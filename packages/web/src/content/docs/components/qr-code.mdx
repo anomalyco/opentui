@@ -1,0 +1,172 @@
+---
+title: QR code
+description: Display a scannable QR code from text content
+---
+
+# QR code
+
+`QRCodeRenderable` displays text or URLs as a QR Code Model 2 symbol. It uses half-block cells to keep the symbol square in terminal cell geometry.
+
+For module matrices, terminal strings, SVG, and raw bytes, use the standalone [QR encoder](/docs/reference/qr-encoder).
+The same package exports this encoder. It also supports explicit segments, ECI, GS1/FNC1, and structured append.
+
+## Availability
+
+| Field           | Availability                                                                         |
+| --------------- | ------------------------------------------------------------------------------------ |
+| Package         | Core `@opentui/qrcode`, React `@opentui/qrcode/react`, Solid `@opentui/qrcode/solid` |
+| Core renderable | `QRCodeRenderable`                                                                   |
+| React           | Call `registerQRCode()` once, then use `<qr-code>`                                   |
+| Solid           | Call `registerQRCode()` once, then use `<qr_code>`                                   |
+| Status          | Separately registered                                                                |
+
+Install the QR code package separately:
+
+```bash
+bun add @opentui/qrcode
+```
+
+## Basic usage
+
+### Renderable API
+
+```typescript
+import { createCliRenderer } from "@opentui/core"
+import { QRCodeRenderable } from "@opentui/qrcode"
+
+const renderer = await createCliRenderer()
+
+const qr = new QRCodeRenderable(renderer, {
+  id: "docs-link",
+  content: "https://opentui.com/docs",
+  quietZone: 4,
+  scale: 2,
+})
+
+renderer.root.add(qr)
+```
+
+### React JSX
+
+```tsx
+import { createCliRenderer } from "@opentui/core"
+import { createRoot } from "@opentui/react"
+import { registerQRCode } from "@opentui/qrcode/react"
+
+registerQRCode()
+
+const renderer = await createCliRenderer()
+createRoot(renderer).render(
+  <qr-code
+    content="https://opentui.com/docs"
+    quietZone={4}
+    scale={2}
+    foregroundColor="#111827"
+    backgroundColor="#ffffff"
+  />,
+)
+```
+
+### Solid JSX
+
+```tsx
+import { render } from "@opentui/solid"
+import { registerQRCode } from "@opentui/qrcode/solid"
+
+registerQRCode()
+
+render(() => (
+  <qr_code
+    content="https://opentui.com/docs"
+    quietZone={4}
+    scale={2}
+    foregroundColor="#111827"
+    backgroundColor="#ffffff"
+  />
+))
+```
+
+## Sizing
+
+`QRCodeRenderable` measures itself from the encoded QR version, the quiet zone, and the requested scale. The default `fit: "contain"` lets the QR code shrink to fit constrained parents while preserving a valid square module grid.
+
+```typescript
+const qr = new QRCodeRenderable(renderer, {
+  content: "opentui.com",
+  quietZone: 4,
+  scale: 2,
+  fit: "contain",
+})
+```
+
+Use `fit: "none"` when you want the configured scale to be the only rendered size.
+
+`quietZone` must be at least 4 modules for a standard QR code. OpenTUI validates the matrix and quiet-zone geometry, but scanner reliability still depends on terminal font, cell aspect ratio, display contrast, and camera conditions.
+
+The content `OPENTUI` and a four-module quiet zone fit a version-one symbol:
+
+```text terminal=qr-code-version-one
+
+
+    █▀▀▀▀▀█ ▀█▄▀█ █▀▀▀▀▀█
+    █ ███ █ ▀ ▀▀█ █ ███ █
+    █ ▀▀▀ █ ▀ ▀█  █ ▀▀▀ █
+    ▀▀▀▀▀▀▀ █ ▀▄█ ▀▀▀▀▀▀▀
+    ▄▄ ▄ ▀▀▄ █ ▄▀▄▀▄█▄█▄█
+    ▄█▀▀█▄▀ █ ▀▀▀▄▄█ ▀█▄
+     ▀  ▀ ▀▀█  ██▄ ▀▀ ▀ ▀
+    █▀▀▀▀▀█ ▄▄▀ ▀▀▄ ▀█▄█▀
+    █ ███ █  ▀███▀█ ▀▄▀
+    █ ▀▀▀ █  █ ▀▀▀▀▀█▄▀▀█
+    ▀▀▀▀▀▀▀  ▀ ▀   ▀ ▀▀
+
+
+```
+
+## Fallback content
+
+When a container is too small to render even a scale-1 QR code, show fallback text instead of an empty area:
+
+```typescript
+const qr = new QRCodeRenderable(renderer, {
+  content: "https://opentui.com/docs",
+  fallbackContent: "Resize for QR",
+  fallbackColor: "#94a3b8",
+})
+```
+
+Fallback painting currently indexes UTF-16 code units and writes one cell for each unit. Use one-cell Basic Multilingual
+Plane characters. Emoji, joined or combining graphemes, and wide characters can split, disappear, or misalign.
+
+## Error correction
+
+Set `errorCorrectionLevel` with the QR package error correction enum:
+
+```typescript
+import { ErrorCorrectionLevel, QRCodeRenderable } from "@opentui/qrcode"
+
+const qr = new QRCodeRenderable(renderer, {
+  content: "opentui.com",
+  errorCorrectionLevel: ErrorCorrectionLevel.H,
+})
+```
+
+Higher error correction improves resilience but can increase the QR version and rendered size for longer content.
+
+## Properties
+
+| Property               | Type                   | Default     | Description                                      |
+| ---------------------- | ---------------------- | ----------- | ------------------------------------------------ |
+| `content`              | `string`               | `""`        | Text content to encode                           |
+| `errorCorrectionLevel` | `ErrorCorrectionLevel` | `M`         | QR error correction level                        |
+| `quietZone`            | `number`               | `4`         | Blank module border around the QR code           |
+| `scale`                | `number`               | `1`         | Terminal columns per QR module before fitting    |
+| `fit`                  | `"contain" \| "none"`  | `"contain"` | Whether the QR code may shrink to fit its parent |
+| `foregroundColor`      | `ColorInput`           | `"#000000"` | Dark module color                                |
+| `backgroundColor`      | `ColorInput`           | `"#ffffff"` | Light module and quiet-zone color                |
+| `fallbackContent`      | `string`               | `""`        | Text rendered when the QR code cannot fit        |
+| `fallbackColor`        | `ColorInput`           | `"#ffffff"` | Fallback text color                              |
+
+## Related APIs
+
+Use the [QR encoder](/docs/reference/qr-encoder) when you need a matrix or serialized output without a renderable. See [Image](/docs/components/image) for decoded image display.

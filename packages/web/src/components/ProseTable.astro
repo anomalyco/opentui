@@ -1,0 +1,8 @@
+---
+// Wraps markdown tables (mapped via `<Content components={{ table: ProseTable }} />`)
+// so wide reference tables scroll instead of overflowing the page.
+---
+
+<div class="table-scroll">
+  <table {...Astro.props}><slot /></table>
+</div>

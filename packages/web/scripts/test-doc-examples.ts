@@ -62,7 +62,7 @@ async function main() {
   }
 
   // Create a template file
-  const template = `import { createCliRenderer, Text, Box } from "@opentui/core"
+  const template = `import { TextRenderable, createCliRenderer } from "@opentui/core"
 
 const renderer = await createCliRenderer({
   exitOnCtrlC: true,
@@ -70,7 +70,7 @@ const renderer = await createCliRenderer({
 
 // Paste your example code here
 renderer.root.add(
-  Text({
+  new TextRenderable(renderer, {
     content: "Hello, OpenTUI!",
     fg: "#00FF00",
   }),

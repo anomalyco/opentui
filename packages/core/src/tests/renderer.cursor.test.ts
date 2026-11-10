@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { createTestRenderer, type TestRenderer } from "../testing"
+import { createTestRenderer, type TestRenderer } from "../testing.js"
 
 describe("renderer cursor state", () => {
   let renderer: TestRenderer

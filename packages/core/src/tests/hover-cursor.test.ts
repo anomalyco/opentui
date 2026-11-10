@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test, afterEach } from "bun:test"
-import { createTestRenderer, MouseButtons, type MockMouse, type TestRenderer } from "../testing"
-import { BoxRenderable } from "../renderables"
-import type { MousePointerStyle } from "../types"
+import { createTestRenderer, MouseButtons, type MockMouse, type TestRenderer } from "../testing.js"
+import { BoxRenderable } from "../renderables/index.js"
+import type { MousePointerStyle } from "../types.js"
 
 describe("mouse pointer style", () => {
   let renderer: TestRenderer
@@ -28,7 +28,44 @@ describe("mouse pointer style", () => {
   })
 
   test("setMousePointer supports all style types", async () => {
-    const styles: MousePointerStyle[] = ["default", "pointer", "text", "crosshair", "move", "not-allowed"]
+    const styles: MousePointerStyle[] = [
+      "auto",
+      "default",
+      "none",
+      "context-menu",
+      "help",
+      "pointer",
+      "progress",
+      "wait",
+      "cell",
+      "crosshair",
+      "text",
+      "vertical-text",
+      "alias",
+      "copy",
+      "move",
+      "no-drop",
+      "not-allowed",
+      "grab",
+      "grabbing",
+      "all-scroll",
+      "col-resize",
+      "row-resize",
+      "n-resize",
+      "e-resize",
+      "s-resize",
+      "w-resize",
+      "ne-resize",
+      "nw-resize",
+      "se-resize",
+      "sw-resize",
+      "ew-resize",
+      "ns-resize",
+      "nesw-resize",
+      "nwse-resize",
+      "zoom-in",
+      "zoom-out",
+    ]
     for (const style of styles) {
       renderer.setMousePointer(style)
       expect((renderer as any)._currentMousePointerStyle).toBe(style)

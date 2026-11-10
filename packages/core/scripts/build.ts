@@ -1,14 +1,13 @@
-import { spawnSync, type SpawnSyncReturns } from "node:child_process"
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs"
-import { dirname, join, resolve } from "path"
+import { execFileSync, spawnSync, type SpawnSyncReturns } from "node:child_process"
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "fs"
+import { basename, dirname, isAbsolute, join, relative, resolve } from "path"
+import { ModuleKind, ScriptTarget, transpileModule } from "typescript"
 import { fileURLToPath } from "url"
 import process from "process"
 import path from "path"
-
-interface Variant {
-  platform: string
-  arch: string
-}
+import { variants, type Variant } from "./variants"
+import { fnv1a64 } from "./native-abi-rust"
+import { separateNativeSymbols } from "./native-symbols"
 
 interface PackageJson {
   name: string
@@ -30,10 +29,23 @@ interface PackageJson {
   peerDependencies?: Record<string, string>
 }
 
+interface BunBuildOptions {
+  chunkNaming?: string
+  entryPoints: string[]
+  entryNaming?: string
+  externalPatterns?: string[]
+  outputDirectory?: string
+  outputFile?: string
+  splitting?: boolean
+  target: "bun" | "node"
+}
+
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 const rootDir = resolve(__dirname, "..")
+const nativeRoot = resolve(rootDir, "../native")
 const licensePath = path.resolve(__dirname, "../../../LICENSE")
+const ghosttyLicensePath = path.resolve(rootDir, "THIRD_PARTY_LICENSES/GHOSTTY")
 const packageJson: PackageJson = JSON.parse(readFileSync(join(rootDir, "package.json"), "utf8"))
 
 const args = process.argv.slice(2)
@@ -42,25 +54,28 @@ const buildNative = args.find((arg) => arg === "--native")
 const isDev = args.includes("--dev")
 const buildAll = args.includes("--all") // Build for all platforms
 const gpaSafeStats = args.includes("--gpa-safe-stats")
+const skipZig = args.includes("--skip-zig")
+const skipSymbols = args.includes("--skip-symbols")
 
-const variants: Variant[] = [
-  { platform: "darwin", arch: "x64" },
-  { platform: "darwin", arch: "arm64" },
-  { platform: "linux", arch: "x64" },
-  { platform: "linux", arch: "arm64" },
-  { platform: "win32", arch: "x64" },
-  { platform: "win32", arch: "arm64" },
-]
+const getHostVariant = (): Variant => {
+  const hostVariant = variants.find((variant) => variant.platform === process.platform && variant.arch === process.arch)
+  if (!hostVariant) {
+    console.error(`Error: Unsupported host platform for native builds: ${process.platform}-${process.arch}`)
+    process.exit(1)
+  }
+  return hostVariant
+}
 
 if (!buildLib && !buildNative) {
   console.error("Error: Please specify --lib, --native, or both")
   process.exit(1)
 }
 
-const getZigTarget = (platform: string, arch: string): string => {
+const getZigTarget = (platform: string, arch: string, abi?: string): string => {
   const platformMap: Record<string, string> = { darwin: "macos", win32: "windows", linux: "linux" }
   const archMap: Record<string, string> = { x64: "x86_64", arm64: "aarch64" }
-  return `${archMap[arch] ?? arch}-${platformMap[platform] ?? platform}`
+  const base = `${archMap[arch] ?? arch}-${platformMap[platform] ?? platform}`
+  return abi ? `${base}-${abi}` : base
 }
 
 const replaceLinks = (text: string): string => {
@@ -79,36 +94,131 @@ if (missingRequired.length > 0) {
   process.exit(1)
 }
 
+const runCommand = (command: string, commandArgs: string[], cwd: string, errorMessage: string): void => {
+  const result: SpawnSyncReturns<Buffer> = spawnSync(command, commandArgs, {
+    cwd,
+    stdio: "inherit",
+  })
+
+  if (result.error) {
+    console.error(`${errorMessage}: ${result.error.message}`)
+    process.exit(1)
+  }
+
+  if (result.status !== 0) {
+    console.error(errorMessage)
+    process.exit(1)
+  }
+}
+
+const runBunBuild = ({
+  chunkNaming,
+  entryPoints,
+  entryNaming,
+  externalPatterns = [],
+  outputDirectory = "dist",
+  outputFile,
+  splitting = false,
+  target,
+}: BunBuildOptions): void => {
+  if (outputFile && splitting) {
+    throw new Error("Bun builds with an output file cannot use splitting")
+  }
+
+  const buildArgs = [
+    "build",
+    `--target=${target}`,
+    outputFile ? `--outfile=${outputFile}` : `--outdir=${outputDirectory}`,
+    "--sourcemap",
+    ...(entryNaming ? [`--entry-naming=${entryNaming}`] : []),
+    ...(chunkNaming ? [`--chunk-naming=${chunkNaming}`] : []),
+    ...(splitting ? ["--splitting"] : []),
+    ...externalPatterns.flatMap((pattern) => ["--external", pattern]),
+    ...entryPoints,
+  ]
+
+  runCommand("bun", buildArgs, rootDir, `Error: Bun ${target} build failed for ${entryPoints.join(", ")}`)
+}
+
+const finalizeBunBuildOutput = (temporaryPath: string, outputPath: string): void => {
+  const temporaryAbsolute = resolve(rootDir, temporaryPath)
+  const outputAbsolute = resolve(rootDir, outputPath)
+  const temporaryMap = `${temporaryAbsolute}.map`
+  const outputMap = `${outputAbsolute}.map`
+
+  let source = readFileSync(temporaryAbsolute, "utf8")
+  source = source.replace(`sourceMappingURL=${basename(temporaryMap)}`, `sourceMappingURL=${basename(outputMap)}`)
+  writeFileSync(temporaryAbsolute, source)
+  renameSync(temporaryAbsolute, outputAbsolute)
+  if (existsSync(temporaryMap)) {
+    const sourceMap = JSON.parse(readFileSync(temporaryMap, "utf8")) as { sources?: string[] }
+    if (sourceMap.sources) {
+      sourceMap.sources = sourceMap.sources.map((sourcePath) => {
+        if (isAbsolute(sourcePath) || sourcePath.includes(":")) return sourcePath
+        return relative(dirname(outputMap), resolve(dirname(temporaryMap), sourcePath)).replaceAll("\\", "/")
+      })
+      writeFileSync(temporaryMap, JSON.stringify(sourceMap, null, 2) + "\n")
+    }
+    renameSync(temporaryMap, outputMap)
+  }
+}
+
+const transpileEntryPoint = (entryPoint: string, outputPath: string): void => {
+  const sourcePath = join(rootDir, entryPoint)
+  const sourceText = readFileSync(sourcePath, "utf8")
+  const result = transpileModule(sourceText, {
+    compilerOptions: {
+      module: ModuleKind.ESNext,
+      sourceMap: true,
+      target: ScriptTarget.ES2022,
+    },
+    fileName: sourcePath,
+  })
+
+  writeFileSync(outputPath, result.outputText)
+  if (result.sourceMapText) {
+    writeFileSync(`${outputPath}.map`, result.sourceMapText)
+  }
+}
+
+// Zig stores archive inputs of a static library as nested members, which other linkers cannot read.
+function checkStaticArchive(path: string): void {
+  if (!existsSync(path)) return
+  const members = execFileSync("zig", ["ar", "t", path], { cwd: nativeRoot, encoding: "utf8" }).split(/\r?\n/)
+  const nested = members.filter((member) => /\.(a|lib)$/.test(member))
+  if (nested.length > 0) throw new Error(`${path} contains nested archives: ${nested.join(", ")}`)
+}
+
 if (buildNative) {
+  runCommand(
+    "bun",
+    ["scripts/native-abi.ts", "--check", ...(buildAll ? ["--all-targets"] : [])],
+    rootDir,
+    "Error: Native ABI metadata is stale",
+  )
   console.log(`Building native ${isDev ? "dev" : "prod"} binaries${buildAll ? " for all platforms" : ""}...`)
 
   const zigArgs = ["build", `-Doptimize=${isDev ? "Debug" : "ReleaseFast"}`]
   if (buildAll) {
-    zigArgs.push("-Dall")
+    // Release builds must never fall back to building without video.
+    zigArgs.push("-Dall", "-Drequire-video")
   }
   if (gpaSafeStats) {
     zigArgs.push("-Dgpa-safe-stats=true")
   }
 
-  const zigBuild: SpawnSyncReturns<Buffer> = spawnSync("zig", zigArgs, {
-    cwd: join(rootDir, "src", "zig"),
-    stdio: "inherit",
-  })
-
-  if (zigBuild.error) {
-    console.error("Error: Zig is not installed or not in PATH")
-    process.exit(1)
+  if (!skipZig) {
+    // Native video statically links FFmpeg; prepare:zig builds only the host prefixes.
+    if (buildAll) runCommand("bun", ["scripts/build-ffmpeg.ts", "--all"], nativeRoot, "Error: FFmpeg build failed")
+    runCommand("zig", zigArgs, nativeRoot, "Error: Zig build failed")
   }
 
-  if (zigBuild.status !== 0) {
-    console.error("Error: Zig build failed")
-    process.exit(1)
-  }
+  const variantsToPackage = buildAll ? variants : [getHostVariant()]
 
-  for (const { platform, arch } of variants) {
-    const nativeName = `${packageJson.name}-${platform}-${arch}`
+  for (const { platform, arch, abi } of variantsToPackage) {
+    const nativeName = `${packageJson.name}-${platform}-${arch}${abi ? `-${abi}` : ""}`
     const nativeDir = join(rootDir, "node_modules", nativeName)
-    const libDir = join(rootDir, "src", "zig", "lib", getZigTarget(platform, arch))
+    const libDir = join(nativeRoot, "lib", getZigTarget(platform, arch, abi))
 
     rmSync(nativeDir, { recursive: true, force: true })
     mkdirSync(nativeDir, { recursive: true })
@@ -136,11 +246,47 @@ if (buildNative) {
       continue
     }
 
-    const indexTsContent = `const module = await import("./${libraryFileName}", { with: { type: "file" } })
-const path = module.default
-export default path;
+    checkStaticArchive(join(libDir, platform === "win32" ? "opentui-static.lib" : "libopentui.a"))
+
+    // The Zig build installs the header it compiled beside the libraries. A different header means the libraries
+    // are stale, and a C or Rust host would bind declarations they do not implement.
+    const header = readFileSync(join(libDir, "opentui.h"))
+    const headerHash = fnv1a64(header)
+    const sourceHash = fnv1a64(readFileSync(join(nativeRoot, "include", "opentui.h")))
+    if (headerHash !== sourceHash) {
+      throw new Error(`${libDir}/opentui.h (${headerHash}) is not include/opentui.h (${sourceHash}); rebuild native`)
+    }
+    writeFileSync(join(nativeDir, "opentui.h"), header)
+    // A Windows host links the DLL through its import library.
+    if (platform === "win32") copyFileSync(join(libDir, "opentui.lib"), join(nativeDir, "opentui.lib"))
+
+    if (!isDev && !skipSymbols && libraryFileName) {
+      separateNativeSymbols({
+        binary: join(nativeDir, libraryFileName),
+        symbolsDir: join(nativeRoot, "symbols", `${platform}-${arch}${abi ? `-${abi}` : ""}`),
+        platform,
+        target: getZigTarget(platform, arch, abi),
+        version: packageJson.version,
+        commit: execFileSync("git", ["rev-parse", "HEAD"], { cwd: rootDir, encoding: "utf8" }).trim(),
+        abi: abi ?? (platform === "linux" || platform === "win32" ? "gnu" : undefined),
+        pdb: join(libDir, "opentui.pdb"),
+        buildDir: nativeRoot,
+      })
+    }
+
+    const indexJsContent = `import { fileURLToPath } from "node:url"
+
+export default fileURLToPath(new URL("./${libraryFileName}", import.meta.url))
 `
-    writeFileSync(join(nativeDir, "index.ts"), indexTsContent)
+    writeFileSync(join(nativeDir, "index.js"), indexJsContent)
+
+    const indexBunJsContent = `const module = await import("./${libraryFileName}", { with: { type: "file" } })
+
+export default module.default
+`
+    writeFileSync(join(nativeDir, "index.bun.js"), indexBunJsContent)
+
+    writeFileSync(join(nativeDir, "index.d.ts"), "declare const path: string\nexport default path\n")
 
     writeFileSync(
       join(nativeDir, "package.json"),
@@ -148,17 +294,28 @@ export default path;
         {
           name: nativeName,
           version: packageJson.version,
-          description: `Prebuilt ${platform}-${arch} binaries for ${packageJson.name}`,
-          main: "index.ts",
-          types: "index.ts",
-          license: packageJson.license,
+          description: `Prebuilt ${platform}-${arch}${abi ? `-${abi}` : ""} binaries for ${packageJson.name}`,
+          type: "module",
+          main: "index.js",
+          module: "index.js",
+          types: "index.d.ts",
+          // The binaries statically link LGPL FFmpeg.
+          license: `${packageJson.license} AND LGPL-2.1-or-later`,
           author: packageJson.author,
           homepage: packageJson.homepage,
           repository: packageJson.repository,
           bugs: packageJson.bugs,
           keywords: [...(packageJson.keywords ?? []), "prebuild", "prebuilt"],
+          exports: {
+            ".": {
+              bun: "./index.bun.js",
+              import: "./index.js",
+              types: "./index.d.ts",
+            },
+          },
           os: [platform],
           cpu: [arch],
+          ...(abi ? { libc: [abi] } : {}),
         },
         null,
         2,
@@ -167,15 +324,39 @@ export default path;
 
     writeFileSync(
       join(nativeDir, "README.md"),
-      replaceLinks(`## ${nativeName}\n\n> Prebuilt ${platform}-${arch} binaries for \`${packageJson.name}\`.`),
+      replaceLinks(
+        `## ${nativeName}\n\n> Prebuilt ${platform}-${arch}${abi ? `-${abi}` : ""} binaries for \`${packageJson.name}\`.\n\n` +
+          `\`opentui.h\` beside \`${libraryFileName}\` is the C ABI header that this library was built from ` +
+          `(FNV-1a 64 \`${headerHash}\`). A C host compiles against it and links the library in this directory` +
+          `${platform === "win32" ? " through `opentui.lib`" : ""}. For the Rust crates in packages/rust, set ` +
+          `\`OPENTUI_LIB_DIR\` to this directory${platform === "win32" ? "" : " and turn off their default `static` feature (`default-features = false`), since this package has no static library"}; their build fails when the header differs from the one their bindings were generated from. ` +
+          `See [C](https://opentui.com/docs/native/c).`,
+      ),
     )
 
     if (existsSync(licensePath)) copyFileSync(licensePath, join(nativeDir, "LICENSE"))
-    console.log("Built:", nativeName)
+    for (const [source, destination] of [
+      [ghosttyLicensePath, "LICENSE-GHOSTTY"],
+      [join(nativeRoot, "src", "vendor", "wuffs", "LICENSE"), "LICENSE-WUFFS"],
+      [join(nativeRoot, "src", "vendor", "stb", "LICENSE"), "LICENSE-STB"],
+      [join(nativeRoot, "src", "vendor", "libwebp", "COPYING"), "LICENSE-LIBWEBP"],
+      [join(nativeRoot, "src", "vendor", "libwebp", "PATENTS"), "PATENTS-LIBWEBP"],
+      [join(nativeRoot, "src", "vendor", "libwebp", "AUTHORS"), "AUTHORS-LIBWEBP"],
+      [join(nativeRoot, "src", "vendor", "lcms2", "LICENSE"), "LICENSE-LCMS2"],
+      [join(nativeRoot, "src", "vendor", "ffmpeg", "COPYING.LGPLv2.1"), "LICENSE-FFMPEG"],
+      [join(nativeRoot, "src", "vendor", "ffmpeg", "README.md"), "FFMPEG-SOURCE.md"],
+      [join(nativeRoot, "src", "vendor", "ffmpeg", "LICENSE-ZLIB"), "LICENSE-ZLIB"],
+    ] as const) {
+      if (!existsSync(source)) throw new Error(`Required native license file is missing: ${source}`)
+      copyFileSync(source, join(nativeDir, destination))
+    }
+    console.log("Built:", nativeName, `opentui.h FNV-1a 64 ${headerHash}`)
   }
 }
 
 if (buildLib) {
+  if (!buildNative)
+    runCommand("bun", ["scripts/native-abi.ts", "--check"], rootDir, "Error: Native ABI metadata is stale")
   console.log("Building library...")
 
   const distDir = join(rootDir, "dist")
@@ -193,61 +374,66 @@ if (buildLib) {
     process.exit(1)
   }
 
-  const entryPoints: string[] = [
-    packageJson.module,
-    "src/3d.ts",
-    "src/testing.ts",
-    "src/runtime-plugin.ts",
-    "src/runtime-plugin-support.ts",
-  ]
-
-  // Build main entry points with code splitting
-  // External patterns to prevent bundling tree-sitter assets and default-parsers
-  // to allow standalone executables to work
-  const externalPatterns = [
-    ...externalDeps,
-    "*.wasm",
-    "*.scm",
-    "./lib/tree-sitter/assets/*",
-    "./lib/tree-sitter/default-parsers",
-    "./lib/tree-sitter/default-parsers.ts",
-  ]
-
-  spawnSync(
-    "bun",
-    [
-      "build",
-      "--target=bun",
-      "--splitting",
-      "--outdir=dist",
-      "--sourcemap",
-      ...externalPatterns.flatMap((dep) => ["--external", dep]),
-      ...entryPoints,
-    ],
+  const bunOnlyEntryPoints = [
     {
-      cwd: rootDir,
-      stdio: "inherit",
+      entryPoint: "src/runtime-plugin.ts",
+      outputFile: "runtime-plugin.js",
     },
-  )
+    {
+      entryPoint: "src/runtime-plugin-support-configure.ts",
+      outputFile: "runtime-plugin-support-configure.js",
+    },
+    {
+      entryPoint: "src/runtime-plugin-support.ts",
+      outputFile: "runtime-plugin-support.js",
+    },
+  ]
 
-  // Build parser worker as standalone bundle (no splitting) so it can be loaded as a Worker
-  // Make web-tree-sitter external so it loads from node_modules with its WASM file
-  spawnSync(
+  // Keep runtime assets external so Bun consumers can discover literal file imports
+  // and Node consumers can resolve package-relative files.
+  const externalPatterns = [...externalDeps, "@opentui/core/parser.worker", "*.wasm", "*.scm"]
+
+  const portableEntryPoints = [packageJson.module, "src/testing.ts", "src/yoga.ts"]
+
+  runBunBuild({
+    chunkNaming: "chunk-node-[hash].[ext]",
+    entryPoints: portableEntryPoints,
+    externalPatterns,
+    splitting: true,
+    target: "node",
+  })
+  finalizeBunBuildOutput("dist/index.js", "dist/index.node.js")
+  runBunBuild({
+    chunkNaming: "chunk-bun-[hash].[ext]",
+    entryNaming: "[name].bun.[ext]",
+    entryPoints: portableEntryPoints,
+    externalPatterns,
+    splitting: true,
+    target: "bun",
+  })
+  runBunBuild({
+    entryPoints: ["src/node-assets.ts"],
+    externalPatterns,
+    target: "node",
+  })
+
+  for (const { entryPoint, outputFile } of bunOnlyEntryPoints) {
+    transpileEntryPoint(entryPoint, join(distDir, outputFile))
+  }
+
+  // Build updater as a separate entry so generator code stays out of the core runtime bundle.
+  runCommand(
     "bun",
     [
       "build",
       "--target=bun",
-      "--outdir=dist",
+      "--outdir=dist/lib/tree-sitter",
       "--sourcemap",
       ...externalDeps.flatMap((dep) => ["--external", dep]),
-      "--external",
-      "web-tree-sitter",
-      "src/lib/tree-sitter/parser.worker.ts",
+      "src/lib/tree-sitter/update-assets.ts",
     ],
-    {
-      cwd: rootDir,
-      stdio: "inherit",
-    },
+    rootDir,
+    "Error: Bun build failed for src/lib/tree-sitter/update-assets.ts",
   )
 
   // Post-process to fix Bun's duplicate export issue
@@ -255,12 +441,17 @@ if (buildLib) {
   // and: https://github.com/oven-sh/bun/issues/10631
   console.log("Post-processing bundled files to fix duplicate exports...")
   const bundledFiles = [
-    "dist/index.js",
-    "dist/3d.js",
+    "dist/index.node.js",
+    "dist/node-assets.js",
     "dist/testing.js",
     "dist/runtime-plugin.js",
     "dist/runtime-plugin-support.js",
-    "dist/lib/tree-sitter/parser.worker.js",
+    "dist/runtime-plugin-support-configure.js",
+    "dist/yoga.js",
+    "dist/lib/tree-sitter/update-assets.js",
+    "dist/index.bun.js",
+    "dist/testing.bun.js",
+    "dist/yoga.bun.js",
   ]
   for (const filePath of bundledFiles) {
     const fullPath = join(rootDir, filePath)
@@ -293,16 +484,21 @@ if (buildLib) {
 
   const tsconfigBuildPath = join(rootDir, "tsconfig.build.json")
 
-  const tscResult: SpawnSyncReturns<Buffer> = spawnSync("bunx", ["tsc", "-p", tsconfigBuildPath], {
-    cwd: rootDir,
-    stdio: "inherit",
-  })
+  runCommand("bunx", ["tsc", "-p", tsconfigBuildPath], rootDir, "Error: TypeScript declaration generation failed")
+  console.log("TypeScript declarations generated")
 
-  if (tscResult.status !== 0) {
-    console.error("Error: TypeScript declaration generation failed")
-    process.exit(1)
-  } else {
-    console.log("TypeScript declarations generated")
+  // Bun derives dotted outfile paths from the entry name, so build in a temporary directory and move both outputs.
+  // The tree-sitter WASM remains a separate manifest asset.
+  runBunBuild({
+    entryPoints: ["src/lib/tree-sitter/parser.worker.ts"],
+    externalPatterns: ["*.wasm"],
+    outputDirectory: "dist/worker",
+    target: "node",
+  })
+  finalizeBunBuildOutput("dist/worker/parser.worker.js", "dist/parser.worker.js")
+  rmSync(join(distDir, "worker"), { recursive: true, force: true })
+  if (!existsSync(join(distDir, "parser.worker.js"))) {
+    throw new Error("Parser worker build did not produce dist/parser.worker.js")
   }
 
   const treeSitterSrcDir = join(rootDir, "src", "lib", "tree-sitter")
@@ -324,42 +520,97 @@ if (buildLib) {
   copyAssets(join(treeSitterSrcDir, "assets"), join(distDir, "assets"))
   console.log("  Copied tree-sitter assets (*.wasm, *.scm) to dist/assets/")
 
+  const writeBunOnlyStub = (fileName: string, specifier: string, exportNames: string[]): void => {
+    const errorMessage = `${specifier} is Bun-only and is not available in Node.js. Use Bun to import this entrypoint.`
+    const namedExports = exportNames
+      .map((exportName) => `export function ${exportName}() {\n  throw new Error(${JSON.stringify(errorMessage)})\n}`)
+      .join("\n\n")
+
+    writeFileSync(
+      join(distDir, fileName),
+      `const errorMessage = ${JSON.stringify(errorMessage)}\n\n${namedExports}\n\nthrow new Error(errorMessage)\n`,
+    )
+  }
+
+  writeBunOnlyStub("runtime-plugin.node.js", `${packageJson.name}/runtime-plugin`, [
+    "createRuntimePlugin",
+    "isCoreRuntimeModuleSpecifier",
+    "runtimeModuleIdForSpecifier",
+  ])
+  writeBunOnlyStub("runtime-plugin-support.node.js", `${packageJson.name}/runtime-plugin-support`, [
+    "ensureRuntimePluginSupport",
+    "createRuntimePlugin",
+    "runtimeModuleIdForSpecifier",
+  ])
+  writeBunOnlyStub("runtime-plugin-support-configure.node.js", `${packageJson.name}/runtime-plugin-support/configure`, [
+    "ensureRuntimePluginSupport",
+    "createRuntimePlugin",
+    "runtimeModuleIdForSpecifier",
+  ])
+
   // Configure exports for multiple entry points
   const exports = {
     ".": {
-      import: "./index.js",
-      require: "./index.js",
       types: "./index.d.ts",
-    },
-    "./3d": {
-      import: "./3d.js",
-      require: "./3d.js",
-      types: "./3d.d.ts",
+      bun: "./index.bun.js",
+      node: "./index.node.js",
+      import: "./index.node.js",
     },
     "./testing": {
+      bun: "./testing.bun.js",
       import: "./testing.js",
-      require: "./testing.js",
       types: "./testing.d.ts",
     },
     "./runtime-plugin": {
-      import: "./runtime-plugin.js",
-      require: "./runtime-plugin.js",
       types: "./runtime-plugin.d.ts",
+      bun: "./runtime-plugin.js",
+      node: "./runtime-plugin.node.js",
+      default: "./runtime-plugin.node.js",
     },
     "./runtime-plugin-support": {
-      import: "./runtime-plugin-support.js",
-      require: "./runtime-plugin-support.js",
       types: "./runtime-plugin-support.d.ts",
+      bun: "./runtime-plugin-support.js",
+      node: "./runtime-plugin-support.node.js",
+      default: "./runtime-plugin-support.node.js",
+    },
+    "./runtime-plugin-support/configure": {
+      types: "./runtime-plugin-support-configure.d.ts",
+      bun: "./runtime-plugin-support-configure.js",
+      node: "./runtime-plugin-support-configure.node.js",
+      default: "./runtime-plugin-support-configure.node.js",
+    },
+    "./yoga": {
+      bun: "./yoga.bun.js",
+      types: "./yoga.d.ts",
+      import: "./yoga.js",
+    },
+    // Conditional exports select the first matching key in declaration order. Bun
+    // matches `bun` for both import and require, while Node ESM falls through to
+    // `import`. There is deliberately no `require` or `default`: this module uses
+    // top-level await, so directing Node CommonJS to it would fail during evaluation.
+    "./tree-sitter/update-assets": {
+      types: "./lib/tree-sitter/update-assets.d.ts",
+      bun: "./lib/tree-sitter/update-assets.js",
+      import: "./lib/tree-sitter/update-assets.js",
     },
     "./parser.worker": {
-      import: "./lib/tree-sitter/parser.worker.js",
-      require: "./lib/tree-sitter/parser.worker.js",
+      bun: "./parser.worker.js",
+      node: "./parser.worker.js",
+      import: "./parser.worker.js",
+      require: "./parser.worker.js",
       types: "./lib/tree-sitter/parser.worker.d.ts",
+    },
+    "./node-assets": {
+      types: "./node-assets.d.ts",
+      import: "./node-assets.js",
     },
   }
 
   const optionalDeps: Record<string, string> = Object.fromEntries(
-    variants.map(({ platform, arch }) => [`${packageJson.name}-${platform}-${arch}`, packageJson.version]),
+    variants.map(({ platform, arch, abi }) => [
+      `${packageJson.name}-${platform}-${arch}${abi ? `-${abi}` : ""}`,
+      packageJson.version,
+    ]),
   )
 
   writeFileSync(
@@ -367,8 +618,8 @@ if (buildLib) {
     JSON.stringify(
       {
         name: packageJson.name,
-        module: "index.js",
-        main: "index.js",
+        module: "index.node.js",
+        main: "index.node.js",
         types: "index.d.ts",
         type: packageJson.type,
         version: packageJson.version,
@@ -379,9 +630,9 @@ if (buildLib) {
         homepage: packageJson.homepage,
         repository: packageJson.repository,
         bugs: packageJson.bugs,
+        engines: packageJson.engines,
         exports,
         dependencies: packageJson.dependencies,
-        devDependencies: packageJson.devDependencies,
         peerDependencies: packageJson.peerDependencies,
         optionalDependencies: {
           ...packageJson.optionalDependencies,
@@ -395,6 +646,10 @@ if (buildLib) {
 
   writeFileSync(join(distDir, "README.md"), replaceLinks(readFileSync(join(rootDir, "README.md"), "utf8")))
   if (existsSync(licensePath)) copyFileSync(licensePath, join(distDir, "LICENSE"))
+
+  if (!existsSync(join(distDir, "parser.worker.js"))) {
+    throw new Error("Parser worker was removed while assembling the distribution")
+  }
 
   console.log("Library built at:", distDir)
 }

@@ -1,5 +1,5 @@
-import { Edge, Gutter } from "yoga-layout"
-import { type RenderableOptions, Renderable } from "../Renderable.js"
+import { Gutter } from "../yoga.js"
+import { type RenderableOptions, Renderable, type NativeRenderableIntegration } from "../Renderable.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import {
   type BorderCharacters,
@@ -13,6 +13,7 @@ import {
 import { type ColorInput, RGBA, parseColor } from "../lib/RGBA.js"
 import { isValidPercentage } from "../lib/renderable.validations.js"
 import type { RenderContext } from "../types.js"
+import type { NativeScenePaint, NativeSceneBoxDetails } from "../zig.js"
 
 export interface BoxOptions<TRenderable extends Renderable = BoxRenderable> extends RenderableOptions<TRenderable> {
   backgroundColor?: string | RGBA
@@ -22,7 +23,10 @@ export interface BoxOptions<TRenderable extends Renderable = BoxRenderable> exte
   customBorderChars?: BorderCharacters
   shouldFill?: boolean
   title?: string
+  titleColor?: string | RGBA
   titleAlignment?: "left" | "center" | "right"
+  bottomTitle?: string
+  bottomTitleAlignment?: "left" | "center" | "right"
   focusedBorderColor?: ColorInput
   focusable?: boolean
   gap?: number | `${number}%`
@@ -40,7 +44,15 @@ function isGapType(value: any): value is number | undefined {
   return isValidPercentage(value)
 }
 
+function borderMask(sides: BorderSidesConfig): number {
+  return (sides.left ? 1 : 0) | (sides.bottom ? 2 : 0) | (sides.right ? 4 : 0) | (sides.top ? 8 : 0)
+}
+
 export class BoxRenderable extends Renderable {
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
+    kind: "box",
+    body: { native: this.prototype.renderSelf },
+  }
   protected _backgroundColor: RGBA
   protected _border: boolean | BorderSides[]
   protected _borderStyle: BorderStyle
@@ -49,9 +61,12 @@ export class BoxRenderable extends Renderable {
   private _customBorderCharsObj: BorderCharacters | undefined
   protected _customBorderChars?: Uint32Array
   protected borderSides: BorderSidesConfig
-  public shouldFill: boolean
+  private _shouldFill: boolean
   protected _title?: string
+  protected _titleColor?: RGBA
   protected _titleAlignment: "left" | "center" | "right"
+  protected _bottomTitle?: string
+  protected _bottomTitleAlignment: "left" | "center" | "right"
 
   protected _defaultOptions = {
     backgroundColor: "transparent",
@@ -60,40 +75,62 @@ export class BoxRenderable extends Renderable {
     borderColor: "#FFFFFF",
     shouldFill: true,
     titleAlignment: "left",
+    bottomTitleAlignment: "left",
     focusedBorderColor: "#00AAFF",
   } satisfies Partial<BoxOptions>
 
   constructor(ctx: RenderContext, options: BoxOptions) {
     super(ctx, options)
 
-    if (options.focusable === true) {
-      this._focusable = true
-    }
+    try {
+      if (options.focusable === true) {
+        this._focusable = true
+      }
 
-    this._backgroundColor = parseColor(options.backgroundColor || this._defaultOptions.backgroundColor)
-    this._border = options.border ?? this._defaultOptions.border
-    if (
-      !options.border &&
-      (options.borderStyle || options.borderColor || options.focusedBorderColor || options.customBorderChars)
-    ) {
-      this._border = true
-    }
-    this._borderStyle = parseBorderStyle(options.borderStyle, this._defaultOptions.borderStyle)
-    this._borderColor = parseColor(options.borderColor || this._defaultOptions.borderColor)
-    this._focusedBorderColor = parseColor(options.focusedBorderColor || this._defaultOptions.focusedBorderColor)
-    this._customBorderCharsObj = options.customBorderChars
-    this._customBorderChars = this._customBorderCharsObj ? borderCharsToArray(this._customBorderCharsObj) : undefined
-    this.borderSides = getBorderSides(this._border)
-    this.shouldFill = options.shouldFill ?? this._defaultOptions.shouldFill
-    this._title = options.title
-    this._titleAlignment = options.titleAlignment || this._defaultOptions.titleAlignment
+      this._backgroundColor = RGBA.clone(parseColor(options.backgroundColor || this._defaultOptions.backgroundColor))
+      this._border = options.border ?? this._defaultOptions.border
+      if (
+        !options.border &&
+        (options.borderStyle || options.borderColor || options.focusedBorderColor || options.customBorderChars)
+      ) {
+        this._border = true
+      }
+      this._borderStyle = parseBorderStyle(options.borderStyle, this._defaultOptions.borderStyle)
+      this._borderColor = RGBA.clone(parseColor(options.borderColor || this._defaultOptions.borderColor))
+      if (Array.isArray(this._border)) this._border = [...this._border]
+      this._focusedBorderColor = RGBA.clone(
+        parseColor(options.focusedBorderColor || this._defaultOptions.focusedBorderColor),
+      )
+      this._customBorderCharsObj = options.customBorderChars
+      this._customBorderChars = this._customBorderCharsObj ? borderCharsToArray(this._customBorderCharsObj) : undefined
+      this.borderSides = getBorderSides(this._border)
+      this._shouldFill = options.shouldFill ?? this._defaultOptions.shouldFill
+      this._title = options.title
+      this._titleColor = options.titleColor ? RGBA.clone(parseColor(options.titleColor)) : undefined
+      this._titleAlignment = options.titleAlignment || this._defaultOptions.titleAlignment
+      this._bottomTitle = options.bottomTitle
+      this._bottomTitleAlignment = options.bottomTitleAlignment || this._defaultOptions.bottomTitleAlignment
 
-    this.applyYogaBorders()
+      this.setNativeScenePaint()
+      this.requestRender()
+      if (
+        this._title ||
+        this._bottomTitle ||
+        this._titleColor ||
+        this._customBorderChars ||
+        this._titleAlignment !== "left" ||
+        this._bottomTitleAlignment !== "left"
+      ) {
+        this.setNativeBoxDetails()
+      }
 
-    const hasInitialGapProps =
-      options.gap !== undefined || options.rowGap !== undefined || options.columnGap !== undefined
-    if (hasInitialGapProps) {
-      this.applyYogaGap(options)
+      const hasInitialGapProps =
+        options.gap !== undefined || options.rowGap !== undefined || options.columnGap !== undefined
+      if (hasInitialGapProps) {
+        this.applyYogaGap(options)
+      }
+    } catch (error) {
+      this.abortConstruction(error)
     }
   }
 
@@ -105,7 +142,6 @@ export class BoxRenderable extends Renderable {
     if (this._border === false) {
       this._border = true
       this.borderSides = getBorderSides(this._border)
-      this.applyYogaBorders()
     }
   }
 
@@ -114,32 +150,37 @@ export class BoxRenderable extends Renderable {
   }
 
   public set customBorderChars(value: BorderCharacters | undefined) {
+    const chars = value ? borderCharsToArray(value) : undefined
+    this.setNativeBoxDetails({ customBorderChars: chars })
     this._customBorderCharsObj = value
-    this._customBorderChars = value ? borderCharsToArray(value) : undefined
+    this._customBorderChars = chars
     this.requestRender()
   }
 
+  /** Requested value, snapshotted when staging succeeds; native accepts it at the next boundary. */
   public get backgroundColor(): RGBA {
-    return this._backgroundColor
+    return RGBA.clone(this._backgroundColor)
   }
 
   public set backgroundColor(value: RGBA | string | undefined) {
-    const newColor = parseColor(value ?? this._defaultOptions.backgroundColor)
-    if (this._backgroundColor !== newColor) {
-      this._backgroundColor = newColor
-      this.requestRender()
-    }
+    if (this.isFreed()) return
+    const newColor = RGBA.clone(parseColor(value ?? this._defaultOptions.backgroundColor))
+    this._ctx.nativeScene.setBackground(this, newColor)
+    this._backgroundColor = newColor
+    this.requestRender()
   }
 
   public get border(): boolean | BorderSides[] {
+    if (Array.isArray(this._border)) return [...this._border]
     return this._border
   }
 
   public set border(value: boolean | BorderSides[]) {
     if (this._border !== value) {
-      this._border = value
-      this.borderSides = getBorderSides(value)
-      this.applyYogaBorders()
+      const sides = getBorderSides(value)
+      this.setNativeScenePaint({ border: borderMask(sides) })
+      this._border = Array.isArray(value) ? [...value] : value
+      this.borderSides = sides
       this.requestRender()
     }
   }
@@ -151,39 +192,49 @@ export class BoxRenderable extends Renderable {
   public set borderStyle(value: BorderStyle) {
     const _value = parseBorderStyle(value, this._defaultOptions.borderStyle)
     if (this._borderStyle !== _value || !this._border) {
-      this._borderStyle = _value
-      this._customBorderChars = undefined
-      this.initializeBorder()
-      this.requestRender()
+      this.runMutation(() => {
+        this._ctx.nativeScene.setBoxBorderStyle(
+          this,
+          _value,
+          this._border === false ? 15 : borderMask(this.borderSides),
+        )
+        this._borderStyle = _value
+        this._customBorderChars = undefined
+        this._customBorderCharsObj = undefined
+        this.initializeBorder()
+        this.requestRender()
+      })
     }
   }
 
   public get borderColor(): RGBA {
-    return this._borderColor
+    return RGBA.clone(this._borderColor)
   }
 
   public set borderColor(value: RGBA | string) {
-    const newColor = parseColor(value ?? this._defaultOptions.borderColor)
-    if (this._borderColor !== newColor) {
-      this._borderColor = newColor
-      this.initializeBorder()
-      this.requestRender()
-    }
+    const newColor = RGBA.clone(parseColor(value ?? this._defaultOptions.borderColor))
+    this.setNativeScenePaint({
+      borderColor: newColor,
+      border: this._border === false ? 15 : borderMask(this.borderSides),
+    })
+    this._borderColor = newColor
+    this.initializeBorder()
+    this.requestRender()
   }
 
   public get focusedBorderColor(): RGBA {
-    return this._focusedBorderColor
+    return RGBA.clone(this._focusedBorderColor)
   }
 
   public set focusedBorderColor(value: RGBA | string) {
-    const newColor = parseColor(value ?? this._defaultOptions.focusedBorderColor)
-    if (this._focusedBorderColor !== newColor) {
-      this._focusedBorderColor = newColor
-      this.initializeBorder()
-      if (this._focused) {
-        this.requestRender()
-      }
-    }
+    const newColor = RGBA.clone(parseColor(value ?? this._defaultOptions.focusedBorderColor))
+    this.setNativeScenePaint({
+      focusedBorderColor: newColor,
+      border: this._border === false ? 15 : borderMask(this.borderSides),
+    })
+    this._focusedBorderColor = newColor
+    this.initializeBorder()
+    this.requestRender()
   }
 
   public get title(): string | undefined {
@@ -192,7 +243,21 @@ export class BoxRenderable extends Renderable {
 
   public set title(value: string | undefined) {
     if (this._title !== value) {
+      this.setNativeBoxDetails({ title: value })
       this._title = value
+      this.requestRender()
+    }
+  }
+
+  public get titleColor(): RGBA | undefined {
+    return this._titleColor ? RGBA.clone(this._titleColor) : undefined
+  }
+
+  public set titleColor(value: string | RGBA | undefined) {
+    const newColor = value ? RGBA.clone(parseColor(value)) : undefined
+    if (this._titleColor !== newColor) {
+      this.setNativeBoxDetails({ titleColor: newColor })
+      this._titleColor = newColor
       this.requestRender()
     }
   }
@@ -202,94 +267,116 @@ export class BoxRenderable extends Renderable {
   }
 
   public set titleAlignment(value: "left" | "center" | "right") {
+    value ??= this._defaultOptions.titleAlignment
     if (this._titleAlignment !== value) {
+      this.setNativeBoxDetails({ titleAlignment: value })
       this._titleAlignment = value
       this.requestRender()
     }
   }
 
-  protected renderSelf(buffer: OptimizedBuffer): void {
-    const currentBorderColor = this._focused ? this._focusedBorderColor : this._borderColor
+  public get bottomTitle(): string | undefined {
+    return this._bottomTitle
+  }
 
-    buffer.drawBox({
-      x: this.x,
-      y: this.y,
-      width: this.width,
-      height: this.height,
-      borderStyle: this._borderStyle,
-      customBorderChars: this._customBorderChars,
-      border: this._border,
-      borderColor: currentBorderColor,
-      backgroundColor: this._backgroundColor,
-      shouldFill: this.shouldFill,
+  public set bottomTitle(value: string | undefined) {
+    if (this._bottomTitle !== value) {
+      this.setNativeBoxDetails({ bottomTitle: value })
+      this._bottomTitle = value
+      this.requestRender()
+    }
+  }
+
+  public get bottomTitleAlignment(): "left" | "center" | "right" {
+    return this._bottomTitleAlignment
+  }
+
+  public set bottomTitleAlignment(value: "left" | "center" | "right") {
+    value ??= this._defaultOptions.bottomTitleAlignment
+    if (this._bottomTitleAlignment !== value) {
+      this.setNativeBoxDetails({ bottomTitleAlignment: value })
+      this._bottomTitleAlignment = value
+      this.requestRender()
+    }
+  }
+
+  private setNativeBoxDetails(details: Partial<NativeSceneBoxDetails> = {}): void {
+    if (this.isFreed()) return
+    this._ctx.nativeScene.setBoxDetails(this, {
       title: this._title,
+      bottomTitle: this._bottomTitle,
       titleAlignment: this._titleAlignment,
+      bottomTitleAlignment: this._bottomTitleAlignment,
+      titleColor: this._titleColor,
+      customBorderChars: this._customBorderChars,
+      ...details,
     })
   }
 
-  protected getScissorRect(): { x: number; y: number; width: number; height: number } {
-    const baseRect = super.getScissorRect()
-
-    if (!this.borderSides.top && !this.borderSides.right && !this.borderSides.bottom && !this.borderSides.left) {
-      return baseRect
-    }
-
-    const leftInset = this.borderSides.left ? 1 : 0
-    const rightInset = this.borderSides.right ? 1 : 0
-    const topInset = this.borderSides.top ? 1 : 0
-    const bottomInset = this.borderSides.bottom ? 1 : 0
-
-    return {
-      x: baseRect.x + leftInset,
-      y: baseRect.y + topInset,
-      width: Math.max(0, baseRect.width - leftInset - rightInset),
-      height: Math.max(0, baseRect.height - topInset - bottomInset),
-    }
+  protected renderSelf(buffer: OptimizedBuffer): void {
+    // A layout-only box records nothing; native would draw nothing for it either.
+    if (borderMask(this.borderSides) === 0 && !(this._shouldFill && this._backgroundColor.a > 0)) return
+    this._drawNativeBody(buffer)
   }
 
-  private applyYogaBorders(): void {
-    const node = this.yogaNode
-    node.setBorder(Edge.Left, this.borderSides.left ? 1 : 0)
-    node.setBorder(Edge.Right, this.borderSides.right ? 1 : 0)
-    node.setBorder(Edge.Top, this.borderSides.top ? 1 : 0)
-    node.setBorder(Edge.Bottom, this.borderSides.bottom ? 1 : 0)
+  public get shouldFill(): boolean {
+    return this._shouldFill
+  }
+
+  public set shouldFill(value: boolean) {
+    value ??= this._defaultOptions.shouldFill
+    if (this._shouldFill === value) return
+    this.setNativeScenePaint({ shouldFill: value })
+    this._shouldFill = value
     this.requestRender()
   }
 
-  private applyYogaGap(options: BoxOptions): void {
-    const node = this.yogaNode
+  protected getNativeScenePaint(): NativeScenePaint {
+    return {
+      zIndex: this._zIndex,
+      opacity: this._opacity,
+      translateX: this._translateX,
+      translateY: this._translateY,
+      focusable: this._focusable,
+      border: borderMask(this.borderSides),
+      shouldFill: this._shouldFill,
+      backgroundColor: this._backgroundColor,
+      borderColor: this._borderColor,
+      focusedBorderColor: this._focusedBorderColor,
+      borderStyle: this._borderStyle,
+    }
+  }
 
+  private applyYogaGap(options: BoxOptions): void {
     if (isGapType(options.gap)) {
-      node.setGap(Gutter.All, options.gap)
+      this.setGap(Gutter.All, options.gap)
     }
 
     if (isGapType(options.rowGap)) {
-      node.setGap(Gutter.Row, options.rowGap)
+      this.setGap(Gutter.Row, options.rowGap)
     }
 
     if (isGapType(options.columnGap)) {
-      node.setGap(Gutter.Column, options.columnGap)
+      this.setGap(Gutter.Column, options.columnGap)
     }
   }
 
-  public set gap(gap: number | `${number}%` | undefined) {
-    if (isGapType(gap)) {
-      this.yogaNode.setGap(Gutter.All, gap)
-      this.requestRender()
-    }
+  public set gap(gap: number | `${number}%` | null | undefined) {
+    this.setGapStyle(Gutter.All, gap)
   }
 
-  public set rowGap(rowGap: number | `${number}%` | undefined) {
-    if (isGapType(rowGap)) {
-      this.yogaNode.setGap(Gutter.Row, rowGap)
-      this.requestRender()
-    }
+  public set rowGap(rowGap: number | `${number}%` | null | undefined) {
+    this.setGapStyle(Gutter.Row, rowGap)
   }
 
-  public set columnGap(columnGap: number | `${number}%` | undefined) {
-    if (isGapType(columnGap)) {
-      this.yogaNode.setGap(Gutter.Column, columnGap)
-      this.requestRender()
-    }
+  public set columnGap(columnGap: number | `${number}%` | null | undefined) {
+    this.setGapStyle(Gutter.Column, columnGap)
+  }
+
+  // A nullish gap unsets the gutter, as when the option is omitted.
+  private setGapStyle(gutter: Gutter, gap: number | `${number}%` | null | undefined): void {
+    if (gap != null && !isGapType(gap)) return
+    this.setGap(gutter, gap ?? undefined)
+    this.requestRender()
   }
 }

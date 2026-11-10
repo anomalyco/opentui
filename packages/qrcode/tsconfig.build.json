@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "./dist",
+    "noEmit": false,
+    "rootDir": "./src",
+    "types": ["bun", "node"],
+    "baseUrl": ".",
+    "paths": {
+      "@opentui/core": ["../core/dist"],
+      "@opentui/core/*": ["../core/dist/*"],
+      "@opentui/react": ["./src/framework-react.d.ts"],
+      "@opentui/solid": ["./src/framework-solid.d.ts"],
+      "@opentui/solid/components": ["./src/framework-solid.d.ts"]
+    },
+    "skipLibCheck": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler"
+  },
+  "include": ["src/**/*"],
+  "exclude": ["**/*.test.ts", "**/*.spec.ts", "../core/**/*"]
+}

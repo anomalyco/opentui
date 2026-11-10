@@ -5,6 +5,7 @@ import type {
   CodeProps,
   DiffProps,
   ExtendedIntrinsicElements,
+  ImageProps,
   InputProps,
   LineBreakProps,
   LineNumberProps,
@@ -17,6 +18,7 @@ import type {
   TabSelectProps,
   TextareaProps,
   TextProps,
+  VideoProps,
 } from "./src/types/components.js"
 
 export namespace JSX {
@@ -50,6 +52,8 @@ export namespace JSX {
     "ascii-font": AsciiFontProps
     "tab-select": TabSelectProps
     "line-number": LineNumberProps
+    image: ImageProps
+    video: VideoProps
     // Text modifiers
     b: SpanProps
     i: SpanProps

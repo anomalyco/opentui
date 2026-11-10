@@ -1,0 +1,149 @@
+# Markdown parity with Core
+
+`Markdown` (`src/widget/markdown.rs`) should show what OpenTUI Core's
+`MarkdownRenderable` shows, as the OpenCode TUI configures it:
+
+```tsx
+<markdown
+  syntaxStyle={syntax()}
+  renderNode={plugins.markdown()}
+  content={text}
+  streaming={!completed}
+  internalBlockMode="top-level"
+  tableOptions={{ style: "grid", cellPaddingX: 1 }}
+  conceal={markdownMode === "rendered"}
+  fg={theme.markdown.text}
+  bg={theme.background.base}
+/>
+```
+
+The Rust widget keeps its own parser and its own native widgets per block. It
+does not copy Core's design, which renders text blocks as tree-sitter
+Markdown with conceal metadata in a `Code` renderable, because that is a Bun
+workaround: a parse in JavaScript, a second one in a worker. The goal is the
+same frame, from one parse.
+
+The API changes are additive.
+
+## Conceal
+
+`Markdown::conceal(bool)`, on by default as in Core. On, the widget shows
+rendered text, as today. Off, it shows the Markdown source of each block, with
+the styles still applied:
+
+- Headings keep their `#` run, emphasis its `*`, `_`, and `~~`, code spans their
+  backticks, links `[label](url)`, autolinks `<url>`, and images
+  `![alt](url)`. Escapes keep their backslash.
+- List markers, quote bars, rules, code fences, and table borders look the same
+  in both modes, as in Core: Core hides fences and `>` even in source mode.
+
+Both modes keep a paragraph's line breaks, as Core does: chat models break
+lines on purpose, and Core shows those breaks.
+
+Links follow Core when concealed: a link whose label differs from its URL shows
+` (url)` after the label unless the terminal supports OSC 8 hyperlinks. Images
+show their alt text, or `image`.
+
+## Code-block renderers
+
+`Markdown::code_block_renderer(language, render)` registers a renderer for
+fences whose info string resolves to `language` through
+`syntax::filetype_for_info_string`, as Core's
+`createMarkdownCodeBlockRenderer` does. OpenCode's LaTeX and Mermaid plugins
+need this hook.
+
+```rust
+pub struct CodeBlock<'a> {
+    pub app: &'a App,
+    pub language: &'a str,
+    pub info: &'a str,
+    pub code: &'a str,
+    pub conceal: bool,
+    pub streaming: bool,
+    /// The widget this renderer returned for this block before the block changed.
+    pub previous: Option<&'a AnyWidget>,
+}
+```
+
+The renderer returns `Some(widget)` to replace the default `Code`, or `None` to
+keep it. When a streamed block changes, the widget calls the renderer again
+with the widget it returned last time. Returning that same widget keeps it in
+place; Core gives the renderer only a block id for that, which Mermaid uses to
+keep its last good diagram. `remove_code_block_renderer(language)` removes one.
+Registering or removing a renderer rebuilds the code blocks only.
+
+## Streaming
+
+`Markdown::streaming(bool)`, off by default. While it is on, an update reparses
+only the source after the last blocks known to be complete, as Core's
+`parseMarkdownIncremental` does with trailing unstable tokens: a block is
+complete when the source up to the next block's start is unchanged, and the
+last complete block is reparsed anyway. The widgets of earlier blocks
+are neither compared nor touched. Turning streaming off reparses everything
+once, so the final document equals a one-shot parse.
+
+`append` works in both modes. Without streaming it reparses the document and
+keeps the widgets of unchanged blocks, as today.
+
+## Table options
+
+`Markdown::table_options(MarkdownTableOptions)` mirrors Core's
+`MarkdownTableOptions`: `style` (`Grid` or `Columns`), `width_mode`,
+`column_fitter`, `wrap`, `cell_padding_x`, `cell_padding_y`, `borders`,
+`outer_border`, `border_style`, `border_color`, and `selectable`, each `None`
+for the style's default. `Grid` has borders and fills the width; `Columns` has
+no borders, fits the content, and puts two cells between columns. The default
+style is `Grid`, which the widget draws today. Core defaults to `Columns` in
+top-level mode, but OpenCode always asks for `Grid`.
+
+## Scope styles
+
+`Markdown::scope_styles(true)` styles text through the syntax theme, as Core
+styles it through its `syntaxStyle`: headings by `markup.heading.1` to
+`markup.heading.6`, then `markup.strong`, `markup.italic`,
+`markup.strikethrough`, `markup.raw`, `markup.link`, `markup.link.label`,
+`markup.link.url`, `markup.list`, `markup.quote`, `string.escape`, and
+`default` for plain text. Rules and quote bars take the `conceal` color. Nested
+styles patch the style around them, as overlapping tree-sitter captures do. A
+link's `]` and the space before a concealed link's URL keep the text style:
+Core's query captures `]` as `markup.link.bracket.close`, which its lookup does
+not resolve through `markup.link`. Bare URLs take `markup.link.label`, as
+Core's link detection gives them. A scope the theme does not style falls back
+to `MarkdownColors`. Off by default, so the colors alone style text.
+
+## Block layout
+
+The widget already lays out blocks as Core's top-level mode does: one widget
+per top-level block, a blank row between blocks. These change to match Core:
+
+- Bullets are `-` at every depth; ordered markers are right-aligned to the
+  widest number.
+- Code blocks lose their one-cell side padding, so code lines start where text
+  starts.
+- Concealed images lose the picture emoji.
+- Table headers take the heading color, as Core's take `markup.heading`.
+
+## Deviations from Core
+
+- Task items keep their state: `- ☐ todo` and `- ☑ done` when concealed,
+  `- [ ] todo` when not. Core drops the checkbox, so done and open items look
+  the same.
+- Concealed escapes drop their backslash: `\*` shows `*`. Core's tree-sitter
+  queries do not conceal escapes, which shows the backslash in rendered text.
+- Quotes hold rendered blocks, so a list in a quote is a list. Core shows the
+  quote's text as highlighted Markdown source.
+- Setext headings show as ATX headings in source mode.
+- Hyperlink support is read on each update, which rebuilds every block when it
+  changed. Core also rebuilds link text the moment the terminal reports its
+  capabilities; the Rust widget waits for its next update.
+
+## Proof
+
+`tests/fixtures/markdown/*.md` is a small corpus: headings, lists, code fences,
+tables, links, emphasis, quotes and rules. `tests/fixtures/markdown/render.ts`
+renders each with `@opentui/core` in `createTestRenderer` at 60 columns, as
+OpenCode configures it, with conceal on and off, into `<case>.<mode>.txt`. It
+also checks that Core's streamed frame, in chunks of 7 characters, equals the
+one-shot frame. `tests/markdown.rs` renders the same corpus with the Rust
+widget, one-shot and streamed in chunks, and compares the frames with Core's,
+except where a deviation above applies.

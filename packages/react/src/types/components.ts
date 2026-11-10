@@ -8,6 +8,8 @@ import type {
   CodeRenderable,
   DiffRenderable,
   DiffRenderableOptions,
+  ImageRenderable,
+  ImageRenderableOptions,
   InputRenderable,
   InputRenderableOptions,
   LineNumberOptions,
@@ -30,6 +32,11 @@ import type {
   TextNodeRenderable,
   TextOptions,
   TextRenderable,
+  VideoRenderable,
+  VideoRenderableOptions,
+  CursorChangeEvent,
+  ContentChangeEvent,
+  KeyEvent,
 } from "@opentui/core"
 import type React from "react"
 
@@ -78,7 +85,7 @@ export type GetNonStyledProperties<TConstructor> =
   TConstructor extends RenderableConstructor<TextRenderable>
     ? NonStyledProps | "content"
     : TConstructor extends RenderableConstructor<BoxRenderable>
-      ? NonStyledProps | "title"
+      ? NonStyledProps | "title" | "bottomTitle"
       : TConstructor extends RenderableConstructor<ASCIIFontRenderable>
         ? NonStyledProps | "text" | "selectable"
         : TConstructor extends RenderableConstructor<InputRenderable>
@@ -96,7 +103,20 @@ export type GetNonStyledProperties<TConstructor> =
                   | "drawUnstyledText"
               : TConstructor extends RenderableConstructor<MarkdownRenderable>
                 ? NonStyledProps | "content" | "syntaxStyle" | "treeSitterClient" | "conceal" | "renderNode"
-                : NonStyledProps
+                : TConstructor extends RenderableConstructor<ImageRenderable>
+                  ? NonStyledProps | "source"
+                  : TConstructor extends RenderableConstructor<VideoRenderable>
+                    ?
+                        | NonStyledProps
+                        | "source"
+                        | "autoplay"
+                        | "loop"
+                        | "audio"
+                        | "muted"
+                        | "volume"
+                        | "avSyncOffsetMs"
+                        | "maxFps"
+                    : NonStyledProps
 
 // ============================================================================
 // Component Props System
@@ -144,9 +164,17 @@ export type InputProps = ComponentProps<InputRenderableOptions, InputRenderable>
 
 export type TextareaProps = ComponentProps<TextareaOptions, TextareaRenderable> & {
   focused?: boolean
+  onSubmit?: () => void
+  onContentChange?: (event: ContentChangeEvent) => void
+  onCursorChange?: (event: CursorChangeEvent) => void
+  onKeyDown?: (event: KeyEvent) => void
 }
 
 export type CodeProps = ComponentProps<CodeOptions, CodeRenderable>
+
+export type ImageProps = ComponentProps<ImageRenderableOptions, ImageRenderable>
+
+export type VideoProps = ComponentProps<VideoRenderableOptions, VideoRenderable>
 
 export type MarkdownProps = ComponentProps<MarkdownOptions, MarkdownRenderable>
 

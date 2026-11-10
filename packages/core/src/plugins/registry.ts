@@ -1,4 +1,4 @@
-import type { CliRenderer } from "../renderer"
+import type { CliRenderer } from "../renderer.js"
 import type {
   Plugin,
   PluginContext,
@@ -6,7 +6,7 @@ import type {
   PluginErrorReport,
   ResolvedSlotRenderer,
   SlotRenderer,
-} from "./types"
+} from "./types.js"
 
 const noop = () => {}
 const DEFAULT_DEBUG_PLUGIN_ERRORS = false
@@ -44,6 +44,8 @@ export class SlotRegistry<TNode, TSlots extends object, TContext extends PluginC
   private errorListeners: Set<(event: PluginErrorEvent) => void> = new Set()
   private pluginErrors: PluginErrorEvent[] = []
   private registrationOrder = 0
+  private batchDepth = 0
+  private batchedNotify = false
   private rendererInstance: CliRenderer
   private hostContext: Readonly<TContext>
   private options: Required<Pick<SlotRegistryOptions, "debugPluginErrors" | "maxPluginErrors">> &
@@ -83,7 +85,7 @@ export class SlotRegistry<TNode, TSlots extends object, TContext extends PluginC
 
   public register(plugin: Plugin<TNode, TSlots, TContext>): () => void {
     if (this.plugins.some((entry) => entry.plugin.id === plugin.id)) {
-      throw new Error(`Plugin with id \"${plugin.id}\" is already registered`)
+      throw new Error(`Plugin with id "${plugin.id}" is already registered`)
     }
 
     try {
@@ -196,6 +198,20 @@ export class SlotRegistry<TNode, TSlots extends object, TContext extends PluginC
     }
   }
 
+  public batch<T>(run: () => T): T {
+    this.batchDepth += 1
+
+    try {
+      return run()
+    } finally {
+      this.batchDepth -= 1
+      if (this.batchDepth === 0 && this.batchedNotify) {
+        this.batchedNotify = false
+        this.flushListeners()
+      }
+    }
+  }
+
   public getPluginErrors(): readonly PluginErrorEvent[] {
     return this.pluginErrors
   }
@@ -220,9 +236,9 @@ export class SlotRegistry<TNode, TSlots extends object, TContext extends PluginC
     }
 
     if (this.options.debugPluginErrors) {
-      const slotLabel = event.slot ? ` slot=\"${event.slot}\"` : ""
+      const slotLabel = event.slot ? ` slot="${event.slot}"` : ""
       console.debug(
-        `[SlotRegistry][PluginError] plugin=\"${event.pluginId}\" phase=\"${event.phase}\" source=\"${event.source}\"${slotLabel}`,
+        `[SlotRegistry][PluginError] plugin="${event.pluginId}" phase="${event.phase}" source="${event.source}"${slotLabel}`,
       )
       console.debug(event.error)
     }
@@ -313,6 +329,15 @@ export class SlotRegistry<TNode, TSlots extends object, TContext extends PluginC
   }
 
   private notifyListeners(): void {
+    if (this.batchDepth > 0) {
+      this.batchedNotify = true
+      return
+    }
+
+    this.flushListeners()
+  }
+
+  private flushListeners(): void {
     for (const listener of this.listeners) {
       try {
         listener()

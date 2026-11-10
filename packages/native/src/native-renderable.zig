@@ -1,0 +1,174 @@
+const std = @import("std");
+
+const editor_view = @import("editor-view.zig");
+const native_yoga = @import("yoga.zig");
+const text_buffer_view = @import("text-buffer-view.zig");
+const scene = @import("scene.zig");
+const buffer = @import("buffer.zig");
+
+// Generic measure targets keep Yoga independent of concrete renderable types.
+// Add target kinds here instead of adding type-specific Yoga APIs.
+pub const MeasureTarget = union(enum) {
+    none,
+    text_buffer_view: *text_buffer_view.UnifiedTextBufferView,
+    editor_view: *editor_view.EditorView,
+};
+
+pub const NativeRenderable = struct {
+    yoga_node: native_yoga.YGNodeRef,
+    measure_target: MeasureTarget = .none,
+    context_owned: bool = false,
+    measure_dependents: ?*?*NativeRenderable = null,
+    measure_previous: ?*NativeRenderable = null,
+    measure_next: ?*NativeRenderable = null,
+    scene_node: ?*scene.Node = null,
+    surface: ?*buffer.OptimizedBuffer = null,
+
+    pub fn init() native_yoga.Error!NativeRenderable {
+        var yoga_node: native_yoga.YGNodeRef = null;
+        try native_yoga.check(native_yoga.yogaNodeCreateForOpenTUIChecked(&yoga_node));
+        return .{ .yoga_node = yoga_node };
+    }
+
+    pub fn initWithConfig(config: *native_yoga.Config) native_yoga.Error!NativeRenderable {
+        return .{ .yoga_node = try config.createNode() };
+    }
+
+    pub fn deinit(self: *NativeRenderable) void {
+        self.detachMeasure();
+        native_yoga.yogaNodeFree(self.yoga_node);
+        self.* = undefined;
+    }
+
+    pub fn detachMeasure(self: *NativeRenderable) void {
+        native_yoga.yogaNodeSetDirtiedFunc(self.yoga_node, false);
+        if (self.context_owned) {
+            if (native_yoga.yogaNodeGetParent(self.yoga_node)) |parent| {
+                native_yoga.yogaNodeRemoveChild(parent, self.yoga_node);
+            }
+        }
+        self.setMeasureTarget(.none) catch unreachable;
+    }
+
+    pub fn resetForReuse(self: *NativeRenderable) bool {
+        std.debug.assert(self.scene_node == null and self.surface == null);
+        std.debug.assert(self.measure_target == .none and self.measure_dependents == null);
+        std.debug.assert(self.measure_previous == null and self.measure_next == null);
+        if (native_yoga.yogaNodeResetChecked(self.yoga_node) != .ok) return false;
+        self.* = .{
+            .yoga_node = self.yoga_node,
+            .context_owned = true,
+        };
+        return true;
+    }
+
+    pub fn getYogaNode(self: *const NativeRenderable) native_yoga.YGNodeRef {
+        return self.yoga_node;
+    }
+
+    pub fn setMeasureTarget(self: *NativeRenderable, target: MeasureTarget) native_yoga.Error!void {
+        return self.setMeasureTargetPreservingProvider(target, false);
+    }
+
+    pub fn setMeasureTargetPreservingProvider(self: *NativeRenderable, target: MeasureTarget, preserve_provider: bool) native_yoga.Error!void {
+        std.debug.assert((self.measure_dependents == null) == (self.measure_target == .none));
+        try native_yoga.check(if (preserve_provider) native_yoga.nodeTeardownStatus(self.yoga_node) else switch (target) {
+            .none => native_yoga.yogaNodeSetNativeMeasureFunc(self.yoga_node, null, null, false),
+            // `measure` ignores the height cap.
+            else => native_yoga.yogaNodeSetNativeMeasureFunc(self.yoga_node, self, &NativeRenderable.measure, true),
+        });
+        const invalidate = self.context_owned and (target != .none or self.measure_target != .none);
+        if (self.measure_dependents) |head| {
+            std.debug.assert((self.measure_previous == null) == (head.* == self));
+            if (self.measure_previous) |previous| {
+                previous.measure_next = self.measure_next;
+            } else {
+                head.* = self.measure_next;
+            }
+            if (self.measure_next) |next| next.measure_previous = self.measure_previous;
+            self.measure_previous = null;
+            self.measure_next = null;
+        }
+        self.measure_target = target;
+        self.measure_dependents = switch (target) {
+            .none => null,
+            .text_buffer_view => |view| &view.measure_dependents,
+            .editor_view => |view| &view.measure_dependents,
+        };
+        if (self.measure_dependents) |head| {
+            self.measure_next = head.*;
+            if (head.*) |next| next.measure_previous = self;
+            head.* = self;
+        }
+        if (invalidate) native_yoga.yogaNodeInvalidateMeasure(self.yoga_node);
+    }
+
+    fn measure(target: ?*anyopaque, width: f32, width_mode: u32, height: f32, height_mode: u32) callconv(.c) native_yoga.ExternalYogaSize {
+        _ = height_mode;
+        const self: *NativeRenderable = @ptrCast(@alignCast(target orelse return .{ .width = std.math.nan(f32), .height = std.math.nan(f32) }));
+        const effective_width = normalizeYogaMeasureWidthInput(width, width_mode);
+        const effective_height = normalizeYogaMeasureHeightInput(height);
+        const measure_width = measureCells(effective_width);
+        const measure_height = measureCells(effective_height);
+        const result = (self.measureTarget(measure_width, measure_height) catch |err| {
+            native_yoga.reportMeasureError(self.yoga_node, err);
+            return .{ .width = std.math.nan(f32), .height = std.math.nan(f32) };
+        }) orelse return .{ .width = 1, .height = 1 };
+
+        var measured_width: f32 = @floatFromInt(@max(@as(u32, 1), result.width_cols_max));
+        const measured_height: f32 = @floatFromInt(@max(@as(u32, 1), result.line_count));
+
+        // Only the width clamps: Yoga reuses a size across width modes, and scroll content needs every row.
+        if (width_mode == @backingInt(native_yoga.YogaMeasureMode.at_most) and !isYogaNodeAbsolute(self.yoga_node)) {
+            measured_width = @min(effective_width, measured_width);
+        }
+
+        return .{ .width = measured_width, .height = measured_height };
+    }
+
+    fn measureTarget(self: *NativeRenderable, width: u32, height: u32) !?text_buffer_view.MeasureResult {
+        return switch (self.measure_target) {
+            .none => null,
+            .text_buffer_view => |view| try view.measureForDimensions(width, height),
+            .editor_view => |view| try view.getTextBufferView().measureForDimensions(width, height),
+        };
+    }
+};
+
+// Idle ownership travels between the Context pool and scene insertion/removal.
+// Scene state is a separate allocation so live Yoga owners stay small.
+pub const NodeStorage = struct {
+    node: *NativeRenderable,
+    scene_node: *scene.Node,
+    children: std.ArrayListUnmanaged(*NativeRenderable) = .empty,
+    paint_children: std.ArrayListUnmanaged(*NativeRenderable) = .empty,
+    attention: std.ArrayListUnmanaged(*NativeRenderable) = .empty,
+    reuse_web_defaults: bool = false,
+
+    pub fn retainedBytes(self: *const NodeStorage) usize {
+        return @sizeOf(NativeRenderable) + @sizeOf(scene.Node) + native_yoga.nodeStorageBytes(self.node.yoga_node) +
+            (self.children.capacity + self.paint_children.capacity + self.attention.capacity) * @sizeOf(*NativeRenderable);
+    }
+};
+
+pub fn normalizeYogaMeasureWidthInput(value: f32, width_mode: u32) f32 {
+    if (width_mode == @backingInt(native_yoga.YogaMeasureMode.undefined) or std.math.isNan(value)) return 0;
+    return value;
+}
+
+pub fn normalizeYogaMeasureHeightInput(value: f32) f32 {
+    if (std.math.isNan(value)) return 1;
+    return value;
+}
+
+// Yoga's cache counts sizes `inexactEquals` (|a - b| < 0.0001f) as equal, so they measure as one cell.
+const yoga_inexact_equals_epsilon: f32 = 0.0001;
+pub fn measureCells(value: f32) u32 {
+    if (!std.math.isFinite(value)) return 0;
+    return std.math.lossyCast(u32, if (@ceil(value) - value < yoga_inexact_equals_epsilon) @ceil(value) else @floor(value));
+}
+
+fn isYogaNodeAbsolute(node: native_yoga.YGNodeRef) bool {
+    return native_yoga.yogaNodeStyleGetEnum(node, @backingInt(native_yoga.YogaEnumKind.position_type)) ==
+        @backingInt(native_yoga.YogaPositionType.absolute);
+}

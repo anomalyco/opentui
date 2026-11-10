@@ -1,6 +1,7 @@
 import { test, expect, describe, mock, beforeEach } from "bun:test"
 import { TerminalConsole, ConsolePosition } from "./console.js"
 import { MouseEvent } from "./renderer.js"
+import { stringWidth } from "./platform/runtime.js"
 import { ManualClock } from "./testing/manual-clock.js"
 
 interface MockRenderer {
@@ -115,7 +116,7 @@ describe("TerminalConsole", () => {
 
       terminalConsole.resize(100, 10)
 
-      expect(terminalConsole["consoleHeight"]).toBeGreaterThanOrEqual(1)
+      expect(terminalConsole["consoleHeight"] >= 1).toBe(true)
     })
   })
 
@@ -315,6 +316,23 @@ describe("TerminalConsole", () => {
       expect(onCopy).toHaveBeenCalledWith("Hello")
     })
 
+    test("should use baseCode for Ctrl+Shift+C from alternate layouts", () => {
+      const onCopy = mock(() => {})
+      terminalConsole = new TerminalConsole(mockRenderer as any, {
+        position: ConsolePosition.BOTTOM,
+        sizePercent: 30,
+        onCopySelection: onCopy,
+      })
+
+      terminalConsole["_displayLines"] = [{ text: "Hello World", level: "LOG" as any, indent: false }]
+      terminalConsole["_selectionStart"] = { line: 0, col: 0 }
+      terminalConsole["_selectionEnd"] = { line: 0, col: 5 }
+
+      terminalConsole["handleKeyPress"]({ name: "ㅊ", baseCode: 99, ctrl: true, shift: true, meta: false } as any)
+
+      expect(onCopy).toHaveBeenCalledWith("Hello")
+    })
+
     test("should not trigger when no selection", () => {
       const onCopy = mock(() => {})
       terminalConsole = new TerminalConsole(mockRenderer as any, {
@@ -444,7 +462,7 @@ describe("TerminalConsole", () => {
       clock.advance(100)
 
       // Should have scrolled up
-      expect(terminalConsole["scrollTopIndex"]).toBeLessThan(20)
+      expect(terminalConsole["scrollTopIndex"] < 20).toBe(true)
 
       // Stop selecting
       terminalConsole.handleMouse(createMouseEvent(bounds.x + 1, bounds.y + 1, "up", 0))
@@ -488,13 +506,41 @@ describe("TerminalConsole", () => {
       clock.advance(100)
 
       // Should have scrolled down
-      expect(terminalConsole["scrollTopIndex"]).toBeGreaterThan(0)
+      expect(terminalConsole["scrollTopIndex"] > 0).toBe(true)
 
       // Stop selecting
       terminalConsole.handleMouse(createMouseEvent(bounds.x + 1, bounds.y + logAreaHeight, "up", 0))
 
       // Auto-scroll should be stopped
       expect(terminalConsole["_autoScrollInterval"]).toBeNull()
+    })
+
+    test("should stop auto-scroll when hidden", () => {
+      const clock = new ManualClock()
+      terminalConsole = new TerminalConsole(mockRenderer as any, {
+        position: ConsolePosition.BOTTOM,
+        sizePercent: 30,
+        clock,
+      })
+      terminalConsole["isVisible"] = true
+      terminalConsole["_displayLines"] = Array.from({ length: 50 }, (_, i) => ({
+        text: `Line ${i}`,
+        level: "LOG" as any,
+        indent: false,
+      }))
+      terminalConsole["scrollTopIndex"] = 20
+
+      const bounds = terminalConsole.bounds
+      terminalConsole.handleMouse(createMouseEvent(bounds.x + 1, bounds.y + 5, "down", 0))
+      terminalConsole.handleMouse(createMouseEvent(bounds.x + 1, bounds.y + 1, "drag", 0))
+      expect(terminalConsole["_autoScrollInterval"]).not.toBeNull()
+
+      terminalConsole.hide()
+
+      expect(terminalConsole["_autoScrollInterval"]).toBeNull()
+      const scrollTopIndex = terminalConsole["scrollTopIndex"]
+      clock.advance(100)
+      expect(terminalConsole["scrollTopIndex"]).toBe(scrollTopIndex)
     })
 
     test("should stop auto-scroll when dragging away from edge", async () => {
@@ -559,7 +605,7 @@ describe("TerminalConsole", () => {
 
       // Selection end should have moved with the scroll
       const endLine = terminalConsole["_selectionEnd"]?.line
-      expect(endLine).toBeLessThan(initialStartLine!)
+      expect(endLine! < initialStartLine!).toBe(true)
 
       // Stop selecting
       terminalConsole.handleMouse(createMouseEvent(bounds.x + 1, bounds.y + 1, "up", 0))
@@ -607,6 +653,72 @@ describe("TerminalConsole", () => {
       terminalConsole["_selectionEnd"] = { line: 0, col: 4 }
 
       expect(() => terminalConsole["triggerCopy"]()).not.toThrow()
+    })
+  })
+
+  describe("log wrapping", () => {
+    const entries: unknown[][] = [["hello world"], ["a\nbcdef"], [new Error("boom")]]
+
+    test("terminates with one or more cells per display line at every console width", () => {
+      for (let width = 1; width <= 6; width++) {
+        terminalConsole = new TerminalConsole({ ...mockRenderer, width, terminalWidth: width } as any, {
+          position: ConsolePosition.BOTTOM,
+        })
+        expect(terminalConsole["consoleWidth"]).toBe(width)
+        for (const args of entries) {
+          const text = terminalConsole["formatArguments"](args)
+          const lines = terminalConsole["_processLogEntry"]([new Date(0), "LOG" as any, args, null])
+          const lineCount = text.split("\n").length
+          // The first line also carries the "[time] [LOG] " prefix.
+          expect(lines.length).toBeLessThanOrEqual(text.length + lineCount + 32)
+          expect(lines.every((line: { text: string }) => line.text.length > 0)).toBe(true)
+        }
+      }
+    })
+
+    test("escapes control characters except newlines and tabs", () => {
+      terminalConsole = new TerminalConsole(mockRenderer as any, { position: ConsolePosition.BOTTOM })
+      // util.inspect already escapes strings; Error messages and stacks are written raw.
+      const error = new Error("a\x1b[31mb\r\nc\td\x00\x7f\x9b")
+      error.stack = undefined
+      expect(terminalConsole["formatArguments"]([error])).toBe("Error: a\\x1b[31mb\nc\td\\x00\\x7f\\x9b\n")
+    })
+
+    test("wraps by display cells at grapheme boundaries without dropping text", () => {
+      const graphemes = (text: string) => [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)]
+      const samples: unknown[][] = [
+        ["hello world"],
+        ["表示幅のテスト"],
+        ["e\u0301".repeat(6)],
+        ["👩‍🚀 crew 👩‍🚀"],
+        ["short\nsecond line is longer"],
+      ]
+      for (let width = 1; width <= 12; width++) {
+        terminalConsole = new TerminalConsole({ ...mockRenderer, width, terminalWidth: width } as any, {
+          position: ConsolePosition.BOTTOM,
+        })
+        for (const args of samples) {
+          const date = new Date(0)
+          const prefix = `[${terminalConsole["formatTimestamp"](date)}] [LOG] `
+          const sources = terminalConsole["formatArguments"](args).split("\n")
+          sources[0] = prefix + sources[0]
+          const lines: { text: string; indent: boolean }[] = terminalConsole["_processLogEntry"]([
+            date,
+            "LOG" as any,
+            args,
+            null,
+          ])
+
+          expect(lines.map((line) => line.text).join("")).toBe(sources.join(""))
+          expect(lines.map((line) => line.indent)).toEqual(lines.map((_, index) => index > 0))
+          const count = (texts: string[]) => texts.reduce((sum, text) => sum + graphemes(text).length, 0)
+          expect(count(lines.map((line) => line.text))).toBe(count(sources))
+          for (const line of lines) {
+            const budget = Math.max(1, width - 1 - (line.indent ? 2 : 0))
+            if (graphemes(line.text).length > 1) expect(stringWidth(line.text)).toBeLessThanOrEqual(budget)
+          }
+        }
+      }
     })
   })
 })

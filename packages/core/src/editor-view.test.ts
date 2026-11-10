@@ -1,14 +1,21 @@
+import { ResourceContext } from "./buffer.js"
 import { describe, expect, it, beforeEach, afterEach } from "bun:test"
 import { EditBuffer } from "./edit-buffer.js"
 import { EditorView } from "./editor-view.js"
 import { RGBA } from "./lib/RGBA.js"
+
+let resourceContext: ResourceContext
+beforeEach(() => {
+  resourceContext = new ResourceContext({ objectCapacity: 8, renderCellsMax: 1 })
+})
+afterEach(() => resourceContext.destroy())
 
 describe("EditorView", () => {
   let buffer: EditBuffer
   let view: EditorView
 
   beforeEach(() => {
-    buffer = EditBuffer.create("wcwidth")
+    buffer = EditBuffer.create("wcwidth", resourceContext)
     view = EditorView.create(buffer, 40, 10)
   })
 
@@ -221,9 +228,10 @@ describe("EditorView", () => {
     it("should update local selection focus position", () => {
       buffer.setText("Hello World")
 
+      // Inclusive selection: the cell under the focus (5, the space) is selected too.
       const changed1 = view.setLocalSelection(0, 0, 5, 0)
       expect(changed1).toBe(true)
-      expect(view.getSelectedText()).toBe("Hello")
+      expect(view.getSelectedText()).toBe("Hello ")
 
       const changed2 = view.updateLocalSelection(0, 0, 11, 0)
       expect(changed2).toBe(true)
@@ -249,20 +257,20 @@ describe("EditorView", () => {
       const changed = view.updateLocalSelection(0, 0, 5, 0)
       expect(changed).toBe(true)
       expect(view.hasSelection()).toBe(true)
-      expect(view.getSelectedText()).toBe("Hello")
+      expect(view.getSelectedText()).toBe("Hello ")
     })
 
     it("should preserve anchor when updating local selection", () => {
       buffer.setText("Hello World")
 
       view.setLocalSelection(0, 0, 5, 0)
-      expect(view.getSelectedText()).toBe("Hello")
+      expect(view.getSelectedText()).toBe("Hello ")
 
       view.updateLocalSelection(0, 0, 11, 0)
       expect(view.getSelectedText()).toBe("Hello World")
 
       view.updateLocalSelection(0, 0, 3, 0)
-      expect(view.getSelectedText()).toBe("Hel")
+      expect(view.getSelectedText()).toBe("Hell")
     })
 
     it("should handle backward selection with updateLocalSelection", () => {
@@ -285,7 +293,22 @@ describe("EditorView", () => {
 
       const changed = view.updateLocalSelection(0, 0, 5, 1)
       expect(changed).toBe(true)
-      expect(view.getSelectedText()).toBe("ABCDEFGHIJKLMNO")
+      expect(view.getSelectedText()).toBe("ABCDEFGHIJKLMNOP")
+    })
+
+    it("should select a word with word behavior on the same cell", () => {
+      buffer.setText("alpha beta gamma")
+
+      const changed = view.setLocalSelection(6, 0, 6, 0, undefined, undefined, false, false, "word")
+      expect(changed).toBe(true)
+      expect(view.getSelectedText()).toBe("beta")
+    })
+  })
+
+  describe("text getters", () => {
+    it("should accept an empty placeholder styled-text list", () => {
+      expect(() => view.setPlaceholderStyledText([])).not.toThrow()
+      expect(view.getVirtualLineCount()).toBeGreaterThanOrEqual(0)
     })
   })
 
@@ -450,6 +473,17 @@ describe("EditorView", () => {
       expect(cursor.offset).toBe(6)
     })
 
+    it("preserves public cursor identity", () => {
+      buffer.setText("abc")
+      const first = view.getVisualCursor()
+      buffer.moveCursorRight()
+      const second = view.getVisualCursor()
+
+      expect(first).not.toBe(second)
+      expect(first.offset).toBe(0)
+      expect(second.offset).toBe(1)
+    })
+
     it("should handle vertical navigation through emoji cells correctly", () => {
       buffer.setText("1234567890123456789\n(emoji 🌟 and CJK 世界)\n1234567890123456789")
 
@@ -479,7 +513,7 @@ describe("EditorView", () => {
       view.moveDownVisual()
       cursor = view.getVisualCursor()
       expect(cursor.visualRow).toBe(1)
-      expect(cursor.visualCol).toBe(8)
+      expect(cursor.visualCol).toBe(7)
 
       buffer.moveCursorLeft()
       cursor = view.getVisualCursor()

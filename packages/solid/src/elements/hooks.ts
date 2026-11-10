@@ -1,13 +1,15 @@
 import {
-  engine,
+  getTimelineEngine,
   PasteEvent,
   Selection,
   Timeline,
+  type AnimationTickCallback,
+  type AnimationTickOptions,
   type CliRenderer,
   type KeyEvent,
   type TimelineOptions,
 } from "@opentui/core"
-import { createContext, createSignal, onCleanup, onMount, useContext } from "solid-js"
+import { createContext, createEffect, createSignal, onCleanup, onMount, useContext, type Accessor } from "solid-js"
 
 export const RendererContext = createContext<CliRenderer>()
 
@@ -30,6 +32,19 @@ export const onResize = (callback: (width: number, height: number) => void) => {
 
   onCleanup(() => {
     renderer.off("resize", callback)
+  })
+}
+
+/** Ticks `callback` at `fps` on the renderer's shared animation clock; an undefined rate pauses it. */
+export const onAnimationTick = (
+  fps: number | Accessor<number | undefined>,
+  callback: AnimationTickCallback,
+  options?: AnimationTickOptions,
+) => {
+  const renderer = useRenderer()
+  createEffect(() => {
+    const rate = typeof fps === "function" ? fps() : fps
+    if (rate !== undefined) onCleanup(renderer.onAnimationTick(rate, callback, options))
   })
 }
 
@@ -105,6 +120,30 @@ export const usePaste = (callback: (event: PasteEvent) => void) => {
  */
 export const useKeyHandler = useKeyboard
 
+export const onFocus = (callback: () => void) => {
+  const renderer = useRenderer()
+
+  onMount(() => {
+    renderer.on("focus", callback)
+  })
+
+  onCleanup(() => {
+    renderer.off("focus", callback)
+  })
+}
+
+export const onBlur = (callback: () => void) => {
+  const renderer = useRenderer()
+
+  onMount(() => {
+    renderer.on("blur", callback)
+  })
+
+  onCleanup(() => {
+    renderer.off("blur", callback)
+  })
+}
+
 export const useSelectionHandler = (callback: (selection: Selection) => void) => {
   const renderer = useRenderer()
 
@@ -118,6 +157,7 @@ export const useSelectionHandler = (callback: (selection: Selection) => void) =>
 }
 
 export const useTimeline = (options: TimelineOptions = {}): Timeline => {
+  const engine = getTimelineEngine(useRenderer())
   const timeline = new Timeline(options)
 
   onMount(() => {
@@ -128,8 +168,11 @@ export const useTimeline = (options: TimelineOptions = {}): Timeline => {
   })
 
   onCleanup(() => {
-    timeline.pause()
-    engine.unregister(timeline)
+    try {
+      timeline.pause()
+    } finally {
+      engine.unregister(timeline)
+    }
   })
 
   return timeline

@@ -1,20 +1,21 @@
 import { createCliRenderer } from "@opentui/core"
 import { createRoot, TimeToFirstDraw, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react"
 import { createElement, useEffect, useState, type ComponentType } from "react"
-import { App as AnimationDemo } from "./animation"
-import { App as AsciiDemo } from "./ascii"
-import { App as BasicDemo } from "./basic"
-import { App as BordersDemo } from "./borders"
-import { App as BoxDemo } from "./box"
-import { App as CounterDemo } from "./counter"
-import { App as DiffDemo } from "./diff"
-import { ExtendExample } from "./extend-example"
-import ExternalPluginSlotsDemo from "./external-plugin-slots-demo"
-import { App as FlushSyncDemo } from "./flush-sync"
-import LineNumberDemo from "./line-number"
-import OpacityDemo from "./opacity"
-import { App as ScrollDemo } from "./scroll"
-import { App as TextDemo } from "./text"
+import { App as AnimationDemo } from "./animation.js"
+import { App as AsciiDemo } from "./ascii.js"
+import { App as BasicDemo } from "./basic.js"
+import { App as BordersDemo } from "./borders.js"
+import { App as BoxDemo } from "./box.js"
+import { App as CounterDemo } from "./counter.js"
+import { App as DiffDemo } from "./diff.js"
+import { ExtendExample } from "./extend-example.js"
+import ExternalPluginSlotsDemo from "./external-plugin-slots-demo.js"
+import { App as FlushSyncDemo } from "./flush-sync.js"
+import { App as KeymapDemo } from "./keymap.js"
+import LineNumberDemo from "./line-number.js"
+import OpacityDemo from "./opacity.js"
+import { App as ScrollDemo } from "./scroll.js"
+import { App as TextDemo } from "./text.js"
 
 interface ExampleDefinition {
   name: string
@@ -84,6 +85,11 @@ const EXAMPLES: ExampleDefinition[] = [
     component: FlushSyncDemo,
   },
   {
+    name: "Keymap Demo",
+    description: "Panels plus textareas with global, local, managed bindings, and a centered : prompt",
+    component: KeymapDemo,
+  },
+  {
     name: "Extend Demo",
     description: "Custom renderable registration through extend",
     component: ExtendExample,
@@ -101,7 +107,7 @@ export const ExamplesIndex = () => {
   const [selected, setSelected] = useState(-1)
 
   useEffect(() => {
-    renderer.useConsole = true
+    renderer.consoleMode = "console-overlay"
   }, [renderer])
 
   useKeyboard((key) => {
@@ -184,6 +190,7 @@ export const ExamplesIndex = () => {
 if (import.meta.main) {
   const renderer = await createCliRenderer()
   createRoot(renderer).render(<ExamplesIndex />)
+  await renderer.closed
 }
 
 export default ExamplesIndex

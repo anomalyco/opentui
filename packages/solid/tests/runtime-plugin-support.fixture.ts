@@ -4,13 +4,13 @@ import { join } from "node:path"
 import { plugin as registerPlugin } from "bun"
 import * as coreRuntime from "@opentui/core"
 import * as solidJsRuntime from "solid-js"
-import * as solidRuntime from "../index"
+import * as solidRuntime from "../index.js"
+import { resetSolidTransformPluginState } from "../scripts/solid-plugin.js"
 
 type FixtureState = typeof globalThis & {
   __solidRuntimeHost__?: {
     solid: Record<string, unknown>
     core: Record<string, unknown>
-    core3d: Record<string, unknown>
     coreTesting: Record<string, unknown>
     solidJs: Record<string, unknown>
   }
@@ -22,17 +22,15 @@ const entryPath = join(tempRoot, "entry.tsx")
 const source = [
   'import * as solid from "@opentui/solid"',
   'import * as core from "@opentui/core"',
-  'import * as core3d from "@opentui/core/3d"',
   'import * as coreTesting from "@opentui/core/testing"',
   'import { createSignal } from "solid-js"',
-  "const state = globalThis as { __solidRuntimeHost__?: { solid: Record<string, unknown>; core: Record<string, unknown>; core3d: Record<string, unknown>; coreTesting: Record<string, unknown>; solidJs: Record<string, unknown> } }",
+  "const state = globalThis as { __solidRuntimeHost__?: { solid: Record<string, unknown>; core: Record<string, unknown>; coreTesting: Record<string, unknown>; solidJs: Record<string, unknown> } }",
   "const [value] = createSignal('ok')",
   "const makeNode = () => <text>{value()}</text>",
   "const host = state.__solidRuntimeHost__",
   "const checks = [",
   "  `solid=${solid.extend === host?.solid.extend}`,",
   "  `core=${core.engine === host?.core.engine}`,",
-  "  `core3d=${core3d.ThreeRenderable === host?.core3d.ThreeRenderable}`,",
   "  `coreTesting=${coreTesting.createTestRenderer === host?.coreTesting.createTestRenderer}`,",
   "  `solidJs=${createSignal === host?.solidJs.createSignal}`,",
   "  `jsx=${typeof makeNode === 'function'}`,",
@@ -47,15 +45,15 @@ const state = globalThis as FixtureState
 state.__solidRuntimeHost__ = {
   solid: solidRuntime as Record<string, unknown>,
   core: coreRuntime as Record<string, unknown>,
-  core3d: (await import("@opentui/core/3d")) as Record<string, unknown>,
   coreTesting: (await import("@opentui/core/testing")) as Record<string, unknown>,
   solidJs: solidJsRuntime as Record<string, unknown>,
 }
 
 registerPlugin.clearAll()
+resetSolidTransformPluginState()
 
 try {
-  await import("../scripts/runtime-plugin-support")
+  await import("../scripts/runtime-plugin-support.js")
   await import(entryPath)
 } finally {
   registerPlugin.clearAll()

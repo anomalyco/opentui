@@ -1,0 +1,229 @@
+.terminal-illustration {
+  color: var(--illustration-ink, currentColor);
+  margin: 0;
+  min-width: 0;
+  position: relative;
+}
+
+/* The viewport is the recording's box: it owns centering, clipping, and (in
+   `recordingAspectRatio` mode) the grid-derived aspect ratio, so the controls
+   can sit outside it in the page flow (`controls="below"`) without changing
+   the recording's geometry. */
+.terminal-illustration__viewport {
+  align-items: center;
+  display: flex;
+  height: 100%;
+  justify-content: center;
+  min-width: 0;
+  overflow: hidden;
+  position: relative;
+  width: 100%;
+}
+
+/* The screen is a `pre`, but not a code block: inside prose it must not pick
+   up the shared code-block frame and padding. */
+.terminal-illustration .terminal-illustration__screen {
+  width: auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  overflow: visible;
+}
+
+.terminal-illustration__screen {
+  color: inherit;
+  flex: none;
+  font-family: "OpenTUI Mono", ui-monospace, monospace;
+  font-variant-ligatures: none;
+  white-space: pre;
+}
+
+/* Row pitch = one terminal cell. The JS measures the font's full-block ink
+   height and overrides `--terminal-illustration-row` so consecutive rows of
+   braille/block glyphs tile seamlessly, exactly as in a real terminal. */
+.terminal-illustration__row {
+  display: block;
+  height: var(--terminal-illustration-row, 1.5em);
+  line-height: var(--terminal-illustration-row, 1.5em);
+}
+
+.terminal-illustration__row span {
+  display: inline-block;
+  height: 100%;
+  line-height: inherit;
+  vertical-align: top;
+}
+
+/* Controls: a small pill-shaped panel (progress segments, a play/pause
+   toggle, a caption) overlaid in a corner, never a full window frame/footer
+   bar. Always present in the DOM so keyboard focus can reach it; visibility
+   is purely a CSS concern driven by `data-illustration-controls`. */
+.terminal-illustration__controls {
+  align-items: flex-end;
+  color: inherit;
+  display: flex;
+  flex-direction: column;
+  font-family: inherit;
+  gap: 8px;
+  pointer-events: auto;
+  position: absolute;
+  bottom: 0.75rem;
+  right: 0.75rem;
+  z-index: 1;
+}
+
+.terminal-illustration__buttons {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.terminal-illustration[data-illustration-controls="hidden"] .terminal-illustration__controls {
+  display: none;
+}
+
+.terminal-illustration[data-illustration-controls="hover"] .terminal-illustration__controls {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.terminal-illustration[data-illustration-controls="hover"]:hover .terminal-illustration__controls,
+.terminal-illustration[data-illustration-controls="hover"]:focus-within .terminal-illustration__controls {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal-illustration[data-illustration-controls="hover"] .terminal-illustration__controls {
+    transition: none;
+  }
+}
+
+/* "below": caption and navigation in the page flow under the recording,
+   aligned to the same left edge, with no panel chrome — for article media
+   whose chapter captions are part of the content. */
+.terminal-illustration[data-illustration-controls="below"] .terminal-illustration__controls {
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-block-start: 0.75rem;
+  position: static;
+}
+
+.terminal-illustration[data-illustration-controls="below"] .terminal-illustration__caption {
+  color: var(--muted-color);
+  font-size: var(--text-small);
+  opacity: 1;
+  order: -1;
+  text-align: left;
+  width: auto;
+}
+
+.terminal-illustration[data-illustration-controls="below"] .terminal-illustration__segments {
+  background: none;
+  border: 0;
+  height: auto;
+  padding: 0;
+}
+
+.terminal-illustration[data-illustration-controls="below"] .terminal-illustration__toggle {
+  background: none;
+  border: 0;
+  font-size: var(--text-small);
+  height: auto;
+  padding: 0;
+}
+
+.terminal-illustration[data-illustration-controls="below"] .terminal-illustration__toggle:hover {
+  background: none;
+  text-decoration: underline;
+}
+
+.terminal-illustration__segments {
+  align-items: center;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  display: flex;
+  gap: 6px;
+  height: 22px;
+  padding: 0 9px;
+}
+
+.terminal-illustration[data-segment-count="1"] .terminal-illustration__segments {
+  display: none;
+}
+
+.terminal-illustration__segment {
+  --progress: 0;
+  appearance: none;
+  background: color-mix(in srgb, currentColor 30%, transparent);
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  flex: 0 0 auto;
+  height: 5px;
+  overflow: hidden;
+  padding: 0;
+  position: relative;
+  transition: width 0.24s ease;
+  width: 5px;
+}
+
+.terminal-illustration__segment::after {
+  background: currentColor;
+  content: "";
+  inset: 0;
+  position: absolute;
+  transform: scaleX(var(--progress));
+  transform-origin: left;
+}
+
+.terminal-illustration__segment[aria-current="step"] {
+  width: 20px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal-illustration__segment {
+    transition: none;
+  }
+}
+
+.terminal-illustration__toggle {
+  align-items: center;
+  appearance: none;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  flex: none;
+  font: inherit;
+  font-size: 11px;
+  height: 22px;
+  justify-content: center;
+  padding-inline: 6px;
+}
+
+.terminal-illustration__toggle:hover {
+  background: color-mix(in srgb, currentColor 16%, transparent);
+}
+
+.terminal-illustration__segment:focus-visible,
+.terminal-illustration__toggle:focus-visible {
+  outline: 1px solid currentColor;
+  outline-offset: 2px;
+}
+
+.terminal-illustration__caption {
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  line-height: 1.4;
+  opacity: 0.85;
+  text-align: right;
+  width: 26ch;
+}
+
+.terminal-illustration__caption:empty {
+  display: none;
+}

@@ -1,0 +1,11 @@
+Plain, **strong**, *emphasis*, ***both***, ~~struck~~, and
+`code`.
+
+A snake_case_name stays literal. Escaped \*stars\*.
+
+│ A quoted line
+│ continues here.
+
+────────────────────────────────────────────────────────────
+
+End.

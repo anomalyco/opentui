@@ -1,10 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test"
 import { createTestRenderer, type TestRendererOptions } from "@opentui/core/testing"
 import { createContext, useContext, useEffect, useMemo, useState } from "react"
 import { act, type ReactNode } from "react"
-import { createReactSlotRegistry, createSlot, Slot, type ReactPlugin } from "../src/plugins/slot"
-import { useKeyboard } from "../src/hooks/use-keyboard"
-import { createRoot, type Root } from "../src/reconciler/renderer"
+import { createReactSlotRegistry, createSlot, Slot, type ReactPlugin } from "../src/plugins/slot.js"
+import { useKeyboard } from "../src/hooks/use-keyboard.js"
+import { createRoot, type Root } from "../src/reconciler/renderer.js"
 
 interface AppSlots {
   statusbar: { user: string }
@@ -30,27 +30,27 @@ async function setupSlotTest(
   let root: Root | null = null
   setIsReactActEnvironment(true)
 
-  const setup = await createTestRenderer({
-    ...options,
-    onDestroy() {
-      act(() => {
-        if (root) {
-          root.unmount()
-          root = null
-        }
-      })
-      options.onDestroy?.()
-      setIsReactActEnvironment(false)
-    },
-  })
+  let setup!: Awaited<ReturnType<typeof createTestRenderer>>
+  let registry!: ReturnType<typeof createReactSlotRegistry<AppSlots>>
 
-  const registry = createReactSlotRegistry<AppSlots>(setup.renderer, hostContext)
-  root = createRoot(setup.renderer)
+  await act(async () => {
+    setup = await createTestRenderer({
+      ...options,
+      onDestroy() {
+        act(() => {
+          if (root) {
+            root.unmount()
+            root = null
+          }
+        })
+        options.onDestroy?.()
+        setIsReactActEnvironment(false)
+      },
+    })
 
-  act(() => {
-    if (root) {
-      root.render(createNode(registry))
-    }
+    registry = createReactSlotRegistry<AppSlots>(setup.renderer, hostContext)
+    root = createRoot(setup.renderer)
+    root.render(createNode(registry))
   })
 
   return { setup, registry }
@@ -59,13 +59,17 @@ async function setupSlotTest(
 describe("React Slot System", () => {
   beforeEach(() => {
     if (testSetup) {
-      testSetup.renderer.destroy()
+      act(() => {
+        testSetup.renderer.destroy()
+      })
     }
   })
 
   afterEach(() => {
     if (testSetup) {
-      testSetup.renderer.destroy()
+      act(() => {
+        testSetup.renderer.destroy()
+      })
     }
   })
 
@@ -102,6 +106,36 @@ describe("React Slot System", () => {
     const frame = testSetup.captureCharFrame()
 
     expect(frame).toContain("fallback-only")
+  })
+
+  it("coordinated teardown does not re-remove nodes the renderer already destroyed", async () => {
+    // renderer.destroy() destroys the renderable tree and then triggers
+    // root.unmount() via onDestroy. React's deletion effects run against
+    // already-detached nodes; the host config must treat that as a no-op
+    // instead of asking the container to remove non-children.
+    const { setup } = await setupSlotTest(
+      (registry) => {
+        const AppSlot = Slot<AppSlots, typeof hostContext>
+        return (
+          <AppSlot registry={registry} name="statusbar" user="sam">
+            <text>fallback-only</text>
+          </AppSlot>
+        )
+      },
+      { width: 50, height: 6 },
+    )
+    testSetup = setup
+    await testSetup.renderOnce()
+
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      act(() => {
+        testSetup.renderer.destroy()
+      })
+      expect(warnSpy).not.toHaveBeenCalled()
+    } finally {
+      warnSpy.mockRestore()
+    }
   })
 
   it("appends plugin output after fallback content by default", async () => {
@@ -177,6 +211,53 @@ describe("React Slot System", () => {
     expect(frame).toContain("early-plugin")
     expect(frame).toContain("late-plugin")
     expect(frame).not.toContain("replace-fallback")
+  })
+
+  it("replace mode does not invoke fallback components when plugin content wins", async () => {
+    const fallbackLifecycle: string[] = []
+
+    function FallbackProbe() {
+      fallbackLifecycle.push("render")
+
+      useEffect(() => {
+        fallbackLifecycle.push("mount")
+
+        return () => {
+          fallbackLifecycle.push("cleanup")
+        }
+      }, [])
+
+      return <text>fallback-probe</text>
+    }
+
+    const { setup } = await setupSlotTest(
+      (slotRegistry) => {
+        slotRegistry.register({
+          id: "replace-plugin",
+          slots: {
+            statusbar() {
+              return <text>plugin-only</text>
+            },
+          },
+        })
+
+        const Slot = createSlot(slotRegistry)
+        return (
+          <Slot name="statusbar" user="lee" mode="replace">
+            <FallbackProbe />
+          </Slot>
+        )
+      },
+      { width: 40, height: 6 },
+    )
+    testSetup = setup
+
+    await testSetup.renderOnce()
+    const frame = testSetup.captureCharFrame()
+
+    expect(frame).toContain("plugin-only")
+    expect(frame).not.toContain("fallback-probe")
+    expect(fallbackLifecycle).toEqual([])
   })
 
   it("single_winner mode renders only the highest-priority plugin", async () => {

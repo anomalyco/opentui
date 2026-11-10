@@ -1,24 +1,23 @@
-import { existsSync } from "node:fs"
-import { dirname, isAbsolute, join, resolve } from "node:path"
+import { existsSync, readFileSync } from "node:fs"
+import { dirname, join } from "node:path"
 import process from "node:process"
-import { fileURLToPath, pathToFileURL } from "node:url"
-import "@opentui/solid/runtime-plugin-support"
-import {
-  Slot,
-  createSolidSlotRegistry,
-  type SlotMode,
-  type SolidPlugin,
-  useKeyboard,
-  useRenderer,
-} from "@opentui/solid"
-import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show } from "solid-js"
+import { pathToFileURL } from "node:url"
+import "./external-plugin-runtime"
+import { createSlotRegistry } from "@opentui/core"
+import { Slot, type SlotMode, type SolidPlugin, useKeyboard, useRenderer } from "@opentui/solid"
+import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show, type JSX } from "solid-js"
+import { resolveExternalPluginCandidates } from "./external-plugin-path.js"
 
 const STATUSBAR_LABEL = "host-status"
 const SIDEBAR_SECTION = "external-plugins"
-const DEFAULT_PLUGIN_ENTRY = ".plugin/index.tsx"
 const EXTERNAL_PLUGIN_PATH_ENV = "OPENTUI_SOLID_EXTERNAL_PLUGIN_PATH"
+const EXTERNAL_PLUGIN_PACKAGE_JSON = "package.json"
+const MAX_INSTALL_OUTPUT_LENGTH = 1200
+const BUN_INSTALL_COMMAND = ["install", "--no-save"]
+const BUN_BE_BUN_ENV = "BUN_BE_BUN"
+const NODE_MODULES_DIR = "node_modules"
 
-const moduleDir = dirname(fileURLToPath(import.meta.url))
+const installedPluginDependencyManifestsByDir = new Map<string, string>()
 
 type ExternalPluginSlots = {
   statusbar: { label: string }
@@ -34,38 +33,13 @@ type ExternalPluginModule = {
   loadExternalPlugin(): SolidPlugin<ExternalPluginSlots, ExternalPluginContext>
 }
 
-function normalizePath(input: string): string {
-  if (input.startsWith("file://")) {
-    return fileURLToPath(input)
-  }
-
-  if (isAbsolute(input)) {
-    return input
-  }
-
-  return resolve(process.cwd(), input)
-}
-
-function resolveExternalPluginCandidates(): string[] {
-  const paths = new Set<string>()
-  const envPath = process.env[EXTERNAL_PLUGIN_PATH_ENV]
-
-  if (envPath && envPath.trim().length > 0) {
-    paths.add(normalizePath(envPath.trim()))
-  }
-
-  paths.add(resolve(process.cwd(), "packages", "solid", "examples", DEFAULT_PLUGIN_ENTRY))
-  paths.add(resolve(dirname(process.execPath), "..", "..", DEFAULT_PLUGIN_ENTRY))
-  paths.add(resolve(moduleDir, "..", DEFAULT_PLUGIN_ENTRY))
-  paths.add(join(dirname(process.execPath), DEFAULT_PLUGIN_ENTRY))
-  paths.add(resolve(dirname(process.execPath), "..", DEFAULT_PLUGIN_ENTRY))
-  paths.add(resolve(process.cwd(), DEFAULT_PLUGIN_ENTRY))
-
-  return [...paths]
-}
-
 function resolveExternalPluginPath(): string {
-  const candidates = resolveExternalPluginCandidates()
+  const candidates = resolveExternalPluginCandidates({
+    cwd: process.cwd(),
+    execPath: process.execPath,
+    moduleUrl: import.meta.url,
+    envPath: process.env[EXTERNAL_PLUGIN_PATH_ENV],
+  })
 
   for (const candidate of candidates) {
     if (existsSync(candidate)) {
@@ -76,10 +50,65 @@ function resolveExternalPluginPath(): string {
   throw new Error(`Unable to locate external plugin. Checked: ${candidates.join(", ")}`)
 }
 
+function formatInstallOutput(stdout: string, stderr: string): string {
+  const output = [stdout.trim(), stderr.trim()].filter((line) => line.length > 0).join("\n")
+
+  if (output.length <= MAX_INSTALL_OUTPUT_LENGTH) {
+    return output
+  }
+
+  return `${output.slice(0, MAX_INSTALL_OUTPUT_LENGTH)}\n...(truncated)...`
+}
+
+function readPluginPackageManifest(packageJsonPath: string): string {
+  try {
+    return readFileSync(packageJsonPath, "utf8")
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`Failed to read external plugin package manifest at ${packageJsonPath}: ${message}`)
+  }
+}
+
+function ensureExternalPluginDependencies(pluginEntryPath: string): void {
+  const pluginDir = dirname(pluginEntryPath)
+  const pluginPackageJson = join(pluginDir, EXTERNAL_PLUGIN_PACKAGE_JSON)
+  const pluginNodeModulesDir = join(pluginDir, NODE_MODULES_DIR)
+
+  if (!existsSync(pluginPackageJson)) {
+    return
+  }
+
+  const packageManifest = readPluginPackageManifest(pluginPackageJson)
+  const cachedManifest = installedPluginDependencyManifestsByDir.get(pluginDir)
+
+  if (cachedManifest === packageManifest && existsSync(pluginNodeModulesDir)) {
+    return
+  }
+
+  const install = Bun.spawnSync([process.execPath, ...BUN_INSTALL_COMMAND], {
+    cwd: pluginDir,
+    env: {
+      ...process.env,
+      [BUN_BE_BUN_ENV]: "1",
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+
+  if (install.exitCode !== 0) {
+    const output = formatInstallOutput(install.stdout.toString(), install.stderr.toString())
+    const details = output.length > 0 ? `\n${output}` : ""
+    throw new Error(`Failed to install external plugin dependencies in ${pluginDir}.${details}`)
+  }
+
+  installedPluginDependencyManifestsByDir.set(pluginDir, packageManifest)
+}
+
 async function loadExternalPluginFromDisk(
   nonce: number,
 ): Promise<{ path: string; plugin: SolidPlugin<ExternalPluginSlots, ExternalPluginContext> }> {
   const path = resolveExternalPluginPath()
+  ensureExternalPluginDependencies(path)
   const url = pathToFileURL(path)
   url.searchParams.set("reload", `${nonce}`)
   url.searchParams.set("ts", `${Date.now()}`)
@@ -115,7 +144,11 @@ function nextStatusbarMode(mode: SlotMode): SlotMode {
 
 export default function ExternalPluginSlotsDemo() {
   const renderer = useRenderer()
-  const registry = createSolidSlotRegistry<ExternalPluginSlots, ExternalPluginContext>(renderer, hostContext)
+  const registry = createSlotRegistry<JSX.Element, ExternalPluginSlots, ExternalPluginContext>(
+    renderer,
+    "solid:external-plugin-demo",
+    hostContext,
+  )
   const AppSlot = Slot<ExternalPluginSlots, ExternalPluginContext>
 
   const [statusbarMode, setStatusbarMode] = createSignal<SlotMode>("append")
@@ -237,7 +270,7 @@ export default function ExternalPluginSlotsDemo() {
         marginBottom={1}
       >
         <Show when={statusbarMode()} keyed>
-          {(currentMode) => (
+          {(currentMode: SlotMode) => (
             <AppSlot registry={registry} name="statusbar" label={STATUSBAR_LABEL} mode={currentMode}>
               <text fg="#94a3b8">Fallback statusbar content</text>
             </AppSlot>

@@ -9,12 +9,19 @@ import type {
   FiletypeParserOptions,
   PerformanceStats,
   InjectionMapping,
+  TreeSitterWorkerLogType,
+  TreeSitterWorkerRequest,
+  TreeSitterWorkerResponse,
 } from "./types.js"
 import { DownloadUtils } from "./download-utils.js"
-import { isMainThread } from "worker_threads"
 import { isBunfsPath, normalizeBunfsPath } from "../bunfs.js"
-
-const self = globalThis
+import { resolveAssetPath } from "../../platform/assets.js"
+import {
+  isWorkerRuntime,
+  postWorkerMessage,
+  setWorkerMessageHandler,
+  type WorkerMessageEvent,
+} from "../../platform/worker.js"
 
 type ParserState = {
   parser: Parser
@@ -47,9 +54,29 @@ interface ReusableParserState {
   }
 }
 
+// web-tree-sitter ignores the #lua-match? predicates of nvim-treesitter queries, so they would match every node.
+// Rewrites one to #match? when its Lua pattern uses only what the bundled queries use: literals, an anchor at
+// either end, sets of literals and %d, "." (which also matches a newline in Lua), "*", and "+". Any other
+// pattern, or one RegExp rejects, keeps #lua-match? so the query still loads.
+function translateLuaMatch(query: string): string {
+  return query.replace(
+    /#(not-)?(any-)?lua-match\?(\s+@[\w.-]+\s+)"(\^?(?:(?:[\w/!:#.]|\[\^?(?:[\w*-]|%d)+\])[*+]?)*\$?)"/g,
+    (predicate, not = "", any = "", capture: string, pattern: string) => {
+      const source = pattern.replaceAll("%d", "0-9").replaceAll(".", "[^]")
+      try {
+        new RegExp(source)
+      } catch {
+        return predicate
+      }
+      return `#${any}${not}match?${capture}"${source}"`
+    },
+  )
+}
+
 class ParserWorker {
   private bufferParsers: Map<number, ParserState> = new Map()
   private filetypeParserOptions: Map<string, FiletypeParserOptions> = new Map()
+  private filetypeAliases: Map<string, string> = new Map()
   private filetypeParsers: Map<string, FiletypeParser> = new Map()
   private filetypeParserPromises: Map<string, Promise<FiletypeParser | undefined>> = new Map()
   private reusableParsers: Map<string, ReusableParserState> = new Map()
@@ -73,46 +100,84 @@ class ParserWorker {
     if (!this.tsDataPath) {
       return ""
     }
-    return DownloadUtils.fetchHighlightQueries(sources, this.tsDataPath, filetype)
+    return translateLuaMatch(await DownloadUtils.fetchHighlightQueries(sources, this.tsDataPath, filetype))
   }
 
-  async initialize({ dataPath }: { dataPath: string }) {
+  async initialize({ dataPath, treeSitterWasmPath }: { dataPath: string; treeSitterWasmPath?: string }) {
     if (this.initializePromise) {
       return this.initializePromise
     }
-    this.initializePromise = new Promise(async (resolve, reject) => {
+    this.initializePromise = (async () => {
       this.dataPath = dataPath
       this.tsDataPath = path.join(dataPath, "tree-sitter")
 
-      try {
-        await mkdir(path.join(this.tsDataPath, "languages"), { recursive: true })
-        await mkdir(path.join(this.tsDataPath, "queries"), { recursive: true })
+      await mkdir(path.join(this.tsDataPath, "languages"), { recursive: true })
+      await mkdir(path.join(this.tsDataPath, "queries"), { recursive: true })
 
-        let { default: treeWasm } = await import("web-tree-sitter/tree-sitter.wasm" as string, {
-          with: { type: "wasm" },
-        })
+      let treeWasm =
+        treeSitterWasmPath ??
+        resolveAssetPath(
+          "web-tree-sitter/tree-sitter.wasm",
+          () => new URL(import.meta.resolve("web-tree-sitter/tree-sitter.wasm")),
+        )
 
-        if (isBunfsPath(treeWasm)) {
-          treeWasm = normalizeBunfsPath(path.parse(treeWasm).base)
-        }
-
-        await Parser.init({
-          locateFile() {
-            return treeWasm
-          },
-        })
-
-        this.initialized = true
-        resolve()
-      } catch (error) {
-        reject(error)
+      if (isBunfsPath(treeWasm)) {
+        treeWasm = normalizeBunfsPath(path.parse(treeWasm).base)
       }
-    })
+
+      await Parser.init({
+        locateFile() {
+          return treeWasm
+        },
+      })
+
+      this.initialized = true
+    })()
     return this.initializePromise
   }
 
   public addFiletypeParser(filetypeParser: FiletypeParserOptions) {
-    this.filetypeParserOptions.set(filetypeParser.filetype, filetypeParser)
+    const previousAliases = this.filetypeParserOptions.get(filetypeParser.filetype)?.aliases ?? []
+    for (const alias of previousAliases) {
+      if (this.filetypeAliases.get(alias) === filetypeParser.filetype) {
+        this.filetypeAliases.delete(alias)
+      }
+    }
+
+    const aliases = [...new Set((filetypeParser.aliases ?? []).filter((alias) => alias !== filetypeParser.filetype))]
+
+    this.filetypeAliases.delete(filetypeParser.filetype)
+    this.filetypeParserOptions.set(filetypeParser.filetype, {
+      ...filetypeParser,
+      aliases,
+    })
+
+    for (const alias of aliases) {
+      this.filetypeAliases.set(alias, filetypeParser.filetype)
+    }
+
+    this.invalidateParserCaches(filetypeParser.filetype)
+  }
+
+  private resolveCanonicalFiletype(filetype: string): string {
+    if (this.filetypeParserOptions.has(filetype)) {
+      return filetype
+    }
+
+    return this.filetypeAliases.get(filetype) ?? filetype
+  }
+
+  private invalidateParserCaches(filetype: string): void {
+    this.filetypeParsers.delete(filetype)
+    this.filetypeParserPromises.delete(filetype)
+
+    const reusableParser = this.reusableParsers.get(filetype)
+    if (reusableParser) {
+      reusableParser.parser.delete()
+      this.reusableParsers.delete(filetype)
+    }
+
+    this.reusableParserPromises.delete(filetype)
   }
 
   private async createQueries(
@@ -184,25 +249,27 @@ class ParserWorker {
   }
 
   private async resolveFiletypeParser(filetype: string): Promise<FiletypeParser | undefined> {
-    if (this.filetypeParsers.has(filetype)) {
-      return this.filetypeParsers.get(filetype)
+    const canonicalFiletype = this.resolveCanonicalFiletype(filetype)
+
+    if (this.filetypeParsers.has(canonicalFiletype)) {
+      return this.filetypeParsers.get(canonicalFiletype)
     }
 
-    if (this.filetypeParserPromises.has(filetype)) {
-      return this.filetypeParserPromises.get(filetype)
+    if (this.filetypeParserPromises.has(canonicalFiletype)) {
+      return this.filetypeParserPromises.get(canonicalFiletype)
     }
 
-    const loadingPromise = this.loadFiletypeParser(filetype)
-    this.filetypeParserPromises.set(filetype, loadingPromise)
+    const loadingPromise = this.loadFiletypeParser(canonicalFiletype)
+    this.filetypeParserPromises.set(canonicalFiletype, loadingPromise)
 
     try {
       const result = await loadingPromise
       if (result) {
-        this.filetypeParsers.set(filetype, result)
+        this.filetypeParsers.set(canonicalFiletype, result)
       }
       return result
     } finally {
-      this.filetypeParserPromises.delete(filetype)
+      this.filetypeParserPromises.delete(canonicalFiletype)
     }
   }
 
@@ -233,25 +300,27 @@ class ParserWorker {
   }
 
   private async getReusableParser(filetype: string): Promise<ReusableParserState | undefined> {
-    if (this.reusableParsers.has(filetype)) {
-      return this.reusableParsers.get(filetype)
+    const canonicalFiletype = this.resolveCanonicalFiletype(filetype)
+
+    if (this.reusableParsers.has(canonicalFiletype)) {
+      return this.reusableParsers.get(canonicalFiletype)
     }
 
-    if (this.reusableParserPromises.has(filetype)) {
-      return this.reusableParserPromises.get(filetype)
+    if (this.reusableParserPromises.has(canonicalFiletype)) {
+      return this.reusableParserPromises.get(canonicalFiletype)
     }
 
-    const creationPromise = this.createReusableParser(filetype)
-    this.reusableParserPromises.set(filetype, creationPromise)
+    const creationPromise = this.createReusableParser(canonicalFiletype)
+    this.reusableParserPromises.set(canonicalFiletype, creationPromise)
 
     try {
       const result = await creationPromise
       if (result) {
-        this.reusableParsers.set(filetype, result)
+        this.reusableParsers.set(canonicalFiletype, result)
       }
       return result
     } finally {
-      this.reusableParserPromises.delete(filetype)
+      this.reusableParserPromises.delete(canonicalFiletype)
     }
   }
 
@@ -283,7 +352,7 @@ class ParserWorker {
     const filetypeParser = await this.resolveFiletypeParser(filetype)
 
     if (!filetypeParser) {
-      self.postMessage({
+      postWorkerMessage({
         type: "PARSER_INIT_RESPONSE",
         bufferId,
         messageId,
@@ -297,7 +366,7 @@ class ParserWorker {
     parser.setLanguage(filetypeParser.language)
     const tree = parser.parse(content)
     if (!tree) {
-      self.postMessage({
+      postWorkerMessage({
         type: "PARSER_INIT_RESPONSE",
         bufferId,
         messageId,
@@ -317,14 +386,14 @@ class ParserWorker {
     }
     this.bufferParsers.set(bufferId, parserState)
 
-    self.postMessage({
+    postWorkerMessage({
       type: "PARSER_INIT_RESPONSE",
       bufferId,
       messageId,
       hasParser: true,
     })
     const highlights = await this.initialQuery(parserState)
-    self.postMessage({
+    postWorkerMessage({
       type: "HIGHLIGHT_RESPONSE",
       bufferId,
       version,
@@ -529,6 +598,7 @@ class ParserWorker {
     }
 
     const changedRanges = parserState.tree.getChangedRanges(newTree)
+    parserState.tree.delete()
     parserState.tree = newTree
 
     const startQuery = performance.now()
@@ -742,6 +812,7 @@ class ParserWorker {
       return { error: "Failed to parse buffer during reset" }
     }
 
+    parserState.tree.delete()
     parserState.tree = newTree
     const matches = parserState.queries.highlights.captures(parserState.tree.rootNode)
 
@@ -771,7 +842,7 @@ class ParserWorker {
     const reusableState = await this.getReusableParser(filetype)
 
     if (!reusableState) {
-      self.postMessage({
+      postWorkerMessage({
         type: "ONESHOT_HIGHLIGHT_RESPONSE",
         messageId,
         hasParser: false,
@@ -787,7 +858,7 @@ class ParserWorker {
     const tree = reusableState.parser.parse(parseContent)
 
     if (!tree) {
-      self.postMessage({
+      postWorkerMessage({
         type: "ONESHOT_HIGHLIGHT_RESPONSE",
         messageId,
         hasParser: false,
@@ -817,7 +888,7 @@ class ParserWorker {
 
       const highlights = this.getSimpleHighlights(matches, injectionRanges)
 
-      self.postMessage({
+      postWorkerMessage({
         type: "ONESHOT_HIGHLIGHT_RESPONSE",
         messageId,
         hasParser: true,
@@ -864,125 +935,199 @@ class ParserWorker {
     }
   }
 }
-if (!isMainThread) {
+
+function logMessage(type: TreeSitterWorkerLogType, ...args: unknown[]): void {
+  postWorkerMessage({
+    type: "WORKER_LOG",
+    logType: type,
+    data: args,
+  } satisfies TreeSitterWorkerResponse)
+}
+
+function postWorkerError(bufferId: number | undefined, messageId: string | undefined, error: unknown): void {
+  postWorkerMessage({
+    type: "ERROR",
+    bufferId,
+    messageId,
+    error: error instanceof Error ? error.stack || error.message : String(error),
+  } satisfies TreeSitterWorkerResponse)
+}
+
+if (isWorkerRuntime) {
   const worker = new ParserWorker()
 
-  function logMessage(type: "log" | "error" | "warn", ...args: any[]) {
-    self.postMessage({
-      type: "WORKER_LOG",
-      logType: type,
-      data: args,
-    })
-  }
   console.log = (...args) => logMessage("log", ...args)
   console.error = (...args) => logMessage("error", ...args)
   console.warn = (...args) => logMessage("warn", ...args)
 
-  // @ts-ignore - we'll fix this in the future for sure
-  self.onmessage = async (e: MessageEvent) => {
-    const { type, bufferId, version, content, filetype, edits, filetypeParser, messageId, dataPath } = e.data
+  const handleMessage = async (event: WorkerMessageEvent<TreeSitterWorkerRequest>) => {
+    const message = event.data
+    const messageType = String((event.data as { type?: unknown }).type ?? "unknown")
 
     try {
-      switch (type) {
+      switch (message.type) {
         case "INIT":
           try {
-            await worker.initialize({ dataPath })
-            self.postMessage({ type: "INIT_RESPONSE" })
+            await worker.initialize({ dataPath: message.dataPath, treeSitterWasmPath: message.treeSitterWasmPath })
+            postWorkerMessage({ type: "INIT_RESPONSE" } satisfies TreeSitterWorkerResponse)
           } catch (error) {
-            self.postMessage({
+            postWorkerMessage({
               type: "INIT_RESPONSE",
               error: error instanceof Error ? error.stack || error.message : String(error),
-            })
+            } satisfies TreeSitterWorkerResponse)
           }
           break
 
         case "ADD_FILETYPE_PARSER":
-          worker.addFiletypeParser(filetypeParser)
+          worker.addFiletypeParser(message.filetypeParser)
           break
 
-        case "PRELOAD_PARSER":
-          const maybeParser = await worker.preloadParser(filetype)
-          self.postMessage({ type: "PRELOAD_PARSER_RESPONSE", messageId, hasParser: !!maybeParser })
+        case "PRELOAD_PARSER": {
+          const maybeParser = await worker.preloadParser(message.filetype)
+          postWorkerMessage({
+            type: "PRELOAD_PARSER_RESPONSE",
+            messageId: message.messageId,
+            hasParser: !!maybeParser,
+          } satisfies TreeSitterWorkerResponse)
           break
+        }
 
         case "INITIALIZE_PARSER":
-          await worker.handleInitializeParser(bufferId, version, content, filetype, messageId)
+          await worker.handleInitializeParser(
+            message.bufferId,
+            message.version,
+            message.content,
+            message.filetype,
+            message.messageId,
+          )
           break
 
-        case "HANDLE_EDITS":
-          const response = await worker.handleEdits(bufferId, content, edits)
+        case "HANDLE_EDITS": {
+          const response = await worker.handleEdits(message.bufferId, message.content, message.edits)
           if (response.highlights && response.highlights.length > 0) {
-            self.postMessage({ type: "HIGHLIGHT_RESPONSE", bufferId, version, ...response })
+            postWorkerMessage({
+              type: "HIGHLIGHT_RESPONSE",
+              bufferId: message.bufferId,
+              version: message.version,
+              highlights: response.highlights,
+            } satisfies TreeSitterWorkerResponse)
           } else if (response.warning) {
-            self.postMessage({ type: "WARNING", bufferId, warning: response.warning })
+            postWorkerMessage({
+              type: "WARNING",
+              bufferId: message.bufferId,
+              warning: response.warning,
+            } satisfies TreeSitterWorkerResponse)
           } else if (response.error) {
-            self.postMessage({ type: "ERROR", bufferId, error: response.error })
+            postWorkerMessage({
+              type: "ERROR",
+              bufferId: message.bufferId,
+              error: response.error,
+            } satisfies TreeSitterWorkerResponse)
           }
           break
+        }
 
         case "GET_PERFORMANCE":
-          self.postMessage({ type: "PERFORMANCE_RESPONSE", performance: worker.performance, messageId })
+          postWorkerMessage({
+            type: "PERFORMANCE_RESPONSE",
+            performance: worker.performance,
+            messageId: message.messageId,
+          } satisfies TreeSitterWorkerResponse)
           break
 
-        case "RESET_BUFFER":
-          const resetResponse = await worker.handleResetBuffer(bufferId, version, content)
+        case "RESET_BUFFER": {
+          const resetResponse = await worker.handleResetBuffer(message.bufferId, message.version, message.content)
           if (resetResponse.highlights && resetResponse.highlights.length > 0) {
-            self.postMessage({ type: "HIGHLIGHT_RESPONSE", bufferId, version, ...resetResponse })
+            postWorkerMessage({
+              type: "HIGHLIGHT_RESPONSE",
+              bufferId: message.bufferId,
+              version: message.version,
+              highlights: resetResponse.highlights,
+            } satisfies TreeSitterWorkerResponse)
           } else if (resetResponse.warning) {
-            self.postMessage({ type: "WARNING", bufferId, warning: resetResponse.warning })
+            postWorkerMessage({
+              type: "WARNING",
+              bufferId: message.bufferId,
+              warning: resetResponse.warning,
+            } satisfies TreeSitterWorkerResponse)
           } else if (resetResponse.error) {
-            self.postMessage({ type: "ERROR", bufferId, error: resetResponse.error })
+            postWorkerMessage({
+              type: "ERROR",
+              bufferId: message.bufferId,
+              error: resetResponse.error,
+            } satisfies TreeSitterWorkerResponse)
           }
           break
+        }
 
         case "DISPOSE_BUFFER":
-          worker.disposeBuffer(bufferId)
-          self.postMessage({ type: "BUFFER_DISPOSED", bufferId })
+          worker.disposeBuffer(message.bufferId)
+          postWorkerMessage({
+            type: "BUFFER_DISPOSED",
+            bufferId: message.bufferId,
+          } satisfies TreeSitterWorkerResponse)
           break
 
         case "ONESHOT_HIGHLIGHT":
-          await worker.handleOneShotHighlight(content, filetype, messageId)
+          await worker.handleOneShotHighlight(message.content, message.filetype, message.messageId)
           break
 
         case "UPDATE_DATA_PATH":
           try {
-            await worker.updateDataPath(dataPath)
-            self.postMessage({ type: "UPDATE_DATA_PATH_RESPONSE", messageId })
-          } catch (error) {
-            self.postMessage({
+            await worker.updateDataPath(message.dataPath)
+            postWorkerMessage({
               type: "UPDATE_DATA_PATH_RESPONSE",
-              messageId,
+              messageId: message.messageId,
+            } satisfies TreeSitterWorkerResponse)
+          } catch (error) {
+            postWorkerMessage({
+              type: "UPDATE_DATA_PATH_RESPONSE",
+              messageId: message.messageId,
               error: error instanceof Error ? error.message : String(error),
-            })
+            } satisfies TreeSitterWorkerResponse)
           }
           break
 
         case "CLEAR_CACHE":
           try {
             await worker.clearCache()
-            self.postMessage({ type: "CLEAR_CACHE_RESPONSE", messageId })
-          } catch (error) {
-            self.postMessage({
+            postWorkerMessage({
               type: "CLEAR_CACHE_RESPONSE",
-              messageId,
+              messageId: message.messageId,
+            } satisfies TreeSitterWorkerResponse)
+          } catch (error) {
+            postWorkerMessage({
+              type: "CLEAR_CACHE_RESPONSE",
+              messageId: message.messageId,
               error: error instanceof Error ? error.message : String(error),
-            })
+            } satisfies TreeSitterWorkerResponse)
           }
           break
 
         default:
-          self.postMessage({
+          postWorkerMessage({
             type: "ERROR",
-            bufferId,
-            error: `Unknown message type: ${type}`,
-          })
+            error: `Unknown message type: ${messageType}`,
+          } satisfies TreeSitterWorkerResponse)
       }
     } catch (error) {
-      self.postMessage({
-        type: "ERROR",
-        bufferId,
-        error: error instanceof Error ? error.stack || error.message : String(error),
-      })
+      const messageId = "messageId" in message ? message.messageId : undefined
+      if ("bufferId" in message) {
+        postWorkerError(message.bufferId, messageId, error)
+      } else {
+        postWorkerError(undefined, messageId, error)
+      }
     }
   }
+
+  // A buffer's messages run one at a time: a pass that awaits an injected grammar still reads the buffer's tree, so a
+  // later edit, reset or dispose must not delete it first. Other buffers and one-shot highlights do not wait.
+  const bufferQueues = new Map<number, Promise<void>>()
+  setWorkerMessageHandler<TreeSitterWorkerRequest>((event) => {
+    if (!("bufferId" in event.data)) return handleMessage(event)
+    const { bufferId } = event.data
+    const queued = (bufferQueues.get(bufferId) ?? Promise.resolve()).then(() => handleMessage(event))
+    bufferQueues.set(bufferId, queued)
+    void queued.then(() => bufferQueues.get(bufferId) === queued && bufferQueues.delete(bufferId))
+  })
 }

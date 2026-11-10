@@ -1,0 +1,541 @@
+---
+title: Custom keymap addons
+description: Create Keymap addons with public callbacks, ordered setup, and complete cleanup
+---
+
+# Custom keymap addons
+
+An addon is a function that accepts a `Keymap`, registers behavior through public methods, and returns a disposer.
+The shipped addons use the same registration surface.
+
+Use this page as the canonical reference for addon callbacks and extension contracts.
+See [Built-in keymap addons](/docs/keymap/addons) for the shipped inventory.
+
+## Addon shape
+
+```ts
+import type { Keymap, KeymapEvent } from "@opentui/keymap"
+
+export function registerModeField<TTarget extends object, TEvent extends KeymapEvent>(
+  keymap: Keymap<TTarget, TEvent>,
+): () => void {
+  const offField = keymap.registerBindingFields({
+    mode(value, ctx) {
+      ctx.require("app.mode", value)
+      ctx.attr("mode", value)
+    },
+  })
+
+  const offIntercept = keymap.intercept("key", ({ event, setData }) => {
+    if (event.name === "escape") {
+      setData("app.mode", "normal")
+    }
+  })
+
+  return () => {
+    offIntercept()
+    offField()
+  }
+}
+```
+
+Use these rules for every addon:
+
+- Use only public `Keymap` registration and query methods.
+- Return one disposer that removes every registration owned by the addon.
+- Dispose in reverse setup order when registrations depend on each other.
+- Install compile-time extensions before the layers that use them.
+- Clean up completed setup if a later setup step throws.
+- Keep host-specific behavior behind a host-specific addon entry point.
+
+Normal addons do not need `KEYMAP_EXTENSION_CONTEXT`. That advanced root export exposes tightly coupled engine services.
+
+## Public registration APIs
+
+### Fields, tokens, and patterns
+
+| API                                | Callback or value                                              |
+| ---------------------------------- | -------------------------------------------------------------- |
+| `registerLayer(layer)`             | `Layer` with commands, key bindings, and optional addon fields |
+| `registerLayerFields(fields)`      | `Record<string, LayerFieldCompiler>`                           |
+| `registerBindingFields(fields)`    | `Record<string, BindingFieldCompiler>`                         |
+| `registerCommandFields(fields)`    | `Record<string, CommandFieldCompiler>`                         |
+| `registerToken(token)`             | `KeyToken`                                                     |
+| `registerSequencePattern(pattern)` | `SequencePattern`                                              |
+
+These methods return individual disposers. Field registration has no stage-wide clear method.
+
+### Key binding pipeline
+
+| API                                 | Callback                   |
+| ----------------------------------- | -------------------------- |
+| `prependLayerBindingsTransformer()` | `LayerBindingsTransformer` |
+| `appendLayerBindingsTransformer()`  | `LayerBindingsTransformer` |
+| `prependBindingExpander()`          | `BindingExpander`          |
+| `appendBindingExpander()`           | `BindingExpander`          |
+| `prependBindingParser()`            | `BindingParser`            |
+| `appendBindingParser()`             | `BindingParser`            |
+| `prependBindingTransformer()`       | `BindingTransformer`       |
+| `appendBindingTransformer()`        | `BindingTransformer`       |
+
+The matching clear methods are `clearLayerBindingsTransformers()`, `clearBindingExpanders()`,
+`clearBindingParsers()`, and `clearBindingTransformers()`.
+
+### Commands and dispatch
+
+| API                               | Callback                    |
+| --------------------------------- | --------------------------- |
+| `prependCommandTransformer()`     | `CommandTransformer`        |
+| `appendCommandTransformer()`      | `CommandTransformer`        |
+| `prependCommandResolver()`        | `CommandResolver`           |
+| `appendCommandResolver()`         | `CommandResolver`           |
+| `prependEventMatchResolver()`     | `EventMatchResolver`        |
+| `appendEventMatchResolver()`      | `EventMatchResolver`        |
+| `prependDisambiguationResolver()` | `KeyDisambiguationResolver` |
+| `appendDisambiguationResolver()`  | `KeyDisambiguationResolver` |
+
+The matching clear methods are `clearCommandTransformers()`, `clearCommandResolvers()`,
+`clearEventMatchResolvers()`, and `clearDisambiguationResolvers()`.
+
+### Diagnostics, intercepts, and resources
+
+| API                                    | Callback or purpose                              |
+| -------------------------------------- | ------------------------------------------------ |
+| `prependLayerAnalyzer()`               | `LayerAnalyzer`                                  |
+| `appendLayerAnalyzer()`                | `LayerAnalyzer`                                  |
+| `clearLayerAnalyzers()`                | Remove all analyzers.                            |
+| `intercept("key", fn, options?)`       | Observe or consume input before dispatch.        |
+| `intercept("key:after", fn, options?)` | Observe one dispatch outcome.                    |
+| `intercept("raw", fn, options?)`       | Observe host input before key parsing.           |
+| `keymap.on(name, listener)`            | Subscribe to state, trace, or diagnostic events. |
+| `acquireResource(symbol, setup)`       | Share reference-counted setup on one keymap.     |
+
+Every method in these tables returns a disposer except the `clear*()` methods.
+
+## Field compiler callbacks
+
+Field compilers convert addon configuration into conditions and metadata.
+All three compiler contexts expose the same methods:
+
+| Method                 | Effect                                                          |
+| ---------------------- | --------------------------------------------------------------- |
+| `require(name, value)` | Require `Object.is(keymap.getData(name), value)`.               |
+| `activeWhen(callback)` | Evaluate a boolean callback during queries and dispatch.        |
+| `activeWhen(reactive)` | Evaluate `ReactiveMatcher.get()` and subscribe to invalidation. |
+| `attr(name, value)`    | Publish compiled metadata.                                      |
+
+Conflicting requirements or attrs from fields on the same record produce a compile error.
+Repeated values are allowed when `Object.is()` reports equality.
+
+### Layer fields
+
+`LayerFieldCompiler` receives the field value and `LayerFieldContext`.
+Layer requirements and matchers control the complete layer.
+
+Layer attrs appear as `GraphLayer.attrs` in graph snapshots. Raw layer fields appear as `GraphLayer.fields`.
+The key binding pipeline also receives a read-only view of compiled layer fields.
+
+### Key binding fields
+
+`BindingFieldCompiler` receives the field value and `BindingFieldContext`.
+Key binding attrs appear as `ActiveBinding.attrs` and `ActiveKey.bindingAttrs`.
+
+```ts
+keymap.registerBindingFields({
+  mode(value, ctx) {
+    ctx.require("app.mode", value)
+    ctx.attr("mode", value)
+  },
+})
+```
+
+The example makes the key binding active only when `app.mode` matches.
+It also publishes the normalized `mode` value as metadata.
+
+### Command fields
+
+`CommandFieldCompiler` receives the field value and `CommandFieldContext`.
+Command attrs appear in command projections and active-key `commandAttrs`.
+
+`getCommands()` still returns the registered command object with its original top-level custom fields.
+
+### Reactive matchers
+
+`ReactiveMatcher` has this contract:
+
+```ts
+interface ReactiveMatcher {
+  get(): boolean
+  subscribe(onChange: () => void): () => void
+}
+```
+
+The engine subscribes when the owning layer, key binding, or command registers.
+It calls the returned disposer when that owner unregisters.
+
+Use `reactiveMatcherFromStore()` from the React entry point for external stores.
+Use `reactiveMatcherFromSignal()` from the Solid entry point for Solid accessors.
+
+## Key binding pipeline callbacks
+
+String key bindings run through an ordered pipeline:
+
+1. A layer key binding transformer rewrites the complete array.
+2. Expanders rewrite one source string into one or more strings.
+3. Parsers consume each string and create sequence parts.
+4. Key binding transformers rewrite parsed records or add derived records.
+5. Field compilers add conditions and metadata.
+
+Object-form keys skip expanders and parsers. Key binding transformers still receive their normalized sequence.
+
+### `LayerBindingsTransformer`
+
+```ts
+(bindings, ctx) => readonly Binding[] | void
+```
+
+The callback receives a snapshot of the layer's key binding array.
+Return a replacement array or return nothing to keep the current array.
+
+`LayerBindingsTransformerContext` contains:
+
+| Member                    | Purpose                                                 |
+| ------------------------- | ------------------------------------------------------- |
+| `layer`                   | Read-only source layer.                                 |
+| `validateBindings(value)` | Return `BindingsValidationResult` for an unknown value. |
+
+The engine snapshots each returned array before the next transformer runs.
+
+### `BindingExpander`
+
+```ts
+(ctx) => readonly BindingExpansion[] | undefined
+```
+
+`BindingExpanderContext` contains `input`, optional `displays`, and read-only `layer` fields.
+Return `undefined` to leave the candidate unchanged. Otherwise, return at least one `{ key, displays? }` object.
+
+Each expansion key must be a string. If `displays` exists, it must contain strings and later match the parsed sequence
+length.
+
+```ts
+keymap.appendBindingExpander(({ input }) => {
+  if (input !== "save") return undefined
+  return [{ key: "ctrl+s", displays: ["save"] }]
+})
+```
+
+Expanders compose. Each expander receives every candidate from the preceding expander.
+
+### `BindingParser`
+
+```ts
+;(ctx) => BindingParserResult | undefined
+```
+
+`BindingParserContext` contains:
+
+| Member                          | Purpose                                                            |
+| ------------------------------- | ------------------------------------------------------------------ |
+| `input`                         | Complete source string.                                            |
+| `index`                         | Current parser position.                                           |
+| `layer`                         | Read-only layer fields.                                            |
+| `tokens`                        | Registered resolved tokens.                                        |
+| `patterns`                      | Registered resolved sequence patterns.                             |
+| `normalizeTokenName(name)`      | Normalize a semantic token or pattern name.                        |
+| `createMatch(id)`               | Create an opaque text match identifier.                            |
+| `parseObjectKey(key, options?)` | Normalize one stroke with optional display, match, and token name. |
+
+Return `undefined` when the parser does not claim the current position.
+To claim it, return `parts` and `nextIndex`. The index must advance and cannot pass the input length.
+
+`usedTokens` marks layers that must recompile when tokens change.
+`unknownTokens` makes the expanded key binding inactive and emits a warning.
+
+Keep delimiters inside the parser. Register the semantic name `leader`, then let a parser own syntax such as
+`<leader>` or `[leader]`.
+
+### `BindingTransformer`
+
+```ts
+(binding, ctx) => void
+```
+
+The callback receives a mutable parsed key binding copy.
+`BindingTransformerContext` contains:
+
+| Member           | Purpose                                                |
+| ---------------- | ------------------------------------------------------ |
+| `layer`          | Read-only layer fields.                                |
+| `parseKey(key)`  | Parse exactly one stroke with the current environment. |
+| `add(binding)`   | Add a derived parsed key binding.                      |
+| `skipOriginal()` | Remove the current parsed key binding.                 |
+
+Derived key bindings are snapshotted. If no transformer removes the original, it stays before all derived records.
+
+### Pipeline order and disposal
+
+`prepend*()` callbacks run before `append*()` callbacks.
+Multiple prepend registrations run newest first. Multiple append registrations run oldest first.
+
+Disposing one callback removes only that callback. It does not undo compiled output in existing layers.
+A clear method removes the complete callback stage and also does not recompile existing layers.
+
+## Command callbacks
+
+### `CommandTransformer`
+
+```ts
+(command, ctx) => void
+```
+
+The engine gives each transformer a shallow command copy.
+The callback can mutate that copy. `CommandTransformerContext` also supplies:
+
+| Member           | Purpose                                  |
+| ---------------- | ---------------------------------------- |
+| `layer`          | Read-only source layer.                  |
+| `add(command)`   | Add a shallow copy of a derived command. |
+| `skipOriginal()` | Remove the transformed source command.   |
+
+Transformers run once during layer registration and before command-field compilers.
+Derived commands follow the retained source command.
+
+### `CommandResolver`
+
+```ts
+;(input, ctx) => Command | undefined
+```
+
+`CommandResolverContext` contains:
+
+| Member                | Purpose                                                    |
+| --------------------- | ---------------------------------------------------------- |
+| `input`               | Current command input.                                     |
+| `payload`             | Current invocation payload.                                |
+| `setInput(input)`     | Replace input passed to the resolved command.              |
+| `setPayload(payload)` | Replace payload passed to the resolved command.            |
+| `getCommand(name)`    | Read a command from the current active or registered mode. |
+
+Return `undefined` to let the next resolver run. Return a `Command` to resolve the input.
+The engine invokes resolvers during command lookup and again for each programmatic execution that needs them.
+
+Put invocation behavior in the returned `run(ctx)` handler.
+A resolver can return `{ ok: false, reason: "invalid-args" }` from that handler.
+
+A thrown resolver emits an error. Resolution continues with the next resolver.
+
+## Event-match callbacks
+
+`EventMatchResolver` has this signature:
+
+```ts
+(event, ctx) => readonly KeyMatch[] | undefined
+```
+
+Call `ctx.resolveKey(key)` to create the same opaque match value that parsed key bindings use.
+Return candidates in preferred order. Invalid candidates emit errors and are skipped.
+
+Candidate order is global across active layers. The engine tries all layers for the first candidate before it tries the
+next candidate. Use key binding expanders or transformers for layer-local aliases.
+
+## Disambiguation callbacks
+
+Use `KeyDisambiguationResolver` when one sequence is both exact and a prefix, such as `g` and `gg`.
+
+Register a resolver before the ambiguous layer. Without one, compilation rejects the conflicting key binding and keeps
+valid earlier key bindings.
+
+`KeyDisambiguationContext` contains:
+
+| Member                                  | Purpose                                                  |
+| --------------------------------------- | -------------------------------------------------------- |
+| `event`                                 | Current event without mutation methods.                  |
+| `focused`                               | Current focused target.                                  |
+| `sequence`                              | Current sequence.                                        |
+| `stroke`                                | Latest sequence part.                                    |
+| `exact`                                 | Reachable exact key bindings.                            |
+| `continuations`                         | Reachable next keys with key binding and metadata views. |
+| `getData(name)`, `setData(name, value)` | Runtime data access.                                     |
+| `runExact()`                            | Run the exact key binding now.                           |
+| `continueSequence()`                    | Keep the prefix pending.                                 |
+| `clear()`                               | Clear and consume the sequence.                          |
+| `defer(handler)`                        | Keep the sequence pending and start cancellable work.    |
+
+The resolver must return a decision synchronously. A promise return is invalid.
+Use `ctx.defer()` for asynchronous work.
+
+`KeyDeferredDisambiguationContext` contains:
+
+| Member               | Purpose                                                                   |
+| -------------------- | ------------------------------------------------------------------------- |
+| `signal`             | Abort when a new press, focus change, or sequence clear cancels the work. |
+| `sequence`           | Captured pending sequence.                                                |
+| `focused`            | Captured focus target.                                                    |
+| `sleep(ms)`          | Return `true` after the delay or `false` after abort.                     |
+| `runExact()`         | Resolve with the captured exact key binding.                              |
+| `continueSequence()` | Keep the captured prefix pending.                                         |
+| `clear()`            | Clear the captured sequence.                                              |
+
+A deferred handler can return a decision, a promise for a decision, or nothing.
+Return nothing after abort to end without dispatch.
+
+## Layer analyzers
+
+`LayerAnalyzer` runs after key binding compilation. `LayerAnalysisContext` contains:
+
+| Member                         | Purpose                                                            |
+| ------------------------------ | ------------------------------------------------------------------ |
+| `target`, `order`              | Source layer identity.                                             |
+| `sourceBindings`               | Key bindings after layer transformers.                             |
+| `bindings`                     | Compiled `LayerBindingAnalysis` records.                           |
+| `hasTokenBindings`             | Whether source syntax used known or unresolved tokens or patterns. |
+| `checkCommandResolution(name)` | Return `resolved`, `unresolved`, or `error`.                       |
+| `warn(...)`                    | Emit a warning.                                                    |
+| `warnOnce(...)`                | Emit one warning for an analyzer key.                              |
+| `error(...)`                   | Emit an error.                                                     |
+
+An analyzer observes one compile. Adding an analyzer does not inspect existing layers until another supported change
+recompiles them.
+
+## Intercept callbacks
+
+### Before key dispatch
+
+`intercept("key", fn, options?)` supplies `event`, `setData`, `getData`, and `consume(options?)`.
+
+`consume()` defaults both `preventDefault` and `stopPropagation` to `true`.
+Stopping propagation ends pre-dispatch intercept processing and skips key binding dispatch.
+
+### After key dispatch
+
+`intercept("key:after", fn, options?)` supplies:
+
+- `event` and `eventType`
+- `focused`
+- `handled` and `reason`
+- completed `sequence` and current `pendingSequence`
+- `setData`, `getData`, and `consume`
+
+The reason is `intercept-consumed`, `binding-handled`, `binding-rejected`, `no-match`, `sequence-pending`,
+`sequence-miss`, or `sequence-cleared`.
+
+The callback runs once after each matching press or release event received by Keymap.
+Event prevention does not suppress the after callback.
+
+### Raw input
+
+`intercept("raw", fn, options?)` supplies the raw `sequence` and `stop()`.
+Calling `stop()` makes the host listener report that it consumed the input.
+
+Raw intercepts work only when the host implements `onRawInput()`.
+
+### Intercept order
+
+All intercept forms accept `priority`, which defaults to `0`.
+Higher priorities run first. Earlier registrations run first when priorities match.
+
+Key intercepts also accept `release`. It defaults to `false`.
+
+## Event listeners
+
+`keymap.on()` supports `state`, `pendingSequence`, `dispatch`, `warning`, and `error`.
+See [Core keymap events](/docs/keymap/core#events) for payload fields and timing.
+
+A thrown state, sequence, or dispatch listener emits an error and does not stop later listeners.
+A thrown warning or error listener also does not stop later diagnostic listeners.
+It does not recursively emit another error.
+
+## Shared resources
+
+`acquireResource(symbol, setup)` shares setup among addon registrations on one keymap.
+
+- The first holder runs `setup()` and stores its disposer.
+- Later holders for the same symbol increment the reference count.
+- Each holder receives its own release function.
+- The resource disposer runs after the last release.
+- Host destruction disposes every retained resource.
+- A thrown setup is not stored.
+
+Use a module-private symbol for each shared resource. The first holder's setup arguments remain in effect until the last
+holder releases the resource.
+
+## Errors and lifecycle
+
+Most extension callback failures emit an `error` event instead of escaping the registration call.
+The engine skips the failed item and continues when it can.
+
+Reserved or duplicate field names emit errors. The returned field disposer owns only the names that registered
+successfully.
+
+Unknown layer and key binding fields emit warnings and have no compiled behavior.
+Unknown command fields remain on command objects without warnings.
+
+Unknown parser tokens or patterns make that expanded key binding inactive.
+Registering the missing token or pattern later recompiles key bindings.
+
+Runtime data changes are allowed during dispatch. Structural changes are not.
+Do not register or dispose layers, parsers, resolvers, tokens, or similar structure during dispatch.
+
+After host destruction, host-backed queries such as `getActiveKeys()` throw.
+Addon disposers remain safe to call.
+
+The [Keymap hosts](/docs/keymap/hosts) page defines focus, target destruction, raw input, and host cleanup.
+
+## Testing addons
+
+Use `@opentui/keymap/testing` for host-independent addon tests.
+`createTestKeymap({ defaultKeys: true })` returns a keymap, fake host, root target, diagnostic capture, and cleanup function.
+
+```ts
+import { createTestKeymap } from "@opentui/keymap/testing"
+import { registerMyAddon } from "./my-addon"
+
+const { keymap, host, diagnostics, cleanup } = createTestKeymap({ defaultKeys: true })
+
+try {
+  const disposeAddon = registerMyAddon(keymap)
+  const disposeLayer = keymap.registerLayer({
+    commands: [{ name: "file.save", run() {} }],
+    bindings: [{ key: "x", cmd: "file.save" }],
+  })
+
+  host.press("x")
+  diagnostics.takeErrors()
+
+  disposeLayer()
+  disposeAddon()
+} finally {
+  cleanup()
+}
+```
+
+Use `createTestKeymapHost()` when a test must construct `Keymap` itself.
+Use `captureKeymapDiagnostics()` when a test already owns a keymap.
+
+Test these observable behaviors:
+
+- The addon changes dispatch or query output as intended.
+- Its disposer removes behavior and subscriptions.
+- Repeated registration follows the intended ownership policy.
+- Callback failures emit the expected diagnostic code.
+- Target and host destruction release retained resources.
+- Disposers remain safe before and after host destruction.
+
+Use an adapter-specific test only when the addon depends on HTML or OpenTUI behavior.
+See [Testing](/docs/core-concepts/testing) for renderer, input, and lifecycle tests.
+
+## Reserved field names
+
+| Surface     | Reserved names                                             |
+| ----------- | ---------------------------------------------------------- |
+| Layer       | `target`, `targetMode`, `priority`, `bindings`, `commands` |
+| Key binding | `key`, `cmd`, `event`, `preventDefault`, `fallthrough`     |
+| Command     | `name`, `run`                                              |
+
+## Related pages
+
+- [Built-in keymap addons](/docs/keymap/addons)
+- [Core keymap API](/docs/keymap/core)
+- [Keymap hosts](/docs/keymap/hosts)
+- [Testing](/docs/core-concepts/testing)

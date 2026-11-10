@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
-import { envRegistry, registerEnvVar, env, clearEnvCache } from "./env.ts"
+import { envRegistry, registerEnvVar, env, clearEnvCache } from "./env.js"
 
 // Backup and restore registry to avoid interfering with module-level registrations
 let registryBackup: Record<string, any> = {}
@@ -117,6 +117,17 @@ describe("env registry", () => {
 
     // Don't set the env var
     expect(env.TEST_DEFAULT).toBe("default_value")
+  })
+
+  test("should return undefined for optional env vars when not set", () => {
+    registerEnvVar({
+      name: "TEST_OPTIONAL",
+      description: "An optional test variable",
+      type: "string",
+      required: false,
+    })
+
+    expect(env.TEST_OPTIONAL).toBeUndefined()
   })
 
   test("should throw error for required env var not set", () => {

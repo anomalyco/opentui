@@ -1,5 +1,6 @@
-import { Renderable, type ViewportBounds } from "../index.js"
-import { coordinateToCharacterIndex, fonts } from "./ascii.font.js"
+import { Renderable } from "../Renderable.js"
+import type { SelectionBehavior, ViewportBounds } from "../types.js"
+import { coordinateToCharacterIndex, fonts, getCharacterPositions } from "./ascii.font.js"
 
 class SelectionAnchor {
   private relativeX: number
@@ -10,16 +11,16 @@ class SelectionAnchor {
     absoluteX: number,
     absoluteY: number,
   ) {
-    this.relativeX = absoluteX - this.renderable.x
-    this.relativeY = absoluteY - this.renderable.y
+    this.relativeX = absoluteX - Math.trunc(this.renderable.x)
+    this.relativeY = absoluteY - Math.trunc(this.renderable.y)
   }
 
   get x(): number {
-    return this.renderable.x + this.relativeX
+    return Math.trunc(this.renderable.x) + this.relativeX
   }
 
   get y(): number {
-    return this.renderable.y + this.relativeY
+    return Math.trunc(this.renderable.y) + this.relativeY
   }
 }
 
@@ -31,10 +32,17 @@ export class Selection {
   private _isActive: boolean = true
   private _isDragging: boolean = true
   private _isStart: boolean = false
+  behavior: SelectionBehavior
 
-  constructor(anchorRenderable: Renderable, anchor: { x: number; y: number }, focus: { x: number; y: number }) {
+  constructor(
+    anchorRenderable: Renderable,
+    anchor: { x: number; y: number },
+    focus: { x: number; y: number },
+    behavior: SelectionBehavior = "cell",
+  ) {
     this._anchor = new SelectionAnchor(anchorRenderable, anchor.x, anchor.y)
     this._focus = { ...focus }
+    this.behavior = behavior
   }
 
   get isStart(): boolean {
@@ -110,7 +118,8 @@ export class Selection {
   }
 
   getSelectedText(): string {
-    const selectedTexts = this._selectedRenderables
+    const selectedTextsByLine = new Map<number, Array<{ x: number; text: string }>>()
+    const selectedRenderables = this._selectedRenderables
       // Sort by reading order: top-to-bottom, then left-to-right
       .sort((a, b) => {
         const aY = a.y
@@ -121,9 +130,28 @@ export class Selection {
         return a.x - b.x
       })
       .filter((renderable) => !renderable.isDestroyed)
-      .map((renderable) => renderable.getSelectedText())
-      .filter((text) => text)
-    return selectedTexts.join("\n")
+
+    for (const renderable of selectedRenderables) {
+      const text = renderable.getSelectedText()
+      if (!text) continue
+      const lines = text.split("\n")
+      for (let index = 0; index < lines.length; index += 1) {
+        const y = renderable.y + index
+        const line = selectedTextsByLine.get(y) ?? []
+        line.push({ x: renderable.x, text: lines[index] })
+        selectedTextsByLine.set(y, line)
+      }
+    }
+
+    return [...selectedTextsByLine.entries()]
+      .sort(([leftY], [rightY]) => leftY - rightY)
+      .map(([, line]) =>
+        line
+          .sort((left, right) => left.x - right.x)
+          .map((segment) => segment.text)
+          .join(""),
+      )
+      .join("\n")
   }
 }
 
@@ -133,6 +161,7 @@ export interface LocalSelectionBounds {
   focusX: number
   focusY: number
   isActive: boolean
+  behavior: SelectionBehavior
 }
 
 export function convertGlobalToLocalSelection(
@@ -150,6 +179,7 @@ export function convertGlobalToLocalSelection(
     focusX: globalSelection.focus.x - localX,
     focusY: globalSelection.focus.y - localY,
     isActive: true,
+    behavior: globalSelection.behavior,
   }
 }
 
@@ -191,46 +221,38 @@ export class ASCIIFontSelectionHelper {
 
     const text = this.getText()
     const font = this.getFont()
+    const positions = getCharacterPositions(text, font)
+    const minY = Math.min(localSelection.anchorY, localSelection.focusY)
+    const maxY = Math.max(localSelection.anchorY, localSelection.focusY)
 
-    const selStart = { x: localSelection.anchorX, y: localSelection.anchorY }
-    const selEnd = { x: localSelection.focusX, y: localSelection.focusY }
-
-    if (height - 1 < selStart.y || 0 > selEnd.y) {
+    // Completely above or below this glyph row: not selected.
+    if (maxY < 0 || minY > height - 1) {
       this.localSelection = null
       return previousSelection !== null
     }
 
-    let startCharIndex = 0
-    let endCharIndex = text.length
-
-    if (selStart.y > height - 1) {
-      // Selection starts below us - we're not selected
-      this.localSelection = null
-      return previousSelection !== null
-    } else if (selStart.y >= 0 && selStart.y <= height - 1) {
-      // Selection starts within our Y range - use the actual start X coordinate
-      if (selStart.x > 0) {
-        startCharIndex = coordinateToCharacterIndex(selStart.x, text, font)
+    const indexAt = (x: number, y: number): number => {
+      if (y < 0) return 0
+      if (y > height - 1) return text.length
+      if (x < 0) return 0
+      if (x >= width) return text.length
+      for (let index = 1; index < positions.length; index += 1) {
+        if (x < positions[index]) return index - 1
       }
+      return text.length
     }
 
-    if (selEnd.y < 0) {
-      // Selection ends above us - we're not selected
+    const anchorIndex = indexAt(localSelection.anchorX, localSelection.anchorY)
+    const focusIndex = indexAt(localSelection.focusX, localSelection.focusY)
+    const start = Math.min(anchorIndex, focusIndex)
+    const end = Math.min(Math.max(anchorIndex, focusIndex) + 1, text.length)
+    const samePoint =
+      localSelection.anchorX === localSelection.focusX && localSelection.anchorY === localSelection.focusY
+
+    if (samePoint || start >= end) {
       this.localSelection = null
-      return previousSelection !== null
-    } else if (selEnd.y >= 0 && selEnd.y <= height - 1) {
-      // Selection ends within our Y range - use the actual end X coordinate
-      if (selEnd.x >= 0) {
-        endCharIndex = coordinateToCharacterIndex(selEnd.x, text, font)
-      } else {
-        endCharIndex = 0
-      }
-    }
-
-    if (startCharIndex < endCharIndex && startCharIndex >= 0 && endCharIndex <= text.length) {
-      this.localSelection = { start: startCharIndex, end: endCharIndex }
     } else {
-      this.localSelection = null
+      this.localSelection = { start, end }
     }
 
     return (

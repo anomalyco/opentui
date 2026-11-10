@@ -1,6 +1,6 @@
 # OpenTUI React Component Extension
 
-The `extend` function allows you to add custom renderable components to the OpenTUI React reconciler, similar to how `@react-three/fiber` allows extending Three.js objects.
+The `extend` function adds custom renderable classes to the component catalogue of the OpenTUI React reconciler. It works like `extend` in `@react-three/fiber`, which adds Three.js objects.
 
 ## Basic Usage
 
@@ -8,7 +8,7 @@ The `extend` function allows you to add custom renderable components to the Open
 
 ```tsx
 import { BoxRenderable, OptimizedBuffer, RGBA, type BoxOptions, type RenderContext } from "@opentui/core"
-import { extend, render } from "@opentui/react"
+import { extend } from "@opentui/react"
 
 class ConsoleButton extends BoxRenderable {
   public label: string = "Button"
@@ -48,9 +48,13 @@ function App() {
 }
 ```
 
+React calls the constructor with `{ id, ...props }`. After construction, React assigns each prop to the instance again. In this example, React sets `label` after the class field sets it to `"Button"`.
+
+`renderSelf()` is a [paint hook](https://opentui.com/docs/extend/custom-renderables#use-paint-hooks). It uses screen cell coordinates, so the example places the label relative to `this.x` and `this.y`.
+
 ## TypeScript Support
 
-For full TypeScript support, declare your extended components using module augmentation:
+For full TypeScript support, declare your extended components with module augmentation:
 
 ```tsx
 // In your component file or declaration file
@@ -73,7 +77,7 @@ extend({
 
 ### `extend(components)`
 
-Extends the component catalogue with new renderable components.
+Adds renderable components to the component catalogue.
 
 **Parameters:**
 
@@ -81,22 +85,22 @@ Extends the component catalogue with new renderable components.
 
 **Returns:**
 
-- `void` when passing an object of components
+- `void`
 
 ### `getComponentCatalogue()`
 
-Returns the current extended component catalogue (used internally by reconciler).
+Returns the current component catalogue. The reconciler uses it to find the class for each JSX element.
 
 ## Best Practices
 
-1. **Declare types with module augmentation**: This provides full IntelliSense and type checking
+1. **Declare types with module augmentation**: TypeScript then completes and checks the props of each custom element.
 
-2. **Call `requestRender()`**: Don't forget to call `requestRender()` when properties change to trigger re-rendering
+2. **Call `requestRender()`**: Call `requestRender()` in each property setter that changes what the component draws.
 
-3. **Extend from appropriate base classes**: Use `BoxRenderable` for containers, `TextRenderable` for text, etc.
+3. **Extend from appropriate base classes**: Use `BoxRenderable` for containers, `TextRenderable` for text, and so on.
 
 ## Limitations
 
 - Extended components must extend from OpenTUI's core renderable classes
-- Component names should be unique to avoid conflicts
+- `extend()` replaces an existing entry with the same name, including a built-in component. Use unique names.
 - TypeScript support requires manual module augmentation declarations

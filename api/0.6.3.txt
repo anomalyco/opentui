@@ -1,0 +1,29 @@
+base 0.6.2
++ @opentui/core: method CliRenderer.setProgramStatus(status: ProgramStatus): boolean
++ @opentui/core: method NativeSession.setProgramStatus(status: ProgramStatus): boolean
++ @opentui/core: property TerminalCapabilities.program_status: boolean
+- @opentui/core: type NativeSessionControl = { kind: "capability-response"; bytes: Uint8Array; } | { kind: "palette-query"; bytes: Uint8Array; } | { kind: "title"; title: string; } | { kind: "mouse"; mode: "disabled" | "drag" | "motion"; } | { kind: "kitty-keyboard-flags"; flags: number; } | { kind: "restore-modes" | "query-pixel-resolution" | "query-theme-colors" | "reset-background"; }
++ @opentui/core: type NativeSessionControl = { kind: "capability-response"; bytes: Uint8Array; } | { kind: "palette-query"; bytes: Uint8Array; } | { kind: "title"; title: string; } | { kind: "mouse"; mode: "disabled" | "drag" | "motion"; } | { kind: "kitty-keyboard-flags"; flags: number; } | { kind: "program-status"; status: ProgramStatus; } | { kind: "restore-modes" | "query-pixel-resolution" | "query-theme-colors" | "reset-background"; }
++ @opentui/core: type ProgramStatus = (ProgramStatusRecord & { state: "idle" | "done" | "error"; }) | (ProgramStatusRecord & { state: "working"; progress?: number; }) | (ProgramStatusRecord & { state: "blocked"; kind?: ProgramStatusKind; progress?: number; }) | { state: "clear"; id?: string; }
++ @opentui/core: type ProgramStatusKind = "permission" | "question" | "auth"
++ opentui.h: const OT_CAP_PROGRAM_STATUS = 131072
++ opentui.h: const OT_CONTROL_PROGRAM_STATUS = 11
++ opentui.h: const OT_PROGRAM_KIND_AUTH = 3
++ opentui.h: const OT_PROGRAM_KIND_PERMISSION = 1
++ opentui.h: const OT_PROGRAM_KIND_QUESTION = 2
++ opentui.h: const OT_PROGRAM_STATE_BLOCKED = 4
++ opentui.h: const OT_PROGRAM_STATE_CLEAR = 6
++ opentui.h: const OT_PROGRAM_STATE_DONE = 3
++ opentui.h: const OT_PROGRAM_STATE_ERROR = 5
++ opentui.h: const OT_PROGRAM_STATE_IDLE = 1
++ opentui.h: const OT_PROGRAM_STATE_WORKING = 2
++ opentui.h: const OT_PROGRAM_STATUS_PROGRESS = 1
++ opentui.h: field ot_session_program_status.app_len: uint32_t, offset 20
++ opentui.h: field ot_session_program_status.fields: uint32_t, offset 8
++ opentui.h: field ot_session_program_status.id_len: uint32_t, offset 16
++ opentui.h: field ot_session_program_status.kind: uint32_t, offset 4
++ opentui.h: field ot_session_program_status.message_len: uint32_t, offset 28
++ opentui.h: field ot_session_program_status.progress: uint32_t, offset 12
++ opentui.h: field ot_session_program_status.state: uint32_t, offset 0
++ opentui.h: field ot_session_program_status.title_len: uint32_t, offset 24
++ opentui.h: struct ot_session_program_status

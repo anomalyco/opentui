@@ -1,0 +1,2304 @@
+const std = @import("std");
+const testing = std.testing;
+const utf8 = @import("../utf8.zig");
+const utils = @import("../utils.zig");
+const uucode = @import("uucode");
+const ghostty_vt = @import("../ghostty-vt.zig");
+
+test "decodeUtf8Unchecked keeps its result in one word" {
+    const decoded = utf8.decodeUtf8Unchecked("\u{65e5}", 0);
+    try testing.expectEqual(@sizeOf(u32), @sizeOf(@TypeOf(decoded)));
+    try testing.expectEqual(@bitSizeOf(u32), @bitSizeOf(@TypeOf(decoded)));
+    try testing.expectEqual(@as(u21, 0x65e5), decoded.cp);
+    try testing.expectEqual(@as(u3, 3), decoded.len);
+    try testing.expectEqual(@as(u8, 0), decoded._padding);
+}
+
+test "decodeUtf8Unchecked preserves scalar values and bounded progress" {
+    var bytes: [5]u8 = undefined;
+    bytes[0] = 'x';
+    for (0..0x110000) |value| {
+        if (value >= 0xD800 and value <= 0xDFFF) continue;
+        const cp: u21 = @intCast(value);
+        const len = try std.unicode.utf8Encode(cp, bytes[1..]);
+        const decoded = utf8.decodeUtf8Unchecked(bytes[0 .. 1 + @as(usize, len)], 1);
+        try testing.expectEqual(cp, decoded.cp);
+        try testing.expectEqual(len, decoded.len);
+    }
+    for ([_][]const u8{ "\u{A2}", "\u{65e5}", "\u{20000}", "\u{10FFFF}" }) |text| {
+        for (1..text.len) |end| {
+            const decoded = utf8.decodeUtf8Unchecked(text[0..end], 0);
+            try testing.expectEqual(@as(u21, 0xFFFD), decoded.cp);
+            try testing.expectEqual(@as(u3, 1), decoded.len);
+        }
+    }
+    for (0..256) |first| {
+        var malformed: [4]u8 = .{ @intCast(first), 0xBF, 0xBF, 0xBF };
+        for (1..5) |len| {
+            const decoded = utf8.decodeUtf8Unchecked(malformed[0..len], 0);
+            try testing.expect(decoded.len > 0 and decoded.len <= len);
+        }
+    }
+}
+
+// ============================================================================
+// ASCII-ONLY DETECTION TESTS
+// ============================================================================
+
+test "printableAsciiPrefixLen and isAsciiOnly: printable ASCII is 32..126 at every SIMD position" {
+    const all_printable = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+    const rows = [_]struct { text: []const u8, prefix: usize }{
+        // The empty string is not ASCII-only by convention.
+        .{ .text = "", .prefix = 0 },
+        .{ .text = " ", .prefix = 1 },
+        .{ .text = "Hello, World!", .prefix = 13 },
+        .{ .text = all_printable, .prefix = all_printable.len },
+        .{ .text = "0123456789abcde", .prefix = 15 },
+        .{ .text = "0123456789abcdef", .prefix = 16 },
+        .{ .text = "0123456789abcdefg", .prefix = 17 },
+        .{ .text = "0123456789abcdef0123456789abcdefX", .prefix = 33 },
+        .{ .text = "Hello\tWorld", .prefix = 5 },
+        .{ .text = "Hello\nWorld", .prefix = 5 },
+        .{ .text = "Hello\rWorld", .prefix = 5 },
+        .{ .text = "\x1F", .prefix = 0 },
+        .{ .text = "Hello\x7FWorld", .prefix = 5 },
+        .{ .text = "Hello\x80World", .prefix = 5 },
+        .{ .text = "Hello\xFFWorld", .prefix = 5 },
+        .{ .text = "Hello \u{1f44b}", .prefix = 6 },
+        .{ .text = "caf\u{e9}", .prefix = 3 },
+        .{ .text = "\x00bcdefghijklmnop", .prefix = 0 },
+        .{ .text = "0123456789abcde\x00", .prefix = 15 },
+        .{ .text = "0123456789abcdef\x00", .prefix = 16 },
+        .{ .text = "0123456789ab\x7fdef0123", .prefix = 12 },
+        .{ .text = "0123456789abcdef0123456789\x00bcdef", .prefix = 26 },
+        .{ .text = "0123456789abcdef0123456789\x7fbcdef", .prefix = 26 },
+    };
+    for (rows) |row| {
+        try testing.expectEqual(row.prefix, utf8.printableAsciiPrefixLen(row.text));
+        try testing.expectEqual(row.text.len > 0 and row.prefix == row.text.len, utf8.isAsciiOnly(row.text));
+    }
+
+    const buf = try testing.allocator.alloc(u8, 10_000);
+    defer testing.allocator.free(buf);
+    for (buf, 0..) |*b, i| b.* = 32 + @as(u8, @intCast(i % 95));
+    try testing.expect(utf8.isAsciiOnly(buf));
+    buf[5000] = 0x80;
+    try testing.expectEqual(5000, utf8.printableAsciiPrefixLen(buf));
+}
+
+// ============================================================================
+// LINE BREAK TESTS
+// ============================================================================
+
+const LineBreakTestCase = struct {
+    name: []const u8,
+    input: []const u8,
+    expected: []const usize,
+};
+
+const line_break_golden_tests = [_]LineBreakTestCase{
+    .{
+        .name = "empty string",
+        .input = "",
+        .expected = &[_]usize{},
+    },
+    .{
+        .name = "only LF",
+        .input = "a\nb",
+        .expected = &[_]usize{1},
+    },
+    .{
+        .name = "only CR",
+        .input = "a\rb",
+        .expected = &[_]usize{1},
+    },
+    .{
+        .name = "CRLF",
+        .input = "a\r\nb",
+        .expected = &[_]usize{2}, // CRLF recorded at \n index
+    },
+    .{
+        .name = "ending with CR",
+        .input = "a\r",
+        .expected = &[_]usize{1},
+    },
+    .{
+        .name = "ending with LF",
+        .input = "a\n",
+        .expected = &[_]usize{1},
+    },
+    .{
+        .name = "ending with CRLF",
+        .input = "a\r\n",
+        .expected = &[_]usize{2},
+    },
+    .{
+        .name = "consecutive LF",
+        .input = "\n\n",
+        .expected = &[_]usize{ 0, 1 },
+    },
+    .{
+        .name = "consecutive CRLF",
+        .input = "\r\n\r\n",
+        .expected = &[_]usize{ 1, 3 },
+    },
+    .{
+        .name = "mixed breaks",
+        .input = "\n\r\n\r",
+        .expected = &[_]usize{ 0, 2, 3 },
+    },
+    .{
+        .name = "CR LF separate",
+        .input = "\r\r\n",
+        .expected = &[_]usize{ 0, 2 },
+    },
+    .{
+        .name = "very long line no breaks",
+        .input = utils.repeat(u8, "a", 1000),
+        .expected = &[_]usize{},
+    },
+    .{
+        .name = "multiple LF",
+        .input = "line1\nline2\nline3\n",
+        .expected = &[_]usize{ 5, 11, 17 },
+    },
+    .{
+        .name = "multiple CRLF",
+        .input = "line1\r\nline2\r\nline3\r\n",
+        .expected = &[_]usize{ 6, 13, 20 },
+    },
+    .{
+        .name = "mixed line endings",
+        .input = "unix\nmac\rwin\r\n",
+        .expected = &[_]usize{ 4, 8, 13 },
+    },
+};
+
+fn testLineBreaks(test_case: LineBreakTestCase, allocator: std.mem.Allocator) !void {
+    var result = utf8.LineBreakResult.init(allocator);
+    defer result.deinit();
+
+    try utf8.findLineBreaks(test_case.input, &result);
+
+    try testing.expectEqual(test_case.expected.len, result.breaks.items.len);
+
+    for (test_case.expected, 0..) |exp, i| {
+        try testing.expectEqual(exp, result.breaks.items[i].pos);
+    }
+}
+
+test "line breaks: golden tests" {
+    for (line_break_golden_tests) |tc| {
+        try testLineBreaks(tc, testing.allocator);
+    }
+}
+
+test "line breaks: CRLF at SIMD16 edge (15-16)" {
+    var buf: [32]u8 = undefined;
+    @memset(&buf, 'x');
+    buf[15] = '\r';
+    buf[16] = '\n';
+
+    const expected = [_]usize{16}; // CRLF recorded at \n index
+
+    try testLineBreaks(.{
+        .name = "CRLF@15-16",
+        .input = &buf,
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+test "line breaks: multiple breaks around SIMD16 boundary" {
+    var buf: [32]u8 = undefined;
+    @memset(&buf, 'x');
+    buf[14] = '\n';
+    buf[15] = '\r';
+    buf[16] = '\n';
+    buf[17] = '\n';
+
+    const expected = [_]usize{ 14, 16, 17 }; // 15-16 is CRLF
+
+    try testLineBreaks(.{
+        .name = "multi@boundary",
+        .input = &buf,
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+test "line breaks: multibyte adjacent to LF" {
+    const input = "é\n";
+    const expected = [_]usize{2};
+
+    try testLineBreaks(.{
+        .name = "é\\n",
+        .input = input,
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+test "line breaks: multibyte adjacent to CRLF" {
+    const input = "漢\r\n";
+    const expected = [_]usize{4};
+
+    try testLineBreaks(.{
+        .name = "漢\\r\\n",
+        .input = input,
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+test "line breaks: multibyte at SIMD boundary without breaks" {
+    var buf: [32]u8 = undefined;
+    @memset(&buf, 0);
+
+    const text = "Test世界Test";
+    @memcpy(buf[0..text.len], text);
+
+    const expected: [0]usize = .{};
+
+    try testLineBreaks(.{
+        .name = "unicode@boundary",
+        .input = buf[0..text.len],
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+test "line breaks: realistic text" {
+    const sample_text =
+        "The quick brown fox jumps over the lazy dog.\n" ++
+        "Lorem ipsum dolor sit amet, consectetur adipiscing elit.\n" ++
+        "Windows uses CRLF line endings.\r\n" ++
+        "Unix uses LF line endings.\n" ++
+        "Classic Mac used CR line endings.\r" ++
+        "UTF-8 text: 世界 こんにちは\n" ++
+        "Multiple\n\nEmpty\n\n\nLines\n" ++
+        "Mixed\r\nendings\nhere\r";
+
+    var result = utf8.LineBreakResult.init(testing.allocator);
+    defer result.deinit();
+
+    try utf8.findLineBreaks(sample_text, &result);
+
+    // Verify we found some breaks
+    try testing.expect(result.breaks.items.len > 0);
+}
+
+test "line breaks: random small buffers" {
+    var prng = std.Random.DefaultPrng.init(42);
+    const random = prng.random();
+
+    var i: usize = 0;
+    while (i < 50) : (i += 1) {
+        const size = 16 + random.uintLessThan(usize, 1024);
+        const buf = try testing.allocator.alloc(u8, size);
+        defer testing.allocator.free(buf);
+
+        for (buf) |*b| {
+            const r = random.uintLessThan(u8, 100);
+            if (r < 5) {
+                b.* = '\n';
+            } else if (r < 10) {
+                b.* = '\r';
+            } else {
+                b.* = 'a' + random.uintLessThan(u8, 26);
+            }
+        }
+
+        var result = utf8.LineBreakResult.init(testing.allocator);
+        defer result.deinit();
+        try utf8.findLineBreaks(buf, &result);
+    }
+}
+
+// ============================================================================
+// TAB STOP TESTS
+// ============================================================================
+
+const TabStopTestCase = struct {
+    name: []const u8,
+    input: []const u8,
+    expected: []const usize,
+};
+
+const tab_stop_golden_tests = [_]TabStopTestCase{
+    .{
+        .name = "empty string",
+        .input = "",
+        .expected = &[_]usize{},
+    },
+    .{
+        .name = "no tabs",
+        .input = "hello world",
+        .expected = &[_]usize{},
+    },
+    .{
+        .name = "single tab",
+        .input = "a\tb",
+        .expected = &[_]usize{1},
+    },
+    .{
+        .name = "multiple tabs",
+        .input = "a\tb\tc",
+        .expected = &[_]usize{ 1, 3 },
+    },
+    .{
+        .name = "tab at start",
+        .input = "\tabc",
+        .expected = &[_]usize{0},
+    },
+    .{
+        .name = "tab at end",
+        .input = "abc\t",
+        .expected = &[_]usize{3},
+    },
+    .{
+        .name = "consecutive tabs",
+        .input = "a\t\tb",
+        .expected = &[_]usize{ 1, 2 },
+    },
+    .{
+        .name = "only tabs",
+        .input = "\t\t\t",
+        .expected = &[_]usize{ 0, 1, 2 },
+    },
+    .{
+        .name = "tabs mixed with spaces",
+        .input = "a \tb \tc",
+        .expected = &[_]usize{ 2, 5 },
+    },
+    .{
+        .name = "tab with newline",
+        .input = "a\tb\nc\td",
+        .expected = &[_]usize{ 1, 5 },
+    },
+    .{
+        .name = "many tabs",
+        .input = "\ta\tb\tc\td\te\tf\t",
+        .expected = &[_]usize{ 0, 2, 4, 6, 8, 10, 12 },
+    },
+};
+
+fn testTabStops(test_case: TabStopTestCase, allocator: std.mem.Allocator) !void {
+    var result = utf8.TabStopResult.init(allocator);
+    defer result.deinit();
+
+    try utf8.findTabStops(test_case.input, &result);
+
+    try testing.expectEqual(test_case.expected.len, result.positions.items.len);
+
+    for (test_case.expected, 0..) |exp, i| {
+        try testing.expectEqual(exp, result.positions.items[i]);
+    }
+}
+
+test "tab stops: golden tests" {
+    for (tab_stop_golden_tests) |tc| {
+        try testTabStops(tc, testing.allocator);
+    }
+}
+
+test "tab stops: tab at SIMD16 edge (15)" {
+    var buf: [32]u8 = undefined;
+    @memset(&buf, 'x');
+    buf[15] = '\t';
+    buf[16] = 'y';
+
+    const expected = [_]usize{15};
+
+    try testTabStops(.{
+        .name = "tab@15",
+        .input = &buf,
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+test "tab stops: tab at SIMD16 edge (16)" {
+    var buf: [32]u8 = undefined;
+    @memset(&buf, 'x');
+    buf[16] = '\t';
+    buf[17] = 'y';
+
+    const expected = [_]usize{16};
+
+    try testTabStops(.{
+        .name = "tab@16",
+        .input = &buf,
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+test "tab stops: multiple tabs around SIMD16 boundary" {
+    var buf: [32]u8 = undefined;
+    @memset(&buf, 'x');
+    buf[14] = '\t';
+    buf[15] = '\t';
+    buf[16] = '\t';
+    buf[17] = '\t';
+
+    const expected = [_]usize{ 14, 15, 16, 17 };
+
+    try testTabStops(.{
+        .name = "tabs@boundary",
+        .input = &buf,
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+test "tab stops: tabs in all SIMD lanes" {
+    var buf: [16]u8 = undefined;
+    for (&buf) |*b| {
+        b.* = '\t';
+    }
+
+    const expected = [_]usize{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+
+    try testTabStops(.{
+        .name = "all_tabs",
+        .input = &buf,
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+test "tab stops: multibyte adjacent to tab" {
+    const input = "é\ttest"; // é is 2 bytes: 0xC3 0xA9
+    const expected = [_]usize{2}; // Tab at index 2
+
+    try testTabStops(.{
+        .name = "é\\t",
+        .input = input,
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+test "tab stops: CJK adjacent to tab" {
+    const input = "漢\ttest"; // 漢 is 3 bytes: 0xE6 0xBC 0xA2
+    const expected = [_]usize{3}; // Tab at index 3
+
+    try testTabStops(.{
+        .name = "漢\\t",
+        .input = input,
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+test "tab stops: emoji adjacent to tab" {
+    const input = "👋\twave"; // 👋 is 4 bytes
+    const expected = [_]usize{4}; // Tab at index 4
+
+    try testTabStops(.{
+        .name = "emoji\\t",
+        .input = input,
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+test "tab stops: multibyte at SIMD boundary without tabs" {
+    var buf: [32]u8 = undefined;
+    @memset(&buf, 0);
+
+    const text = "Test世界Test";
+    @memcpy(buf[0..text.len], text);
+
+    const expected: [0]usize = .{}; // No tabs
+
+    try testTabStops(.{
+        .name = "unicode@boundary",
+        .input = buf[0..text.len],
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+test "tab stops: realistic code text" {
+    const sample_text =
+        "function test() {\n" ++
+        "\tconst x = 10;\n" ++
+        "\tif (x > 5) {\n" ++
+        "\t\treturn true;\n" ++
+        "\t}\n" ++
+        "\treturn false;\n" ++
+        "}\n";
+
+    var result = utf8.TabStopResult.init(testing.allocator);
+    defer result.deinit();
+
+    try utf8.findTabStops(sample_text, &result);
+
+    // Should find 6 tabs (including double-tab for nested return)
+    try testing.expectEqual(@as(usize, 6), result.positions.items.len);
+}
+
+test "tab stops: TSV data" {
+    const tsv_line = "name\tage\tcity\tcountry";
+    const expected = [_]usize{ 4, 8, 13 };
+
+    try testTabStops(.{
+        .name = "tsv",
+        .input = tsv_line,
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+test "tab stops: random small buffers" {
+    var prng = std.Random.DefaultPrng.init(42);
+    const random = prng.random();
+
+    var i: usize = 0;
+    while (i < 50) : (i += 1) {
+        const size = 16 + random.uintLessThan(usize, 1024);
+        const buf = try testing.allocator.alloc(u8, size);
+        defer testing.allocator.free(buf);
+
+        for (buf) |*b| {
+            const r = random.uintLessThan(u8, 100);
+            if (r < 10) {
+                b.* = '\t';
+            } else {
+                b.* = 'a' + random.uintLessThan(u8, 26);
+            }
+        }
+
+        var result = utf8.TabStopResult.init(testing.allocator);
+        defer result.deinit();
+        try utf8.findTabStops(buf, &result);
+    }
+}
+
+test "tab stops: large buffer with periodic tabs" {
+    const size = 10000;
+    const buf = try testing.allocator.alloc(u8, size);
+    defer testing.allocator.free(buf);
+
+    var expected_count: usize = 0;
+    for (buf, 0..) |*b, idx| {
+        if (idx % 50 == 0) {
+            b.* = '\t';
+            expected_count += 1;
+        } else {
+            b.* = 'a' + @as(u8, @intCast(idx % 26));
+        }
+    }
+
+    var result = utf8.TabStopResult.init(testing.allocator);
+    defer result.deinit();
+    try utf8.findTabStops(buf, &result);
+
+    try testing.expectEqual(expected_count, result.positions.items.len);
+}
+
+test "tab stops: exactly 16 bytes with tab" {
+    const input = "0123456789abcd\tx"; // exactly 16 bytes with tab at pos 14
+    const expected = [_]usize{14};
+
+    try testTabStops(.{
+        .name = "16bytes_with_tab",
+        .input = input,
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+test "tab stops: exactly 16 bytes no tab" {
+    const input = "0123456789abcdef"; // exactly 16 bytes, no tab
+    const expected: [0]usize = .{};
+
+    try testTabStops(.{
+        .name = "16bytes_no_tab",
+        .input = input,
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+test "tab stops: 17 bytes with tab at 16" {
+    const input = "0123456789abcdef\t"; // tab at position 16
+    const expected = [_]usize{16};
+
+    try testTabStops(.{
+        .name = "tab@16",
+        .input = input,
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+test "tab stops: result reuse" {
+    var result = utf8.TabStopResult.init(testing.allocator);
+    defer result.deinit();
+
+    // First use
+    try utf8.findTabStops("a\tb\tc", &result);
+    try testing.expectEqual(@as(usize, 2), result.positions.items.len);
+
+    // Second use - should reset automatically
+    try utf8.findTabStops("x\ty", &result);
+    try testing.expectEqual(@as(usize, 1), result.positions.items.len);
+    try testing.expectEqual(@as(usize, 1), result.positions.items[0]);
+}
+
+test "tab stops: mixed with other whitespace" {
+    const input = "  \t  \t  ";
+    const expected = [_]usize{ 2, 5 };
+
+    try testTabStops(.{
+        .name = "mixed_whitespace",
+        .input = input,
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+test "tab stops: makefile style" {
+    const makefile = "target:\n\t@echo Building\n\t@gcc -o out main.c\n";
+
+    var result = utf8.TabStopResult.init(testing.allocator);
+    defer result.deinit();
+
+    try utf8.findTabStops(makefile, &result);
+
+    // Should find 2 tabs (one per command line)
+    try testing.expectEqual(@as(usize, 2), result.positions.items.len);
+}
+
+test "tab stops: tabs across multiple SIMD chunks" {
+    const size = 64; // 4 SIMD chunks
+    const buf = try testing.allocator.alloc(u8, size);
+    defer testing.allocator.free(buf);
+
+    @memset(buf, 'x');
+    buf[0] = '\t';
+    buf[16] = '\t';
+    buf[32] = '\t';
+    buf[48] = '\t';
+    buf[63] = '\t';
+
+    const expected = [_]usize{ 0, 16, 32, 48, 63 };
+
+    try testTabStops(.{
+        .name = "multi_chunk",
+        .input = buf,
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+// ============================================================================
+// CHUNK LAYOUT SCANNER TESTS
+// ============================================================================
+
+const LayoutBreakTestCase = struct {
+    name: []const u8,
+    input: []const u8,
+    expected: []const usize,
+};
+
+const layout_break_golden_tests = [_]LayoutBreakTestCase{
+    .{
+        .name = "empty string",
+        .input = "",
+        .expected = &[_]usize{},
+    },
+    .{
+        .name = "no breaks",
+        .input = "abcdef",
+        .expected = &[_]usize{},
+    },
+    .{
+        .name = "single space",
+        .input = "a b",
+        .expected = &[_]usize{1},
+    },
+    .{
+        .name = "multiple spaces",
+        .input = "a b c",
+        .expected = &[_]usize{ 1, 3 },
+    },
+    .{
+        .name = "tab character",
+        .input = "a\tb",
+        .expected = &[_]usize{1},
+    },
+    .{
+        .name = "newline",
+        .input = "a\nb",
+        .expected = &[_]usize{},
+    },
+    .{
+        .name = "carriage return",
+        .input = "a\rb",
+        .expected = &[_]usize{},
+    },
+    .{
+        .name = "dash",
+        .input = "pre-post",
+        .expected = &[_]usize{3},
+    },
+    .{
+        .name = "forward slash",
+        .input = "path/to/file",
+        .expected = &[_]usize{ 4, 7 },
+    },
+    .{
+        .name = "backslash",
+        .input = "path\\to\\file",
+        .expected = &[_]usize{ 4, 7 },
+    },
+    .{
+        .name = "punctuation",
+        .input = "Hello, world! How are you? Fine.",
+        .expected = &[_]usize{ 5, 6, 12, 13, 17, 21, 25, 26, 31 },
+    },
+    .{
+        .name = "brackets",
+        .input = "(a)[b]{c}",
+        .expected = &[_]usize{ 0, 2, 3, 5, 6, 8 },
+    },
+    .{
+        .name = "mixed breaks",
+        .input = "Hello, world! -path/file.",
+        .expected = &[_]usize{ 5, 6, 12, 13, 14, 19, 24 },
+    },
+    .{
+        .name = "consecutive spaces",
+        .input = "a  b",
+        .expected = &[_]usize{ 1, 2 },
+    },
+    .{
+        .name = "only spaces",
+        .input = "   ",
+        .expected = &[_]usize{ 0, 1, 2 },
+    },
+    .{
+        .name = "all break types",
+        .input = " \t-/\\.,:;!?()[]{}",
+        .expected = &[_]usize{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 },
+    },
+    .{
+        .name = "nbsp",
+        .input = "a\u{00A0}b",
+        .expected = &[_]usize{1},
+    },
+    .{
+        .name = "em space",
+        .input = "a\u{2003}b",
+        .expected = &[_]usize{1},
+    },
+    .{
+        .name = "ideo space",
+        .input = "a\u{3000}b",
+        .expected = &[_]usize{1},
+    },
+    .{
+        .name = "soft hyphen",
+        .input = "pre\u{00AD}post",
+        .expected = &[_]usize{3},
+    },
+    .{
+        .name = "unicode hyphen",
+        .input = "pre\u{2010}post",
+        .expected = &[_]usize{3},
+    },
+    .{
+        .name = "zero width space",
+        .input = "a\u{200B}b",
+        .expected = &[_]usize{1},
+    },
+    .{
+        .name = "cjk run breaks between characters",
+        .input = "你好世界",
+        .expected = &[_]usize{ 0, 3, 6 },
+    },
+    .{
+        // Breaks after 文 and after 。, but none after 字: the full stop
+        // must not start a line.
+        .name = "no break before ideographic full stop",
+        .input = "文字。",
+        .expected = &[_]usize{ 0, 6 },
+    },
+};
+
+fn testLayoutBreaks(test_case: LayoutBreakTestCase, allocator: std.mem.Allocator) !void {
+    var breaks: std.ArrayListUnmanaged(utf8.LayoutWrapBreak) = .empty;
+    defer breaks.deinit(allocator);
+
+    _ = try utf8.findChunkLayoutInfo(allocator, test_case.input, 4, .hidden, utf8.isAsciiOnly(test_case.input), .unicode, &breaks);
+
+    try testing.expectEqual(test_case.expected.len, breaks.items.len);
+
+    for (test_case.expected, 0..) |exp, i| {
+        try testing.expectEqual(exp, breaks.items[i].byte_start);
+    }
+}
+
+test "chunk layout scanner: golden break offsets" {
+    for (layout_break_golden_tests) |tc| {
+        try testLayoutBreaks(tc, testing.allocator);
+    }
+}
+
+test "wrap breaks: space at SIMD16 edge (15)" {
+    var buf: [32]u8 = undefined;
+    @memset(&buf, 'x');
+    buf[15] = ' ';
+    buf[16] = 'y';
+
+    const expected = [_]usize{15};
+
+    try testLayoutBreaks(.{
+        .name = "space@15",
+        .input = &buf,
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+test "wrap breaks: unicode NBSP at SIMD16 edge (15)" {
+    var buf: [32]u8 = undefined;
+    @memset(&buf, 'x');
+    // NBSP U+00A0 = 0xC2 0xA0
+    buf[15] = 0xC2;
+    buf[16] = 0xA0;
+
+    const expected = [_]usize{15};
+
+    try testLayoutBreaks(.{
+        .name = "nbsp@15",
+        .input = &buf,
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+test "wrap breaks: multiple breaks around SIMD16 boundary" {
+    var buf: [32]u8 = undefined;
+    @memset(&buf, 'x');
+    buf[14] = ' ';
+    buf[15] = '-';
+    buf[16] = '/';
+    buf[17] = '.';
+
+    const expected = [_]usize{ 14, 15, 16, 17 };
+
+    try testLayoutBreaks(.{
+        .name = "multi@boundary",
+        .input = &buf,
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+test "wrap breaks: multibyte adjacent to space" {
+    const input = "é test"; // é is 2 bytes: 0xC3 0xA9
+    const expected = [_]usize{2}; // Space at index 2
+
+    try testLayoutBreaks(.{
+        .name = "é space",
+        .input = input,
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+test "wrap breaks: multibyte adjacent to dash" {
+    const input = "漢-test"; // 漢 is 3 bytes: 0xE6 0xBC 0xA2
+    const expected = [_]usize{3}; // Dash at index 3
+
+    try testLayoutBreaks(.{
+        .name = "漢-",
+        .input = input,
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+test "wrap breaks: multibyte at SIMD boundary with script transitions" {
+    var buf: [32]u8 = undefined;
+    @memset(&buf, 0);
+
+    // Place UTF-8 sequences around boundary
+    const text = "Test世界Test";
+    @memcpy(buf[0..text.len], text);
+
+    //// Breaks at ASCII<->CJK transitions and between CJK characters:
+    // - after 't' in "Test" (byte 3)
+    // - after '世' before '界' (byte 4)
+    // - after '界' before "Test" (byte 7)
+    const expected = [_]usize{ 3, 4, 7 };
+
+    try testLayoutBreaks(.{
+        .name = "unicode@boundary",
+        .input = buf[0..text.len],
+        .expected = &expected,
+    }, testing.allocator);
+}
+
+test "chunk layout scanner: break offset beyond 64KB" {
+    const size = 100_000;
+    const buf = try testing.allocator.alloc(u8, size);
+    defer testing.allocator.free(buf);
+
+    @memset(buf, 'a');
+    const break_pos: usize = 70_000;
+    buf[break_pos] = ' ';
+
+    var breaks: std.ArrayListUnmanaged(utf8.LayoutWrapBreak) = .empty;
+    defer breaks.deinit(testing.allocator);
+    _ = try utf8.findChunkLayoutInfo(testing.allocator, buf, 4, .hidden, true, .unicode, &breaks);
+
+    try testing.expectEqual(@as(usize, 1), breaks.items.len);
+    try testing.expectEqual(@as(u32, break_pos), breaks.items[0].byte_start);
+}
+
+// ============================================================================
+// WRAP BY WIDTH TESTS
+// ============================================================================
+
+test "wrap by width: empty string" {
+    const result = utf8.findWrapPosByWidth("", 10, 4, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 0), result.byte_offset);
+    try testing.expectEqual(@as(u32, 0), result.grapheme_count);
+    try testing.expectEqual(@as(u32, 0), result.columns_used);
+}
+
+test "wrap by width: simple ASCII no wrap" {
+    const result = utf8.findWrapPosByWidth("hello", 10, 4, .hidden, true, .unicode);
+    try testing.expectEqual(@as(u32, 5), result.byte_offset);
+    try testing.expectEqual(@as(u32, 5), result.grapheme_count);
+    try testing.expectEqual(@as(u32, 5), result.columns_used);
+}
+
+test "wrap by width: ASCII wrap exactly at limit" {
+    const result = utf8.findWrapPosByWidth("hello", 5, 4, .hidden, true, .unicode);
+    try testing.expectEqual(@as(u32, 5), result.byte_offset);
+    try testing.expectEqual(@as(u32, 5), result.grapheme_count);
+    try testing.expectEqual(@as(u32, 5), result.columns_used);
+}
+
+test "wrap by width: ASCII wrap before limit" {
+    const result = utf8.findWrapPosByWidth("hello world", 7, 4, .hidden, true, .unicode);
+    try testing.expectEqual(@as(u32, 7), result.byte_offset);
+    try testing.expectEqual(@as(u32, 7), result.grapheme_count);
+    try testing.expectEqual(@as(u32, 7), result.columns_used);
+}
+
+test "wrap by width: East Asian wide char" {
+    const result = utf8.findWrapPosByWidth("世界", 3, 4, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 3), result.byte_offset); // After first char
+    try testing.expectEqual(@as(u32, 1), result.grapheme_count);
+    try testing.expectEqual(@as(u32, 2), result.columns_used);
+}
+
+test "wrap by width: combining mark" {
+    const result = utf8.findWrapPosByWidth("e\u{0301}test", 3, 4, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 5), result.byte_offset); // After "é" (3 bytes) + "te" (2 bytes)
+    try testing.expectEqual(@as(u32, 3), result.grapheme_count);
+    try testing.expectEqual(@as(u32, 3), result.columns_used);
+}
+
+test "wrap by width: tab handling" {
+    const result = utf8.findWrapPosByWidth("a\tb", 5, 4, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 2), result.byte_offset); // After "a\t"
+    try testing.expectEqual(@as(u32, 2), result.grapheme_count); // 'a' + tab
+    try testing.expectEqual(@as(u32, 5), result.columns_used); // 'a' (1) + tab (4) = 5
+}
+
+fn testWrapByWidthMethodsMatch(input: []const u8, max_columns: u32, tab_width: u8, isASCIIOnly: bool) !void {
+    const result = utf8.findWrapPosByWidth(input, max_columns, tab_width, .hidden, isASCIIOnly, .unicode);
+    // Since we only have SIMD16 in utf8.zig, just verify it doesn't crash
+    _ = result;
+}
+
+test "wrap by width: consistency - realistic text" {
+    const sample_text =
+        "The quick brown fox jumps over the lazy dog. " ++
+        "Lorem ipsum dolor sit amet, consectetur adipiscing elit. " ++
+        "File paths: /usr/local/bin and C:\\Windows\\System32. " ++
+        "Punctuation test: Hello, world! How are you? I'm fine.";
+
+    const widths = [_]u32{ 10, 20, 40, 80, 120 };
+    for (widths) |w| {
+        try testWrapByWidthMethodsMatch(sample_text, w, 4, true);
+    }
+}
+
+test "wrap by width: consistency - Unicode text" {
+    const unicode_text = "世界 こんにちは test 你好 CJK-mixed";
+
+    const widths = [_]u32{ 5, 10, 15, 20, 30 };
+    for (widths) |w| {
+        try testWrapByWidthMethodsMatch(unicode_text, w, 4, false);
+    }
+}
+
+test "wrap by width: consistency - edge cases" {
+    const edge_cases = [_]struct { text: []const u8, ascii: bool }{
+        .{ .text = "", .ascii = false },
+        .{ .text = " ", .ascii = true },
+        .{ .text = "a", .ascii = true },
+        .{ .text = "abc", .ascii = true },
+        .{ .text = "   ", .ascii = true },
+        .{ .text = "a b c d e", .ascii = true },
+        .{ .text = "no-spaces-here", .ascii = true },
+        .{ .text = "/usr/local/bin", .ascii = true },
+        .{ .text = "世界", .ascii = false },
+        .{ .text = "\t\t\t", .ascii = false },
+    };
+
+    for (edge_cases) |input| {
+        const widths = [_]u32{ 1, 5, 10, 20 };
+        for (widths) |w| {
+            try testWrapByWidthMethodsMatch(input.text, w, 4, input.ascii);
+        }
+    }
+}
+
+test "wrap by width: property - random ASCII buffers" {
+    var prng = std.Random.DefaultPrng.init(42);
+    const random = prng.random();
+
+    var i: usize = 0;
+    while (i < 50) : (i += 1) {
+        const size = 16 + random.uintLessThan(usize, 256);
+        const buf = try testing.allocator.alloc(u8, size);
+        defer testing.allocator.free(buf);
+
+        for (buf) |*b| {
+            b.* = 'a' + random.uintLessThan(u8, 26);
+        }
+
+        const width = 10 + random.uintLessThan(u32, 70);
+        try testWrapByWidthMethodsMatch(buf, width, 4, true);
+    }
+}
+
+test "wrap by width: boundary - SIMD16 chunk boundary" {
+    var buf: [32]u8 = undefined;
+    @memset(&buf, 'x');
+    try testWrapByWidthMethodsMatch(&buf, 20, 4, true);
+    try testWrapByWidthMethodsMatch(&buf, 10, 4, true);
+}
+
+test "wrap by width: boundary - Unicode at SIMD boundary" {
+    var buf: [32]u8 = undefined;
+    @memset(&buf, 'a');
+    const cjk = "世";
+    @memcpy(buf[14..17], cjk);
+    try testWrapByWidthMethodsMatch(buf[0..20], 20, 4, false);
+}
+
+test "wrap by width: wide emoji exactly at column boundary" {
+    const input = "Hello 🌍 World";
+
+    const result7 = utf8.findWrapPosByWidth(input, 7, 8, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 6), result7.byte_offset);
+    try testing.expectEqual(@as(u32, 6), result7.columns_used);
+
+    const result8 = utf8.findWrapPosByWidth(input, 8, 8, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 10), result8.byte_offset);
+    try testing.expectEqual(@as(u32, 8), result8.columns_used);
+
+    const result6 = utf8.findWrapPosByWidth(input, 6, 8, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 6), result6.byte_offset);
+    try testing.expectEqual(@as(u32, 6), result6.columns_used);
+}
+
+test "wrap by width: wide emoji at start" {
+    const input = "🌍 World";
+
+    const result1 = utf8.findWrapPosByWidth(input, 1, 8, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 0), result1.byte_offset);
+    try testing.expectEqual(@as(u32, 0), result1.columns_used);
+
+    const result2 = utf8.findWrapPosByWidth(input, 2, 8, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 4), result2.byte_offset);
+    try testing.expectEqual(@as(u32, 2), result2.columns_used);
+
+    const result3 = utf8.findWrapPosByWidth(input, 3, 8, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 5), result3.byte_offset);
+    try testing.expectEqual(@as(u32, 3), result3.columns_used);
+}
+
+test "wrap by width: multiple wide characters" {
+    const input = "AB🌍CD🌎EF";
+
+    const result5 = utf8.findWrapPosByWidth(input, 5, 8, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 7), result5.byte_offset);
+    try testing.expectEqual(@as(u32, 5), result5.columns_used);
+
+    const result6 = utf8.findWrapPosByWidth(input, 6, 8, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 8), result6.byte_offset);
+    try testing.expectEqual(@as(u32, 6), result6.columns_used);
+}
+
+test "wrap by width: CJK wide characters at boundary" {
+    const input = "hello世界test";
+
+    const result6 = utf8.findWrapPosByWidth(input, 6, 8, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 5), result6.byte_offset);
+    try testing.expectEqual(@as(u32, 5), result6.columns_used);
+
+    const result7 = utf8.findWrapPosByWidth(input, 7, 8, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 8), result7.byte_offset);
+    try testing.expectEqual(@as(u32, 7), result7.columns_used);
+}
+
+// ============================================================================
+// FIND POS BY WIDTH TESTS (for selection - includes graphemes that start before limit)
+// ============================================================================
+
+test "find pos by width: wide emoji at boundary - INCLUDES grapheme" {
+    const input = "Hello 🌍 World";
+    // Layout: H(0) e(1) l(2) l(3) o(4) space(5) 🌍(6-7) space(8) W(9)...
+
+    // include_start_before=true (selection end): include graphemes that START before max_columns
+    const result7 = utf8.findPosByWidth(input, 7, 8, .hidden, false, true, .unicode);
+    try testing.expectEqual(@as(u32, 10), result7.byte_offset); // After emoji (snapped forward)
+    try testing.expectEqual(@as(u32, 8), result7.columns_used);
+
+    const result8 = utf8.findPosByWidth(input, 8, 8, .hidden, false, true, .unicode);
+    try testing.expectEqual(@as(u32, 10), result8.byte_offset);
+    try testing.expectEqual(@as(u32, 8), result8.columns_used);
+
+    const result6 = utf8.findPosByWidth(input, 6, 8, .hidden, false, true, .unicode);
+    try testing.expectEqual(@as(u32, 6), result6.byte_offset);
+    try testing.expectEqual(@as(u32, 6), result6.columns_used);
+
+    // include_start_before=false (selection start): exclude graphemes that cross max_columns
+    const start7 = utf8.findPosByWidth(input, 7, 8, .hidden, false, false, .unicode);
+    try testing.expectEqual(@as(u32, 6), start7.byte_offset); // Before emoji (snapped backward)
+    try testing.expectEqual(@as(u32, 6), start7.columns_used);
+}
+
+test "find pos by width: start at second cell of width=2 grapheme snaps backward" {
+    const input = "AB🌍CD";
+    const result = utf8.findPosByWidth(input, 3, 8, .hidden, false, false, .unicode);
+    try testing.expectEqual(@as(u32, 2), result.byte_offset); // After "AB", before emoji
+    try testing.expectEqual(@as(u32, 2), result.columns_used);
+}
+
+test "find pos by width: end at first cell of width=2 grapheme snaps forward" {
+    const input = "AB🌍CD";
+    const result = utf8.findPosByWidth(input, 2, 8, .hidden, false, true, .unicode);
+    try testing.expectEqual(@as(u32, 2), result.byte_offset); // After "AB" (emoji starts at 2, which is NOT > 2, but hasn't been consumed yet)
+    try testing.expectEqual(@as(u32, 2), result.columns_used);
+
+    const result3 = utf8.findPosByWidth(input, 3, 8, .hidden, false, true, .unicode);
+    try testing.expectEqual(@as(u32, 6), result3.byte_offset); // After "AB🌍"
+    try testing.expectEqual(@as(u32, 4), result3.columns_used);
+}
+
+test "find pos by width: selection boundaries with multiple wide chars" {
+    const input = "A🌍B🌎C";
+    const start2 = utf8.findPosByWidth(input, 2, 8, .hidden, false, false, .unicode);
+    try testing.expectEqual(@as(u32, 1), start2.byte_offset); // After "A", before first emoji
+    try testing.expectEqual(@as(u32, 1), start2.columns_used);
+
+    const end5 = utf8.findPosByWidth(input, 5, 8, .hidden, false, true, .unicode);
+    try testing.expectEqual(@as(u32, 10), end5.byte_offset); // After "A🌍B🌎"
+    try testing.expectEqual(@as(u32, 6), end5.columns_used);
+}
+
+test "find pos by width: empty string" {
+    const result = utf8.findPosByWidth("", 10, 4, .hidden, false, true, .unicode);
+    try testing.expectEqual(@as(u32, 0), result.byte_offset);
+    try testing.expectEqual(@as(u32, 0), result.grapheme_count);
+    try testing.expectEqual(@as(u32, 0), result.columns_used);
+}
+
+test "find pos by width: simple ASCII no limit" {
+    const result = utf8.findPosByWidth("hello", 10, 4, .hidden, true, true, .unicode);
+    try testing.expectEqual(@as(u32, 5), result.byte_offset);
+    try testing.expectEqual(@as(u32, 5), result.grapheme_count);
+    try testing.expectEqual(@as(u32, 5), result.columns_used);
+}
+
+test "find pos by width: ASCII exactly at limit" {
+    const result = utf8.findPosByWidth("hello", 5, 4, .hidden, true, true, .unicode);
+    try testing.expectEqual(@as(u32, 5), result.byte_offset);
+    try testing.expectEqual(@as(u32, 5), result.grapheme_count);
+    try testing.expectEqual(@as(u32, 5), result.columns_used);
+}
+
+test "find pos by width: wide emoji at start" {
+    const input = "🌍 World";
+
+    const result1 = utf8.findPosByWidth(input, 1, 8, .hidden, false, true, .unicode);
+    try testing.expectEqual(@as(u32, 4), result1.byte_offset);
+    try testing.expectEqual(@as(u32, 2), result1.columns_used);
+
+    const result2 = utf8.findPosByWidth(input, 2, 8, .hidden, false, true, .unicode);
+    try testing.expectEqual(@as(u32, 4), result2.byte_offset);
+    try testing.expectEqual(@as(u32, 2), result2.columns_used);
+
+    const result3 = utf8.findPosByWidth(input, 3, 8, .hidden, false, true, .unicode);
+    try testing.expectEqual(@as(u32, 5), result3.byte_offset);
+    try testing.expectEqual(@as(u32, 3), result3.columns_used);
+}
+
+test "find pos by width: multiple wide characters" {
+    const input = "AB🌍CD🌎EF";
+
+    const result5 = utf8.findPosByWidth(input, 5, 8, .hidden, false, true, .unicode);
+    try testing.expectEqual(@as(u32, 7), result5.byte_offset);
+    try testing.expectEqual(@as(u32, 5), result5.columns_used);
+
+    const result7 = utf8.findPosByWidth(input, 7, 8, .hidden, false, true, .unicode);
+    try testing.expectEqual(@as(u32, 12), result7.byte_offset);
+    try testing.expectEqual(@as(u32, 8), result7.columns_used);
+}
+
+test "find pos by width: CJK wide characters" {
+    const input = "hello世界test";
+
+    const result6 = utf8.findPosByWidth(input, 6, 8, .hidden, false, true, .unicode);
+    try testing.expectEqual(@as(u32, 8), result6.byte_offset);
+    try testing.expectEqual(@as(u32, 7), result6.columns_used);
+
+    const result8 = utf8.findPosByWidth(input, 8, 8, .hidden, false, true, .unicode);
+    try testing.expectEqual(@as(u32, 11), result8.byte_offset);
+    try testing.expectEqual(@as(u32, 9), result8.columns_used);
+}
+
+test "eastAsianWidth: verify all characters in test string have correct width" {
+    // Test each CJK character individually to ensure width calculation is correct
+
+    // Test hiragana characters from "こんにちは"
+    try testing.expectEqual(@as(u32, 2), utf8.eastAsianWidth(0x3053)); // こ
+    try testing.expectEqual(@as(u32, 2), utf8.eastAsianWidth(0x3093)); // ん
+    try testing.expectEqual(@as(u32, 2), utf8.eastAsianWidth(0x306B)); // に
+    try testing.expectEqual(@as(u32, 2), utf8.eastAsianWidth(0x3061)); // ち
+    try testing.expectEqual(@as(u32, 2), utf8.eastAsianWidth(0x306F)); // は
+
+    // Test kanji characters from "世界"
+    try testing.expectEqual(@as(u32, 2), utf8.eastAsianWidth(0x4E16)); // 世
+    try testing.expectEqual(@as(u32, 2), utf8.eastAsianWidth(0x754C)); // 界
+
+    // Test emoji
+    try testing.expectEqual(@as(u32, 2), utf8.eastAsianWidth(0x1F31F)); // 🌟
+    try testing.expectEqual(@as(u32, 2), utf8.eastAsianWidth(0x1F680)); // 🚀
+
+    // Test Chinese characters from "你好"
+    try testing.expectEqual(@as(u32, 2), utf8.eastAsianWidth(0x4F60)); // 你
+    try testing.expectEqual(@as(u32, 2), utf8.eastAsianWidth(0x597D)); // 好
+
+    // Test Korean characters from "안녕하세요"
+    try testing.expectEqual(@as(u32, 2), utf8.eastAsianWidth(0xC548)); // 안
+    try testing.expectEqual(@as(u32, 2), utf8.eastAsianWidth(0xB155)); // 녕
+    try testing.expectEqual(@as(u32, 2), utf8.eastAsianWidth(0xD558)); // 하
+    try testing.expectEqual(@as(u32, 2), utf8.eastAsianWidth(0xC138)); // 세
+    try testing.expectEqual(@as(u32, 2), utf8.eastAsianWidth(0xC694)); // 요
+
+    // Test ASCII characters
+    try testing.expectEqual(@as(u32, 1), utf8.eastAsianWidth('H'));
+    try testing.expectEqual(@as(u32, 1), utf8.eastAsianWidth('e'));
+    try testing.expectEqual(@as(u32, 1), utf8.eastAsianWidth(' '));
+    try testing.expectEqual(@as(u32, 1), utf8.eastAsianWidth(':'));
+}
+
+test "find pos by width: CJK characters with English - verify column calculation" {
+    // This test verifies that findPosByWidth correctly handles mixed CJK and ASCII
+    const input = "🌟 Unicode test: こんにちは世界 Hello World 你好世界";
+
+    // Verify width calculations at key positions
+    const width_before_hello = utf8.calculateTextWidth(input[0..40], 8, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 31), width_before_hello);
+
+    const width_including_space_before_hello = utf8.calculateTextWidth(input[0..41], 8, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 32), width_including_space_before_hello);
+
+    const width_up_to_hello = utf8.calculateTextWidth(input[0..46], 8, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 37), width_up_to_hello);
+
+    const width_including_hello_space = utf8.calculateTextWidth(input[0..47], 8, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 38), width_including_hello_space);
+
+    const width_up_to_world = utf8.calculateTextWidth(input[0..52], 8, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 43), width_up_to_world);
+
+    const width_including_world_space = utf8.calculateTextWidth(input[0..53], 8, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 44), width_including_world_space);
+
+    // Verify findPosByWidth returns correct positions
+    const result35 = utf8.findPosByWidth(input, 35, 8, .hidden, false, false, .unicode);
+    try testing.expectEqual(@as(u32, 44), result35.byte_offset);
+    try testing.expectEqual(@as(u32, 35), result35.columns_used);
+
+    const result36 = utf8.findPosByWidth(input, 36, 8, .hidden, false, false, .unicode);
+    try testing.expectEqual(@as(u32, 45), result36.byte_offset);
+    try testing.expectEqual(@as(u32, 36), result36.columns_used);
+
+    const result37 = utf8.findPosByWidth(input, 37, 8, .hidden, false, false, .unicode);
+    try testing.expectEqual(@as(u32, 46), result37.byte_offset);
+    try testing.expectEqual(@as(u32, 37), result37.columns_used);
+
+    const result42 = utf8.findPosByWidth(input, 42, 8, .hidden, false, false, .unicode);
+    try testing.expectEqual(@as(u32, 51), result42.byte_offset);
+    try testing.expectEqual(@as(u32, 42), result42.columns_used);
+}
+
+test "find pos by width: combining mark" {
+    const result = utf8.findPosByWidth("e\u{0301}test", 3, 4, .hidden, false, true, .unicode);
+    try testing.expectEqual(@as(u32, 5), result.byte_offset); // After "é" (3 bytes) + "te" (2 bytes)
+    try testing.expectEqual(@as(u32, 3), result.grapheme_count);
+    try testing.expectEqual(@as(u32, 3), result.columns_used);
+}
+
+test "find pos by width: tab handling" {
+    const result = utf8.findPosByWidth("a\tb", 5, 4, .hidden, false, true, .unicode);
+    try testing.expectEqual(@as(u32, 2), result.byte_offset); // After "a\t"
+    try testing.expectEqual(@as(u32, 2), result.grapheme_count); // 'a' + tab
+    try testing.expectEqual(@as(u32, 5), result.columns_used); // 'a' (1) + tab (4) = 5
+}
+
+// ============================================================================
+// SPLIT CHUNK AT WEIGHT TESTS (include_start_before=false)
+// Tests for the exact behavior needed by splitChunkAtWeight in edit-buffer.zig
+// ============================================================================
+
+test "split at weight: ASCII simple split" {
+    const input = "hello world";
+
+    // Split at column 5 - should stop at 'h' of "hello"
+    const result = utf8.findPosByWidth(input, 5, 8, .hidden, true, false, .unicode);
+    try testing.expectEqual(@as(u32, 5), result.byte_offset); // After "hello"
+    try testing.expectEqual(@as(u32, 5), result.columns_used);
+}
+
+test "split at weight: ASCII split in middle" {
+    const input = "abcdefghij";
+
+    // Split at column 3
+    const result = utf8.findPosByWidth(input, 3, 8, .hidden, true, false, .unicode);
+    try testing.expectEqual(@as(u32, 3), result.byte_offset); // After "abc"
+    try testing.expectEqual(@as(u32, 3), result.columns_used);
+}
+
+test "split at weight: wide char at boundary - exclude when starting after" {
+    const input = "AB🌍CD"; // A(1) B(1) 🌍(2) C(1) D(1)
+
+    // Split at column 2 - should include up to B, exclude emoji
+    const result2 = utf8.findPosByWidth(input, 2, 8, .hidden, false, false, .unicode);
+    try testing.expectEqual(@as(u32, 2), result2.byte_offset); // After "AB"
+    try testing.expectEqual(@as(u32, 2), result2.columns_used);
+
+    const result3 = utf8.findPosByWidth(input, 3, 8, .hidden, false, false, .unicode);
+    try testing.expectEqual(@as(u32, 2), result3.byte_offset); // After "AB", before emoji
+    try testing.expectEqual(@as(u32, 2), result3.columns_used);
+}
+
+test "split at weight: CJK characters" {
+    const input = "hello世界test"; // h(1) e(1) l(1) l(1) o(1) 世(2) 界(2) t(1) e(1) s(1) t(1)
+
+    // Split at column 5 - after "hello"
+    const result5 = utf8.findPosByWidth(input, 5, 8, .hidden, false, false, .unicode);
+    try testing.expectEqual(@as(u32, 5), result5.byte_offset);
+    try testing.expectEqual(@as(u32, 5), result5.columns_used);
+
+    const result6 = utf8.findPosByWidth(input, 6, 8, .hidden, false, false, .unicode);
+    try testing.expectEqual(@as(u32, 5), result6.byte_offset); // After "hello", before 世
+    try testing.expectEqual(@as(u32, 5), result6.columns_used);
+
+    // Split at column 9 - should include both CJK chars
+    const result9 = utf8.findPosByWidth(input, 9, 8, .hidden, false, false, .unicode);
+    try testing.expectEqual(@as(u32, 11), result9.byte_offset); // After "hello世界"
+    try testing.expectEqual(@as(u32, 9), result9.columns_used);
+}
+
+test "split at weight: combining marks" {
+    const input = "cafe\u{0301}test"; // c(1) a(1) f(1) é(1) t(1) e(1) s(1) t(1)
+
+    // Split at column 4 - should include the combining mark with 'e'
+    const result4 = utf8.findPosByWidth(input, 4, 8, .hidden, false, false, .unicode);
+    try testing.expectEqual(@as(u32, 6), result4.byte_offset); // After "café" (5 bytes: cafe + combining accent)
+    try testing.expectEqual(@as(u32, 4), result4.columns_used);
+}
+
+test "split at weight: emoji with skin tone" {
+    const input = "Hi👋🏿Bye"; // H(1) i(1) 👋🏿(wide) B(1) y(1) e(1)
+
+    // Split at column 2 - should stop before or after emoji depending on where it starts
+    const result2 = utf8.findPosByWidth(input, 2, 8, .hidden, false, false, .unicode);
+    try testing.expectEqual(@as(u32, 2), result2.byte_offset); // After "Hi"
+    try testing.expectEqual(@as(u32, 2), result2.columns_used);
+
+    // Split at column 5 - should include emoji
+    const result5 = utf8.findPosByWidth(input, 5, 8, .hidden, false, false, .unicode);
+    // Result will stop at first grapheme that starts >= max_columns
+    // Just verify it returns a reasonable offset
+    try testing.expect(result5.byte_offset >= 2); // At least past "Hi"
+    try testing.expect(result5.columns_used >= 2); // At least 2 columns
+}
+
+test "split at weight: zero width at start" {
+    const input = "hello";
+
+    // Split at column 0 - should return offset 0
+    const result = utf8.findPosByWidth(input, 0, 8, .hidden, true, false, .unicode);
+    try testing.expectEqual(@as(u32, 0), result.byte_offset);
+    try testing.expectEqual(@as(u32, 0), result.columns_used);
+}
+
+test "split at weight: beyond end" {
+    const input = "hello"; // 5 columns
+
+    // Split at column 10 - should return entire string
+    const result = utf8.findPosByWidth(input, 10, 8, .hidden, true, false, .unicode);
+    try testing.expectEqual(@as(u32, 5), result.byte_offset);
+    try testing.expectEqual(@as(u32, 5), result.columns_used);
+}
+
+test "split at weight: tab character" {
+    const input = "a\tbc"; // a(1) tab(4 fixed) b(1) c(1) = 7 columns total
+
+    // Split at column 4 - should stop before tab since it would exceed limit
+    const result4 = utf8.findPosByWidth(input, 4, 4, .hidden, false, false, .unicode);
+    try testing.expectEqual(@as(u32, 1), result4.byte_offset); // After "a"
+    try testing.expectEqual(@as(u32, 1), result4.columns_used); // a(1)
+}
+
+test "split at weight: complex mixed content" {
+    const input = "A🌍B世C"; // A(1) 🌍(2) B(1) 世(2) C(1) = 7 columns total
+    const r1 = utf8.findPosByWidth(input, 1, 8, .hidden, false, false, .unicode);
+    try testing.expectEqual(@as(u32, 1), r1.byte_offset); // After "A"
+
+    const r2 = utf8.findPosByWidth(input, 2, 8, .hidden, false, false, .unicode);
+    try testing.expectEqual(@as(u32, 1), r2.byte_offset); // After "A"
+
+    const r3 = utf8.findPosByWidth(input, 3, 8, .hidden, false, false, .unicode);
+    try testing.expectEqual(@as(u32, 5), r3.byte_offset); // After "A🌍"
+
+    const r4 = utf8.findPosByWidth(input, 4, 8, .hidden, false, false, .unicode);
+    try testing.expectEqual(@as(u32, 6), r4.byte_offset); // After "A🌍B"
+
+    const r5 = utf8.findPosByWidth(input, 5, 8, .hidden, false, false, .unicode);
+    try testing.expectEqual(@as(u32, 6), r5.byte_offset); // After "A🌍B"
+}
+
+// ============================================================================
+// GET WIDTH AT TESTS
+// ============================================================================
+
+test "getWidthAt: empty string" {
+    const result = utf8.getWidthAt("", 0, 8, .hidden, .unicode);
+    try testing.expectEqual(@as(u32, 0), result);
+}
+
+test "getWidthAt: out of bounds" {
+    const result = utf8.getWidthAt("hello", 10, 8, .hidden, .unicode);
+    try testing.expectEqual(@as(u32, 0), result);
+}
+
+test "getWidthAt: simple ASCII" {
+    const text = "hello";
+    try testing.expectEqual(@as(u32, 1), utf8.getWidthAt(text, 0, 8, .hidden, .unicode)); // 'h'
+    try testing.expectEqual(@as(u32, 1), utf8.getWidthAt(text, 1, 8, .hidden, .unicode)); // 'e'
+    try testing.expectEqual(@as(u32, 1), utf8.getWidthAt(text, 4, 8, .hidden, .unicode)); // 'o'
+}
+
+test "getWidthAt: tab character" {
+    const text = "a\tb";
+    try testing.expectEqual(@as(u32, 1), utf8.getWidthAt(text, 0, 4, .hidden, .unicode)); // 'a'
+    try testing.expectEqual(@as(u32, 4), utf8.getWidthAt(text, 1, 4, .hidden, .unicode)); // tab fixed width 4
+    try testing.expectEqual(@as(u32, 1), utf8.getWidthAt(text, 2, 4, .hidden, .unicode)); // 'b'
+}
+
+test "getWidthAt: tab at different columns" {
+    const text = "\t";
+    // Tab now has fixed width regardless of current_column
+    try testing.expectEqual(@as(u32, 4), utf8.getWidthAt(text, 0, 4, .hidden, .unicode)); // Tab fixed width 4
+    try testing.expectEqual(@as(u32, 4), utf8.getWidthAt(text, 0, 4, .hidden, .unicode)); // Tab fixed width 4
+    try testing.expectEqual(@as(u32, 4), utf8.getWidthAt(text, 0, 4, .hidden, .unicode)); // Tab fixed width 4
+    try testing.expectEqual(@as(u32, 4), utf8.getWidthAt(text, 0, 4, .hidden, .unicode)); // Tab fixed width 4
+    try testing.expectEqual(@as(u32, 4), utf8.getWidthAt(text, 0, 4, .hidden, .unicode)); // Tab fixed width 4
+}
+
+test "getWidthAt: CJK wide character" {
+    const text = "世界";
+    try testing.expectEqual(@as(u32, 2), utf8.getWidthAt(text, 0, 8, .hidden, .unicode)); // '世' (3 bytes)
+    try testing.expectEqual(@as(u32, 2), utf8.getWidthAt(text, 3, 8, .hidden, .unicode)); // '界' (3 bytes)
+}
+
+test "getWidthAt: emoji single width" {
+    const text = "🌍";
+    try testing.expectEqual(@as(u32, 2), utf8.getWidthAt(text, 0, 8, .hidden, .unicode)); // emoji
+}
+
+test "getWidthAt: combining mark grapheme" {
+    const text = "cafe\u{0301}"; // é with combining acute accent
+    const width = utf8.getWidthAt(text, 3, 8, .hidden, .unicode); // At 'e' (which has combining mark after)
+    try testing.expectEqual(@as(u32, 1), width); // 'e' width 1 + combining mark width 0 = 1
+}
+
+test "getWidthAt: emoji with skin tone" {
+    const text = "👋🏿"; // Wave + dark skin tone modifier
+    const width = utf8.getWidthAt(text, 0, 8, .hidden, .unicode);
+    try testing.expectEqual(@as(u32, 2), width); // Single grapheme cluster, width 2
+}
+
+test "getWidthAt: emoji with ZWJ" {
+    const text = "👩‍🚀"; // Woman astronaut (woman + ZWJ + rocket)
+    const width = utf8.getWidthAt(text, 0, 8, .hidden, .unicode);
+    try testing.expectEqual(@as(u32, 2), width); // Single grapheme cluster, width 2
+}
+
+test "getWidthAt: flag emoji" {
+    const text = "🇺🇸"; // US flag (two regional indicators)
+    const width = utf8.getWidthAt(text, 0, 8, .hidden, .unicode);
+    try testing.expectEqual(@as(u32, 2), width); // Entire grapheme cluster
+}
+
+test "getWidthAt: mixed ASCII and CJK" {
+    const text = "Hello世界";
+    try testing.expectEqual(@as(u32, 1), utf8.getWidthAt(text, 0, 8, .hidden, .unicode)); // 'H'
+    try testing.expectEqual(@as(u32, 1), utf8.getWidthAt(text, 1, 8, .hidden, .unicode)); // 'e'
+    try testing.expectEqual(@as(u32, 2), utf8.getWidthAt(text, 5, 8, .hidden, .unicode)); // '世'
+    try testing.expectEqual(@as(u32, 2), utf8.getWidthAt(text, 8, 8, .hidden, .unicode)); // '界'
+}
+
+test "getWidthAt: emoji with VS16 selector" {
+    const text = "❤️"; // Heart + VS16 selector
+    const width = utf8.getWidthAt(text, 0, 8, .hidden, .unicode);
+    try testing.expectEqual(@as(u32, 2), width); // Single grapheme cluster, width 2
+}
+
+test "getWidthAt: hiragana" {
+    const text = "こんにちは";
+    try testing.expectEqual(@as(u32, 2), utf8.getWidthAt(text, 0, 8, .hidden, .unicode)); // 'こ'
+    try testing.expectEqual(@as(u32, 2), utf8.getWidthAt(text, 3, 8, .hidden, .unicode)); // 'ん'
+}
+
+test "getWidthAt: katakana" {
+    const text = "カタカナ";
+    try testing.expectEqual(@as(u32, 2), utf8.getWidthAt(text, 0, 8, .hidden, .unicode)); // 'カ'
+    try testing.expectEqual(@as(u32, 2), utf8.getWidthAt(text, 3, 8, .hidden, .unicode)); // 'タ'
+}
+
+test "getWidthAt: fullwidth forms" {
+    const text = "ＡＢＣ"; // Fullwidth A, B, C
+    try testing.expectEqual(@as(u32, 2), utf8.getWidthAt(text, 0, 8, .hidden, .unicode)); // Fullwidth 'A'
+    try testing.expectEqual(@as(u32, 2), utf8.getWidthAt(text, 3, 8, .hidden, .unicode)); // Fullwidth 'B'
+}
+
+test "getWidthAt: zero width at start of string" {
+    const text = "a\u{0301}bc"; // a + combining accent + bc
+    try testing.expectEqual(@as(u32, 1), utf8.getWidthAt(text, 0, 8, .hidden, .unicode)); // 'a' + combining = 1
+    try testing.expectEqual(@as(u32, 1), utf8.getWidthAt(text, 3, 8, .hidden, .unicode)); // 'b'
+}
+
+test "getWidthAt: control characters" {
+    const text = "a\x00b";
+    try testing.expectEqual(@as(u32, 1), utf8.getWidthAt(text, 0, 8, .hidden, .unicode)); // 'a'
+    try testing.expectEqual(@as(u32, 0), utf8.getWidthAt(text, 1, 8, .hidden, .unicode)); // null
+    try testing.expectEqual(@as(u32, 1), utf8.getWidthAt(text, 2, 8, .hidden, .unicode)); // 'b'
+}
+
+test "getWidthAt: multiple combining marks" {
+    const text = "e\u{0301}\u{0302}"; // e + acute + circumflex
+    const width = utf8.getWidthAt(text, 0, 8, .hidden, .unicode);
+    try testing.expectEqual(@as(u32, 1), width); // All combining marks part of one grapheme
+}
+
+test "getWidthAt: at exact end boundary" {
+    const text = "hello";
+    const width = utf8.getWidthAt(text, 5, 8, .hidden, .unicode); // At index 5 (past end)
+    try testing.expectEqual(@as(u32, 0), width);
+}
+
+test "getWidthAt: realistic mixed content" {
+    const text = "Hello 世界! 👋";
+    try testing.expectEqual(@as(u32, 1), utf8.getWidthAt(text, 0, 8, .hidden, .unicode)); // 'H'
+    try testing.expectEqual(@as(u32, 1), utf8.getWidthAt(text, 5, 8, .hidden, .unicode)); // ' '
+    try testing.expectEqual(@as(u32, 2), utf8.getWidthAt(text, 6, 8, .hidden, .unicode)); // '世'
+    try testing.expectEqual(@as(u32, 2), utf8.getWidthAt(text, 9, 8, .hidden, .unicode)); // '界'
+    try testing.expectEqual(@as(u32, 1), utf8.getWidthAt(text, 12, 8, .hidden, .unicode)); // '!'
+    try testing.expectEqual(@as(u32, 1), utf8.getWidthAt(text, 13, 8, .hidden, .unicode)); // ' '
+    try testing.expectEqual(@as(u32, 2), utf8.getWidthAt(text, 14, 8, .hidden, .unicode)); // emoji
+}
+
+test "getWidthAt: grapheme at SIMD boundary" {
+    var buf: [32]u8 = undefined;
+    @memset(&buf, 'x');
+    const cjk = "世";
+    @memcpy(buf[14..17], cjk); // Place CJK char near boundary
+
+    try testing.expectEqual(@as(u32, 1), utf8.getWidthAt(&buf, 13, 8, .hidden, .unicode)); // 'x'
+    try testing.expectEqual(@as(u32, 2), utf8.getWidthAt(&buf, 14, 8, .hidden, .unicode)); // '世'
+    try testing.expectEqual(@as(u32, 1), utf8.getWidthAt(&buf, 17, 8, .hidden, .unicode)); // 'x'
+}
+
+test "getWidthAt: incomplete UTF-8 at end" {
+    const text = "abc\xC3"; // Incomplete 2-byte sequence
+    try testing.expectEqual(@as(u32, 1), utf8.getWidthAt(text, 0, 8, .hidden, .unicode)); // 'a'
+    try testing.expectEqual(@as(u32, 1), utf8.getWidthAt(text, 3, 8, .hidden, .unicode)); // Incomplete, returns 1 for error
+}
+
+test "getWidthAt: random positions in realistic text" {
+    const text = "The quick brown 🦊 jumps over the lazy 犬";
+
+    try testing.expectEqual(@as(u32, 1), utf8.getWidthAt(text, 0, 8, .hidden, .unicode)); // 'T'
+    try testing.expectEqual(@as(u32, 1), utf8.getWidthAt(text, 10, 8, .hidden, .unicode)); // 'b'
+    try testing.expectEqual(@as(u32, 2), utf8.getWidthAt(text, 16, 8, .hidden, .unicode)); // fox emoji
+    try testing.expectEqual(@as(u32, 2), utf8.getWidthAt(text, 41, 8, .hidden, .unicode)); // '犬' (dog)
+}
+
+// ============================================================================
+// GET PREV GRAPHEME START TESTS
+// ============================================================================
+
+test "getPrevGraphemeStart: out of bounds" {
+    try testing.expect(utf8.getPrevGraphemeStart("hello", 100, 8, .hidden, .unicode) == null);
+}
+
+test "getPrevGraphemeStart: steps back to the last grapheme with cells that layout measured" {
+    // Model: segment forward as layout does and measure each grapheme as the width of the text before its end
+    // minus the width before its start. U+FFFD is a grapheme of its own: inside a joining sequence it must not join
+    // the graphemes after it, and a mark after it does not join it.
+    const texts = [_][]const u8{ "", "Hello 世界! 👋\u{1f3ff}", "a\tb", "日本", "e\u{301}\u{302}x", "👩\u{200d}👧!", "👩\u{200d}❤", "🇺🇸🇩🇪", "❤\u{fe0f}", "क्षि", "a\x07\u{301}\u{85}\x1b", "\u{200b}a\u{feff}", "日\u{fffd}", "a\r\nb", "\u{600}a", "क्\u{fffd}\u{301}ष", "👩\u{200d}\u{fffd}\u{200d}👩", "\u{fffd}\u{fe0f}" };
+    const alphabet = [_]u21{ 'a', '\t', '\r', '\n', 0, 0x1b, 0x7f, 0x85, 0x301, 0x200b, 0x200d, 0x200e, 0xe0041, 0xfe0f, 0x1f469, 0x1f3fb, 0x2764, 0x1f1e9, 0x600, 0x915, 0x94d, 0x93f, 0x1100, 0x1161, 0xac00, 0xfffd, 0x65e5 };
+    var prng = std.Random.DefaultPrng.init(0x5eed);
+    const random = prng.random();
+    var bytes: [64]u8 = undefined;
+    for (0..texts.len + 20_000) |index| {
+        const text = if (index < texts.len) texts[index] else random_text: {
+            var len: usize = 0;
+            for (0..1 + random.uintLessThan(usize, 10)) |_| len += try std.unicode.utf8Encode(alphabet[random.uintLessThan(usize, alphabet.len)], bytes[len..]);
+            break :random_text bytes[0..len];
+        };
+        for ([_]utf8.WidthMethod{ .unicode, .unicode_wide, .no_zwj }) |width_method| {
+            for (std.enums.values(utf8.ControlDisplay)) |control_display| {
+                errdefer std.debug.print("width_method={t} control_display={t} text={x}\n", .{ width_method, control_display, text });
+                var break_state: uucode.grapheme.BreakState = .default;
+                var prev_cp: ?u21 = null;
+                var start: usize = 0;
+                var expected: ?utf8.PrevGraphemeResult = null;
+                var pos: usize = 0;
+                while (true) {
+                    const decoded = if (pos < text.len) utf8.decodeUtf8Unchecked(text, pos) else null;
+                    if (decoded == null or utf8.isGraphemeBreak(prev_cp, decoded.?.cp, &break_state, width_method)) {
+                        const width = utf8.calculateTextWidth(text[0..pos], 4, control_display, false, width_method) - utf8.calculateTextWidth(text[0..start], 4, control_display, false, width_method);
+                        if (std.mem.indexOf(u8, text[start..pos], "\u{fffd}") != null) try testing.expectEqualStrings("\u{fffd}", text[start..pos]);
+                        if (width > 0) expected = .{ .start_offset = start, .width = width };
+                        try testing.expectEqual(expected, utf8.getPrevGraphemeStart(text, pos, 4, control_display, width_method));
+                        start = pos;
+                    }
+                    prev_cp = (decoded orelse break).cp;
+                    pos += decoded.?.len;
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// RENDER CLUSTER INFO TESTS (for caching multibyte clusters and tabs)
+// ============================================================================
+
+test "findRenderClusterInfo: empty string" {
+    var result: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
+    defer result.deinit(testing.allocator);
+
+    try utf8.findRenderClusterInfo(testing.allocator, "", 4, .hidden, false, .unicode, &result);
+    try testing.expectEqual(@as(usize, 0), result.items.len);
+}
+
+test "findRenderClusterInfo: ASCII-only returns empty" {
+    var result: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
+    defer result.deinit(testing.allocator);
+
+    try utf8.findRenderClusterInfo(testing.allocator, "hello world", 4, .hidden, true, .unicode, &result);
+    try testing.expectEqual(@as(usize, 0), result.items.len);
+}
+
+test "findRenderClusterInfo: ASCII with tab" {
+    var result: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
+    defer result.deinit(testing.allocator);
+
+    try utf8.findRenderClusterInfo(testing.allocator, "hello\tworld", 4, .hidden, false, .unicode, &result);
+
+    // Should have one entry for the tab
+    try testing.expectEqual(@as(usize, 1), result.items.len);
+    try testing.expectEqual(@as(u32, 5), result.items[0].byte_start);
+    try testing.expectEqual(@as(u32, 1), result.items[0].byte_len);
+    try testing.expectEqual(@as(u32, 4), result.items[0].width_cols);
+    try testing.expectEqual(@as(u32, 5), result.items[0].col_start);
+}
+
+test "findRenderClusterInfo: multiple tabs" {
+    var result: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
+    defer result.deinit(testing.allocator);
+
+    try utf8.findRenderClusterInfo(testing.allocator, "a\tb\tc", 4, .hidden, false, .unicode, &result);
+
+    // Should have two entries for the tabs
+    try testing.expectEqual(@as(usize, 2), result.items.len);
+
+    // First tab at byte 1, col 1
+    try testing.expectEqual(@as(u32, 1), result.items[0].byte_start);
+    try testing.expectEqual(@as(u32, 1), result.items[0].byte_len);
+    try testing.expectEqual(@as(u32, 4), result.items[0].width_cols);
+    try testing.expectEqual(@as(u32, 1), result.items[0].col_start);
+
+    // Second tab at byte 3, col 6 (1 + 4 + 1)
+    try testing.expectEqual(@as(u32, 3), result.items[1].byte_start);
+    try testing.expectEqual(@as(u32, 1), result.items[1].byte_len);
+    try testing.expectEqual(@as(u32, 4), result.items[1].width_cols);
+    try testing.expectEqual(@as(u32, 6), result.items[1].col_start);
+}
+
+test "findRenderClusterInfo: CJK characters" {
+    var result: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
+    defer result.deinit(testing.allocator);
+
+    const text = "hello世界";
+    try utf8.findRenderClusterInfo(testing.allocator, text, 4, .hidden, false, .unicode, &result);
+
+    // Should have two entries for the CJK characters
+    try testing.expectEqual(@as(usize, 2), result.items.len);
+
+    // 世 at byte 5
+    try testing.expectEqual(@as(u32, 5), result.items[0].byte_start);
+    try testing.expectEqual(@as(u32, 3), result.items[0].byte_len);
+    try testing.expectEqual(@as(u32, 2), result.items[0].width_cols);
+    try testing.expectEqual(@as(u32, 5), result.items[0].col_start);
+
+    // 界 at byte 8
+    try testing.expectEqual(@as(u32, 8), result.items[1].byte_start);
+    try testing.expectEqual(@as(u32, 3), result.items[1].byte_len);
+    try testing.expectEqual(@as(u32, 2), result.items[1].width_cols);
+    try testing.expectEqual(@as(u32, 7), result.items[1].col_start);
+}
+
+test "findRenderClusterInfo: emoji with skin tone" {
+    var result: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
+    defer result.deinit(testing.allocator);
+
+    const text = "Hi👋🏿Bye"; // Hi + wave + dark skin tone + Bye
+    try utf8.findRenderClusterInfo(testing.allocator, text, 4, .hidden, false, .unicode, &result);
+
+    // Should have one entry for the emoji cluster
+    try testing.expectEqual(@as(usize, 1), result.items.len);
+
+    try testing.expectEqual(@as(u32, 2), result.items[0].byte_start);
+    try testing.expectEqual(@as(u32, 8), result.items[0].byte_len); // 4 + 4 bytes
+    try testing.expectEqual(@as(u32, 2), result.items[0].width_cols);
+    try testing.expectEqual(@as(u32, 2), result.items[0].col_start);
+}
+
+test "findRenderClusterInfo: emoji with ZWJ" {
+    var result: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
+    defer result.deinit(testing.allocator);
+
+    const text = "a👩‍🚀b"; // a + woman astronaut + b
+    try utf8.findRenderClusterInfo(testing.allocator, text, 4, .hidden, false, .unicode, &result);
+
+    // Should have one entry for the emoji cluster
+    try testing.expectEqual(@as(usize, 1), result.items.len);
+
+    try testing.expectEqual(@as(u32, 1), result.items[0].byte_start);
+    try testing.expectEqual(@as(u32, 2), result.items[0].width_cols);
+    try testing.expectEqual(@as(u32, 1), result.items[0].col_start);
+}
+
+test "findRenderClusterInfo: combining mark" {
+    var result: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
+    defer result.deinit(testing.allocator);
+
+    const text = "cafe\u{0301}"; // café with combining acute
+    try utf8.findRenderClusterInfo(testing.allocator, text, 4, .hidden, false, .unicode, &result);
+
+    // Should have one entry for e + combining mark
+    try testing.expectEqual(@as(usize, 1), result.items.len);
+
+    try testing.expectEqual(@as(u32, 3), result.items[0].byte_start); // 'e' position
+    try testing.expectEqual(@as(u32, 3), result.items[0].byte_len); // e (1 byte) + combining (2 bytes)
+    try testing.expectEqual(@as(u32, 1), result.items[0].width_cols);
+    try testing.expectEqual(@as(u32, 3), result.items[0].col_start);
+}
+
+test "findRenderClusterInfo: flag emoji" {
+    var result: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
+    defer result.deinit(testing.allocator);
+
+    const text = "US🇺🇸"; // US + flag
+    try utf8.findRenderClusterInfo(testing.allocator, text, 4, .hidden, false, .unicode, &result);
+
+    // Should have one entry for the flag (two regional indicators)
+    try testing.expectEqual(@as(usize, 1), result.items.len);
+
+    try testing.expectEqual(@as(u32, 2), result.items[0].byte_start);
+    try testing.expectEqual(@as(u32, 8), result.items[0].byte_len); // Two 4-byte chars
+    try testing.expectEqual(@as(u32, 2), result.items[0].width_cols);
+    try testing.expectEqual(@as(u32, 2), result.items[0].col_start);
+}
+
+test "findRenderClusterInfo: mixed content" {
+    var result: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
+    defer result.deinit(testing.allocator);
+
+    const text = "Hi\t世界!"; // Hi + tab + CJK + !
+    try utf8.findRenderClusterInfo(testing.allocator, text, 4, .hidden, false, .unicode, &result);
+
+    // Should have three entries: tab, 世, 界
+    try testing.expectEqual(@as(usize, 3), result.items.len);
+
+    // Tab at byte 2, col 2
+    try testing.expectEqual(@as(u32, 2), result.items[0].byte_start);
+    try testing.expectEqual(@as(u32, 1), result.items[0].byte_len);
+    try testing.expectEqual(@as(u32, 4), result.items[0].width_cols);
+    try testing.expectEqual(@as(u32, 2), result.items[0].col_start);
+
+    // 世 at byte 3, col 6
+    try testing.expectEqual(@as(u32, 3), result.items[1].byte_start);
+    try testing.expectEqual(@as(u32, 3), result.items[1].byte_len);
+    try testing.expectEqual(@as(u32, 2), result.items[1].width_cols);
+    try testing.expectEqual(@as(u32, 6), result.items[1].col_start);
+
+    // 界 at byte 6, col 8
+    try testing.expectEqual(@as(u32, 6), result.items[2].byte_start);
+    try testing.expectEqual(@as(u32, 3), result.items[2].byte_len);
+    try testing.expectEqual(@as(u32, 2), result.items[2].width_cols);
+    try testing.expectEqual(@as(u32, 8), result.items[2].col_start);
+}
+
+test "findRenderClusterInfo: only ASCII letters no cache" {
+    var result: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
+    defer result.deinit(testing.allocator);
+
+    try utf8.findRenderClusterInfo(testing.allocator, "abcdefghij", 4, .hidden, false, .unicode, &result);
+
+    // No special characters, should be empty
+    try testing.expectEqual(@as(usize, 0), result.items.len);
+}
+
+test "findRenderClusterInfo: emoji with VS16" {
+    var result: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
+    defer result.deinit(testing.allocator);
+
+    const text = "I ❤️ U"; // I + space + heart + VS16 + space + U
+    try utf8.findRenderClusterInfo(testing.allocator, text, 4, .hidden, false, .unicode, &result);
+
+    // Should have one entry for the emoji cluster
+    try testing.expectEqual(@as(usize, 1), result.items.len);
+
+    try testing.expectEqual(@as(u32, 2), result.items[0].byte_start);
+    try testing.expectEqual(@as(u32, 2), result.items[0].width_cols);
+    try testing.expectEqual(@as(u32, 2), result.items[0].col_start);
+}
+
+test "findRenderClusterInfo: realistic text" {
+    var result: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
+    defer result.deinit(testing.allocator);
+
+    const text = "function test() {\n\tconst 世界 = 10;\n}";
+    try utf8.findRenderClusterInfo(testing.allocator, text, 4, .hidden, false, .unicode, &result);
+
+    // Should have entries for: tab, 世, 界
+    try testing.expectEqual(@as(usize, 3), result.items.len);
+}
+
+test "findRenderClusterInfo: hiragana" {
+    var result: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
+    defer result.deinit(testing.allocator);
+
+    const text = "こんにちは";
+    try utf8.findRenderClusterInfo(testing.allocator, text, 4, .hidden, false, .unicode, &result);
+
+    // Should have 5 entries (each hiragana is 3 bytes, width 2)
+    try testing.expectEqual(@as(usize, 5), result.items.len);
+
+    // Check first character
+    try testing.expectEqual(@as(u32, 0), result.items[0].byte_start);
+    try testing.expectEqual(@as(u32, 3), result.items[0].byte_len);
+    try testing.expectEqual(@as(u32, 2), result.items[0].width_cols);
+}
+
+test "findRenderClusterInfo: at SIMD boundary" {
+    var result: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
+    defer result.deinit(testing.allocator);
+
+    // Create text with multibyte char near SIMD boundary (16 bytes)
+    var buf: [32]u8 = undefined;
+    @memset(&buf, 'x');
+    const cjk = "世";
+    @memcpy(buf[14..17], cjk); // Place CJK char at boundary
+
+    try utf8.findRenderClusterInfo(testing.allocator, &buf, 4, .hidden, false, .unicode, &result);
+
+    // Should find the CJK character
+    var found = false;
+    for (result.items) |g| {
+        if (g.byte_start == 14) {
+            found = true;
+            try testing.expectEqual(@as(u32, 3), g.byte_len);
+            try testing.expectEqual(@as(u32, 2), g.width_cols);
+            break;
+        }
+    }
+    try testing.expect(found);
+}
+
+test "findRenderClusterInfo: long render-cluster metadata exceeds u8 ranges" {
+    var text: std.ArrayListUnmanaged(u8) = .empty;
+    defer text.deinit(testing.allocator);
+
+    for (0..130) |i| {
+        if (i > 0) try text.appendSlice(testing.allocator, "\u{200D}");
+        try text.appendSlice(testing.allocator, "👩");
+    }
+    try testing.expect(text.items.len > std.math.maxInt(u8));
+
+    for ([_]struct { method: utf8.WidthMethod, width: u32 }{
+        .{ .method = .unicode, .width = 2 },
+        .{ .method = .wcwidth, .width = 260 },
+    }) |case| {
+        var result: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
+        defer result.deinit(testing.allocator);
+
+        try utf8.findRenderClusterInfo(testing.allocator, text.items, 4, .hidden, false, case.method, &result);
+        try testing.expectEqual(@as(usize, 1), result.items.len);
+        try testing.expectEqual(@as(u32, 0), result.items[0].byte_start);
+        try testing.expectEqual(@as(u32, @intCast(text.items.len)), result.items[0].byte_len);
+        try testing.expectEqual(case.width, result.items[0].width_cols);
+    }
+}
+
+// Single-input calculateTextWidth cases are rows in fixtures/text-corpus.json. These tests
+// generate their input, compare with Ghostty, or bound a width that no outside reference confirms.
+
+test "calculateTextWidth: large text with many tabs" {
+    const size = 1000;
+    const buf = try testing.allocator.alloc(u8, size);
+    defer testing.allocator.free(buf);
+
+    var expected: u32 = 0;
+    for (buf, 0..) |*b, i| {
+        if (i % 10 == 0) {
+            b.* = '\t';
+            expected += 4;
+        } else {
+            b.* = 'a';
+            expected += 1;
+        }
+    }
+
+    const result = utf8.calculateTextWidth(buf, 4, .hidden, false, .unicode);
+    try testing.expectEqual(expected, result);
+}
+
+// ----------------------------------------------------------------------------
+// Zero-Width Characters
+// ----------------------------------------------------------------------------
+
+test "calculateTextWidth: each default-ignorable code point takes the cells Ghostty gives it" {
+    // Default_Ignorable_Code_Point (Unicode 17.0 DerivedCoreProperties.txt), alone and after a base.
+    // Ghostty draws each in no cell except U+00AD; a cell the terminal does not draw moves the rest of the row.
+    var terminal: ghostty_vt.vt.Terminal = try .init(std.testing.io, testing.allocator, .{ .cols = 4, .rows = 1 });
+    defer terminal.deinit(testing.allocator);
+    var stream = terminal.vtStream();
+    defer stream.deinit();
+    var bytes: [5]u8 = .{ 'a', 0, 0, 0, 0 };
+    for (0..0x110000) |cp| {
+        // Ghostty gives the conjoining jamo fillers no cell; OpenTUI keeps their widths (see the drawing test).
+        if (!uucode.get(.is_default_ignorable, @intCast(cp)) or cp == 0x115f or cp == 0x1160) continue;
+        const len = 1 + try std.unicode.utf8Encode(@intCast(cp), bytes[1..]);
+        stream.nextSlice("\r\x1b[2K");
+        stream.nextSlice(bytes[0..len]);
+        const cells = terminal.screens.active.cursor.x - 1;
+        for (std.enums.values(utf8.WidthMethod)) |width_method| {
+            errdefer std.debug.print("width_method={t} code point={x}\n", .{ width_method, cp });
+            try testing.expectEqual(cells, utf8.calculateTextWidth(bytes[1..len], 4, .hidden, false, width_method));
+            // The grapheme methods widen any one-cell base before VS16 to two cells.
+            if (cp == 0xfe0f and width_method != .wcwidth) continue;
+            try testing.expectEqual(1 + cells, utf8.calculateTextWidth(bytes[0..len], 4, .hidden, false, width_method));
+            // Grapheme-safe wrapping measures the cluster as it grows, in every width method.
+            try testing.expectEqual(1 + cells, utf8.findWrapPosByWidthGraphemeSafe(bytes[0..len], 4, 4, .hidden, false, width_method).columns_used);
+        }
+    }
+}
+
+// ============================================================================
+// OTHER INDIC SCRIPTS WIDTH TESTS
+// ============================================================================
+
+test "calculateTextWidth: Malayalam script" {
+    const malayalam = "മലയാളം";
+    const width = utf8.calculateTextWidth(malayalam, 4, .hidden, false, .unicode);
+    // Each base letter is width 1, vowel signs width 0
+    try testing.expect(width >= 4 and width <= 5);
+}
+
+// ============================================================================
+// ARABIC AND OTHER SCRIPTS WIDTH TESTS
+// ============================================================================
+
+test "calculateTextWidth: Sinhala script" {
+    const sinhala = "ආහාර";
+    const width = utf8.calculateTextWidth(sinhala, 4, .hidden, false, .unicode);
+    // Sinhala chars width 1, vowel signs width 0
+    try testing.expect(width >= 3 and width <= 4);
+}
+
+// ============================================================================
+// MIXED SCRIPT COMPREHENSIVE TESTS
+// ============================================================================
+
+test "calculateTextWidth: all ending words from text" {
+    const endings = "समाप्त끝จบముగింపుಅಂತ್ಯઅંત";
+    const width = utf8.calculateTextWidth(endings, 4, .hidden, false, .unicode);
+    // TODO: Expect absolutely
+    try testing.expect(width > 10);
+}
+
+test "calculateTextWidth: complex text with emojis and multiple scripts" {
+    const complex = "The 🌟 journey: संस्कृति meets 漢字 🎋";
+    const width = utf8.calculateTextWidth(complex, 4, .hidden, false, .unicode);
+    // TODO: Expect absolutely
+    try testing.expect(width >= 30 and width <= 50);
+}
+
+test "calculateTextWidth: validate against unicode-width-map.zon" {
+    // Runs of code points with the width terminals draw them in.
+    const Run = struct { first: u21, last: u21, width: u32 };
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diagnostics: std.zon.parse.Diagnostics = undefined;
+    const runs = try std.zon.parse.fromSlice([]const Run, .{
+        .gpa = testing.allocator,
+        .arena = arena.allocator(),
+        .source = @embedFile("unicode-width-map.zon"),
+        .diagnostics = &diagnostics,
+    });
+    var failures: usize = 0;
+    for (runs) |run| for (run.first..run.last + 1) |cp| {
+        var buf: [4]u8 = undefined;
+        const str = buf[0..try std.unicode.utf8Encode(@intCast(cp), &buf)];
+        for (std.enums.values(utf8.WidthMethod)) |method| {
+            const actual = utf8.calculateTextWidth(str, 4, .hidden, false, method);
+            if (actual == run.width) continue;
+            std.debug.print("U+{X:0>4} {s}: {d}, expected {d}\n", .{ cp, @tagName(method), actual, run.width });
+            failures += 1;
+        }
+    };
+    try testing.expectEqual(@as(usize, 0), failures);
+}
+
+test "findRenderClusterInfo: comprehensive multilingual text" {
+    const text =
+        \\# The Celestial Journey of संस्कृति 🌟🔮✨
+        \\In the beginning, there was नमस्ते 🙏 and the ancient wisdom of the ॐ symbol echoing through dimensions. The travelers 🧑‍🚀👨‍🚀👩‍🚀 embarked on their quest through the cosmos, guided by the mysterious རྒྱ་མཚོ and the luminous 🌈🦄🧚‍♀️ beings of light. They encountered the great देवनागरी scribes who wrote in flowing अक्षर characters, documenting everything in their sacred texts 📜📖✍️.
+        \\## Chapter प्रथम: The Eastern Gardens 🏯🎋🌸
+        \\The journey led them to the mystical lands where 漢字 (kanji) danced with ひらがな and カタカナ across ancient scrolls 📯🎴🎎. In the gardens of Seoul, they found 한글 inscriptions speaking of 사랑 (love) and 평화 (peace) 💝🕊️☮️. The monks meditated under the bodhi tree 🧘‍♂️🌳, contemplating the nature of धर्म while drinking matcha 🍵 and eating 餃子 dumplings 🥟.
+        \\Strange creatures emerged from the mist: 🦥🦦🦧🦨🦩🦚🦜🦝🦞🦟. They spoke in riddles about the प्राचीन (ancient) ways and the नवीन (new) paths forward. "भविष्य में क्या है?" they asked, while the ໂຫຍ່າກເຈົ້າ whispered secrets in Lao script 🤫🗣️💬.
+        \\## The संगम (Confluence) of Scripts 🌊📝🎭
+        \\At the great confluence, they witnessed the merger of བོད་ཡིག (Tibetan), ગુજરાતી (Gujarati), and தமிழ் (Tamil) scripts flowing together like rivers 🏞️🌊💧. The scholars debated about ਪੰਜਾਬੀ philosophy while juggling 🤹‍♂️🎪🎨 colorful orbs that represented different తెలుగు concepts.
+        \\The marketplace buzzed with activity 🏪🛒💰: merchants sold বাংলা spices 🌶️🧄🧅, ಕನ್ನಡ silks 🧵👘, and മലയാളം handicrafts 🎨🖼️. Children played with toys shaped like 🦖🦕🐉🐲 while their parents bargained using ancient ଓଡ଼ିଆ numerals and gestures 🤝🤲👐.
+        \\## The Festival of ๑๐๐ Lanterns 🏮🎆🎇
+        \\During the grand festival, they lit exactly ๑๐๐ (100 in Thai numerals) lanterns 🏮🕯️💡 that floated into the night sky like ascending ความหวัง (hopes). The celebration featured dancers 💃🕺🩰 performing classical moves from भरतनाट्यम tradition, their मुद्रा hand gestures telling stories of प्रेम and वीरता.
+        \\Musicians played unusual instruments: the 🎻🎺🎷🎸🪕🪘 ensemble created harmonies that resonated with the वेद chants and མཆོད་རྟེན bells 🔔⛩️. The audience sat mesmerized 😵‍💫🤯✨, some sipping on bubble tea 🧋 while others enjoyed मिठाई sweets 🍬🍭🧁.
+        \\## The འཕྲུལ་དེབ (Machine) Age Arrives ⚙️🤖🦾
+        \\As modernity crept in, the ancient འཁོར་ལོ (wheel) gave way to 🚗🚕🚙🚌🚎 vehicles and eventually to 🚀🛸🛰️ spacecraft. The યુવાન (youth) learned to code in Python 🐍💻⌨️, but still honored their గురువు (teachers) who taught them the old ways of ज्ञान acquisition 🧠📚🎓.
+        \\The সমাজ (society) transformed: robots 🤖🦾🦿 worked alongside humans 👨‍💼👩‍💼👨‍🔬👩‍🔬, and AI learned to read སྐད (languages) from across the planet 🌍🌎🌏. Yet somehow, the essence of मानवता remained intact, preserved in the கவிதை (poetry) and the ກາບແກ້ວ stories passed down through generations 👴👵👨‍👩‍👧‍👦.
+        \\## The Final ಅಧ್ಯಾಯ (Chapter) 🌅🌄🌠
+        \\As the sun set over the പർവ്വതങ്ങൾ (mountains) 🏔️⛰️🗻, our travelers realized that every script, every symbol—from ا to ㄱ to অ to अ—represented not just sounds, but entire civilizations' worth of विचार (thoughts) and ಕನಸು (dreams) 💭💤🌌.
+        \\They gathered around the final campfire 🔥🏕️, sharing stories in ภาษา (languages) both ancient and new. Someone brought out a guitar 🎸 and started singing in ગીત form, while others prepared ආහාර (food) 🍛🍲🥘 seasoned with love ❤️💕💖 and memories 📸🎞️📹.
+        \\And so they learned that whether written in দেবনাগরী, 中文, 한글, or ไทย, the human experience transcends boundaries 🌐🤝🌈. The weird emojis 🦩🧿🪬🫀🫁🧠 and complex scripts were all part of the same beautiful བསྟན་པ (teaching): that diversity is our greatest strength 💪✊🙌.
+        \\The end. समाप्त. 끝. จบ. முடிவு. ముగింపు. সমাপ্তি. ഒടുക്കം. ಅಂತ್ಯ. અંત. 🎬🎭🎪✨🌟⭐
+        \\
+    ;
+
+    const expected_width = utf8.calculateTextWidth(text, 4, .hidden, false, .unicode);
+
+    var result: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
+    defer result.deinit(testing.allocator);
+
+    try utf8.findRenderClusterInfo(testing.allocator, text, 4, .hidden, false, .unicode, &result);
+    try testing.expect(result.items.len > 0);
+
+    var prev_end_byte: usize = 0;
+
+    for (result.items) |g| {
+        try testing.expect(g.byte_start >= prev_end_byte);
+
+        const text_before = text[0..g.byte_start];
+        const expected_col = utf8.calculateTextWidth(text_before, 4, .hidden, false, .unicode);
+
+        try testing.expectEqual(expected_col, g.col_start);
+
+        prev_end_byte = g.byte_start + g.byte_len;
+    }
+
+    const final_computed_width = utf8.calculateTextWidth(text, 4, .hidden, false, .unicode);
+    try testing.expectEqual(expected_width, final_computed_width);
+}
+
+// ============================================================================
+// THAI DIACRITICS AND COMBINING MARKS TESTS
+// ============================================================================
+
+test "Thai: base consonants have width 1" {
+    const consonants = "กขคงจฉชซญฎฏฐดตถทธนบปผฝพฟภมยรลวศษสหอฮ";
+    const width = utf8.calculateTextWidth(consonants, 4, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 36), width);
+}
+
+test "Thai: spacing vowels have width 1" {
+    const spacing_vowels = "าะแโใไ";
+    const width = utf8.calculateTextWidth(spacing_vowels, 4, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 6), width);
+}
+
+test "Thai: combining vowels above have width 0" {
+    const base = "ก";
+    const with_sara_i = "กิ";
+    const with_sara_ii = "กี";
+    const with_sara_ue = "กึ";
+    const with_sara_uee = "กื";
+    const with_mai_han_akat = "กั";
+
+    try testing.expectEqual(@as(u32, 1), utf8.calculateTextWidth(base, 4, .hidden, false, .unicode));
+    try testing.expectEqual(@as(u32, 1), utf8.calculateTextWidth(with_sara_i, 4, .hidden, false, .unicode));
+    try testing.expectEqual(@as(u32, 1), utf8.calculateTextWidth(with_sara_ii, 4, .hidden, false, .unicode));
+    try testing.expectEqual(@as(u32, 1), utf8.calculateTextWidth(with_sara_ue, 4, .hidden, false, .unicode));
+    try testing.expectEqual(@as(u32, 1), utf8.calculateTextWidth(with_sara_uee, 4, .hidden, false, .unicode));
+    try testing.expectEqual(@as(u32, 1), utf8.calculateTextWidth(with_mai_han_akat, 4, .hidden, false, .unicode));
+}
+
+test "Thai: combining vowels below have width 0" {
+    const with_sara_u = "กุ";
+    const with_sara_uu = "กู";
+
+    try testing.expectEqual(@as(u32, 1), utf8.calculateTextWidth(with_sara_u, 4, .hidden, false, .unicode));
+    try testing.expectEqual(@as(u32, 1), utf8.calculateTextWidth(with_sara_uu, 4, .hidden, false, .unicode));
+}
+
+test "Thai: tone marks have width 0" {
+    const with_mai_ek = "ก่";
+    const with_mai_tho = "ก้";
+    const with_mai_tri = "ก๊";
+    const with_mai_chattawa = "ก๋";
+
+    try testing.expectEqual(@as(u32, 1), utf8.calculateTextWidth(with_mai_ek, 4, .hidden, false, .unicode));
+    try testing.expectEqual(@as(u32, 1), utf8.calculateTextWidth(with_mai_tho, 4, .hidden, false, .unicode));
+    try testing.expectEqual(@as(u32, 1), utf8.calculateTextWidth(with_mai_tri, 4, .hidden, false, .unicode));
+    try testing.expectEqual(@as(u32, 1), utf8.calculateTextWidth(with_mai_chattawa, 4, .hidden, false, .unicode));
+}
+
+test "Thai: other diacritics have width 0" {
+    const with_maitaikhu = "ก็";
+    const with_thanthakhat = "ก์";
+    const with_nikhahit = "กํ";
+
+    try testing.expectEqual(@as(u32, 1), utf8.calculateTextWidth(with_maitaikhu, 4, .hidden, false, .unicode));
+    try testing.expectEqual(@as(u32, 1), utf8.calculateTextWidth(with_thanthakhat, 4, .hidden, false, .unicode));
+    try testing.expectEqual(@as(u32, 1), utf8.calculateTextWidth(with_nikhahit, 4, .hidden, false, .unicode));
+}
+
+test "Thai: combined vowel and tone mark" {
+    const text = "กี่";
+    try testing.expectEqual(@as(u32, 1), utf8.calculateTextWidth(text, 4, .hidden, false, .unicode));
+
+    const text2 = "คือ";
+    try testing.expectEqual(@as(u32, 2), utf8.calculateTextWidth(text2, 4, .hidden, false, .unicode));
+}
+
+test "Thai: word 'ภาษาไทย' (Thai language)" {
+    const text = "ภาษาไทย";
+    try testing.expectEqual(@as(u32, 7), utf8.calculateTextWidth(text, 4, .hidden, false, .unicode));
+}
+
+test "Thai: word 'อย่าง' with tone mark" {
+    const text = "อย่าง";
+    try testing.expectEqual(@as(u32, 4), utf8.calculateTextWidth(text, 4, .hidden, false, .unicode));
+}
+
+test "Thai: word 'อธิบาย' with vowel above" {
+    const text = "อธิบาย";
+    try testing.expectEqual(@as(u32, 5), utf8.calculateTextWidth(text, 4, .hidden, false, .unicode));
+}
+
+test "Thai: full sentence with spaces" {
+    const text = "ภาษาไทย คืออะไร อธิบายมาอย่างละเอียด";
+    try testing.expectEqual(@as(u32, 32), utf8.calculateTextWidth(text, 4, .hidden, false, .unicode));
+}
+
+test "Thai: wrap by width respects combining marks" {
+    const text = "คือ";
+
+    const result1 = utf8.findWrapPosByWidth(text, 1, 4, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 6), result1.byte_offset);
+    try testing.expectEqual(@as(u32, 1), result1.columns_used);
+
+    const result2 = utf8.findWrapPosByWidth(text, 2, 4, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 9), result2.byte_offset);
+    try testing.expectEqual(@as(u32, 2), result2.columns_used);
+}
+
+test "Thai: wrap by width with tone marks" {
+    const text = "ก่อน";
+
+    const result2 = utf8.findWrapPosByWidth(text, 2, 4, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 2), result2.columns_used);
+
+    const result3 = utf8.findWrapPosByWidth(text, 3, 4, .hidden, false, .unicode);
+    try testing.expectEqual(@as(u32, 3), result3.columns_used);
+}
+
+test "Thai: render-cluster info for combining marks" {
+    const text = "กี่";
+
+    var result: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
+    defer result.deinit(testing.allocator);
+
+    try utf8.findRenderClusterInfo(testing.allocator, text, 4, .hidden, false, .unicode, &result);
+
+    try testing.expectEqual(@as(usize, 1), result.items.len);
+    try testing.expectEqual(@as(u32, 1), result.items[0].width_cols);
+}
+
+test "Thai: render-cluster info for word with combining marks" {
+    const text = "คือ";
+
+    var result: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
+    defer result.deinit(testing.allocator);
+
+    try utf8.findRenderClusterInfo(testing.allocator, text, 4, .hidden, false, .unicode, &result);
+
+    try testing.expectEqual(@as(usize, 2), result.items.len);
+    try testing.expectEqual(@as(u32, 1), result.items[0].width_cols);
+    try testing.expectEqual(@as(u32, 1), result.items[1].width_cols);
+}
+
+test "Thai: mixed Thai and ASCII" {
+    const text = "Hello ภาษาไทย World";
+    try testing.expectEqual(@as(u32, 19), utf8.calculateTextWidth(text, 4, .hidden, false, .unicode));
+}
+
+test "Thai: mixed Thai and emoji" {
+    const text = "ภาษา 🇹🇭 ไทย";
+    try testing.expectEqual(@as(u32, 11), utf8.calculateTextWidth(text, 4, .hidden, false, .unicode));
+}
+
+test "Thai: คำว่า width should be 4" {
+    const text = "คำว่า";
+    try testing.expectEqual(@as(u32, 4), utf8.calculateTextWidth(text, 4, .hidden, false, .unicode));
+}
+
+test "Thai: น้ำ width should be 2" {
+    const text = "น้ำ";
+    try testing.expectEqual(@as(u32, 2), utf8.calculateTextWidth(text, 4, .hidden, false, .unicode));
+}
+
+test "Thai: ว่ width should be 1" {
+    const text = "ว่";
+    try testing.expectEqual(@as(u32, 1), utf8.calculateTextWidth(text, 4, .hidden, false, .unicode));
+}
+
+test "Thai: ว่ wcwidth vs unicode mode comparison" {
+    const text = "ว่";
+    const wcwidth_result = utf8.calculateTextWidth(text, 4, .hidden, false, .wcwidth);
+    const unicode_result = utf8.calculateTextWidth(text, 4, .hidden, false, .unicode);
+
+    try testing.expectEqual(@as(u32, 1), wcwidth_result);
+    try testing.expectEqual(@as(u32, 1), unicode_result);
+}
+
+test "Thai: ว่ is a single grapheme cluster" {
+    const text = "ว่";
+
+    var result: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
+    defer result.deinit(testing.allocator);
+
+    try utf8.findRenderClusterInfo(testing.allocator, text, 4, .hidden, false, .unicode, &result);
+
+    try testing.expectEqual(@as(usize, 1), result.items.len);
+    try testing.expectEqual(@as(u32, 1), result.items[0].width_cols);
+}

@@ -7,8 +7,8 @@ import {
   type TextTableColumnWidthMode,
   type TextTableContent,
   type CliRenderer,
-} from "../index"
-import { createTestRenderer } from "../testing"
+} from "../index.js"
+import { createTestRenderer } from "../testing.js"
 import { Command } from "commander"
 import { existsSync } from "node:fs"
 import { mkdir } from "node:fs/promises"
@@ -272,8 +272,9 @@ if (scenarioFilter && filteredScenarios.length === 0) {
 const { renderer, renderOnce } = await createTestRenderer({
   width,
   height,
-  useAlternateScreen: false,
-  useConsole: false,
+  screenMode: "main-screen",
+  externalOutputMode: "passthrough",
+  consoleMode: "disabled",
 })
 
 renderer.requestRender = () => {}

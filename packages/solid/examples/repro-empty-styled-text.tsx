@@ -7,7 +7,7 @@ process.env.DEBUG = "true"
 const EmptyStyledTextTest = () => {
   const renderer = useRenderer()
 
-  renderer.useConsole = true
+  renderer.consoleMode = "console-overlay"
   renderer.console.show()
 
   const [showBox, setShowBox] = createSignal(false)

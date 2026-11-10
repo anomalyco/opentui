@@ -1,4 +1,4 @@
-# Zig build cache
-.zig-cache
-zig-out
-src/zig/lib
+.node-test
+.node-benchmark
+ffi-fast-path-paired.json
+src/zig/

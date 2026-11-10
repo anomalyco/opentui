@@ -2,6 +2,10 @@ export const ANSI = {
   switchToAlternateScreen: "\x1b[?1049h",
   switchToMainScreen: "\x1b[?1049l",
   reset: "\x1b[0m",
+  resetScrollRegion: "\x1b[r",
+  home: "\x1b[H",
+  clearScreen: "\x1b[2J",
+  clearSavedLines: "\x1b[3J",
 
   scrollDown: (lines: number) => `\x1b[${lines}T`,
   scrollUp: (lines: number) => `\x1b[${lines}S`,

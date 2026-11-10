@@ -5,12 +5,23 @@ export * from "./composition/constructs.js"
 export * from "./composition/VRenderable.js"
 export * from "./composition/vnode.js"
 export * from "./Diff.js"
+export * from "./EditBufferRenderable.js"
+export * from "./EmbeddedTerminal.js"
 export * from "./FrameBuffer.js"
 export * from "./Input.js"
+export * from "./Image.js"
+export * from "./Video.js"
 export * from "./LineNumberRenderable.js"
 export * from "./Markdown.js"
 export * from "./ScrollBar.js"
-export * from "./ScrollBox.js"
+export {
+  ScrollBoxRenderable,
+  ScrollBoxBar,
+  ScrollBoxContent,
+  ScrollBoxViewport,
+  ScrollBoxWrapper,
+  type ScrollBoxOptions,
+} from "./ScrollBox.js"
 export * from "./Select.js"
 export * from "./Slider.js"
 export * from "./TextTable.js"

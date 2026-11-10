@@ -1,0 +1,312 @@
+---
+title: Audio
+description: Create an audio engine, play loaded sounds, select output devices, mix PCM, and release native resources
+skill:
+  entry: true
+  intents: [audio, native-audio, sound, playback, mixer, devices, tap]
+---
+
+# Audio
+
+OpenTUI plays, mixes, and captures audio through a native miniaudio engine. The `Audio` class in `@opentui/core` owns the engine and its resources.
+
+This page covers the engine and loaded-sound playback. See [Streaming audio](/docs/application-apis/audio-streaming) for PCM or encoded byte sources and radio URLs. See [Audio capture and recording](/docs/application-apis/audio-capture) for input devices, Float32 PCM, and WAV files.
+
+## Play a loaded sound
+
+Create one engine and keep it alive while its sounds can play.
+
+```typescript
+import { Audio, type AudioSound } from "@opentui/core"
+
+const audio = Audio.create({ autoStart: false })
+const click = "click.wav"
+
+audio.on("error", (error, context) => {
+  console.error(`${context.action}: ${error.message}`)
+})
+
+let sound: AudioSound | null = null
+
+try {
+  sound = await audio.loadSoundFile(click)
+  if (sound == null) throw new Error(`Could not load ${click}`)
+  if (!audio.start()) throw new Error("No playback device is available")
+
+  const voice = audio.play(sound, { volume: 0.8 })
+  if (voice == null) throw new Error("Could not start the sound")
+
+  await new Promise((resolve) => setTimeout(resolve, 1000))
+} finally {
+  if (sound != null) audio.unloadSound(sound)
+  audio.stop()
+  audio.dispose()
+}
+```
+
+`Audio` inherits Node's `EventEmitter`. Attach the `error` listener before the first operation that can emit an error.
+
+Without a listener, an emitted `error` throws. A method that normally returns `false` or `null` can throw before it returns that value.
+
+Construction is different because no `Audio` object exists for a listener yet. Construction failures throw `AudioInitializationError` directly.
+
+## Create the engine
+
+The public construction APIs are `Audio.create(options?)` and its wrapper, `setupAudio(options?)`. The `Audio` constructor is private.
+
+| `AudioSetupOptions` field | Default         | Effect                                                      |
+| ------------------------- | --------------- | ----------------------------------------------------------- |
+| `autoStart`               | `false`         | Opens and starts the playback device during construction    |
+| `sampleRate`              | `48000`         | Sets the engine and capture sample rate                     |
+| `playbackChannels`        | `2`             | Requests the playback device channel count                  |
+| `startOptions`            | Native defaults | Supplies defaults for `autoStart` and later `start()` calls |
+
+Create another engine to change `sampleRate` or `playbackChannels`. Both values become fixed during construction.
+
+`Audio.create()` and `setupAudio()` initialize synchronously. They throw `AudioInitializationError` with one of these `action` values:
+
+| Action              | Failed step                                                  |
+| ------------------- | ------------------------------------------------------------ |
+| `resolveRenderLib`  | Resolve and load the native OpenTUI library                  |
+| `createAudioEngine` | Create the native audio engine                               |
+| `start`             | Apply `startOptions` and complete automatic playback startup |
+
+A failed automatic start destroys the partial native engine. Successful automatic startup emits no `started` event because listeners cannot exist during construction.
+
+## Runtime and platform support
+
+Audio uses the same native runtime as the renderer. Read [Runtime and platform support](/docs/getting-started/runtime-support) for setup and distribution details.
+
+The local requirements are Bun 1.3.14 or later, or Node.js 26.4.0 or later with experimental FFI. Native packages support macOS, Linux, and Windows on x64 and arm64. Use Bun 1.4.0 or later on native Windows arm64.
+
+Linux selects glibc by default. Set the documented libc selector when the target needs musl. Audio has no browser target.
+
+## Load sounds
+
+`loadSound()` accepts a `Uint8Array` or `ArrayBuffer`. `loadSoundFile()` reads a file and then passes its bytes to the same decoder.
+
+Both methods decode the complete WAV, FLAC, or MP3 input into native interleaved Float32 samples. The loaded-sound decoder does not include Vorbis support.
+
+Use [Streaming audio](/docs/application-apis/audio-streaming) for long MP3 or FLAC media. Streaming does not retain the complete decoded sound.
+
+For generated audio or an external decoder, use `await audio.playStream(source, { format: "pcm", sampleFormat: "f32le", sampleRate: 44100, channels: 1 })`. The source supplies little-endian Float32 bytes through a `ReadableStream<Uint8Array>` or `AsyncIterable<Uint8Array>`. It returns the same `AudioStream` as encoded playback; source EOF flushes and drains audio before `stream.closed` resolves.
+
+Each encoded input must fit the native unsigned 32-bit byte length. The maximum input length is `4,294,967,295` bytes.
+
+Loaded sounds have no separate decoded-memory limit. A compressed input can expand to a much larger native allocation.
+
+Embedded asset bytes can go directly to `loadSound()`. See [Standalone executables](/docs/reference/standalone-executables) for Bun and Node.js asset procedures.
+
+## Method reference
+
+### Output lifecycle
+
+| Method             | Result and behavior                                                 |
+| ------------------ | ------------------------------------------------------------------- |
+| `start(options?)`  | Starts the mixer and a playback device. Returns `boolean`           |
+| `startMixer()`     | Starts headless mixing without a playback device. Returns `boolean` |
+| `stop()`           | Stops the mixer and closes the playback device. Returns `boolean`   |
+| `isStarted()`      | Reports the cached playback-device state                            |
+| `isMixerStarted()` | Reports whether playback or headless mixing started the mixer       |
+| `dispose()`        | Disposes child operations and the native engine                     |
+
+### Sounds
+
+| Method                    | Result and behavior                                               |
+| ------------------------- | ----------------------------------------------------------------- |
+| `loadSound(data)`         | Decodes bytes and returns `AudioSound \| null`                    |
+| `loadSoundFile(filePath)` | Reads and decodes a file. Returns `Promise<AudioSound \| null>`   |
+| `unloadSound(sound)`      | Stops its active voices, frees its samples, and returns `boolean` |
+
+### Voices and groups
+
+| Method                          | Result and behavior                                              |
+| ------------------------------- | ---------------------------------------------------------------- |
+| `play(sound, options?)`         | Starts one voice and returns `AudioVoice \| null`                |
+| `stopVoice(voice)`              | Stops one active loaded-sound voice and returns `boolean`        |
+| `group(name)`                   | Creates or reuses a named group and returns `AudioGroup \| null` |
+| `setVoiceGroup(voice, group)`   | Moves an active loaded-sound voice and returns `boolean`         |
+| `setGroupVolume(group, volume)` | Sets one group volume and returns `boolean`                      |
+| `setMasterVolume(volume)`       | Sets the master volume and returns `boolean`                     |
+
+### Playback devices
+
+| Method                           | Result and behavior                                              |
+| -------------------------------- | ---------------------------------------------------------------- |
+| `listPlaybackDevices()`          | Refreshes devices and returns `AudioPlaybackDevice[] \| null`    |
+| `selectPlaybackDevice(index)`    | Refreshes devices, selects one index, and returns `boolean`      |
+| `clearPlaybackDeviceSelection()` | Clears the explicit selection. The backend then uses its default |
+
+### Mixing, tap, and statistics
+
+| Method                                    | Result and behavior                                      |
+| ----------------------------------------- | -------------------------------------------------------- |
+| `mixFrames(frameCount, channels = 2)`     | Mixes PCM and returns `Float32Array \| null`             |
+| `enableTap(capacityFrames = 8192)`        | Creates or replaces the master tap and returns `boolean` |
+| `disableTap()`                            | Frees the master tap and returns `boolean`               |
+| `readTapFrames(frameCount, channels = 2)` | Returns `{ frames, framesRead } \| null`                 |
+| `getStats()`                              | Returns engine statistics or `null`                      |
+
+The return type of `getStats()` is available through method inference. Do not import the non-root `AudioStats` type.
+
+## Start playback or headless mixing
+
+`start()` opens the selected playback device and starts the mixer. It returns `false` when native startup fails.
+
+The device stays open until `stop()` or `dispose()`. Idle voices do not close it.
+
+`startMixer()` starts only the mixer. Use it for tests, benchmarks, or application-owned PCM output.
+
+Headless mode makes progress only when the application calls `mixFrames()`. Call it at the output cadence that consumes the requested number of frames.
+
+Loaded voices and streams also need this consumption to advance. A finite stream cannot finish while its PCM remains unconsumed.
+
+`stop()` preserves loaded sounds, groups, and their handles. Call `start()` or `startMixer()` before later playback needs to advance.
+
+## Select a playback device
+
+Select the device before either output mode starts.
+
+```typescript
+const devices = audio.listPlaybackDevices() ?? []
+const selected = devices.find((device) => device.isDefault) ?? devices[0]
+
+if (selected != null && !audio.selectPlaybackDevice(selected.index)) {
+  throw new Error(`Could not select ${selected.name}`)
+}
+```
+
+Each device has `index`, `name`, and `isDefault` fields. An index belongs to the latest enumeration and can change after a device change.
+
+Selection fails while normal playback or the headless mixer runs. Call `stop()` before selecting another device.
+
+`clearPlaybackDeviceSelection()` restores backend default selection. Clearing a selection does not switch an already open device.
+
+## Control voices and groups
+
+`play()` accepts these options:
+
+| `AudioPlayOptions` field | Default | Native behavior                            |
+| ------------------------ | ------- | ------------------------------------------ |
+| `volume`                 | `1`     | Clamped to `0..4`                          |
+| `pan`                    | `0`     | Clamped to `-1..1`                         |
+| `loop`                   | `false` | Restarts the loaded sound at its end       |
+| `groupId`                | `0`     | Routes the voice through the default group |
+
+Group and master volumes also clamp to `0..4`. `group(name)` returns the existing group when the same name appears again.
+
+The engine supports 32 active loaded voices, encoded streams, and PCM streams in total. A stream reserves one of the same slots.
+
+`AudioSound`, `AudioVoice`, and `AudioGroup` are numeric handles local to one engine. Do not pass them to another `Audio` instance.
+
+`AudioGroup` value `0` names the default group. Groups have no individual disposer. Engine disposal removes them.
+
+Unloading a sound stops all loaded voices that use it. The sound handle becomes invalid, and a later load does not reuse it.
+
+OpenTUI does not emit a loaded-voice completion event or return a completion promise. `play()` only reports whether the voice started.
+
+## Mix PCM and inspect the master tap
+
+`mixFrames()` returns interleaved Float32 PCM. Mono output averages the stereo master.
+
+Output with more than two channels keeps the stereo signal in the first two channels. Extra channels contain zero.
+
+The tap keeps the latest stereo master frames in a fixed native ring. New frames overwrite the oldest frames when the ring is full.
+
+Tap reads do not consume data. Repeated reads can return the same latest frames.
+
+Only `framesRead * channels` values in the returned `frames` array contain tapped data. Remaining allocated values contain zero.
+
+The master tap combines loaded sounds, encoded streams, and PCM streams. It cannot isolate one voice, group, or stream.
+
+OpenTUI does not calculate a fast Fourier transform (FFT). Run an FFT on tap samples in application code.
+
+`getStats()` returns these fields:
+
+| Field          | Meaning                                                                 |
+| -------------- | ----------------------------------------------------------------------- |
+| `soundsLoaded` | Loaded sounds that are not unloaded                                     |
+| `voicesActive` | Active loaded voices plus encoded and PCM streams                       |
+| `framesMixed`  | Frames mixed through device or manual output                            |
+| `lockMisses`   | Device callbacks that returned silence because the engine lock was busy |
+| `lastPeak`     | Peak absolute sample in the last mixed buffer                           |
+| `lastRms`      | Root mean square value for the last mixed buffer                        |
+
+## Low-level start options
+
+`start(options?)` and `AudioSetupOptions.startOptions` accept every `AudioStartOptions` field:
+
+- `periodSizeInFrames`
+- `periodSizeInMilliseconds`
+- `periods`
+- `performanceProfile`
+- `shareMode`
+- `noPreSilencedOutputBuffer`
+- `noClip`
+- `noDisableDenormals`
+- `noFixedSizedCallback`
+- `wasapiNoAutoConvertSrc`
+- `wasapiNoDefaultQualitySrc`
+- `alsaNoMMap`
+- `alsaNoAutoFormat`
+- `alsaNoAutoChannels`
+- `alsaNoAutoResample`
+
+Native defaults use zero for numeric fields and `false` for flags. `performanceProfile` value `1` selects conservative mode.
+
+Every other packed `performanceProfile` value selects low latency in the current native mapping.
+
+`shareMode` value `1` selects exclusive mode. Every other packed value selects shared mode in the current native mapping.
+
+An explicit `start(options)` replaces the construction-time `startOptions` for that call. It does not merge the two objects.
+
+## Events and errors
+
+`Audio` emits these events:
+
+| Event            | Meaning                                                            |
+| ---------------- | ------------------------------------------------------------------ |
+| `started`        | An explicit `start()` started playback                             |
+| `mixerStarted`   | An explicit `startMixer()` changed the mixer to started            |
+| `captureStarted` | Capture input started                                              |
+| `captureStopped` | Capture input stopped, or OpenTUI observed it as stopped           |
+| `stopped`        | `stop()` stopped the mixer                                         |
+| `disposed`       | Native engine destruction completed                                |
+| `error`          | An operation failed. The payload is `(error, { action, status? })` |
+
+An idempotent `start()` or `startMixer()` call returns `true` without another event. Automatic start emits neither
+event. `start()` starts playback and the mixer, but it emits only `started`.
+
+The exact `AudioAction` values are:
+
+| Area              | Actions                                                                            |
+| ----------------- | ---------------------------------------------------------------------------------- |
+| Engine            | `createAudioEngine`, `start`, `startMixer`, `stop`, `getStats`                     |
+| Sounds            | `loadSound`, `loadSoundFile`, `unloadSound`                                        |
+| Voices and groups | `group`, `play`, `stopVoice`, `setVoiceGroup`, `setGroupVolume`, `setMasterVolume` |
+| Mixing and tap    | `mixFrames`, `enableTap`, `readTapFrames`                                          |
+| Playback devices  | `listPlaybackDevices`, `selectPlaybackDevice`, `clearPlaybackDeviceSelection`      |
+| Capture devices   | `listCaptureDevices`, `selectCaptureDevice`, `clearCaptureDeviceSelection`         |
+| Capture           | `startCapture`, `readCaptureFrames`, `getCaptureStats`, `stopCapture`              |
+
+`disableTap()` currently reports failures with the `enableTap` action. `AudioAction` has no `disableTap` value.
+
+## Ownership and cleanup
+
+An `Audio` engine owns loaded sounds, groups, voices, streams, capture streams, recorders, devices, and tap memory.
+
+Each engine owns a separate native Context. Renderer destruction does not dispose an `Audio` engine.
+
+Dispose child streams or recorders when their work ends. The parent also tries to dispose every active child during `audio.dispose()`.
+
+`audio.dispose()` can throw when a child cannot close or native destruction fails. It preserves the engine when cleanup needs a later retry.
+
+Catch the failure, keep the `Audio` object, and call `dispose()` again after the failed resource can close. Do not discard the owner before that retry.
+
+Connect final disposal to the application's [Lifecycle and cleanup](/docs/core-concepts/lifecycle) path.
+
+## Next
+
+- [Streaming audio](/docs/application-apis/audio-streaming)
+- [Audio capture and recording](/docs/application-apis/audio-capture)
+- [Standalone executables](/docs/reference/standalone-executables)

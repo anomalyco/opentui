@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test"
-import { testRender } from "../index"
+import { testRender } from "../index.js"
 import { createSignal, For, Show, Index } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 

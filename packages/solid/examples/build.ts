@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import process from "node:process"
 import { type BunPlugin } from "bun"
-import { createSolidTransformPlugin } from "../scripts/solid-plugin"
+import { createSolidTransformPlugin } from "../scripts/solid-plugin.js"
 
 type BuildTarget = {
   platform: "darwin" | "linux" | "windows"
@@ -81,9 +81,27 @@ const workspaceAliasPlugin: BunPlugin = {
       }
     })
 
+    build.onResolve({ filter: /^@opentui\/three$/ }, () => {
+      return {
+        path: join(packageRoot, "..", "three", "src", "index.ts"),
+      }
+    })
+
+    build.onResolve({ filter: /^@opentui\/three\/runtime-modules$/ }, () => {
+      return {
+        path: join(packageRoot, "..", "three", "src", "runtime-modules.ts"),
+      }
+    })
+
     build.onResolve({ filter: /^@opentui\/solid\/runtime-plugin-support$/ }, () => {
       return {
         path: join(packageRoot, "scripts", "runtime-plugin-support.ts"),
+      }
+    })
+
+    build.onResolve({ filter: /^@opentui\/solid\/runtime-plugin-support\/configure$/ }, () => {
+      return {
+        path: join(packageRoot, "scripts", "runtime-plugin-support-configure.ts"),
       }
     })
   },

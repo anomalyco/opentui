@@ -12,6 +12,24 @@ let clock: ManualClock
 
 const simulateFrames = (ms: number, frameInterval?: number) => _simulateFrames(clock, renderOnce, ms, frameInterval)
 
+function countSelectedCells(
+  background: Uint16Array,
+  bufferWidth: number,
+  bounds: { x: number; y: number; width: number; height: number },
+): number {
+  let selectedCells = 0
+  for (let y = bounds.y; y < bounds.y + bounds.height; y++) {
+    for (let x = bounds.x; x < bounds.x + bounds.width; x++) {
+      const bufferIdx = y * bufferWidth + x
+      const bgG = (background[bufferIdx * 4 + 1] & 0xff) / 255
+      if (Math.abs(bgG - 1.0) < 0.01) {
+        selectedCells++
+      }
+    }
+  }
+  return selectedCells
+}
+
 describe("Textarea - Scroll Tests", () => {
   beforeEach(async () => {
     clock = new ManualClock()
@@ -538,7 +556,7 @@ describe("Textarea - Scroll Tests", () => {
 
   describe("Viewport Offset After Resize", () => {
     it("should keep content at bottom when resizing from narrow wrapped to wide unwrapped", async () => {
-      const { textarea: editor, root } = await createTextareaRenderable(currentRenderer, renderOnce, {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
         initialValue: Array.from(
           { length: 15 },
           (_, i) => `This is line ${i.toString().padStart(2, "0")} with enough text to wrap when narrow`,
@@ -564,7 +582,6 @@ describe("Textarea - Scroll Tests", () => {
 
       // Resize to much wider - this will unwrap most lines
       editor.width = 80
-      root.yogaNode.calculateLayout(80, 24)
       await renderOnce()
 
       const viewportAfterResize = editor.editorView.getViewport()
@@ -582,7 +599,7 @@ describe("Textarea - Scroll Tests", () => {
     })
 
     it("should clamp horizontal viewport offset when resizing wider with no wrap", async () => {
-      const { textarea: editor, root } = await createTextareaRenderable(currentRenderer, renderOnce, {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
         initialValue: "A".repeat(200),
         width: 20,
         height: 10,
@@ -605,7 +622,6 @@ describe("Textarea - Scroll Tests", () => {
 
       // Resize to much wider - viewport offsetX might now exceed valid range
       editor.width = 250
-      root.yogaNode.calculateLayout(80, 24)
       await renderOnce()
 
       const viewportWide = editor.editorView.getViewport()
@@ -618,7 +634,7 @@ describe("Textarea - Scroll Tests", () => {
     })
 
     it("should allow scrolling and selecting last line immediately after resize from wide to narrow", async () => {
-      const { textarea: editor, root } = await createTextareaRenderable(currentRenderer, renderOnce, {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
         initialValue: Array.from(
           { length: 20 },
           (_, i) =>
@@ -634,7 +650,6 @@ describe("Textarea - Scroll Tests", () => {
 
       // Resize to very narrow - this will cause heavy wrapping
       editor.width = 10
-      root.yogaNode.calculateLayout(80, 24)
       await renderOnce()
 
       const viewportAfterResize = editor.editorView.getViewport()
@@ -700,22 +715,12 @@ describe("Textarea - Scroll Tests", () => {
       expect(frames.length).toBeGreaterThan(10)
 
       const bufferWidth = currentRenderer.width
+      const editorBounds = { x: editor.x, y: editor.y, width: editor.width, height: editor.height }
       const selectionCellCounts: number[] = []
 
       for (const frame of frames) {
         if (!frame.buffers?.bg) continue
-
-        let selectedCells = 0
-        for (let y = editor.y; y < editor.y + editor.height; y++) {
-          for (let x = editor.x; x < editor.x + editor.width; x++) {
-            const bufferIdx = y * bufferWidth + x
-            const bgG = frame.buffers.bg[bufferIdx * 4 + 1]
-            if (Math.abs(bgG - 1.0) < 0.01) {
-              selectedCells++
-            }
-          }
-        }
-        selectionCellCounts.push(selectedCells)
+        selectionCellCounts.push(countSelectedCells(frame.buffers.bg, bufferWidth, editorBounds))
       }
 
       const firstFrameSelection = selectionCellCounts[0] || 0

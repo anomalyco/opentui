@@ -381,6 +381,28 @@ describe("mock-keys", () => {
 
     mockKeys.pressTab({ shift: true })
 
+    expect(mockRenderer.getEmittedData()).toBe("\x1b[Z")
+  })
+
+  test("pressTab with shift modifier parses as shift+tab", async () => {
+    const { parseKeypress } = await import("../lib/parse.keypress.js")
+    const mockRenderer = new MockRenderer()
+    const mockKeys = createMockKeys(mockRenderer as any)
+
+    mockKeys.pressTab({ shift: true })
+
+    const result = parseKeypress(mockRenderer.getEmittedData())
+    expect(result).not.toBeNull()
+    expect(result?.name).toBe("tab")
+    expect(result?.shift).toBe(true)
+  })
+
+  test("pressTab without modifiers still sends raw tab", () => {
+    const mockRenderer = new MockRenderer()
+    const mockKeys = createMockKeys(mockRenderer as any)
+
+    mockKeys.pressTab()
+
     expect(mockRenderer.getEmittedData()).toBe("\t")
   })
 
@@ -953,7 +975,7 @@ describe("mock-keys", () => {
 
   describe("modifyOtherKeys Mode (CSI u variant)", () => {
     test("modifyOtherKeys sequences can be parsed by parseKeypress", async () => {
-      const { parseKeypress } = await import("../lib/parse.keypress")
+      const { parseKeypress } = await import("../lib/parse.keypress.js")
 
       // Test that our generated sequences can be parsed correctly
       const tests = [

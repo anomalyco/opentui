@@ -1,0 +1,92 @@
+---
+import { channelUrl, pageChannel } from "../lib/docs-channel"
+import { buildDocsIndex } from "../lib/docs-index"
+import DocsSearch from "./DocsSearch.astro"
+
+const channel = pageChannel(Astro.url.pathname)
+const docsIndex = await buildDocsIndex()
+
+const normalize = (path: string) => path.replace(/\/+$/, "") || "/"
+const current = normalize(Astro.url.pathname)
+
+// Generated pages outside the docs index: Releases closes Start so it stays visible without scrolling, and API
+// reference follows the reference section's ungrouped pages.
+const releases = { url: "/docs/releases", navTitle: "Releases", group: undefined }
+const apiReference = { url: "/docs/api", navTitle: "API reference", group: undefined }
+const sections = docsIndex.sections.map((section) => {
+  if (section.id === "start") return { ...section, pages: [...section.pages, releases] }
+  if (section.id !== "reference") return section
+  const grouped = section.pages.findIndex((page) => page.group)
+  const at = grouped === -1 ? section.pages.length : grouped
+  return { ...section, pages: [...section.pages.slice(0, at), apiReference, ...section.pages.slice(at)] }
+})
+---
+
+<div class="docs-index">
+  <DocsSearch />
+  <nav aria-label="Documentation" data-docs-nav>
+    <ul>
+      {
+        sections.map((section) => (
+          <li>
+            <span class="section">{section.title}</span>
+            <ul>
+              {section.pages.map((page, index) => (
+                <>
+                  {page.group && page.group !== section.pages[index - 1]?.group && <li class="group">{page.group}</li>}
+                  <li>
+                    <a
+                      href={channelUrl(page.url, channel)}
+                      aria-current={current === channelUrl(page.url, channel) ? "page" : undefined}
+                    >
+                      {page.navTitle}
+                    </a>
+                  </li>
+                </>
+              ))}
+            </ul>
+          </li>
+        ))
+      }
+    </ul>
+  </nav>
+</div>
+
+<style>
+  .docs-index {
+    line-height: 1.6;
+  }
+
+  ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  nav[hidden] {
+    display: none;
+  }
+
+  nav > ul > li + li {
+    margin-block-start: 1.5rem;
+  }
+
+  .section {
+    font-weight: 700;
+  }
+
+  .group {
+    font-weight: 700;
+    font-size: var(--text-caption);
+    margin-block-start: 0.75rem;
+  }
+
+  a {
+    display: inline-block;
+    padding-block: 0.0625rem;
+  }
+
+  a[aria-current="page"] {
+    color: inherit;
+  }
+</style>

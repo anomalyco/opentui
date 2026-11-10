@@ -1,0 +1,54 @@
+---
+import type { WordmarkStudy } from "../data/wordmark-studies"
+
+interface Props {
+  study: WordmarkStudy
+  width: number
+}
+
+const { study, width } = Astro.props
+const number = (value: number) => Number(value.toFixed(3))
+---
+
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 25 6"
+  width={width}
+  height={(width * 6) / 25}
+  role="img"
+  aria-label={`OpenTUI — ${study.id}, ${study.name}, ${width}px wide`}
+  focusable="false"
+  shape-rendering="crispEdges"
+>
+  {
+    study.layers.map((layer, index) => (
+      <g fill={layer.ink} class:list={{ overprint: index > 0 }}>
+        {"rectangles" in layer ? (
+          <path
+            d={layer.rectangles
+              .map(([x, y, w, h]) => `M${number(x)} ${number(y)}h${number(w)}v${number(h)}h${number(-w)}z`)
+              .join("")}
+          />
+        ) : (
+          layer.circles.map(([x, y, radius]) => (
+            <circle cx={x} cy={y} r={radius} shape-rendering="geometricPrecision" />
+          ))
+        )}
+      </g>
+    ))
+  }
+</svg>
+
+<style>
+  svg {
+    display: block;
+    flex: none;
+    max-width: 100%;
+    height: auto;
+    isolation: isolate;
+  }
+
+  .overprint {
+    mix-blend-mode: multiply;
+  }
+</style>

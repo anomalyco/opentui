@@ -179,6 +179,114 @@ test("parseKeypress - ctrl+letter combinations", () => {
   })
 })
 
+test("parseKeypress - raw ctrl+\\ and related control bytes", () => {
+  expect(parseKeypress("\x1c")).toEqual({
+    eventType: "press",
+    name: "\\",
+    ctrl: true,
+    meta: false,
+    shift: false,
+    option: false,
+    number: false,
+    sequence: "\x1c",
+    raw: "\x1c",
+    source: "raw",
+  })
+
+  expect(parseKeypress("\x1d")).toEqual({
+    eventType: "press",
+    name: "]",
+    ctrl: true,
+    meta: false,
+    shift: false,
+    option: false,
+    number: false,
+    sequence: "\x1d",
+    raw: "\x1d",
+    source: "raw",
+  })
+
+  expect(parseKeypress("\x1e")).toEqual({
+    eventType: "press",
+    name: "^",
+    ctrl: true,
+    meta: false,
+    shift: false,
+    option: false,
+    number: false,
+    sequence: "\x1e",
+    raw: "\x1e",
+    source: "raw",
+  })
+
+  expect(parseKeypress("\x1f")).toEqual({
+    eventType: "press",
+    name: "_",
+    ctrl: true,
+    meta: false,
+    shift: false,
+    option: false,
+    number: false,
+    sequence: "\x1f",
+    raw: "\x1f",
+    source: "raw",
+  })
+})
+
+test("parseKeypress - meta+raw ctrl+\\ and related control bytes", () => {
+  expect(parseKeypress("\x1b\x1c")).toEqual({
+    eventType: "press",
+    name: "\\",
+    ctrl: true,
+    meta: true,
+    shift: false,
+    option: false,
+    number: false,
+    sequence: "\x1b\x1c",
+    raw: "\x1b\x1c",
+    source: "raw",
+  })
+
+  expect(parseKeypress("\x1b\x1d")).toEqual({
+    eventType: "press",
+    name: "]",
+    ctrl: true,
+    meta: true,
+    shift: false,
+    option: false,
+    number: false,
+    sequence: "\x1b\x1d",
+    raw: "\x1b\x1d",
+    source: "raw",
+  })
+
+  expect(parseKeypress("\x1b\x1e")).toEqual({
+    eventType: "press",
+    name: "^",
+    ctrl: true,
+    meta: true,
+    shift: false,
+    option: false,
+    number: false,
+    sequence: "\x1b\x1e",
+    raw: "\x1b\x1e",
+    source: "raw",
+  })
+
+  expect(parseKeypress("\x1b\x1f")).toEqual({
+    eventType: "press",
+    name: "_",
+    ctrl: true,
+    meta: true,
+    shift: false,
+    option: false,
+    number: false,
+    sequence: "\x1b\x1f",
+    raw: "\x1b\x1f",
+    source: "raw",
+  })
+})
+
 test("parseKeypress - ctrl+space and alt+space", () => {
   // Ctrl+Space sends \x00 (null character)
   expect(parseKeypress("\x00")).toEqual({
@@ -779,36 +887,30 @@ test("parseKeypress - backspace key with modifiers (Kitty keyboard protocol)", (
   expect(shiftBackspace.source).toBe("kitty")
 })
 
-test("parseKeypress - Buffer input", () => {
-  const buf = Buffer.from("a")
-  expect(parseKeypress(buf)).toEqual({
-    eventType: "press",
-    name: "a",
-    ctrl: false,
-    meta: false,
-    shift: false,
-    option: false,
-    number: false,
-    sequence: "a",
-    raw: "a",
-    source: "raw",
-  })
-})
-
-test("parseKeypress - high byte buffer handling", () => {
-  const buf = Buffer.from([160]) // 128 + 32, should become \x1b + " "
-  expect(parseKeypress(buf)).toEqual({
-    eventType: "press",
-    name: "space",
-    ctrl: false,
-    meta: true,
-    shift: false,
-    option: false,
-    number: false,
-    sequence: "\x1b ",
-    raw: "\x1b ",
-    source: "raw",
-  })
+test("parseKeypress - Buffer input leaves the buffer unchanged", () => {
+  const press = { ctrl: false, shift: false, option: false, number: false, eventType: "press", source: "raw" } as const
+  const key = (name: string, sequence: string, meta = false) => ({ ...press, name, meta, sequence, raw: sequence })
+  const kittyFlags = { super: false, hyper: false, capsLock: false, numLock: false }
+  const cases: Array<[Buffer, boolean, ParsedKey | null]> = [
+    [Buffer.from("a"), false, key("a", "a")],
+    [Buffer.from("é"), false, key("é", "é")], // two bytes, the first above 127
+    [Buffer.from([127]), false, key("backspace", "\x7f")],
+    [Buffer.from([128]), false, { ...key("space", "\x1b\x00", true), ctrl: true }],
+    [Buffer.from([160]), false, key("space", "\x1b ", true)], // 128 + 32
+    [Buffer.from([225]), false, key("a", "\x1ba", true)],
+    [Buffer.from([255]), false, key("backspace", "\x1b\x7f", true)],
+    [
+      Buffer.from("\x1b[97;5u"),
+      true,
+      { ...key("a", "a"), ...kittyFlags, ctrl: true, raw: "\x1b[97;5u", source: "kitty" },
+    ],
+    [Buffer.from("\x1b[<0;1;1M"), false, null],
+  ]
+  for (const [buf, useKittyKeyboard, expected] of cases) {
+    const before = Buffer.from(buf)
+    expect(parseKeypress(buf, { useKittyKeyboard })).toEqual(expected)
+    expect(buf).toEqual(before)
+  }
 })
 
 test("parseKeypress - empty input", () => {
@@ -1846,4 +1948,67 @@ test("parseKeypress - preserves printable Unicode characters including non-BMP",
     expect(key.ctrl).toBe(false)
     expect(key.shift).toBe(false)
   }
+})
+
+test("parseKeypress - SS3 application keypad digits (ESC O p..y)", () => {
+  const cases: Array<[string, string]> = [
+    ["\x1bOp", "0"],
+    ["\x1bOq", "1"],
+    ["\x1bOr", "2"],
+    ["\x1bOs", "3"],
+    ["\x1bOt", "4"],
+    ["\x1bOu", "5"],
+    ["\x1bOv", "6"],
+    ["\x1bOw", "7"],
+    ["\x1bOx", "8"],
+    ["\x1bOy", "9"],
+  ]
+
+  for (const [seq, digit] of cases) {
+    const key = parseKeypress(seq)
+    expect(key).not.toBeNull()
+    expect(key!.name).toBe(digit)
+    // sequence must be the printable digit, not the raw ESC sequence,
+    // so that text-insertion components can insert it without filtering it
+    expect(key!.sequence).toBe(digit)
+    expect(key!.number).toBe(true)
+    expect(key!.ctrl).toBe(false)
+    expect(key!.meta).toBe(false)
+    expect(key!.shift).toBe(false)
+    expect(key!.source).toBe("raw")
+  }
+})
+
+test("parseKeypress - SS3 application keypad operators (ESC O j/k/l/m/n/o/X)", () => {
+  const cases: Array<[string, string]> = [
+    ["\x1bOj", "*"],
+    ["\x1bOk", "+"],
+    ["\x1bOl", ","],
+    ["\x1bOm", "-"],
+    ["\x1bOn", "."],
+    ["\x1bOo", "/"],
+    ["\x1bOX", "="],
+  ]
+
+  for (const [seq, char] of cases) {
+    const key = parseKeypress(seq)
+    expect(key).not.toBeNull()
+    expect(key!.name).toBe(char)
+    expect(key!.sequence).toBe(char)
+    expect(key!.number).toBe(false)
+    expect(key!.ctrl).toBe(false)
+    expect(key!.meta).toBe(false)
+    expect(key!.shift).toBe(false)
+    expect(key!.source).toBe("raw")
+  }
+})
+
+test("parseKeypress - SS3 application keypad Enter (ESC O M)", () => {
+  const key = parseKeypress("\x1bOM")
+  expect(key).not.toBeNull()
+  expect(key!.name).toBe("return")
+  expect(key!.ctrl).toBe(false)
+  expect(key!.meta).toBe(false)
+  expect(key!.shift).toBe(false)
+  expect(key!.source).toBe("raw")
 })

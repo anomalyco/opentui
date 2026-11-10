@@ -1,0 +1,44 @@
+base 0.3.4
+- @opentui/core/testing: constructor MockTreeSitterClient(options?: { autoResolveTimeout?: number; })
++ @opentui/core/testing: constructor MockTreeSitterClient(options?: { autoResolveTimeout?: number; clock?: Clock; })
++ @opentui/core/testing: method MockTreeSitterClient.destroy(): Promise<void>
+- @opentui/core: constructor TreeSitterClient(options: TreeSitterClientOptions)
++ @opentui/core: constructor TreeSitterClient(options: TreeSitterClientOptions, internalOptions?: TreeSitterClientInternalOptions)
++ @opentui/core: function destroyTreeSitterClient(): Promise<void>
++ @opentui/core: method TreeSitterClient.onDestroy(callback: () => void): () => void
+- @opentui/core: property RenderLib.textBufferSetSyntaxStyle: (buffer: TextBufferHandle, style: SyntaxStyleHandle | null) => void
++ @opentui/core: property RenderLib.textBufferSetSyntaxStyle: (buffer: TextBufferHandle, style: SyntaxStyleHandle | null) => boolean
+- @opentui/core: property TreeSitterClientEvents."worker:log": [ logType: "log" | "error", message: string ]
++ @opentui/core: property TreeSitterClientEvents."worker:log": [ logType: TreeSitterWorkerLogType, message: string ]
++ @opentui/core: type TreeSitterWorkerLogType = "log" | "error" | "warn"
++ @opentui/core: type TreeSitterWorkerRequest = { type: "INIT"; dataPath: string; } | { type: "ADD_FILETYPE_PARSER"; filetypeParser: FiletypeParserOptions; } | { type: "PRELOAD_PARSER"; filetype: string; messageId: string; } | { type: "INITIALIZE_PARSER"; bufferId: number; version: number; content: string; filetype: string; messageId: string; } | { type: "HANDLE_EDITS"; bufferId: number; version: number; content: string; edits: Edit[]; } | { type: "GET_PERFORMANCE"; messageId: string; } | { type: "RESET_BUFFER"; bufferId: number; version: number; content: string; edits: Edit[]; } | { type: "DISPOSE_BUFFER"; bufferId: number; } | { type: "ONESHOT_HIGHLIGHT"; content: string; filetype: string; messageId: string; } | { type: "UPDATE_DATA_PATH"; dataPath: string; messageId: string; } | { type: "CLEAR_CACHE"; messageId: string; }
++ @opentui/core: type TreeSitterWorkerResponse = { type: "INIT_RESPONSE"; error?: string; } | { type: "PARSER_INIT_RESPONSE"; bufferId: number; messageId: string; hasParser: boolean; warning?: string; error?: string; } | { type: "HIGHLIGHT_RESPONSE"; bufferId: number; version: number; highlights: HighlightResponse[]; } | { type: "PRELOAD_PARSER_RESPONSE"; messageId: string; hasParser: boolean; } | { type: "BUFFER_DISPOSED"; bufferId: number; } | { type: "PERFORMANCE_RESPONSE"; performance: PerformanceStats; messageId: string; } | { type: "ONESHOT_HIGHLIGHT_RESPONSE"; messageId: string; hasParser: boolean; highlights?: SimpleHighlight[]; warning?: string; error?: string; } | { type: "UPDATE_DATA_PATH_RESPONSE"; messageId: string; error?: string; } | { type: "CLEAR_CACHE_RESPONSE"; messageId: string; error?: string; } | { type: "WARNING"; bufferId?: number; warning: string; } | { type: "ERROR"; bufferId?: number; error: string; } | { type: "WORKER_LOG"; logType: TreeSitterWorkerLogType; data: unknown[]; }
+- @opentui/keymap/runtime-modules: const runtimeModules: { "@opentui/keymap": typeof keymap; "@opentui/keymap/extras": typeof keymapExtras; "@opentui/keymap/extras/graph": typeof keymapGraphExtra; "@opentui/keymap/addons": typeof keymapAddons; "@opentui/keymap/addons/opentui": typeof keymapOpenTuiAddons; "@opentui/keymap/html": typeof keymapHtml; "@opentui/keymap/opentui": typeof keymapOpenTui; "@opentui/keymap/react": typeof keymapReact; "@opentui/keymap/solid": typeof keymapSolid; }
++ @opentui/keymap/runtime-modules: const runtimeModules: { "@opentui/keymap": typeof keymap; "@opentui/keymap/extras": typeof keymapExtras; "@opentui/keymap/extras/graph": typeof keymapGraphExtra; "@opentui/keymap/addons": typeof keymapAddons; "@opentui/keymap/addons/opentui": typeof keymapOpenTuiAddons; "@opentui/keymap/html": typeof keymapHtml; "@opentui/keymap/opentui": typeof keymapOpenTui; "@opentui/keymap/react": () => Promise<RuntimeModuleExports>; "@opentui/keymap/solid": () => Promise<RuntimeModuleExports>; }
+- @opentui/solid/bun-plugin: type ResolveImportPath = (specifier: string) => string | null
++ @opentui/solid/jsx-dev-runtime: function Fragment(props: { children?: JSX.Element; }): JSX.Element
++ @opentui/solid/jsx-dev-runtime: function jsxDEV(type: string | JsxComponent, props?: Record<string, unknown> | null): JSX.Element
+- @opentui/solid/jsx-dev-runtime: type JSX.ArrayElement = Array<Element>
+- @opentui/solid/jsx-dev-runtime: type JSX.Element = DomNode | ArrayElement | string | number | boolean | null | undefined
++ @opentui/solid/jsx-dev-runtime: type JSX.Element = SolidJSX.Element
++ @opentui/solid/jsx-runtime: const jsxs: typeof jsx
++ @opentui/solid/jsx-runtime: function Fragment(props: { children?: JSX.Element; }): JSX.Element
++ @opentui/solid/jsx-runtime: function jsx(type: string | JsxComponent, props?: Record<string, unknown> | null): JSX.Element
++ @opentui/solid/jsx-runtime: function jsxDEV(type: string | JsxComponent, props?: Record<string, unknown> | null): JSX.Element
+- @opentui/solid/jsx-runtime: type JSX.ArrayElement = Array<Element>
+- @opentui/solid/jsx-runtime: type JSX.Element = DomNode | ArrayElement | string | number | boolean | null | undefined
++ @opentui/solid/jsx-runtime: type JSX.Element = SolidJSX.Element
++ @opentui/solid/jsx-runtime: type JsxComponent = (props: Record<string, unknown>) => unknown
+- @opentui/solid: function Portal(props: { mount?: DomNode; ref?: (el: {}) => void; children: JSX.Element; }): DomNode
++ @opentui/solid: function Portal(props: { mount?: DomNode; ref?: (el: {}) => void; children: JSX.Element; }): JSX.Element
+- @opentui/solid: type JSX.ArrayElement = Array<Element>
+- @opentui/solid: type JSX.Element = DomNode | ArrayElement | string | number | boolean | null | undefined
++ @opentui/solid: type JSX.Element = SolidJSX.Element
+- @opentui/three: constructor RapierPhysicsWorld(rapierWorld: RAPIER.World)
++ @opentui/three: constructor RapierPhysicsWorld(rapierWorld: World)
+- @opentui/three: constructor RapierRigidBody(rapierBody: RAPIER.RigidBody)
++ @opentui/three: constructor RapierRigidBody(rapierBody: RigidBody)
+- @opentui/three: static method RapierPhysicsWorld.createFromRapierWorld(rapierWorld: RAPIER.World): RapierPhysicsWorld
++ @opentui/three: static method RapierPhysicsWorld.createFromRapierWorld(rapierWorld: World): RapierPhysicsWorld
+- @opentui/three: readonly property RapierRigidBody.nativeBody: RAPIER.RigidBody
++ @opentui/three: readonly property RapierRigidBody.nativeBody: RigidBody

@@ -1,9 +1,14 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process"
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { dirname, join, resolve } from "path"
+import { ModuleKind, ScriptTarget, transpileModule } from "typescript"
 import { fileURLToPath } from "url"
 import process from "process"
 import { createSolidTransformPlugin } from "./solid-plugin.js"
+import { resolveNodeSolidRuntimeImport } from "./solid-transform.js"
+
+// `packages/solid/package.json` is the workspace manifest used for repo development.
+// This build writes `packages/solid/dist/package.json`, which is the actual published npm manifest.
 
 interface PackageJson {
   name: string
@@ -45,6 +50,95 @@ const replaceLinks = (text: string): string => {
     : text
 }
 
+interface BunOnlyStubOptions {
+  defaultExport?: boolean
+}
+
+interface MainBuildOptions {
+  entryPoint?: string
+  label: string
+  outputFile: string
+  resolvePath?: (specifier: string) => string | null
+  target: "bun" | "node"
+}
+
+const transpileEntryPoint = (entryPoint: string, outputFile: string): void => {
+  const sourcePath = join(rootDir, entryPoint)
+  const outputPath = join(rootDir, "dist", outputFile)
+  const sourceText = readFileSync(sourcePath, "utf8")
+  const result = transpileModule(sourceText, {
+    compilerOptions: {
+      module: ModuleKind.ESNext,
+      sourceMap: true,
+      target: ScriptTarget.ES2022,
+    },
+    fileName: sourcePath,
+  })
+
+  mkdirSync(dirname(outputPath), { recursive: true })
+  writeFileSync(outputPath, result.outputText)
+  if (result.sourceMapText) {
+    writeFileSync(`${outputPath}.map`, result.sourceMapText)
+  }
+}
+
+const buildMainEntryPoint = async (options: MainBuildOptions): Promise<void> => {
+  console.log(`Building ${options.label} entry point...`)
+
+  const external = new Set(externalDeps)
+
+  for (const specifier of ["solid-js", "solid-js/store"]) {
+    const rewritten = options.resolvePath?.(specifier)
+    if (rewritten) {
+      external.add(rewritten)
+    }
+  }
+
+  const buildResult = await Bun.build({
+    entrypoints: [join(rootDir, options.entryPoint ?? packageJson.module!)],
+    external: [...external],
+    outfile: join(rootDir, "dist", options.outputFile),
+    plugins: [createSolidTransformPlugin({ resolvePath: options.resolvePath })],
+    sourcemap: "external",
+    target: options.target,
+  })
+
+  if (!buildResult.success) {
+    console.error(`Build failed for ${options.label} entry point:`, buildResult.logs)
+    process.exit(1)
+  }
+
+  const outputPath = join(rootDir, "dist", options.outputFile)
+  for (const output of buildResult.outputs) {
+    if (output.kind === "entry-point") {
+      await Bun.write(outputPath, output)
+      continue
+    }
+
+    if (output.kind === "sourcemap") {
+      await Bun.write(`${outputPath}.map`, output)
+    }
+  }
+}
+
+const writeBunOnlyStub = (
+  outputFile: string,
+  specifier: string,
+  exportNames: string[],
+  options: BunOnlyStubOptions = {},
+): void => {
+  const errorMessage = `${specifier} is Bun-only and is not available in Node.js. Use Bun to import this entrypoint.`
+  const namedExports = exportNames
+    .map((exportName) => `export function ${exportName}() {\n  return unavailable()\n}`)
+    .join("\n\n")
+  const defaultExport = options.defaultExport ? "\n\nexport default unavailable()" : ""
+
+  writeFileSync(
+    join(rootDir, "dist", outputFile),
+    `const errorMessage = ${JSON.stringify(errorMessage)}\n\nfunction unavailable() {\n  throw new Error(errorMessage)\n}\n\n${namedExports}${defaultExport}\n\nunavailable()\n`,
+  )
+}
+
 const requiredFields: (keyof PackageJson)[] = ["name", "version", "description"]
 const missingRequired = requiredFields.filter((field) => !packageJson[field])
 if (missingRequired.length > 0) {
@@ -68,20 +162,24 @@ if (!packageJson.module) {
   process.exit(1)
 }
 
-console.log("Building main entry point...")
-const mainBuildResult = await Bun.build({
-  entrypoints: [join(rootDir, packageJson.module)],
-  target: "bun",
-  outdir: join(rootDir, "dist"),
-  external: externalDeps,
-  plugins: [createSolidTransformPlugin()],
-  splitting: true,
+await buildMainEntryPoint({
+  label: "Node",
+  outputFile: "index.js",
+  resolvePath: resolveNodeSolidRuntimeImport,
+  target: "node",
 })
 
-if (!mainBuildResult.success) {
-  console.error("Build failed for main entry point:", mainBuildResult.logs)
-  process.exit(1)
-}
+await buildMainEntryPoint({
+  label: "Bun",
+  outputFile: "index.bun.js",
+  target: "bun",
+})
+
+console.log("Building components entry point...")
+writeFileSync(
+  join(distDir, "components.js"),
+  `export { extend, getComponentCatalogue } from ${JSON.stringify(packageJson.name)}\n`,
+)
 
 console.log("Generating TypeScript declarations...")
 
@@ -123,42 +221,82 @@ if (existsSync(join(rootDir, "jsx-runtime.d.ts"))) {
   copyFileSync(join(rootDir, "jsx-runtime.d.ts"), join(distDir, "jsx-runtime.d.ts"))
 }
 
+if (existsSync(join(rootDir, "jsx-dev-runtime.d.ts"))) {
+  copyFileSync(join(rootDir, "jsx-dev-runtime.d.ts"), join(distDir, "jsx-dev-runtime.d.ts"))
+}
+
+transpileEntryPoint("jsx-runtime.ts", "jsx-runtime.js")
+transpileEntryPoint("jsx-dev-runtime.ts", "jsx-dev-runtime.js")
+
 mkdirSync(join(distDir, "scripts"), { recursive: true })
 
-if (existsSync(join(rootDir, "scripts", "solid-plugin.ts"))) {
-  copyFileSync(join(rootDir, "scripts", "solid-plugin.ts"), join(distDir, "scripts", "solid-plugin.ts"))
-}
-
-if (existsSync(join(rootDir, "scripts", "preload.ts"))) {
-  copyFileSync(join(rootDir, "scripts", "preload.ts"), join(distDir, "scripts", "preload.ts"))
-}
-
-if (existsSync(join(rootDir, "scripts", "runtime-plugin-support.ts"))) {
-  copyFileSync(
-    join(rootDir, "scripts", "runtime-plugin-support.ts"),
-    join(distDir, "scripts", "runtime-plugin-support.ts"),
-  )
-}
+transpileEntryPoint("scripts/solid-plugin.ts", "scripts/solid-plugin.js")
+transpileEntryPoint("scripts/solid-transform.ts", "scripts/solid-transform.js")
+transpileEntryPoint("scripts/preload.ts", "scripts/preload.js")
+transpileEntryPoint("scripts/runtime-plugin-support.ts", "scripts/runtime-plugin-support.js")
+transpileEntryPoint("scripts/runtime-plugin-support-configure.ts", "scripts/runtime-plugin-support-configure.js")
+writeBunOnlyStub("scripts/preload.node.js", `${packageJson.name}/preload`, [])
+writeBunOnlyStub(
+  "scripts/solid-plugin.node.js",
+  `${packageJson.name}/bun-plugin`,
+  ["ensureSolidTransformPlugin", "resetSolidTransformPluginState", "createSolidTransformPlugin"],
+  { defaultExport: true },
+)
+writeBunOnlyStub("scripts/runtime-plugin-support.node.js", `${packageJson.name}/runtime-plugin-support`, [
+  "ensureRuntimePluginSupport",
+])
+writeBunOnlyStub(
+  "scripts/runtime-plugin-support-configure.node.js",
+  `${packageJson.name}/runtime-plugin-support/configure`,
+  ["ensureRuntimePluginSupport"],
+)
 
 const exports = {
   ".": {
     types: "./index.d.ts",
+    bun: "./index.bun.js",
+    node: "./index.js",
     import: "./index.js",
-    require: "./index.js",
+    default: "./index.js",
   },
   "./preload": {
-    import: "./scripts/preload.ts",
+    bun: "./scripts/preload.js",
+    node: "./scripts/preload.node.js",
+    default: "./scripts/preload.node.js",
   },
   "./bun-plugin": {
     types: "./scripts/solid-plugin.d.ts",
-    import: "./scripts/solid-plugin.ts",
+    bun: "./scripts/solid-plugin.js",
+    node: "./scripts/solid-plugin.node.js",
+    default: "./scripts/solid-plugin.node.js",
   },
   "./runtime-plugin-support": {
     types: "./scripts/runtime-plugin-support.d.ts",
-    import: "./scripts/runtime-plugin-support.ts",
+    bun: "./scripts/runtime-plugin-support.js",
+    node: "./scripts/runtime-plugin-support.node.js",
+    default: "./scripts/runtime-plugin-support.node.js",
   },
-  "./jsx-runtime": "./jsx-runtime.d.ts",
-  "./jsx-dev-runtime": "./jsx-runtime.d.ts",
+  "./runtime-plugin-support/configure": {
+    types: "./scripts/runtime-plugin-support-configure.d.ts",
+    bun: "./scripts/runtime-plugin-support-configure.js",
+    node: "./scripts/runtime-plugin-support-configure.node.js",
+    default: "./scripts/runtime-plugin-support-configure.node.js",
+  },
+  "./components": {
+    types: "./components.d.ts",
+    import: "./components.js",
+    require: "./components.js",
+  },
+  "./jsx-runtime": {
+    types: "./jsx-runtime.d.ts",
+    import: "./jsx-runtime.js",
+    default: "./jsx-runtime.js",
+  },
+  "./jsx-dev-runtime": {
+    types: "./jsx-dev-runtime.d.ts",
+    import: "./jsx-dev-runtime.js",
+    default: "./jsx-dev-runtime.js",
+  },
 }
 
 // Process dependencies to replace workspace references with actual versions

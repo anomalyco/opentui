@@ -1,0 +1,130 @@
+---
+title: Keymap
+description: Register, dispatch, and query shared key bindings in an OpenTUI app
+skill:
+  entry: true
+  intents: [keymap, keybindings, shortcuts, commands, leader, ex-commands]
+---
+
+# Keymap
+
+`@opentui/keymap` is an independent, host-agnostic package for layered key bindings, commands, and key sequences.
+
+The package lets an app register an action once and resolve it from the current focus. An editor can save from every
+view, close only the focused dialog, and show its current shortcuts.
+
+## Install
+
+```bash
+bun add @opentui/keymap
+```
+
+The engine is JavaScript. The OpenTUI adapter connects it to terminal input from `CliRenderer`.
+The HTML adapter connects the same engine to browser keyboard events.
+
+## Create an OpenTUI keymap
+
+Create the renderer first. Then create a default OpenTUI keymap and register an application layer.
+
+```ts
+import { createCliRenderer } from "@opentui/core"
+import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
+
+const renderer = await createCliRenderer()
+const keymap = createDefaultOpenTuiKeymap(renderer)
+
+keymap.registerLayer({
+  commands: [
+    {
+      name: "file.save",
+      run() {
+        console.log("save")
+      },
+    },
+    {
+      name: "app.quit",
+      run() {
+        renderer.destroy()
+      },
+    },
+  ],
+  bindings: [
+    { key: "ctrl+s", cmd: "file.save" },
+    { key: "q", cmd: "app.quit" },
+  ],
+})
+```
+
+`createDefaultOpenTuiKeymap()` installs the default parser, event matcher, `enabled` fields, and metadata fields.
+Each registration returns a disposer. Destroying the renderer also ends the host lifecycle and releases keymap resources.
+See [Lifecycle and cleanup](/docs/core-concepts/lifecycle) for application shutdown.
+
+```text terminal=keymap-active-keys
+ctrl+s  file.save
+q       app.quit
+```
+
+## Register, dispatch, and query
+
+Keymap uses one short model:
+
+| Step     | What happens                                                                                                   | Main APIs                                                          |
+| -------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Register | The app adds commands, key bindings, layers, tokens, patterns, and addons.                                     | `registerLayer()`, `registerToken()`, addon registration functions |
+| Dispatch | The host sends an event. The engine applies focus, conditions, layer order, sequences, and command resolution. | Host listeners, `dispatchCommand()`, intercepts                    |
+| Query    | The app reads the commands and next keys that are active now.                                                  | `getActiveKeys()`, `getCommands()`, `getPendingSequence()`         |
+
+A layer can be global or attached to a host target. Higher `priority` values run first.
+Newer layers run first when priorities match. A focused target controls which local layers are active.
+
+A key sequence stays pending until another key completes it, rejects it, or clears it.
+Queries use that pending state, so a shortcut view can show only the next reachable keys.
+
+The [Core keymap API](/docs/keymap/core) defines key syntax, field compilation, runtime data, command queries,
+dispatch results, ordering, errors, and sequence limits.
+
+## Choose the input level
+
+Use [direct keyboard events](/docs/core-concepts/keyboard) when one owner needs the original `KeyEvent`.
+Examples include a global Ctrl+C handler or terminal-protocol diagnostics.
+
+Use a component's local key binding options for behavior that belongs only to that component.
+Examples include cursor movement in an input or selection movement in a list.
+
+Move to Keymap when the same application command has more than one owner or context. Keymap is useful when you need:
+
+- focus-scoped or priority-ordered layers
+- user-configurable key bindings
+- multi-key sequences or leader keys
+- named commands for palettes and help
+- one command model across Core, React, and Solid code
+
+Keymap does not replace component text input. The OpenTUI textarea addon can route editing commands through Keymap when
+an application needs to manage those key bindings centrally.
+
+## Hosts and framework state
+
+The [Hosts](/docs/keymap/hosts) page defines `KeymapHost` and the built-in OpenTUI and HTML adapters.
+Hosts supply focus, hierarchy, key events, metadata, and lifecycle signals.
+
+React and Solid do not create a keymap. Their providers consume a pre-created OpenTUI keymap and expose reactive state:
+
+- [React keymap integration](/docs/keymap/react) supplies React context and hooks.
+- [Solid keymap integration](/docs/keymap/solid) supplies Solid context, selectors, and hooks.
+
+## Add features
+
+The bare engine has no fixed key language. Addons install parsers, field compilers, sequence behavior, diagnostics, and
+OpenTUI integrations through public registration APIs.
+
+- [Built-in keymap addons](/docs/keymap/addons) lists every shipped universal and OpenTUI addon.
+- [Custom keymap addons](/docs/keymap/custom-addons) explains addon callbacks, ordering, cleanup, and tests.
+
+## Next
+
+- [Hosts](/docs/keymap/hosts)
+- [Core keymap API](/docs/keymap/core)
+- [React keymap integration](/docs/keymap/react)
+- [Solid keymap integration](/docs/keymap/solid)
+- [Built-in keymap addons](/docs/keymap/addons)
+- [Custom keymap addons](/docs/keymap/custom-addons)

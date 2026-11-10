@@ -35,7 +35,7 @@ export default function TabSelectDemo() {
   const [activeTab, setActiveTab] = createSignal(0)
 
   onMount(() => {
-    renderer.useConsole = true
+    renderer.consoleMode = "console-overlay"
     renderer.console.show()
   })
 

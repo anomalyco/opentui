@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test"
+import { describe, expect, it, spyOn } from "bun:test"
 import { TextNodeRenderable, isTextNodeRenderable } from "./TextNode.js"
 import { RGBA } from "../lib/RGBA.js"
 import { StyledText, red, bold, t } from "../lib/styled-text.js"
@@ -44,6 +44,30 @@ describe("TextNodeRenderable", () => {
       expect(node.bg?.g).toBe(0)
       expect(node.bg?.b).toBe(1)
       expect(node.bg?.a).toBe(1)
+    })
+
+    it("should preserve RGBA intent constructors in constructor and setters", () => {
+      const node = new TextNodeRenderable({
+        fg: RGBA.fromIndex(6),
+        bg: RGBA.defaultBackground(),
+      })
+
+      expect(node.fg).toBeDefined()
+      expect(node.bg).toBeDefined()
+      expect(node.fg).toBeInstanceOf(RGBA)
+      expect(node.bg).toBeInstanceOf(RGBA)
+      expect(node.fg!.intent).toBe("indexed")
+      expect(node.fg!.slot).toBe(6)
+      expect(node.bg!.intent).toBe("default")
+
+      node.fg = RGBA.defaultForeground()
+      node.bg = RGBA.fromIndex(4)
+
+      expect(node.fg).toBeInstanceOf(RGBA)
+      expect(node.bg).toBeInstanceOf(RGBA)
+      expect(node.fg!.intent).toBe("default")
+      expect(node.bg!.intent).toBe("indexed")
+      expect(node.bg!.slot).toBe(4)
     })
 
     it("should handle undefined colors", () => {
@@ -240,18 +264,72 @@ describe("TextNodeRenderable", () => {
       node.add(child)
       node.add("Last")
 
-      node.remove(child.id)
+      node.remove(child)
 
       expect(node.children).toEqual(["First", "Last"])
       expect(child.parent).toBeNull()
     })
 
-    it("should throw error when child not found in remove", () => {
+    it("should remove duplicate-id children by first public match or exact object", () => {
       const node = new TextNodeRenderable({})
+      const first = new TextNodeRenderable({ id: "duplicate" })
+      const second = new TextNodeRenderable({ id: "duplicate" })
 
-      expect(() => {
-        node.remove("nonexistent-id")
-      }).toThrow("Child not found in children")
+      node.add(first)
+      node.add(second)
+
+      expect(node.getRenderable("duplicate")).toBe(first)
+
+      node.remove(second)
+
+      expect(node.children).toHaveLength(1)
+      expect(node.children[0]).toBe(first)
+      expect(first.parent).toBe(node)
+      expect(second.parent).toBeNull()
+      expect(node.getRenderable("duplicate")).toBe(first)
+
+      const found = node.getRenderable("duplicate")
+      expect(found).toBe(first)
+      if (found) node.remove(found)
+
+      expect(node.children).toHaveLength(0)
+      expect(first.parent).toBeNull()
+    })
+
+    it("should warn in dev instead of throwing for a child not contained by the node", () => {
+      const node = new TextNodeRenderable({})
+      const child = new TextNodeRenderable({})
+
+      const warnSpy = spyOn(console, "warn").mockImplementation(() => {})
+      try {
+        expect(() => node.remove(child)).not.toThrow()
+        expect(warnSpy).toHaveBeenCalledTimes(1)
+      } finally {
+        warnSpy.mockRestore()
+      }
+    })
+
+    it("should not warn when removing an actual child", () => {
+      const node = new TextNodeRenderable({})
+      const child = new TextNodeRenderable({})
+      node.add(child)
+
+      const warnSpy = spyOn(console, "warn").mockImplementation(() => {})
+      try {
+        node.remove(child)
+        expect(warnSpy).not.toHaveBeenCalled()
+      } finally {
+        warnSpy.mockRestore()
+      }
+    })
+
+    it("should reject string ids at runtime", () => {
+      const node = new TextNodeRenderable({})
+      const child = new TextNodeRenderable({ id: "child" })
+      node.add(child)
+
+      expect(() => (node as any).remove("child")).toThrow("remove expects a TextNodeRenderable child object")
+      expect(node.children[0]).toBe(child)
     })
   })
 
@@ -617,9 +695,10 @@ describe("TextNodeRenderable", () => {
 
       expect(chunks).toHaveLength(1)
       expect(chunks[0].text).toBe("Test")
-      expect(chunks[0].fg?.r).toBe(0)
-      expect(chunks[0].fg?.g).toBe(1)
-      expect(chunks[0].fg?.b).toBe(0)
+      expect(chunks[0].fg).toBeInstanceOf(RGBA)
+      expect((chunks[0].fg as RGBA).r).toBe(0)
+      expect((chunks[0].fg as RGBA).g).toBe(1)
+      expect((chunks[0].fg as RGBA).b).toBe(0)
     })
 
     it("should get children using getChildren", () => {

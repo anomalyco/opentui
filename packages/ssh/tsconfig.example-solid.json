@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "preserve",
+    "jsxImportSource": "@opentui/solid",
+    "baseUrl": ".",
+    "paths": {
+      "@opentui/core": ["../core/dist"],
+      "@opentui/core/*": ["../core/dist/*"],
+      "@opentui/solid": ["../solid/dist"],
+      "@opentui/solid/*": ["../solid/dist/*"]
+    }
+  },
+  "include": ["examples/solid.tsx", "examples/solid-app.tsx", "src/**/*.ts"],
+  "exclude": ["dist", "src/tests", "examples/react.tsx"]
+}

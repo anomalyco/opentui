@@ -1,0 +1,265 @@
+---
+import SitePage from "../../layouts/SitePage.astro"
+
+const title = "Font lab | OpenTUI"
+const description = "Compare the live OpenTUI Mono files with the next compile."
+const weight = {
+  regular: "Regular. The outline names the current section.",
+  bold: "Bold. Navigation and the current outline item.",
+  italic: "Italic. Comments in code samples.",
+}
+const prose = [
+  "OpenTUI is a library to build terminal user interfaces in TypeScript, React, or Solid, on a native Zig renderer.",
+  "You write TypeScript directly or through React and Solid. You arrange boxes and text with flexbox. You add selects, inputs, and scroll boxes with keyboard and mouse controls.",
+  "A renderable is a node in the tree. The renderer walks that tree, sets the layout, and writes cells. <code>box</code>, <code>text</code>, and <code>input</code> are renderables. The page typeface sets the article and the code in it.",
+  "Documentation uses 14px. Landing pages, scrollback, and package notes use 16px. Bold marks the current section. Italic marks comments. One family must work for all of this. It must not look like a UI sans on a grid.",
+]
+
+const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ\nabcdefghijklmnopqrstuvwxyz\n0123456789"
+const identity = "Il1|  O0Q  a g  8 69  @  {}[]()  _*#&"
+const operators = "=> === !== <= >= || && ?? ... /* */ <!-- -->"
+const code = `renderer.root.add(
+  box({ flexDirection: "column" }, [
+    text({ content: "rate = tokens / (t1 - t0)" }),
+    input({ placeholder: "filter 1lI O0 {}" }),
+  ]),
+)`
+const boxDrawing = `┌──────────────┬────────┐
+│ renderable   │ state  │
+├──────────────┼────────┤
+│ box          │ ready  │
+│ text         │ dirty  │
+│ input        │ focus  │
+└──────────────┴────────┘`
+---
+
+<SitePage {title} {description} wide robots="noindex">
+  <article class="lab">
+    <h1>Font lab</h1>
+    <p>
+      Live is the typeface on the site in <code>public/fonts/</code>. Next is the next
+      compile in <code>public/fonts/candidate/</code>. The plan is
+      <code>src/font/private-build-plans.toml</code>.
+    </p>
+
+    <h2>Identity</h2>
+    <div class="pair">
+      <figure>
+        <figcaption>Live</figcaption>
+        <pre>{identity}</pre>
+      </figure>
+      <figure class="next">
+        <figcaption>Next</figcaption>
+        <pre>{identity}</pre>
+      </figure>
+    </div>
+
+    <h2>Alphabet</h2>
+    <div class="pair">
+      <figure>
+        <figcaption>Live</figcaption>
+        <pre>{alphabet}</pre>
+      </figure>
+      <figure class="next">
+        <figcaption>Next</figcaption>
+        <pre>{alphabet}</pre>
+      </figure>
+    </div>
+
+    <h2>Code</h2>
+    <div class="pair">
+      <figure>
+        <figcaption>Live</figcaption>
+        <pre>{code}</pre>
+      </figure>
+      <figure class="next">
+        <figcaption>Next</figcaption>
+        <pre>{code}</pre>
+      </figure>
+    </div>
+
+    <h2>Operators</h2>
+    <div class="pair">
+      <figure>
+        <figcaption>Live</figcaption>
+        <pre>{operators}</pre>
+      </figure>
+      <figure class="next">
+        <figcaption>Next</figcaption>
+        <pre>{operators}</pre>
+      </figure>
+    </div>
+
+    <h2>Box drawing</h2>
+    <div class="pair">
+      <figure>
+        <figcaption>Live</figcaption>
+        <pre class="diagram">{boxDrawing}</pre>
+      </figure>
+      <figure class="next">
+        <figcaption>Next</figcaption>
+        <pre class="diagram">{boxDrawing}</pre>
+      </figure>
+    </div>
+
+    <h2>Weight</h2>
+    <div class="pair">
+      <figure>
+        <figcaption>Live</figcaption>
+        <p>{weight.regular}</p>
+        <p class="bold">{weight.bold}</p>
+        <p class="italic">{weight.italic}</p>
+      </figure>
+      <figure class="next">
+        <figcaption>Next</figcaption>
+        <p>{weight.regular}</p>
+        <p class="bold">{weight.bold}</p>
+        <p class="italic">{weight.italic}</p>
+      </figure>
+    </div>
+
+    <h2>Prose</h2>
+    <div class="pair">
+      <figure>
+        <figcaption>Live</figcaption>
+        {prose.map((paragraph) => <p set:html={paragraph} />)}
+      </figure>
+      <figure class="next">
+        <figcaption>Next</figcaption>
+        {prose.map((paragraph) => <p set:html={paragraph} />)}
+      </figure>
+    </div>
+
+    <h2>Reading</h2>
+    <div class="pair reading">
+      <figure>
+        <figcaption>Live</figcaption>
+        {prose.map((paragraph) => <p set:html={paragraph} />)}
+      </figure>
+      <figure class="next">
+        <figcaption>Next</figcaption>
+        {prose.map((paragraph) => <p set:html={paragraph} />)}
+      </figure>
+    </div>
+  </article>
+</SitePage>
+
+<style>
+  @font-face {
+    font-family: "OpenTUI Mono Next";
+    src: url("/fonts/candidate/OpenTUIMono-Regular.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+  }
+
+  @font-face {
+    font-family: "OpenTUI Mono Next";
+    src: url("/fonts/candidate/OpenTUIMono-Bold.woff2") format("woff2");
+    font-weight: 700;
+    font-style: normal;
+    font-display: swap;
+  }
+
+  @font-face {
+    font-family: "OpenTUI Mono Next";
+    src: url("/fonts/candidate/OpenTUIMono-Italic.woff2") format("woff2");
+    font-weight: 400;
+    font-style: italic;
+    font-display: swap;
+  }
+
+  @font-face {
+    font-family: "OpenTUI Mono Next";
+    src: url("/fonts/candidate/OpenTUIMono-BoldItalic.woff2") format("woff2");
+    font-weight: 700;
+    font-style: italic;
+    font-display: swap;
+  }
+
+  .lab {
+    max-width: var(--frame-width);
+  }
+
+  .lab h1 {
+    margin-block: 0 3rem;
+  }
+
+  .lab h2 {
+    font-size: 1.25rem;
+    line-height: 1.5rem;
+    margin-block: 3rem 0.75rem;
+  }
+
+  .lab p {
+    max-width: var(--content-width);
+    margin-block: 0 1.5rem;
+  }
+
+  .lab :not(pre) > code {
+    background: color-mix(in srgb, currentColor 8%, transparent);
+    padding: 0.0625rem 0.4ch;
+  }
+
+  .pair {
+    display: grid;
+    gap: 1.5rem;
+    margin-block: 0 1.5rem;
+  }
+
+  .pair figure {
+    margin: 0;
+    min-width: 0;
+  }
+
+  .pair figcaption {
+    color: var(--muted-color);
+    margin-block-end: 0.75rem;
+  }
+
+  .pair pre,
+  .pair p {
+    margin: 0;
+    max-width: none;
+  }
+
+  .pair pre + pre,
+  .pair p + p {
+    margin-block-start: 0.75rem;
+  }
+
+  .pair pre {
+    font-family: inherit;
+    font-size: var(--text-small);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .pair .diagram {
+    font-size: inherit;
+    line-height: 1.2;
+    font-variant-ligatures: none;
+    white-space: pre;
+    overflow-x: auto;
+    overflow-wrap: normal;
+  }
+
+  .next {
+    font-family: "OpenTUI Mono Next", monospace;
+  }
+
+  .bold {
+    font-weight: 700;
+  }
+
+  .italic {
+    font-style: italic;
+  }
+
+  @media (min-width: 48rem) {
+    .pair {
+      grid-template-columns: 1fr 1fr;
+      column-gap: 3rem;
+    }
+  }
+</style>

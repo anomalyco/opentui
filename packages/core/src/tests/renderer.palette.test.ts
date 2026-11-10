@@ -1,16 +1,64 @@
-import { test, expect, describe } from "bun:test"
-import { createTestRenderer, type TestRendererOptions } from "../testing/test-renderer.js"
+import { test, expect, describe, spyOn, afterEach } from "bun:test"
+import { createTestRenderer as createRenderer, type TestRendererOptions } from "../testing/test-renderer.js"
 import { EventEmitter } from "events"
 import { Buffer } from "node:buffer"
-import { Readable } from "node:stream"
+import { Readable, Writable } from "node:stream"
 import tty from "tty"
-import { ManualClock } from "../testing/manual-clock"
-import type { GetPaletteOptions, TerminalColors } from "../lib/terminal-palette"
+import { ManualClock } from "../testing/manual-clock.js"
+import type { GetPaletteOptions, TerminalColors } from "../lib/terminal-palette.js"
+import { clearEnvCache } from "../lib/env.js"
+import { CliRenderEvents, type CliRenderer } from "../renderer.js"
+import { resolveRenderLib } from "../zig.js"
+import { TextRenderable } from "../renderables/Text.js"
 
 const OSC_SUPPORT_TIMEOUT_MS = 300
+const renderers = new Set<CliRenderer>()
 
-function flushAsync(): Promise<void> {
-  return Promise.resolve().then(() => Promise.resolve())
+afterEach(async () => {
+  for (const renderer of renderers) {
+    renderer.destroy()
+    await renderer.closed
+  }
+  renderers.clear()
+})
+
+type PaletteRendererOptions = TestRendererOptions & { setup?: boolean }
+
+async function createTestRenderer(options: PaletteRendererOptions) {
+  const stdout = new Writable({
+    write(chunk, _encoding, callback) {
+      options.stdout?.write(chunk)
+      callback()
+    },
+  }) as NodeJS.WriteStream
+  stdout.isTTY = options.stdout?.isTTY ?? true
+  const result = await createRenderer({
+    ...options,
+    stdout,
+    bufferedOutput: "stdout",
+    remote: options.remote ?? true,
+    forwardEnvKeys: [],
+    environment: options.environment ?? { COLORTERM: "truecolor" },
+  })
+  renderers.add(result.renderer)
+  if (options.setup !== false) {
+    await result.renderer.setupTerminal()
+    await result.renderer.nativeScene!.driver.idle()
+  }
+  return result
+}
+
+async function flushAsync(): Promise<void> {
+  await Promise.resolve()
+  for (const renderer of renderers) {
+    if (!renderer.isDestroyed) await renderer.nativeScene!.driver.idle()
+  }
+  await Promise.resolve()
+}
+
+async function flushPaletteDetection(): Promise<void> {
+  await flushAsync()
+  await flushAsync()
 }
 
 function schedule(clock: ManualClock | undefined, fn: () => void): void {
@@ -22,7 +70,8 @@ function schedule(clock: ManualClock | undefined, fn: () => void): void {
   process.nextTick(fn)
 }
 
-function createMockStreams(clock?: ManualClock) {
+function createMockStreams(clock?: ManualClock, options: { emitSpecialColors?: boolean } = {}) {
+  const emitSpecialColors = options.emitSpecialColors ?? true
   const mockStdin = new Readable({ read() {} }) as tty.ReadStream
   mockStdin.isTTY = true
   mockStdin.setRawMode = () => mockStdin
@@ -42,13 +91,17 @@ function createMockStreams(clock?: ManualClock) {
         schedule(clock, () => {
           mockStdin.emit("data", Buffer.from("\x1b]4;0;rgb:0000/0000/0000\x07"))
         })
-      } else if (dataStr.includes("\x1b]4;")) {
+        return true
+      }
+      if (dataStr.includes("\x1b]4;")) {
         schedule(clock, () => {
           for (let i = 0; i < 16; i++) {
             mockStdin.emit("data", Buffer.from(`\x1b]4;${i};rgb:1000/2000/3000\x07`))
           }
         })
-      } else if (dataStr.includes("\x1b]10;?")) {
+      }
+      // A sentinel-mode palette packet asks the special colors too.
+      if (emitSpecialColors && dataStr.includes("\x1b]10;?")) {
         schedule(clock, () => {
           mockStdin.emit("data", Buffer.from("\x1b]10;#ffffff\x07"))
           mockStdin.emit("data", Buffer.from("\x1b]11;#000000\x07"))
@@ -61,6 +114,8 @@ function createMockStreams(clock?: ManualClock) {
           mockStdin.emit("data", Buffer.from("\x1b]19;#cccccc\x07"))
         })
       }
+      // In sentinel mode every batch ends with DA1, answered last.
+      if (dataStr.endsWith("\x1b[c")) schedule(clock, () => mockStdin.emit("data", Buffer.from("\x1b[?62c")))
       return true
     },
   } as any
@@ -97,58 +152,96 @@ async function detectPaletteAndAdvanceClock(
   return palettePromise
 }
 
-async function createPaletteRenderer(options: Partial<TestRendererOptions> = {}) {
+async function createPaletteRenderer(
+  options: Partial<PaletteRendererOptions> & { emitSpecialColors?: boolean; primeTheme?: boolean } = {},
+) {
   const clock = options.clock instanceof ManualClock ? options.clock : new ManualClock()
-  const { mockStdin, mockStdout, writes } = createMockStreams(clock)
+  const { mockStdin, mockStdout, writes } = createMockStreams(clock, { emitSpecialColors: options.emitSpecialColors })
+  const { emitSpecialColors, ...rendererOptions } = options
   const { renderer } = await createTestRenderer({
     stdin: mockStdin,
     stdout: mockStdout,
-    ...options,
+    ...rendererOptions,
     clock,
+    setup: false,
   })
+  if (options.primeTheme !== false) {
+    mockStdin.emit("data", Buffer.from("\x1b]10;#ffffff\x07\x1b]11;#000000\x07"))
+  }
+  if (options.setup !== false) {
+    await renderer.setupTerminal()
+    await renderer.nativeScene!.driver.idle()
+  }
+  writes.length = 0
 
   return { renderer, mockStdin, mockStdout, writes, clock }
 }
 
+async function createSilentFollowUpPaletteRenderer(environment: Record<string, string> = { COLORTERM: "truecolor" }) {
+  const clock = new ManualClock()
+  const mockStdin = new EventEmitter() as any
+  mockStdin.isTTY = true
+  mockStdin.setRawMode = () => {}
+  mockStdin.resume = () => {}
+  mockStdin.pause = () => {}
+  mockStdin.setEncoding = () => {}
+
+  const writes: string[] = []
+  const mockStdout = {
+    isTTY: true,
+    columns: 80,
+    rows: 24,
+    write: (data: string | Buffer) => {
+      const dataStr = data.toString()
+      writes.push(dataStr)
+
+      if (dataStr === "\x1b]4;0;?\x07") {
+        clock.setTimeout(() => {
+          mockStdin.emit("data", Buffer.from("\x1b]4;0;rgb:0000/0000/0000\x07"))
+        }, 0)
+      }
+
+      return true
+    },
+  } as any
+
+  const { renderer } = await createTestRenderer({
+    stdin: mockStdin,
+    stdout: mockStdout,
+    clock,
+    environment,
+  })
+  writes.length = 0
+
+  return { renderer, writes, clock }
+}
+
 describe("Palette caching behavior", () => {
-  test("getPalette returns cached palette on subsequent calls", async () => {
-    const { renderer, clock, mockStdin, mockStdout } = await createPaletteRenderer()
+  // A repeated request for the same size returns the cached object immediately and writes no queries.
+  const cachedRequests: Array<[first: GetPaletteOptions, repeats: GetPaletteOptions[], size: number]> = [
+    [{ timeout: 300 }, [{ timeout: 300 }], 16],
+    [{ size: 16, timeout: 300 }, [{ size: 16, timeout: 300 }, { size: 16, timeout: 300 }, { size: 16 }], 16],
+    [{ timeout: 100 }, [{ timeout: 5000 }], 16],
+  ]
 
-    const palette1 = await detectPaletteAndAdvanceClock(renderer, clock, { timeout: 300 })
-    const palette2 = await detectPaletteAndAdvanceClock(renderer, clock, { timeout: 300 })
+  for (const [first, repeats, size] of cachedRequests) {
+    test(`getPalette caches ${JSON.stringify(first)} for ${JSON.stringify(repeats)}`, async () => {
+      const { renderer, clock, writes } = await createPaletteRenderer()
+      const palette = await detectPaletteAndAdvanceClock(renderer, clock, first)
+      const state = { writes: writes.length, time: clock.now() }
+      expect({ size: palette.palette.length, status: renderer.paletteDetectionStatus }).toEqual({
+        size,
+        status: "cached",
+      })
 
-    expect(palette1).toBe(palette2)
-    expect(palette1).toEqual(palette2)
+      for (const options of repeats) {
+        expect(await detectPaletteAndAdvanceClock(renderer, clock, options)).toBe(palette)
+      }
 
-    renderer.destroy()
-  })
-
-  test("getPalette caches correctly with non-256 size parameter", async () => {
-    const { renderer, clock, mockStdin, mockStdout } = await createPaletteRenderer()
-
-    const palette1 = await detectPaletteAndAdvanceClock(renderer, clock, { size: 16, timeout: 300 })
-    const palette2 = await detectPaletteAndAdvanceClock(renderer, clock, { size: 16, timeout: 300 })
-
-    expect(palette1).toBe(palette2)
-    expect(renderer.paletteDetectionStatus).toBe("cached")
-
-    renderer.destroy()
-  })
-
-  test("cached palette is returned instantly", async () => {
-    const { renderer, clock, mockStdin, mockStdout, writes } = await createPaletteRenderer()
-
-    await detectPaletteAndAdvanceClock(renderer, clock, { timeout: 300 })
-    const writeCountAfterFirst = writes.length
-
-    const timeAfterFirstDetection = clock.now()
-    await detectPaletteAndAdvanceClock(renderer, clock, { timeout: 300 })
-
-    expect(clock.now()).toBe(timeAfterFirstDetection)
-    expect(writes.length).toBe(writeCountAfterFirst)
-
-    renderer.destroy()
-  })
+      expect({ writes: writes.length, time: clock.now() }).toEqual(state)
+      renderer.destroy()
+    })
+  }
 
   test("multiple concurrent calls share same detection", async () => {
     const { renderer, clock, mockStdin, mockStdout, writes } = await createPaletteRenderer()
@@ -172,7 +265,27 @@ describe("Palette caching behavior", () => {
     renderer.destroy()
   })
 
-  test("palette detector created only once", async () => {
+  test("concurrent requests with different sizes redetect for the later caller", async () => {
+    const { renderer, clock, writes } = await createPaletteRenderer()
+
+    const palette16Promise = renderer.getPalette({ size: 16, timeout: 300 })
+    const palette256Promise = renderer.getPalette({ size: 256, timeout: 300 })
+
+    await advancePaletteClock(clock, 300)
+    await flushAsync()
+    await advancePaletteClock(clock, 300)
+
+    const [palette16, palette256] = await Promise.all([palette16Promise, palette256Promise])
+
+    expect(palette16.palette).toHaveLength(16)
+    expect(palette256.palette).toHaveLength(256)
+    expect(palette16).not.toBe(palette256)
+    expect(writes.filter((write) => write.includes("\x1b]4;255;?"))).toHaveLength(1)
+
+    renderer.destroy()
+  })
+
+  test("palette detector is released after detection and cached calls do not create another", async () => {
     const { renderer, clock, mockStdin, mockStdout } = await createPaletteRenderer()
 
     // @ts-expect-error - accessing private property for testing
@@ -182,27 +295,13 @@ describe("Palette caching behavior", () => {
 
     // @ts-expect-error - accessing private property for testing
     const detector1 = renderer._paletteDetector
-    expect(detector1).not.toBeNull()
+    expect(detector1).toBeNull()
 
     await detectPaletteAndAdvanceClock(renderer, clock, { timeout: 300 })
 
     // @ts-expect-error - accessing private property for testing
     const detector2 = renderer._paletteDetector
     expect(detector1).toBe(detector2)
-
-    renderer.destroy()
-  })
-
-  test("cache persists with different timeout values", async () => {
-    const { renderer, clock, mockStdin, mockStdout, writes } = await createPaletteRenderer()
-
-    const palette1 = await detectPaletteAndAdvanceClock(renderer, clock, { timeout: 100 })
-    const writeCountAfterFirst = writes.length
-
-    const palette2 = await detectPaletteAndAdvanceClock(renderer, clock, { timeout: 5000 })
-
-    expect(writes.length).toBe(writeCountAfterFirst)
-    expect(palette1).toBe(palette2)
 
     renderer.destroy()
   })
@@ -215,8 +314,8 @@ describe("Palette caching behavior", () => {
     renderer.start()
     await flushAsync()
     renderer.pause()
-    renderer.suspend()
-    renderer.resume()
+    await renderer.suspend()
+    await renderer.resume()
     renderer.stop()
 
     const palette2 = await detectPaletteAndAdvanceClock(renderer, clock, { timeout: 100 })
@@ -261,60 +360,70 @@ describe("Palette detection with non-TTY", () => {
 })
 
 describe("Palette detection with OSC responses", () => {
-  test("detects colors from OSC responses", async () => {
-    const clock = new ManualClock()
-    const mockStdin = new EventEmitter() as any
-    mockStdin.isTTY = true
-    mockStdin.setRawMode = () => {}
-    mockStdin.resume = () => {}
-    mockStdin.pause = () => {}
-    mockStdin.setEncoding = () => {}
+  test.each(["linux", "darwin", "win32"] as const)(
+    "detects colors from OSC responses under %s output policy",
+    async (platform) => {
+      const clock = new ManualClock()
+      const mockStdin = new EventEmitter() as any
+      mockStdin.isTTY = true
+      mockStdin.setRawMode = () => {}
+      mockStdin.resume = () => {}
+      mockStdin.pause = () => {}
+      mockStdin.setEncoding = () => {}
 
-    const mockStdout = {
-      isTTY: true,
-      columns: 80,
-      rows: 24,
-      write: (data: string | Buffer) => {
-        const dataStr = data.toString()
-        clock.setTimeout(() => {
-          if (dataStr.includes("\x1b]4;0;?")) {
-            mockStdin.emit("data", Buffer.from("\x1b]4;0;#000000\x07"))
-          }
-          if (dataStr.match(/\x1b\]4;\d+;/g)) {
-            mockStdin.emit("data", Buffer.from("\x1b]4;0;#000000\x07"))
-            mockStdin.emit("data", Buffer.from("\x1b]4;1;#ff0000\x07"))
-            mockStdin.emit("data", Buffer.from("\x1b]4;2;#00ff00\x07"))
-            mockStdin.emit("data", Buffer.from("\x1b]4;3;#0000ff\x07"))
-            for (let i = 4; i < 256; i++) {
-              mockStdin.emit("data", Buffer.from(`\x1b]4;${i};#808080\x07`))
+      const mockStdout = {
+        isTTY: true,
+        columns: 80,
+        rows: 24,
+        write: (data: string | Buffer) => {
+          const dataStr = data.toString()
+          clock.setTimeout(() => {
+            if (dataStr.includes("\x1b]4;0;?")) {
+              mockStdin.emit("data", Buffer.from("\x1b]4;0;#000000\x07"))
             }
-          }
-        }, 0)
-        return true
-      },
-    } as any
+            if (dataStr.match(/\x1b\]4;\d+;/g)) {
+              mockStdin.emit("data", Buffer.from("\x1b]4;0;#000000\x07"))
+              mockStdin.emit("data", Buffer.from("\x1b]4;1;#ff0000\x07"))
+              mockStdin.emit("data", Buffer.from("\x1b]4;2;#00ff00\x07"))
+              mockStdin.emit("data", Buffer.from("\x1b]4;3;#0000ff\x07"))
+              for (let i = 4; i < 256; i++) {
+                mockStdin.emit("data", Buffer.from(`\x1b]4;${i};#808080\x07`))
+              }
+            }
+          }, 0)
+          return true
+        },
+      } as any
 
-    const { renderer } = await createTestRenderer({
-      stdin: mockStdin,
-      stdout: mockStdout,
-      useThread: false,
-      clock,
-    })
+      // Load the host library before exercising another platform's constructor policy.
+      resolveRenderLib()
+      const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!
+      let renderer: CliRenderer
+      try {
+        Object.defineProperty(process, "platform", { value: platform })
+        renderer = (await createTestRenderer({ stdin: mockStdin, stdout: mockStdout, clock })).renderer
+      } finally {
+        Object.defineProperty(process, "platform", descriptor)
+      }
 
-    const palette = await detectPaletteAndAdvanceClock(renderer, clock, { timeout: 300 })
+      try {
+        const palette = await detectPaletteAndAdvanceClock(renderer, clock, { timeout: 300 })
 
-    expect(typeof palette === "object" && palette !== null && Array.isArray(palette.palette)).toBe(true)
-    expect(palette.palette.length).toBeGreaterThanOrEqual(16)
-    expect(palette.palette[0]).toBe("#000000")
-    expect(palette.palette[1]).toBe("#ff0000")
-    expect(palette.palette[2]).toBe("#00ff00")
-    expect(palette.palette[3]).toBe("#0000ff")
+        expect(typeof palette === "object" && palette !== null && Array.isArray(palette.palette)).toBe(true)
+        expect(palette.palette.length).toBeGreaterThanOrEqual(16)
+        expect(palette.palette[0]).toBe("#000000")
+        expect(palette.palette[1]).toBe("#ff0000")
+        expect(palette.palette[2]).toBe("#00ff00")
+        expect(palette.palette[3]).toBe("#0000ff")
 
-    const cached = await detectPaletteAndAdvanceClock(renderer, clock, { timeout: 100 })
-    expect(palette).toBe(cached)
-
-    renderer.destroy()
-  })
+        const cached = await detectPaletteAndAdvanceClock(renderer, clock, { timeout: 100 })
+        expect(palette).toBe(cached)
+      } finally {
+        renderer.destroy()
+        await renderer.closed
+      }
+    },
+  )
 
   test("handles RGB format responses", async () => {
     const clock = new ManualClock()
@@ -351,7 +460,6 @@ describe("Palette detection with OSC responses", () => {
     const { renderer } = await createTestRenderer({
       stdin: mockStdin,
       stdout: mockStdout,
-      useThread: false,
       clock,
     })
 
@@ -425,6 +533,144 @@ describe("Palette cache invalidation", () => {
     renderer.destroy()
   })
 
+  test("getPalette syncs native palette state again after cache invalidation and refetch", async () => {
+    const { renderer, clock } = await createPaletteRenderer({
+      environment: { TERM: "xterm-256color", TERM_PROGRAM: "Apple_Terminal" },
+      emitSpecialColors: false,
+    })
+    expect(renderer.capabilities?.rgb).toBe(false)
+    // @ts-expect-error - spying on private method for native palette publishing behavior
+    const sync = spyOn(renderer, "syncNativePaletteState")
+
+    await detectPaletteAndAdvanceClock(renderer, clock, { timeout: 300 })
+    expect(sync).toHaveBeenCalledTimes(1)
+
+    renderer.clearPaletteCache()
+    await detectPaletteAndAdvanceClock(renderer, clock, { timeout: 300 })
+
+    expect(sync).toHaveBeenCalledTimes(2)
+
+    sync.mockRestore()
+    renderer.destroy()
+  })
+
+  test("theme mode changes clear palette cache and schedule native palette refresh when native palette is needed", async () => {
+    const { renderer } = await createPaletteRenderer({
+      environment: { TERM: "xterm-256color", TERM_PROGRAM: "Apple_Terminal" },
+      primeTheme: false,
+    })
+    expect(renderer.capabilities?.rgb).toBe(false)
+    const clear = spyOn(renderer, "clearPaletteCache")
+    // @ts-expect-error - spying on private method for native palette refresh scheduling
+    const refresh = spyOn(renderer, "refreshPalette")
+
+    renderer.stdin.emit("data", Buffer.from("\x1b]10;#ffffff\x07"))
+    renderer.stdin.emit("data", Buffer.from("\x1b]11;#000000\x07"))
+    await flushAsync()
+
+    expect(renderer.themeMode).toBe("dark")
+    expect(clear).toHaveBeenCalledTimes(1)
+    expect(refresh).toHaveBeenCalledTimes(1)
+
+    clear.mockRestore()
+    refresh.mockRestore()
+    renderer.destroy()
+  })
+
+  test("theme mode changes schedule palette refresh for truecolor terminals with palette listeners", async () => {
+    const { renderer } = await createPaletteRenderer({ primeTheme: false })
+    expect(renderer.capabilities?.rgb).toBe(true)
+    // @ts-expect-error - spying on private method for palette refresh scheduling
+    const refresh = spyOn(renderer, "refreshPalette")
+    renderer.on(CliRenderEvents.PALETTE, () => {})
+
+    renderer.stdin.emit("data", Buffer.from("\x1b]10;#ffffff\x07"))
+    renderer.stdin.emit("data", Buffer.from("\x1b]11;#000000\x07"))
+    await flushAsync()
+
+    expect(renderer.themeMode).toBe("dark")
+    expect(refresh).toHaveBeenCalledTimes(1)
+
+    refresh.mockRestore()
+    renderer.destroy()
+  })
+
+  test("theme mode changes skip palette refresh for truecolor terminals without palette listeners", async () => {
+    const { renderer } = await createPaletteRenderer({ primeTheme: false })
+    expect(renderer.capabilities?.rgb).toBe(true)
+    // @ts-expect-error - spying on private method for palette refresh scheduling
+    const refresh = spyOn(renderer, "refreshPalette")
+
+    renderer.stdin.emit("data", Buffer.from("\x1b]10;#ffffff\x07"))
+    renderer.stdin.emit("data", Buffer.from("\x1b]11;#000000\x07"))
+    await flushAsync()
+
+    expect(renderer.themeMode).toBe("dark")
+    expect(refresh).not.toHaveBeenCalled()
+
+    refresh.mockRestore()
+    renderer.destroy()
+  })
+
+  test("startup palette refresh is skipped for truecolor terminals", async () => {
+    const { renderer, writes } = await createPaletteRenderer()
+    expect(renderer.capabilities?.rgb).toBe(true)
+
+    // Startup only calls refresh when native palette state is useful.
+    // @ts-expect-error - exercising private startup palette gate
+    if (renderer.shouldSyncNativePaletteState()) renderer.refreshPalette()
+
+    expect(writes).toEqual([])
+
+    renderer.destroy()
+  })
+
+  test("setupTerminal does not refresh palette on truecolor startup", async () => {
+    const { renderer } = await createPaletteRenderer({ useMouse: false, setup: false, primeTheme: false })
+    // @ts-expect-error - spying on private method for startup palette gate
+    const refresh = spyOn(renderer, "refreshPalette")
+
+    await renderer.setupTerminal()
+    expect(renderer.capabilities?.rgb).toBe(true)
+    expect(refresh).not.toHaveBeenCalled()
+
+    refresh.mockRestore()
+    renderer.destroy()
+  })
+
+  test("setupTerminal refreshes palette on ANSI-256 non-truecolor startup", async () => {
+    const { renderer } = await createPaletteRenderer({
+      useMouse: false,
+      setup: false,
+      primeTheme: false,
+      environment: { TERM: "xterm-256color", TERM_PROGRAM: "Apple_Terminal" },
+    })
+    // @ts-expect-error - spying on private method for startup palette gate
+    const refresh = spyOn(renderer, "refreshPalette").mockImplementation(() => {})
+
+    await renderer.setupTerminal()
+    expect(renderer.capabilities?.rgb).toBe(false)
+    expect(renderer.capabilities?.ansi256).toBe(true)
+    expect(refresh).toHaveBeenCalledTimes(1)
+
+    refresh.mockRestore()
+    renderer.destroy()
+  })
+
+  test("getPalette emits palette change events for refreshed palettes", async () => {
+    const { renderer, clock } = await createPaletteRenderer({ emitSpecialColors: false })
+    const palettes: TerminalColors[] = []
+    renderer.on(CliRenderEvents.PALETTE, (colors) => palettes.push(colors))
+
+    await detectPaletteAndAdvanceClock(renderer, clock, { timeout: 300 })
+    await detectPaletteAndAdvanceClock(renderer, clock, { timeout: 300 })
+
+    expect(palettes).toHaveLength(1)
+    expect(palettes[0]?.palette.length).toBe(16)
+
+    renderer.destroy()
+  })
+
   test("paletteDetectionStatus tracks detection lifecycle", async () => {
     const { renderer, clock, mockStdin, mockStdout } = await createPaletteRenderer()
 
@@ -441,11 +687,40 @@ describe("Palette cache invalidation", () => {
   })
 })
 
+describe("Capability repaint handling", () => {
+  test("capability responses request a forced repaint", async () => {
+    const clock = new ManualClock()
+    const writes: string[] = []
+    const { renderer, renderOnce } = await createTestRenderer({
+      clock,
+      stdout: { write: (chunk: Uint8Array) => writes.push(Buffer.from(chunk).toString()) } as any,
+    })
+    renderer.root.add(new TextRenderable(renderer, { content: "repaint-probe" }))
+    await renderOnce()
+    await renderer.nativeScene!.driver.idle()
+    writes.length = 0
+
+    // @ts-expect-error - testing private renderer state
+    expect(renderer.forceFullRepaintRequested).toBe(false)
+
+    renderer.stdin.emit("data", Buffer.from("\x1bP>|wezterm\x1b\\"))
+
+    // @ts-expect-error - testing private renderer state
+    expect(renderer.forceFullRepaintRequested).toBe(true)
+    expect(renderer.getSchedulerState().hasScheduledRender).toBe(true)
+
+    await renderOnce()
+    await renderer.nativeScene!.driver.idle()
+    expect(writes.join("")).toContain("repaint-probe")
+    renderer.destroy()
+  })
+})
+
 describe("Palette detection with suspended renderer", () => {
   test("getPalette throws error when renderer is suspended", async () => {
     const { renderer, clock, mockStdin, mockStdout } = await createPaletteRenderer()
 
-    renderer.suspend()
+    await renderer.suspend()
 
     await expect(renderer.getPalette({ timeout: 300 })).rejects.toThrow(
       "Cannot detect palette while renderer is suspended",
@@ -457,8 +732,8 @@ describe("Palette detection with suspended renderer", () => {
   test("getPalette works after resume", async () => {
     const { renderer, clock, mockStdin, mockStdout } = await createPaletteRenderer()
 
-    renderer.suspend()
-    renderer.resume()
+    await renderer.suspend()
+    await renderer.resume()
 
     const palette = await detectPaletteAndAdvanceClock(renderer, clock, { timeout: 300 })
     expect(typeof palette === "object" && palette !== null && Array.isArray(palette.palette)).toBe(true)
@@ -480,7 +755,74 @@ describe("Palette detector cleanup", () => {
     // @ts-expect-error - accessing private property for testing
     expect(renderer._paletteDetectionPromise).toBeNull()
     // @ts-expect-error - accessing private property for testing
-    expect(renderer._cachedPalette).toBeNull()
+    expect(renderer._paletteCache.size).toBe(0)
+  })
+
+  test("destroy ignores pending native palette publish", async () => {
+    const { renderer, clock } = await createPaletteRenderer({
+      environment: { TERM: "xterm-256color", TERM_PROGRAM: "Apple_Terminal" },
+      emitSpecialColors: false,
+    })
+    expect(renderer.capabilities?.rgb).toBe(false)
+
+    await detectPaletteAndAdvanceClock(renderer, clock, { size: 16, timeout: 300 })
+    await detectPaletteAndAdvanceClock(renderer, clock, { size: 256, timeout: 300 })
+    // @ts-expect-error - spying on private method for testing
+    const sync = spyOn(renderer, "syncNativePaletteState")
+    const requestRender = spyOn(renderer, "requestRender")
+
+    // @ts-expect-error - accessing private method for testing
+    renderer.refreshPalette()
+    renderer.destroy()
+    await flushAsync()
+
+    expect(sync).not.toHaveBeenCalled()
+    expect(requestRender).not.toHaveBeenCalled()
+
+    sync.mockRestore()
+    requestRender.mockRestore()
+  })
+
+  test("destroy during render ignores pending palette detection publish", async () => {
+    const { renderer, clock } = await createPaletteRenderer()
+
+    // @ts-expect-error - spying on private method for testing
+    const sync = spyOn(renderer, "syncNativePaletteState")
+    const palettePromise = renderer.getPalette({ size: 256, timeout: 300 })
+    const cancelled = palettePromise.catch((error) => error)
+
+    // @ts-expect-error - simulating destroy while a frame is unwinding
+    renderer.rendering = true
+    renderer.destroy()
+    await advancePaletteClock(clock, 300)
+    expect(await cancelled).toEqual(new Error("Cannot detect palette after renderer destruction"))
+
+    expect(sync).not.toHaveBeenCalled()
+
+    sync.mockRestore()
+
+    // @ts-expect-error - finish deferred destroy cleanup for the test renderer
+    renderer.rendering = false
+    // @ts-expect-error - finish deferred destroy cleanup for the test renderer
+    renderer.finalizeDestroy()
+    await renderer.closed
+  })
+
+  test("destroy stops pending palette detector writes", async () => {
+    const { renderer, clock, writes } = await createPaletteRenderer({})
+    const palettePromise = renderer.getPalette({ size: 16, timeout: 300 })
+    const cancelled = palettePromise.catch((error) => error)
+
+    await flushAsync()
+    // In clock mode the probe's reply makes the detector write its queries next. Sentinel mode wrote its one packet.
+    if (!(renderer as any).replySentinel) clock.advance(0)
+    renderer.destroy()
+    await flushAsync()
+    clock.advance(300)
+    expect(await cancelled).toEqual(new Error("Cannot detect palette after renderer destruction"))
+    await renderer.closed
+    const queries = writes.filter((write) => /\x1b\](4;\d+|1\d);\?/.test(write))
+    expect(queries.map((write) => write.startsWith("\x1b]4;0;?\x07"))).toEqual([true])
   })
 
   test("multiple destroy calls don't cause errors", async () => {
@@ -514,7 +856,228 @@ describe("Palette detector cleanup", () => {
   })
 })
 
+describe("Palette detection while capabilities are unsettled", () => {
+  test("getPalette runs immediately outside tmux", async () => {
+    const { renderer, writes, clock } = await createSilentFollowUpPaletteRenderer()
+
+    let palettePromise: Promise<TerminalColors> | undefined
+    try {
+      expect((renderer as any).startupRepliesPending).toBe(true)
+
+      expect(renderer.capabilities?.multiplexer).toBe("none")
+
+      palettePromise = renderer.getPalette({ size: 16 })
+      void palettePromise.catch(() => {})
+      await flushAsync()
+
+      expect(writes.some((write) => write.startsWith("\x1b]4;0;?\x07"))).toBe(true)
+    } finally {
+      renderer.destroy()
+      if (palettePromise) await expect(palettePromise).rejects.toThrow(/cancelled|destruction/)
+    }
+  })
+
+  test("getPalette defers local tmux palette detection while tmux version is unknown", async () => {
+    const { renderer, writes, clock } = await createSilentFollowUpPaletteRenderer({
+      COLORTERM: "truecolor",
+      TMUX: "fixture",
+    })
+
+    let palettePromise: Promise<TerminalColors> | undefined
+    try {
+      expect((renderer as any).startupRepliesPending).toBe(true)
+
+      expect(renderer.capabilities?.multiplexer).toBe("tmux")
+      expect(renderer.capabilities?.terminal?.from_xtversion).toBe(false)
+
+      palettePromise = renderer.getPalette({ size: 16 })
+      void palettePromise.catch(() => {})
+      await flushAsync()
+
+      expect(writes).toEqual([])
+      expect(renderer.paletteDetectionStatus).toBe("idle")
+
+      // The startup batch end releases it: the DA1 reply in sentinel mode, otherwise the backstop.
+      if ((renderer as any).replySentinel) renderer.stdin.emit("data", Buffer.from("\x1b[?62c"))
+      else clock.advance(5000)
+      await flushAsync()
+      expect(writes.some((write) => write.includes("]4;0;?"))).toBe(true)
+    } finally {
+      renderer.destroy()
+      if (palettePromise) await expect(palettePromise).rejects.toThrow(/cancelled|destruction/)
+    }
+  })
+
+  test("getPalette does not wait when tmux version came from env", async () => {
+    const { renderer, writes, clock } = await createSilentFollowUpPaletteRenderer({
+      COLORTERM: "truecolor",
+      TERM_PROGRAM: "tmux",
+      TERM_PROGRAM_VERSION: "3.6a",
+    })
+
+    let palettePromise: Promise<TerminalColors> | undefined
+    try {
+      expect((renderer as any).startupRepliesPending).toBe(true)
+
+      palettePromise = renderer.getPalette({ size: 16 })
+      void palettePromise.catch(() => {})
+      await flushAsync()
+
+      expect(writes.some((write) => write.startsWith("\x1b]4;0;?\x07"))).toBe(true)
+    } finally {
+      renderer.destroy()
+      if (palettePromise) await expect(palettePromise).rejects.toThrow(/cancelled|destruction/)
+    }
+  })
+
+  test("getPalette uses wrapped palette queries after legacy tmux version is detected", async () => {
+    const { renderer, writes, clock } = await createSilentFollowUpPaletteRenderer({
+      COLORTERM: "truecolor",
+      TMUX: "fixture",
+    })
+
+    let palettePromise: Promise<TerminalColors> | undefined
+    try {
+      expect((renderer as any).startupRepliesPending).toBe(true)
+
+      palettePromise = renderer.getPalette({ size: 16 })
+      void palettePromise.catch(() => {})
+      await flushAsync()
+
+      expect(writes).toEqual([])
+
+      renderer.stdin.emit("data", Buffer.from("\x1bP>|tmux 3.5a\x1b\\"))
+      await flushAsync()
+
+      expect(writes.some((write) => write.startsWith("\x1bPtmux;") && write.includes("\x1b\x1b]4;"))).toBe(true)
+      expect(writes.some((write) => write.includes("\x1b\x1b]4;0;?\x07"))).toBe(true)
+    } finally {
+      renderer.destroy()
+      if (palettePromise) await expect(palettePromise).rejects.toThrow(/cancelled|destruction/)
+    }
+  })
+
+  test("getPalette uses plain palette queries after tmux 3.6 version is detected", async () => {
+    const { renderer, writes, clock } = await createSilentFollowUpPaletteRenderer({
+      COLORTERM: "truecolor",
+      TMUX: "fixture",
+    })
+
+    let palettePromise: Promise<TerminalColors> | undefined
+    try {
+      expect((renderer as any).startupRepliesPending).toBe(true)
+
+      palettePromise = renderer.getPalette({ size: 16 })
+      void palettePromise.catch(() => {})
+      await flushAsync()
+
+      expect(writes).toEqual([])
+
+      renderer.stdin.emit("data", Buffer.from("\x1bP>|tmux 3.6a\x1b\\"))
+      await flushAsync()
+
+      expect(writes.some((write) => write.startsWith("\x1b]4;0;?\x07"))).toBe(true)
+      expect(writes.some((write) => write.startsWith("\x1bPtmux;") && write.includes("\x1b\x1b]4;"))).toBe(false)
+    } finally {
+      renderer.destroy()
+      if (palettePromise) await expect(palettePromise).rejects.toThrow(/cancelled|destruction/)
+    }
+  })
+
+  test("getPalette does not wait for remote XTVERSION when local tmux env is unknown", async () => {
+    const { renderer, writes, clock } = await createSilentFollowUpPaletteRenderer()
+
+    let palettePromise: Promise<TerminalColors> | undefined
+    try {
+      expect((renderer as any).startupRepliesPending).toBe(true)
+
+      palettePromise = renderer.getPalette({ size: 16 })
+      void palettePromise.catch(() => {})
+      await flushAsync()
+
+      expect(renderer.capabilities?.multiplexer).toBe("none")
+      expect(writes.some((write) => write.startsWith("\x1b]4;0;?\x07"))).toBe(true)
+    } finally {
+      renderer.destroy()
+      if (palettePromise) await expect(palettePromise).rejects.toThrow(/cancelled|destruction/)
+    }
+  })
+})
+
 describe("Palette detection error handling", () => {
+  test("getPalette settles after idle window when follow-up palette queries are silent", async () => {
+    const { renderer, writes, clock } = await createSilentFollowUpPaletteRenderer()
+    // A missed startup DA1 reply leaves sentinel mode; clock mode keeps the probe and the idle window.
+    clock.advance(5000)
+
+    let settled = false
+    let palette: TerminalColors | undefined
+    const palettePromise = renderer.getPalette({ size: 16 }).then((result) => {
+      settled = true
+      palette = result
+    })
+
+    try {
+      await flushAsync()
+      clock.advance(0)
+      await flushAsync()
+
+      expect(writes).toContain("\x1b]4;0;?\x07")
+      expect(writes.some((write) => write.includes("\x1b]4;1;?\x07"))).toBe(true)
+      expect(writes.some((write) => write.includes("\x1b]10;?\x07"))).toBe(true)
+
+      clock.advance(299)
+      await flushAsync()
+      expect(settled).toBe(false)
+
+      clock.advance(1)
+      await flushPaletteDetection()
+
+      expect(settled).toBe(true)
+      await palettePromise
+      expect(palette?.palette.every((color) => color === null)).toBe(true)
+    } finally {
+      renderer.destroy()
+    }
+  })
+
+  test("getPalette silent follow-up idle window is configurable with OTUI_PALETTE_IDLE_TIMEOUT_MS", async () => {
+    const previousIdleTimeout = process.env.OTUI_PALETTE_IDLE_TIMEOUT_MS
+    process.env.OTUI_PALETTE_IDLE_TIMEOUT_MS = "50"
+    clearEnvCache()
+
+    const { renderer, clock } = await createSilentFollowUpPaletteRenderer()
+    clock.advance(5000)
+    let settled = false
+    const palettePromise = renderer.getPalette({ size: 16 }).then(() => {
+      settled = true
+    })
+
+    try {
+      await flushAsync()
+      clock.advance(0)
+      await flushAsync()
+
+      clock.advance(49)
+      await flushAsync()
+      expect(settled).toBe(false)
+
+      clock.advance(1)
+      await flushPaletteDetection()
+
+      expect(settled).toBe(true)
+      await palettePromise
+    } finally {
+      renderer.destroy()
+      if (previousIdleTimeout === undefined) {
+        delete process.env.OTUI_PALETTE_IDLE_TIMEOUT_MS
+      } else {
+        process.env.OTUI_PALETTE_IDLE_TIMEOUT_MS = previousIdleTimeout
+      }
+      clearEnvCache()
+    }
+  })
+
   test("handles timeout gracefully", async () => {
     const clock = new ManualClock()
     const mockStdin = new EventEmitter() as any
@@ -561,28 +1124,8 @@ describe("Palette detection error handling", () => {
 })
 
 describe("Palette cache with different sizes", () => {
-  test("cache works correctly when requesting size=16 twice", async () => {
-    const { renderer, clock, mockStdin, mockStdout, writes } = await createPaletteRenderer()
-
-    const palette1 = await detectPaletteAndAdvanceClock(renderer, clock, { size: 16, timeout: 300 })
-    const writeCountAfterFirst = writes.length
-
-    expect(renderer.paletteDetectionStatus).toBe("cached")
-    expect(palette1.palette.length).toBe(16)
-
-    const timeAfterFirstDetection = clock.now()
-    const palette2 = await detectPaletteAndAdvanceClock(renderer, clock, { size: 16, timeout: 300 })
-
-    expect(clock.now()).toBe(timeAfterFirstDetection)
-    expect(writes.length).toBe(writeCountAfterFirst)
-    expect(palette1).toBe(palette2)
-    expect(renderer.paletteDetectionStatus).toBe("cached")
-
-    renderer.destroy()
-  })
-
   test("cache is invalidated when requesting different size", async () => {
-    const { renderer, clock, mockStdin, mockStdout, writes } = await createPaletteRenderer({ useThread: false })
+    const { renderer, clock, mockStdin, mockStdout, writes } = await createPaletteRenderer({})
 
     const palette1 = await detectPaletteAndAdvanceClock(renderer, clock, { size: 16, timeout: 300 })
     const writeCountAfter16 = writes.length
@@ -592,37 +1135,6 @@ describe("Palette cache with different sizes", () => {
 
     expect(writeCountAfter256).toBeGreaterThan(writeCountAfter16)
     expect(palette1).not.toBe(palette2)
-
-    renderer.destroy()
-  })
-
-  test("cache persists across multiple identical size requests", async () => {
-    const { renderer, clock, mockStdin, mockStdout, writes } = await createPaletteRenderer()
-
-    const palette1 = await detectPaletteAndAdvanceClock(renderer, clock, { size: 16, timeout: 300 })
-    const writeCountAfterFirst = writes.length
-
-    const palette2 = await detectPaletteAndAdvanceClock(renderer, clock, { size: 16, timeout: 300 })
-    const palette3 = await detectPaletteAndAdvanceClock(renderer, clock, { size: 16, timeout: 300 })
-    const palette4 = await detectPaletteAndAdvanceClock(renderer, clock, { size: 16, timeout: 300 })
-
-    expect(writes.length).toBe(writeCountAfterFirst)
-    expect(palette1).toBe(palette2)
-    expect(palette2).toBe(palette3)
-    expect(palette3).toBe(palette4)
-
-    renderer.destroy()
-  })
-
-  test("cached call is significantly faster than initial detection", async () => {
-    const { renderer, clock, mockStdin, mockStdout } = await createPaletteRenderer()
-
-    await detectPaletteAndAdvanceClock(renderer, clock, { size: 16, timeout: 300 })
-    const timeAfterFirstDetection = clock.now()
-
-    await detectPaletteAndAdvanceClock(renderer, clock, { size: 16, timeout: 300 })
-
-    expect(clock.now()).toBe(timeAfterFirstDetection)
 
     renderer.destroy()
   })

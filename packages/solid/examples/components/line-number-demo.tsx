@@ -1,8 +1,9 @@
-import { RGBA, SyntaxStyle, TextAttributes } from "@opentui/core"
-import { useKeyboard } from "@opentui/solid"
-import { createSignal, onMount } from "solid-js"
+import { RGBA, SyntaxStyle, TextAttributes, RenderableEvents, type CodeRenderable } from "@opentui/core"
+import { useKeyboard, useRenderer } from "@opentui/solid"
+import { createSignal, onCleanup, onMount } from "solid-js"
 
 export default function LineNumberDemo() {
+  const renderer = useRenderer()
   const [showLineNumbers, setShowLineNumbers] = createSignal(true)
   const [showDiffHighlights, setShowDiffHighlights] = createSignal(false)
   const [showDiagnostics, setShowDiagnostics] = createSignal(false)
@@ -25,16 +26,25 @@ console.log('Sum:', sum)
 const evens = results.filter(n => n % 2 === 0)
 console.log('Even numbers:', evens)`
 
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    keyword: { fg: RGBA.fromHex("#C792EA") },
-    function: { fg: RGBA.fromHex("#82AAFF") },
-    string: { fg: RGBA.fromHex("#C3E88D") },
-    number: { fg: RGBA.fromHex("#F78C6C") },
-    comment: { fg: RGBA.fromHex("#546E7A") },
-    type: { fg: RGBA.fromHex("#FFCB6B") },
-    operator: { fg: RGBA.fromHex("#89DDFF") },
-    variable: { fg: RGBA.fromHex("#EEFFFF") },
-    default: { fg: RGBA.fromHex("#A6ACCD") },
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      keyword: { fg: RGBA.fromHex("#C792EA") },
+      function: { fg: RGBA.fromHex("#82AAFF") },
+      string: { fg: RGBA.fromHex("#C3E88D") },
+      number: { fg: RGBA.fromHex("#F78C6C") },
+      comment: { fg: RGBA.fromHex("#546E7A") },
+      type: { fg: RGBA.fromHex("#FFCB6B") },
+      operator: { fg: RGBA.fromHex("#89DDFF") },
+      variable: { fg: RGBA.fromHex("#EEFFFF") },
+      default: { fg: RGBA.fromHex("#A6ACCD") },
+    },
+    renderer.nativeScene!,
+  )
+  let code: CodeRenderable | undefined
+  onCleanup(() => {
+    // Solid defers node removal; keep the style until Code releases its buffers.
+    if (code && !code.isDestroyed) code.once(RenderableEvents.DESTROYED, () => syntaxStyle.destroy())
+    else syntaxStyle.destroy()
   })
 
   let lineNumberRef: any
@@ -142,6 +152,7 @@ console.log('Even numbers:', evens)`
           height="100%"
         >
           <code
+            ref={(node) => (code = node)}
             content={codeContent}
             filetype="typescript"
             syntaxStyle={syntaxStyle}

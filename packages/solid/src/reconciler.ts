@@ -2,23 +2,26 @@
 import {
   BaseRenderable,
   createTextAttributes,
+  ImageRenderable,
   InputRenderable,
   InputRenderableEvents,
   isTextNodeRenderable,
-  parseColor,
+  isEditBufferRenderable,
   Renderable,
   RootTextNodeRenderable,
-  ScrollBoxRenderable,
   SelectRenderable,
   SelectRenderableEvents,
   TabSelectRenderable,
   TabSelectRenderableEvents,
   TextNodeRenderable,
   TextRenderable,
+  TextTableRenderable,
+  VideoRenderable,
+  type RenderContext,
   type TextNodeOptions,
 } from "@opentui/core"
-import { decodeHTML } from "entities"
-import { useContext } from "solid-js"
+import { decodeHTMLStrict } from "entities"
+import { createContext, onCleanup, useContext } from "solid-js"
 import { createRenderer } from "./renderer/index.js"
 import { getComponentCatalogue, RendererContext, SlotRenderable } from "./elements/index.js"
 import { getNextId } from "./utils/id-counter.js"
@@ -33,6 +36,9 @@ class TextNode extends TextNodeRenderable {
 }
 
 export type DomNode = BaseRenderable
+
+/** @internal Portal allocation target, separate from the renderer exposed to application hooks. */
+export const RenderableContext = createContext<() => RenderContext>()
 
 /**
  * Gets the id of a node, or content if it's a text chunk.
@@ -66,13 +72,14 @@ function _insertNode(parent: DomNode, node: DomNode, anchor?: DomNode): void {
     node instanceof TextNode,
   )
 
-  if (node instanceof SlotRenderable) {
-    node.parent = parent
-    node = node.getSlotChild(parent)
+  const slot = node instanceof SlotRenderable ? node : undefined
+  if (slot) {
+    slot.parent = parent
+    node = slot.getSlotChild(parent)
   }
 
   if (anchor && anchor instanceof SlotRenderable) {
-    anchor = anchor.getSlotChild(parent)
+    anchor = anchor.getSlotChildForRemoval(parent)
   }
 
   if (isTextNodeRenderable(node)) {
@@ -93,30 +100,42 @@ function _insertNode(parent: DomNode, node: DomNode, anchor?: DomNode): void {
     throw new Error("Tried to mount a non base renderable")
   }
 
-  if (!anchor) {
-    parent.add(node)
-    return
-  }
-
-  const children = getNodeChildren(parent)
-
-  const anchorIndex = children.findIndex((el) => el.id === anchor.id)
-  if (anchorIndex === -1) {
-    log("[INSERT]", "Could not find anchor", logId(parent), logId(anchor), "[children]", ...children.map((c) => c.id))
+  let anchorIndex: number | undefined
+  if (anchor) {
+    const children = getNodeChildren(parent)
+    anchorIndex = children.indexOf(anchor)
+    if (anchorIndex === -1) {
+      log("[INSERT]", "Could not find anchor", logId(parent), logId(anchor), "[children]", ...children.map((c) => c.id))
+    }
   }
 
   parent.add(node, anchorIndex)
+
+  // Hosts such as LineNumberRenderable ignore children they do not render.
+  if (slot && !node.parent) node.destroy()
 }
 
 function _removeNode(parent: DomNode, node: DomNode): void {
   log("Removing node:", logId(node), "from parent:", logId(parent))
 
+  let slotParent: SlotRenderable | undefined
+
   if (node instanceof SlotRenderable) {
-    node.parent = null
-    node = node.getSlotChild(parent)
+    slotParent = node
+    const slotChild = slotParent.getSlotChildForRemoval(parent)
+    if (!slotChild) {
+      if (slotParent.parent === parent) {
+        slotParent.parent = null
+      }
+      return
+    }
+
+    node = slotChild
   }
 
-  parent.remove(node.id)
+  parent.remove(node)
+
+  slotParent?.didRemoveSlotChild(parent, node)
 
   process.nextTick(() => {
     if (node instanceof BaseRenderable && !node.parent) {
@@ -126,7 +145,9 @@ function _removeNode(parent: DomNode, node: DomNode): void {
   })
 }
 
-function _createTextNode(value: string | number): TextNode {
+export { _removeNode as removeNode }
+
+function _createTextNode(value: string | number, decodeEntities: boolean): TextNode {
   log("Creating text node:", value)
 
   const id = getNextId("text-node")
@@ -135,7 +156,7 @@ function _createTextNode(value: string | number): TextNode {
     value = value.toString()
   }
 
-  return TextNode.fromString(decodeHTML(value), { id })
+  return TextNode.fromString(decodeEntities ? decodeHTMLStrict(value) : value, { id })
 }
 
 export function createSlotNode(): SlotRenderable {
@@ -151,19 +172,11 @@ function _getParentNode(childNode: DomNode): DomNode | undefined {
   if (parent instanceof RootTextNodeRenderable) {
     parent = parent.textParent ?? undefined
   }
-  // ScrollBox delegates add/remove to its internal `content` wrapper
-  // (scrollbox → wrapper → viewport → content), so children report
-  // `content` as their parent. Return the ScrollBox so the identity
-  // check in cleanChildren (getParentNode(el) === parent) succeeds.
-  const scrollBoxCandidate = parent?.parent?.parent?.parent
-  if (scrollBoxCandidate instanceof ScrollBoxRenderable && scrollBoxCandidate.content === parent) {
-    parent = scrollBoxCandidate
-  }
   return parent
 }
 
-export const {
-  render: _render,
+const {
+  render: renderRoot,
   effect,
   memo,
   createComponent,
@@ -179,7 +192,7 @@ export const {
   createElement(tagName: string): DomNode {
     log("Creating element:", tagName)
     const id = getNextId(tagName)
-    const solidRenderer = useContext(RendererContext)
+    const solidRenderer = useContext(RenderableContext)?.() ?? useContext(RendererContext)
     if (!solidRenderer) {
       throw new Error("No renderer found")
     }
@@ -190,11 +203,19 @@ export const {
     }
 
     const element = new elements[tagName](solidRenderer, { id })
+    if (element instanceof ImageRenderable) {
+      onCleanup(() => {
+        element.source = undefined
+      })
+    }
     log("Element created with id:", id)
     return element
   },
 
-  createTextNode: _createTextNode,
+  // The compiler escapes static JSX before calling createTextNode directly.
+  createTextNode: (value) => _createTextNode(value, true),
+
+  createDynamicTextNode: (value) => _createTextNode(value, false),
 
   createSlotNode,
 
@@ -202,7 +223,7 @@ export const {
     log("Replacing text:", value, "in node:", logId(textNode))
 
     if (!(textNode instanceof TextNode)) return
-    textNode.replace(decodeHTML(value), 0)
+    textNode.replace(value, 0)
   },
 
   setProperty(node: DomNode, name: string, value: any, prev: any): void {
@@ -225,9 +246,9 @@ export const {
       }
 
       if (name === "style") {
-        node.attributes |= createTextAttributes(value)
-        node.fg = value.fg ? parseColor(value.fg) : node.fg
-        node.bg = value.bg ? parseColor(value.bg) : node.bg
+        node.attributes = (node.attributes & ~createTextAttributes(prev)) | createTextAttributes(value)
+        node.fg = value?.fg
+        node.bg = value?.bg
         return
       }
 
@@ -311,18 +332,36 @@ export const {
         }
         break
       case "style":
-        for (const prop in value) {
-          const propVal = value[prop]
-          if (prev !== undefined && propVal === prev[prop]) continue
+        const nextStyle = value ?? {}
+        const previousStyle = prev ?? {}
+        if (isEditBufferRenderable(node) && previousStyle.selectionOccupancy && !nextStyle.selectionOccupancy) {
+          node.selectionOccupancy = undefined
+        }
+        if (node instanceof ImageRenderable || node instanceof VideoRenderable) {
+          for (const prop in previousStyle) {
+            if (Object.prototype.hasOwnProperty.call(nextStyle, prop)) continue
+            if (prop !== "fit" && prop !== "protocol" && prop !== "crop") continue
+            // A video has no protocol, and a removed fit is not reset yet.
+            if (node instanceof ImageRenderable) node[prop] = undefined
+            else if (prop === "crop") node.crop = undefined
+          }
+        }
+        for (const prop in nextStyle) {
+          const propVal = nextStyle[prop]
+          if (propVal === previousStyle[prop]) continue
           // @ts-expect-error todo validate if prop is actually settable
           node[prop] = propVal
         }
         break
       case "text":
       case "content": {
-        const textValue = typeof value === "string" ? value : Array.isArray(value) ? value.join("") : `${value}`
+        if (name === "content" && node instanceof TextTableRenderable) {
+          node.content = value
+          break
+        }
+        const textValue = typeof value === "string" ? value : Array.isArray(value) ? value.join("") : `${value ?? ""}`
         // @ts-expect-error todo validate if prop is actually settable
-        node[name] = decodeHTML(textValue)
+        node[name] = textValue
         break
       }
 
@@ -364,8 +403,15 @@ export const {
       log("No parent found for node:", logId(node))
       return undefined
     }
-    const siblings = getNodeChildren(parent)
 
+    if (node instanceof SlotRenderable) {
+      const layoutSlotNode = node.getSlotChildForRemoval(parent)
+      if (layoutSlotNode) {
+        node = layoutSlotNode
+      }
+    }
+
+    const siblings = getNodeChildren(parent)
     const index = siblings.indexOf(node)
 
     if (index === -1 || index === siblings.length - 1) {
@@ -384,3 +430,31 @@ export const {
     return nextSibling
   },
 })
+
+export {
+  effect,
+  memo,
+  createComponent,
+  createElement,
+  createTextNode,
+  insertNode,
+  insert,
+  spread,
+  setProp,
+  mergeProps,
+  use,
+}
+
+/** @internal Start an independent root without inheriting a Portal allocation target. */
+export function _render(code: () => DomNode, root: DomNode): () => void {
+  return renderRoot(
+    () =>
+      RenderableContext.Provider({
+        value: root instanceof Renderable ? () => root.ctx : undefined,
+        get children() {
+          return code() as any
+        },
+      }) as unknown as DomNode,
+    root,
+  )
+}

@@ -1,4 +1,3 @@
-import solidTransformPlugin from "./solid-plugin.js"
-import { plugin, type BunPlugin } from "bun"
+import { ensureSolidTransformPlugin } from "./solid-plugin.js"
 
-plugin(solidTransformPlugin)
+ensureSolidTransformPlugin()

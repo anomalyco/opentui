@@ -1,0 +1,138 @@
+---
+title: Application data paths
+description: Inspect and change OpenTUI's process-global configuration and data paths without assuming per-renderer isolation
+---
+
+# Application data paths
+
+This advanced reference is for applications that use OpenTUI's process-global configuration or Tree-sitter data
+locations.
+
+`DataPathsManager` computes path strings. It does not read configuration files, create directories, or isolate paths
+per renderer.
+
+## Public API
+
+```typescript
+interface DataPaths {
+  globalConfigPath: string
+  globalConfigFile: string
+  localConfigFile: string
+  globalDataPath: string
+}
+
+interface DataPathsEvents {
+  "paths:changed": [paths: DataPaths]
+}
+
+class DataPathsManager extends EventEmitter<DataPathsEvents> {
+  appName: string
+  readonly globalConfigPath: string
+  readonly globalConfigFile: string
+  readonly localConfigFile: string
+  readonly globalDataPath: string
+  toObject(): DataPaths
+}
+
+function getDataPaths(): DataPathsManager
+```
+
+Import all symbols from `@opentui/core`.
+
+## Defaults
+
+The default `appName` is `"opentui"`.
+
+| Property           | Result                                             |
+| ------------------ | -------------------------------------------------- |
+| `globalConfigPath` | `(XDG_CONFIG_HOME or <home>/.config)/<appName>`    |
+| `globalConfigFile` | `<globalConfigPath>/init.ts`                       |
+| `localConfigFile`  | `<process.cwd()>/.<appName>.ts`                    |
+| `globalDataPath`   | `(XDG_DATA_HOME or <home>/.local/share)/<appName>` |
+
+An unset or empty XDG value selects the fallback. A nonempty value is used as supplied before `appName` is appended.
+
+The implementation uses these same fallbacks on Linux, macOS, and Windows. It does not select macOS
+`Library/Application Support`, Windows `APPDATA`, or Windows `LOCALAPPDATA`. On Windows, the runtime's `path.join()`
+uses Windows separators under `os.homedir()`.
+
+`XDG_CACHE_HOME` does not participate in this API.
+
+## Read paths
+
+```typescript
+import { getDataPaths } from "@opentui/core"
+
+const paths = getDataPaths()
+console.log(paths.toObject())
+```
+
+Each property is lazy and cached after its first read. `toObject()` reads all four properties and returns a new plain
+object.
+
+Changing `process.cwd()` after the first `localConfigFile` read does not change the cached path. Changing XDG values
+after a global path read also does not invalidate the manager. Configure the process environment and working directory
+before the first lookup.
+
+Read [Environment variables](/docs/reference/env-vars) for environment-cache timing.
+
+## Change the application name
+
+```typescript
+const paths = getDataPaths()
+
+const onPathsChanged = (next: ReturnType<typeof paths.toObject>) => {
+  console.log(next.globalDataPath)
+}
+
+paths.on("paths:changed", onPathsChanged)
+paths.appName = "my-terminal-app"
+
+paths.off("paths:changed", onPathsChanged)
+```
+
+Setting a different valid name clears all cached paths. The manager then emits one synchronous `"paths:changed"`
+event with a fully recomputed `DataPaths` object. Setting the same name does nothing.
+
+A name must be a valid directory name on both Unix-like systems and Windows. It cannot be empty, whitespace-only,
+`.` or `..`, a Windows reserved device name, or contain path separators, control bytes, or `< > : " | ? *`. It also
+cannot end with a dot or space. An invalid value throws `Invalid app name` and leaves the old name unchanged.
+
+## Directory creation
+
+`DataPathsManager` has no `mkdir`, `create`, or file-loading method. A returned path can point to a directory that does
+not exist.
+
+Create only the directory that your application owns, at the point where it writes data. Handle permission and
+read-only-file-system failures there. Path lookup itself performs no I/O other than reading the home directory, current
+directory, and environment values.
+
+## Process-global lifecycle
+
+`getDataPaths()` returns a singleton stored on `globalThis` under the OpenTUI singleton bag. It persists across module
+imports and Bun hot reloads in the same process.
+
+Every renderer and package import in that process sees the same manager. Changing `appName` in one subsystem changes
+the singleton paths for all consumers. Do not use it for per-renderer or per-session isolation.
+
+`DataPathsManager` has no destroy method. Remove every listener that your application adds. Constructing
+`new DataPathsManager()` creates a separate manager, but OpenTUI services that call `getDataPaths()` do not use it.
+
+## Tree-sitter effect
+
+The process-global Tree-sitter client uses `getDataPaths().globalDataPath` as its default data path. When the singleton
+client exists, it subscribes to `"paths:changed"` and calls `client.setDataPath()` asynchronously.
+
+Thus, changing the singleton `appName` redirects the singleton Tree-sitter client's parser and query data path. A
+failure logs `Failed to update tree-sitter data path` and does not make the synchronous `appName` assignment fail.
+
+Destroying the singleton Tree-sitter client removes its path listener. A directly constructed `TreeSitterClient` with
+an explicit `dataPath` does not use this manager.
+
+Read [Syntax highlighting with Tree-sitter](/docs/reference/tree-sitter) before changing paths after parser startup.
+
+## Next
+
+- [Environment variables](/docs/reference/env-vars) defines XDG values and read timing.
+- [Runtime and platform support](/docs/getting-started/runtime-support) defines filesystem requirements.
+- [Syntax highlighting with Tree-sitter](/docs/reference/tree-sitter) owns parser-data lifecycle.

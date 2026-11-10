@@ -62,7 +62,7 @@ export class KeyEvent implements ParsedKey {
 }
 
 export class PasteEvent {
-  type: "paste" = "paste"
+  type = "paste" as const
   bytes: Uint8Array
   metadata?: PasteMetadata
   private _defaultPrevented: boolean = false

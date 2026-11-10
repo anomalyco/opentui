@@ -1,0 +1,33 @@
+diff --git a/yoga/algorithm/Cache.cpp b/yoga/algorithm/Cache.cpp
+index 08e2f223..01bec5b6 100644
+--- a/yoga/algorithm/Cache.cpp
++++ b/yoga/algorithm/Cache.cpp
+@@ -92,6 +92,10 @@ bool canUseCachedMeasurement(
+     hasSameWidthSpec = sizesMatch(effectiveLastWidth, effectiveWidth, config);
+   }
+ 
++  // OpenTUI: the stricter rule compares sizes without the margin on both
++  // sides (facebook/yoga#1965). Only a positive margin comes off the old size:
++  // upstream's rule is already valid for a negative margin. Entries for a
++  // percent margin match only at the same owner width (facebook/yoga#2042).
+   const bool widthIsCompatible =
+       hasSameWidthSpec ||
+       sizeIsExactAndMatchesOldMeasuredSize(
+@@ -106,7 +110,7 @@ bool canUseCachedMeasurement(
+           widthMode,
+           availableWidth - marginRow,
+           lastWidthMode,
+-          lastAvailableWidth,
++          lastAvailableWidth - std::max(marginRow, 0.0f),
+           lastComputedWidth,
+           config);
+ 
+@@ -140,7 +144,7 @@ bool canUseCachedMeasurement(
+       newSizeIsStricterAndStillValid(heightMode,
+                                      availableHeight - marginColumn,
+                                      lastHeightMode,
+-                                     lastAvailableHeight,
++                                     lastAvailableHeight - std::max(marginColumn, 0.0f),
+                                      lastComputedHeight,
+                                      config);
+ 

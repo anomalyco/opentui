@@ -1,8 +1,17 @@
-import { SystemClock, type Clock, type TimerHandle } from "./clock"
+import { RGBA, DEFAULT_BACKGROUND_RGB, DEFAULT_FOREGROUND_RGB, ansi256IndexToRgb } from "./RGBA.js"
+import { SystemClock, type Clock, type TimerHandle } from "./clock.js"
+import { env, registerEnvVar } from "./env.js"
 
 type Hex = string | null
 
 const SYSTEM_CLOCK = new SystemClock()
+
+registerEnvVar({
+  name: "OTUI_PALETTE_IDLE_TIMEOUT_MS",
+  description: "Milliseconds of silence after palette queries before using fallback colors.",
+  type: "number",
+  default: 300,
+})
 
 const OSC4_RESPONSE =
   /\x1b]4;(\d+);(?:(?:rgb:)([0-9a-fA-F]+)\/([0-9a-fA-F]+)\/([0-9a-fA-F]+)|#([0-9a-fA-F]{6}))(?:\x07|\x1b\\)/g
@@ -36,8 +45,24 @@ export interface TerminalPaletteDetector {
   cleanup(): void
 }
 
+export interface NormalizedTerminalPalette {
+  palette: RGBA[]
+  defaultForeground: RGBA
+  defaultBackground: RGBA
+}
+
 export type OscSubscriptionSource = {
   subscribeOsc(handler: (sequence: string) => void): () => void
+}
+
+export interface TerminalPaletteOptions {
+  stdin: NodeJS.ReadStream
+  stdout: NodeJS.WriteStream
+  writeFn?: WriteFunction
+  isLegacyTmux?: boolean
+  isTmux?: boolean
+  oscSource?: OscSubscriptionSource
+  clock?: Clock
 }
 
 function scaleComponent(comp: string): string {
@@ -52,6 +77,47 @@ function toHex(r?: string, g?: string, b?: string, hex6?: string): string {
   if (hex6) return `#${hex6.toLowerCase()}`
   if (r && g && b) return `#${scaleComponent(r)}${scaleComponent(g)}${scaleComponent(b)}`
   return "#000000"
+}
+
+const SPECIAL_COLORS = {
+  10: "defaultForeground",
+  11: "defaultBackground",
+  12: "cursorColor",
+  13: "mouseForeground",
+  14: "mouseBackground",
+  15: "tekForeground",
+  16: "tekBackground",
+  17: "highlightBackground",
+  19: "highlightForeground",
+} as const satisfies Record<number, Exclude<keyof TerminalColors, "palette">>
+
+export function emptyTerminalColors(size: number): TerminalColors {
+  const colors = { palette: Array(size).fill(null) } as TerminalColors
+  for (const key of Object.values(SPECIAL_COLORS)) colors[key] = null
+  return colors
+}
+
+/** Copies the OSC 4 and OSC 10-19 color replies in `sequence` into `colors`; returns whether a color changed. */
+export function applyPaletteReplies(colors: TerminalColors, sequence: string): boolean {
+  let changed = false
+  let m: RegExpExecArray | null
+  OSC4_RESPONSE.lastIndex = 0
+  while ((m = OSC4_RESPONSE.exec(sequence))) {
+    const index = parseInt(m[1], 10)
+    const hex = toHex(m[2], m[3], m[4], m[5])
+    if (index >= colors.palette.length || colors.palette[index] === hex) continue
+    colors.palette[index] = hex
+    changed = true
+  }
+  OSC_SPECIAL_RESPONSE.lastIndex = 0
+  while ((m = OSC_SPECIAL_RESPONSE.exec(sequence))) {
+    const key = SPECIAL_COLORS[parseInt(m[1], 10) as keyof typeof SPECIAL_COLORS]
+    const hex = toHex(m[2], m[3], m[4], m[5])
+    if (!key || colors[key] === hex) continue
+    colors[key] = hex
+    changed = true
+  }
+  return changed
 }
 
 /**
@@ -71,30 +137,24 @@ export class TerminalPalette implements TerminalPaletteDetector {
   private writeFn: WriteFunction
   private activeQuerySessions: Array<() => void> = []
   private inLegacyTmux: boolean
+  private inTmux: boolean
   private oscSource?: OscSubscriptionSource
   private readonly clock: Clock
 
-  constructor(
-    stdin: NodeJS.ReadStream,
-    stdout: NodeJS.WriteStream,
-    writeFn?: WriteFunction,
-    isLegacyTmux?: boolean,
-    oscSource?: OscSubscriptionSource,
-    clock?: Clock,
-  ) {
+  constructor(options: TerminalPaletteOptions) {
+    const { stdin, stdout, writeFn, isLegacyTmux, isTmux, oscSource, clock } = options
+
     this.stdin = stdin
     this.stdout = stdout
     this.writeFn = writeFn || ((data: string | Buffer) => stdout.write(data))
     this.inLegacyTmux = isLegacyTmux ?? false
+    this.inTmux = isTmux ?? this.inLegacyTmux
     this.oscSource = oscSource
     this.clock = clock ?? SYSTEM_CLOCK
   }
 
-  /**
-   * Write an OSC sequence, wrapping for tmux if needed
-   */
-  private writeOsc(osc: string): boolean {
-    const data = this.inLegacyTmux ? wrapForTmux(osc) : osc
+  private writeOsc(osc: string, wrapForLegacyTmux = false): boolean {
+    const data = wrapForLegacyTmux && this.inLegacyTmux ? wrapForTmux(osc) : osc
     return this.writeFn(data)
   }
 
@@ -202,11 +262,16 @@ export class TerminalPalette implements TerminalPaletteDetector {
         finish(false)
       }, timeoutMs)
       session.subscribeInput(onData)
-      this.writeOsc("\x1b]4;0;?\x07")
+      // Only OSC 4 needs legacy tmux passthrough; tmux routes OSC 4 replies back to the pane.
+      this.writeOsc("\x1b]4;0;?\x07", true)
     })
   }
 
-  private async queryPalette(indices: number[], timeoutMs = 1200): Promise<Map<number, Hex>> {
+  private async queryPalette(
+    indices: number[],
+    timeoutMs = 1200,
+    idleTimeoutMs = env.OTUI_PALETTE_IDLE_TIMEOUT_MS,
+  ): Promise<Map<number, Hex>> {
     const out = this.stdout
     const results = new Map<number, Hex>()
     indices.forEach((i) => results.set(i, null))
@@ -246,28 +311,25 @@ export class TerminalPalette implements TerminalPaletteDetector {
           return
         }
 
-        idleTimer = session.resetTimer(idleTimer, finish, 150)
+        idleTimer = session.resetTimer(idleTimer, finish, idleTimeoutMs)
       }
 
       session.setTimer(finish, timeoutMs)
       session.subscribeInput(onData)
-      this.writeOsc(indices.map((i) => `\x1b]4;${i};?\x07`).join(""))
+      // Only OSC 4 needs legacy tmux passthrough; tmux routes OSC 4 replies back to the pane.
+      this.writeOsc(indices.map((i) => `\x1b]4;${i};?\x07`).join(""), true)
+      idleTimer = session.resetTimer(idleTimer, finish, idleTimeoutMs)
     })
   }
 
-  private async querySpecialColors(timeoutMs = 1200): Promise<Record<number, Hex>> {
+  private async querySpecialColors(
+    timeoutMs = 1200,
+    idleTimeoutMs = env.OTUI_PALETTE_IDLE_TIMEOUT_MS,
+  ): Promise<Record<number, Hex>> {
     const out = this.stdout
-    const results: Record<number, Hex> = {
-      10: null,
-      11: null,
-      12: null,
-      13: null,
-      14: null,
-      15: null,
-      16: null,
-      17: null,
-      19: null,
-    }
+    const results: Record<number, Hex> = Object.fromEntries(Object.keys(SPECIAL_COLORS).map((osc) => [osc, null]))
+    // tmux handles plain OSC 10/11/12 only; it has no OSC 13-17/19 handlers or reply routing.
+    const queries = this.inTmux ? [10, 11, 12] : [10, 11, 12, 13, 14, 15, 16, 17, 19]
 
     if (!out.isTTY || !this.stdin.isTTY) {
       return results
@@ -302,32 +364,21 @@ export class TerminalPalette implements TerminalPaletteDetector {
 
         if (buffer.length > 8192) buffer = buffer.slice(-4096)
 
-        const done = Object.values(results).filter((v) => v !== null).length
-        if (done === Object.keys(results).length) {
+        if (queries.every((idx) => results[idx] !== null)) {
           finish()
           return
         }
 
         if (!updated) return
 
-        idleTimer = session.resetTimer(idleTimer, finish, 150)
+        idleTimer = session.resetTimer(idleTimer, finish, idleTimeoutMs)
       }
 
       session.setTimer(finish, timeoutMs)
       session.subscribeInput(onData)
-      this.writeOsc(
-        [
-          "\x1b]10;?\x07",
-          "\x1b]11;?\x07",
-          "\x1b]12;?\x07",
-          "\x1b]13;?\x07",
-          "\x1b]14;?\x07",
-          "\x1b]15;?\x07",
-          "\x1b]16;?\x07",
-          "\x1b]17;?\x07",
-          "\x1b]19;?\x07",
-        ].join(""),
-      )
+      // OSC 10/11/12 are plain tmux handlers. DCS passthrough does not help other special colors.
+      this.writeOsc(queries.map((idx) => `\x1b]${idx};?\x07`).join(""))
+      idleTimer = session.resetTimer(idleTimer, finish, idleTimeoutMs)
     })
   }
 
@@ -335,49 +386,66 @@ export class TerminalPalette implements TerminalPaletteDetector {
     const { timeout = 5000, size = 16 } = options || {}
     const supported = await this.detectOSCSupport()
 
-    if (!supported) {
-      return {
-        palette: Array(size).fill(null),
-        defaultForeground: null,
-        defaultBackground: null,
-        cursorColor: null,
-        mouseForeground: null,
-        mouseBackground: null,
-        tekForeground: null,
-        tekBackground: null,
-        highlightBackground: null,
-        highlightForeground: null,
-      }
-    }
+    if (!supported) return emptyTerminalColors(size)
 
     const indicesToQuery = [...Array(size).keys()]
+    const idleTimeout = env.OTUI_PALETTE_IDLE_TIMEOUT_MS
     const [paletteResults, specialColors] = await Promise.all([
-      this.queryPalette(indicesToQuery, timeout),
-      this.querySpecialColors(timeout),
+      this.queryPalette(indicesToQuery, timeout, idleTimeout),
+      this.querySpecialColors(timeout, idleTimeout),
     ])
 
-    return {
-      palette: [...Array(size).keys()].map((i) => paletteResults.get(i) ?? null),
-      defaultForeground: specialColors[10],
-      defaultBackground: specialColors[11],
-      cursorColor: specialColors[12],
-      mouseForeground: specialColors[13],
-      mouseBackground: specialColors[14],
-      tekForeground: specialColors[15],
-      tekBackground: specialColors[16],
-      highlightBackground: specialColors[17],
-      highlightForeground: specialColors[19],
-    }
+    const colors = emptyTerminalColors(size)
+    colors.palette = colors.palette.map((_, i) => paletteResults.get(i) ?? null)
+    for (const [osc, key] of Object.entries(SPECIAL_COLORS)) colors[key] = specialColors[Number(osc)]
+    return colors
   }
 }
 
-export function createTerminalPalette(
-  stdin: NodeJS.ReadStream,
-  stdout: NodeJS.WriteStream,
-  writeFn?: WriteFunction,
-  isLegacyTmux?: boolean,
-  oscSource?: OscSubscriptionSource,
-  clock?: Clock,
-): TerminalPaletteDetector {
-  return new TerminalPalette(stdin, stdout, writeFn, isLegacyTmux, oscSource, clock)
+export function createTerminalPalette(options: TerminalPaletteOptions): TerminalPaletteDetector {
+  return new TerminalPalette(options)
+}
+
+const DEFAULT_FOREGROUND_FALLBACK = RGBA.fromInts(...DEFAULT_FOREGROUND_RGB)
+const DEFAULT_BACKGROUND_FALLBACK = RGBA.fromInts(...DEFAULT_BACKGROUND_RGB)
+
+let fallbackAnsi256Palette: RGBA[] | null = null
+
+function getFallbackAnsi256Palette(): readonly RGBA[] {
+  if (!fallbackAnsi256Palette) {
+    fallbackAnsi256Palette = Array.from({ length: 256 }, (_, index) => {
+      const [r, g, b] = ansi256IndexToRgb(index)
+      return RGBA.fromInts(r, g, b)
+    })
+  }
+
+  return fallbackAnsi256Palette
+}
+
+export function normalizeTerminalPalette(colors?: TerminalColors | null): NormalizedTerminalPalette {
+  const fallbackPalette = getFallbackAnsi256Palette()
+
+  return {
+    palette: Array.from({ length: 256 }, (_, index) => {
+      const detected = colors?.palette[index]
+      return detected ? RGBA.fromHex(detected) : RGBA.clone(fallbackPalette[index])
+    }),
+    defaultForeground: colors?.defaultForeground
+      ? RGBA.fromHex(colors.defaultForeground)
+      : RGBA.clone(DEFAULT_FOREGROUND_FALLBACK),
+    defaultBackground: colors?.defaultBackground
+      ? RGBA.fromHex(colors.defaultBackground)
+      : RGBA.clone(DEFAULT_BACKGROUND_FALLBACK),
+  }
+}
+
+export function buildTerminalPaletteSignature(colors?: TerminalColors | null): string {
+  const normalized = normalizeTerminalPalette(colors)
+  const paletteSignature = normalized.palette.map((color) => color.toInts().join(",")).join(";")
+
+  return [
+    paletteSignature,
+    normalized.defaultForeground.toInts().join(","),
+    normalized.defaultBackground.toInts().join(","),
+  ].join("|")
 }

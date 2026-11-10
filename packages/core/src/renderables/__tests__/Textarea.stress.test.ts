@@ -468,7 +468,7 @@ describe("Textarea - Stress Tests", () => {
 
     for (let i = 0; i < 10000; i++) {
       const button = buttonCodes[i % buttonCodes.length]
-      const modifier = modifiers[(i / buttonCodes.length) % modifiers.length | 0]
+      const modifier = modifiers[((i / buttonCodes.length) % modifiers.length) | 0]
       const code = button | modifier
       const x = (i % 40) + 1
       const y = (i % 10) + 1

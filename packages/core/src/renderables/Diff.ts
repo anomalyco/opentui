@@ -1,7 +1,7 @@
-import { Renderable, type RenderableOptions } from "../Renderable.js"
+import { Renderable, type RenderableOptions, type NativeRenderableIntegration } from "../Renderable.js"
 import type { RenderContext } from "../types.js"
 import { CodeRenderable, type CodeOptions } from "./Code.js"
-import { LineNumberRenderable, type LineSign, type LineColorConfig } from "./LineNumberRenderable.js"
+import { LineNumberRenderable, type GutterLayout, type LineSign, type LineColorConfig } from "./LineNumberRenderable.js"
 import { RGBA, parseColor } from "../lib/RGBA.js"
 import { SyntaxStyle } from "../syntax-style.js"
 import { parsePatch, type StructuredPatch } from "diff"
@@ -16,6 +16,19 @@ interface LogicalLine {
   color?: string | RGBA
   sign?: LineSign
   type: "context" | "add" | "remove" | "empty"
+  hunkStart?: boolean
+}
+
+export interface DiffGutterOptions {
+  /** Columns before the line numbers, painted in each row's gutter color. Defaults to 1. */
+  paddingLeft?: number
+  /** Columns after the line numbers and signs. Defaults to 1. */
+  paddingRight?: number
+  /**
+   * Reserve room for at least this many line-number digits, and always reserve the sign column. Give several diffs
+   * the same value to line up their code columns.
+   */
+  minDigits?: number
 }
 
 export interface DiffRenderableOptions extends RenderableOptions<DiffRenderable> {
@@ -37,6 +50,7 @@ export interface DiffRenderableOptions extends RenderableOptions<DiffRenderable>
   showLineNumbers?: boolean
   lineNumberFg?: string | RGBA
   lineNumberBg?: string | RGBA
+  gutter?: DiffGutterOptions
 
   // Diff styling
   addedBg?: string | RGBA
@@ -51,17 +65,39 @@ export interface DiffRenderableOptions extends RenderableOptions<DiffRenderable>
   removedLineNumberBg?: string | RGBA
 }
 
+// Width of the " +" and " -" signs.
+const SIGN_WIDTH = 2
+
+const defaultColors = {
+  lineNumberFg: "#888888",
+  lineNumberBg: "transparent",
+  addedBg: "#1a4d1a",
+  removedBg: "#4d1a1a",
+  contextBg: "transparent",
+  addedSignColor: "#22c55e",
+  removedSignColor: "#ef4444",
+  addedLineNumberBg: "transparent",
+  removedLineNumberBg: "transparent",
+}
+
 export class DiffRenderable extends Renderable {
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
+    ...Renderable.nativeIntegration,
+  }
   private _diff: string
   private _syncScroll: boolean = false
   private _view: "unified" | "split"
   private _parsedDiff: StructuredPatch | null = null
   private _parseError: Error | null = null
+  // Source-line anchors for hunk starts; native extmarks should eventually own these anchors.
+  private _hunkStartLines: number[] = []
+  private _hunkRowOffsets: number[] | null = null
 
   // CodeRenderable options
   private _fg?: RGBA
   private _filetype?: string
   private _syntaxStyle?: SyntaxStyle
+  private fallbackSyntaxStyle?: SyntaxStyle
   private _wrapMode?: "word" | "char" | "none"
   private _conceal: boolean
   private _selectionBg?: RGBA
@@ -72,6 +108,7 @@ export class DiffRenderable extends Renderable {
   private _showLineNumbers: boolean
   private _lineNumberFg: RGBA
   private _lineNumberBg: RGBA
+  private _gutter: DiffGutterOptions
 
   // Diff styling
   private _addedBg: RGBA
@@ -95,7 +132,7 @@ export class DiffRenderable extends Renderable {
   private rightCodeRenderable: CodeRenderable | null = null
 
   private pendingRebuild: boolean = false
-  private _lastWidth: number = 0
+  private _lastCodeWidths: [number, number] = [0, 0]
 
   private errorTextRenderable: TextRenderable | null = null
   private errorCodeRenderable: CodeRenderable | null = null
@@ -109,40 +146,48 @@ export class DiffRenderable extends Renderable {
       flexDirection: options.view === "split" ? "row" : "column",
     })
 
-    this._diff = options.diff ?? ""
-    this._syncScroll = options.syncScroll ?? false
-    this._view = options.view ?? "unified"
+    try {
+      this._diff = options.diff ?? ""
+      this._syncScroll = options.syncScroll ?? false
+      this._view = options.view ?? "unified"
 
-    // CodeRenderable options
-    this._fg = options.fg ? parseColor(options.fg) : undefined
-    this._filetype = options.filetype
-    this._syntaxStyle = options.syntaxStyle
-    this._wrapMode = options.wrapMode
-    this._conceal = options.conceal ?? false
-    this._selectionBg = options.selectionBg ? parseColor(options.selectionBg) : undefined
-    this._selectionFg = options.selectionFg ? parseColor(options.selectionFg) : undefined
-    this._treeSitterClient = options.treeSitterClient
+      // CodeRenderable options
+      this._fg = options.fg ? RGBA.clone(parseColor(options.fg)) : undefined
+      this._filetype = options.filetype
+      this._syntaxStyle = options.syntaxStyle
+      this._wrapMode = options.wrapMode
+      this._conceal = options.conceal ?? false
+      this._selectionBg = options.selectionBg ? RGBA.clone(parseColor(options.selectionBg)) : undefined
+      this._selectionFg = options.selectionFg ? RGBA.clone(parseColor(options.selectionFg)) : undefined
+      this._treeSitterClient = options.treeSitterClient
 
-    // LineNumberRenderable options
-    this._showLineNumbers = options.showLineNumbers ?? true
-    this._lineNumberFg = parseColor(options.lineNumberFg ?? "#888888")
-    this._lineNumberBg = parseColor(options.lineNumberBg ?? "transparent")
+      // LineNumberRenderable options
+      this._showLineNumbers = options.showLineNumbers ?? true
+      this._lineNumberFg = RGBA.clone(parseColor(options.lineNumberFg ?? defaultColors.lineNumberFg))
+      this._lineNumberBg = RGBA.clone(parseColor(options.lineNumberBg ?? defaultColors.lineNumberBg))
+      this._gutter = { ...options.gutter }
 
-    // Diff styling
-    this._addedBg = parseColor(options.addedBg ?? "#1a4d1a")
-    this._removedBg = parseColor(options.removedBg ?? "#4d1a1a")
-    this._contextBg = parseColor(options.contextBg ?? "transparent")
-    this._addedContentBg = options.addedContentBg ? parseColor(options.addedContentBg) : null
-    this._removedContentBg = options.removedContentBg ? parseColor(options.removedContentBg) : null
-    this._contextContentBg = options.contextContentBg ? parseColor(options.contextContentBg) : null
-    this._addedSignColor = parseColor(options.addedSignColor ?? "#22c55e")
-    this._removedSignColor = parseColor(options.removedSignColor ?? "#ef4444")
-    this._addedLineNumberBg = parseColor(options.addedLineNumberBg ?? "transparent")
-    this._removedLineNumberBg = parseColor(options.removedLineNumberBg ?? "transparent")
+      // Diff styling
+      this._addedBg = RGBA.clone(parseColor(options.addedBg ?? defaultColors.addedBg))
+      this._removedBg = RGBA.clone(parseColor(options.removedBg ?? defaultColors.removedBg))
+      this._contextBg = RGBA.clone(parseColor(options.contextBg ?? defaultColors.contextBg))
+      this._addedContentBg = options.addedContentBg ? RGBA.clone(parseColor(options.addedContentBg)) : null
+      this._removedContentBg = options.removedContentBg ? RGBA.clone(parseColor(options.removedContentBg)) : null
+      this._contextContentBg = options.contextContentBg ? RGBA.clone(parseColor(options.contextContentBg)) : null
+      this._addedSignColor = RGBA.clone(parseColor(options.addedSignColor ?? defaultColors.addedSignColor))
+      this._removedSignColor = RGBA.clone(parseColor(options.removedSignColor ?? defaultColors.removedSignColor))
+      this._addedLineNumberBg = RGBA.clone(parseColor(options.addedLineNumberBg ?? defaultColors.addedLineNumberBg))
+      this._removedLineNumberBg = RGBA.clone(
+        parseColor(options.removedLineNumberBg ?? defaultColors.removedLineNumberBg),
+      )
 
-    if (this._diff) {
-      this.parseDiff()
-      this.buildView()
+      if (this._diff) {
+        this.parseDiff()
+        this.buildView()
+      }
+    } catch (error) {
+      // destroySelf destroys every pane, attached or not.
+      this.rollbackConstruction(error)
     }
   }
 
@@ -171,6 +216,10 @@ export class DiffRenderable extends Renderable {
   }
 
   private buildView(): void {
+    if (this.isDestroyed) return
+    this._hunkStartLines = []
+    this.invalidateHunkRowOffsets()
+
     if (this._parseError) {
       this.buildErrorView()
       return
@@ -211,17 +260,6 @@ export class DiffRenderable extends Renderable {
     return false
   }
 
-  protected override onResize(width: number, height: number): void {
-    super.onResize(width, height)
-
-    if (this._view === "split" && this._wrapMode !== "none" && this._wrapMode !== undefined) {
-      if (this._lastWidth !== width) {
-        this._lastWidth = width
-        this.requestRebuild()
-      }
-    }
-  }
-
   private requestRebuild(): void {
     if (this.pendingRebuild) {
       return
@@ -237,6 +275,10 @@ export class DiffRenderable extends Renderable {
     })
   }
 
+  private invalidateHunkRowOffsets(): void {
+    this._hunkRowOffsets = null
+  }
+
   private rebuildView(): void {
     if (this._view === "split") {
       this.requestRebuild()
@@ -246,8 +288,22 @@ export class DiffRenderable extends Renderable {
   }
 
   private handleLineInfoChange = (): void => {
-    if (!this._waitingForHighlight) return
+    // Wrapping or async concealment can change the visual row for an existing hunk anchor.
+    this.invalidateHunkRowOffsets()
+
     if (!this.leftCodeRenderable || !this.rightCodeRenderable) return
+
+    // View changes and gutter remeasurement can resize panes without resizing the Diff.
+    if (
+      this._view === "split" &&
+      (this._wrapMode === "word" || this._wrapMode === "char") &&
+      (this.leftCodeRenderable.width !== this._lastCodeWidths[0] ||
+        this.rightCodeRenderable.width !== this._lastCodeWidths[1])
+    ) {
+      this.requestRebuild()
+    }
+
+    if (!this._waitingForHighlight) return
 
     const leftIsHighlighting = this.leftCodeRenderable.isHighlighting
     const rightIsHighlighting = this.rightCodeRenderable.isHighlighting
@@ -259,43 +315,77 @@ export class DiffRenderable extends Renderable {
   }
 
   private attachLineInfoListeners(): void {
-    if (this._lineInfoChangeHandler) return
-    if (!this.leftCodeRenderable || !this.rightCodeRenderable) return
+    if (!this.leftCodeRenderable && !this.rightCodeRenderable) return
 
-    this._lineInfoChangeHandler = this.handleLineInfoChange
-    this.leftCodeRenderable.on("line-info-change", this._lineInfoChangeHandler)
-    this.rightCodeRenderable.on("line-info-change", this._lineInfoChangeHandler)
+    // Hunk offsets depend on lineInfo even when syncScroll is off.
+    this._lineInfoChangeHandler ??= this.handleLineInfoChange
+    if (this.leftCodeRenderable) {
+      this.leftCodeRenderable.off("line-info-change", this._lineInfoChangeHandler)
+      this.leftCodeRenderable.on("line-info-change", this._lineInfoChangeHandler)
+    }
+    if (this.rightCodeRenderable) {
+      this.rightCodeRenderable.off("line-info-change", this._lineInfoChangeHandler)
+      this.rightCodeRenderable.on("line-info-change", this._lineInfoChangeHandler)
+    }
   }
 
   private detachLineInfoListeners(): void {
     if (!this._lineInfoChangeHandler) return
 
-    if (this.leftCodeRenderable) {
-      this.leftCodeRenderable.off("line-info-change", this._lineInfoChangeHandler)
-    }
-    if (this.rightCodeRenderable) {
-      this.rightCodeRenderable.off("line-info-change", this._lineInfoChangeHandler)
-    }
+    const handler = this._lineInfoChangeHandler
     this._lineInfoChangeHandler = null
+    this.runCleanup((run) => {
+      run(() => this.leftCodeRenderable?.off("line-info-change", handler))
+      run(() => this.rightCodeRenderable?.off("line-info-change", handler))
+    })
   }
 
   public override destroyRecursively(): void {
-    this.detachLineInfoListeners()
+    if (this.isDestroyed) return
+    this.assertMutable()
+    this.runCleanup((run) => {
+      run(() => this.detachLineInfoListeners())
+      this.pendingRebuild = false
+      this.leftSideAdded = false
+      this.rightSideAdded = false
+      run(() => super.destroyRecursively())
+    })
+  }
+
+  protected override destroySelf(): void {
     this.pendingRebuild = false
-    this.leftSideAdded = false
-    this.rightSideAdded = false
-    super.destroyRecursively()
+    this.runCleanup((run) => {
+      run(() => this.detachLineInfoListeners())
+      // Inactive views are detached from the tree but still owned by this Diff.
+      for (const child of [
+        this.leftSide,
+        this.rightSide,
+        this.leftCodeRenderable,
+        this.rightCodeRenderable,
+        this.errorTextRenderable,
+        this.errorCodeRenderable,
+      ]) {
+        if (child && !child.isDestroyed) run(() => child.destroyRecursively())
+      }
+      this.leftSide = this.rightSide = this.leftCodeRenderable = this.rightCodeRenderable = null
+      this.errorTextRenderable = this.errorCodeRenderable = null
+      run(() => this.fallbackSyntaxStyle?.destroy())
+    })
+  }
+
+  private get codeSyntaxStyle(): SyntaxStyle {
+    return this._syntaxStyle ?? (this.fallbackSyntaxStyle ??= SyntaxStyle.create(this.ctx.nativeScene))
   }
 
   private buildErrorView(): void {
     this.flexDirection = "column"
 
     if (this.leftSide && this.leftSideAdded) {
-      super.remove(this.leftSide.id)
+      super.remove(this.leftSide)
       this.leftSideAdded = false
     }
     if (this.rightSide && this.rightSideAdded) {
-      super.remove(this.rightSide.id)
+      super.remove(this.rightSide)
       this.rightSideAdded = false
     }
 
@@ -322,7 +412,7 @@ export class DiffRenderable extends Renderable {
         id: this.id ? `${this.id}-error-code` : undefined,
         content: this._diff,
         filetype: "diff",
-        syntaxStyle: this._syntaxStyle ?? SyntaxStyle.create(),
+        syntaxStyle: this.codeSyntaxStyle,
         wrapMode: this._wrapMode,
         conceal: this._conceal,
         width: "100%",
@@ -359,7 +449,7 @@ export class DiffRenderable extends Renderable {
         filetype: this._filetype,
         wrapMode,
         conceal: this._conceal,
-        syntaxStyle: this._syntaxStyle ?? SyntaxStyle.create(),
+        syntaxStyle: this.codeSyntaxStyle,
         width: "100%",
         height: "100%",
         ...(this._fg !== undefined && { fg: this._fg }),
@@ -431,6 +521,7 @@ export class DiffRenderable extends Renderable {
         height: "100%",
       })
       newSide.showLineNumbers = this._showLineNumbers
+      newSide.setGutterLayout(this.gutterLayout())
       super.add(newSide)
 
       if (side === "left") {
@@ -442,7 +533,13 @@ export class DiffRenderable extends Renderable {
       }
     } else {
       sideRef.width = width
+      sideRef.fg = this._lineNumberFg
+      sideRef.bg = this._lineNumberBg
+      sideRef.setGutterLayout(this.gutterLayout())
       sideRef.setLineColors(lineColors)
+      // Preserve the viewer's width-only gutter reservation across alignment rebuilds.
+      const padding = sideRef.getLineSigns().get(-1)
+      if (padding) lineSigns.set(-1, padding)
       sideRef.setLineSigns(lineSigns)
       sideRef.setLineNumbers(lineNumbers)
       sideRef.setHideLineNumbers(hideLineNumbers)
@@ -458,6 +555,19 @@ export class DiffRenderable extends Renderable {
     }
   }
 
+  // Set through the method: LineNumberRenderable also applies a paddingRight option as layout padding.
+  private gutterLayout(): GutterLayout {
+    return {
+      // The paddings and digits set the width; a minWidth floor would turn into extra left padding.
+      minWidth: 0,
+      paddingLeft: this._gutter.paddingLeft ?? 1,
+      paddingRight: this._gutter.paddingRight ?? 1,
+      minDigits: this._gutter.minDigits ?? 0,
+      // A fixed digit count only lines diffs up if sides without +/- lines keep the sign column too.
+      minAfterWidth: this._gutter.minDigits === undefined ? 0 : SIGN_WIDTH,
+    }
+  }
+
   private buildUnifiedView(): void {
     if (!this._parsedDiff) return
 
@@ -466,13 +576,13 @@ export class DiffRenderable extends Renderable {
     if (this.errorTextRenderable) {
       const errorTextIndex = this.getChildren().indexOf(this.errorTextRenderable)
       if (errorTextIndex !== -1) {
-        super.remove(this.errorTextRenderable.id)
+        super.remove(this.errorTextRenderable)
       }
     }
     if (this.errorCodeRenderable) {
       const errorCodeIndex = this.getChildren().indexOf(this.errorCodeRenderable)
       if (errorCodeIndex !== -1) {
-        super.remove(this.errorCodeRenderable.id)
+        super.remove(this.errorCodeRenderable)
       }
     }
 
@@ -484,6 +594,9 @@ export class DiffRenderable extends Renderable {
     let lineIndex = 0
 
     for (const hunk of this._parsedDiff.hunks) {
+      // Unified view flattens hunks directly into the left CodeRenderable line stream.
+      this._hunkStartLines.push(lineIndex)
+
       let oldLineNum = hunk.oldStart
       let newLineNum = hunk.newStart
 
@@ -549,11 +662,12 @@ export class DiffRenderable extends Renderable {
     const content = contentLines.join("\n")
 
     const codeRenderable = this.createOrUpdateCodeRenderable("left", content, this._wrapMode)
+    this.attachLineInfoListeners()
 
     this.createOrUpdateSide("left", codeRenderable, lineColors, lineSigns, lineNumbers, new Set<number>(), "100%")
 
     if (this.rightSide && this.rightSideAdded) {
-      super.remove(this.rightSide.id)
+      super.remove(this.rightSide)
       this.rightSideAdded = false
     }
   }
@@ -566,20 +680,24 @@ export class DiffRenderable extends Renderable {
     if (this.errorTextRenderable) {
       const errorTextIndex = this.getChildren().indexOf(this.errorTextRenderable)
       if (errorTextIndex !== -1) {
-        super.remove(this.errorTextRenderable.id)
+        super.remove(this.errorTextRenderable)
       }
     }
     if (this.errorCodeRenderable) {
       const errorCodeIndex = this.getChildren().indexOf(this.errorCodeRenderable)
       if (errorCodeIndex !== -1) {
-        super.remove(this.errorCodeRenderable.id)
+        super.remove(this.errorCodeRenderable)
       }
     }
 
     const leftLogicalLines: LogicalLine[] = []
     const rightLogicalLines: LogicalLine[] = []
+    const hunkFirstLeftLine: number[] = []
 
     for (const hunk of this._parsedDiff.hunks) {
+      // Split view may insert padding later, so carry hunk starts through LogicalLine metadata.
+      hunkFirstLeftLine.push(leftLogicalLines.length)
+
       let oldLineNum = hunk.oldStart
       let newLineNum = hunk.newStart
 
@@ -676,10 +794,17 @@ export class DiffRenderable extends Renderable {
       }
     }
 
+    // Mark before wrap-alignment so padding does not lose the hunk start.
+    for (const startIndex of hunkFirstLeftLine) {
+      const firstLine = leftLogicalLines[startIndex]
+      if (firstLine) firstLine.hunkStart = true
+    }
+
     const canDoWrapAlignment = this.width > 0 && (this._wrapMode === "word" || this._wrapMode === "char")
 
     const preLeftContent = leftLogicalLines.map((l) => l.content).join("\n")
     const preRightContent = rightLogicalLines.map((l) => l.content).join("\n")
+    this._lastCodeWidths = [this.leftCodeRenderable?.width ?? 0, this.rightCodeRenderable?.width ?? 0]
 
     const needsConsistentConcealing =
       (this._wrapMode === "word" || this._wrapMode === "char") && this._conceal && this._filetype
@@ -696,6 +821,7 @@ export class DiffRenderable extends Renderable {
       this._wrapMode,
       drawUnstyledText,
     )
+    this.attachLineInfoListeners()
 
     let finalLeftLines: LogicalLine[]
     let finalRightLines: LogicalLine[]
@@ -738,8 +864,9 @@ export class DiffRenderable extends Renderable {
         const leftLine = leftLogicalLines[i]
         const rightLine = rightLogicalLines[i]
 
-        const leftVisualCount = leftVisualCounts.get(i) || 1
-        const rightVisualCount = rightVisualCounts.get(i) || 1
+        // Concealed logical lines have zero visual rows; counting them as one misaligns split panes.
+        const leftVisualCount = leftVisualCounts.get(i) ?? 0
+        const rightVisualCount = rightVisualCounts.get(i) ?? 0
 
         if (leftVisualPos < rightVisualPos) {
           const pad = rightVisualPos - leftVisualPos
@@ -788,6 +915,10 @@ export class DiffRenderable extends Renderable {
     const rightLineNumbers = new Map<number, number>()
 
     finalLeftLines.forEach((line, index) => {
+      if (line.hunkStart) {
+        // After padding, this is the line index CodeRenderable.lineInfo can resolve to a row.
+        this._hunkStartLines.push(index)
+      }
       if (line.lineNum !== undefined) {
         leftLineNumbers.set(index, line.lineNum)
       }
@@ -899,9 +1030,6 @@ export class DiffRenderable extends Renderable {
   public set syncScroll(value: boolean) {
     if (this._syncScroll !== value) {
       this._syncScroll = value
-      if (!value) {
-        this.detachLineInfoListeners()
-      }
     }
   }
 
@@ -935,6 +1063,10 @@ export class DiffRenderable extends Renderable {
   public set syntaxStyle(value: SyntaxStyle | undefined) {
     if (this._syntaxStyle !== value) {
       this._syntaxStyle = value
+      // Inactive panes can still finish highlighting after their theme is replaced.
+      for (const code of [this.leftCodeRenderable, this.rightCodeRenderable, this.errorCodeRenderable]) {
+        if (code && !code.isDestroyed) code.syntaxStyle = this.codeSyntaxStyle
+      }
       this.rebuildView()
     }
   }
@@ -946,6 +1078,7 @@ export class DiffRenderable extends Renderable {
   public set wrapMode(value: "word" | "char" | "none" | undefined) {
     if (this._wrapMode !== value) {
       this._wrapMode = value
+      this.invalidateHunkRowOffsets()
 
       if (this._view === "unified" && this.leftCodeRenderable) {
         this.leftCodeRenderable.wrapMode = value ?? "none"
@@ -972,119 +1105,108 @@ export class DiffRenderable extends Renderable {
   }
 
   public get addedBg(): RGBA {
-    return this._addedBg
+    return RGBA.clone(this._addedBg)
   }
 
   public set addedBg(value: string | RGBA) {
-    const parsed = parseColor(value)
-    if (this._addedBg !== parsed) {
-      this._addedBg = parsed
-      this.rebuildView()
-    }
+    this._addedBg = RGBA.clone(parseColor(value ?? defaultColors.addedBg))
+    this.rebuildView()
   }
 
   public get removedBg(): RGBA {
-    return this._removedBg
+    return RGBA.clone(this._removedBg)
   }
 
   public set removedBg(value: string | RGBA) {
-    const parsed = parseColor(value)
-    if (this._removedBg !== parsed) {
-      this._removedBg = parsed
-      this.rebuildView()
-    }
+    this._removedBg = RGBA.clone(parseColor(value ?? defaultColors.removedBg))
+    this.rebuildView()
   }
 
   public get contextBg(): RGBA {
-    return this._contextBg
+    return RGBA.clone(this._contextBg)
   }
 
   public set contextBg(value: string | RGBA) {
-    const parsed = parseColor(value)
-    if (this._contextBg !== parsed) {
-      this._contextBg = parsed
-      this.rebuildView()
-    }
+    this._contextBg = RGBA.clone(parseColor(value ?? defaultColors.contextBg))
+    this.rebuildView()
   }
 
   public get addedSignColor(): RGBA {
-    return this._addedSignColor
+    return RGBA.clone(this._addedSignColor)
   }
 
   public set addedSignColor(value: string | RGBA) {
-    const parsed = parseColor(value)
-    if (this._addedSignColor !== parsed) {
-      this._addedSignColor = parsed
-      this.rebuildView()
-    }
+    this._addedSignColor = RGBA.clone(parseColor(value ?? defaultColors.addedSignColor))
+    this.rebuildView()
   }
 
   public get removedSignColor(): RGBA {
-    return this._removedSignColor
+    return RGBA.clone(this._removedSignColor)
   }
 
   public set removedSignColor(value: string | RGBA) {
-    const parsed = parseColor(value)
-    if (this._removedSignColor !== parsed) {
-      this._removedSignColor = parsed
-      this.rebuildView()
-    }
+    this._removedSignColor = RGBA.clone(parseColor(value ?? defaultColors.removedSignColor))
+    this.rebuildView()
   }
 
   public get addedLineNumberBg(): RGBA {
-    return this._addedLineNumberBg
+    return RGBA.clone(this._addedLineNumberBg)
   }
 
   public set addedLineNumberBg(value: string | RGBA) {
-    const parsed = parseColor(value)
-    if (this._addedLineNumberBg !== parsed) {
-      this._addedLineNumberBg = parsed
-      this.rebuildView()
-    }
+    this._addedLineNumberBg = RGBA.clone(parseColor(value ?? defaultColors.addedLineNumberBg))
+    this.rebuildView()
   }
 
   public get removedLineNumberBg(): RGBA {
-    return this._removedLineNumberBg
+    return RGBA.clone(this._removedLineNumberBg)
   }
 
   public set removedLineNumberBg(value: string | RGBA) {
-    const parsed = parseColor(value)
-    if (this._removedLineNumberBg !== parsed) {
-      this._removedLineNumberBg = parsed
-      this.rebuildView()
-    }
+    this._removedLineNumberBg = RGBA.clone(parseColor(value ?? defaultColors.removedLineNumberBg))
+    this.rebuildView()
   }
 
   public get lineNumberFg(): RGBA {
-    return this._lineNumberFg
+    return RGBA.clone(this._lineNumberFg)
   }
 
   public set lineNumberFg(value: string | RGBA) {
-    const parsed = parseColor(value)
-    if (this._lineNumberFg !== parsed) {
-      this._lineNumberFg = parsed
-      this.rebuildView()
-    }
+    this._lineNumberFg = RGBA.clone(parseColor(value ?? defaultColors.lineNumberFg))
+    this.rebuildView()
   }
 
   public get lineNumberBg(): RGBA {
-    return this._lineNumberBg
+    return RGBA.clone(this._lineNumberBg)
   }
 
   public set lineNumberBg(value: string | RGBA) {
-    const parsed = parseColor(value)
-    if (this._lineNumberBg !== parsed) {
-      this._lineNumberBg = parsed
-      this.rebuildView()
-    }
+    this._lineNumberBg = RGBA.clone(parseColor(value ?? defaultColors.lineNumberBg))
+    this.rebuildView()
+  }
+
+  public get gutter(): DiffGutterOptions {
+    return { ...this._gutter }
+  }
+
+  public set gutter(value: DiffGutterOptions | undefined) {
+    const next = { ...value }
+    if (
+      next.paddingLeft === this._gutter.paddingLeft &&
+      next.paddingRight === this._gutter.paddingRight &&
+      next.minDigits === this._gutter.minDigits
+    )
+      return
+    this._gutter = next
+    this.rebuildView()
   }
 
   public get addedContentBg(): RGBA | null {
-    return this._addedContentBg
+    return this._addedContentBg ? RGBA.clone(this._addedContentBg) : null
   }
 
   public set addedContentBg(value: string | RGBA | null) {
-    const parsed = value ? parseColor(value) : null
+    const parsed = value ? RGBA.clone(parseColor(value)) : null
     if (this._addedContentBg !== parsed) {
       this._addedContentBg = parsed
       this.rebuildView()
@@ -1092,11 +1214,11 @@ export class DiffRenderable extends Renderable {
   }
 
   public get removedContentBg(): RGBA | null {
-    return this._removedContentBg
+    return this._removedContentBg ? RGBA.clone(this._removedContentBg) : null
   }
 
   public set removedContentBg(value: string | RGBA | null) {
-    const parsed = value ? parseColor(value) : null
+    const parsed = value ? RGBA.clone(parseColor(value)) : null
     if (this._removedContentBg !== parsed) {
       this._removedContentBg = parsed
       this.rebuildView()
@@ -1104,11 +1226,11 @@ export class DiffRenderable extends Renderable {
   }
 
   public get contextContentBg(): RGBA | null {
-    return this._contextContentBg
+    return this._contextContentBg ? RGBA.clone(this._contextContentBg) : null
   }
 
   public set contextContentBg(value: string | RGBA | null) {
-    const parsed = value ? parseColor(value) : null
+    const parsed = value ? RGBA.clone(parseColor(value)) : null
     if (this._contextContentBg !== parsed) {
       this._contextContentBg = parsed
       this.rebuildView()
@@ -1116,11 +1238,11 @@ export class DiffRenderable extends Renderable {
   }
 
   public get selectionBg(): RGBA | undefined {
-    return this._selectionBg
+    return this._selectionBg ? RGBA.clone(this._selectionBg) : undefined
   }
 
   public set selectionBg(value: string | RGBA | undefined) {
-    const parsed = value ? parseColor(value) : undefined
+    const parsed = value ? RGBA.clone(parseColor(value)) : undefined
     if (this._selectionBg !== parsed) {
       this._selectionBg = parsed
       if (this.leftCodeRenderable) {
@@ -1133,11 +1255,11 @@ export class DiffRenderable extends Renderable {
   }
 
   public get selectionFg(): RGBA | undefined {
-    return this._selectionFg
+    return this._selectionFg ? RGBA.clone(this._selectionFg) : undefined
   }
 
   public set selectionFg(value: string | RGBA | undefined) {
-    const parsed = value ? parseColor(value) : undefined
+    const parsed = value ? RGBA.clone(parseColor(value)) : undefined
     if (this._selectionFg !== parsed) {
       this._selectionFg = parsed
       if (this.leftCodeRenderable) {
@@ -1161,11 +1283,11 @@ export class DiffRenderable extends Renderable {
   }
 
   public get fg(): RGBA | undefined {
-    return this._fg
+    return this._fg ? RGBA.clone(this._fg) : undefined
   }
 
   public set fg(value: string | RGBA | undefined) {
-    const parsed = value ? parseColor(value) : undefined
+    const parsed = value ? RGBA.clone(parseColor(value)) : undefined
     if (this._fg !== parsed) {
       this._fg = parsed
       if (this.leftCodeRenderable) {
@@ -1205,5 +1327,34 @@ export class DiffRenderable extends Renderable {
   public clearHighlightLines(startLine: number, endLine: number): void {
     this.leftSide?.clearHighlightLines(startLine, endLine)
     this.rightSide?.clearHighlightLines(startLine, endLine)
+  }
+
+  public getHunkRowOffsets(): number[] {
+    if (this._hunkRowOffsets) return [...this._hunkRowOffsets]
+
+    this._hunkRowOffsets = this.computeHunkRowOffsets()
+    return [...this._hunkRowOffsets]
+  }
+
+  private computeHunkRowOffsets(): number[] {
+    if (this._hunkStartLines.length === 0) return []
+
+    // lineInfo composes native wrapping with CodeRenderable's temporary conceal source map.
+    // Native extmark row resolution should replace this scan with direct anchor queries.
+    const sources = this.leftCodeRenderable?.lineInfo.lineSources
+    if (!sources || sources.length === 0) return [...this._hunkStartLines]
+
+    const offsets: number[] = []
+    let visualRow = 0
+
+    for (const hunkStartLine of this._hunkStartLines) {
+      // If the exact hunk line is concealed, navigate to the next visible row.
+      while (visualRow < sources.length && sources[visualRow] < hunkStartLine) {
+        visualRow++
+      }
+      offsets.push(visualRow < sources.length ? visualRow : hunkStartLine)
+    }
+
+    return offsets
   }
 }

@@ -7,25 +7,27 @@ on:
         description: "Version being released"
         required: true
         type: string
-      isDryRun:
-        description: "Whether this is a dry run release"
-        required: false
-        type: boolean
-        default: false
+      npmPackagesArtifact:
+        description: "Name of the npm packages artifact"
+        required: true
+        type: string
+
+permissions:
+  contents: read
 
 jobs:
   build-examples:
     name: Build Example Executables
-    runs-on: macos-latest
+    runs-on: blacksmith-12vcpu-macos-15
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.1
 
       - name: Install dependencies FIRST (before copying built packages)
         run: |
@@ -34,12 +36,11 @@ jobs:
 
           echo ""
           echo "✅ Base dependencies installed"
-          echo "Note: bun-webgpu will be installed by the build script (src/examples/build.ts) for all platforms"
 
       - name: Download npm packages artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
-          name: npm-packages-${{ inputs.version }}
+          name: ${{ inputs.npmPackagesArtifact }}
 
       - name: Extract and install npm packages
         run: |
@@ -59,9 +60,32 @@ jobs:
           test -f packages/core/dist/package.json || (echo "❌ core dist/package.json missing after copy!" && exit 1)
           echo "✅ Core dist copied"
 
+          echo "Copying three dist..."
+          test -d "npm-packages/three-dist" || (echo "❌ three-dist not found in artifact!" && exit 1)
+          cp -r npm-packages/three-dist packages/three/dist
+          test -f packages/three/dist/package.json || (echo "❌ three dist/package.json missing after copy!" && exit 1)
+          echo "✅ Three dist copied"
+
+          echo "Copying qrcode dist..."
+          test -d "npm-packages/qrcode-dist" || (echo "❌ qrcode-dist not found in artifact!" && exit 1)
+          cp -r npm-packages/qrcode-dist packages/qrcode/dist
+          test -f packages/qrcode/dist/package.json || (echo "❌ qrcode dist/package.json missing after copy!" && exit 1)
+          echo "✅ QRCode dist copied"
+
           # Copy native packages to core's node_modules (required - these OVERRIDE the npm versions)
           echo "Copying built native packages (overriding any npm versions)..."
           test -d "npm-packages/core-native-packages" || (echo "❌ core-native-packages not found in artifact!" && exit 1)
+
+          # Remove Bun-managed symlinks first so we can replace them with the prebuilt artifact directories.
+          rm -rf packages/core/node_modules/@opentui/core-darwin-x64
+          rm -rf packages/core/node_modules/@opentui/core-darwin-arm64
+          rm -rf packages/core/node_modules/@opentui/core-linux-x64
+          rm -rf packages/core/node_modules/@opentui/core-linux-arm64
+          rm -rf packages/core/node_modules/@opentui/core-linux-x64-musl
+          rm -rf packages/core/node_modules/@opentui/core-linux-arm64-musl
+          rm -rf packages/core/node_modules/@opentui/core-win32-x64
+          rm -rf packages/core/node_modules/@opentui/core-win32-arm64
+
           cp -r npm-packages/core-native-packages/* packages/core/node_modules/@opentui/
           test -n "$(ls -A packages/core/node_modules/@opentui/)" || (echo "❌ No native packages copied!" && exit 1)
           echo "✅ Native packages copied"
@@ -80,79 +104,54 @@ jobs:
           echo ""
           echo "Package extraction complete:"
           ls -lah packages/core/dist/
+          ls -lah packages/qrcode/dist/
+          ls -lah packages/three/dist/
           ls -lah packages/core/node_modules/@opentui/
 
-      - name: Verify bun-webgpu is available for build
-        run: |
-          echo "Checking bun-webgpu installation..."
-
-          # Check root node_modules first
-          if [ -d node_modules/bun-webgpu ]; then
-            echo "✅ bun-webgpu found in root node_modules"
-          # Check packages/core/node_modules
-          elif [ -d packages/core/node_modules/bun-webgpu ]; then
-            echo "✅ bun-webgpu found in packages/core/node_modules"
-          else
-            echo "❌ bun-webgpu not found in root or packages/core/node_modules!"
-            echo "Note: The build script will install it, but it should already be present"
-            exit 1
-          fi
-
-          # Check for platform-specific packages in .bun cache (where bun install --os="*" --cpu="*" puts them)
-          echo ""
-          echo "Checking for platform-specific bun-webgpu packages in cache..."
-          if [ -d node_modules/.bun/bun-webgpu-darwin-arm64@0.1.4 ]; then
-            echo "✅ bun-webgpu-darwin-arm64 found in cache"
-          else
-            echo "⚠️  bun-webgpu-darwin-arm64 not found (will be installed during build)"
-          fi
-
-          if [ -d node_modules/.bun/bun-webgpu-darwin-x64@0.1.4 ]; then
-            echo "✅ bun-webgpu-darwin-x64 found in cache"
-          else
-            echo "⚠️  bun-webgpu-darwin-x64 not found (will be installed during build)"
-          fi
-
-          if [ -d node_modules/.bun/bun-webgpu-linux-x64@0.1.4 ]; then
-            echo "✅ bun-webgpu-linux-x64 found in cache"
-          else
-            echo "⚠️  bun-webgpu-linux-x64 not found (will be installed during build)"
-          fi
-
-          if [ -d node_modules/.bun/bun-webgpu-win32-x64@0.1.4 ]; then
-            echo "✅ bun-webgpu-win32-x64 found in cache"
-          else
-            echo "⚠️  bun-webgpu-win32-x64 not found (will be installed during build)"
-          fi
-
-          echo ""
-          echo "✅ bun-webgpu ready for bundling"
-
       - name: Build examples
+        env:
+          OPENTUI_EXAMPLES_USE_PREBUILT_ARTIFACTS: "true"
         run: |
           set -e
-          cd packages/core
-          bun src/examples/build.ts
+          cd packages/examples
+          bun run build
 
       - name: Verify example builds
         run: |
           set -e
           echo "Verifying example executables..."
-          test -f "packages/core/src/examples/dist/darwin-x64/opentui-examples" || (echo "❌ darwin-x64 example missing!" && exit 1)
-          test -f "packages/core/src/examples/dist/darwin-arm64/opentui-examples" || (echo "❌ darwin-arm64 example missing!" && exit 1)
-          test -f "packages/core/src/examples/dist/linux-x64/opentui-examples" || (echo "❌ linux-x64 example missing!" && exit 1)
-          test -f "packages/core/src/examples/dist/windows-x64/opentui-examples.exe" || (echo "❌ windows-x64 example missing!" && exit 1)
+          test -f "packages/examples/dist/darwin-x64/opentui-examples" || (echo "❌ darwin-x64 example missing!" && exit 1)
+          test -f "packages/examples/dist/darwin-arm64/opentui-examples" || (echo "❌ darwin-arm64 example missing!" && exit 1)
+          test -f "packages/examples/dist/linux-x64/opentui-examples" || (echo "❌ linux-x64 example missing!" && exit 1)
+          test -f "packages/examples/dist/windows-x64/opentui-examples.exe" || (echo "❌ windows-x64 example missing!" && exit 1)
 
           echo "✅ All example executables verified"
           echo ""
-          ls -lah packages/core/src/examples/dist/*/
+          ls -lah packages/examples/dist/*/
+
+      - name: Stage example license notices
+        run: |
+          set -e
+          mkdir -p artifacts/example-notices
+          cp LICENSE artifacts/example-notices/LICENSE
+          cp packages/core/THIRD_PARTY_LICENSES/GHOSTTY artifacts/example-notices/LICENSE-GHOSTTY
+          cp packages/native/src/vendor/wuffs/LICENSE artifacts/example-notices/LICENSE-WUFFS
+          cp packages/native/src/vendor/stb/LICENSE artifacts/example-notices/LICENSE-STB
+          cp packages/native/src/vendor/libwebp/COPYING artifacts/example-notices/LICENSE-LIBWEBP
+          cp packages/native/src/vendor/libwebp/PATENTS artifacts/example-notices/PATENTS-LIBWEBP
+          cp packages/native/src/vendor/libwebp/AUTHORS artifacts/example-notices/AUTHORS-LIBWEBP
+          cp packages/native/src/vendor/lcms2/LICENSE artifacts/example-notices/LICENSE-LCMS2
+          cp packages/native/src/vendor/ffmpeg/COPYING.LGPLv2.1 artifacts/example-notices/LICENSE-FFMPEG
+          cp packages/native/src/vendor/ffmpeg/README.md artifacts/example-notices/FFMPEG-SOURCE.md
+          cp packages/native/src/vendor/ffmpeg/LICENSE-ZLIB artifacts/example-notices/LICENSE-ZLIB
 
       # Create separate zips for each platform's examples
       - name: Package examples - darwin-x64
         run: |
           set -e
           mkdir -p artifacts/examples-darwin-x64
-          cp packages/core/src/examples/dist/darwin-x64/opentui-examples artifacts/examples-darwin-x64/
+          cp packages/examples/dist/darwin-x64/opentui-examples artifacts/examples-darwin-x64/
+          cp artifacts/example-notices/* artifacts/examples-darwin-x64/
           cd artifacts
           zip -r examples-darwin-x64.zip examples-darwin-x64/
           test -f examples-darwin-x64.zip || (echo "❌ Failed to create darwin-x64 zip" && exit 1)
@@ -163,7 +162,8 @@ jobs:
         run: |
           set -e
           mkdir -p artifacts/examples-darwin-arm64
-          cp packages/core/src/examples/dist/darwin-arm64/opentui-examples artifacts/examples-darwin-arm64/
+          cp packages/examples/dist/darwin-arm64/opentui-examples artifacts/examples-darwin-arm64/
+          cp artifacts/example-notices/* artifacts/examples-darwin-arm64/
           cd artifacts
           zip -r examples-darwin-arm64.zip examples-darwin-arm64/
           test -f examples-darwin-arm64.zip || (echo "❌ Failed to create darwin-arm64 zip" && exit 1)
@@ -174,7 +174,8 @@ jobs:
         run: |
           set -e
           mkdir -p artifacts/examples-linux-x64
-          cp packages/core/src/examples/dist/linux-x64/opentui-examples artifacts/examples-linux-x64/
+          cp packages/examples/dist/linux-x64/opentui-examples artifacts/examples-linux-x64/
+          cp artifacts/example-notices/* artifacts/examples-linux-x64/
           cd artifacts
           zip -r examples-linux-x64.zip examples-linux-x64/
           test -f examples-linux-x64.zip || (echo "❌ Failed to create linux-x64 zip" && exit 1)
@@ -185,7 +186,8 @@ jobs:
         run: |
           set -e
           mkdir -p artifacts/examples-windows-x64
-          cp packages/core/src/examples/dist/windows-x64/opentui-examples.exe artifacts/examples-windows-x64/
+          cp packages/examples/dist/windows-x64/opentui-examples.exe artifacts/examples-windows-x64/
+          cp artifacts/example-notices/* artifacts/examples-windows-x64/
           cd artifacts
           zip -r examples-windows-x64.zip examples-windows-x64/
           test -f examples-windows-x64.zip || (echo "❌ Failed to create windows-x64 zip" && exit 1)
@@ -200,13 +202,26 @@ jobs:
           test -f artifacts/examples-darwin-arm64.zip || (echo "❌ examples-darwin-arm64.zip missing!" && exit 1)
           test -f artifacts/examples-linux-x64.zip || (echo "❌ examples-linux-x64.zip missing!" && exit 1)
           test -f artifacts/examples-windows-x64.zip || (echo "❌ examples-windows-x64.zip missing!" && exit 1)
+          for directory in artifacts/examples-{darwin-x64,darwin-arm64,linux-x64,windows-x64}; do
+            test -f "$directory/LICENSE" || (echo "❌ OpenTUI license missing from $directory" && exit 1)
+            test -f "$directory/LICENSE-GHOSTTY" || (echo "❌ Ghostty notices missing from $directory" && exit 1)
+            test -f "$directory/LICENSE-LIBWEBP" || (echo "❌ libwebp notice missing from $directory" && exit 1)
+            test -f "$directory/PATENTS-LIBWEBP" || (echo "❌ libwebp patents missing from $directory" && exit 1)
+            test -f "$directory/AUTHORS-LIBWEBP" || (echo "❌ libwebp authors missing from $directory" && exit 1)
+            test -f "$directory/LICENSE-STB" || (echo "❌ stb notice missing from $directory" && exit 1)
+            test -f "$directory/LICENSE-WUFFS" || (echo "❌ Wuffs notice missing from $directory" && exit 1)
+            test -f "$directory/LICENSE-LCMS2" || (echo "❌ Little CMS notice missing from $directory" && exit 1)
+            test -f "$directory/LICENSE-FFMPEG" || (echo "❌ FFmpeg notice missing from $directory" && exit 1)
+            test -f "$directory/FFMPEG-SOURCE.md" || (echo "❌ FFmpeg source notice missing from $directory" && exit 1)
+            test -f "$directory/LICENSE-ZLIB" || (echo "❌ zlib notice missing from $directory" && exit 1)
+          done
 
           echo ""
           echo "✅ All artifacts verified. Ready to upload:"
           ls -lah artifacts/*.zip
 
       - name: Upload example executables
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: example-executables-${{ inputs.version }}
           path: |

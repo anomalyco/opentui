@@ -11,6 +11,7 @@
     "skipLibCheck": true,
     "jsx": "preserve",
     "jsxImportSource": "@opentui/solid",
+    "module": "ESNext",
     "moduleResolution": "bundler",
     "baseUrl": ".",
     "paths": {
@@ -20,11 +21,15 @@
   },
   "include": [
     "index.ts",
+    "components.ts",
     "src/**/*",
     "jsx-runtime.d.ts",
+    "jsx-dev-runtime.d.ts",
     // See the comment below
     "scripts/solid-plugin.ts",
-    "scripts/runtime-plugin-support.ts"
+    "scripts/solid-transform.ts",
+    "scripts/runtime-plugin-support.ts",
+    "scripts/runtime-plugin-support-configure.ts"
   ],
   "exclude": [
     "**/*.test.ts",
@@ -36,7 +41,6 @@
     // "exclude" is applied after "include"
     // See: https://www.typescriptlang.org/tsconfig#exclude
     "scripts/build.ts",
-    "scripts/publish.ts",
     "scripts/preload.ts"
   ]
 }

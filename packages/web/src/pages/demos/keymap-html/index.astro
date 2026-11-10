@@ -1,0 +1,135 @@
+---
+import SocialMeta from "../../../components/SocialMeta.astro"
+import demoStylesUrl from "../../../styles/keymap-html-demo.css?url"
+
+const title = "HTML Keymap Demo | OpenTUI"
+const description = "Use OpenTUI keymap leader bindings and ex commands in HTML."
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={description} />
+    <title>{title}</title>
+    <SocialMeta {title} {description} />
+    <link rel="icon" href="/favicon.svg" />
+    <link rel="stylesheet" href={demoStylesUrl} />
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">@opentui/keymap/html</p>
+          <h1>HTML Keymap Demo</h1>
+          <p class="lede">
+            Focus a panel or textarea, press <kbd>Space</kbd> for leader bindings, <kbd>:</kbd> for ex commands, and
+            <kbd>Tab</kbd> to cycle focus.
+          </p>
+        </div>
+        <div class="hero-card">
+          <div class="hero-card-row"><span>Leader</span><strong id="leader-state">Idle</strong></div>
+          <div class="hero-card-row"><span>Pending</span><strong id="pending-sequence">None</strong></div>
+          <div class="hero-card-row"><span>Focused</span><strong id="focused-target">None</strong></div>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="workspace">
+          <div class="panels">
+            <section id="alpha-panel" class="panel panel-alpha" tabindex="0" data-focusable="true">
+              <div class="panel-title-row">
+                <span class="panel-badge">Panel</span>
+                <h2>Alpha</h2>
+              </div>
+              <p class="panel-copy">Focused panel bindings: <kbd>j</kbd>, <kbd>k</kbd>, <kbd>3</kbd><kbd>k</kbd>, <kbd>Enter</kbd>.</p>
+              <div id="alpha-count" class="counter">0</div>
+            </section>
+
+            <section id="beta-panel" class="panel panel-beta" tabindex="0" data-focusable="true">
+              <div class="panel-title-row">
+                <span class="panel-badge">Panel</span>
+                <h2>Beta</h2>
+              </div>
+              <p class="panel-copy">Focused panel bindings: <kbd>j</kbd>, <kbd>k</kbd>, <kbd>3</kbd><kbd>k</kbd>, <kbd>Enter</kbd>.</p>
+              <div id="beta-count" class="counter">0</div>
+            </section>
+          </div>
+
+          <div class="editor-grid">
+            <section id="notes-card" class="editor-card">
+              <div class="editor-card-header">
+                <h2>Notes</h2>
+                <span>Use <kbd>Ctrl+Enter</kbd> to snapshot</span>
+              </div>
+              <textarea id="notes-field" data-focusable="true">
+Ship the HTML adapter.
+Use leader bindings and ex commands.</textarea
+              >
+            </section>
+
+            <section id="draft-card" class="editor-card">
+              <div class="editor-card-header">
+                <h2>Draft</h2>
+                <span>Use <kbd>Ctrl+Enter</kbd> to snapshot</span>
+              </div>
+              <textarea id="draft-field" data-focusable="true">
+This example runs against the built dist bundle.</textarea
+              >
+            </section>
+          </div>
+
+          <section id="graph-card" class="graph-card">
+            <div class="graph-header">
+              <div>
+                <p class="graph-eyebrow">runtime graph</p>
+                <h2>Keymap State</h2>
+              </div>
+              <span>Live projection from the graph feature via <code>keymap.getGraphSnapshot()</code></span>
+            </div>
+            <div id="keymap-graph" class="keymap-graph"></div>
+          </section>
+
+          <section id="help-card" class="help-card">
+            <h2>Quick Help</h2>
+            <div id="help-copy" class="help-copy"></div>
+          </section>
+        </section>
+
+        <aside class="sidebar">
+          <section id="graph-canvas-card" class="sidebar-card graph-canvas-card">
+            <h2>Graph View</h2>
+            <canvas id="graph-canvas" class="graph-canvas" aria-label="Abstract keymap graph visualization"></canvas>
+          </section>
+
+          <section id="log-card" class="sidebar-card" tabindex="0" data-focusable="true">
+            <h2>Recent Actions</h2>
+            <div id="log-lines" class="log-lines"></div>
+          </section>
+        </aside>
+      </main>
+
+      <div id="prompt-overlay" class="prompt-overlay is-hidden">
+        <section id="prompt-shell" class="prompt-shell" role="dialog" aria-modal="true" aria-labelledby="prompt-title">
+          <div class="prompt-input-shell">
+            <div class="prompt-header">
+              <div>
+                <p class="prompt-eyebrow">Command Palette</p>
+                <h2 id="prompt-title">Ex Prompt</h2>
+              </div>
+              <span>Commands come from the keymap resolver chain. Press <kbd>Esc</kbd> to close.</span>
+            </div>
+            <input id="command-input" class="prompt-input" autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="prompt-results">
+            <div id="command-help" class="prompt-help"></div>
+            <div id="command-suggestions" class="prompt-suggestions"></div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <script src="../../../scripts/keymap-html-demo.ts"></script>
+  </body>
+</html>

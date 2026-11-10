@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { EventEmitter } from "events"
-import { createSlotRegistry, SlotRegistry } from "../plugins/registry"
-import type { Plugin } from "../plugins/types"
-import type { CliRenderer } from "../renderer"
+import { createSlotRegistry, SlotRegistry } from "../plugins/registry.js"
+import type { Plugin } from "../plugins/types.js"
+import type { CliRenderer } from "../renderer.js"
 
 interface AppSlots {
   statusbar: { user: string }
@@ -200,6 +200,41 @@ describe("SlotRegistry", () => {
     registry.unregister("first")
 
     expect(notifyCount).toBe(3)
+  })
+
+  test("batch coalesces listener notifications", () => {
+    const registry = new SlotRegistry<TestNode, AppSlots, AppContext>(createMockRenderer(), hostContext)
+    let notifyCount = 0
+
+    registry.subscribe(() => {
+      notifyCount += 1
+    })
+
+    registry.batch(() => {
+      registry.register({
+        id: "first",
+        slots: {
+          statusbar() {
+            return "first"
+          },
+        },
+      })
+
+      registry.register({
+        id: "second",
+        slots: {
+          statusbar() {
+            return "second"
+          },
+        },
+      })
+
+      registry.updateOrder("second", -1)
+      registry.unregister("first")
+    })
+
+    expect(notifyCount).toBe(1)
+    expect(registry.resolve("statusbar").map((renderer) => renderer(hostContext, { user: "sam" }))).toEqual(["second"])
   })
 
   test("returns false and does not notify when updating order for unknown plugin", () => {

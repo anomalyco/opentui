@@ -56,7 +56,7 @@ function addEvent(eventType: string, event: object) {
   if (children.length > 50) {
     const oldest = children[0]
     if (oldest) {
-      scrollBox.remove(oldest.id)
+      scrollBox.remove(oldest)
       oldest.destroyRecursively()
     }
   }
@@ -106,13 +106,16 @@ async function main() {
 
   mainContainer.add(scrollBox)
 
-  syntaxStyle = SyntaxStyle.fromStyles({
-    string: { fg: parseColor("#A5D6FF") },
-    number: { fg: parseColor("#79C0FF") },
-    boolean: { fg: parseColor("#79C0FF") },
-    keyword: { fg: parseColor("#FF7B72") },
-    default: { fg: parseColor("#E6EDF3") },
-  })
+  syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      string: { fg: parseColor("#A5D6FF") },
+      number: { fg: parseColor("#79C0FF") },
+      boolean: { fg: parseColor("#79C0FF") },
+      keyword: { fg: parseColor("#FF7B72") },
+      default: { fg: parseColor("#E6EDF3") },
+    },
+    renderer.nativeScene,
+  )
 
   addEvent("capabilities", renderer.capabilities)
 

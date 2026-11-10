@@ -1,6 +1,6 @@
 import { createTestRenderer } from "@opentui/core/testing"
 import { For, createSignal, onCleanup, onMount } from "solid-js"
-import { render, testRender, useRenderer } from "../index"
+import { render, testRender, useRenderer } from "../index.js"
 
 type Mode = "external" | "helper" | "external-onmount" | "helper-onmount" | "external-active" | "helper-active"
 

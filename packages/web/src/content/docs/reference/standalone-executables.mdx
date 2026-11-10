@@ -1,0 +1,200 @@
+---
+title: Standalone executables
+description: Build OpenTUI apps as Bun executables or Node.js single executables
+skill:
+  entry: true
+  intents: [standalone, executable, bun-compile, node-sea, node-assets]
+---
+
+# Standalone executables
+
+This page gives the complete Bun compile and Node.js single executable application (SEA) procedures. See
+[Deploy an OpenTUI application](/docs/ship/deploy) before you choose a format. See
+[Runtime and platform support](/docs/getting-started/runtime-support) for the tested matrix.
+
+## Bun
+
+Bun can embed OpenTUI's native library, parser worker, default grammars, and Tree-sitter WASM in
+`bun build --compile` executables. These executables do not normally need asset extraction or `OTUI_ASSET_ROOT`.
+
+```bash
+bun build --compile ./app.ts --outfile app
+```
+
+### Linux libc
+
+Linux uses the glibc native package by default. Define `process.env.OPENTUI_LIBC` at build time. This lets Bun remove
+the unused native-package branch and embed only the target libc.
+
+```ts
+await Bun.build({
+  entrypoints: ["./app.ts"],
+  compile: {
+    target: "bun-linux-x64-musl",
+    outfile: "./app-linux-x64-musl",
+  },
+  define: {
+    "process.env.OPENTUI_LIBC": JSON.stringify("musl"),
+  },
+})
+```
+
+Use `"glibc"` for a glibc target. Without a build-time definition, Bun retains both runtime selection branches. The
+build can then require both native packages for the target architecture.
+
+Make sure every target native package is installed before compiling. Multi-platform release builds can install optional packages for all supported OS and CPU combinations:
+
+```bash
+bun install --os="*" --cpu="*" @opentui/core@<version>
+```
+
+On Alpine, Bun's Linux musl executable can require the standard C++ runtime libraries:
+
+```bash
+apk add --no-cache libstdc++ libgcc
+```
+
+## Node.js SEA
+
+Use Node.js 26.4.0 or later for this procedure. The tested SEA is ESM and enables experimental FFI. It does not support
+OpenTUI's Bun runtime-plugin system or `@opentui/three`.
+
+Node stores SEA assets as bytes inside the executable. The OpenTUI native library and worker need filesystem paths.
+The application must extract every OpenTUI asset before the bundled OpenTUI module body executes.
+
+The build flow is:
+
+1. Bundle the application as one Node-targeted ESM file.
+2. Call `getNodeAssets()` at build time for the target platform, architecture, and Linux libc.
+3. Add every returned `{ key, source }` entry to the SEA `assets` map without changing its key.
+4. Prepend startup code that extracts all assets to an absolute directory.
+5. Set `OTUI_ASSET_ROOT` to that directory before the bundled OpenTUI code executes.
+6. Build the SEA with `--experimental-ffi` in `execArgv`.
+
+`getNodeAssets()` is an ESM build-time manifest API. Do not call it from the finished SEA. It resolves installed
+packages and verifies source files on disk.
+
+```js
+import { spawnSync } from "node:child_process"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { resolve } from "node:path"
+import { getNodeAssets } from "@opentui/core/node-assets"
+
+const buildDir = resolve("build")
+mkdirSync(buildDir, { recursive: true })
+
+const libc = process.platform === "linux" && process.env.OPENTUI_LIBC === "musl" ? "musl" : "glibc"
+const assets = getNodeAssets({
+  platform: process.platform,
+  arch: process.arch,
+  ...(process.platform === "linux" ? { libc } : {}),
+})
+
+run("bun", ["build", "./app.ts", "--target=node", `--outfile=${resolve(buildDir, "bundle.mjs")}`])
+
+const prelude = `
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
+import { getRawAsset, isSea } from "node:sea"
+
+if (!isSea()) throw new Error("Expected a Node SEA executable")
+
+const assetRoot = mkdtempSync(join(tmpdir(), "opentui-assets-"))
+try {
+  for (const key of ${JSON.stringify(assets.map(({ key }) => key))}) {
+    const target = join(assetRoot, key)
+    mkdirSync(dirname(target), { recursive: true })
+    writeFileSync(target, new Uint8Array(getRawAsset(key)))
+  }
+} catch (error) {
+  rmSync(assetRoot, { recursive: true, force: true })
+  throw error
+}
+
+process.env.OTUI_ASSET_ROOT = assetRoot
+${process.platform === "linux" ? `process.env.OPENTUI_LIBC = ${JSON.stringify(libc)}` : ""}
+`
+
+const seaMain = resolve(buildDir, "sea-main.mjs")
+writeFileSync(seaMain, prelude + readFileSync(resolve(buildDir, "bundle.mjs"), "utf8"))
+
+const output = resolve(buildDir, process.platform === "win32" ? "app.exe" : "app")
+const config = {
+  main: seaMain,
+  mainFormat: "module",
+  executable: process.execPath,
+  output,
+  disableExperimentalSEAWarning: true,
+  useSnapshot: false,
+  useCodeCache: false,
+  execArgv: ["--experimental-ffi", "--no-warnings"],
+  execArgvExtension: "none",
+  assets: Object.fromEntries(assets.map(({ key, source }) => [key, source])),
+}
+
+const configPath = resolve(buildDir, "sea-config.json")
+writeFileSync(configPath, JSON.stringify(config, null, 2))
+run(process.execPath, ["--build-sea", configPath])
+
+function run(command, args) {
+  const result = spawnSync(command, args, { stdio: "inherit" })
+  if (result.error) throw result.error
+  if (result.status !== 0) throw new Error(`${command} failed with status ${result.status}`)
+}
+```
+
+Run this build file with Node.js 26.4.0 or later. The example builds for the host platform and architecture. It uses Bun only as
+the ESM bundler. The matching optional native package must be installed.
+
+The application uses normal OpenTUI imports:
+
+```typescript
+import { TextRenderable, createCliRenderer } from "@opentui/core"
+
+const renderer = await createCliRenderer()
+renderer.root.add(new TextRenderable(renderer, { content: "Hello from Node SEA" }))
+```
+
+### Node asset manifest
+
+```ts
+type NodeAssetTarget = {
+  platform: "darwin" | "linux" | "win32"
+  arch: "arm64" | "x64"
+  libc?: "glibc" | "musl"
+}
+
+type NodeAsset = {
+  readonly key: string
+  readonly source: string
+}
+```
+
+`source` is an absolute path to an existing build-time file. The manifest includes the selected native library, parser
+worker, current default grammar and query assets, and Tree-sitter WASM. Keys are validated, unique, sorted, and
+relocatable. Do not depend on a fixed asset count.
+
+`libc` is valid only for Linux and defaults to glibc when omitted. Manifest generation throws for unsupported targets,
+invalid libc combinations, missing native packages, and missing files.
+
+### Extraction ownership
+
+- `OTUI_ASSET_ROOT` must be absolute. Set it before the bundled OpenTUI module body executes.
+- Extract every manifest entry beneath that root with its exact key. A missing requested file throws. OpenTUI does not
+  fall back to installed package paths when the root is set.
+- The extraction destination must be writable. The example uses a private directory for each process and removes it
+  after an extraction error. It keeps a successful directory for the process lifetime because the native library and
+  worker continue to use those files. The application owns stale-directory cleanup after the process ends.
+- If an application adds a shared cache, publish each complete file with an atomic rename. Verify cached content before
+  reuse, and coordinate concurrent writers. The application owns cache cleanup, permissions, and integrity policy.
+- Keep `mainFormat: "module"`, `useSnapshot: false`, `useCodeCache: false`, and `execArgvExtension: "none"`.
+- Keep `--experimental-ffi` in `execArgv`. The example also uses `--no-warnings`.
+- The tested settings depend on ESM and runtime `import()` support.
+- Cross-target builds require a matching target Node executable and native package.
+- Repository CI runs the Node SEA acceptance path on Linux x64.
+- Node SEA and Node FFI are experimental Node.js features. The application owns code signing and platform
+  distribution.
+
+See [Environment variables](/docs/reference/env-vars#otui_asset_root) for the exact asset-root timing and fallback
+rules.

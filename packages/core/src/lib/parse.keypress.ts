@@ -1,6 +1,6 @@
 // Copied from https://github.com/enquirer/enquirer/blob/36785f3399a41cd61e9d28d1eb9c2fcd73d69b4c/lib/keypress.js
 import { Buffer } from "node:buffer"
-import { parseKittyKeyboard } from "./parse.keypress-kitty.js"
+import { kittyNamedSingleStrokeKeys, parseKittyKeyboard } from "./parse.keypress-kitty.js"
 
 const metaKeyCodeRe = /^(?:\x1b)([a-zA-Z0-9])$/
 
@@ -53,6 +53,27 @@ const keyName: Record<string, string> = {
   OE: "clear",
   OF: "end",
   OH: "home",
+  /* VT100 application keypad (SS3) — sent when terminal enables DECKPAM (ESC =).
+   * macOS Terminal.app and other xterm-based terminals emit these when running
+   * full-screen apps with the alternate screen. */
+  OM: "return",
+  Oj: "*",
+  Ok: "+",
+  Ol: ",",
+  Om: "-",
+  On: ".",
+  Oo: "/",
+  Op: "0",
+  Oq: "1",
+  Or: "2",
+  Os: "3",
+  Ot: "4",
+  Ou: "5",
+  Ov: "6",
+  Ow: "7",
+  Ox: "8",
+  Oy: "9",
+  OX: "=",
   /* xterm/rxvt ESC [ number ~ */
   "[1~": "home",
   "[2~": "insert",
@@ -103,12 +124,36 @@ const keyName: Record<string, string> = {
 
 export const nonAlphanumericKeys = [...Object.values(keyName), "backspace"]
 
+export const terminalNamedSingleStrokeKeys = [
+  ...new Set(["return", "linefeed", "tab", "escape", "space", ...nonAlphanumericKeys, ...kittyNamedSingleStrokeKeys]),
+]
+
 const isShiftKey = (code: string) => {
   return ["[a", "[b", "[c", "[d", "[e", "[2$", "[3$", "[5$", "[6$", "[7$", "[8$", "[Z"].includes(code)
 }
 
 const isCtrlKey = (code: string) => {
   return ["Oa", "Ob", "Oc", "Od", "Oe", "[2^", "[3^", "[5^", "[6^", "[7^", "[8^"].includes(code)
+}
+
+// Map raw control bytes to the key names that bindings expect. Terminals send
+// Ctrl+A..Ctrl+Z as 0x01..0x1a, and they send Ctrl+\\..Ctrl+_ as 0x1c..0x1f.
+// The ESC-prefixed meta+ctrl path reuses this mapping, so the raw and meta
+// forms stay aligned.
+const getCtrlKeyName = (charCode: number): string | undefined => {
+  if (charCode === 0) {
+    return "space"
+  }
+
+  if (charCode >= 1 && charCode <= 26) {
+    return String.fromCharCode(charCode + "a".charCodeAt(0) - 1)
+  }
+
+  if (charCode >= 28 && charCode <= 31) {
+    return String.fromCharCode(charCode + 64)
+  }
+
+  return undefined
 }
 
 export type KeyEventType = "press" | "repeat" | "release"
@@ -129,12 +174,39 @@ export interface ParsedKey {
   hyper?: boolean
   capsLock?: boolean
   numLock?: boolean
+  // Kitty's base-layout codepoint as a Unicode number. Example: 99 means "c".
+  // This lets shortcut matching recover Ctrl+C from an event whose printed name
+  // is something else under the active layout or IME.
   baseCode?: number
   repeated?: boolean
 }
 
 export type ParseKeypressOptions = {
   useKittyKeyboard?: boolean
+}
+
+// Printable characters for VT100 SS3 application-keypad sequences.
+// When the terminal is in application keypad mode (DECKPAM / ESC =), numpad keys
+// send these SS3 codes instead of raw ASCII characters. The keys map to the same
+// printable output as their regular-keyboard equivalents.
+const ss3NumpadPrintable: Record<string, string> = {
+  Op: "0",
+  Oq: "1",
+  Or: "2",
+  Os: "3",
+  Ot: "4",
+  Ou: "5",
+  Ov: "6",
+  Ow: "7",
+  Ox: "8",
+  Oy: "9",
+  Oj: "*",
+  Ok: "+",
+  Ol: ",",
+  Om: "-",
+  On: ".",
+  Oo: "/",
+  OX: "=",
 }
 
 const modifyOtherKeysRe = /^\x1b\[27;(\d+);(\d+)~$/
@@ -144,8 +216,7 @@ export const parseKeypress = (s: Buffer | string = "", options: ParseKeypressOpt
 
   if (Buffer.isBuffer(s)) {
     if (s[0]! > 127 && s[1] === undefined) {
-      ;(s[0] as unknown as number) -= 128
-      s = "\x1b" + String(s)
+      s = "\x1b" + String.fromCharCode(s[0]! - 128)
     } else {
       s = String(s)
     }
@@ -233,6 +304,9 @@ export const parseKeypress = (s: Buffer | string = "", options: ParseKeypressOpt
 
   key.sequence = key.sequence || s || key.name
 
+  const ctrlKeyName = s.length === 1 ? getCtrlKeyName(s.charCodeAt(0)) : undefined
+  const metaCtrlKeyName = s.length === 2 && s[0] === "\x1b" ? getCtrlKeyName(s.charCodeAt(1)) : undefined
+
   // Check for Kitty keyboard protocol if enabled
   if (options.useKittyKeyboard) {
     const kittyResult = parseKittyKeyboard(s)
@@ -305,13 +379,9 @@ export const parseKeypress = (s: Buffer | string = "", options: ParseKeypressOpt
   } else if (s === " " || s === "\x1b ") {
     key.name = "space"
     key.meta = s.length === 2
-  } else if (s === "\x00") {
-    // ctrl+space
-    key.name = "space"
-    key.ctrl = true
-  } else if (s.length === 1 && s <= "\x1a") {
-    // ctrl+letter
-    key.name = String.fromCharCode(s.charCodeAt(0) + "a".charCodeAt(0) - 1)
+  } else if (ctrlKeyName) {
+    // ctrl+space, ctrl+letter, ctrl+\\, ctrl+], ctrl+^, ctrl+_
+    key.name = ctrlKeyName
     key.ctrl = true
   } else if (s.length === 1 && s >= "0" && s <= "9") {
     // number - keep the actual number character for vim commands
@@ -344,11 +414,12 @@ export const parseKeypress = (s: Buffer | string = "", options: ParseKeypressOpt
     } else {
       key.name = char
     }
-  } else if (s.length === 2 && s[0] === "\x1b" && s[1]! <= "\x1a") {
-    // meta+ctrl+letter (ESC + control character)
+  } else if (metaCtrlKeyName) {
+    // ESC + control byte is the raw meta+ctrl form. Reuse the same names as
+    // the plain ctrl path, so meta+ctrl+\\ and friends resolve consistently.
     key.meta = true
     key.ctrl = true
-    key.name = String.fromCharCode(s.charCodeAt(1) + "a".charCodeAt(0) - 1)
+    key.name = metaCtrlKeyName
   } else if ((parts = fnKeyRe.exec(s))) {
     const segs = [...s]
 
@@ -380,6 +451,17 @@ export const parseKeypress = (s: Buffer | string = "", options: ParseKeypressOpt
       key.name = keyNameResult
       key.shift = isShiftKey(code) || key.shift
       key.ctrl = isCtrlKey(code) || key.ctrl
+
+      // SS3 application-keypad sequences have a raw sequence starting with ESC
+      // which the text-insertion branch would filter out (charCode 27 < 32).
+      // Override sequence with the printable character so text input works.
+      const ss3Char = ss3NumpadPrintable[code]
+      if (ss3Char !== undefined) {
+        key.sequence = ss3Char
+        if (key.name >= "0" && key.name <= "9") {
+          key.number = true
+        }
+      }
     } else {
       // If we matched the regex but didn't find a valid key name,
       // reset the key to default state (unknown sequence)

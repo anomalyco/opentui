@@ -13,6 +13,12 @@ export function singleton<T>(key: string, factory: () => T): T {
   return bag[key] as T
 }
 
+export function getSingleton<T>(key: string): T | undefined {
+  // @ts-expect-error this symbol is only used in this file and is not part of the public API
+  const bag = globalThis[singletonCacheSymbol]
+  return bag?.[key] as T | undefined
+}
+
 export function destroySingleton(key: string): void {
   // @ts-expect-error this symbol is only used in this file and is not part of the public API
   const bag = globalThis[singletonCacheSymbol]

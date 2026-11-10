@@ -1,0 +1,495 @@
+$ bun src/keymap-benchmark.ts
+[unknown-token] [Keymap] Unknown token "leader" in key sequence "<leader>a" was ignored
+keymap-benchmark iters=20000 warmup=2000 rounds=5 min_sample_ms=250 scenarios=70
+scenario                                              iters    median ms  best ms   median ops/sec
+----------------------------------------------------  -------  ---------  --------  --------------
+compile_layer_default_parser                          147000   168.98     165.15    869921.79     
+compile_layer_default_parser_with_local_commands      136000   211.11     208.57    644219.64     
+compile_layer_many_noop_parsers                       117000   158.94     156.56    736116.04     
+compile_layer_replaced_parser_chain                   193000   239.31     230.18    806484.47     
+compile_layer_many_noop_expanders                     98500    235.93     231.37    417490.37     
+compile_layer_comma_expander                          92700    213.98     210.84    433213.00     
+compile_layer_mod_expander                            177000   210.60     207.42    840462.49     
+compile_layer_mod_comma_expanders                     62100    246.31     243.80    252120.07     
+compile_layer_sequence_pattern                        170000   208.78     208.49    814250.18     
+register_commands_custom_fields                       202000   244.74     243.05    825376.23     
+register_commands_custom_fields_with_conditions       150000   228.41     221.81    656718.71     
+get_commands_query                                    20000    1940.68    1912.06   10305.68      
+get_commands_namespace_query                          20000    821.57     804.21    24343.67      
+get_commands_query_function_filter                    20000    1950.06    1899.54   10256.08      
+get_commands_registered_query                         20000    248.42     248.27    80508.82      
+get_command_entries_query                             20000    2404.53    2384.76   8317.65       
+get_command_entries_registered_query                  20000    849.64     846.35    23539.33      
+get_command_entries_registered_command_filter         20000    3644.42    3588.29   5487.84       
+get_command_bindings_registered_subset                20000    28986.95   28944.83  689.97        
+get_command_entries_reachable_shadowed_bindings       20000    495.79     488.46    40339.54      
+get_command_bindings_reachable_shadowed_subset        20000    353.24     344.76    56619.21      
+binding_sections_small_mixed                          318000   160.86     159.76    1976914.24    
+binding_sections_large_mixed                          20000    1338.47    1316.20   14942.42      
+binding_sections_duplicate_normalized_commands        20000    1650.32    1561.38   12118.86      
+format_key_sequence_plain                             5798000  147.96     147.85    39187546.59   
+format_key_sequence_token_aliases                     2374000  92.00      91.66     25803237.73   
+format_command_bindings_dedupe_many                   23100    249.66     245.65    92525.45      
+format_command_bindings_no_dedupe_many                35300    245.42     242.83    143835.47     
+run_command_registered                                685000   183.26     182.02    3737841.79    
+run_command_registered_with_command                   806000   232.46     230.69    3467329.68    
+active_keys_global_layers                             20000    1384.52    1376.72   14445.49      
+active_keys_focus_tree                                20000    1315.06    1313.98   15208.48      
+active_keys_focus_tree_repeat_reads_5x                20000    6711.53    6679.61   2979.95       
+active_keys_focus_tree_with_bindings_repeat_reads_5x  20000    9999.81    9990.25   2000.04       
+active_keys_focus_tree_with_metadata_repeat_reads_5x  20000    9728.38    9714.09   2055.84       
+dispatch_focus_tree                                   20000    1400.33    1372.08   14282.34      
+dispatch_static_sequence_start_clear                  119000   203.15     202.13    585776.82     
+dispatch_pattern_sequence_start_clear                 105000   216.02     215.59    486064.98     
+dispatch_static_sequence_complete                     60200    235.56     233.49    255556.24     
+dispatch_pattern_sequence_complete                    49500    235.31     235.07    210359.65     
+dispatch_static_key_with_pattern_sibling              124000   232.64     231.72    533016.87     
+dispatch_no_match_static_layer                        125000   227.77     225.93    548807.56     
+dispatch_no_match_pattern_layer                       127000   223.42     221.97    568428.18     
+dispatch_disambiguation_default_fast_path             128000   231.77     229.25    552278.00     
+dispatch_disambiguation_sync_run_exact                85800    235.64     234.91    364110.95     
+dispatch_disambiguation_sync_continue_sequence        102000   233.35     232.85    437114.83     
+dispatch_disambiguation_deferred_timeout_run_exact    45700    226.08     222.10    202144.34     
+dispatch_disambiguation_deferred_timeout_cancelled    46800    239.58     236.80    195343.24     
+active_keys_pending_sequence                          20000    305.00     304.13    65572.78      
+pending_sequence_parts_repeat_reads_5x                20000    765.34     759.93    26132.34      
+active_keys_pending_sequence_pattern                  20000    307.39     306.12    65064.97      
+pending_sequence_pattern_parts_repeat_reads_5x        20000    783.86     782.68    25514.80      
+active_keys_pending_recompiled_token_prefix           20000    2301.31    2281.93   8690.71       
+active_keys_requirement_heavy                         20000    735.54     732.25    27191.06      
+active_keys_layer_requirement_heavy                   20000    498.31     494.95    40135.62      
+active_keys_enabled_callback_heavy                    20000    1237.08    1210.23   16167.15      
+get_commands_command_requirement_heavy                20000    313.22     307.29    63852.50      
+get_commands_enabled_command_callback_heavy           20000    905.70     810.46    22082.36      
+active_keys_binding_sparse_data_churn                 20000    761.97     758.06    26247.67      
+active_keys_layer_sparse_data_churn                   20000    647.83     646.70    30872.49      
+state_change_focus_churn_noop                         1113000  131.23     127.93    8481090.43    
+state_change_focus_churn_read_heavy                   20000    626.90     624.39    31903.12      
+state_change_focus_churn_metadata_read_heavy          20000    1982.89    1963.96   10086.30      
+state_change_focus_churn_bindings_read_heavy          20000    2012.51    1977.13   9937.86       
+state_change_focus_churn_repeat_reads_5x              20000    3113.72    3089.86   6423.19       
+state_change_pending_blur_read_heavy                  45600    215.52     212.15    211578.26     
+state_change_external_invalidation_read_heavy         5225000  229.75     229.04    22742399.64   
+active_keys_prefix_merge_heavy                        20000    766.97     759.81    26076.56      
+dispatch_key_hooks_heavy                              82700    227.54     227.19    363459.37     
+dispatch_command_data_heavy                           108000   232.45     219.00    464624.54     
+compile_layer_default_parser: Repeated layer registration using the default binding parser
+  round 1: 173.12 ms (849126.90 ops/sec)
+  round 2: 168.98 ms (869921.79 ops/sec)
+  round 3: 169.34 ms (868051.07 ops/sec)
+  round 4: 165.15 ms (890110.24 ops/sec)
+  round 5: 165.25 ms (889570.91 ops/sec)
+compile_layer_default_parser_with_local_commands: Repeated layer registration with per-layer commands compiled on mount
+  round 1: 216.39 ms (628505.25 ops/sec)
+  round 2: 210.11 ms (647292.32 ops/sec)
+  round 3: 218.00 ms (623865.25 ops/sec)
+  round 4: 208.57 ms (652066.43 ops/sec)
+  round 5: 211.11 ms (644219.64 ops/sec)
+compile_layer_many_noop_parsers: Repeated layer registration with many no-op parsers ahead of default
+  round 1: 165.38 ms (707447.17 ops/sec)
+  round 2: 158.97 ms (735984.07 ops/sec)
+  round 3: 156.56 ms (747340.99 ops/sec)
+  round 4: 158.94 ms (736116.04 ops/sec)
+  round 5: 158.76 ms (736970.16 ops/sec)
+compile_layer_replaced_parser_chain: Repeated layer registration after replacing the parser chain
+  round 1: 246.31 ms (783551.24 ops/sec)
+  round 2: 239.31 ms (806484.47 ops/sec)
+  round 3: 246.91 ms (781656.85 ops/sec)
+  round 4: 237.69 ms (811988.97 ops/sec)
+  round 5: 230.18 ms (838491.54 ops/sec)
+compile_layer_many_noop_expanders: Repeated layer registration with many no-op expanders before parsing
+  round 1: 237.83 ms (414164.35 ops/sec)
+  round 2: 236.27 ms (416891.44 ops/sec)
+  round 3: 235.93 ms (417490.37 ops/sec)
+  round 4: 232.34 ms (423946.22 ops/sec)
+  round 5: 231.37 ms (425723.19 ops/sec)
+compile_layer_comma_expander: Repeated layer registration with comma-separated binding expansion
+  round 1: 215.72 ms (429723.80 ops/sec)
+  round 2: 214.44 ms (432284.38 ops/sec)
+  round 3: 213.98 ms (433213.00 ops/sec)
+  round 4: 212.87 ms (435486.85 ops/sec)
+  round 5: 210.84 ms (439664.59 ops/sec)
+compile_layer_mod_expander: Repeated layer registration with platform-aware mod binding expansion
+  round 1: 213.32 ms (829734.82 ops/sec)
+  round 2: 207.42 ms (853352.36 ops/sec)
+  round 3: 213.67 ms (828361.63 ops/sec)
+  round 4: 210.60 ms (840462.49 ops/sec)
+  round 5: 210.03 ms (842754.64 ops/sec)
+compile_layer_mod_comma_expanders: Repeated layer registration with stacked mod and comma binding expansion
+  round 1: 243.80 ms (254716.98 ops/sec)
+  round 2: 249.53 ms (248869.58 ops/sec)
+  round 3: 248.28 ms (250117.52 ops/sec)
+  round 4: 245.35 ms (253103.68 ops/sec)
+  round 5: 246.31 ms (252120.07 ops/sec)
+compile_layer_sequence_pattern: Repeated layer registration using a dynamic sequence pattern segment
+  round 1: 224.27 ms (758023.62 ops/sec)
+  round 2: 208.49 ms (815399.70 ops/sec)
+  round 3: 208.75 ms (814375.16 ops/sec)
+  round 4: 208.78 ms (814250.18 ops/sec)
+  round 5: 209.19 ms (812668.71 ops/sec)
+register_commands_custom_fields: Repeated command registration with compiled and raw custom fields
+  round 1: 243.05 ms (831101.43 ops/sec)
+  round 2: 244.74 ms (825376.23 ops/sec)
+  round 3: 248.67 ms (812337.48 ops/sec)
+  round 4: 243.20 ms (830606.91 ops/sec)
+  round 5: 247.33 ms (816735.81 ops/sec)
+register_commands_custom_fields_with_conditions: Repeated command registration with compiled custom fields and command runtime conditions
+  round 1: 234.65 ms (639261.41 ops/sec)
+  round 2: 230.18 ms (651677.48 ops/sec)
+  round 3: 223.13 ms (672263.88 ops/sec)
+  round 4: 221.81 ms (676267.92 ops/sec)
+  round 5: 228.41 ms (656718.71 ops/sec)
+get_commands_query: Repeated command discovery with search and filter over raw fields and attrs
+  round 1: 1912.06 ms (10459.90 ops/sec)
+  round 2: 1940.58 ms (10306.20 ops/sec)
+  round 3: 1952.60 ms (10242.77 ops/sec)
+  round 4: 1955.73 ms (10226.36 ops/sec)
+  round 5: 1940.68 ms (10305.68 ops/sec)
+get_commands_namespace_query: Repeated command discovery with top-level namespace filtering
+  round 1: 809.07 ms (24719.78 ops/sec)
+  round 2: 821.57 ms (24343.67 ops/sec)
+  round 3: 827.51 ms (24168.79 ops/sec)
+  round 4: 833.61 ms (23991.92 ops/sec)
+  round 5: 804.21 ms (24869.27 ops/sec)
+get_commands_query_function_filter: Repeated command discovery with search and a full-record filter predicate
+  round 1: 1899.54 ms (10528.84 ops/sec)
+  round 2: 1932.98 ms (10346.72 ops/sec)
+  round 3: 1950.06 ms (10256.08 ops/sec)
+  round 4: 1962.07 ms (10193.29 ops/sec)
+  round 5: 1969.96 ms (10152.50 ops/sec)
+get_commands_registered_query: Repeated registered command discovery with namespace filtering
+  round 1: 263.82 ms (75809.97 ops/sec)
+  round 2: 248.42 ms (80508.82 ops/sec)
+  round 3: 249.40 ms (80191.77 ops/sec)
+  round 4: 248.40 ms (80514.41 ops/sec)
+  round 5: 248.27 ms (80557.04 ops/sec)
+get_command_entries_query: Repeated command-plus-binding discovery with search and filter over raw fields and attrs
+  round 1: 2426.94 ms (8240.83 ops/sec)
+  round 2: 2384.76 ms (8386.59 ops/sec)
+  round 3: 2417.94 ms (8271.51 ops/sec)
+  round 4: 2400.38 ms (8332.03 ops/sec)
+  round 5: 2404.53 ms (8317.65 ops/sec)
+get_command_entries_registered_query: Repeated registered command-entry discovery with namespace filtering
+  round 1: 846.35 ms (23630.79 ops/sec)
+  round 2: 848.28 ms (23577.25 ops/sec)
+  round 3: 849.64 ms (23539.33 ops/sec)
+  round 4: 856.83 ms (23341.93 ops/sec)
+  round 5: 863.87 ms (23151.70 ops/sec)
+get_command_entries_registered_command_filter: Repeated registered command-entry discovery for a requested command set
+  round 1: 3662.53 ms (5460.71 ops/sec)
+  round 2: 3644.42 ms (5487.84 ops/sec)
+  round 3: 3658.96 ms (5466.04 ops/sec)
+  round 4: 3588.29 ms (5573.69 ops/sec)
+  round 5: 3625.51 ms (5516.47 ops/sec)
+get_command_bindings_registered_subset: Repeated registered command-binding grouping for a requested command set
+  round 1: 29158.66 ms (685.90 ops/sec)
+  round 2: 29044.83 ms (688.59 ops/sec)
+  round 3: 28966.33 ms (690.46 ops/sec)
+  round 4: 28944.83 ms (690.97 ops/sec)
+  round 5: 28986.95 ms (689.97 ops/sec)
+get_command_entries_reachable_shadowed_bindings: Repeated reachable command-entry discovery while shadowed commands share bindings by name
+  round 1: 488.46 ms (40945.30 ops/sec)
+  round 2: 492.78 ms (40585.78 ops/sec)
+  round 3: 496.52 ms (40280.48 ops/sec)
+  round 4: 496.71 ms (40264.76 ops/sec)
+  round 5: 495.79 ms (40339.54 ops/sec)
+get_command_bindings_reachable_shadowed_subset: Repeated reachable command-binding grouping while shadowed commands share bindings by name
+  round 1: 358.13 ms (55845.07 ops/sec)
+  round 2: 358.04 ms (55860.05 ops/sec)
+  round 3: 353.24 ms (56619.21 ops/sec)
+  round 4: 344.76 ms (58010.75 ops/sec)
+  round 5: 348.87 ms (57328.59 ops/sec)
+binding_sections_small_mixed: Repeated binding-section resolution for a small mixed app config
+  round 1: 161.79 ms (1965537.17 ops/sec)
+  round 2: 161.40 ms (1970275.48 ops/sec)
+  round 3: 160.86 ms (1976914.24 ops/sec)
+  round 4: 159.76 ms (1990489.35 ops/sec)
+  round 5: 160.37 ms (1982908.83 ops/sec)
+binding_sections_large_mixed: Repeated binding-section resolution for many sections and mixed binding value shapes
+  round 1: 1331.32 ms (15022.72 ops/sec)
+  round 2: 1316.20 ms (15195.26 ops/sec)
+  round 3: 1367.93 ms (14620.66 ops/sec)
+  round 4: 1338.47 ms (14942.42 ops/sec)
+  round 5: 1351.74 ms (14795.71 ops/sec)
+binding_sections_duplicate_normalized_commands: Repeated binding-section resolution with many trimmed command overrides and disables
+  round 1: 1608.31 ms (12435.41 ops/sec)
+  round 2: 1657.92 ms (12063.31 ops/sec)
+  round 3: 1710.17 ms (11694.75 ops/sec)
+  round 4: 1650.32 ms (12118.86 ops/sec)
+  round 5: 1561.38 ms (12809.19 ops/sec)
+format_key_sequence_plain: Repeated plain key-sequence formatting without custom options
+  round 1: 154.01 ms (37645999.67 ops/sec)
+  round 2: 147.92 ms (39195902.62 ops/sec)
+  round 3: 148.36 ms (39079681.72 ops/sec)
+  round 4: 147.96 ms (39187546.59 ops/sec)
+  round 5: 147.85 ms (39216227.91 ops/sec)
+format_key_sequence_token_aliases: Repeated key-sequence formatting with token, key, modifier, and separator options
+  round 1: 99.84 ms (23778233.50 ops/sec)
+  round 2: 91.66 ms (25899676.94 ops/sec)
+  round 3: 92.00 ms (25803237.73 ops/sec)
+  round 4: 91.95 ms (25817853.09 ops/sec)
+  round 5: 92.43 ms (25683745.89 ops/sec)
+format_command_bindings_dedupe_many: Repeated command-binding formatting with display-based dedupe over many bindings
+  round 1: 249.66 ms (92525.45 ops/sec)
+  round 2: 252.02 ms (91658.03 ops/sec)
+  round 3: 249.69 ms (92514.58 ops/sec)
+  round 4: 245.65 ms (94035.39 ops/sec)
+  round 5: 249.08 ms (92740.00 ops/sec)
+format_command_bindings_no_dedupe_many: Repeated command-binding formatting retaining duplicate bindings
+  round 1: 246.24 ms (143356.29 ops/sec)
+  round 2: 243.55 ms (144939.54 ops/sec)
+  round 3: 245.42 ms (143835.47 ops/sec)
+  round 4: 247.46 ms (142650.28 ops/sec)
+  round 5: 242.83 ms (145369.89 ops/sec)
+run_command_registered: Repeated programmatic execution of a directly registered command
+  round 1: 186.93 ms (3664541.12 ops/sec)
+  round 2: 183.26 ms (3737841.79 ops/sec)
+  round 3: 182.98 ms (3743535.92 ops/sec)
+  round 4: 184.65 ms (3709800.61 ops/sec)
+  round 5: 182.02 ms (3763366.65 ops/sec)
+run_command_registered_with_command: Repeated programmatic execution of a directly registered command with command metadata included
+  round 1: 232.68 ms (3464002.86 ops/sec)
+  round 2: 230.82 ms (3491898.45 ops/sec)
+  round 3: 230.69 ms (3493821.43 ops/sec)
+  round 4: 233.37 ms (3453770.11 ops/sec)
+  round 5: 232.46 ms (3467329.68 ops/sec)
+active_keys_global_layers: Repeated getActiveKeys with many global layers
+  round 1: 1378.13 ms (14512.41 ops/sec)
+  round 2: 1385.08 ms (14439.55 ops/sec)
+  round 3: 1376.72 ms (14527.27 ops/sec)
+  round 4: 1384.52 ms (14445.49 ops/sec)
+  round 5: 1386.81 ms (14421.62 ops/sec)
+active_keys_focus_tree: Repeated getActiveKeys with deep focus chain and many unrelated target layers
+  round 1: 1313.98 ms (15220.92 ops/sec)
+  round 2: 1314.37 ms (15216.45 ops/sec)
+  round 3: 1315.06 ms (15208.48 ops/sec)
+  round 4: 1330.24 ms (15034.92 ops/sec)
+  round 5: 1326.43 ms (15078.12 ops/sec)
+active_keys_focus_tree_repeat_reads_5x: Repeated getActiveKeys five times against the same focus tree state
+  round 1: 6711.53 ms (2979.95 ops/sec)
+  round 2: 6714.48 ms (2978.64 ops/sec)
+  round 3: 6722.44 ms (2975.11 ops/sec)
+  round 4: 6704.94 ms (2982.87 ops/sec)
+  round 5: 6679.61 ms (2994.19 ops/sec)
+active_keys_focus_tree_with_bindings_repeat_reads_5x: Repeated getActiveKeys with bindings five times against metadata-rich focus tree state
+  round 1: 9999.81 ms (2000.04 ops/sec)
+  round 2: 9990.25 ms (2001.95 ops/sec)
+  round 3: 10003.13 ms (1999.37 ops/sec)
+  round 4: 10004.05 ms (1999.19 ops/sec)
+  round 5: 9993.40 ms (2001.32 ops/sec)
+active_keys_focus_tree_with_metadata_repeat_reads_5x: Repeated getActiveKeys with metadata five times against metadata-rich focus tree state
+  round 1: 9767.83 ms (2047.54 ops/sec)
+  round 2: 9724.68 ms (2056.62 ops/sec)
+  round 3: 9740.92 ms (2053.19 ops/sec)
+  round 4: 9714.09 ms (2058.87 ops/sec)
+  round 5: 9728.38 ms (2055.84 ops/sec)
+dispatch_focus_tree: Repeated key dispatch with deep focus chain and many unrelated target layers
+  round 1: 1400.33 ms (14282.34 ops/sec)
+  round 2: 1403.39 ms (14251.16 ops/sec)
+  round 3: 1407.68 ms (14207.74 ops/sec)
+  round 4: 1397.90 ms (14307.14 ops/sec)
+  round 5: 1372.08 ms (14576.41 ops/sec)
+dispatch_static_sequence_start_clear: Repeated static sequence prefix dispatch followed by pending clear
+  round 1: 212.19 ms (560809.10 ops/sec)
+  round 2: 202.39 ms (587980.86 ops/sec)
+  round 3: 203.15 ms (585776.82 ops/sec)
+  round 4: 202.13 ms (588730.51 ops/sec)
+  round 5: 203.78 ms (583949.96 ops/sec)
+dispatch_pattern_sequence_start_clear: Repeated pattern sequence prefix dispatch followed by pending clear
+  round 1: 221.16 ms (474771.72 ops/sec)
+  round 2: 217.58 ms (482592.12 ops/sec)
+  round 3: 216.02 ms (486064.98 ops/sec)
+  round 4: 215.80 ms (486568.21 ops/sec)
+  round 5: 215.59 ms (487031.15 ops/sec)
+dispatch_static_sequence_complete: Repeated static two-stroke sequence dispatch through command execution
+  round 1: 239.68 ms (251163.20 ops/sec)
+  round 2: 236.40 ms (254649.63 ops/sec)
+  round 3: 235.56 ms (255556.24 ops/sec)
+  round 4: 234.62 ms (256587.53 ops/sec)
+  round 5: 233.49 ms (257829.65 ops/sec)
+dispatch_pattern_sequence_complete: Repeated dynamic pattern sequence dispatch through payload command execution
+  round 1: 236.48 ms (209318.07 ops/sec)
+  round 2: 235.07 ms (210579.38 ops/sec)
+  round 3: 236.16 ms (209603.29 ops/sec)
+  round 4: 235.31 ms (210359.65 ops/sec)
+  round 5: 235.09 ms (210554.23 ops/sec)
+dispatch_static_key_with_pattern_sibling: Repeated exact-key dispatch while the same layer also has a pattern binding
+  round 1: 247.25 ms (501524.54 ops/sec)
+  round 2: 233.14 ms (531868.41 ops/sec)
+  round 3: 231.72 ms (535121.96 ops/sec)
+  round 4: 232.64 ms (533016.87 ops/sec)
+  round 5: 232.34 ms (533697.74 ops/sec)
+dispatch_no_match_static_layer: Repeated no-match dispatch against a layer with only static bindings
+  round 1: 229.25 ms (545265.49 ops/sec)
+  round 2: 226.52 ms (551825.01 ops/sec)
+  round 3: 225.93 ms (553280.85 ops/sec)
+  round 4: 227.77 ms (548807.56 ops/sec)
+  round 5: 229.76 ms (544041.72 ops/sec)
+dispatch_no_match_pattern_layer: Repeated no-match dispatch against a layer with a pattern binding
+  round 1: 223.42 ms (568428.18 ops/sec)
+  round 2: 222.53 ms (570712.45 ops/sec)
+  round 3: 226.16 ms (561544.59 ops/sec)
+  round 4: 224.62 ms (565398.19 ops/sec)
+  round 5: 221.97 ms (572157.44 ops/sec)
+dispatch_disambiguation_default_fast_path: Repeated exact-key dispatch with no disambiguation resolver installed
+  round 1: 232.89 ms (549607.44 ops/sec)
+  round 2: 231.29 ms (553423.47 ops/sec)
+  round 3: 231.77 ms (552278.00 ops/sec)
+  round 4: 232.63 ms (550220.13 ops/sec)
+  round 5: 229.25 ms (558332.88 ops/sec)
+dispatch_disambiguation_sync_run_exact: Repeated ambiguous first-stroke dispatch with a sync runExact disambiguation resolver
+  round 1: 235.95 ms (363633.67 ops/sec)
+  round 2: 234.91 ms (365252.94 ops/sec)
+  round 3: 235.64 ms (364110.95 ops/sec)
+  round 4: 235.16 ms (364856.61 ops/sec)
+  round 5: 236.94 ms (362122.72 ops/sec)
+dispatch_disambiguation_sync_continue_sequence: Repeated ambiguous first-stroke dispatch with a sync continueSequence disambiguation resolver
+  round 1: 233.78 ms (436314.09 ops/sec)
+  round 2: 232.85 ms (438054.48 ops/sec)
+  round 3: 233.29 ms (437221.79 ops/sec)
+  round 4: 233.41 ms (436997.40 ops/sec)
+  round 5: 233.35 ms (437114.83 ops/sec)
+dispatch_disambiguation_deferred_timeout_run_exact: Repeated ambiguous first-stroke dispatch with a deferred timeout resolver that later runs the exact binding
+  round 1: 229.04 ms (199524.98 ops/sec)
+  round 2: 229.95 ms (198738.71 ops/sec)
+  round 3: 222.54 ms (205359.84 ops/sec)
+  round 4: 222.10 ms (205765.10 ops/sec)
+  round 5: 226.08 ms (202144.34 ops/sec)
+dispatch_disambiguation_deferred_timeout_cancelled: Repeated ambiguous first-stroke dispatch with a deferred timeout resolver that is cancelled before it resolves
+  round 1: 240.66 ms (194462.36 ops/sec)
+  round 2: 239.38 ms (195504.54 ops/sec)
+  round 3: 239.58 ms (195343.24 ops/sec)
+  round 4: 236.80 ms (197632.32 ops/sec)
+  round 5: 241.28 ms (193969.40 ops/sec)
+active_keys_pending_sequence: Repeated getActiveKeys while a multi-key sequence is pending
+  round 1: 305.20 ms (65531.37 ops/sec)
+  round 2: 305.00 ms (65572.78 ops/sec)
+  round 3: 304.32 ms (65719.38 ops/sec)
+  round 4: 304.13 ms (65761.89 ops/sec)
+  round 5: 305.36 ms (65496.25 ops/sec)
+pending_sequence_parts_repeat_reads_5x: Repeated pending sequence part reads against the same pending state
+  round 1: 767.41 ms (26061.53 ops/sec)
+  round 2: 763.27 ms (26202.98 ops/sec)
+  round 3: 759.93 ms (26318.10 ops/sec)
+  round 4: 767.22 ms (26068.07 ops/sec)
+  round 5: 765.34 ms (26132.34 ops/sec)
+active_keys_pending_sequence_pattern: Repeated getActiveKeys while a dynamic sequence pattern is pending
+  round 1: 306.12 ms (65332.90 ops/sec)
+  round 2: 309.81 ms (64555.57 ops/sec)
+  round 3: 307.62 ms (65015.38 ops/sec)
+  round 4: 306.87 ms (65173.38 ops/sec)
+  round 5: 307.39 ms (65064.97 ops/sec)
+pending_sequence_pattern_parts_repeat_reads_5x: Repeated pending sequence part reads against captured pattern input
+  round 1: 785.07 ms (25475.43 ops/sec)
+  round 2: 782.68 ms (25553.35 ops/sec)
+  round 3: 783.86 ms (25514.80 ops/sec)
+  round 4: 791.98 ms (25253.23 ops/sec)
+  round 5: 783.56 ms (25524.56 ops/sec)
+active_keys_pending_recompiled_token_prefix: Repeated getActiveKeys while a late-registered token prefix is pending
+  round 1: 2298.09 ms (8702.90 ops/sec)
+  round 2: 2281.93 ms (8764.53 ops/sec)
+  round 3: 2301.31 ms (8690.71 ops/sec)
+  round 4: 2304.26 ms (8679.56 ops/sec)
+  round 5: 2302.26 ms (8687.10 ops/sec)
+active_keys_requirement_heavy: Repeated getActiveKeys with many runtime-gated bindings
+  round 1: 756.03 ms (26454.09 ops/sec)
+  round 2: 737.39 ms (27122.56 ops/sec)
+  round 3: 734.38 ms (27233.67 ops/sec)
+  round 4: 732.25 ms (27313.20 ops/sec)
+  round 5: 735.54 ms (27191.06 ops/sec)
+active_keys_layer_requirement_heavy: Repeated getActiveKeys with many runtime-gated layers
+  round 1: 500.54 ms (39956.77 ops/sec)
+  round 2: 494.98 ms (40406.07 ops/sec)
+  round 3: 498.37 ms (40130.64 ops/sec)
+  round 4: 498.31 ms (40135.62 ops/sec)
+  round 5: 494.95 ms (40407.75 ops/sec)
+active_keys_enabled_callback_heavy: Repeated getActiveKeys with many callback-enabled layers
+  round 1: 1237.08 ms (16167.15 ops/sec)
+  round 2: 1241.09 ms (16114.81 ops/sec)
+  round 3: 1227.84 ms (16288.74 ops/sec)
+  round 4: 1210.23 ms (16525.85 ops/sec)
+  round 5: 1272.95 ms (15711.55 ops/sec)
+get_commands_command_requirement_heavy: Repeated getCommands with many runtime-gated commands using keyed requirements
+  round 1: 313.72 ms (63751.20 ops/sec)
+  round 2: 312.41 ms (64018.61 ops/sec)
+  round 3: 313.22 ms (63852.50 ops/sec)
+  round 4: 313.74 ms (63746.72 ops/sec)
+  round 5: 307.29 ms (65084.92 ops/sec)
+get_commands_enabled_command_callback_heavy: Repeated getCommands with many callback-enabled commands via the enabled fields addon
+  round 1: 957.60 ms (20885.51 ops/sec)
+  round 2: 905.70 ms (22082.36 ops/sec)
+  round 3: 907.16 ms (22046.77 ops/sec)
+  round 4: 868.13 ms (23038.13 ops/sec)
+  round 5: 810.46 ms (24677.30 ops/sec)
+active_keys_binding_sparse_data_churn: Repeated setData and getActiveKeys with per-binding dependency keys
+  round 1: 758.92 ms (26353.38 ops/sec)
+  round 2: 761.97 ms (26247.67 ops/sec)
+  round 3: 758.06 ms (26383.11 ops/sec)
+  round 4: 767.76 ms (26049.95 ops/sec)
+  round 5: 765.72 ms (26119.26 ops/sec)
+active_keys_layer_sparse_data_churn: Repeated setData and getActiveKeys with per-layer dependency keys
+  round 1: 648.07 ms (30860.86 ops/sec)
+  round 2: 647.83 ms (30872.49 ops/sec)
+  round 3: 647.67 ms (30879.81 ops/sec)
+  round 4: 649.82 ms (30777.65 ops/sec)
+  round 5: 646.70 ms (30926.11 ops/sec)
+state_change_focus_churn_noop: Repeated focus changes with a noop state listener
+  round 1: 134.92 ms (8249396.59 ops/sec)
+  round 2: 132.64 ms (8391070.63 ops/sec)
+  round 3: 127.93 ms (8700365.10 ops/sec)
+  round 4: 130.02 ms (8559906.02 ops/sec)
+  round 5: 131.23 ms (8481090.43 ops/sec)
+state_change_focus_churn_read_heavy: Repeated focus changes with active key and prefix listeners
+  round 1: 624.39 ms (32031.23 ops/sec)
+  round 2: 624.94 ms (32003.12 ops/sec)
+  round 3: 626.90 ms (31903.12 ops/sec)
+  round 4: 634.80 ms (31506.13 ops/sec)
+  round 5: 632.79 ms (31606.16 ops/sec)
+state_change_focus_churn_metadata_read_heavy: Repeated focus changes with active metadata and prefix listeners
+  round 1: 2054.12 ms (9736.54 ops/sec)
+  round 2: 1963.96 ms (10183.50 ops/sec)
+  round 3: 1972.55 ms (10139.17 ops/sec)
+  round 4: 1982.89 ms (10086.30 ops/sec)
+  round 5: 1990.99 ms (10045.23 ops/sec)
+state_change_focus_churn_bindings_read_heavy: Repeated focus changes with active binding and prefix listeners
+  round 1: 2048.85 ms (9761.57 ops/sec)
+  round 2: 2063.89 ms (9690.42 ops/sec)
+  round 3: 1977.13 ms (10115.66 ops/sec)
+  round 4: 2001.36 ms (9993.21 ops/sec)
+  round 5: 2012.51 ms (9937.86 ops/sec)
+state_change_focus_churn_repeat_reads_5x: Repeated focus changes followed by five active key reads
+  round 1: 3089.86 ms (6472.79 ops/sec)
+  round 2: 3097.01 ms (6457.84 ops/sec)
+  round 3: 3113.72 ms (6423.19 ops/sec)
+  round 4: 3137.20 ms (6375.11 ops/sec)
+  round 5: 3119.55 ms (6411.17 ops/sec)
+state_change_pending_blur_read_heavy: Repeated pending sequence blur clears with state listeners
+  round 1: 234.37 ms (194566.57 ops/sec)
+  round 2: 215.52 ms (211578.26 ops/sec)
+  round 3: 212.15 ms (214937.40 ops/sec)
+  round 4: 213.72 ms (213358.79 ops/sec)
+  round 5: 217.94 ms (209234.78 ops/sec)
+state_change_external_invalidation_read_heavy: Repeated external reactive-matcher invalidation with state listeners
+  round 1: 229.40 ms (22777131.76 ops/sec)
+  round 2: 230.38 ms (22679608.36 ops/sec)
+  round 3: 229.04 ms (22812808.35 ops/sec)
+  round 4: 229.75 ms (22742399.64 ops/sec)
+  round 5: 231.04 ms (22615147.83 ops/sec)
+active_keys_prefix_merge_heavy: Repeated getActiveKeys with many overlapping prefixes across layers
+  round 1: 762.98 ms (26213.05 ops/sec)
+  round 2: 766.97 ms (26076.56 ops/sec)
+  round 3: 769.18 ms (26001.61 ops/sec)
+  round 4: 759.81 ms (26322.51 ops/sec)
+  round 5: 770.91 ms (25943.46 ops/sec)
+dispatch_key_hooks_heavy: Repeated key dispatch with many registered key hooks
+  round 1: 229.95 ms (359647.18 ops/sec)
+  round 2: 227.31 ms (363827.27 ops/sec)
+  round 3: 227.54 ms (363459.37 ops/sec)
+  round 4: 230.57 ms (358673.41 ops/sec)
+  round 5: 227.19 ms (364004.56 ops/sec)
+dispatch_command_data_heavy: Repeated matched dispatch while commands receive many runtime data fields
+  round 1: 233.94 ms (461658.56 ops/sec)
+  round 2: 233.61 ms (462315.08 ops/sec)
+  round 3: 232.45 ms (464624.54 ops/sec)
+  round 4: 222.43 ms (485554.47 ops/sec)
+  round 5: 219.00 ms (493151.43 ops/sec)

@@ -1,5 +1,5 @@
 import { dlopen, FFIType, suffix } from "bun:ffi"
-import { setRenderLibPath } from "../zig"
+import { setRenderLibPath } from "../zig.js"
 
 if (!process.env.NATIVE_SPAN_FEED_LIB) {
   process.env.NATIVE_SPAN_FEED_LIB = "bench"
@@ -22,7 +22,7 @@ function hasFlag(name: string): boolean {
 
 const libVariant = process.env.NATIVE_SPAN_FEED_LIB
 const libBase = libVariant === "bench" ? "native_span_feed_bench" : (libVariant ?? "native_span_feed")
-const libPath = new URL(`../zig/zig-out/lib/lib${libBase}.${suffix}`, import.meta.url).pathname
+const libPath = new URL(`../../../native/zig-out/lib/lib${libBase}.${suffix}`, import.meta.url).pathname
 
 setRenderLibPath(libPath)
 

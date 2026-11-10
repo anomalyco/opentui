@@ -1,9 +1,8 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { runtimeModuleIdForSpecifier } from "@opentui/core/runtime-plugin"
-import { createSolidTransformPlugin } from "../scripts/solid-plugin"
+import { createSolidTransformPlugin, resetSolidTransformPluginState } from "../scripts/solid-plugin.js"
 
 type ResolveCallback = (args: { path: string; importer: string }) => unknown | Promise<unknown>
 type LoadResult = { contents: string; loader: string } | void
@@ -61,7 +60,7 @@ const runLoad = async (handlers: LoadHandler[], path: string): Promise<LoadResul
 }
 
 const createTempTsxFile = (source: string): { path: string; dispose: () => void } => {
-  const tempRoot = mkdtempSync(join(tmpdir(), "solid-plugin-test-"))
+  const tempRoot = mkdtempSync(join(import.meta.dir, "solid-plugin-test-"))
   const path = join(tempRoot, "fixture.tsx")
   writeFileSync(path, source)
 
@@ -74,6 +73,14 @@ const createTempTsxFile = (source: string): { path: string; dispose: () => void 
 }
 
 describe("solid transform plugin", () => {
+  beforeEach(() => {
+    resetSolidTransformPluginState()
+  })
+
+  afterEach(() => {
+    resetSolidTransformPluginState()
+  })
+
   it("does not register runtime module resolvers by default", () => {
     const { build, resolveFilters, modules } = createMockBuild()
     createSolidTransformPlugin().setup(build as any)
@@ -158,6 +165,28 @@ describe("solid transform plugin", () => {
     }
   })
 
+  it("transforms queried TSX paths", async () => {
+    const tempFile = createTempTsxFile("const node = <text>ok</text>\nexport { node }")
+
+    try {
+      const { build, loadHandlers } = createMockBuild()
+      createSolidTransformPlugin().setup(build as any)
+
+      const transformed = await runLoad(loadHandlers, `${tempFile.path}?reload=1`)
+
+      expect(transformed).toBeDefined()
+
+      if (!transformed) {
+        throw new Error("Expected transformed output")
+      }
+
+      expect(transformed.loader).toBe("js")
+      expect(transformed.contents).toContain("@opentui/solid")
+    } finally {
+      tempFile.dispose()
+    }
+  })
+
   it("transforms runtime-resolved modules end-to-end in a subprocess", () => {
     const fixturePath = join(import.meta.dir, "solid-plugin.fixture.ts")
     const result = Bun.spawnSync([process.execPath, fixturePath], {
@@ -168,17 +197,37 @@ describe("solid transform plugin", () => {
     })
 
     const stdout = result.stdout.toString().trim()
-    const stderr = result.stderr.toString().trim()
-
-    if (stdout) {
-      console.debug(`[solid-plugin.fixture] stdout:\n${stdout}`)
-    }
-
-    if (stderr) {
-      console.debug(`[solid-plugin.fixture] stderr:\n${stderr}`)
-    }
 
     expect(result.exitCode).toBe(0)
     expect(stdout).toContain("sync=sync-value;async=async-value;jsx=true")
+  })
+
+  it("ignores host project babel config when transforming plugins", async () => {
+    const hostile = mkdtempSync(join(import.meta.dir, "solid-plugin-hostile-config-"))
+    const tsxPath = join(hostile, "fixture.tsx")
+    writeFileSync(tsxPath, "const node = <text>ok</text>\nexport { node }")
+    writeFileSync(
+      join(hostile, "babel.config.json"),
+      JSON.stringify({ plugins: ["nonexistent-plugin-should-never-load"] }),
+    )
+    writeFileSync(join(hostile, ".babelrc.json"), JSON.stringify({ plugins: ["another-nonexistent-plugin"] }))
+
+    const prev = process.cwd()
+    try {
+      process.chdir(hostile)
+
+      const { build, loadHandlers } = createMockBuild()
+      createSolidTransformPlugin().setup(build as any)
+
+      const transformed = await runLoad(loadHandlers, tsxPath)
+
+      expect(transformed).toBeDefined()
+      if (!transformed) throw new Error("Expected transformed output")
+      expect(transformed.loader).toBe("js")
+      expect(transformed.contents).toContain("@opentui/solid")
+    } finally {
+      process.chdir(prev)
+      rmSync(hostile, { recursive: true, force: true })
+    }
   })
 })

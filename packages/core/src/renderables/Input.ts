@@ -1,5 +1,3 @@
-import type { PasteEvent } from "../lib/KeyHandler.js"
-import { decodePasteBytes, stripAnsiSequences } from "../lib/paste.js"
 import type { RenderContext } from "../types.js"
 import {
   TextareaRenderable,
@@ -11,10 +9,14 @@ import {
 export type InputAction = TextareaAction
 export type InputKeyBinding = TextareaKeyBinding
 
-export interface InputRenderableOptions
-  extends Omit<TextareaOptions, "height" | "minHeight" | "maxHeight" | "initialValue"> {
+export interface InputRenderableOptions extends Omit<
+  TextareaOptions,
+  "height" | "minHeight" | "maxHeight" | "initialValue"
+> {
   /** Initial text value (newlines are stripped) */
   value?: string
+  /** Minimum number of characters allowed */
+  minLength?: number
   /** Maximum number of characters allowed */
   maxLength?: number
   /** Placeholder text (Input only supports string, not StyledText) */
@@ -41,6 +43,7 @@ export enum InputRenderableEvents {
  */
 export class InputRenderable extends TextareaRenderable {
   private _maxLength: number
+  private _minLength: number
   private _lastCommittedValue: string = ""
 
   // Only specify defaults that differ from TextareaRenderable/EditBufferRenderable
@@ -49,15 +52,21 @@ export class InputRenderable extends TextareaRenderable {
     placeholder: "",
     // Input-specific
     maxLength: 1000,
+    minLength: 0,
     value: "",
   } satisfies Partial<InputRenderableOptions>
 
   constructor(ctx: RenderContext, options: InputRenderableOptions) {
     const defaults = InputRenderable.defaultOptions
     const maxLength = options.maxLength ?? defaults.maxLength
+    const minLength = options.minLength ?? defaults.minLength
     // Sanitize initial value: strip newlines and enforce maxLength
     const rawValue = options.value ?? defaults.value
     const initialValue = rawValue.replace(/[\n\r]/g, "").substring(0, maxLength)
+
+    if (minLength > maxLength) {
+      throw new Error(`InputRenderable: minLength (${minLength}) cannot be greater than maxLength (${maxLength})`)
+    }
 
     super(ctx, {
       ...options,
@@ -69,17 +78,23 @@ export class InputRenderable extends TextareaRenderable {
       // Override return/linefeed to submit instead of newline
       keyBindings: [
         { name: "return", action: "submit" },
+        { name: "kpenter", action: "submit" },
         { name: "linefeed", action: "submit" },
         ...(options.keyBindings || []),
       ],
     })
 
-    this._maxLength = maxLength
-    this._lastCommittedValue = this.plainText
+    try {
+      this._maxLength = maxLength
+      this._minLength = minLength
+      this._lastCommittedValue = this.plainText
 
-    // Set cursor to end of initial value
-    if (initialValue) {
-      this.cursorOffset = initialValue.length
+      // Set cursor to end of initial value
+      if (initialValue) {
+        this.cursorOffset = this.editBuffer.getEOL().offset
+      }
+    } catch (error) {
+      this.rollbackConstruction(error)
     }
   }
 
@@ -88,16 +103,6 @@ export class InputRenderable extends TextareaRenderable {
    */
   public override newLine(): boolean {
     return false
-  }
-
-  /**
-   * Handle paste - strip newlines and enforce maxLength
-   */
-  public override handlePaste(event: PasteEvent): void {
-    const sanitized = stripAnsiSequences(decodePasteBytes(event.bytes)).replace(/[\n\r]/g, "")
-    if (sanitized) {
-      this.insertText(sanitized)
-    }
   }
 
   /**
@@ -112,8 +117,14 @@ export class InputRenderable extends TextareaRenderable {
     if (remaining <= 0) return
 
     const toInsert = sanitized.substring(0, remaining)
-    super.insertText(toInsert)
-    this.emit(InputRenderableEvents.INPUT, this.plainText)
+    this.runMutation(() => {
+      super.insertText(toInsert)
+      this.emit(InputRenderableEvents.INPUT, this.plainText)
+    })
+  }
+
+  protected override defaultDimension(kind: "width" | "height"): number | "auto" | `${number}%` {
+    return kind === "height" ? 1 : super.defaultDimension(kind)
   }
 
   public get value(): string {
@@ -124,9 +135,11 @@ export class InputRenderable extends TextareaRenderable {
     const newValue = value.substring(0, this._maxLength).replace(/[\n\r]/g, "")
     const currentValue = this.plainText
     if (currentValue !== newValue) {
-      this.setText(newValue)
-      this.cursorOffset = newValue.length
-      this.emit(InputRenderableEvents.INPUT, newValue)
+      this.runMutation(() => {
+        this.setText(newValue)
+        this.cursorOffset = this.editBuffer.getEOL().offset
+        this.emit(InputRenderableEvents.INPUT, newValue)
+      })
     }
   }
 
@@ -148,6 +161,10 @@ export class InputRenderable extends TextareaRenderable {
 
   public override submit(): boolean {
     const currentValue = this.plainText
+    if (currentValue.length < this._minLength) {
+      return false
+    }
+
     if (currentValue !== this._lastCommittedValue) {
       this._lastCommittedValue = currentValue
       this.emit(InputRenderableEvents.CHANGE, currentValue)
@@ -219,15 +236,30 @@ export class InputRenderable extends TextareaRenderable {
   }
 
   public set maxLength(maxLength: number) {
-    this._maxLength = maxLength
     const currentValue = this.plainText
     if (currentValue.length > maxLength) {
-      this.setText(currentValue.substring(0, maxLength))
+      this.runMutation(() => {
+        this.setText(currentValue.substring(0, maxLength))
+        this._maxLength = maxLength
+      })
+    } else {
+      this._maxLength = maxLength
     }
   }
 
   public get maxLength(): number {
     return this._maxLength
+  }
+
+  public set minLength(minLength: number) {
+    if (minLength > this._maxLength) {
+      throw new Error(`InputRenderable: minLength (${minLength}) cannot be greater than maxLength (${this._maxLength})`)
+    }
+    this._minLength = minLength
+  }
+
+  public get minLength(): number {
+    return this._minLength
   }
 
   public override set placeholder(placeholder: string) {

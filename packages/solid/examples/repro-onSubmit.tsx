@@ -6,7 +6,7 @@ process.env.DEBUG = "true"
 const InputTest = () => {
   const renderer = useRenderer()
 
-  renderer.useConsole = true
+  renderer.consoleMode = "console-overlay"
   renderer.console.show()
 
   const [sig, setS] = createSignal(0)

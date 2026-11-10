@@ -1,0 +1,134 @@
+---
+// The on-page section list for a documentation page: h2 entries with h3
+// entries nested beneath them. Rendered in the desktop outline panel and in
+// the small-screen "On this page" disclosure (see layouts/Docs.astro). The
+// scroll spy lives here so both copies stay in sync.
+import type { MarkdownHeading } from "astro"
+
+interface Props {
+  headings: MarkdownHeading[]
+}
+
+interface TocEntry {
+  heading: MarkdownHeading
+  children: MarkdownHeading[]
+}
+
+const entries: TocEntry[] = []
+for (const heading of Astro.props.headings) {
+  if (heading.depth === 2) {
+    entries.push({ heading, children: [] })
+  } else if (heading.depth === 3 && entries.length > 0) {
+    entries[entries.length - 1].children.push(heading)
+  }
+}
+---
+
+<ul class="toc-list">
+  {
+    entries.map(({ heading, children }) => (
+      <li>
+        <a href={`#${heading.slug}`}>{heading.text}</a>
+        {children.length > 0 && (
+          <ul>
+            {children.map((child) => (
+              <li>
+                <a href={`#${child.slug}`}>{child.text}</a>
+              </li>
+            ))}
+          </ul>
+        )}
+      </li>
+    ))
+  }
+</ul>
+
+<style>
+  .toc-list {
+    line-height: 1.6;
+    /* Section titles quote code identifiers; wrap them mid-token rather
+     * than clipping at the rail edge. */
+    overflow-wrap: anywhere;
+  }
+
+  ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  li ul {
+    padding-inline-start: 1rem;
+  }
+
+  li + li {
+    margin-block-start: 0.25rem;
+  }
+
+  /* The outline is orientation, not navigation. It stays in the text color
+   * so the link color keeps marking real links. The current section is
+   * bold. OpenTUI Mono bold keeps the same advance width, so nothing
+   * shifts as the marker moves. (a:visited keeps the global rule from
+   * recoloring visited anchors.) */
+  a,
+  a:visited {
+    color: inherit;
+    display: inline-block;
+    padding-block: 0.0625rem;
+  }
+
+  a[aria-current] {
+    font-weight: 700;
+  }
+</style>
+
+<script>
+  // Scroll spy: mark the section being read with the text color, matching the
+  // current-page treatment in the docs nav. No section is marked before the
+  // first heading. Also mirrors the current section name into the collapsed
+  // "On this page" bar (see [data-current-section] in layouts/Docs.astro).
+  const article = document.querySelector("#docs-content article")
+  const headings = article ? Array.from(article.querySelectorAll<HTMLElement>("h2[id], h3[id]")) : []
+  const links = Array.from(document.querySelectorAll<HTMLAnchorElement>(".toc-list a"))
+  const labels = Array.from(document.querySelectorAll<HTMLElement>("[data-current-section]"))
+
+  if (headings.length > 0 && links.length > 0) {
+    // Match the anchored-heading offset so a followed anchor marks its own
+    // section (see scroll-margin-block-start in styles/prose.css).
+    const threshold = (Number.parseFloat(getComputedStyle(headings[0]).scrollMarginBlockStart) || 80) + 2
+    let marked: string | undefined
+
+    function update() {
+      let current: HTMLElement | undefined
+      for (const heading of headings) {
+        if (heading.getBoundingClientRect().top > threshold) break
+        current = heading
+      }
+      if (current?.id === marked) return
+      marked = current?.id
+      for (const link of links) {
+        if (marked !== undefined && link.getAttribute("href") === `#${marked}`) {
+          link.setAttribute("aria-current", "true")
+        } else {
+          link.removeAttribute("aria-current")
+        }
+      }
+      const name = current?.textContent?.replace(/#\s*$/, "").trim() ?? ""
+      for (const label of labels) label.textContent = name
+    }
+
+    let scheduled = false
+    function schedule() {
+      if (scheduled) return
+      scheduled = true
+      requestAnimationFrame(() => {
+        scheduled = false
+        update()
+      })
+    }
+
+    window.addEventListener("scroll", schedule, { passive: true })
+    window.addEventListener("resize", schedule, { passive: true })
+    update()
+  }
+</script>

@@ -1,0 +1,147 @@
+base 0.4.3
++ @opentui/core: class AudioInitializationError extends Error
++ @opentui/core: class AudioStream<M = AudioStreamMetadata> extends EventEmitter<AudioStreamEvents<M>>
++ @opentui/core: class AudioStreamError extends Error
++ @opentui/core: const NativeAudioStreamCloseReason: { readonly PreserveNativeTerminal: 0; readonly TransportError: 1; readonly Disposed: 2; }
++ @opentui/core: const NativeAudioStreamFormat: { readonly Mp3: 1; readonly Flac: 2; }
++ @opentui/core: const NativeAudioStreamState: { readonly Initializing: 0; readonly Buffering: 1; readonly Playing: 2; readonly Ended: 3; readonly Failed: 4; readonly Cancelled: 5; readonly Reconnecting: 6; }
++ @opentui/core: constructor AudioInitializationError(action: AudioInitializationAction, message: string, status?: number, cause?: unknown)
++ @opentui/core: constructor AudioStreamError(message: string, context: AudioStreamErrorContext, cause?: unknown)
++ @opentui/core: function createIcyStreamDemuxer(options: IcyStreamDemuxerOptions): AudioStreamDemuxer<AudioStreamMetadata>
++ @opentui/core: interface AudioStreamBodyOptions<M = AudioStreamMetadata> extends AudioStreamOptions
++ @opentui/core: interface AudioStreamBufferOptions
++ @opentui/core: interface AudioStreamConnectContext
++ @opentui/core: interface AudioStreamConnection<I = unknown>
++ @opentui/core: interface AudioStreamConnector<I = unknown>
++ @opentui/core: interface AudioStreamContentTypeContext
++ @opentui/core: interface AudioStreamDemuxer<M>
++ @opentui/core: interface AudioStreamErrorContext
++ @opentui/core: interface AudioStreamEvents<M = AudioStreamMetadata>
++ @opentui/core: interface AudioStreamMetadata
++ @opentui/core: interface AudioStreamOptions
++ @opentui/core: interface AudioStreamReconnectEvent
++ @opentui/core: interface AudioStreamReconnectOptions
++ @opentui/core: interface AudioStreamRetryContext
++ @opentui/core: interface AudioStreamSourceOptions<I = unknown, M = AudioStreamMetadata> extends AudioStreamOptions
++ @opentui/core: interface AudioStreamStats
++ @opentui/core: interface AudioStreamUrlOptions extends AudioStreamOptions
++ @opentui/core: interface IcyStreamDemuxerOptions
++ @opentui/core: method Audio.playStream<M = AudioStreamMetadata>(source: AudioStreamBody, options?: AudioStreamBodyOptions<M>): Promise<AudioStream<M>>
++ @opentui/core: method Audio.playStreamSource<I, M = AudioStreamMetadata>(connector: AudioStreamConnector<I>, options?: AudioStreamSourceOptions<I, M>): Promise<AudioStream<M>>
++ @opentui/core: method Audio.playStreamUrl(source: string | URL, options?: AudioStreamUrlOptions): Promise<AudioStream<AudioStreamMetadata>>
++ @opentui/core: method AudioStream.dispose(): void
++ @opentui/core: method AudioStream.getMetadata(): M | null
++ @opentui/core: method AudioStream.getStats(): AudioStreamStats
++ @opentui/core: method AudioStream.setGroup(groupId: number): boolean
++ @opentui/core: method AudioStream.setPan(pan: number): boolean
++ @opentui/core: method AudioStream.setVolume(volume: number): boolean
++ @opentui/core: method AudioStreamConnection.close?(): void | Promise<void>
++ @opentui/core: method AudioStreamConnector.connect(context: AudioStreamConnectContext): Promise<AudioStreamConnection<I>>
++ @opentui/core: method AudioStreamDemuxer.abort?(reason: unknown): void
++ @opentui/core: method AudioStreamDemuxer.flush(): Iterable<AudioStreamDemuxOutput<M>>
++ @opentui/core: method AudioStreamDemuxer.push(chunk: Uint8Array): Iterable<AudioStreamDemuxOutput<M>>
++ @opentui/core: method AudioStreamReconnectOptions.retry?(error: AudioStreamError, context: AudioStreamRetryContext): AudioStreamRetryDecision
++ @opentui/core: readonly property Audio.sampleRate: number
++ @opentui/core: property AudioEngineLib.audioCloseStream: (engine: AudioEngineHandle, streamId: number, reason: NativeAudioStreamCloseReason) => { status: number; stats: NativeAudioStreamStats | null; }
++ @opentui/core: property AudioEngineLib.audioCreateStream: (engine: AudioEngineHandle, options: AudioStreamCreateOptions) => { status: number; streamId: number | null; }
++ @opentui/core: property AudioEngineLib.audioEndStream: (engine: AudioEngineHandle, streamId: number) => number
++ @opentui/core: property AudioEngineLib.audioGetStreamStats: (engine: AudioEngineHandle, streamId: number) => NativeAudioStreamStats | null
++ @opentui/core: property AudioEngineLib.audioRestartStream: (engine: AudioEngineHandle, streamId: number) => number
++ @opentui/core: property AudioEngineLib.audioSetStreamGroup: (engine: AudioEngineHandle, streamId: number, groupId: number) => number
++ @opentui/core: property AudioEngineLib.audioSetStreamPan: (engine: AudioEngineHandle, streamId: number, pan: number) => number
++ @opentui/core: property AudioEngineLib.audioSetStreamVolume: (engine: AudioEngineHandle, streamId: number, volume: number) => number
++ @opentui/core: property AudioEngineLib.audioWriteStream: (engine: AudioEngineHandle, streamId: number, data: Uint8Array) => number
++ @opentui/core: readonly property AudioInitializationError.action: AudioInitializationAction
++ @opentui/core: readonly property AudioInitializationError.status?: number
++ @opentui/core: readonly property AudioStream.closed: Promise<void>
++ @opentui/core: readonly property AudioStream.format: AudioStreamFormat
++ @opentui/core: readonly property AudioStream.state: AudioStreamState
++ @opentui/core: property AudioStreamBodyOptions.contentTypePolicy?: never
++ @opentui/core: property AudioStreamBodyOptions.demuxer?: AudioStreamDemuxerFactory<M>
++ @opentui/core: property AudioStreamBodyOptions.metadataEncoding?: never
++ @opentui/core: property AudioStreamBodyOptions.reconnect?: never
++ @opentui/core: property AudioStreamBodyOptions.request?: never
++ @opentui/core: property AudioStreamBufferOptions.capacityMs?: number
++ @opentui/core: property AudioStreamBufferOptions.resumeMs?: number
++ @opentui/core: property AudioStreamBufferOptions.startupMs?: number
++ @opentui/core: readonly property AudioStreamConnectContext.attempt: number
++ @opentui/core: readonly property AudioStreamConnectContext.signal: AbortSignal
++ @opentui/core: readonly property AudioStreamConnection.body: AudioStreamBody
++ @opentui/core: readonly property AudioStreamConnection.info: I
++ @opentui/core: readonly property AudioStreamContentTypeContext.contentType: string | null
++ @opentui/core: readonly property AudioStreamContentTypeContext.format: AudioStreamFormat
++ @opentui/core: readonly property AudioStreamContentTypeContext.status: number
++ @opentui/core: readonly property AudioStreamContentTypeContext.url: string
++ @opentui/core: readonly property AudioStreamDemuxer.initialMetadata: M | null
++ @opentui/core: readonly property AudioStreamError.context: AudioStreamErrorContext
++ @opentui/core: property AudioStreamErrorContext.action: AudioStreamAction
++ @opentui/core: property AudioStreamErrorContext.attempt?: number
++ @opentui/core: property AudioStreamErrorContext.errorCode?: number
++ @opentui/core: property AudioStreamErrorContext.status?: number
++ @opentui/core: property AudioStreamEvents.disposed: [ ]
++ @opentui/core: property AudioStreamEvents.ended: [ ]
++ @opentui/core: property AudioStreamEvents.error: [ error: Error, context: AudioStreamErrorContext ]
++ @opentui/core: property AudioStreamEvents.metadata: [ metadata: M | null ]
++ @opentui/core: property AudioStreamEvents.reconnecting: [ event: AudioStreamReconnectEvent ]
++ @opentui/core: readonly property AudioStreamMetadata.fields: Readonly<Record<string, string>>
++ @opentui/core: readonly property AudioStreamMetadata.format: AudioStreamMetadataFormat
++ @opentui/core: readonly property AudioStreamMetadata.headers: Readonly<Record<string, string>>
++ @opentui/core: property AudioStreamOptions.buffer?: AudioStreamBufferOptions
++ @opentui/core: property AudioStreamOptions.format?: AudioStreamFormat
++ @opentui/core: property AudioStreamOptions.groupId?: number
++ @opentui/core: property AudioStreamOptions.maxProbeBytes?: number
++ @opentui/core: property AudioStreamOptions.pan?: number
++ @opentui/core: property AudioStreamOptions.signal?: AbortSignal
++ @opentui/core: property AudioStreamOptions.volume?: number
++ @opentui/core: property AudioStreamReconnectEvent.attempt: number
++ @opentui/core: property AudioStreamReconnectEvent.delayMs: number
++ @opentui/core: property AudioStreamReconnectEvent.error: AudioStreamError
++ @opentui/core: property AudioStreamReconnectEvent.maxRetries: number
++ @opentui/core: property AudioStreamReconnectOptions.backoffFactor?: number
++ @opentui/core: property AudioStreamReconnectOptions.initialDelayMs?: number
++ @opentui/core: property AudioStreamReconnectOptions.maxDelayMs?: number
++ @opentui/core: property AudioStreamReconnectOptions.maxRetries?: number
++ @opentui/core: property AudioStreamReconnectOptions.retryOnEnd?: boolean
++ @opentui/core: readonly property AudioStreamRetryContext.attempt: number
++ @opentui/core: readonly property AudioStreamRetryContext.maxRetries: number
++ @opentui/core: readonly property AudioStreamRetryContext.phase: AudioStreamRetryPhase
++ @opentui/core: property AudioStreamSourceOptions.contentTypePolicy?: never
++ @opentui/core: property AudioStreamSourceOptions.demuxer?: (info: I) => AudioStreamDemuxer<M> | null
++ @opentui/core: property AudioStreamSourceOptions.metadataEncoding?: never
++ @opentui/core: property AudioStreamSourceOptions.reconnect?: AudioStreamReconnectOptions
++ @opentui/core: property AudioStreamSourceOptions.request?: never
++ @opentui/core: property AudioStreamStats.bufferedDurationMs: number
++ @opentui/core: property AudioStreamStats.bufferedFrames: number
++ @opentui/core: property AudioStreamStats.bytesReceived: bigint
++ @opentui/core: property AudioStreamStats.capacityFrames: number
++ @opentui/core: property AudioStreamStats.channels: number
++ @opentui/core: property AudioStreamStats.framesDecoded: bigint
++ @opentui/core: property AudioStreamStats.framesPlayed: bigint
++ @opentui/core: property AudioStreamStats.reconnectAttempts: number
++ @opentui/core: property AudioStreamStats.sampleRate: number
++ @opentui/core: property AudioStreamStats.state: AudioStreamState
++ @opentui/core: property AudioStreamStats.underruns: number
++ @opentui/core: property AudioStreamUrlOptions.contentTypePolicy?: AudioStreamContentTypePolicy
++ @opentui/core: property AudioStreamUrlOptions.demuxer?: never
++ @opentui/core: property AudioStreamUrlOptions.metadataEncoding?: string
++ @opentui/core: property AudioStreamUrlOptions.reconnect?: AudioStreamReconnectOptions
++ @opentui/core: property AudioStreamUrlOptions.request?: Omit<RequestInit, "body" | "signal">
++ @opentui/core: property IcyStreamDemuxerOptions.headers?: Readonly<Record<string, string>>
++ @opentui/core: property IcyStreamDemuxerOptions.metadataEncoding?: string
++ @opentui/core: property IcyStreamDemuxerOptions.metadataInterval: number
++ @opentui/core: type AudioInitializationAction = "resolveRenderLib" | "createAudioEngine" | "start"
++ @opentui/core: type AudioStreamAction = "fetch" | "response" | "source" | "demuxer" | "create" | "write" | "end" | "restart" | "stats" | "decoder" | "destroy" | "setVolume" | "setPan" | "setGroup"
++ @opentui/core: type AudioStreamBody = ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>
++ @opentui/core: type AudioStreamContentTypePolicy = "validate" | "ignore" | ((context: AudioStreamContentTypeContext) => boolean)
++ @opentui/core: type AudioStreamCreateOptions = { capacityMs: number; startupMs: number; resumeMs: number; volume: number; pan: number; groupId: number; maxProbeBytes: number; format: NativeAudioStreamFormat; }
++ @opentui/core: type AudioStreamDemuxOutput<M> = { type: "audio"; data: Uint8Array; } | { type: "metadata"; metadata: M | null; }
++ @opentui/core: type AudioStreamDemuxerFactory<M> = () => AudioStreamDemuxer<M>
++ @opentui/core: type AudioStreamFormat = "mp3" | "flac"
++ @opentui/core: type AudioStreamMetadataFormat = "icy"
++ @opentui/core: type AudioStreamRetryDecision = false | { readonly delayMs?: number; }
++ @opentui/core: type AudioStreamRetryPhase = "connect" | "read"
++ @opentui/core: type AudioStreamState = "initializing" | "buffering" | "playing" | "reconnecting" | "ended" | "errored" | "disposed"
++ @opentui/core: type NativeAudioStreamCloseReason = NativeAudioStreamCloseReasonType
++ @opentui/core: type NativeAudioStreamFormat = NativeAudioStreamFormatType
++ @opentui/core: type NativeAudioStreamState = NativeAudioStreamStateType
++ @opentui/core: type NativeAudioStreamStats = { bytesReceived: bigint; framesDecoded: bigint; framesPlayed: bigint; state: number; sampleRate: number; channels: number; bufferedFrames: number; capacityFrames: number; underruns: number; errorCode: number; readyGeneration: number; }

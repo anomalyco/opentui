@@ -1,0 +1,103 @@
+{
+  "name": "@opentui/keymap",
+  "version": "0.8.3",
+  "description": "Standalone keymap package for OpenTUI",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anomalyco/opentui",
+    "directory": "packages/keymap"
+  },
+  "module": "src/index.ts",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
+    },
+    "./extras": {
+      "import": "./src/extras/index.ts",
+      "types": "./src/extras/index.ts"
+    },
+    "./extras/graph": {
+      "import": "./src/extras/graph.ts",
+      "types": "./src/extras/graph.ts"
+    },
+    "./addons": {
+      "import": "./src/addons/index.ts",
+      "types": "./src/addons/index.ts"
+    },
+    "./addons/opentui": {
+      "import": "./src/addons/opentui/index.ts",
+      "types": "./src/addons/opentui/index.ts"
+    },
+    "./testing": {
+      "import": "./src/testing/index.ts",
+      "types": "./src/testing/index.ts"
+    },
+    "./html": {
+      "import": "./src/html.ts",
+      "types": "./src/html.ts"
+    },
+    "./opentui": {
+      "import": "./src/opentui.ts",
+      "types": "./src/opentui.ts"
+    },
+    "./react": {
+      "import": "./src/react/index.ts",
+      "types": "./src/react/index.ts"
+    },
+    "./solid": {
+      "import": "./src/solid/index.ts",
+      "types": "./src/solid/index.ts"
+    },
+    "./runtime-modules": {
+      "import": "./src/runtime-modules.ts",
+      "types": "./src/runtime-modules.ts"
+    }
+  },
+  "scripts": {
+    "build": "bun run scripts/build.ts",
+    "publish": "bun ../../scripts/npm-publish.ts publish @opentui/keymap",
+    "test:dist": "bun run scripts/test-packed-consumer.ts",
+    "test": "bun run scripts/test.ts"
+  },
+  "dependencies": {
+    "@opentui/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "@opentui/react": "workspace:*",
+    "@opentui/solid": "workspace:*",
+    "react": ">=19.2.0",
+    "solid-js": "^1.9.12"
+  },
+  "peerDependenciesMeta": {
+    "@opentui/react": {
+      "optional": true
+    },
+    "@opentui/solid": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "solid-js": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@opentui/react": "workspace:*",
+    "@opentui/solid": "workspace:*",
+    "@types/bun": "1.4.1",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.0",
+    "react": ">=19.2.0",
+    "solid-js": "1.9.16",
+    "typescript": "^5"
+  },
+  "engines": {
+    "bun": ">=1.3.14"
+  }
+}

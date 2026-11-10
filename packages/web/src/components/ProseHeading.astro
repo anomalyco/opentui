@@ -1,0 +1,26 @@
+---
+// Wraps markdown headings (mapped via `<Content components={{ h2: ProseH2 }} />`).
+// Adds a text-only anchor link, revealed on hover or focus, so a person can
+// copy a deep link to the section. Styles live in styles/prose.css.
+interface Props {
+  as: "h2" | "h3"
+  id?: string
+}
+
+const { as: Tag, id, ...rest } = Astro.props
+---
+
+{
+  id ? (
+    <Tag id={id} {...rest}>
+      <slot />
+      <a class="anchor" href={`#${id}`} aria-label="Link to this section">
+        #
+      </a>
+    </Tag>
+  ) : (
+    <Tag {...rest}>
+      <slot />
+    </Tag>
+  )
+}

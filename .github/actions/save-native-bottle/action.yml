@@ -1,0 +1,22 @@
+name: Save native bottle
+description: Save linked native libraries from a full cross-compile. Host builds must not save this cache.
+inputs:
+  key:
+    description: Cache key from restore-native-bottle
+    required: true
+  zig-version:
+    description: Zig version that produced the libraries
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      working-directory: ${{ github.workspace }}
+      run: bun scripts/native-bottle.ts stage --zig "${{ inputs.zig-version }}"
+
+    - uses: actions/cache/save@v5
+      continue-on-error: true
+      with:
+        path: packages/native/lib
+        key: ${{ inputs.key }}
+        enableCrossOsArchive: true

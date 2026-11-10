@@ -1,37 +1,57 @@
 import { test, expect, beforeEach, beforeAll, afterAll, describe } from "bun:test"
 import { TreeSitterClient, addDefaultParsers } from "./client.js"
+import { createServer, type Server } from "node:http"
+import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
-import { mkdir, readdir, stat } from "node:fs/promises"
+import { dirname, join, resolve } from "node:path"
+import { mkdir, readdir, stat, writeFile } from "node:fs/promises"
 import { readFileSync } from "node:fs"
+import { fileURLToPath } from "node:url"
 import type { FiletypeParserOptions } from "./types.js"
 
 describe("TreeSitterClient Caching", () => {
   let dataPath: string
-  let testServer: any
-  const TEST_PORT = 55231
-  const BASE_URL = `http://localhost:${TEST_PORT}`
+  let testServer: Server | undefined
+  const TEST_HOST = "127.0.0.1"
+  let BASE_URL = ""
+  const DATA_ROOT = join(tmpdir(), "tree-sitter-cache-test")
 
   beforeAll(async () => {
-    const assetsDir = resolve(__dirname, "assets")
-    testServer = Bun.serve({
-      port: TEST_PORT,
-      fetch(req) {
-        const url = new URL(req.url)
-        const filePath = join(assetsDir, url.pathname)
-        return new Response(readFileSync(filePath))
-      },
+    const assetsDir = resolve(dirname(fileURLToPath(import.meta.url)), "assets")
+
+    testServer = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", `http://${TEST_HOST}`)
+      const filePath = join(assetsDir, url.pathname)
+      res.end(readFileSync(filePath))
     })
+
+    // The Bun and Node test lanes can run this file at the same time, so let the OS pick the port.
+    await new Promise<void>((resolve, reject) => {
+      testServer!.once("error", reject)
+      testServer!.listen(0, TEST_HOST, () => {
+        testServer!.off("error", reject)
+        resolve()
+      })
+    })
+    BASE_URL = `http://${TEST_HOST}:${(testServer.address() as AddressInfo).port}`
+
+    await mkdir(DATA_ROOT, { recursive: true })
   })
 
   afterAll(async () => {
     if (testServer) {
-      testServer.stop()
+      await new Promise<void>((resolve, reject) => {
+        testServer!.close((error) => {
+          if (error) reject(error)
+          else resolve()
+        })
+      })
+      testServer = undefined
     }
   })
 
   beforeEach(async () => {
-    dataPath = join(tmpdir(), "tree-sitter-cache-test-" + Math.random().toString(36).slice(2))
+    dataPath = join(DATA_ROOT, Math.random().toString(36).slice(2))
     await mkdir(dataPath, { recursive: true })
   })
 
@@ -212,9 +232,12 @@ describe("TreeSitterClient Caching", () => {
     await client.destroy()
   })
 
-  test("should handle directory creation errors gracefully", async () => {
-    const invalidDataPath = "/invalid/path/that/cannot/be/created"
-    const client = new TreeSitterClient({ dataPath: invalidDataPath })
+  test("should reject when tree-sitter cache directories cannot be created", async () => {
+    const blockedDataPath = join(DATA_ROOT, "blocked-" + Math.random().toString(36).slice(2))
+    await mkdir(blockedDataPath, { recursive: true })
+    await writeFile(join(blockedDataPath, "tree-sitter"), "blocked")
+
+    const client = new TreeSitterClient({ dataPath: blockedDataPath })
 
     await expect(client.initialize()).rejects.toThrow()
 
@@ -222,8 +245,8 @@ describe("TreeSitterClient Caching", () => {
   })
 
   test("should handle data path changes", async () => {
-    const initialDataPath = join(tmpdir(), "tree-sitter-initial-" + Math.random().toString(36).slice(2))
-    const newDataPath = join(tmpdir(), "tree-sitter-new-" + Math.random().toString(36).slice(2))
+    const initialDataPath = join(DATA_ROOT, "initial-" + Math.random().toString(36).slice(2))
+    const newDataPath = join(DATA_ROOT, "new-" + Math.random().toString(36).slice(2))
 
     await mkdir(initialDataPath, { recursive: true })
     await mkdir(newDataPath, { recursive: true })

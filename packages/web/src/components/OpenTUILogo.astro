@@ -1,0 +1,55 @@
+---
+interface Props extends astroHTML.JSX.SVGAttributes {
+  variant?: "currentColor" | "spectrum"
+  title?: string
+}
+
+const { variant = "currentColor", title, ...attributes } = Astro.props
+const spectrum = variant === "spectrum"
+---
+
+<svg
+  {...attributes}
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="1 0 25 6"
+  shape-rendering="crispEdges"
+  role={title ? "img" : undefined}
+  aria-label={title}
+  aria-hidden={title ? undefined : "true"}
+  focusable="false"
+  data-wordmark={!spectrum || undefined}
+>
+  {
+    spectrum && (
+      <defs>
+        <linearGradient id="opentui-logo-spectrum" gradientUnits="userSpaceOnUse" x1="1" y1="0" x2="26" y2="0">
+          <stop offset="0" stop-color="#ff6b6b" />
+          <stop offset="16%" stop-color="#ff6b6b" />
+          <stop offset="16%" stop-color="#ffa94d" />
+          <stop offset="32%" stop-color="#ffa94d" />
+          <stop offset="32%" stop-color="#ffe066" />
+          <stop offset="44%" stop-color="#ffe066" />
+          <stop offset="44%" stop-color="#69db7c" />
+          <stop offset="60%" stop-color="#69db7c" />
+          <stop offset="60%" stop-color="#4dabf7" />
+          <stop offset="72%" stop-color="#4dabf7" />
+          <stop offset="72%" stop-color="#748ffc" />
+          <stop offset="88%" stop-color="#748ffc" />
+          <stop offset="88%" stop-color="#da77f2" />
+          <stop offset="100%" stop-color="#da77f2" />
+        </linearGradient>
+      </defs>
+    )
+  }
+  <g fill={spectrum ? "url(#opentui-logo-spectrum)" : "currentColor"}>
+    <path
+      data-ink="cyan"
+      d="M1 1h3v1h-3zM1 4h3v1h-3zM1 1h1v4h-1zM3 1h1v4h-1zM5 1h3v1h-3zM5 4h3v1h-3zM5 1h1v4h-1zM7 1h1v4h-1zM9 1h3v1h-3zM9 4h3v1h-3zM9 1h1v4h-1zM11 1h1v2h-1zM21 1h1v4h-1zM23 1h1v4h-1zM21 4h3v1h-3z"
+    />
+    <path
+      data-ink="magenta"
+      d="M5 4h1v2h-1zM13 1h1v4h-1zM17 0h1v5h-1zM25 1h1v4h-1zM13 1h2v1h-2zM15 2h1v3h-1zM17 4h3v1h-3zM19 3h1v2h-1z"
+    />
+    <path data-ink="yellow" d="M17 1h3v1h-3z" />
+  </g>
+</svg>

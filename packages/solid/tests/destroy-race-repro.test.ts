@@ -14,17 +14,8 @@ const runFixture = (mode: Mode) => {
   })
 
   const stdout = result.stdout.toString()
-  const stderr = result.stderr.toString()
 
-  console.debug(`[destroy-race-repro ${mode}] exit=${result.exitCode}`)
-  if (stdout.trim()) {
-    console.debug(`[destroy-race-repro ${mode}] stdout:\n${stdout.trimEnd()}`)
-  }
-  if (stderr.trim()) {
-    console.debug(`[destroy-race-repro ${mode}] stderr:\n${stderr.trimEnd()}`)
-  }
-
-  return { result, stdout, stderr }
+  return { result, stdout }
 }
 
 describe("destroy race regressions", () => {

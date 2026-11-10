@@ -1,0 +1,79 @@
+name: Format and Lint
+
+on:
+  pull_request:
+    branches: [main, "[0-9]+.[0-9]+.x"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  fmt:
+    name: Format Check
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+
+    steps:
+      - name: Checkout code
+        uses: useblacksmith/checkout@v1
+
+      - name: Restore Bun install cache
+        uses: ./.github/actions/restore-bun-cache
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.1
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Check formatting
+        run: bun run fmt:check
+
+      - name: Show formatting differences
+        if: failure()
+        run: |
+          echo "=== Showing differences for each file ==="
+          bun run fmt
+          git diff --color=always
+
+  lint:
+    name: Lint Check
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+
+    steps:
+      - name: Checkout code
+        uses: useblacksmith/checkout@v1
+
+      - name: Restore Bun install cache
+        uses: ./.github/actions/restore-bun-cache
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.1
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Run linter
+        run: bun run lint:ci
+
+  checks-complete:
+    name: Format and Lint
+    needs: [fmt, lint]
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    if: always()
+
+    steps:
+      - name: Check results
+        run: |
+          if [ "${{ needs.fmt.result }}" != "success" ] || [ "${{ needs.lint.result }}" != "success" ]; then
+            echo "Format or lint checks failed"
+            exit 1
+          fi
+          echo "Format and lint checks passed"

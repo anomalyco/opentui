@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Interactive recording in YOUR terminal, via asciinema:
+#
+#   bin/record out.cast                 record an interactive shell
+#   bin/record out.cast -- node demo.mjs   record a command (still interactive)
+#   bin/record --headless out.cast -- node demo.mjs   scripted, no TTY needed
+#   bin/record --no-markers out.cast -- app   set chapters afterward
+#
+# While recording, press ctrl+x to drop a chapter marker. Exit the shell (or
+# let the command finish) to stop. Chapters can also be defined later in
+# story.config.json by on-screen text ("when") or timestamp ("atMs"), so
+# markers are optional.
+set -euo pipefail
+
+MARKER_KEY='^x'
+HEADLESS=0
+MARKERS=1
+SIZE=""
+OUT=""
+
+usage() {
+  sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  exit "${1:-0}"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --headless) HEADLESS=1; shift ;;
+    --no-markers) MARKERS=0; shift ;;
+    --window-size) SIZE="$2"; shift 2 ;;
+    -h|--help) usage ;;
+    --) shift; break ;;
+    *)
+      if [[ -z "$OUT" ]]; then OUT="$1"; shift
+      else echo "unexpected argument: $1" >&2; usage 1; fi ;;
+  esac
+done
+
+[[ -n "$OUT" ]] || { echo "missing output file" >&2; usage 1; }
+
+ARGS=(record --overwrite)
+[[ "$HEADLESS" == 1 ]] && ARGS+=(--headless)
+[[ -n "$SIZE" ]] && ARGS+=(--window-size "$SIZE")
+if [[ $# -gt 0 ]]; then
+  ARGS+=(--command "$*")
+fi
+
+# Ensure a marker keybinding exists without touching the user's own config.
+if [[ "$MARKERS" == 1 ]]; then
+  CONFIG_HOME="${ASCIINEMA_CONFIG_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/asciinema}"
+  if [[ -f "$CONFIG_HOME/config.toml" ]]; then
+    if ! grep -q "add_marker_key" "$CONFIG_HOME/config.toml" && [[ "$HEADLESS" == 0 ]]; then
+      echo "hint: set add_marker_key under [session] in $CONFIG_HOME/config.toml to drop markers while recording" >&2
+    fi
+  else
+    TEMP_CONFIG="$(mktemp -d)"
+    trap 'rm -rf "$TEMP_CONFIG"' EXIT
+    printf '[session]\nadd_marker_key = "%s"\n' "$MARKER_KEY" > "$TEMP_CONFIG/config.toml"
+    export ASCIINEMA_CONFIG_HOME="$TEMP_CONFIG"
+    [[ "$HEADLESS" == 1 ]] || echo "marker key: ctrl+x (drops a chapter marker)" >&2
+  fi
+fi
+
+exec asciinema "${ARGS[@]}" "$OUT"

@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test"
+import { Buffer } from "node:buffer"
+import { parseKittyKeyboard } from "./parse.keypress-kitty.js"
 import { parseKeypress, type ParseKeypressOptions, type ParsedKey } from "./parse.keypress.js"
+import { NativeStdinParser } from "./stdin-parser-native.js"
 
 // This mirrors the upstream protocol tables and expands them into one test
 // per case so missing mappings fail with a name.
@@ -285,6 +288,10 @@ const modifierCases: KeyCase[] = [
 ]
 
 const eventAndPayloadCases = [
+  ["\x1b[32u", { name: "space", sequence: " " }],
+  ["\x1b[32;2u", { name: "space", sequence: " ", shift: true }],
+  ["\x1b[32;5u", { name: "space", sequence: " ", ctrl: true }],
+  ["\x1b[32:32:32;5u", { name: "space", sequence: " ", ctrl: true, baseCode: 32 }],
   ["\x1b[97;1:1u", { name: "a", eventType: "press" }],
   ["\x1b[97;1:2u", { name: "a", eventType: "press", repeated: true }],
   ["\x1b[97;1:3u", { name: "a", eventType: "release" }],
@@ -292,6 +299,9 @@ const eventAndPayloadCases = [
   ["\x1b[97:65;2u", { name: "a", sequence: "A", shift: true }],
   ["\x1b[97::113u", { name: "a", sequence: "a", baseCode: 113 }],
   ["\x1b[97;1;65u", { name: "a", sequence: "A" }],
+  ["\x1b[57400u", { name: "kp1", sequence: "1" }],
+  ["\x1b[57413u", { name: "kpplus", sequence: "+" }],
+  ["\x1b[57400;1;120u", { name: "kp1", sequence: "x" }],
   ["\x1b[0;;229u", { name: "å", sequence: "å" }],
   ["\x1b[0;;104:105u", { name: "hi", sequence: "hi" }],
 ] as const satisfies ReadonlyArray<readonly [string, ExpectedKey]>
@@ -315,9 +325,19 @@ describe("Kitty protocol: enhanced letter aliases", () => {
 describe("Kitty protocol: canonical CSI letter forms", () => {
   defineKeyCases(canonicalLetterAliasCases)
 
-  test("CSI R is not a canonical F3 alias in the current spec", () => {
-    expect(parseKeypress("\x1b[R", options)?.name).not.toBe("f3")
-    expect(parseKeypress("\x1b[1;2R", options)?.name).not.toBe("f3")
+  // CSI R and CSI 1;n R are F3 only in legacy mode (196, 197); parseKeypress has no negotiated mode, so this checks
+  // the stdin parser with the Kitty protocol on. The "Kitty mode" rows in stdin-parser.conformance.json specify more.
+  test("CSI R and CSI 1;2 R are not F3 in Kitty mode", () => {
+    expect(parseKittyKeyboard("\x1b[R")).toBeNull()
+    const parser = new NativeStdinParser({ armTimeouts: false, protocolContext: { kittyKeyboardEnabled: true } })
+    try {
+      parser.push(Buffer.from("\x1b[R\x1b[1;2R"))
+      const names: string[] = []
+      parser.drain((event) => event.type === "key" && names.push(event.key.name))
+      expect(names).not.toContain("f3")
+    } finally {
+      parser.destroy()
+    }
   })
 })
 

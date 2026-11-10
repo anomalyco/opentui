@@ -1,12 +1,12 @@
 import { OptimizedBuffer } from "../buffer.js"
 import { parseColor, RGBA, type ColorInput } from "./RGBA.js"
-import block from "./fonts/block.json"
-import shade from "./fonts/shade.json"
-import slick from "./fonts/slick.json"
-import tiny from "./fonts/tiny.json"
-import huge from "./fonts/huge.json"
-import grid from "./fonts/grid.json"
-import pallet from "./fonts/pallet.json"
+import block from "./fonts/block.json" with { type: "json" }
+import shade from "./fonts/shade.json" with { type: "json" }
+import slick from "./fonts/slick.json" with { type: "json" }
+import tiny from "./fonts/tiny.json" with { type: "json" }
+import huge from "./fonts/huge.json" with { type: "json" }
+import grid from "./fonts/grid.json" with { type: "json" }
+import pallet from "./fonts/pallet.json" with { type: "json" }
 
 /*
  * Renders ASCII fonts to a buffer.
@@ -245,11 +245,6 @@ export function renderFontToFrameBuffer(
   }
 
   const colors = Array.isArray(color) ? color : [color]
-
-  if (y < 0 || y + fontDef.lines > height) {
-    return { width: 0, height: fontDef.lines }
-  }
-
   let currentX = x
   const startX = x
 

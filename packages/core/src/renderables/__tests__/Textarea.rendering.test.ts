@@ -4,13 +4,17 @@ import { createTextareaRenderable } from "./renderable-test-utils.js"
 import { RGBA } from "../../lib/RGBA.js"
 import { SyntaxStyle } from "../../syntax-style.js"
 import { OptimizedBuffer } from "../../buffer.js"
+import type { CapturedFrame } from "../../types.js"
 import { fg, t } from "../../lib/index.js"
-import { BoxRenderable, TextareaRenderable, TextRenderable } from "../index.js"
+import { BoxRenderable } from "../Box.js"
+import { TextareaRenderable } from "../Textarea.js"
+import { TextRenderable } from "../Text.js"
 
 let currentRenderer: TestRenderer
 let renderOnce: () => Promise<void>
 let currentMockInput: MockInput
 let captureFrame: () => string
+let captureSpans: () => CapturedFrame
 let resize: (width: number, height: number) => void
 
 describe("Textarea - Rendering Tests", () => {
@@ -19,6 +23,7 @@ describe("Textarea - Rendering Tests", () => {
       renderer: currentRenderer,
       renderOnce,
       captureCharFrame: captureFrame,
+      captureSpans,
       mockInput: currentMockInput,
       resize,
     } = await createTestRenderer({
@@ -32,6 +37,64 @@ describe("Textarea - Rendering Tests", () => {
   })
 
   describe("Wrapping", () => {
+    it("fills textarea bounds with indexed background color", async () => {
+      const surface = RGBA.fromIndex(254)
+      await createTextareaRenderable(currentRenderer, renderOnce, {
+        initialValue: "abc",
+        width: 6,
+        height: 2,
+        backgroundColor: surface,
+        focusedBackgroundColor: surface,
+      })
+
+      const frame = captureSpans()
+      expect(frame.lines[0].spans[0].text).toBe("abc   ")
+      expect(frame.lines[0].spans[0].bg.intent).toBe("indexed")
+      expect(frame.lines[0].spans[0].bg.slot).toBe(254)
+      expect(frame.lines[1].spans[0].text).toBe("      ")
+      expect(frame.lines[1].spans[0].bg.intent).toBe("indexed")
+      expect(frame.lines[1].spans[0].bg.slot).toBe(254)
+    })
+
+    it("fills textarea bounds without double-blending translucent backgrounds", async () => {
+      const surface = RGBA.fromValues(1, 0, 0, 0.5)
+      await createTextareaRenderable(currentRenderer, renderOnce, {
+        initialValue: "abc",
+        width: 6,
+        height: 2,
+        backgroundColor: surface,
+        focusedBackgroundColor: surface,
+      })
+
+      const frame = captureSpans()
+      expect(frame.lines[0].spans[0].text).toBe("abc   ")
+      expect(frame.lines[1].spans[0].text).toBe("      ")
+      expect(frame.lines[0].spans[0].bg.r).toBeCloseTo(frame.lines[1].spans[0].bg.r, 5)
+      expect(frame.lines[0].spans[0].bg.g).toBeCloseTo(frame.lines[1].spans[0].bg.g, 5)
+      expect(frame.lines[0].spans[0].bg.b).toBeCloseTo(frame.lines[1].spans[0].bg.b, 5)
+      expect(frame.lines[0].spans[0].bg.a).toBeCloseTo(frame.lines[1].spans[0].bg.a, 5)
+    })
+
+    it("fills textarea background while placeholder is shown", async () => {
+      const surface = RGBA.fromIndex(254)
+      await createTextareaRenderable(currentRenderer, renderOnce, {
+        initialValue: "",
+        placeholder: "hint",
+        width: 6,
+        height: 2,
+        backgroundColor: surface,
+        focusedBackgroundColor: surface,
+      })
+
+      const frame = captureSpans()
+      expect(frame.lines[0].spans.some((span) => span.text.includes("hint"))).toBe(true)
+      expect(
+        frame.lines[0].spans.slice(0, 2).every((span) => span.bg.intent === "indexed" && span.bg.slot === 254),
+      ).toBe(true)
+      expect(frame.lines[1].spans[0].bg.intent).toBe("indexed")
+      expect(frame.lines[1].spans[0].bg.slot).toBe(254)
+    })
+
     it("should move cursor down through all wrapped visual lines at column 0", async () => {
       // Create a long line that will wrap into multiple visual lines
       const longText =
@@ -393,7 +456,7 @@ describe("Textarea - Rendering Tests", () => {
     })
 
     it("should clear highlights with clear() method", async () => {
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("highlight", {
         fg: RGBA.fromValues(1, 0, 0, 1),
       })
@@ -423,7 +486,7 @@ describe("Textarea - Rendering Tests", () => {
     })
 
     it("should clear both text and highlights together", async () => {
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("highlight", {
         fg: RGBA.fromValues(1, 0, 0, 1),
       })
@@ -490,7 +553,9 @@ describe("Textarea - Rendering Tests", () => {
       editor.focus()
       editor.insertText("x")
 
-      const buffer = OptimizedBuffer.create(80, 24, "wcwidth")
+      const buffer = OptimizedBuffer.create(80, 24, "wcwidth", {
+        owner: currentRenderer.nativeScene,
+      })
       buffer.drawEditorView(editor.editorView, 0, 0)
 
       expect(editor.plainText).toBe("xTest")
@@ -508,7 +573,9 @@ describe("Textarea - Rendering Tests", () => {
 
       editor.focus()
 
-      const buffer = OptimizedBuffer.create(80, 24, "wcwidth")
+      const buffer = OptimizedBuffer.create(80, 24, "wcwidth", {
+        owner: currentRenderer.nativeScene,
+      })
 
       for (let i = 0; i < 5; i++) {
         editor.insertText("a")
@@ -531,7 +598,9 @@ describe("Textarea - Rendering Tests", () => {
       editor.focus()
       editor.gotoLine(9999)
 
-      const buffer = OptimizedBuffer.create(80, 24, "wcwidth")
+      const buffer = OptimizedBuffer.create(80, 24, "wcwidth", {
+        owner: currentRenderer.nativeScene,
+      })
 
       editor.newLine()
       buffer.drawEditorView(editor.editorView, 0, 0)
@@ -553,7 +622,9 @@ describe("Textarea - Rendering Tests", () => {
       editor.focus()
       editor.gotoLine(9999)
 
-      const buffer = OptimizedBuffer.create(80, 24, "wcwidth")
+      const buffer = OptimizedBuffer.create(80, 24, "wcwidth", {
+        owner: currentRenderer.nativeScene,
+      })
 
       editor.deleteCharBackward()
       buffer.drawEditorView(editor.editorView, 0, 0)
@@ -573,7 +644,9 @@ describe("Textarea - Rendering Tests", () => {
 
       editor.focus()
 
-      const buffer = OptimizedBuffer.create(80, 24, "wcwidth")
+      const buffer = OptimizedBuffer.create(80, 24, "wcwidth", {
+        owner: currentRenderer.nativeScene,
+      })
 
       buffer.drawEditorView(editor.editorView, 0, 0)
       editor.insertText("x")
@@ -594,7 +667,9 @@ describe("Textarea - Rendering Tests", () => {
 
       editor.focus()
 
-      const buffer = OptimizedBuffer.create(80, 24, "wcwidth")
+      const buffer = OptimizedBuffer.create(80, 24, "wcwidth", {
+        owner: currentRenderer.nativeScene,
+      })
 
       buffer.drawEditorView(editor.editorView, 0, 0)
 

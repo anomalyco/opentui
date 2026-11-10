@@ -298,6 +298,14 @@ export function createMockKeys(renderer: CliRenderer, options?: MockKeysOptions)
         // For regular characters and single-char control codes with modifiers
         let char = keyCode
 
+        // Shift+Tab produces the back-tab escape sequence \x1b[Z in standard ANSI terminals
+        if (char === "\t" && modifiers.shift) {
+          // Build the base as \x1b[Z, then apply meta prefix if also pressed
+          keyCode = modifiers.meta ? "\x1b\x1b[Z" : "\x1b[Z"
+          renderer.stdin.emit("data", Buffer.from(keyCode))
+          return
+        }
+
         // Special handling for backspace with modifiers - use modifyOtherKeys format
         // Terminals send Ctrl+Backspace as CSI 27;5;127~ (or CSI 27;5;8~)
         // Only use modifyOtherKeys for ctrl, super, or hyper (not shift or meta alone)

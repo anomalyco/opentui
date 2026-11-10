@@ -138,6 +138,67 @@ describe("ScrollBox Sticky Scroll Behavior", () => {
     }
   })
 
+  it("re-engages sticky bottom after mouse scrolling back to the bottom", async () => {
+    const INITIAL_COUNT = 20
+    const [items, setItems] = createSignal<string[]>(Array.from({ length: INITIAL_COUNT }, (_, i) => `Line ${i}`))
+    let scrollRef: ScrollBoxRenderable | undefined
+
+    testSetup = await testRender(
+      () => (
+        <scrollbox
+          ref={(r) => {
+            scrollRef = r
+          }}
+          width={40}
+          height={8}
+          stickyScroll={true}
+          stickyStart="bottom"
+        >
+          <For each={items()}>
+            {(item) => (
+              <box>
+                <text>{item}</text>
+              </box>
+            )}
+          </For>
+        </scrollbox>
+      ),
+      {
+        width: 80,
+        height: 24,
+      },
+    )
+
+    await testSetup.renderOnce()
+
+    const wheel = (direction: "up" | "down") => {
+      ;(scrollRef as any).onMouseEvent({
+        type: "scroll",
+        scroll: { direction, delta: 1 },
+        modifiers: { shift: false, alt: false, ctrl: false },
+        isDragging: false,
+      })
+    }
+
+    const initialMaxScroll = Math.max(0, scrollRef!.scrollHeight - scrollRef!.viewport.height)
+    expect(scrollRef!.scrollTop).toBe(initialMaxScroll)
+
+    wheel("up")
+    await testSetup.renderOnce()
+    expect(scrollRef!.scrollTop).toBeLessThan(initialMaxScroll)
+
+    wheel("down")
+    await testSetup.renderOnce()
+    expect(scrollRef!.scrollTop).toBe(initialMaxScroll)
+
+    setItems((prev) => [...prev, ...Array.from({ length: 5 }, (_, i) => `Line ${INITIAL_COUNT + i}`)])
+    await testSetup.renderOnce()
+
+    const finalMaxScroll = Math.max(0, scrollRef!.scrollHeight - scrollRef!.viewport.height)
+    expect(scrollRef!.scrollTop).toBe(finalMaxScroll)
+    expect(testSetup.captureCharFrame()).toContain("Line 24")
+  })
+
   it("accidental scroll when no scrollable content does not disable sticky", async () => {
     const [items, setItems] = createSignal<string[]>([])
     let scrollRef: ScrollBoxRenderable | undefined
@@ -179,9 +240,6 @@ describe("ScrollBox Sticky Scroll Behavior", () => {
       await testSetup.renderOnce()
       scrollRef.scrollTop = 10
       await testSetup.renderOnce()
-
-      // _hasManualScroll should still be false because there was no meaningful scrollable content
-      expect((scrollRef as any)._hasManualScroll).toBe(false)
     }
 
     // Now add content to make it scrollable
@@ -194,7 +252,6 @@ describe("ScrollBox Sticky Scroll Behavior", () => {
       // Should still be at bottom due to sticky scroll
       if (i === 16) {
         expect(scrollRef!.scrollTop).toBe(maxScroll)
-        expect((scrollRef as any)._hasManualScroll).toBe(false)
       }
     }
 

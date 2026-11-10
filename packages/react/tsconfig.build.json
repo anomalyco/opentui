@@ -11,6 +11,7 @@
     "skipLibCheck": true,
     "jsx": "react-jsx",
     "jsxImportSource": "@opentui/react",
+    "module": "ESNext",
     "moduleResolution": "bundler",
     "baseUrl": ".",
     "paths": {
@@ -23,15 +24,8 @@
     "jsx-runtime.d.ts",
     "jsx-dev-runtime.d.ts",
     "jsx-namespace.d.ts",
-    "scripts/runtime-plugin-support.ts"
+    "scripts/runtime-plugin-support.ts",
+    "scripts/runtime-plugin-support-configure.ts"
   ],
-  "exclude": [
-    "**/*.test.ts",
-    "**/*.spec.ts",
-    "examples/**/*",
-    "node_modules/**/*",
-    "../core/**/*",
-    "scripts/build.ts",
-    "scripts/publish.ts"
-  ]
+  "exclude": ["**/*.test.ts", "**/*.spec.ts", "examples/**/*", "node_modules/**/*", "../core/**/*", "scripts/build.ts"]
 }

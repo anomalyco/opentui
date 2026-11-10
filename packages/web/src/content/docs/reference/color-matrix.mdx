@@ -1,0 +1,172 @@
+---
+title: FrameBuffer color matrices
+description: Apply exact 4x4 RGBA transforms to selected or uniform FrameBuffer cells and channels
+---
+
+# FrameBuffer color matrices
+
+This supported advanced API transforms stored foreground and background colors in an `OptimizedBuffer`. Use it when a
+[FrameBuffer](/docs/components/frame-buffer) needs a cell-level color transform.
+
+Buffer positions are terminal cells, not image pixels. Read [Colors](/docs/core-concepts/colors) for normal color input
+and terminal palette behavior.
+
+## Methods
+
+```typescript
+import { TargetChannel } from "@opentui/core"
+
+frameBuffer.colorMatrix(
+  matrix: Float32Array,
+  cellMask: Float32Array,
+  strength = 1,
+  target = TargetChannel.Both,
+)
+
+frameBuffer.colorMatrixUniform(
+  matrix: Float32Array,
+  strength = 1,
+  target = TargetChannel.Both,
+)
+```
+
+Both methods mutate the buffer and return `void`. The matrix must contain exactly 16 floats. A different length throws
+`RangeError` before the native call. A non-finite `strength` also throws `RangeError`.
+
+Native code rejects a non-finite matrix coefficient, a target that is not a `TargetChannel` value, and a mask with more
+triplets than the Context's `renderCellsMax`. A direct call then throws `NativeError`. In a paint hook, the frame fails
+when native code plays the recording.
+
+`colorMatrix()` transforms only mask entries. `colorMatrixUniform()` transforms every buffer cell.
+
+## Matrix format
+
+The matrix is row-major. Each row computes one output channel:
+
+```text
+[m00, m01, m02, m03]  red output
+[m10, m11, m12, m13]  green output
+[m20, m21, m22, m23]  blue output
+[m30, m31, m32, m33]  alpha output
+```
+
+For normalized input `C = [r, g, b, a]`, OpenTUI calculates:
+
+```text
+transformed = M * C
+result = C + (transformed - C) * effectiveStrength
+```
+
+`strength = 0` keeps the original value. `strength = 1` uses the complete matrix result. Strength is not clamped, so a
+negative value or a value above one extrapolates.
+
+Intermediate calculations can be below `0` or above `1`. The stored buffer is RGBA8. Native code clamps each final
+channel to `0..1`, rounds it to `0..255`, and writes it to storage. The native source comments that say no clamping
+describe the float calculation, not the RGBA8 write.
+
+Native code stores a calculated channel that is not finite, for example after overflow, as zero.
+
+## Target channels
+
+| Enum                 | Value | Cells changed             |
+| -------------------- | ----- | ------------------------- |
+| `TargetChannel.FG`   | `1`   | Foreground only           |
+| `TargetChannel.BG`   | `2`   | Background only           |
+| `TargetChannel.Both` | `3`   | Foreground and background |
+
+Use the enum values. Core and native code reject other numbers.
+
+## Cell mask
+
+`colorMatrix()` reads packed triplets:
+
+```text
+[x, y, perCellStrength, x, y, perCellStrength, ...]
+```
+
+The effective strength is `methodStrength * perCellStrength`.
+
+Mask behavior is exact:
+
+- Native code reads `Math.floor(cellMask.length / 3)` triplets. It ignores one or two trailing floats.
+- Native code skips a coordinate that is negative, not finite, or above the native `u32` range.
+- Positive fractional coordinates truncate toward zero.
+- Native code skips coordinates outside the buffer.
+- Native code skips a triplet whose effective strength is zero or not finite.
+- Duplicate coordinates apply the matrix more than once, in mask order.
+
+The mask ignores the active scissor and opacity stacks. Limit coordinates in the mask when the transform must stay in a
+clipped region.
+
+## Uniform behavior
+
+`colorMatrixUniform()` uses a four-cell SIMD path and a scalar remainder. With `strength === 0`, native code returns
+without a change.
+
+Uniform transforms ignore the active scissor and opacity stacks. They process `width * height` stored cells, including
+blank and continuation cells.
+
+In a paint hook, native code plays the transform on the frame at that node's place in paint order. A uniform transform
+then changes the whole frame as painted up to that point, not only the node's area.
+
+## Cell color semantics
+
+Each cell color stores RGBA8 values plus terminal color-intent metadata. The matrix reads the resolved RGBA channels.
+It then writes a new explicit RGB color. A transformed indexed or default color loses its palette or default intent.
+
+The methods do not change characters, continuation tags, image placements, text attributes, or hyperlink IDs. They
+can change foreground and background alpha if the fourth matrix row does so.
+
+The transform has no retained allocation or cleanup method. Native code reads the supplied arrays only during the
+call. In a paint hook, the recording keeps a copy of them.
+
+## Exported matrices
+
+`@opentui/core` exports these `Float32Array` values. Each keeps alpha unchanged.
+
+| Export                     | Transform                                  |
+| -------------------------- | ------------------------------------------ |
+| `SEPIA_MATRIX`             | Sepia                                      |
+| `PROTANOPIA_SIM_MATRIX`    | Protanopia simulation                      |
+| `DEUTERANOPIA_SIM_MATRIX`  | Deuteranopia simulation                    |
+| `TRITANOPIA_SIM_MATRIX`    | Tritanopia simulation                      |
+| `ACHROMATOPSIA_MATRIX`     | Luminance grayscale simulation             |
+| `PROTANOPIA_COMP_MATRIX`   | Protanopia-oriented channel compensation   |
+| `DEUTERANOPIA_COMP_MATRIX` | Deuteranopia-oriented channel compensation |
+| `TRITANOPIA_COMP_MATRIX`   | Tritanopia-oriented channel compensation   |
+| `TECHNICOLOR_MATRIX`       | Increased and cross-reduced RGB channels   |
+| `SOLARIZATION_MATRIX`      | Partial channel inversion                  |
+| `SYNTHWAVE_MATRIX`         | Magenta-biased channel mapping             |
+| `GREENSCALE_MATRIX`        | Luminance in the green channel only        |
+| `GRAYSCALE_MATRIX`         | Luminance copied to RGB                    |
+| `INVERT_MATRIX`            | `1 - channel` through the alpha column     |
+
+These constants encode calculations. Their names do not promise accessibility outcomes for every display or viewer.
+
+## Apply a uniform matrix
+
+```typescript
+import { INVERT_MATRIX, TargetChannel } from "@opentui/core"
+
+frameBuffer.colorMatrixUniform(INVERT_MATRIX, 1, TargetChannel.Both)
+```
+
+## Apply a cell mask
+
+```typescript
+import { SEPIA_MATRIX, TargetChannel } from "@opentui/core"
+
+const cells = new Float32Array([5, 2, 1, 6, 2, 0.5, 7, 2, 0.25])
+
+frameBuffer.colorMatrix(SEPIA_MATRIX, cells, 0.8, TargetChannel.FG)
+```
+
+The effective strengths in this example are `0.8`, `0.4`, and `0.2`.
+
+## Next
+
+- [FrameBuffer](/docs/components/frame-buffer) owns the normal component surface.
+- [Buffer API](/docs/reference/buffer-api) defines buffer ownership, masks, and raw-cell limits.
+- [Colors](/docs/core-concepts/colors) defines color values and intent.
+- [Post-processing effects](/docs/extend/post-processing) lists experimental helpers built on matrices and raw arrays.
+- [Custom renderables](/docs/extend/custom-renderables) shows where local drawing belongs.

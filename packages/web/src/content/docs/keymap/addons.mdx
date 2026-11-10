@@ -1,0 +1,280 @@
+---
+title: Built-in keymap addons
+description: Add shipped parsers, fields, sequences, diagnostics, and OpenTUI integrations
+---
+
+# Built-in keymap addons
+
+The Keymap engine starts bare. Shipped addons install parser, field, sequence, command, diagnostic, and OpenTUI
+behavior through the public engine APIs.
+
+Import universal addons from `@opentui/keymap/addons`:
+
+```ts
+import { registerDefaultKeys, registerEnabledFields, registerMetadataFields } from "@opentui/keymap/addons"
+```
+
+Import OpenTUI addons from `@opentui/keymap/addons/opentui`:
+
+```ts
+import { registerBaseLayoutFallback, registerManagedTextareaLayer } from "@opentui/keymap/addons/opentui"
+```
+
+The OpenTUI entry point re-exports every universal addon and adds its terminal integrations.
+
+## Registration and cleanup
+
+Each addon registration function returns a disposer. Keep it for feature removal while the host remains alive.
+Host destruction also releases resources registered through `acquireResource()`.
+
+Install compile-time addons before their layers. This rule applies to field compilers, expanders, parsers,
+transformers, and analyzers. Those stages do not recompile existing layers when you add them later.
+
+Install a disambiguation addon before a layer that contains both an exact sequence and its prefix.
+Adding the first resolver can recompile an existing layer, but registering it first avoids a temporary compile error.
+
+When one feature uses several addons, dispose its layer first. Then dispose its addons in reverse registration order.
+
+The default OpenTUI and HTML keymap factories already install `registerDefaultKeys()`, `registerEnabledFields()`, and
+`registerMetadataFields()`. Do not install another copy unless another owner also holds and disposes that registration.
+
+## Universal addons
+
+### Default keys
+
+| Export                                | Kind     | Behavior                                     |
+| ------------------------------------- | -------- | -------------------------------------------- |
+| `defaultBindingParser`                | value    | Parse the shared string key syntax.          |
+| `defaultEventMatchResolver`           | value    | Match canonical normalized event strokes.    |
+| `registerDefaultBindingParser()`      | function | Append `defaultBindingParser`.               |
+| `registerDefaultEventMatchResolver()` | function | Append `defaultEventMatchResolver`.          |
+| `registerDefaultKeys()`               | function | Register the parser, then the event matcher. |
+
+The `registerDefaultKeys()` disposer removes the event matcher first and then the parser.
+See [Default key syntax](/docs/keymap/core#default-key-syntax) for the complete grammar and key-name groups.
+
+### Field addons
+
+| Export                       | Added fields and behavior                                                             |
+| ---------------------------- | ------------------------------------------------------------------------------------- |
+| `registerBindingOverrides()` | Add layer field `bindingOverrides` and replace matching string-command key bindings.  |
+| `registerEnabledFields()`    | Add `enabled` to layers and commands.                                                 |
+| `registerMetadataFields()`   | Compile key binding `desc` and `group`, plus command `desc`, `title`, and `category`. |
+| `registerAliasesField()`     | Add layer-local, single-stroke key-name aliases.                                      |
+
+`bindingOverrides` must be a key binding array. Override command names and source command names are trimmed for the
+comparison. Overrides come first, and unaffected source key bindings keep their order.
+
+`enabled` accepts `boolean`, `() => boolean`, or `ReactiveMatcher`. It controls layers and commands, not individual key
+bindings. It does not publish metadata.
+
+The metadata addon requires non-empty strings and stores trimmed values in compiled attrs.
+It does not add layer metadata fields.
+
+`aliases` must map names to string key names. The addon normalizes both sides to lowercase and adds an aliased key
+binding. It does not remove the original key binding and does not change multi-stroke sequences.
+
+### Syntax and sequence addons
+
+| Export                                   | Behavior                                                                |
+| ---------------------------------------- | ----------------------------------------------------------------------- |
+| `registerCommaBindings()`                | Expand a string such as `x, y` into separate key bindings.              |
+| `registerEmacsBindings()`                | Prepend parsing for spaced chords such as `ctrl+x ctrl+s`.              |
+| `registerLeader()`                       | Register one token for `<leader>`-style syntax.                         |
+| `registerModBindings()`                  | Expand `mod+...` to the host's primary shortcut modifier.               |
+| `registerTimedLeader()`                  | Register a leader token and clear its pending sequence after a timeout. |
+| `registerBackspacePopsPendingSequence()` | Pop one pending stroke when Backspace is pressed.                       |
+| `registerEscapeClearsPendingSequence()`  | Clear a pending sequence when Escape is pressed.                        |
+| `registerNeovimDisambiguation()`         | Run an ambiguous exact key binding after a timeout.                     |
+
+The Emacs addon is an example parser for spaced chords. It does not claim to implement the complete Emacs grammar.
+
+`registerModBindings()` uses `primaryModifier` when that modifier is not unsupported.
+It falls back to `ctrl`, or to `super` when `ctrl` is unsupported.
+
+| API                                      | Options and defaults                                             |
+| ---------------------------------------- | ---------------------------------------------------------------- |
+| `registerLeader()`                       | `LeaderOptions.trigger`, with `name` defaulting to `leader`.     |
+| `registerTimedLeader()`                  | `LeaderOptions` plus `timeoutMs: 1500`, `onArm`, and `onDisarm`. |
+| `registerBackspacePopsPendingSequence()` | `preventDefault: true` and `priority: 0`.                        |
+| `registerEscapeClearsPendingSequence()`  | `preventDefault: true` and `priority: 0`.                        |
+| `registerNeovimDisambiguation()`         | `timeoutMs: 300`.                                                |
+
+A leader trigger can be a `KeyLike`, `{ key: KeyLike }`, or a key binding lookup array.
+An empty array disables the leader and returns a no-op disposer. An array with more than one key binding is invalid.
+
+The timed leader clears its timer and calls `onDisarm` during disposal when it is armed.
+
+### Diagnostics
+
+| Export                                | Warning condition                                                |
+| ------------------------------------- | ---------------------------------------------------------------- |
+| `registerDeadBindingWarnings()`       | A key binding has no command and no reachable continuation.      |
+| `registerUnresolvedCommandWarnings()` | A string command does not resolve through commands or resolvers. |
+
+Both addons append layer analyzers. Register them before the layers that they must inspect.
+They share one analyzer registration per keymap through reference-counted resources.
+
+### Ex commands
+
+`registerExCommands()` installs command fields, a command transformer, and a resolver for `:name ...args` input.
+Register an ex command with a colon-prefixed name or `namespace: "excommands"`.
+
+```ts
+import { registerExCommands } from "@opentui/keymap/addons"
+
+registerExCommands(keymap)
+
+keymap.registerLayer({
+  commands: [
+    {
+      name: "write",
+      namespace: "excommands",
+      aliases: ["w"],
+      nargs: "1",
+      run({ payload }) {
+        console.log(payload.raw, payload.args)
+      },
+    },
+  ],
+})
+```
+
+| `ExCommand` field | Type                                     | Default                    |
+| ----------------- | ---------------------------------------- | -------------------------- |
+| `name`            | `string`                                 | required                   |
+| `aliases`         | `string[]`                               | `[]`                       |
+| `nargs`           | `"0" \| "1" \| "?" \| "*" \| "+"`        | no validation              |
+| `run`             | `CommandHandler` with `ExCommandPayload` | required                   |
+| Other fields      | `unknown`                                | retained as command fields |
+
+The transformer normalizes names to a leading colon and sets `namespace` to `excommands`.
+Aliases create additional registered commands. The resolver trims input and splits arguments on whitespace.
+
+`ExCommandPayload` contains `raw`, readonly `args`, and optional nested `payload` from the original invocation.
+An argument-count mismatch returns `{ ok: false, reason: "invalid-args" }`.
+
+The disposer removes the resolver, then the transformer, and then the field compilers.
+
+### Universal type exports
+
+| Exported type                         | Purpose                                   |
+| ------------------------------------- | ----------------------------------------- |
+| `Aliases`                             | Record used by the `aliases` layer field. |
+| `BackspacePopsPendingSequenceOptions` | Backspace intercept options.              |
+| `EscapeClearsPendingSequenceOptions`  | Escape intercept options.                 |
+| `Enabled`                             | Accepted `enabled` field union.           |
+| `ExCommand`, `ExCommandPayload`       | Ex command registration and payload.      |
+| `LeaderOptions`, `LeaderTrigger`      | Leader configuration.                     |
+| `NeovimDisambiguationOptions`         | Ambiguity timeout configuration.          |
+| `TimedLeaderOptions`                  | Timed leader configuration.               |
+
+## OpenTUI addons
+
+`@opentui/keymap/addons/opentui` re-exports all universal values and types.
+It adds the values and types in this section.
+
+### Base-layout fallback
+
+`registerBaseLayoutFallback()` appends an event-match resolver that reads `KeyEvent.baseCode`.
+Kitty reports it as the key at the same position on the base layout (US QWERTY).
+The resolver falls back to that key when the typed key is one non-ASCII character, or when the base-layout key is a
+digit, the same rule as Core's key bindings.
+The fallback is for layouts whose keys cannot type the binding's character: Korean Ctrl+ㅊ and Russian Ctrl+с match
+`ctrl+c`, and AZERTY Ctrl+& matches `ctrl+1`.
+Any other ASCII key matches as typed: Dvorak Ctrl+J matches `ctrl+j`, not `ctrl+c`.
+A non-ASCII Latin letter, such as AZERTY é or German ß, still falls back.
+Some punctuation on non-Latin layouts does not, for example Hebrew `'` on the W key, Greek `;` on the Q key, or Russian
+`.` on the `/` key.
+
+Register the default event matcher first. Its direct event candidate then runs before the base-layout fallback across all
+active layers.
+
+### Edit-buffer integration
+
+| Export                                                            | Behavior                                                             |
+| ----------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `createTextareaBindings(overrides?, options?)`                    | Return generated textarea key bindings with overrides first.         |
+| `registerEditBufferCommands(keymap, renderer, options?)`          | Register command handlers for `renderer.currentFocusedEditor`.       |
+| `registerTextareaMappingSuspension(keymap, renderer)`             | Suspend a focused textarea's built-in mapped shortcuts.              |
+| `registerManagedTextareaLayer(keymap, renderer, layer, options?)` | Combine commands, suspension, generated key bindings, and overrides. |
+
+`registerManagedTextareaLayer()` creates a global layer. Its `layer` argument excludes `target` and `targetMode`.
+The command handlers follow `renderer.currentFocusedEditor` when they run.
+
+Textarea mapping suspension applies to `TextareaRenderable`, but not `InputRenderable`.
+It preserves plain typing and restores the textarea's previous `traits.suspend` state after focus change or cleanup.
+
+The command and suspension registrations are reference-counted per keymap.
+Use one renderer and one command-name configuration for all holders on that keymap.
+The first holder supplies the shared command setup until the last holder disposes it.
+
+The managed helper registers commands, then suspension, and then its key binding layer.
+Its disposer removes the layer, suspension, and commands in reverse order.
+
+`EditBufferCommandOptions` has these fields:
+
+| Field              | Default        | Meaning                                            |
+| ------------------ | -------------- | -------------------------------------------------- |
+| `category`         | `Text Editing` | Generated command category.                        |
+| `group`            | `Text Editing` | Generated key binding group.                       |
+| `includeFineGroup` | `false`        | Add a `fineGroup` field to generated key bindings. |
+| `commandNames`     | built-in names | Override names by `EditBufferCommandName`.         |
+| `descriptions`     | built-in text  | Override descriptions by `EditBufferCommandName`.  |
+
+The entry point exports `EditBufferCommandName`, `EditBufferCommandOptions`, and `EditBufferFineGroup`.
+`EditBufferFineGroup` is `Cursor`, `Selection`, `Delete`, `History`, `Insert`, or `Submit`.
+
+### Edit-buffer commands
+
+| Action                    | Default command                 | Default description         |
+| ------------------------- | ------------------------------- | --------------------------- |
+| `move-left`               | `input.move.left`               | Cursor left                 |
+| `move-right`              | `input.move.right`              | Cursor right                |
+| `move-up`                 | `input.move.up`                 | Cursor up                   |
+| `move-down`               | `input.move.down`               | Cursor down                 |
+| `select-left`             | `input.select.left`             | Select left                 |
+| `select-right`            | `input.select.right`            | Select right                |
+| `select-up`               | `input.select.up`               | Select up                   |
+| `select-down`             | `input.select.down`             | Select down                 |
+| `line-home`               | `input.line.home`               | Line start                  |
+| `line-end`                | `input.line.end`                | Line end                    |
+| `select-line-home`        | `input.select.line.home`        | Select to line start        |
+| `select-line-end`         | `input.select.line.end`         | Select to line end          |
+| `visual-line-home`        | `input.visual.line.home`        | Visual line start           |
+| `visual-line-end`         | `input.visual.line.end`         | Visual line end             |
+| `select-visual-line-home` | `input.select.visual.line.home` | Select to visual line start |
+| `select-visual-line-end`  | `input.select.visual.line.end`  | Select to visual line end   |
+| `buffer-home`             | `input.buffer.home`             | Buffer start                |
+| `buffer-end`              | `input.buffer.end`              | Buffer end                  |
+| `select-buffer-home`      | `input.select.buffer.home`      | Select to buffer start      |
+| `select-buffer-end`       | `input.select.buffer.end`       | Select to buffer end        |
+| `delete-line`             | `input.delete.line`             | Delete line                 |
+| `delete-to-line-end`      | `input.delete.to.line.end`      | Delete to line end          |
+| `delete-to-line-start`    | `input.delete.to.line.start`    | Delete to line start        |
+| `backspace`               | `input.backspace`               | Delete backward             |
+| `delete`                  | `input.delete`                  | Delete forward              |
+| `newline`                 | `input.newline`                 | New line                    |
+| `undo`                    | `input.undo`                    | Undo                        |
+| `redo`                    | `input.redo`                    | Redo                        |
+| `word-forward`            | `input.word.forward`            | Next word                   |
+| `word-backward`           | `input.word.backward`           | Previous word               |
+| `select-word-forward`     | `input.select.word.forward`     | Select next word            |
+| `select-word-backward`    | `input.select.word.backward`    | Select previous word        |
+| `delete-word-forward`     | `input.delete.word.forward`     | Delete next word            |
+| `delete-word-backward`    | `input.delete.word.backward`    | Delete previous word        |
+| `select-all`              | `input.select.all`              | Select all                  |
+| `submit`                  | `input.submit`                  | Submit                      |
+
+Generated key bindings come from `defaultTextareaKeyBindings` in `@opentui/core`.
+`createTextareaBindings()` places overrides before those defaults, so an override wins by key binding order.
+
+See [Textarea](/docs/components/textarea) for component behavior.
+
+## Related pages
+
+- [Keymap](/docs/keymap/overview) explains when to use the package.
+- [Core keymap API](/docs/keymap/core) defines engine registration and ordering.
+- [Custom keymap addons](/docs/keymap/custom-addons) defines addon callbacks and lifecycle rules.
+- [Textarea](/docs/components/textarea) defines the OpenTUI component.
+- [Testing](/docs/core-concepts/testing) covers renderer and input tests.

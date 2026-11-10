@@ -1,6 +1,6 @@
 {
   "name": "@opentui/react",
-  "version": "0.1.87",
+  "version": "0.8.3",
   "description": "React renderer for building terminal user interfaces using OpenTUI core",
   "license": "MIT",
   "repository": {
@@ -25,6 +25,10 @@
       "import": "./scripts/runtime-plugin-support.ts",
       "types": "./scripts/runtime-plugin-support.ts"
     },
+    "./runtime-plugin-support/configure": {
+      "import": "./scripts/runtime-plugin-support-configure.ts",
+      "types": "./scripts/runtime-plugin-support-configure.ts"
+    },
     "./jsx-runtime": {
       "import": "./jsx-runtime.js",
       "types": "./jsx-runtime.d.ts"
@@ -38,22 +42,23 @@
     "build": "bun run scripts/build.ts",
     "build:examples": "bun examples/build.ts",
     "build:dev": "bun run scripts/build.ts --dev",
-    "publish": "bun run scripts/publish.ts",
+    "publish": "bun ../../scripts/npm-publish.ts publish @opentui/react",
     "test": "bun test"
   },
   "devDependencies": {
-    "@types/bun": "latest",
+    "@opentui/keymap": "workspace:*",
+    "@types/bun": "1.4.1",
     "@types/node": "^24.0.0",
-    "@types/react": "^19.0.0",
-    "@types/react-reconciler": "^0.32.0",
+    "@types/react": "^19.2.0",
+    "@types/react-reconciler": "^0.33.0",
     "@types/ws": "^8.18.1",
-    "react": ">=19.0.0",
+    "react": ">=19.2.0",
     "react-devtools-core": "^7.0.1",
     "typescript": "^5",
     "ws": "^8.18.0"
   },
   "peerDependencies": {
-    "react": ">=19.0.0",
+    "react": ">=19.2.0",
     "react-devtools-core": "^7.0.1",
     "ws": "^8.18.0"
   },
@@ -67,6 +72,6 @@
   },
   "dependencies": {
     "@opentui/core": "workspace:*",
-    "react-reconciler": "^0.32.0"
+    "react-reconciler": "^0.33.0"
   }
 }

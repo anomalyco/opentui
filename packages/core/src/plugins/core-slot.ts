@@ -1,8 +1,8 @@
-import { BaseRenderable, Renderable, type RenderableOptions } from "../Renderable"
-import type { CliRenderer } from "../renderer"
-import type { RenderContext } from "../types"
-import { createSlotRegistry, SlotRegistry, type SlotRegistryOptions } from "./registry"
-import type { Plugin, PluginContext, PluginErrorEvent, SlotMode } from "./types"
+import { BaseRenderable, Renderable, type RenderableOptions } from "../Renderable.js"
+import type { CliRenderer } from "../renderer.js"
+import type { RenderContext } from "../types.js"
+import { createSlotRegistry, SlotRegistry, type SlotRegistryOptions } from "./registry.js"
+import type { Plugin, PluginContext, PluginErrorEvent, SlotMode } from "./types.js"
 
 export type CoreSlotMode = SlotMode
 
@@ -461,7 +461,7 @@ export class SlotRenderable<
 
   private _detachNodeFromMount(node: BaseRenderable): void {
     if (node.parent === this) {
-      this.remove(node.id)
+      this.remove(node)
     }
   }
 
@@ -555,7 +555,7 @@ export class SlotRenderable<
     for (const node of this._mountedNodes) {
       if (!desiredNodeSet.has(node)) {
         if (node.parent === this) {
-          this.remove(node.id)
+          this.remove(node)
         }
       }
     }
@@ -569,7 +569,7 @@ export class SlotRenderable<
       }
 
       const childAtIndex = this.getChildren()[index]
-      if (childAtIndex?.id !== node.id) {
+      if (childAtIndex !== node) {
         this.add(node, index)
       }
     }

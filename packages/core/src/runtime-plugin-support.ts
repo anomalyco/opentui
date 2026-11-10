@@ -1,34 +1,6 @@
-import { plugin as registerBunPlugin } from "bun"
-import {
-  createRuntimePlugin,
-  runtimeModuleIdForSpecifier,
-  type CreateRuntimePluginOptions,
-  type RuntimeModuleEntry,
-  type RuntimeModuleExports,
-  type RuntimeModuleLoader,
-} from "./runtime-plugin"
+import { ensureRuntimePluginSupport } from "./runtime-plugin-support-configure.js"
 
-const runtimePluginSupportInstalledKey = "__opentuiCoreRuntimePluginSupportInstalled__"
-
-type RuntimePluginSupportState = typeof globalThis & {
-  [runtimePluginSupportInstalledKey]?: boolean
-}
-
-export function ensureRuntimePluginSupport(options: CreateRuntimePluginOptions = {}): boolean {
-  const state = globalThis as RuntimePluginSupportState
-
-  if (state[runtimePluginSupportInstalledKey]) {
-    return false
-  }
-
-  registerBunPlugin(createRuntimePlugin(options))
-
-  state[runtimePluginSupportInstalledKey] = true
-  return true
-}
-
-ensureRuntimePluginSupport()
-
+export { ensureRuntimePluginSupport }
 export {
   createRuntimePlugin,
   runtimeModuleIdForSpecifier,
@@ -36,4 +8,7 @@ export {
   type RuntimeModuleEntry,
   type RuntimeModuleExports,
   type RuntimeModuleLoader,
-}
+  type RuntimeSpecifierPreserve,
+} from "./runtime-plugin-support-configure.js"
+
+ensureRuntimePluginSupport()

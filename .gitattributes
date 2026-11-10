@@ -1,0 +1,44 @@
+# Treat binary assets as binary so git, editors, and merge/filter
+# tools never re-encode them as text. Prevents UTF-8 mojibake of
+# bytes >= 0x80 (which is what corrupted the example image assets
+# in c1f46659).
+
+# Source files: enforce LF line endings regardless of platform
+* text=auto eol=lf
+
+# Images
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.webp binary
+*.ico  binary
+
+# Fonts
+*.ttf   binary
+*.otf   binary
+*.woff  binary
+*.woff2 binary
+
+# Compiled / bundled native code
+*.wasm  binary
+*.so    binary
+*.dylib binary
+*.dll   binary
+*.exe   binary
+*.a     binary
+*.o     binary
+
+# Terminal byte fixtures: CRLF in them is data
+packages/rust/**/*.bin binary
+
+# Archives
+*.zip binary
+*.gz  binary
+*.tar binary
+
+# Audio / video
+*.mp3 binary
+*.mp4 binary
+*.wav binary
+*.ogg binary

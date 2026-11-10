@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from "bun:test"
-import { MouseParser, type RawMouseEvent } from "./parse.mouse"
+import { MouseParser } from "./parse.mouse.js"
 
 // Encode a basic/X10 mouse event: ESC [ M Cb Cx Cy
 // buttonByte is the logical value (before the +32 wire offset), x/y are 0-based.
@@ -158,9 +158,9 @@ describe("MouseParser basic (X10) mode", () => {
       expect(e.modifiers).toEqual({ shift: true, alt: true, ctrl: true })
     })
 
-    test("scroll bit takes priority over motion bit: byte 96 (64|32) → 'scroll'", () => {
+    test("motion bit takes priority over scroll bit: byte 96 (64|32) → 'move'", () => {
       const e = parser.parseMouseEvent(encodeBasic(96, 10, 5))!
-      expect(e.type).toBe("scroll")
+      expect(e.type).toBe("move")
     })
 
     test("release without motion bit is still 'up'", () => {
@@ -290,30 +290,31 @@ describe("MouseParser SGR mode", () => {
       expect(e).toMatchObject({ type: "scroll", scroll: { direction: "right", delta: 1 } })
     })
 
-    test("scroll+motion code 96 (64|32) is treated as scroll up", () => {
-      // Seen in URxvt capture: ESC[<96;...M while moving during wheel scroll.
+    test("scroll+motion code 96 (64|32) is treated as move", () => {
+      // Seen in URxvt: motion can arrive with both bits set while scrolling.
       const e = parser.parseMouseEvent(encodeSGR(96, 80, 66, true))!
       expect(e).toMatchObject({
-        type: "scroll",
+        type: "move",
         x: 80,
         y: 66,
-        scroll: { direction: "up", delta: 1 },
+        scroll: undefined,
       })
     })
 
-    test("scroll+motion code 97 (65|32) is treated as scroll down", () => {
+    test("scroll+motion code 97 (65|32) is treated as move", () => {
       const e = parser.parseMouseEvent(encodeSGR(97, 80, 66, true))!
       expect(e).toMatchObject({
-        type: "scroll",
+        type: "move",
         x: 80,
         y: 66,
-        scroll: { direction: "down", delta: 1 },
+        scroll: undefined,
       })
     })
 
     test("scroll release (m) is not classified as scroll", () => {
       // Some terminals send release for scroll too; the parser should not
       // report that as a scroll event.
+      // 044: pins main; the conformance vectors make a wheel release a response with no mouse event.
       const e = parser.parseMouseEvent(encodeSGR(64, 10, 5, false))!
       expect(e.type).not.toBe("scroll")
     })
@@ -380,19 +381,12 @@ describe("MouseParser SGR mode", () => {
       expect(move.type).toBe("move")
     })
 
-    test("multiple buttons pressed — any motion is drag", () => {
+    test("releasing one of multiple pressed buttons keeps motion dragging", () => {
       parser.parseMouseEvent(encodeSGR(0, 5, 5, true)) // left down
       parser.parseMouseEvent(encodeSGR(2, 5, 5, true)) // right down
-      const e = parser.parseMouseEvent(encodeSGR(32, 8, 5, false))!
-      expect(e.type).toBe("drag")
-    })
-
-    test("release clears ALL tracked buttons", () => {
-      parser.parseMouseEvent(encodeSGR(0, 5, 5, true)) // left down
-      parser.parseMouseEvent(encodeSGR(2, 5, 5, true)) // right down
-      parser.parseMouseEvent(encodeSGR(0, 5, 5, false)) // release (clears all)
-      const e = parser.parseMouseEvent(encodeSGR(32, 8, 5, false))!
-      expect(e.type).toBe("move") // no buttons tracked → move, not drag
+      parser.parseMouseEvent(encodeSGR(2, 5, 5, false)) // right up
+      const event = parser.parseMouseEvent(encodeSGR(32, 8, 5, false))!
+      expect(event.type).toBe("drag")
     })
 
     test("reset() clears button tracking state", () => {
@@ -486,13 +480,13 @@ describe("MouseParser parseAllMouseEvents (multi-event chunks)", () => {
     expect(events[2]).toMatchObject({ type: "scroll", scroll: { direction: "down" } })
   })
 
-  test("chunk with scroll+motion codes (96/97) keeps scroll semantics", () => {
+  test("chunk with scroll+motion codes (96/97) keeps motion semantics", () => {
     const buf = Buffer.concat([encodeSGR(64, 82, 67, true), encodeSGR(96, 81, 67, true), encodeSGR(97, 80, 67, true)])
     const events = parser.parseAllMouseEvents(buf)
     expect(events).toHaveLength(3)
     expect(events[0]).toMatchObject({ type: "scroll", scroll: { direction: "up" } })
-    expect(events[1]).toMatchObject({ type: "scroll", scroll: { direction: "up" }, x: 81, y: 67 })
-    expect(events[2]).toMatchObject({ type: "scroll", scroll: { direction: "down" }, x: 80, y: 67 })
+    expect(events[1]).toMatchObject({ type: "move", x: 81, y: 67, scroll: undefined })
+    expect(events[2]).toMatchObject({ type: "move", x: 80, y: 67, scroll: undefined })
   })
 
   test("returns empty array for non-mouse data", () => {

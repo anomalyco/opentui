@@ -3,7 +3,7 @@
 
 import type { ParsedKey } from "./parse.keypress.js"
 
-const kittyKeyMap: Record<number, string> = {
+export const kittyKeyMap: Record<number, string> = {
   // Standard keys
   27: "escape",
   9: "tab",
@@ -134,6 +134,32 @@ const kittyKeyMap: Record<number, string> = {
   // Special
   57453: "iso_level3_shift",
   57454: "iso_level5_shift",
+}
+
+export const kittyNamedSingleStrokeKeys = [...new Set(Object.values(kittyKeyMap))]
+
+export const printableKeypadText: Record<string, string> = {
+  kp0: "0",
+  kp1: "1",
+  kp2: "2",
+  kp3: "3",
+  kp4: "4",
+  kp5: "5",
+  kp6: "6",
+  kp7: "7",
+  kp8: "8",
+  kp9: "9",
+  kpdecimal: ".",
+  kpdivide: "/",
+  kpmultiply: "*",
+  kpminus: "-",
+  kpplus: "+",
+  kpequal: "=",
+  kpseparator: ",",
+}
+
+function getPrintableKittyKeyText(key: ParsedKey): string | undefined {
+  return printableKeypadText[key.name]
 }
 
 function fromKittyMods(mod: number): {
@@ -310,7 +336,10 @@ export function parseKittyKeyboard(sequence: string): ParsedKey | null {
 
   let text = ""
 
-  // Parse field 1: unicode-key-code:shifted_codepoint:base_layout_codepoint
+  // Parse field 1: unicode-key-code:shifted_codepoint:base_layout_codepoint.
+  // The character this key produced, the shifted variant, and what the same
+  // physical key would be on the base layout. Example: a key can produce `ㅊ`
+  // but still report base-layout codepoint 99, which is Unicode `c`.
   const field1 = fields[0]?.split(":") || []
   const codepointStr = field1[0]
   if (!codepointStr) return null
@@ -345,9 +374,10 @@ export function parseKittyKeyboard(sequence: string): ParsedKey | null {
     // It's a Unicode character
     if (codepoint > 0 && codepoint <= 0x10ffff) {
       const char = String.fromCodePoint(codepoint)
-      key.name = char
+      key.name = char === " " ? "space" : char
 
-      // Store base layout codepoint for keyboard layout disambiguation
+      // Keep the raw Unicode codepoint from Kitty so higher-level matching can
+      // later turn `99` into `c` and fall back to it (see getBaseCodeKeyName).
       if (baseCodepoint) {
         key.baseCode = baseCodepoint
       }
@@ -401,13 +431,19 @@ export function parseKittyKeyboard(sequence: string): ParsedKey | null {
     }
   }
 
+  if (text === "") {
+    text = getPrintableKittyKeyText(key) ?? ""
+  }
+
   // Handle text generation for printable characters
   if (text === "") {
     // Check if this is a printable character (not a key name like "up", "f1", etc.)
     const isPrintable = key.name.length > 0 && !kittyKeyMap[codepoint]
     if (isPrintable) {
       // Use shifted codepoint if shift is active and we have one
-      if (key.shift && shiftedCodepoint) {
+      if (codepoint === 32) {
+        text = " "
+      } else if (key.shift && shiftedCodepoint) {
         text = String.fromCodePoint(shiftedCodepoint)
       } else if (key.shift && key.name.length === 1) {
         // When shift is pressed but terminal didn't provide shifted codepoint,
@@ -417,11 +453,6 @@ export function parseKittyKeyboard(sequence: string): ParsedKey | null {
         text = key.name
       }
     }
-  }
-
-  // Special case: shift + space should produce a space
-  if (key.name === " " && key.shift && !key.ctrl && !key.meta) {
-    text = " "
   }
 
   if (text) {

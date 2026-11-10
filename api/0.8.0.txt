@@ -1,0 +1,216 @@
+base 0.7.0
++ @opentui/core/testing: property TestRendererOptions.nativeSceneVerify?: boolean
++ @opentui/core: class ScrollBoxBar extends ScrollBoxPart
++ @opentui/core: class ScrollBoxContent extends ScrollBoxSizedPart
++ @opentui/core: class ScrollBoxViewport extends ScrollBoxSizedPart
++ @opentui/core: class ScrollBoxWrapper extends ScrollBoxFilledPart
++ @opentui/core: constructor ScrollBoxBar(box: ScrollBoxRenderable, orientation: "vertical" | "horizontal")
++ @opentui/core: constructor ScrollBoxContent(box: ScrollBoxRenderable)
++ @opentui/core: constructor ScrollBoxViewport(box: ScrollBoxRenderable)
++ @opentui/core: enum-member NativeEditPositionQuery.End = 7
++ @opentui/core: enum-member NativeEditPositionQuery.PrevChar = 8
++ @opentui/core: enum-member NativeSceneFrame.Scroll
++ @opentui/core: enum-member NativeSceneHook.Scroll
++ @opentui/core: function scrollUnitSize(bar: { viewportSize: number; scrollSize: number; scrollStep?: number | null; }, unit: ScrollUnit): number
++ @opentui/core: interface AnimationTickOptions
++ @opentui/core: interface ScrollBoxContent extends ContentLayout
++ @opentui/core: interface ScrollBoxViewport
++ @opentui/core: method CliRenderer.onAnimationTick(fps: number, callback: AnimationTickCallback, options?: AnimationTickOptions): () => void
++ @opentui/core: method FFIRenderLib.contextDrawSceneBody({ context, target, frame }: NativeDrawingTarget, node: SceneNodeHandle, x: number, y: number): void
+- @opentui/core: method FFIRenderLib.contextDrawSceneText({ context, target, frame }: NativeDrawingTarget, node: SceneNodeHandle, x: number, y: number): void
++ @opentui/core: method FFIRenderLib.sceneGetScroll(context: NativeContextHandle, node: SceneNodeHandle): NativeSceneScrollState
++ @opentui/core: method FFIRenderLib.sceneScrollRequest(context: NativeContextHandle, node: SceneNodeHandle, kind: "into-view" | "anchor" | "layout", target: SceneNodeHandle | null, align?: "nearest" | "start" | "end", inset?: number): NativeSceneScrollState
++ @opentui/core: method FFIRenderLib.sceneScrollTo(context: NativeContextHandle, node: SceneNodeHandle, x: number, y: number, relativeX: boolean, relativeY: boolean, reapply?: boolean): NativeSceneScrollState
++ @opentui/core: method FFIRenderLib.sceneSetScroll(context: NativeContextHandle, node: SceneNodeHandle, options: NativeSceneScrollOptions): void
++ @opentui/core: method FFIRenderLib.sceneSetScrollArrow(context: NativeContextHandle, node: SceneNodeHandle, axis: number, end: number, options: Omit<NativeSceneArrowOptions, "direction">): void
++ @opentui/core: protected method Renderable.onAnimationTick(deltaTime: number, ticks: number, time: number): void
+- @opentui/core: protected method Renderable.propagateFocusChange(hasFocus: boolean): void
++ @opentui/core: protected method Renderable.propagateFocusChange(_hasFocus: boolean): void
++ @opentui/core: method ScrollBoxBar.handleKeyPress(key: KeyEvent): boolean
++ @opentui/core: protected method ScrollBoxBar.rect(): NativeSceneRect
++ @opentui/core: method ScrollBoxBar.resetVisibilityControl(): void
++ @opentui/core: method ScrollBoxBar.scrollBy(delta: number, unit?: ScrollUnit): void
++ @opentui/core: method ScrollBoxContent.add(obj: Renderable | VNode<any, any[]>, index?: number): number
++ @opentui/core: method ScrollBoxContent.findDescendantById(id: string): Renderable | undefined
++ @opentui/core: method ScrollBoxContent.getChildren(): Renderable[]
++ @opentui/core: method ScrollBoxContent.getChildrenCount(): number
++ @opentui/core: method ScrollBoxContent.getRenderable(id: string): Renderable | undefined
++ @opentui/core: method ScrollBoxContent.insertBefore(obj: Renderable | VNode<any, any[]> | unknown, anchor?: Renderable | unknown): number
++ @opentui/core: protected method ScrollBoxContent.rect(): NativeSceneRect
++ @opentui/core: method ScrollBoxContent.remove(child: BaseRenderable): void
+- @opentui/core: method ScrollBoxRenderable.add(obj: Renderable | VNode<any, any[]>, index?: number): number
++ @opentui/core: method ScrollBoxRenderable.afterLayout(callback: () => void): void
++ @opentui/core: method ScrollBoxRenderable.anchor(node: Renderable): () => void
+- @opentui/core: method ScrollBoxRenderable.getChildren(): Renderable[]
+- @opentui/core: method ScrollBoxRenderable.getRenderable(id: string): Renderable | undefined
+- @opentui/core: method ScrollBoxRenderable.insertBefore(obj: Renderable | VNode<any, any[]> | unknown, anchor?: Renderable | unknown): number
+- @opentui/core: method ScrollBoxRenderable.remove(child: BaseRenderable): void
+- @opentui/core: method ScrollBoxRenderable.scrollChildIntoView(childId: string): void
++ @opentui/core: method ScrollBoxRenderable.scrollChildIntoView(child: string | Renderable, options?: { align?: "nearest" | "start" | "end"; inset?: number; }): void
++ @opentui/core: protected method ScrollBoxViewport.rect(): NativeSceneRect
++ @opentui/core: protected method ScrollBoxWrapper.rect(): NativeSceneRect
++ @opentui/core: property AnimationTickOptions.tolerance?: number
++ @opentui/core: property CliRendererConfig.synchronizedOutput?: SynchronizedOutput
+- @opentui/core: readonly property NativeRenderableIntegration.lifecycle?: { readonly resize?: { readonly native: (width: number, height: number) => void; }; readonly update?: { readonly idle: (deltaTime: number) => void; readonly active: (renderable: Renderable) => boolean; }; }
++ @opentui/core: readonly property NativeRenderableIntegration.lifecycle?: { readonly resize?: { readonly native: (width: number, height: number) => void; }; readonly update?: { readonly idle: (deltaTime: number) => void; readonly active: (renderable: Renderable) => boolean; }; readonly scroll?: { readonly active: (renderable: Renderable) => boolean; readonly notify: (renderable: Renderable) => void; }; }
++ @opentui/core: property NativeSessionTerminalOptions.hostMultiplexer?: boolean
++ @opentui/core: property NativeSessionTerminalOptions.replySentinel?: boolean
++ @opentui/core: property NativeSessionTerminalOptions.synchronizedOutput?: SynchronizedOutput
++ @opentui/core: property RenderContext.clock: Clock
++ @opentui/core: property RenderContext.onAnimationTick: (fps: number, callback: AnimationTickCallback, options?: AnimationTickOptions) => () => void
+- @opentui/core: protected property Renderable._hasFocusedDescendant: boolean
++ @opentui/core: property Renderable.animationFps: number | undefined
++ @opentui/core: property RenderableOptions.animationFps?: number
++ @opentui/core: property ScrollBoxBar.arrowOptions: Omit<ArrowOptions, "direction"> | null | undefined
++ @opentui/core: property ScrollBoxBar.height: number
++ @opentui/core: static readonly property ScrollBoxBar.keys: readonly [ "visible", "showArrows", "arrowOptions", "trackOptions", "onChange", "width", "height", "paddingLeft", "paddingTop", "position", "scrollStep" ]
++ @opentui/core: property ScrollBoxBar.onChange: ((position: number) => void) | undefined
++ @opentui/core: readonly property ScrollBoxBar.orientation: "vertical" | "horizontal"
++ @opentui/core: property ScrollBoxBar.paddingLeft: number | null | undefined
++ @opentui/core: property ScrollBoxBar.paddingTop: number | null | undefined
++ @opentui/core: property ScrollBoxBar.position: "absolute" | "relative" | null | undefined
++ @opentui/core: property ScrollBoxBar.scrollPosition: number
++ @opentui/core: readonly property ScrollBoxBar.scrollSize: number
++ @opentui/core: property ScrollBoxBar.scrollStep: number | undefined | null
++ @opentui/core: property ScrollBoxBar.showArrows: boolean
++ @opentui/core: property ScrollBoxBar.trackOptions: { foregroundColor?: ColorInput; backgroundColor?: ColorInput; } | null | undefined
++ @opentui/core: readonly property ScrollBoxBar.viewportSize: number
++ @opentui/core: property ScrollBoxBar.visible: boolean
++ @opentui/core: property ScrollBoxBar.width: number
++ @opentui/core: static readonly property ScrollBoxContent.keys: string[]
++ @opentui/core: property ScrollBoxContent.viewportCulling: boolean
+- @opentui/core: readonly property ScrollBoxRenderable.content: ContentRenderable
++ @opentui/core: readonly property ScrollBoxRenderable.content: ScrollBoxContent
+- @opentui/core: readonly property ScrollBoxRenderable.horizontalScrollBar: ScrollBarRenderable
++ @opentui/core: readonly property ScrollBoxRenderable.horizontalScrollBar: ScrollBoxBar
+- @opentui/core: static property ScrollBoxRenderable.idCounter: number
++ @opentui/core: property ScrollBoxRenderable.overflow: "hidden"
+- @opentui/core: property ScrollBoxRenderable.padding: number | `${number}%` | null | undefined
+- @opentui/core: property ScrollBoxRenderable.paddingBottom: number | `${number}%` | null | undefined
+- @opentui/core: property ScrollBoxRenderable.paddingLeft: number | `${number}%` | null | undefined
+- @opentui/core: property ScrollBoxRenderable.paddingRight: number | `${number}%` | null | undefined
+- @opentui/core: property ScrollBoxRenderable.paddingTop: number | `${number}%` | null | undefined
+- @opentui/core: property ScrollBoxRenderable.paddingX: number | `${number}%` | null | undefined
+- @opentui/core: property ScrollBoxRenderable.paddingY: number | `${number}%` | null | undefined
++ @opentui/core: readonly property ScrollBoxRenderable.primaryAxis: "row" | "column"
++ @opentui/core: property ScrollBoxRenderable.scrollX: boolean
++ @opentui/core: property ScrollBoxRenderable.scrollY: boolean
+- @opentui/core: readonly property ScrollBoxRenderable.verticalScrollBar: ScrollBarRenderable
++ @opentui/core: readonly property ScrollBoxRenderable.verticalScrollBar: ScrollBoxBar
+- @opentui/core: readonly property ScrollBoxRenderable.viewport: BoxRenderable
++ @opentui/core: readonly property ScrollBoxRenderable.viewport: ScrollBoxViewport
+- @opentui/core: readonly property ScrollBoxRenderable.wrapper: BoxRenderable
++ @opentui/core: readonly property ScrollBoxRenderable.wrapper: ScrollBoxWrapper
++ @opentui/core: static readonly property ScrollBoxViewport.keys: string[]
++ @opentui/core: property ScrollBoxViewport.padding: number | null | undefined
++ @opentui/core: property ScrollBoxViewport.paddingBottom: number
++ @opentui/core: property ScrollBoxViewport.paddingLeft: number
++ @opentui/core: property ScrollBoxViewport.paddingRight: number
++ @opentui/core: property ScrollBoxViewport.paddingTop: number
++ @opentui/core: property ScrollBoxViewport.paddingX: number | null | undefined
++ @opentui/core: property ScrollBoxViewport.paddingY: number | null | undefined
++ @opentui/core: static readonly property ScrollBoxWrapper.keys: readonly [ "backgroundColor" ]
++ @opentui/core: property StdinParserProtocolContext.replySentinelActive: boolean
++ @opentui/core: property Timeline.frameRate: number | undefined
++ @opentui/core: property TimelineOptions.frameRate?: number
++ @opentui/core: type AnimationTickCallback = (deltaTime: number, ticks: number, time: number) => void
+- @opentui/core: type NativeSessionControl = { kind: "capability-response"; bytes: Uint8Array; } | { kind: "palette-query"; bytes: Uint8Array; } | { kind: "title"; title: string; } | { kind: "mouse"; mode: "disabled" | "drag" | "motion"; } | { kind: "kitty-keyboard-flags"; flags: number; } | { kind: "program-status"; status: ProgramStatus; } | { kind: "restore-modes" | "query-pixel-resolution" | "query-theme-colors" | "reset-background"; }
++ @opentui/core: type NativeSessionControl = { kind: "capability-response"; bytes: Uint8Array; } | { kind: "palette-query"; bytes: Uint8Array; } | { kind: "title"; title: string; } | { kind: "mouse"; mode: "disabled" | "drag" | "motion"; } | { kind: "kitty-keyboard-flags"; flags: number; } | { kind: "program-status"; status: ProgramStatus; } | { kind: "query-pixel-resolution"; sentinel?: boolean; } | { kind: "restore-modes" | "query-theme-colors" | "reset-background"; }
++ @opentui/core: type SynchronizedOutput = "auto" | "always" | "never"
++ @opentui/react: const useAnimationTick: (fps: number | undefined, callback: AnimationTickCallback, options?: AnimationTickOptions) => void
++ @opentui/solid: const onAnimationTick: (fps: number | Accessor<number | undefined>, callback: AnimationTickCallback, options?: AnimationTickOptions) => void
++ opentui.h: const OT_EDIT_POSITION_END = 7
++ opentui.h: const OT_EDIT_POSITION_PREV_CHAR = 8
++ opentui.h: const OT_INPUT_EXPECT_SENTINEL = 8
++ opentui.h: const OT_SCENE_DEBUG_VERIFY = 2
++ opentui.h: const OT_SCENE_FRAME_SCROLL = 5
++ opentui.h: const OT_SCENE_FULL_PATH_NON_LOCAL = 64
++ opentui.h: const OT_SCENE_FULL_PATH_OPTIONS = 32
++ opentui.h: const OT_SCENE_FULL_PATH_TAINTED = 8
++ opentui.h: const OT_SCENE_FULL_PATH_UNRETAINED = 16
++ opentui.h: const OT_SCENE_HOOK_SCROLL = 128
++ opentui.h: const OT_SCENE_RECORD_SCENE_BODY = 10
+- opentui.h: const OT_SCENE_RECORD_SCENE_TEXT = 10
++ opentui.h: const OT_SCENE_SCROLL_ALIGN_END = 2
++ opentui.h: const OT_SCENE_SCROLL_ALIGN_NEAREST = 0
++ opentui.h: const OT_SCENE_SCROLL_ALIGN_START = 1
++ opentui.h: const OT_SCENE_SCROLL_BAR_ALWAYS = 1
++ opentui.h: const OT_SCENE_SCROLL_BAR_AUTO = 0
++ opentui.h: const OT_SCENE_SCROLL_BAR_INSET = 0
++ opentui.h: const OT_SCENE_SCROLL_BAR_NEVER = 2
++ opentui.h: const OT_SCENE_SCROLL_BAR_OVERLAY = 1
++ opentui.h: const OT_SCENE_SCROLL_CHANGED_CONTENT = 4
++ opentui.h: const OT_SCENE_SCROLL_CHANGED_LAYOUT = 16
++ opentui.h: const OT_SCENE_SCROLL_CHANGED_OFFSET_X = 1
++ opentui.h: const OT_SCENE_SCROLL_CHANGED_OFFSET_Y = 2
++ opentui.h: const OT_SCENE_SCROLL_CHANGED_VIEWPORT = 8
++ opentui.h: const OT_SCENE_SCROLL_FILL_CONTENT = 4
++ opentui.h: const OT_SCENE_SCROLL_FILL_VIEWPORT = 2
++ opentui.h: const OT_SCENE_SCROLL_FILL_WRAPPER = 1
++ opentui.h: const OT_SCENE_SCROLL_FOLLOW_BOTTOM = 2
++ opentui.h: const OT_SCENE_SCROLL_FOLLOW_LEFT = 3
++ opentui.h: const OT_SCENE_SCROLL_FOLLOW_NONE = 0
++ opentui.h: const OT_SCENE_SCROLL_FOLLOW_RIGHT = 4
++ opentui.h: const OT_SCENE_SCROLL_FOLLOW_TOP = 1
++ opentui.h: const OT_SCENE_SCROLL_REAPPLY = 4
++ opentui.h: const OT_SCENE_SCROLL_RELATIVE_X = 1
++ opentui.h: const OT_SCENE_SCROLL_RELATIVE_Y = 2
++ opentui.h: const OT_SCENE_SCROLL_REQUEST_ANCHOR = 1
++ opentui.h: const OT_SCENE_SCROLL_REQUEST_INTO_VIEW = 0
++ opentui.h: const OT_SCENE_SCROLL_REQUEST_LAYOUT = 2
++ opentui.h: const OT_SCENE_SCROLL_X = 1
++ opentui.h: const OT_SCENE_SCROLL_Y = 2
++ opentui.h: const OT_STYLE_CONTENT = 2
++ opentui.h: const OT_TERMINAL_HOST_MULTIPLEXER = 128
++ opentui.h: const OT_TERMINAL_REPLY_SENTINEL = 16
++ opentui.h: const OT_TERMINAL_SYNC_ALWAYS = 32
++ opentui.h: const OT_TERMINAL_SYNC_NEVER = 64
++ opentui.h: field ot_scene_scroll_bar_options.arrows: uint32_t, offset 16
++ opentui.h: field ot_scene_scroll_bar_options.gap: uint32_t, offset 12
++ opentui.h: field ot_scene_scroll_bar_options.placement: uint32_t, offset 4
++ opentui.h: field ot_scene_scroll_bar_options.policy: uint32_t, offset 0
++ opentui.h: field ot_scene_scroll_bar_options.reserved: uint32_t, offset 20
++ opentui.h: field ot_scene_scroll_bar_options.thickness: uint32_t, offset 8
++ opentui.h: field ot_scene_scroll_bar_options.track_background: uint16_t[4], offset 32
++ opentui.h: field ot_scene_scroll_bar_options.track_foreground: uint16_t[4], offset 24
++ opentui.h: field ot_scene_scroll_bar_state.end_arrow: double[4], offset 72
++ opentui.h: field ot_scene_scroll_bar_state.reserved: uint32_t, offset 4
++ opentui.h: field ot_scene_scroll_bar_state.start_arrow: double[4], offset 40
++ opentui.h: field ot_scene_scroll_bar_state.thumb_size: double, offset 112
++ opentui.h: field ot_scene_scroll_bar_state.thumb_start: double, offset 104
++ opentui.h: field ot_scene_scroll_bar_state.track: double[4], offset 8
++ opentui.h: field ot_scene_scroll_bar_state.visible: uint32_t, offset 0
++ opentui.h: field ot_scene_scroll_options.abi_version: uint32_t, offset 4
++ opentui.h: field ot_scene_scroll_options.axes: uint32_t, offset 8
++ opentui.h: field ot_scene_scroll_options.bars: ot_scene_scroll_bar_options[2], offset 64
++ opentui.h: field ot_scene_scroll_options.content_background: uint16_t[4], offset 56
++ opentui.h: field ot_scene_scroll_options.culling: uint32_t, offset 16
++ opentui.h: field ot_scene_scroll_options.fills: uint32_t, offset 20
++ opentui.h: field ot_scene_scroll_options.follow: uint32_t, offset 12
++ opentui.h: field ot_scene_scroll_options.padding: float[4], offset 24
++ opentui.h: field ot_scene_scroll_options.struct_size: uint32_t, offset 0
++ opentui.h: field ot_scene_scroll_options.viewport_background: uint16_t[4], offset 48
++ opentui.h: field ot_scene_scroll_options.wrapper_background: uint16_t[4], offset 40
++ opentui.h: field ot_scene_scroll_state.abi_version: uint32_t, offset 4
++ opentui.h: field ot_scene_scroll_state.bars: ot_scene_scroll_bar_state[2], offset 120
++ opentui.h: field ot_scene_scroll_state.changes: uint32_t, offset 12
++ opentui.h: field ot_scene_scroll_state.content: double[4], offset 56
++ opentui.h: field ot_scene_scroll_state.generation: uint64_t, offset 16
++ opentui.h: field ot_scene_scroll_state.max: double[2], offset 40
++ opentui.h: field ot_scene_scroll_state.offset: double[2], offset 24
++ opentui.h: field ot_scene_scroll_state.struct_size: uint32_t, offset 0
++ opentui.h: field ot_scene_scroll_state.stuck: uint32_t, offset 8
++ opentui.h: field ot_scene_scroll_state.viewport: double[4], offset 88
++ opentui.h: field ot_scene_stats.damage_rows: uint32_t, offset 220
+- opentui.h: field ot_scene_stats.reserved: uint32_t, offset 220
++ opentui.h: function ot_buffer_draw_scene_body(ot_context *, const ot_handle *target, const ot_scene_frame_request *, const ot_handle *node, int32_t x, int32_t y): ot_status
+- opentui.h: function ot_buffer_draw_scene_text(ot_context *, const ot_handle *target, const ot_scene_frame_request *, const ot_handle *node, int32_t x, int32_t y): ot_status
++ opentui.h: function ot_scene_get_scroll(ot_context *, const ot_handle *node, ot_scene_scroll_state *out_state): ot_status
++ opentui.h: function ot_scene_scroll_request(ot_context *, const ot_handle *node, uint32_t kind, const ot_handle *target, uint32_t align, uint32_t inset, ot_scene_scroll_state *out_state): ot_status
++ opentui.h: function ot_scene_scroll_to(ot_context *, const ot_handle *node, double x, double y, uint32_t flags, ot_scene_scroll_state *out_state): ot_status
++ opentui.h: function ot_scene_set_scroll(ot_context *, const ot_handle *node, const ot_scene_scroll_options *): ot_status
++ opentui.h: function ot_scene_set_scroll_arrow(ot_context *, const ot_handle *node, uint32_t axis, uint32_t end, const ot_scene_arrow_options *, const uint8_t *text, uint32_t byte_count): ot_status
++ opentui.h: struct ot_scene_scroll_bar_options
++ opentui.h: struct ot_scene_scroll_bar_state
++ opentui.h: struct ot_scene_scroll_options
++ opentui.h: struct ot_scene_scroll_state

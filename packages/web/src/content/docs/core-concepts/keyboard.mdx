@@ -1,185 +1,162 @@
 ---
 title: Keyboard input
-description: Handling keyboard events in OpenTUI
-order: 3
+description: Choose direct key events, component key bindings, or Keymap commands
+skill:
+  entry: true
+  intents: [keyboard, input, keybindings, paste, focus]
 ---
 
 # Keyboard input
 
-OpenTUI parses terminal input and provides structured key events. The `renderer.keyInput` EventEmitter emits `keypress` events plus raw `paste` events with optional metadata.
+Use direct renderer `KeyEvent` listeners for simple app-wide input. Use component key bindings for local behavior. Use [`@opentui/keymap`](/docs/keymap/overview) for layers, commands, discovery, and key sequences.
 
-## Basic key handling
+These levels can coexist, but they have different ownership and cleanup rules.
+
+## Handle app-wide keys
+
+`renderer.keyInput` emits parsed `keypress`, `keyrelease`, and `paste` events.
 
 ```typescript
-import { createCliRenderer, type KeyEvent } from "@opentui/core"
+import { type KeyEvent, createCliRenderer } from "@opentui/core"
 
 const renderer = await createCliRenderer()
-const keyHandler = renderer.keyInput
 
-keyHandler.on("keypress", (key: KeyEvent) => {
-  console.log("Key name:", key.name)
-  console.log("Sequence:", key.sequence)
-  console.log("Ctrl pressed:", key.ctrl)
-  console.log("Shift pressed:", key.shift)
-  console.log("Alt pressed:", key.meta)
-  console.log("Option pressed:", key.option)
-})
-```
-
-## KeyEvent properties
-
-Each `KeyEvent` contains:
-
-| Property   | Type      | Description                              |
-| ---------- | --------- | ---------------------------------------- |
-| `name`     | `string`  | The key name (e.g., "a", "escape", "f1") |
-| `sequence` | `string`  | The raw escape sequence                  |
-| `ctrl`     | `boolean` | Whether Ctrl was held                    |
-| `shift`    | `boolean` | Whether Shift was held                   |
-| `meta`     | `boolean` | Whether Alt/Meta was held                |
-| `option`   | `boolean` | Whether Option was held (macOS)          |
-
-## Common key patterns
-
-### Single keys
-
-```typescript
-keyHandler.on("keypress", (key: KeyEvent) => {
+const onKeyPress = (key: KeyEvent) => {
   if (key.name === "escape") {
-    console.log("Escape pressed!")
+    renderer.destroy()
   }
+}
 
-  if (key.name === "return") {
-    console.log("Enter pressed!")
-  }
+renderer.keyInput.on("keypress", onKeyPress)
 
-  if (key.name === "space") {
-    console.log("Space pressed!")
-  }
+renderer.once("destroy", () => {
+  renderer.keyInput.off("keypress", onKeyPress)
 })
 ```
 
-### Modifier combinations
+Direct listeners run before the focused renderable. They are suitable for a global exit key, a small shortcut set, or input diagnostics.
+
+Use `prependListener()` when listener order matters. Remove listeners when their owner stops, as described in [Lifecycle and cleanup](/docs/core-concepts/lifecycle).
+
+## Read `KeyEvent`
+
+| Property                          | Type                               | Meaning                                                                      |
+| --------------------------------- | ---------------------------------- | ---------------------------------------------------------------------------- |
+| `name`                            | `string`                           | Canonical key identity, such as `"a"`, `"space"`, `"return"`, or `"escape"`. |
+| `sequence`                        | `string`                           | Decoded text or sequence associated with the key.                            |
+| `raw`                             | `string`                           | The original terminal sequence decoded as a string.                          |
+| `source`                          | `"raw" \| "kitty"`                 | The parser path.                                                             |
+| `ctrl`, `shift`, `meta`, `option` | `boolean`                          | Reported common modifiers. `meta` includes the Alt path.                     |
+| `super`, `hyper`                  | `boolean \| undefined`             | Extended modifiers when the terminal reports them.                           |
+| `eventType`                       | `"press" \| "repeat" \| "release"` | Parsed event type. Kitty repeats use `"press"` with `repeated: true`.        |
+| `repeated`                        | `boolean \| undefined`             | Whether Kitty reported a repeat.                                             |
+| `number`                          | `boolean`                          | Whether legacy parsing identified a digit.                                   |
+| `code`                            | `string \| undefined`              | A recognized terminal key code.                                              |
+| `capsLock`, `numLock`             | `boolean \| undefined`             | Kitty lock state when reported.                                              |
+| `baseCode`                        | `number \| undefined`              | Kitty base-layout code point: the US QWERTY key at the same position.        |
+
+`sequence` is not always equal to `raw`. For example, a Kitty control sequence can produce `name: "space"` and `sequence: " "`.
+
+Compare direct events with canonical names such as `"return"`, `"escape"`, and `"space"`. Component alias maps do not rewrite direct `KeyEvent.name` values.
+
+Core's key bindings (`exitOnCtrlC` and component key bindings) fall back to `baseCode` when the typed key is one non-ASCII character, or when the base-layout key is a digit.
+The fallback is for layouts whose keys cannot type the binding's character: Korean Ctrl+ㅊ matches Ctrl+C, and AZERTY Ctrl+& matches Ctrl+1.
+Any other ASCII key matches as typed, so Dvorak Ctrl+J stays Ctrl+J.
+Some punctuation on non-Latin layouts therefore does not fall back, for example Hebrew `'` on the W key, Greek `;` on the Q key, or Russian `.` on the `/` key.
+
+## Control propagation
+
+Global listeners run in registration order before the focused renderable's handler.
+
+`key.stopPropagation()` stops later global listeners and prevents delivery to the focused renderable. It does not set `defaultPrevented`.
+
+`key.preventDefault()` lets later global listeners run, but it prevents focused renderable handlers from receiving the event.
+
+A focused renderable's `onKeyDown` runs before its built-in `handleKeyPress()`. Calling `preventDefault()` there skips the built-in action.
+
+Component `handleKeyPress()` return values describe local handling, but they do not change the event's propagation flags.
+
+See [Interaction, focus, and selection](/docs/core-concepts/interaction) for focus ownership and the lack of automatic Tab traversal.
+
+## Configure component key bindings
+
+Input, Textarea, Select, and TabSelect expose `keyBindings` for local actions. These four components also accept `keyAliasMap`.
 
 ```typescript
-keyHandler.on("keypress", (key: KeyEvent) => {
-  // Ctrl+C
-  if (key.ctrl && key.name === "c") {
-    console.log("Ctrl+C pressed!")
-  }
+import { TextareaRenderable, createCliRenderer } from "@opentui/core"
 
-  // Ctrl+S
-  if (key.ctrl && key.name === "s") {
-    console.log("Save shortcut!")
-  }
-
-  // Shift+F1
-  if (key.shift && key.name === "f1") {
-    console.log("Shift+F1 pressed!")
-  }
-
-  // Alt+Enter
-  if (key.meta && key.name === "return") {
-    console.log("Alt+Enter pressed!")
-  }
+const renderer = await createCliRenderer()
+const editor = new TextareaRenderable(renderer, {
+  width: 40,
+  height: 8,
+  keyBindings: [{ name: "s", ctrl: true, action: "submit" }],
+  onSubmit() {
+    console.log("Submit", editor.plainText)
+  },
 })
+
+renderer.root.add(editor)
+editor.focus()
 ```
 
-### Function keys
+A key binding contains `name`, optional `ctrl`, `shift`, `meta`, and `super`, plus a component-specific `action`.
 
-```typescript
-keyHandler.on("keypress", (key: KeyEvent) => {
-  // F1-F12
-  if (key.name === "f1") {
-    showHelp()
-  }
+Custom bindings replace default bindings with the same key and modifiers. Other default bindings remain active.
 
-  if (key.name === "f5") {
-    refresh()
-  }
-})
-```
+Core aliases configured binding names such as `enter` to `return` and `esc` to `escape`. It also maps keypad names to their main-keyboard equivalents.
 
-### Arrow keys
+Read [Input](/docs/components/input) and [Textarea](/docs/components/textarea) for their action sets. Other components document their own actions.
 
-```typescript
-keyHandler.on("keypress", (key: KeyEvent) => {
-  switch (key.name) {
-    case "up":
-      moveCursorUp()
-      break
-    case "down":
-      moveCursorDown()
-      break
-    case "left":
-      moveCursorLeft()
-      break
-    case "right":
-      moveCursorRight()
-      break
-  }
-})
-```
+## Use Keymap for commands
+
+Direct listeners become difficult to manage when shortcuts depend on focus, mode, priority, or a sequence prefix.
+
+`@opentui/keymap` adds scoped layers, named commands, multi-stroke sequences, active-key queries, and command metadata. Its OpenTUI host reads the renderer's focused renderable.
+
+Keymap can consume a matched event before the focused component receives it. Read the [Keymap guide](/docs/keymap/overview) for dispatch and disposal.
 
 ## Paste events
 
-Handle pasted bytes separately from individual keypresses. Decode them explicitly when you expect text:
+Paste is terminal input. It is not a read from the host clipboard.
 
 ```typescript
-import { type PasteEvent } from "@opentui/core"
+import { type PasteEvent, createCliRenderer } from "@opentui/core"
 
-const textDecoder = new TextDecoder()
+const renderer = await createCliRenderer()
+const decoder = new TextDecoder()
 
-keyHandler.on("paste", (event: PasteEvent) => {
-  console.log("Pasted bytes:", event.bytes)
-  console.log("Decoded text:", textDecoder.decode(event.bytes))
-  console.log("Metadata:", event.metadata)
-})
+const onPaste = (event: PasteEvent) => {
+  console.log(decoder.decode(event.bytes))
+  console.log(event.metadata?.mimeType, event.metadata?.kind)
+}
+
+renderer.keyInput.on("paste", onPaste)
 ```
 
-## Exit on Ctrl+C
+`PasteEvent.bytes` preserves the terminal payload. Optional metadata contains `mimeType` and `kind`, where kind is `"text"`, `"binary"`, or `"unknown"`.
 
-Configure the renderer to automatically exit on Ctrl+C:
+`PasteEvent` supports the same `preventDefault()` and `stopPropagation()` flow as `KeyEvent`. Focused Input and Textarea components decode, sanitize, and insert paste bytes.
 
-```typescript
-const renderer = await createCliRenderer({
-  exitOnCtrlC: true, // Default behavior
-})
+Use [Clipboard](/docs/core-concepts/clipboard) when the application must read or write host clipboard data.
 
-// Or handle it manually
-const renderer = await createCliRenderer({
-  exitOnCtrlC: false,
-})
+## Handle raw sequences
 
-renderer.keyInput.on("keypress", (key: KeyEvent) => {
-  if (key.ctrl && key.name === "c") {
-    // Custom cleanup before exit
-    cleanup()
-    process.exit(0)
-  }
-})
-```
+`addInputHandler(handler)` and `prependInputHandler(handler)` receive a parsed input event's raw terminal sequence before `KeyEvent` delivery.
 
-## Focus and key routing
+Return `true` to consume that sequence. Return `false` to continue through remaining handlers and, for keys, `KeyEvent` delivery.
 
-Focus components to receive keyboard input. OpenTUI routes events to the focused component:
+The renderer consumes terminal replies to its own queries, such as capability and theme color replies, before handlers added with `addInputHandler` run. Use `prependInputHandler` to observe them.
 
-```typescript
-import { InputRenderable } from "@opentui/core"
+Raw terminal encodings vary. Prefer `KeyEvent` unless you must integrate an unsupported terminal protocol.
 
-const input = new InputRenderable(renderer, {
-  id: "my-input",
-  placeholder: "Type here...",
-})
+The Kitty keyboard protocol improves modifier and release reporting when supported. Read [Terminal capabilities](/docs/reference/terminal-capabilities) before depending on those fields.
 
-// Focus the input to receive key events
-input.focus()
+## Test keyboard input
 
-// Or with constructs
-import { Input } from "@opentui/core"
+`createTestRenderer()` returns `mockInput`. It can press keys, type text, send modifiers, and emit bracketed paste.
 
-const inputNode = Input({ placeholder: "Type here..." })
-inputNode.focus() // Queued for when instantiated
+Use Kitty test mode when you need release, repeat, `super`, `hyper`, or `baseCode` behavior. See [Testing](/docs/core-concepts/testing) for the exact helpers.
 
-renderer.root.add(inputNode)
-```
+## Next
+
+Read [Keymap](/docs/keymap/overview) when local listeners no longer describe your command model. Read [Interaction, focus, and selection](/docs/core-concepts/interaction) when a component does not receive input.

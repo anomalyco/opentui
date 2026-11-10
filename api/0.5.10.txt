@@ -1,0 +1,42 @@
+base 0.5.9
++ @opentui/core: class NativeImagePool
++ @opentui/core: constructor NativeImagePool(options: NativeImagePoolOptions)
++ @opentui/core: interface KittyImageTransportStatus
++ @opentui/core: interface NativeImagePoolOptions
++ @opentui/core: interface PixelImportOptions
++ @opentui/core: method CliRenderer.cancelKittyImageTransport(): void
++ @opentui/core: static method NativeImage.fromPixels(pixels: Uint8Array, width: number, height: number, options?: PixelImportOptions): NativeImage
++ @opentui/core: method NativeImagePool.dispose(): void
++ @opentui/core: method NativeImagePool.publishPixels(pixels: Uint8Array, options?: PixelImportOptions): NativeImage | null
++ @opentui/core: method NativeImagePool.publishRgba(pixels: Uint8Array, stride?: number): NativeImage | null
++ @opentui/core: property CliRenderer.kittyImageTransport: KittyImageTransport
++ @opentui/core: readonly property CliRenderer.kittyImageTransportStatus: KittyImageTransportStatus
++ @opentui/core: property CliRendererConfig.kittyImageTransport?: KittyImageTransport
++ @opentui/core: property KittyImageTransportStatus.effective: "raw" | "zlib" | "png" | "file"
++ @opentui/core: property KittyImageTransportStatus.fallback: "none" | "not-ready" | "unavailable" | "budget" | "busy" | "preparation" | "compression"
++ @opentui/core: property KittyImageTransportStatus.fileState: "disabled" | "probing" | "ready" | "unsupported" | "timeout" | "io-error" | "cancelled"
++ @opentui/core: property KittyImageTransportStatus.pendingBytes: number
++ @opentui/core: property KittyImageTransportStatus.pendingFiles: number
++ @opentui/core: property KittyImageTransportStatus.requested: KittyImageTransport
++ @opentui/core: readonly property NativeImagePool.capacity: number
++ @opentui/core: readonly property NativeImagePool.height: number
++ @opentui/core: readonly property NativeImagePool.width: number
++ @opentui/core: property NativeImagePoolOptions.capacity?: number
++ @opentui/core: property NativeImagePoolOptions.height: number
++ @opentui/core: property NativeImagePoolOptions.width: number
++ @opentui/core: property PixelImportOptions.alpha?: "straight" | "opaque"
++ @opentui/core: property PixelImportOptions.colorSpace?: "srgb"
++ @opentui/core: property PixelImportOptions.format?: PixelFormat
++ @opentui/core: property PixelImportOptions.stride?: number
++ @opentui/core: property RenderLib.cancelKittyImageTransport: (renderer: RendererHandle, failed: boolean) => void
+- @opentui/core: property RenderLib.commitSplitFooterSnapshot: (renderer: RendererHandle, snapshot: OptimizedBuffer, rowColumns: number, startOnNewLine: boolean, trailingNewline: boolean, pinnedRenderOffset: number, force: boolean, beginFrame?: boolean, finalizeFrame?: boolean) => NativeRenderOperationResult
++ @opentui/core: property RenderLib.commitSplitFooterSnapshot: (renderer: RendererHandle, snapshot: OptimizedBuffer, rowColumns: number, startOnNewLine: boolean, trailingNewline: boolean, pinnedRenderOffset: number, force: boolean, beginFrame?: boolean, finalizeFrame?: boolean, controlOutput?: boolean) => NativeRenderOperationResult
++ @opentui/core: property RenderLib.getKittyImageTransport: (renderer: RendererHandle) => Uint32Array
++ @opentui/core: property RenderLib.imageCreateFromPixels: (pixels: Uint8Array, width: number, height: number, stride: number, format: number, alpha: number) => { status: number; handle: ImageHandle | null; }
++ @opentui/core: property RenderLib.imageUpdatePixels: (image: ImageHandle, pixels: Uint8Array, stride: number, format: number, alpha: number) => number
++ @opentui/core: property RenderLib.pollKittyImageTransport: (renderer: RendererHandle) => boolean
++ @opentui/core: property RenderLib.processKittyImageReply: (renderer: RendererHandle, response: string) => number
++ @opentui/core: property RenderLib.setKittyImageTransport: (renderer: RendererHandle, mode: number) => boolean
+- @opentui/core: type ImageErrorCode = "invalid-handle" | "unsupported-format" | "unsupported-color-space" | "malformed-data" | "dimension-limit" | "memory-limit" | "invalid-argument" | "out-of-memory" | "output-too-small" | "internal-error" | "unsupported-feature"
++ @opentui/core: type ImageErrorCode = "invalid-handle" | "unsupported-format" | "unsupported-color-space" | "malformed-data" | "dimension-limit" | "memory-limit" | "invalid-argument" | "out-of-memory" | "output-too-small" | "internal-error" | "unsupported-feature" | "busy"
++ @opentui/core: type KittyImageTransport = "raw" | "zlib" | "file"

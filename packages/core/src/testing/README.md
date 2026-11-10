@@ -20,6 +20,15 @@ const output = captureCharFrame()
 resize(100, 30)
 ```
 
+## Terminal Capabilities
+
+```ts
+import { createTerminalCapabilities, setRendererCapabilities } from "@opentui/core/testing"
+
+const capabilities = createTerminalCapabilities({ kitty_keyboard: true })
+setRendererCapabilities(renderer, { notifications: true })
+```
+
 ## Mock Keyboard Input
 
 ```ts
