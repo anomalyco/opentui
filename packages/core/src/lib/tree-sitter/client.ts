@@ -420,10 +420,10 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
           return
         }
 
-        // A stale reply needs a reset unless one at its version or later was sent: replies come in order, so that
-        // reset or the edits after it still reply.
+        // A stale reply resets unless a later reset was sent: replies come in order, so that reset's reply is still to
+        // come. An edit's reply covers only its changed range, so a reply at the last reset's version resets too.
         if (buffer.version !== message.version) {
-          if ((this.resetVersions.get(message.bufferId) ?? -Infinity) < message.version) {
+          if ((this.resetVersions.get(message.bufferId) ?? -Infinity) <= message.version) {
             this.resetBuffer(message.bufferId, buffer.version, buffer.content)
           }
           return

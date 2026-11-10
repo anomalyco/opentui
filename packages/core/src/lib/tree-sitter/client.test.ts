@@ -351,6 +351,20 @@ describeClient("TreeSitterClient", () => {
       },
     ],
     [
+      "updateBuffer with no highlights right after resetBuffer",
+      async (c, highlighted) => {
+        // The edit's reply is empty, so only a reset at version 3 shows the number that version 2 added.
+        await writeFile(join(dataPath, "number.scm"), "(number) @number\n")
+        const wasm = new URL("./assets/javascript/tree-sitter-javascript.wasm", import.meta.url).pathname
+        c.addFiletypeParser({ filetype: "number", wasm, queries: { highlights: [join(dataPath, "number.scm")] } })
+        const text = `let a = 1 + 2;\n${"x;\n".repeat(600)}`
+        await c.createBuffer(1, text.replace(" + 2", ""), "number", 1)
+        await c.resetBuffer(1, 2, text)
+        await c.updateBuffer(1, append(text, `${text}y;\n`), `${text}y;\n`, 3)
+        await highlighted(3)
+      },
+    ],
+    [
       "updateBuffer streaming list items",
       async (c, highlighted) => {
         await c.createBuffer(1, streamed(1), "markdown", 1)
