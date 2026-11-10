@@ -76,6 +76,7 @@ The same layout properties work across the built-in renderable classes.
 | Flex size     | `flexBasis`                                                                                     | number or `"auto"`                                          | `"auto"`                                            |
 | Flow          | `flexDirection`                                                                                 | `"column"`, `"column-reverse"`, `"row"`, or `"row-reverse"` | `"column"`                                          |
 | Flow          | `flexWrap`                                                                                      | `"no-wrap"`, `"wrap"`, or `"wrap-reverse"`                  | `"no-wrap"`                                         |
+| Flow          | `layoutMode`                                                                                    | `"flex"` or `"list"`, see [List layout](#list-layout)       | `"flex"`                                            |
 | Alignment     | `alignItems`                                                                                    | Yoga align value                                            | `"stretch"`                                         |
 | Alignment     | `alignSelf`                                                                                     | Yoga align value                                            | `"auto"`                                            |
 | Alignment     | `justifyContent`                                                                                | start, end, center, or space distribution                   | `"flex-start"`                                      |
@@ -164,6 +165,22 @@ Absolute children do not consume space in normal flex flow. Their edges position
 Absolute text also uses its intrinsic measure without the relative child's at-most clamp. Set a width when you need predictable wrapping.
 
 Use absolute positioning for overlays and fixed geometry. Use flex flow for ordinary page structure.
+
+## List layout
+
+`layoutMode: "list"` lays out a long column of rows, such as a log or a transcript, without a flex pass over every row. When one row changes, or a row is appended at the end, the other rows are not laid out again. Set it on [ScrollBox](/docs/components/scrollbox) content with `contentOptions: { layoutMode: "list" }`.
+
+Apart from the rules below, a list lays out like a flex column with `overflow: "scroll"`. So the list's height does not cap its rows, and a percent height inside an auto-height row resolves against no height.
+
+| Property                                                                          | In a list                                                       |
+| --------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| The list's `flexDirection` and `flexWrap`                                         | Rows always stack top to bottom in one column                   |
+| The list's `justifyContent`, rows' `marginTop: "auto"` and `marginBottom: "auto"` | Rows start at the top; auto top and bottom margins count as `0` |
+| Rows' `flexGrow`, `flexShrink`, and `flexBasis`                                   | Ignored: each row keeps its own height                          |
+| Percent `height`, `minHeight`, `maxHeight`, `top`, and `bottom` of rows           | Resolve against no height                                       |
+| A percent `gap`                                                                   | `0` unless the list has a definite height                       |
+
+Widths, `alignItems`, `alignSelf`, margins, padding, borders, point gaps, `aspectRatio`, relative insets, and `display: "none"` work as in a column. Absolute children are placed as in flex layout, and they still follow the list's `flexDirection`, `justifyContent`, and `alignItems`. `layoutMode` has no effect on a renderable that measures its own content, such as text.
 
 ## Cell rounding
 

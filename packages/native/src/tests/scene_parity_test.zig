@@ -725,9 +725,10 @@ const Harness = struct {
                     .bars = bars,
                 } } };
             },
-            else => return .{ .style = switch (random.uintLessThan(u32, 3)) {
+            else => return .{ .style = switch (random.uintLessThan(u32, 4)) {
                 0 => .{ .slot = slot, .group = c.OT_STYLE_ENUM, .kind = c.OT_STYLE_ENUM_FLEX_DIRECTION, .unit = 0, .value = @floatFromInt(random.uintLessThan(u32, 4)), .flags = c.OT_STYLE_CONTENT },
                 1 => .{ .slot = slot, .group = c.OT_STYLE_ENUM, .kind = c.OT_STYLE_ENUM_JUSTIFY_CONTENT, .unit = 0, .value = @floatFromInt(random.uintLessThan(u32, 3)), .flags = c.OT_STYLE_CONTENT },
+                2 => .{ .slot = slot, .group = c.OT_STYLE_ENUM, .kind = c.OT_STYLE_ENUM_LAYOUT_MODE, .unit = 0, .value = @floatFromInt(random.uintLessThan(u32, 2)), .flags = c.OT_STYLE_CONTENT },
                 else => .{ .slot = slot, .group = c.OT_STYLE_VALUE, .kind = c.OT_STYLE_VALUE_MIN_HEIGHT, .unit = c.OT_UNIT_POINT, .value = 0, .flags = c.OT_STYLE_CONTENT },
             } },
         }
@@ -819,7 +820,7 @@ const Harness = struct {
             else if ((self.model.kind[slot] == .box or self.model.kind[slot] == .scroll) and random.boolean())
                 .{ .box = .{ .slot = slot, .seed = random.int(u32) } }
             else
-                .{ .style = .{ .slot = slot, .group = c.OT_STYLE_ENUM, .kind = c.OT_STYLE_ENUM_OVERFLOW, .unit = 0, .value = @floatFromInt(random.uintLessThan(u32, 2)), .flags = 0 } },
+                .{ .style = .{ .slot = slot, .group = c.OT_STYLE_ENUM, .kind = if (random.boolean()) c.OT_STYLE_ENUM_OVERFLOW else c.OT_STYLE_ENUM_LAYOUT_MODE, .unit = 0, .value = @floatFromInt(random.uintLessThan(u32, 2)), .flags = 0 } },
             else => if (random.uintLessThan(u32, 3) == 0)
                 .{ .style = .{ .slot = slot, .group = c.OT_STYLE_ENUM, .kind = c.OT_STYLE_ENUM_POSITION_TYPE, .unit = 0, .value = @floatFromInt(1 + random.uintLessThan(u32, 2)), .flags = 0 } }
             else

@@ -208,7 +208,7 @@ describe("remote detection", () => {
     expect([xterm.unicode, konsole.unicode]).toEqual(["wcwidth", "unicode"])
   })
 
-  test("process stdout with memory output preserves auto remote detection", async () => {
+  test("process stdout with memory output preserves auto remote detection and forwards the truecolor override", async () => {
     const caps = await getCapabilitiesFromChild(
       {},
       {
@@ -216,15 +216,16 @@ describe("remote detection", () => {
         HOME: process.env.HOME ?? "",
         TMPDIR: process.env.TMPDIR ?? "/tmp",
         SSH_CONNECTION: "192.0.2.1 54231 192.0.2.2 22",
-        TERM: "xterm-256color",
+        TERM: "screen-256color",
         TERM_PROGRAM: "ghostty",
         TERM_PROGRAM_VERSION: "1.3.1",
+        OPENTUI_FORCE_TRUECOLOR: "1",
       },
       "direct-process-memory",
     )
 
     expect(caps.remote).toBe(true)
-    expect([caps.ansi256, caps.rgb]).toEqual([true, false])
+    expect([caps.ansi256, caps.rgb]).toEqual([true, true])
     expect(caps.notifications).toBe(false)
     expect(caps.terminal.name).toBe("")
   })
@@ -266,8 +267,7 @@ describe("remote detection", () => {
     )
 
     expect(caps.remote).toBe(true)
-    // createCliRenderer runs terminal setup; Windows ConPTY setup enables color
-    // capabilities even when remote mode suppresses env-derived terminal data.
+    expect([caps.ansi256, caps.rgb]).toEqual([false, false])
     expect(caps.notifications).toBe(false)
     expect(caps.terminal.name).toBe("")
   })

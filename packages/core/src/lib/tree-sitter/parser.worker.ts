@@ -598,6 +598,7 @@ class ParserWorker {
     }
 
     const changedRanges = parserState.tree.getChangedRanges(newTree)
+    parserState.tree.delete()
     parserState.tree = newTree
 
     const startQuery = performance.now()
@@ -811,6 +812,7 @@ class ParserWorker {
       return { error: "Failed to parse buffer during reset" }
     }
 
+    parserState.tree.delete()
     parserState.tree = newTree
     const matches = parserState.queries.highlights.captures(parserState.tree.rootNode)
 
@@ -958,7 +960,7 @@ if (isWorkerRuntime) {
   console.error = (...args) => logMessage("error", ...args)
   console.warn = (...args) => logMessage("warn", ...args)
 
-  setWorkerMessageHandler<TreeSitterWorkerRequest>(async (event: WorkerMessageEvent<TreeSitterWorkerRequest>) => {
+  const handleMessage = async (event: WorkerMessageEvent<TreeSitterWorkerRequest>) => {
     const message = event.data
     const messageType = String((event.data as { type?: unknown }).type ?? "unknown")
 
@@ -1116,5 +1118,16 @@ if (isWorkerRuntime) {
         postWorkerError(undefined, messageId, error)
       }
     }
+  }
+
+  // A buffer's messages run one at a time: a pass that awaits an injected grammar still reads the buffer's tree, so a
+  // later edit, reset or dispose must not delete it first. Other buffers and one-shot highlights do not wait.
+  const bufferQueues = new Map<number, Promise<void>>()
+  setWorkerMessageHandler<TreeSitterWorkerRequest>((event) => {
+    if (!("bufferId" in event.data)) return handleMessage(event)
+    const { bufferId } = event.data
+    const queued = (bufferQueues.get(bufferId) ?? Promise.resolve()).then(() => handleMessage(event))
+    bufferQueues.set(bufferId, queued)
+    void queued.then(() => bufferQueues.get(bufferId) === queued && bufferQueues.delete(bufferId))
   })
 }

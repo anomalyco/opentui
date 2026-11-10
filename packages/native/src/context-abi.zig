@@ -1322,7 +1322,7 @@ pub fn ot_session_control(
     const argument_max: u32 = switch (options.kind) {
         c.OT_CONTROL_MOUSE => @backingInt(@import("session.zig").MouseMode.motion),
         c.OT_CONTROL_KITTY_KEYBOARD_FLAGS => 31,
-        c.OT_CONTROL_QUERY_PIXEL_RESOLUTION => 1,
+        c.OT_CONTROL_QUERY_PIXEL_RESOLUTION, c.OT_CONTROL_QUERY_THEME_COLORS, c.OT_CONTROL_PALETTE_QUERY => 1,
         else => 0,
     };
     if ((!payload and byte_count != 0) or options.argument > argument_max) return sessionError(owner, error.InvalidOptions);
@@ -1334,9 +1334,10 @@ pub fn ot_session_control(
         c.OT_CONTROL_KITTY_KEYBOARD_FLAGS => .{ .kitty_keyboard_flags = @intCast(options.argument) },
         c.OT_CONTROL_RESTORE_MODES => .restore_modes,
         c.OT_CONTROL_QUERY_PIXEL_RESOLUTION => .{ .query_pixel_resolution = options.argument != 0 },
-        c.OT_CONTROL_QUERY_THEME_COLORS => .query_theme_colors,
+        c.OT_CONTROL_QUERY_THEME_COLORS => .{ .query_theme_colors = options.argument != 0 },
         c.OT_CONTROL_RESET_BACKGROUND => .reset_background,
-        c.OT_CONTROL_PALETTE_QUERY => .{ .palette_query = bytes },
+        c.OT_CONTROL_END_REPLY_SENTINEL => .end_reply_sentinel,
+        c.OT_CONTROL_PALETTE_QUERY => .{ .palette_query = .{ .bytes = bytes, .sentinel = options.argument != 0 } },
         c.OT_CONTROL_CURSOR => blk: {
             if (bytes.len != @sizeOf(c.ot_session_cursor_update)) return sessionError(owner, error.InvalidOptions);
             var update: c.ot_session_cursor_update = undefined;
@@ -3388,7 +3389,11 @@ test "Context ABI Session control decodes kinds arguments and cursor records bef
         .{ .kind = c.OT_CONTROL_TITLE, .bytes = "t", .reserved = 1 },
         .{ .kind = c.OT_CONTROL_TITLE, .null_bytes = true },
         .{ .kind = 0 },
-        .{ .kind = c.OT_CONTROL_PROGRAM_STATUS + 1 },
+        .{ .kind = c.OT_CONTROL_END_REPLY_SENTINEL + 1 },
+        // The sentinel end, like the cursor, applies in any open phase and takes no argument.
+        .{ .kind = c.OT_CONTROL_END_REPLY_SENTINEL, .argument = 1 },
+        .{ .kind = c.OT_CONTROL_END_REPLY_SENTINEL, .bytes = "x" },
+        .{ .kind = c.OT_CONTROL_END_REPLY_SENTINEL, .status = c.OT_OK },
         .{ .kind = c.OT_CONTROL_RESTORE_MODES, .bytes = "x" },
         // Program status records have known enums and fields, zero unselected progress, and exact text lengths.
         .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{}, "")[1..] },
@@ -3431,8 +3436,8 @@ test "Context ABI Session control decodes kinds arguments and cursor records bef
             .{ c.OT_CONTROL_CAPABILITY_RESPONSE, 0, "\x1b[?0u" }, .{ c.OT_CONTROL_TITLE, 0, "t" },
             .{ c.OT_CONTROL_MOUSE, 2, "" },                       .{ c.OT_CONTROL_KITTY_KEYBOARD_FLAGS, 31, "" },
             .{ c.OT_CONTROL_RESTORE_MODES, 0, "" },               .{ c.OT_CONTROL_QUERY_PIXEL_RESOLUTION, 1, "" },
-            .{ c.OT_CONTROL_QUERY_THEME_COLORS, 0, "" },          .{ c.OT_CONTROL_RESET_BACKGROUND, 0, "" },
-            .{ c.OT_CONTROL_PALETTE_QUERY, 0, "\x1b]10;?\x07" },
+            .{ c.OT_CONTROL_QUERY_THEME_COLORS, 1, "" },          .{ c.OT_CONTROL_RESET_BACKGROUND, 0, "" },
+            .{ c.OT_CONTROL_PALETTE_QUERY, 1, "\x1b]10;?\x07" },
             .{ c.OT_CONTROL_PROGRAM_STATUS, 0, programStatus(.{
                 .state = c.OT_PROGRAM_STATE_BLOCKED,
                 .kind = c.OT_PROGRAM_KIND_AUTH,
@@ -4364,7 +4369,7 @@ test "Scene styled text ABI validates optional links and preserves rejected repl
     linked.flags = c.OT_SCENE_TEXT_LINK;
     linked.link_offset = 1;
     linked.link_byte_count = 3;
-    var urls = [_]u8{ '_', 0xff, 0, 0x1b };
+    var urls = [_]u8{ '_', 'a', 0xc3, 0xa9 };
     const text = (try owner.raw().getRenderable(node)).scene_node.?.text.?;
     const kept = text.buffer.run_styles.keys()[0];
     const epoch = text.buffer.getContentEpoch();
@@ -4416,15 +4421,18 @@ test "Scene styled text ABI validates optional links and preserves rejected repl
     const frame = try owner.scenePaint(session, .{ 0, 0, 0, 255 }, false, 0);
     const target = (try owner.raw().getSessionRenderer(session)).getNextBuffer();
     const link_id = @import("ansi.zig").TextAttributes.getLinkId(target.get(0, 0).?.attributes);
-    try std.testing.expectEqualStrings("\xff\x00\x1b", try owner.links.get(link_id));
+    try std.testing.expectEqualStrings("a\xc3\xa9", try owner.links.get(link_id));
     try std.testing.expectEqual(link_id, @import("ansi.zig").TextAttributes.getLinkId(target.get(3, 0).?.attributes));
     try std.testing.expectEqual(@as(u32, 2), try owner.links.getRefcount(link_id));
-    unlinked.flags = c.OT_SCENE_TEXT_FOREGROUND;
+    // A URL with a control character keeps the chunk's text and style but makes no link.
+    unlinked.flags = c.OT_SCENE_TEXT_FOREGROUND | c.OT_SCENE_TEXT_LINK;
     unlinked.foreground = .{ 255, 0, 0, 255 };
-    try std.testing.expectEqual(c.OT_OK, ot_scene_set_styled_text(handle, &id, "bare", 4, &.{unlinked}, 1, null, 0));
+    unlinked.link_byte_count = 4;
+    try std.testing.expectEqual(c.OT_OK, ot_scene_set_styled_text(handle, &id, "bare", 4, &.{unlinked}, 1, "a\x1b]8", 4));
     try owner.sceneFrameCancel(session, frame.frame_id);
     const unlinked_frame = try owner.scenePaint(session, .{ 0, 0, 0, 255 }, false, 0);
     try std.testing.expectEqual(@as(u32, 0), @import("ansi.zig").TextAttributes.getLinkId(target.get(0, 0).?.attributes));
+    try std.testing.expectEqual(@as(u32, 'b'), target.get(0, 0).?.char);
     try std.testing.expectEqualDeep(unlinked.foreground, target.get(0, 0).?.fg);
     try std.testing.expectEqual(@as(u64, 0), owner.links.getLiveSlotCount());
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_styled_text(handle, &id, null, 0, null, 0, null, 0));

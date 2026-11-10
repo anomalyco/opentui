@@ -20,7 +20,8 @@ import Yoga, {
   type Value,
 } from "../yoga.js"
 import { YogaEnumKind } from "../yoga.internal.js"
-import { FFIRenderLib } from "../zig.js"
+import { FFIRenderLib, resolveRenderLib } from "../zig.js"
+import { freeTestYoga, keepTestYoga } from "./yoga-upstream/tools/utils.js"
 
 function expectYogaValue(actual: Value, unit: Unit, value?: number): void {
   expect(actual.unit).toBe(unit)
@@ -55,6 +56,99 @@ describe("native Yoga API coverage", () => {
 
     Yoga.Config.destroy(config)
     expect(config.useWebDefaults()).toBe(false)
+  })
+
+  // Upstream's YGAutoMinSizeTest shrink row and YGFirstChildMinWidthTest grow row change layout when their
+  // errata bits are cleared. Every errata value keeps Yoga 3.2.1's layouts.
+  test.each([undefined, Errata.None, Errata.StretchFlexBasis, Errata.AbsolutePercentAgainstInnerSize, Errata.All])(
+    "errata %p keeps the layouts of Yoga 3.2.1",
+    (errata) => {
+      const config = Yoga.Config.create()
+      config.setUseWebDefaults(true)
+      if (errata !== undefined) config.setErrata(errata)
+      expect(config.getErrata()).toBe(errata ?? Errata.None)
+      const row = (width: number) => {
+        const node = Yoga.Node.create(config)
+        node.setFlexDirection(FlexDirection.Row)
+        node.setWidth(width)
+        node.setHeight(50)
+        return node
+      }
+      const shrink = row(20)
+      const text = Yoga.Node.create(config)
+      text.setMeasureFunc((width, widthMode) =>
+        widthMode === MeasureMode.AtMost && width < 30 ? { width: 30, height: 48 } : { width: 90, height: 16 },
+      )
+      text.setFlexBasis(90)
+      text.setFlexShrink(1)
+      const spacer = Yoga.Node.create(config)
+      spacer.setWidth(10)
+      spacer.setFlexShrink(0)
+      shrink.insertChild(text, 0)
+      shrink.insertChild(spacer, 1)
+      shrink.calculateLayout(undefined, undefined, Direction.LTR)
+      const grow = row(540)
+      for (const minWidth of [60, 30, 30]) {
+        const child = Yoga.Node.create(config)
+        child.setFlexGrow(1)
+        child.setFlexShrink(1)
+        child.setMaxWidth(180)
+        child.setHeight(30)
+        child.setMinWidth(minWidth)
+        grow.insertChild(child, grow.getChildCount())
+      }
+      grow.calculateLayout(540, 30, Direction.LTR)
+      expect([text.getComputedWidth(), [0, 1, 2].map((i) => grow.getChild(i)!.getComputedWidth())]).toEqual([
+        10,
+        [60, 30, 30],
+      ])
+      shrink.freeRecursive()
+      grow.freeRecursive()
+      config.free()
+    },
+  )
+
+  // Yoga resolves a layout child's percent minimum, and with content-box sizing its percent padding, against
+  // the box's owner size, so a fixed box laid out at owner width 20 is not reused at 40.
+  test.each([
+    ["a percent minimum under display: contents", 20],
+    ["a content-box percent padding", 6],
+  ] as const)("a fixed box relays out at a new owner size for %s", (kind, expected) => {
+    const widths = [20, 40].map((first) => {
+      const root = Yoga.Node.create()
+      root.setFlexDirection(FlexDirection.Row)
+      root.setWidth(8)
+      root.setHeight(4)
+      const child = Yoga.Node.create()
+      if (kind === "a content-box percent padding") {
+        child.setBoxSizing(BoxSizing.ContentBox)
+        child.setPadding(Edge.Left, "10%")
+        child.setMinWidth(2)
+        root.insertChild(child, 0)
+      } else {
+        const wrapper = Yoga.Node.create()
+        wrapper.setDisplay(Display.Contents)
+        child.setMinWidth("50%")
+        wrapper.insertChild(child, 0)
+        root.insertChild(wrapper, 0)
+      }
+      for (const width of [first, 40]) root.calculateLayout(width, 10, Direction.LTR)
+      const width = child.getComputedWidth()
+      root.freeRecursive()
+      return width
+    })
+    expect(widths).toEqual([expected, expected])
+  })
+
+  test("the generated tests' teardown frees what a test created and keeps older configs", () => {
+    const configs = resolveRenderLib().getYogaHost().configs
+    const fixture = Yoga.Config.create()
+    keepTestYoga()
+    const config = Yoga.Config.create()
+    Yoga.Node.create(config).insertChild(Yoga.Node.create(config), 0)
+    freeTestYoga()
+    expect([configs.has(fixture.ptr), configs.has(config.ptr)]).toEqual([true, false])
+    fixture.free()
   })
 
   test("covers node factories, parent-child APIs, removal APIs, and destroy helpers", () => {

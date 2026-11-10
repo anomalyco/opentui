@@ -13,9 +13,11 @@
 #include <new>
 #ifdef OT_YOGA_TEST_ALLOCATOR
 #include <yoga/algorithm/Cache.h>
+#include <yoga/algorithm/CalculateLayout.h>
 #include <yoga/algorithm/PixelGrid.h>
 #include <yoga/debug/Log.h>
 #include <yoga/numeric/Comparison.h>
+#include <utility>
 #endif
 
 namespace {
@@ -55,15 +57,18 @@ bool acceptsAuto(uint32_t kind) {
       kind == OT_STYLE_VALUE_POSITION;
 }
 
-facebook::yoga::StyleLength styleLength(uint32_t unit, float value) {
-  using facebook::yoga::StyleLength;
+template <typename Length>
+Length styleLength(uint32_t unit, float value) {
   switch (unit) {
-    case YGUnitPoint: return StyleLength::points(value);
-    case YGUnitPercent: return StyleLength::percent(value);
-    case YGUnitAuto: return StyleLength::ofAuto();
-    default: return StyleLength::undefined();
+    case YGUnitPoint: return Length::points(value);
+    case YGUnitPercent: return Length::percent(value);
+    case YGUnitAuto: return Length::ofAuto();
+    default: return Length::undefined();
   }
 }
+
+// Yoga's YGJustify starts with YGJustifyAuto, which OT_JUSTIFY_* leaves out.
+constexpr uint32_t kJustifyOffset = YGJustifyFlexStart - OT_JUSTIFY_FLEX_START;
 
 }  // namespace
 
@@ -143,6 +148,12 @@ uint32_t otYogaNodeMoveChild(YGNodeRef parent_ref, YGNodeRef child_ref,
     child->setOwner(parent);
     static_assert(std::is_nothrow_copy_assignable_v<LayoutResults>);
     if (previous) child->setLayout({});
+    // Absolute-edge rounding visits only flagged paths, and the child may get no layout pass: under
+    // display: none, descendants stay dirty below the zeroed root, so the dirty walk below stops
+    // there. Flag the child's new path, so the next pass rounds its subtree as a full pass would.
+    for (Node* node = child; node && node->getConfig()->roundsPositionsFromAbsoluteEdges();
+         node = node->getOwner())
+      node->setHasNewLayout(true);
 
     // Both ancestor paths are bounded by managed placement validation. Mark
     // their complete accepted state before any managed callback can inspect it.
@@ -175,6 +186,10 @@ void otYogaNodeRemoveChildAt(YGNodeRef node_ref, YGNodeRef child_ref, uint32_t i
   if (child->getOwner() == node) {
     child->setLayout({});
     child->setOwner(nullptr);
+    auto dirtied = child->getDirtiedFunc();
+    child->setDirtiedFunc(nullptr);
+    child->setDirty(true);
+    child->setDirtiedFunc(dirtied);
   }
   node->markDirtyAndPropagate();
 }
@@ -215,10 +230,14 @@ void otYogaNodeInvalidateMeasure(YGNodeRef node) noexcept {
 }
 
 void otYogaNodeForgetMeasurements(YGNodeRef node) noexcept {
-  // The reset Yoga applies when it visits a dirty node.
-  auto& layout = facebook::yoga::resolveRef(node)->getLayout();
-  layout.nextCachedMeasurementsIndex = 0;
-  layout.cachedLayout = {};
+  // The reset Yoga applies when it visits a dirty node, up to the root: a list keeps a row's sizes
+  // until the row's epoch resets, and a cached box row would not reach the node.
+  for (auto target = facebook::yoga::resolveRef(node); target; target = target->getOwner()) {
+    auto& layout = target->getLayout();
+    layout.nextCachedMeasurementsIndex = 0;
+    layout.cachedLayout = {};
+    layout.listEpoch = 0;
+  }
 }
 
 uint32_t otYogaNodeGetComputedLayout(YGNodeConstRef node, OTYogaLayout* out) noexcept {
@@ -251,7 +270,11 @@ uint32_t otYogaNodeStyleSetEnum(YGNodeRef node, uint32_t kind, uint32_t value) n
   switch (kind) {
     case OT_STYLE_ENUM_DIRECTION: return set(YGNodeStyleSetDirection, YGDirectionRTL);
     case OT_STYLE_ENUM_FLEX_DIRECTION: return set(YGNodeStyleSetFlexDirection, YGFlexDirectionRowReverse);
-    case OT_STYLE_ENUM_JUSTIFY_CONTENT: return set(YGNodeStyleSetJustifyContent, YGJustifySpaceEvenly);
+    case OT_STYLE_ENUM_JUSTIFY_CONTENT:
+      if (value > OT_JUSTIFY_SPACE_EVENLY) return OT_YOGA_INVALID_ARGUMENT;
+      return checked([&] {
+        YGNodeStyleSetJustifyContent(node, static_cast<YGJustify>(value + kJustifyOffset));
+      });
     case OT_STYLE_ENUM_ALIGN_CONTENT: return set(YGNodeStyleSetAlignContent, YGAlignSpaceEvenly);
     case OT_STYLE_ENUM_ALIGN_ITEMS: return set(YGNodeStyleSetAlignItems, YGAlignSpaceEvenly);
     case OT_STYLE_ENUM_ALIGN_SELF: return set(YGNodeStyleSetAlignSelf, YGAlignSpaceEvenly);
@@ -260,6 +283,13 @@ uint32_t otYogaNodeStyleSetEnum(YGNodeRef node, uint32_t kind, uint32_t value) n
     case OT_STYLE_ENUM_OVERFLOW: return set(YGNodeStyleSetOverflow, YGOverflowScroll);
     case OT_STYLE_ENUM_DISPLAY: return set(YGNodeStyleSetDisplay, YGDisplayContents);
     case OT_STYLE_ENUM_BOX_SIZING: return set(YGNodeStyleSetBoxSizing, YGBoxSizingContentBox);
+    case OT_STYLE_ENUM_LAYOUT_MODE: {
+      // Only the scene config has list rules; other configs keep Yoga's layouts.
+      auto target = facebook::yoga::resolveRef(node);
+      if (value > OT_LAYOUT_MODE_LIST || !target->getConfig()->roundsPositionsFromAbsoluteEdges())
+        return OT_YOGA_INVALID_ARGUMENT;
+      return checked([&] { target->setListLayout(value == OT_LAYOUT_MODE_LIST); });
+    }
     default: return OT_YOGA_INVALID_ARGUMENT;
   }
 }
@@ -270,7 +300,8 @@ uint32_t otYogaNodeStyleGetEnum(YGNodeConstRef node, uint32_t kind, uint32_t* ou
   switch (kind) {
     case OT_STYLE_ENUM_DIRECTION: return get(YGNodeStyleGetDirection);
     case OT_STYLE_ENUM_FLEX_DIRECTION: return get(YGNodeStyleGetFlexDirection);
-    case OT_STYLE_ENUM_JUSTIFY_CONTENT: return get(YGNodeStyleGetJustifyContent);
+    case OT_STYLE_ENUM_JUSTIFY_CONTENT:
+      return checked([&] { *out = YGNodeStyleGetJustifyContent(node) - kJustifyOffset; });
     case OT_STYLE_ENUM_ALIGN_CONTENT: return get(YGNodeStyleGetAlignContent);
     case OT_STYLE_ENUM_ALIGN_ITEMS: return get(YGNodeStyleGetAlignItems);
     case OT_STYLE_ENUM_ALIGN_SELF: return get(YGNodeStyleGetAlignSelf);
@@ -279,6 +310,9 @@ uint32_t otYogaNodeStyleGetEnum(YGNodeConstRef node, uint32_t kind, uint32_t* ou
     case OT_STYLE_ENUM_OVERFLOW: return get(YGNodeStyleGetOverflow);
     case OT_STYLE_ENUM_DISPLAY: return get(YGNodeStyleGetDisplay);
     case OT_STYLE_ENUM_BOX_SIZING: return get(YGNodeStyleGetBoxSizing);
+    case OT_STYLE_ENUM_LAYOUT_MODE:
+      *out = facebook::yoga::resolveRef(node)->listLayout() ? OT_LAYOUT_MODE_LIST : OT_LAYOUT_MODE_FLEX;
+      return OT_YOGA_OK;
     default: return OT_YOGA_INVALID_ARGUMENT;
   }
 }
@@ -326,7 +360,7 @@ uint32_t otYogaNodeStyleSetDimension(YGNodeRef ref, uint32_t kind, uint32_t unit
   return checked([&] {
     auto node = resolveRef(ref);
     const auto dimension = static_cast<Dimension>(kind);
-    const auto length = styleLength(unit, value);
+    const auto length = styleLength<StyleSizeLength>(unit, value);
     if (node->style().dimension(dimension) == length &&
         (!disable_flex_shrink || node->style().flexShrink() == FloatOptional{0}))
       return;
@@ -351,7 +385,7 @@ uint32_t otYogaNodeStyleSetPositions(YGNodeRef ref, uint32_t edge_mask, const ui
     bool changed = false;
     for (uint32_t edge = 0; edge < 4; ++edge) {
       if (!(edge_mask & (1u << edge))) continue;
-      lengths[edge] = styleLength(units[edge], values[edge]);
+      lengths[edge] = styleLength<StyleLength>(units[edge], values[edge]);
       changed |= node->style().position(static_cast<Edge>(edge)) != lengths[edge];
     }
     if (!changed) return;
@@ -506,6 +540,13 @@ void otYogaTestLogMessage(YGConfigConstRef config, const char* message) noexcept
   facebook::yoga::log(facebook::yoga::resolveRef(config), facebook::yoga::LogLevel::Warn, "%s",
                       message);
 }
+uint32_t otYogaTestTakeRoundedNodes() noexcept {
+  return std::exchange(facebook::yoga::testPixelGridNodeCount, 0);
+}
+uint32_t otYogaTestTakeListVisits() noexcept {
+  return std::exchange(facebook::yoga::testListVisitCount, 0);
+}
+void otYogaTestSetListMemo(uint32_t mode) noexcept { facebook::yoga::testListMemo = mode; }
 
 // Independent eager reference for Yoga 3.2.1 Cache.cpp's per-axis predicate, with the margin
 // patch.

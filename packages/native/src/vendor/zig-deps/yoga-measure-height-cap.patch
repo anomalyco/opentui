@@ -1,3 +1,5 @@
+diff --git a/yoga/algorithm/Cache.cpp b/yoga/algorithm/Cache.cpp
+index e62f4067..f1a5f4ea 100644
 --- a/yoga/algorithm/Cache.cpp
 +++ b/yoga/algorithm/Cache.cpp
 @@ -129,4 +129,23 @@ bool canUseCachedMeasurement(
@@ -24,6 +26,8 @@
 +}
 +
  } // namespace facebook::yoga
+diff --git a/yoga/algorithm/Cache.h b/yoga/algorithm/Cache.h
+index f8857eaf..91b6714c 100644
 --- a/yoga/algorithm/Cache.h
 +++ b/yoga/algorithm/Cache.h
 @@ -9,6 +9,7 @@
@@ -31,9 +35,9 @@
  #include <yoga/algorithm/SizingMode.h>
  #include <yoga/config/Config.h>
 +#include <yoga/node/CachedMeasurement.h>
+ #include <yoga/numeric/Comparison.h>
  
  namespace facebook::yoga {
- 
 @@ -27,4 +28,13 @@ bool canUseCachedMeasurement(
      float marginColumn,
      const yoga::Config* config);
@@ -48,24 +52,25 @@
 +    float marginColumn);
 +
  } // namespace facebook::yoga
+diff --git a/yoga/algorithm/CalculateLayout.cpp b/yoga/algorithm/CalculateLayout.cpp
+index 9762ca4b..dd20a9d0 100644
 --- a/yoga/algorithm/CalculateLayout.cpp
 +++ b/yoga/algorithm/CalculateLayout.cpp
-@@ -260,6 +260,24 @@ static void computeFlexBasisForChild(
+@@ -458,6 +458,23 @@ static void computeFlexBasisForChild(
    child->setLayoutComputedFlexBasisGeneration(generationCount);
  }
  
-+// OpenTUI: a percent resolves against an owner size that no cache entry
-+// records.
++// OpenTUI: a percent resolves against the owner size, which
++// canUseMeasurementForLargerHeightCap does not compare.
 +static bool hasPercentBoxLength(const Style& style) {
 +  for (auto dimension : ordinals<Dimension>()) {
-+    if (style.minDimension(dimension).unit() == Unit::Percent ||
-+        style.maxDimension(dimension).unit() == Unit::Percent) {
++    if (style.minDimension(dimension).isPercent() ||
++        style.maxDimension(dimension).isPercent()) {
 +      return true;
 +    }
 +  }
 +  for (auto edge : ordinals<Edge>()) {
-+    if (style.margin(edge).unit() == Unit::Percent ||
-+        style.padding(edge).unit() == Unit::Percent) {
++    if (style.margin(edge).isPercent() || style.padding(edge).isPercent()) {
 +      return true;
 +    }
 +  }
@@ -75,21 +80,21 @@
  static void measureNodeWithMeasureFunc(
      yoga::Node* const node,
      const Direction direction,
-@@ -2173,6 +2191,7 @@ bool calculateLayoutInternal(
+@@ -2803,6 +2820,7 @@ bool calculateLayoutInternal(
    }
  
    CachedMeasurement* cachedResults = nullptr;
-+  const CachedMeasurement* largerHeightCap = nullptr;
++  CachedMeasurement* largerHeightCap = nullptr;
  
    // Determine whether the results are already cached. We maintain a separate
    // cache for layouts and measurements. A layout operation modifies the
-@@ -2226,6 +2245,25 @@ bool calculateLayoutInternal(
+@@ -2860,6 +2878,32 @@ bool calculateLayoutInternal(
          }
        }
      }
 +
 +    // OpenTUI: where Yoga would call the measure function, take a size that
-+    // the larger height cap cannot change. It is stored as a call's result.
++    // the larger height cap cannot change.
 +    if (cachedResults == nullptr && node->heightCapOnlyClamps() &&
 +        !hasPercentBoxLength(node->style())) {
 +      for (size_t i = 0;
@@ -105,11 +110,18 @@
 +          largerHeightCap = &layout->cachedMeasurements[i];
 +        }
 +      }
++      // With exact comparisons, a cache hit gives what a call would. Take the
++      // entry as one rather than add an entry per larger cap, which would
++      // fill the cache and drop the node's other sizes. Other configs store
++      // the size as a call's result.
++      if (node->getConfig()->roundsPositionsFromAbsoluteEdges()) {
++        cachedResults = largerHeightCap;
++      }
 +    }
    } else if (performLayout) {
-     if (yoga::inexactEquals(
-             layout->cachedLayout.availableWidth, availableWidth) &&
-@@ -2258,20 +2296,27 @@ bool calculateLayoutInternal(
+     if (sizesMatch(
+             layout->cachedLayout.availableWidth, availableWidth, node->getConfig()) &&
+@@ -2898,20 +2942,27 @@ bool calculateLayoutInternal(
      (performLayout ? layoutMarkerData.cachedLayouts
                     : layoutMarkerData.cachedMeasures) += 1;
    } else {
@@ -123,10 +135,10 @@
 -        ownerWidth,
 -        ownerHeight,
 -        performLayout,
+-        reason,
 -        layoutMarkerData,
 -        depth,
--        generationCount,
--        reason);
+-        generationCount);
 +    if (largerHeightCap != nullptr) {
 +      layout->setMeasuredDimension(
 +          Dimension::Width, largerHeightCap->computedWidth);
@@ -143,14 +155,16 @@
 +          ownerWidth,
 +          ownerHeight,
 +          performLayout,
++          reason,
 +          layoutMarkerData,
 +          depth,
-+          generationCount,
-+          reason);
++          generationCount);
 +    }
  
      layout->lastOwnerDirection = ownerDirection;
      layout->configVersion = node->getConfig()->getVersion();
+diff --git a/yoga/node/Node.h b/yoga/node/Node.h
+index 7c4e7b43..e971de2a 100644
 --- a/yoga/node/Node.h
 +++ b/yoga/node/Node.h
 @@ -70,6 +70,16 @@ class YG_EXPORT Node : public ::YGNode {
@@ -170,7 +184,7 @@
    YGSize measure(
        float availableWidth,
        MeasureMode widthMode,
-@@ -336,6 +346,7 @@ class YG_EXPORT Node : public ::YGNode {
+@@ -369,6 +379,7 @@ class YG_EXPORT Node : public ::YGNode {
    bool isReferenceBaseline_ : 1 = false;
    bool isDirty_ : 1 = true;
    bool alwaysFormsContainingBlock_ : 1 = false;

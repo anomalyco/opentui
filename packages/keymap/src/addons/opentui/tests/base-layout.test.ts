@@ -28,7 +28,8 @@ describe("base layout fallback addon", () => {
     diagnostics.assertNoUnhandledDiagnostics()
   })
 
-  for (const row of baseLayoutVectors) {
+  // The input parser reports no key for a Kitty key code that is a control character, so U+0080 is a lookup row only.
+  for (const row of baseLayoutVectors.filter(([name]) => !/\p{Cc}/u.test(name))) {
     const [name, baseCode, modifiers, matches] = row
     test(baseLayoutVectorName(row), () => {
       const keymap = getKeymap(renderer)

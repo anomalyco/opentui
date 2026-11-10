@@ -6,6 +6,7 @@ import { fileURLToPath } from "url"
 import process from "process"
 import path from "path"
 import { variants, type Variant } from "./variants"
+import { fnv1a64 } from "./native-abi-rust"
 import { separateNativeSymbols } from "./native-symbols"
 
 interface PackageJson {
@@ -188,13 +189,6 @@ function checkStaticArchive(path: string): void {
   if (nested.length > 0) throw new Error(`${path} contains nested archives: ${nested.join(", ")}`)
 }
 
-// The header hash that opentui-rust's opentui-sys build checks.
-function fnv1a64(bytes: Uint8Array): string {
-  let hash = 0xcbf29ce484222325n
-  for (const byte of bytes) hash = ((hash ^ BigInt(byte)) * 0x100000001b3n) & 0xffffffffffffffffn
-  return `0x${hash.toString(16).padStart(16, "0")}`
-}
-
 if (buildNative) {
   runCommand(
     "bun",
@@ -334,8 +328,8 @@ export default module.default
         `## ${nativeName}\n\n> Prebuilt ${platform}-${arch}${abi ? `-${abi}` : ""} binaries for \`${packageJson.name}\`.\n\n` +
           `\`opentui.h\` beside \`${libraryFileName}\` is the C ABI header that this library was built from ` +
           `(FNV-1a 64 \`${headerHash}\`). A C host compiles against it and links the library in this directory` +
-          `${platform === "win32" ? " through `opentui.lib`" : ""}. For opentui-rust, set \`OPENTUI_LIB_DIR\` to this ` +
-          `directory; its build fails when the header differs from the one its bindings were generated from. ` +
+          `${platform === "win32" ? " through `opentui.lib`" : ""}. For the Rust crates in packages/rust, set ` +
+          `\`OPENTUI_LIB_DIR\` to this directory${platform === "win32" ? "" : " and turn off their default `static` feature (`default-features = false`), since this package has no static library"}; their build fails when the header differs from the one their bindings were generated from. ` +
           `See [C](https://opentui.com/docs/native/c).`,
       ),
     )

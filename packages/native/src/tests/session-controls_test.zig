@@ -14,12 +14,13 @@ const transport: session.Options = .{
 
 const Fixture = @import("session-terminal_test.zig").Fixture;
 const utils = @import("../utils.zig");
+const input_parser = @import("../input-parser.zig");
 
 test "Session controls gate inactive phases and reject malformed or over-limit inputs" {
     const f = try Fixture.initWithOptions(testing.allocator, testing.io, 4, 2, transport, .{ .object_capacity = 2 });
     defer f.deinit();
     const unattached = try f.owner.createSession(transport);
-    try testing.expectError(error.RendererNotAttached, (try f.owner.raw().getSession(unattached)).control(.query_theme_colors));
+    try testing.expectError(error.RendererNotAttached, (try f.owner.raw().getSession(unattached)).control(.{ .query_theme_colors = false }));
     const commands = [_]session.Control{
         .{ .capability_response = "\x1b[?0u" },
         .{ .title = "title" },
@@ -27,7 +28,7 @@ test "Session controls gate inactive phases and reject malformed or over-limit i
         .{ .kitty_keyboard_flags = 31 },
         .restore_modes,
         .{ .query_pixel_resolution = false },
-        .query_theme_colors,
+        .{ .query_theme_colors = false },
         .reset_background,
         .{ .program_status = .{ .state = .working } },
     };
@@ -141,7 +142,7 @@ test "Session controls preserve rejected drafts and leave restoration capacity u
         .{ .title = "rejected" },
         .restore_modes,
         .{ .query_pixel_resolution = false },
-        .query_theme_colors,
+        .{ .query_theme_colors = false },
         .reset_background,
         .{ .program_status = .{ .state = .done } },
     }) |command| {
@@ -225,14 +226,16 @@ test "Session controls bound input and output without allocation after attachmen
     try testing.expect(f.cli.terminal.caps.osc52 and f.cli.terminal.caps.kitty_graphics);
     try testing.expect(f.cli.terminal.caps.sixel and f.cli.terminal.caps.notifications);
     try testing.expect(f.cli.terminal.caps.program_status);
-    for ([_]bool{ false, true }) |sentinel| {
-        try f.value.control(.{ .query_pixel_resolution = sentinel });
-        const sent = try f.drain(&bytes);
-        try testing.expectEqualStrings(ansi.ANSI.queryPixelSize, sent[0..ansi.ANSI.queryPixelSize.len]);
-        try testing.expectEqualStrings(if (sentinel) ansi.ANSI.primaryDeviceAttrs else "", sent[ansi.ANSI.queryPixelSize.len..]);
+    // The sentinel appends one DA1 to the packet; without it the bytes are unchanged.
+    for ([_]struct { session.Control, []const u8 }{
+        .{ .{ .query_pixel_resolution = false }, ansi.ANSI.queryPixelSize },
+        .{ .{ .query_pixel_resolution = true }, ansi.ANSI.queryPixelSize ++ ansi.ANSI.primaryDeviceAttrs },
+        .{ .{ .query_theme_colors = false }, ansi.ANSI.oscThemeQueries },
+        .{ .{ .query_theme_colors = true }, ansi.ANSI.oscThemeQueries ++ ansi.ANSI.primaryDeviceAttrs },
+    }) |case| {
+        try f.value.control(case[0]);
+        try testing.expectEqualStrings(case[1], try f.drain(&bytes));
     }
-    try f.value.control(.query_theme_colors);
-    try testing.expectEqualStrings(ansi.ANSI.oscThemeQueries, try f.drain(&bytes));
     try f.owner.beginSessionClose(f.id);
     _ = try f.driveOutput(&now_ns, .restored, &bytes, 32);
     try testing.expectEqual(allocated, failing.allocated_bytes);
@@ -320,6 +323,103 @@ test "Session clipboard rejects inactive phases and unsupported capability witho
     try testing.expectError(error.SessionCancelled, f.value.writeClipboard(.clipboard, "cancelled"));
     try testing.expect(f.value.canDestroy());
     try testing.expectEqual(@as(usize, 0), f.value.output.staged_bytes);
+}
+
+/// Whether a lone Escape waits without a deadline; the Escape is dropped again.
+fn escapeHeld(f: Fixture, now_ns: u64) !bool {
+    var events: [input_parser.events_per_byte_max]input_parser.Event = undefined;
+    var payload: [input_parser.payload_per_byte_max]u8 = undefined;
+    var sink: input_parser.Sink = .{ .events = &events, .payload = &payload };
+    const feed = try f.value.feedInput("\x1b", now_ns, &sink);
+    try f.value.resetInput(false);
+    return feed.deadline_ns == null;
+}
+
+test "Session input has no Escape timeout only while the current Kitty push is confirmed" {
+    const f = try Fixture.initWithOptions(testing.allocator, testing.io, 4, 2, transport, .{ .object_capacity = 2 });
+    defer f.deinit();
+    var now_ns: u64 = 0;
+    var bytes: [8192]u8 = undefined;
+    const confirm: session.Control = .{ .capability_response = "\x1b[?5u" };
+    try f.owner.setupSessionTerminal(f.id, .{ .reply_sentinel = true });
+    _ = try f.driveOutput(&now_ns, .active, &bytes, 32);
+    try f.value.control(.{ .capability_response = "\x1b[?0u" });
+    _ = try f.drain(&bytes);
+    try testing.expect(!try escapeHeld(f, now_ns));
+    try f.value.control(confirm);
+    _ = try f.drain(&bytes);
+    try testing.expect(try escapeHeld(f, now_ns));
+    // A screen switch pops and pushes again.
+    try f.value.setScreen(!f.cli.useAlternateScreen, 4, 2, "");
+    _ = try f.drain(&bytes);
+    try testing.expect(!try escapeHeld(f, now_ns));
+    try f.value.control(confirm);
+    _ = try f.drain(&bytes);
+    try testing.expect(try escapeHeld(f, now_ns));
+    // Suspension pops; resume pushes in its enable step.
+    try f.owner.suspendSession(f.id);
+    _ = try f.driveOutput(&now_ns, .suspended, &bytes, 32);
+    try testing.expect(!try escapeHeld(f, now_ns));
+    try f.owner.resumeSession(f.id);
+    _ = try f.driveOutput(&now_ns, .active, &bytes, 32);
+    try testing.expect(!try escapeHeld(f, now_ns));
+    try f.value.control(confirm);
+    _ = try f.drain(&bytes);
+    try testing.expect(try escapeHeld(f, now_ns));
+    // A split reply to the current push's query is held and, forwarded whole, pops that push's entry. A reply cut
+    // short by a typed key is not forwarded: its entry stays, so nothing confirms until a later reply lines up.
+    const terminal = &f.cli.terminal;
+    // A query answered without confirmation (`?0u`: the push did not apply) holds nothing: a cut `CSI ?` times out.
+    try f.value.control(.restore_modes);
+    try f.value.control(.{ .capability_response = "\x1b[?0u" });
+    _ = try f.drain(&bytes);
+    try testing.expect(!terminal.kittyQueryOutstanding() and !terminal.state.kitty_confirmed);
+    {
+        var events: [8]input_parser.Event = undefined;
+        var payload: [input_parser.payload_per_byte_max]u8 = undefined;
+        var sink: input_parser.Sink = .{ .events = &events, .payload = &payload };
+        now_ns += 25 * std.time.ns_per_ms;
+        _ = try f.value.feedInput("\x1b[?5", now_ns, &sink);
+        now_ns += 25 * std.time.ns_per_ms;
+        _ = try f.value.feedInput("", now_ns, &sink);
+        try testing.expectEqual(@as(u32, 1), sink.count);
+    }
+    for ([_]struct { []const []const u8, bool }{
+        .{ &.{ "\x1b[?5", "u" }, true },
+        .{ &.{ "\x1b", "[?5u" }, true },
+        .{ &.{ "\x1b[?5", "j" }, false },
+    }) |case| {
+        try f.value.control(.restore_modes);
+        _ = try f.drain(&bytes);
+        try testing.expect(terminal.kittyQueryOutstanding() and terminal.state.kitty_query_count == 1);
+        var events: [8]input_parser.Event = undefined;
+        var payload: [input_parser.payload_per_byte_max]u8 = undefined;
+        var reply: ?[]const u8 = null;
+        for (case[0]) |chunk| {
+            now_ns += 25 * std.time.ns_per_ms;
+            var sink: input_parser.Sink = .{ .events = &events, .payload = &payload };
+            _ = try f.value.feedInput(chunk, now_ns, &sink);
+            for (events[0..sink.count]) |event| {
+                if (event.kind == @backingInt(input_parser.Kind.reply) and event.flags & input_parser.flags.reply_fragment == 0)
+                    reply = sink.raw(event);
+            }
+            now_ns += 25 * std.time.ns_per_ms;
+            _ = try f.value.feedInput("", now_ns, &sink);
+        }
+        if (reply) |bytes_reply| try f.value.control(.{ .capability_response = bytes_reply });
+        _ = try f.drain(&bytes);
+        try testing.expectEqual(case[1], reply != null);
+        try testing.expectEqual(@as(u8, @intFromBool(!case[1])), terminal.state.kitty_query_count);
+        try testing.expectEqual(case[1], terminal.state.kitty_confirmed);
+        if (!case[1]) break;
+    }
+    // Behind the stale entry, the next push's query is the newest, so its reply may still be held.
+    try f.value.control(.restore_modes);
+    _ = try f.drain(&bytes);
+    try testing.expect(terminal.kittyQueryOutstanding() and terminal.state.kitty_query_count == 2);
+    // Clock mode holds nothing, even for a query sent before the miss.
+    try f.value.control(.end_reply_sentinel);
+    try testing.expect(!terminal.kittyQueryOutstanding());
 }
 
 test "Session side channels ignore a pending split transition that terminal starts wait for" {

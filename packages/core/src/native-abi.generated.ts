@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 8d4a673884edb2addb8772fe3be4d8f9bbee6c3d10507578330ba809ca1d894c
+// ABI audit SHA-256: 0343a50f78a6a5f452f63126af22cc088018ccf7075c2d0ef337e1bab720772e
 
 export const nativeSymbols = {
   ot_scene_set_hooks: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -1658,6 +1658,7 @@ export const nativeConstants = {
   OT_STYLE_ENUM_OVERFLOW: 8,
   OT_STYLE_ENUM_DISPLAY: 9,
   OT_STYLE_ENUM_BOX_SIZING: 10,
+  OT_STYLE_ENUM_LAYOUT_MODE: 11,
   OT_STYLE_FLOAT_FLEX: 0,
   OT_STYLE_FLOAT_FLEX_GROW: 1,
   OT_STYLE_FLOAT_FLEX_SHRINK: 2,
@@ -1727,6 +1728,8 @@ export const nativeConstants = {
   OT_DISPLAY_NONE: 1,
   OT_BOX_SIZING_BORDER_BOX: 0,
   OT_BOX_SIZING_CONTENT_BOX: 1,
+  OT_LAYOUT_MODE_FLEX: 0,
+  OT_LAYOUT_MODE_LIST: 1,
   OT_STYLE_ENUM_DIRECTION_MAX: 2,
   OT_STYLE_ENUM_FLEX_DIRECTION_MAX: 3,
   OT_STYLE_ENUM_JUSTIFY_CONTENT_MAX: 5,
@@ -1738,6 +1741,7 @@ export const nativeConstants = {
   OT_STYLE_ENUM_OVERFLOW_MAX: 2,
   OT_STYLE_ENUM_DISPLAY_MAX: 1,
   OT_STYLE_ENUM_BOX_SIZING_MAX: 1,
+  OT_STYLE_ENUM_LAYOUT_MODE_MAX: 1,
   OT_MEASURE_UNDEFINED: 0,
   OT_MEASURE_EXACTLY: 1,
   OT_MEASURE_AT_MOST: 2,
@@ -2069,6 +2073,7 @@ export const nativeConstants = {
   OT_CONTROL_RESET_BACKGROUND: 9,
   OT_CONTROL_PALETTE_QUERY: 10,
   OT_CONTROL_PROGRAM_STATUS: 11,
+  OT_CONTROL_END_REPLY_SENTINEL: 12,
   OT_CURSOR_POSITION: 1,
   OT_CURSOR_STYLE: 2,
   OT_CURSOR_BLINKING: 4,
@@ -2229,6 +2234,7 @@ export const nativeConstants = {
   OT_INPUT_EXPECT_KITTY_KEYBOARD: 2,
   OT_INPUT_EXPECT_CURSOR_POSITION: 4,
   OT_INPUT_EXPECT_SENTINEL: 8,
+  OT_INPUT_EXPECT_ESCAPE_PREFIX: 16,
   OT_INPUT_EVENTS_MIN: 4,
   OT_INPUT_PAYLOAD_BYTES_MIN: 4384,
   OT_INPUT_TIMEOUT_NS: 20000000,

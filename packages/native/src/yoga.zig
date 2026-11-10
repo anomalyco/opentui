@@ -61,6 +61,7 @@ pub const YogaEnumKind = enum(u32) {
     overflow = api.OT_STYLE_ENUM_OVERFLOW,
     display = api.OT_STYLE_ENUM_DISPLAY,
     box_sizing = api.OT_STYLE_ENUM_BOX_SIZING,
+    layout_mode = api.OT_STYLE_ENUM_LAYOUT_MODE,
 };
 
 pub const YogaFloatKind = enum(u32) {
@@ -466,16 +467,22 @@ export fn yogaConfigSetErrata(config: YGConfigRef, errata: u32) void {
     _ = yogaConfigSetErrataChecked(config, errata);
 }
 
+// Upstream gates two layout changes behind errata that a new config sets. They stay set and hidden, so
+// every errata value keeps Yoga 3.2.1's layouts.
+const errata_hidden: u32 = c.YGErrataMinSizeUndefinedInsteadOfAuto | c.YGErrataFlexFirstPassUsesRunningTotals;
+
 pub export fn yogaConfigSetErrataChecked(config: YGConfigRef, errata: u32) Status {
     const status = configStatus(config);
     if (status != .ok) return status;
     if (errata > 7 and errata != c.YGErrataAll and errata != c.YGErrataClassic) return .invalid_argument;
-    c.YGConfigSetErrata(config, @intCast(errata));
+    c.YGConfigSetErrata(config, @intCast(errata | errata_hidden));
     return .ok;
 }
 
 export fn yogaConfigGetErrata(config: YGConfigConstRef) u32 {
-    return enumValue(c.YGConfigGetErrata(config));
+    const errata = enumValue(c.YGConfigGetErrata(config));
+    if (errata == c.YGErrataAll or errata == c.YGErrataClassic) return errata;
+    return errata & ~errata_hidden;
 }
 
 export fn yogaConfigSetExperimentalFeatureEnabled(config: YGConfigRef, feature: u32, enabled: bool) void {
@@ -1051,7 +1058,7 @@ pub fn yogaNodeInvalidateMeasure(node: YGNodeRef) void {
     if (!getContext(node).?.poisoned) c.otYogaNodeInvalidateMeasure(node);
 }
 
-/// Drops cached sizes without marking the node or its ancestors dirty.
+/// Drops the cached sizes of the node and its ancestors without marking them dirty.
 pub fn yogaNodeForgetMeasurements(node: YGNodeRef) void {
     if (!getContext(node).?.poisoned) c.otYogaNodeForgetMeasurements(node);
 }
@@ -1106,6 +1113,9 @@ pub const testFailAfter = c.otYogaTestFailAfter;
 pub const testAllocationCount = c.otYogaTestAllocationCount;
 pub const testContentsChildCount = c.otYogaTestContentsChildCount;
 pub const testLogMessage = c.otYogaTestLogMessage;
+pub const testTakeRoundedNodes = c.otYogaTestTakeRoundedNodes;
+pub const testTakeListVisits = c.otYogaTestTakeListVisits;
+pub const testSetListMemo = c.otYogaTestSetListMemo;
 pub const testCacheMeasurement = c.otYogaTestCacheMeasurement;
 pub const testLargerHeightCap = c.otYogaTestLargerHeightCap;
 pub const TestCacheAxis = c.OTYogaCacheAxis;

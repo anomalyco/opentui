@@ -123,6 +123,8 @@ typedef struct ot_handle {
 #define OT_STYLE_ENUM_OVERFLOW UINT32_C(8)
 #define OT_STYLE_ENUM_DISPLAY UINT32_C(9)
 #define OT_STYLE_ENUM_BOX_SIZING UINT32_C(10)
+/* Scene layout only: LIST stacks in-flow children top to bottom without flex. */
+#define OT_STYLE_ENUM_LAYOUT_MODE UINT32_C(11)
 #define OT_STYLE_FLOAT_FLEX UINT32_C(0)
 #define OT_STYLE_FLOAT_FLEX_GROW UINT32_C(1)
 #define OT_STYLE_FLOAT_FLEX_SHRINK UINT32_C(2)
@@ -192,6 +194,8 @@ typedef struct ot_handle {
 #define OT_DISPLAY_NONE UINT32_C(1)
 #define OT_BOX_SIZING_BORDER_BOX UINT32_C(0)
 #define OT_BOX_SIZING_CONTENT_BOX UINT32_C(1)
+#define OT_LAYOUT_MODE_FLEX UINT32_C(0)
+#define OT_LAYOUT_MODE_LIST UINT32_C(1)
 /* Inclusive enum limits also drive generated host validation. */
 #define OT_STYLE_ENUM_DIRECTION_MAX OT_DIRECTION_RTL
 #define OT_STYLE_ENUM_FLEX_DIRECTION_MAX OT_FLEX_DIRECTION_ROW_REVERSE
@@ -204,6 +208,7 @@ typedef struct ot_handle {
 #define OT_STYLE_ENUM_OVERFLOW_MAX OT_OVERFLOW_SCROLL
 #define OT_STYLE_ENUM_DISPLAY_MAX OT_DISPLAY_NONE
 #define OT_STYLE_ENUM_BOX_SIZING_MAX OT_BOX_SIZING_CONTENT_BOX
+#define OT_STYLE_ENUM_LAYOUT_MODE_MAX OT_LAYOUT_MODE_LIST
 #define OT_MEASURE_UNDEFINED UINT32_C(0)
 #define OT_MEASURE_EXACTLY UINT32_C(1)
 #define OT_MEASURE_AT_MOST UINT32_C(2)
@@ -985,8 +990,9 @@ ot_status ot_scene_set_text(ot_context *, const ot_handle *node, const uint8_t *
  * Rejection preserves accepted content and resources. No style handles.
  * Each array may be NULL only when its count is zero. link_offset and
  * link_byte_count select bytes in urls; without LINK both must be zero. URLs are
- * copied raw metadata, not parsed or normalized. Empty URLs, URLs over 512 bytes,
- * and chunks with zero independently measured width produce no link. Oversized
+ * copied, not normalized. Empty URLs, URLs over 512 bytes,
+ * URLs that are not UTF-8 or hold a C0, DEL or C1 control, and chunks with zero
+ * independently measured width produce no link; their text stays. Oversized
  * URLs are not truncated. URLs and their references are prepared before publication;
  * rejection preserves accepted text, styles, and links. urls may be NULL only
  * when url_byte_count is zero. Link IDs stay local to the owning Context. */
@@ -2380,10 +2386,16 @@ typedef struct ot_session_terminal_options {
 #define OT_CONTROL_RESET_BACKGROUND UINT32_C(9)
 #define OT_CONTROL_PALETTE_QUERY UINT32_C(10)
 #define OT_CONTROL_PROGRAM_STATUS UINT32_C(11)
+#define OT_CONTROL_END_REPLY_SENTINEL UINT32_C(12)
 
 /* argument is 0/1/2 (disabled/drag/motion) for MOUSE, 0..31 for Kitty flags,
- * 0/1 for QUERY_PIXEL_RESOLUTION (1 appends the DA1 sentinel), and zero otherwise. CAPABILITY_RESPONSE, TITLE, CURSOR, PALETTE_QUERY, and
- * PROGRAM_STATUS accept payload bytes. reserved must be zero. */
+ * 0/1 for QUERY_PIXEL_RESOLUTION, QUERY_THEME_COLORS and PALETTE_QUERY (1 appends
+ * the DA1 sentinel, after the validated palette queries in the same packet; a
+ * tmux-wrapped query's replies trail tmux's own DA1, so it takes 0), and zero
+ * otherwise. CAPABILITY_RESPONSE, TITLE, CURSOR, PALETTE_QUERY, and
+ * PROGRAM_STATUS accept payload bytes. reserved must be zero. END_REPLY_SENTINEL,
+ * accepted in every open phase, turns REPLY_SENTINEL off for good once a DA1
+ * reply never came: later Kitty keyboard pushes send no CSI ? u query. */
 typedef struct ot_session_control_options {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -2650,6 +2662,7 @@ typedef struct ot_session_pump_result {
 #define OT_INPUT_EXPECT_KITTY_KEYBOARD UINT32_C(2)
 #define OT_INPUT_EXPECT_CURSOR_POSITION UINT32_C(4)
 #define OT_INPUT_EXPECT_SENTINEL UINT32_C(8)
+#define OT_INPUT_EXPECT_ESCAPE_PREFIX UINT32_C(16)
 
 #define OT_INPUT_EVENTS_MIN UINT32_C(4)
 #define OT_INPUT_PAYLOAD_BYTES_MIN UINT32_C(4384)
@@ -3333,6 +3346,13 @@ ot_status ot_session_input_feed(
  * reply; another byte ends either one and is typed. A lone Escape still times
  * out, and a reply that follows it is not typed; if what follows that Escape is
  * cut before it matches a reply, its introducer is typed. KEEP_REPLY also keeps such a CSI.
+ * ESCAPE_PREFIX, which implies KITTY_KEYBOARD, means the terminal confirmed
+ * Kitty disambiguate or report-all keys, so no unit has a deadline. A raw ESC and the byte after it in the same
+ * feed are Alt and that key as without the flag; a raw ESC that ends a feed is the Escape key at once, and a
+ * sequence that begins the next feed is kept whole (a CSI then is never a key). With SENTINEL, a lone
+ * introducer after that Escape waits as after a timeout, and is typed once SENTINEL is cleared.
+ * A session with a renderer sets it itself once the terminal answers the CSI ? u
+ * query that follows its current push (only with OT_TERMINAL_REPLY_SENTINEL).
  * Changing flags emits nothing; the next feed resolves a unit that may no longer wait. */
 ot_status ot_session_input_expect(ot_context *context, const ot_handle *session, uint32_t flags);
 

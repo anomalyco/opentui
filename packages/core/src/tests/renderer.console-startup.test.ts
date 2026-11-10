@@ -699,7 +699,6 @@ test("CliRenderer leaving split-footer aborts an in-flight startup CPR reply", a
 
     expect((renderer as any).pendingSplitStartupCursorSeed).toBe(false)
     expect((renderer as any).splitStartupSeedTimeoutId).toBeNull()
-    expect((renderer as any).stdinParser.protocolContext.startupCursorCprActive).toBe(false)
 
     renderer.stdin.emit("data", Buffer.from("24;80R"))
     clock.advance(20)

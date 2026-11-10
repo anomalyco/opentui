@@ -431,6 +431,38 @@ describe("Renderable - declared style getters", () => {
   })
 })
 
+// A list lays out its rows as a column with `overflow: scroll` does: it ignores a row direction, and a percent height
+// inside an auto-height row resolves against no height. Each row reads the axis, the row's x and y, and the inner height.
+test.each([
+  ["column", "flex", "column,0,1,9"],
+  ["column", "list", "column,0,1,0"],
+  ["row", "flex", "row,2,0,10"],
+  ["row", "list", "column,0,1,0"],
+] as const)(
+  "Renderable layoutMode: %s %s, from the option and from the setter",
+  async (flexDirection, mode, expected) => {
+    const build = (layoutMode: "flex" | "list") => {
+      const list = new BoxRenderable(testRenderer, { width: 10, height: 10, flexDirection, layoutMode })
+      const row = new BoxRenderable(testRenderer, {})
+      const inner = new BoxRenderable(testRenderer, { width: 1, height: "100%" })
+      row.add(inner)
+      list.add(new BoxRenderable(testRenderer, { width: 2, height: 1 }))
+      list.add(row)
+      testRenderer.root.add(list)
+      return {
+        list,
+        read: () => [list.primaryAxis, row.x - list.x, row.y - list.y, inner.getComputedLayout().height].join(),
+      }
+    }
+    const constructed = build(mode)
+    const assigned = build(mode === "list" ? "flex" : "list")
+    await renderOnce()
+    assigned.list.layoutMode = mode
+    await renderOnce()
+    expect([constructed.read(), assigned.read()]).toEqual([expected, expected])
+  },
+)
+
 describe("Renderable - Child Management", () => {
   test("can add and remove children", () => {
     const parent = new TestRenderable(testRenderer, { id: "parent" })

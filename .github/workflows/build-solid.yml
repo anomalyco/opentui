@@ -20,8 +20,14 @@ env:
   NODE_VERSION: 26.13.0
 
 jobs:
+  changes:
+    uses: ./.github/workflows/changes.yml
+
+  # A pull request that changes only packages/rust skips the tests; the gate accepts that.
   bun-test:
     name: Bun Test (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.rust_only != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -85,6 +91,8 @@ jobs:
 
   node-source:
     name: Node Source Lane
+    needs: changes
+    if: needs.changes.outputs.rust_only != 'true'
     runs-on: blacksmith-8vcpu-ubuntu-2404
     defaults:
       run:
@@ -137,6 +145,8 @@ jobs:
 
   packed-consumer:
     name: Packed Consumer Smoke
+    needs: changes
+    if: needs.changes.outputs.rust_only != 'true'
     runs-on: blacksmith-8vcpu-ubuntu-2404
     defaults:
       run:
@@ -190,22 +200,19 @@ jobs:
   # Gate job for branch protection
   build-complete:
     name: Solid - Build and Test
-    needs: [bun-test, node-source, packed-consumer]
+    needs: [changes, bun-test, node-source, packed-consumer]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     if: always()
     steps:
+      # Without the changes job no skip is known to be safe. A test job may skip only on a Rust-only pull request.
       - name: Check test results
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          RUST_ONLY: ${{ needs.changes.outputs.rust_only }}
+          TYPESCRIPT: ${{ needs.bun-test.result }} ${{ needs.node-source.result }} ${{ needs.packed-consumer.result }}
         run: |
-          if [ "${{ needs.bun-test.result }}" != "success" ]; then
-            echo "Bun tests failed"
-            exit 1
-          fi
-          if [ "${{ needs.node-source.result }}" != "success" ]; then
-            echo "Node source lane failed"
-            exit 1
-          fi
-          if [ "${{ needs.packed-consumer.result }}" != "success" ]; then
-            echo "Packed consumer smoke test failed"
-            exit 1
-          fi
+          [ "$CHANGES" = success ] || { echo "Change detection: $CHANGES"; exit 1; }
+          for result in $TYPESCRIPT; do
+            [ "$result" = success ] || [ "$result-$RUST_ONLY" = skipped-true ] || { echo "Tests failed"; exit 1; }
+          done
           echo "All tests passed"

@@ -832,13 +832,13 @@ export interface NativeInputDrain {
 
 export type NativeSessionControl =
   | { kind: "capability-response"; bytes: Uint8Array }
-  | { kind: "palette-query"; bytes: Uint8Array }
+  | { kind: "palette-query"; bytes: Uint8Array; sentinel?: boolean }
   | { kind: "title"; title: string }
   | { kind: "mouse"; mode: "disabled" | "drag" | "motion" }
   | { kind: "kitty-keyboard-flags"; flags: number }
   | { kind: "program-status"; status: ProgramStatus }
-  | { kind: "query-pixel-resolution"; sentinel?: boolean }
-  | { kind: "restore-modes" | "query-theme-colors" | "reset-background" }
+  | { kind: "query-pixel-resolution" | "query-theme-colors"; sentinel?: boolean }
+  | { kind: "restore-modes" | "reset-background" | "end-reply-sentinel" }
 
 export interface NativeSessionCursorOptions extends CursorStyleOptions {
   position?: { x: number; y: number; visible: boolean }
@@ -3621,6 +3621,7 @@ export class FFIRenderLib {
   public readonly encoder: TextEncoder = new TextEncoder()
   private readonly emptyBytes = new Uint8Array(0)
   public readonly decoder: TextDecoder = new TextDecoder()
+  private readonly textDecoder: TextDecoder = new TextDecoder("utf-8", { ignoreBOM: true })
   private logCallbackWrapper: FFICallbackInstance | null = null
   private diagnosticDrain?: ReturnType<typeof createDiagnosticDrainRecord>
   private nativeSpanFeedCallbackWrapper: FFICallbackInstance | null = null
@@ -4579,7 +4580,7 @@ export class FFIRenderLib {
     if (count[0] !== bytes.length) {
       throw new NativeError(operation, NativeStatus.InternalError)
     }
-    return this.decoder.decode(bytes)
+    return this.textDecoder.decode(bytes)
   }
 
   public contextTextBufferGetText(context: NativeContextHandle, text: ContextTextBufferHandle): string {
@@ -6891,6 +6892,7 @@ export class FFIRenderLib {
         break
       case "palette-query":
         record[kind] = nativeConstants.OT_CONTROL_PALETTE_QUERY
+        record[layout.fields.argument.offset / 4] = command.sentinel ? 1 : 0
         bytes = sessionBytes(command.bytes, "Session palette query length")
         break
       case "title": {
@@ -6930,9 +6932,13 @@ export class FFIRenderLib {
         break
       case "query-theme-colors":
         record[kind] = nativeConstants.OT_CONTROL_QUERY_THEME_COLORS
+        record[layout.fields.argument.offset / 4] = command.sentinel ? 1 : 0
         break
       case "reset-background":
         record[kind] = nativeConstants.OT_CONTROL_RESET_BACKGROUND
+        break
+      case "end-reply-sentinel":
+        record[kind] = nativeConstants.OT_CONTROL_END_REPLY_SENTINEL
         break
       default:
         throw new TypeError("Unknown Session control kind")

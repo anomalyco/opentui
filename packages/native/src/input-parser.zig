@@ -7,17 +7,17 @@ const std = @import("std");
 pub const timeout_ns: u64 = 20 * std.time.ns_per_ms;
 pub const unit_bytes_max: u16 = 4096;
 pub const sequence_bytes_max: u16 = 256;
-pub const key_text_bytes_max: u8 = 32;
 /// The longest reply prefix a held string checks: OSC `7501;`.
 pub const reply_prefix_bytes_max: u8 = 8;
 pub const params_max: u8 = 16;
 pub const subparams_max: u8 = 8;
 pub const events_per_byte_max: u32 = 4;
-pub const payload_per_byte_max: u32 = unit_bytes_max + sequence_bytes_max + key_text_bytes_max;
+/// OT_INPUT_PAYLOAD_BYTES_MIN. The 32 is the key text bound from before key text grew to its unit.
+pub const payload_per_byte_max: u32 = unit_bytes_max + sequence_bytes_max + 32;
 
 comptime {
-    // A Kitty text field keeps at most subparams_max scalars, so key text never truncates by bytes.
-    std.debug.assert(key_text_bytes_max >= @as(u32, subparams_max) * 4);
+    // Key text is never longer than its unit: a scalar's UTF-8 is no longer than its decimal digits.
+    std.debug.assert(1 + 2 * @as(u32, sequence_bytes_max) <= payload_per_byte_max);
 }
 
 pub const Expectations = packed struct(u8) {
@@ -26,7 +26,11 @@ pub const Expectations = packed struct(u8) {
     cursor_position: bool = false,
     /// The host waits for the DA1 reply that ends its query batch, so replies need no deadline.
     sentinel: bool = false,
-    _reserved: u4 = 0,
+    /// The terminal confirmed Kitty disambiguate, so a raw ESC is a key typed by a mapping, read by the read boundary.
+    escape_prefix: bool = false,
+    /// Set by a renderer Session, not the ABI: the current Kitty keyboard push's `CSI ? u` is unanswered.
+    kitty_query: bool = false,
+    _reserved: u2 = 0,
 };
 
 /// Kitty's modifier layout: the wire parameter minus one.
@@ -266,6 +270,14 @@ pub const InputParser = struct {
 
     /// When the host should call feed with zero bytes, or null.
     pub fn deadlineNs(self: *const InputParser) ?u64 {
+        // A raw ESC ends at the read boundary, and the terminal sends Escape and Alt keys as sequences. Due at once:
+        // an ESC that ended a read before the flag was set, and a recovered unit once no sentinel holds it.
+        if (self.expect.escape_prefix) return if (switch (self.state) {
+            .escape => self.batch_left == 0,
+            .csi => |csi| csi.held and csi.recovered and !self.expect.sentinel,
+            .string => |string| string.recovered and !self.expect.sentinel,
+            else => false,
+        }) self.since_ns else null;
         const waits = switch (self.state) {
             // A UTF-8 lead byte's continuation bytes must follow, so no pause cuts a scalar short.
             // Opt-in 8-bit Meta (urxvt meta8, rxvt --meta8, Eterm -8, iTerm2 Option as Meta) is read
@@ -283,6 +295,7 @@ pub const InputParser = struct {
     pub fn setExpectations(self: *InputParser, expect: Expectations) void {
         std.debug.assert(expect._reserved == 0);
         std.debug.assert(!expect.sentinel or expect.replies);
+        std.debug.assert(!expect.escape_prefix or expect.kitty_keyboard);
         self.expect = expect;
     }
 
@@ -331,15 +344,7 @@ pub const InputParser = struct {
         const deadline = self.deadlineNs() orelse return;
         if (now_ns < deadline) return;
         switch (self.state) {
-            .escape => |esc| {
-                if (esc.alt) {
-                    emitKey(sink, &.{"\x1b\x1b"}, key.escape, .{ .alt = true }, .{});
-                    self.state = .ground;
-                } else {
-                    emitKey(sink, &.{"\x1b"}, key.escape, .{}, .{});
-                    self.state = .expired;
-                }
-            },
+            .escape => |esc| self.escapeKey(esc.alt, sink),
             .recover => |introducer| if (self.expect.sentinel) {
                 self.begin(heldUnit(introducer), introducer);
             } else {
@@ -352,7 +357,7 @@ pub const InputParser = struct {
             },
             .csi => |csi| {
                 if (!csi.deferred and self.deferrable()) {
-                    self.state = .{ .csi = .{ .alt = csi.alt, .deferred = true, .held = self.sentinelHeld() } };
+                    self.state = .{ .csi = .{ .alt = csi.alt, .deferred = true, .held = self.sentinelHeld() or self.kittyHeld() } };
                 } else self.cutShort(csi.alt, .csi, 0, sink);
             },
             .ss3 => |ss3| self.cutShort(ss3.alt, .ss3, 0, sink),
@@ -375,7 +380,14 @@ pub const InputParser = struct {
             std.debug.assert(iterations <= 3);
             switch (self.state) {
                 .ground => self.ground(b, false, .of(false, b), sink),
-                .expired => if (b == '[' or (self.expect.sentinel and (b == ']' or b == 'P' or b == '_'))) {
+                // With `escape_prefix`, a unit that begins the read after its ESC is reinstated whole; a CSI then is no key.
+                .expired => if (self.expect.escape_prefix and self.batch_left > 0 and std.mem.indexOfScalar(u8, "[O]P_", b) != null) {
+                    _ = self.escapeByte(b, false, sink);
+                    if (b == '[') self.state.csi.recovered = true;
+                } else if (self.expect.sentinel and std.mem.indexOfScalar(u8, "[]P_", b) != null) {
+                    // With `escape_prefix` the read end was the timeout, so recovery goes on at once.
+                    if (self.expect.escape_prefix) self.begin(heldUnit(b), b) else self.state = .{ .recover = b };
+                } else if (b == '[' and !self.expect.escape_prefix) {
                     self.state = .{ .recover = b };
                 } else {
                     self.state = .ground;
@@ -404,6 +416,10 @@ pub const InputParser = struct {
                 } else if (!self.continuesDeferred(b, csi.held)) {
                     self.cutShort(csi.alt, .csi, 0, sink);
                     pending = b;
+                } else if (!csi.held and b == '?') {
+                    // Only a Kitty keyboard reply continues a bare unit with `?`; it stays a reply.
+                    self.append(b);
+                    self.state.csi.held = true;
                 } else if (!csi.held or b == '<' or b == 'M') {
                     // A mouse report continues only a bare unit, which then is no longer held.
                     self.state.csi = .{ .alt = csi.alt, .deferred = false };
@@ -444,6 +460,14 @@ pub const InputParser = struct {
                 .paste => |paste| self.pasteByte(b, paste.matched, sink),
             }
         }
+        // With `escape_prefix`, an ESC that ends the read is the Escape key at once, as a timeout would give it.
+        if (self.expect.escape_prefix and self.batch_left == 0 and self.state == .escape) self.escapeKey(self.state.escape.alt, sink);
+    }
+
+    /// Escape, or Alt+Escape after another ESC; a later unit may still continue it, except a timed-out ESC ESC.
+    fn escapeKey(self: *InputParser, alt: bool, sink: *Sink) void {
+        emitKey(sink, if (alt) &.{"\x1b\x1b"} else &.{"\x1b"}, key.escape, .{ .alt = alt }, .{});
+        self.state = if (alt and !self.expect.escape_prefix) .ground else .expired;
     }
 
     fn ground(self: *InputParser, b: u8, alt: bool, wire: Wire, sink: *Sink) void {
@@ -577,8 +601,10 @@ pub const InputParser = struct {
         } else if ((b >= 0x40 and b <= 0x7e) or (csi and b == '$' and self.unit_len > 2 and allDigits(self.unit[2..self.unit_len]))) {
             // rxvt ends Shift+Insert and similar keys with `$`, which is otherwise an intermediate.
             self.append(b);
+            // A reinstated unit follows an Escape key already emitted: it is never a second key.
+            const reply_only = csi and self.state.csi.recovered;
             self.state = .ground;
-            if (csi) self.dispatchCsi(alt, false, sink) else self.dispatchSs3(alt, sink);
+            if (csi) self.dispatchCsi(alt, reply_only, sink) else self.dispatchSs3(alt, sink);
         } else if (self.unit_len >= sequence_bytes_max) {
             self.state = .{ .discard = .{ .string = false, .escaped = false, .osc = false } };
             self.discarded_count +|= 1;
@@ -724,20 +750,20 @@ pub const InputParser = struct {
         }
         var cursor_report = false;
         const decoded: ?Key = decoded: {
-            if (params.len > 0 and params[0] == '[') break :decoded bracketKey(params[1..], final);
+            if (params.len > 0 and params[0] == '[') break :decoded if (reply_only) null else bracketKey(params[1..], final);
             // Private-prefixed and intermediate-bearing sequences are never keys.
             const fields = Fields.parse(params) orelse break :decoded null;
             cursor_report = final == 'R' and fields.count == 2 and fields.single(0) != null and fields.single(1) != null;
-            break :decoded if (reply_only) null else self.csiKey(&fields, final);
+            break :decoded if (reply_only) null else self.csiKey(&fields, params, final);
         };
         if (decoded) |value| return emitDecodedKey(sink, alt, unit, value);
         if (alt) emitKey(sink, &.{"\x1b"}, key.escape, .{}, .{});
         emitReply(sink, unit, .csi, if (cursor_report) flags.reply_cursor_position else 0);
     }
 
-    fn csiKey(self: *const InputParser, fields: *const Fields, final: u8) ?Key {
+    fn csiKey(self: *const InputParser, fields: *const Fields, params: []const u8, final: u8) ?Key {
         return switch (final) {
-            'u' => kittyKey(fields),
+            'u' => kittyKey(fields, params),
             '~' => tildeKey(fields),
             // rxvt marks Shift, Ctrl, and both with `$`, `^`, and `@` in place of `~`.
             '$', '^', '@' => if (fields.count == 1) rxvt: {
@@ -812,6 +838,7 @@ pub const InputParser = struct {
         const params = self.unit[2..self.unit_len];
         if (self.sentinelHeld()) return true;
         if (params.len == 0) return !self.state.csi.alt;
+        if (self.kittyHeld()) return true;
         if (params[0] == '<') return allOf(params[1..], "0123456789;");
         return (self.expect.replies and self.replyShaped()) or
             (self.expect.kitty_keyboard and params[0] != '?' and Shape.of(params, true) != null);
@@ -837,6 +864,12 @@ pub const InputParser = struct {
         return self.unit_len >= 3 and beginsReply(self.unit[1], self.unit[2]);
     }
 
+    /// Whether a CSI of `?` and digits may be the reply to the current Kitty keyboard push's query. No key
+    /// starts with `CSI ?`, so it waits for its tail, and every byte must continue it.
+    fn kittyHeld(self: *const InputParser) bool {
+        return self.expect.kitty_query and self.unit_len > 2 and self.unit[2] == '?' and allDigits(self.unit[3..self.unit_len]);
+    }
+
     /// Whether a bare `ESC [` or a number may still begin a reply while the host awaits its sentinel.
     fn sentinelHeld(self: *const InputParser) bool {
         return self.expect.sentinel and allDigits(self.unit[2..self.unit_len]);
@@ -846,6 +879,7 @@ pub const InputParser = struct {
     fn recovered(self: *const InputParser, introducer: u8, b: u8) ?State {
         if (introducer == '[' and b == '<') return .recover_sgr;
         if (introducer == '[' and b == 'M') return .{ .x10 = .{ .alt = false, .recovered = true } };
+        if (introducer == '[' and b == '?' and self.expect.kitty_query and self.batch_left >= 2) return heldUnit('[');
         if (!self.expect.sentinel or !beginsReply(introducer, b)) return null;
         return heldUnit(introducer);
     }
@@ -857,7 +891,7 @@ pub const InputParser = struct {
         const digit = isDigit(b);
         // A reply prefix continues a bare unit only while the host awaits the sentinel.
         if (params.len == 0) return (b == '<' and self.batch_left >= 1) or (b == 'M' and self.batch_left >= 3) or
-            (self.expect.sentinel and beginsReply('[', b));
+            (self.expect.kitty_query and b == '?' and self.batch_left >= 2) or (self.expect.sentinel and beginsReply('[', b));
         // Only `sentinel` defers these; a number continues toward a cursor or pixel size reply.
         if (allDigits(params)) return digit or b == ';';
         // Whether the field being read has a digit; a mode report's `$` follows its digits.
@@ -950,9 +984,9 @@ fn emitReply(sink: *Sink, raw: []const u8, protocol: Protocol, reply_flags: u8) 
     sink.push(value);
 }
 
-/// Text an editor inserts for a key, at most key_text_bytes_max bytes.
+/// Text an editor inserts for a key, no longer than the key's unit.
 const Text = struct {
-    bytes: [key_text_bytes_max]u8 = undefined,
+    bytes: [sequence_bytes_max]u8 = undefined,
     len: u8 = 0,
 
     fn slice(self: *const Text) []const u8 {
@@ -990,8 +1024,6 @@ const Fields = struct {
     values: [params_max][subparams_max]u32 = undefined,
     present: [params_max]u8 = @splat(0),
     subcounts: [params_max]u8 = @splat(0),
-    /// Fields with subfields past subparams_max.
-    overflow: u16 = 0,
     count: u8 = 0,
 
     /// Null when the bytes are not only digits, `;`, and `:`.
@@ -1019,11 +1051,7 @@ const Fields = struct {
             },
             ':' => {
                 sub += 1;
-                if (field < params_max) {
-                    if (sub < subparams_max) {
-                        fields.subcounts[field] += 1;
-                    } else fields.overflow |= @as(u16, 1) << @intCast(field);
-                }
+                if (field < params_max and sub < subparams_max) fields.subcounts[field] += 1;
             },
             else => return null,
         };
@@ -1231,17 +1259,18 @@ fn codeKey(code: u32, mods: Modifiers) ?Key {
 }
 
 /// `CSI code[:shifted[:base]] ; mods[:event] ; text[:text...] u`
-fn kittyKey(fields: *const Fields) ?Key {
+fn kittyKey(fields: *const Fields, params: []const u8) ?Key {
     const code = fields.get(0, 0) orelse return null;
     const shape = modsAndAction(fields);
     var value: Key = .{ .code = code, .mods = shape.mods, .action = shape.action, .flags = flags.key_kitty };
-    if (fields.count > 2) {
-        if (fields.overflow & (1 << 2) != 0) value.flags |= flags.key_text_truncated;
-        for (0..fields.subcounts[2]) |sub| {
-            const scalar = fields.get(2, sub) orelse continue;
-            if (scalar == 0 or !isScalar(scalar) or isControl(scalar)) continue;
-            value.text.append(@intCast(scalar));
-        }
+    // The text's scalars, read from the bytes because they may outnumber subparams_max.
+    var params_fields = std.mem.splitScalar(u8, params, ';');
+    for (0..2) |_| _ = params_fields.next();
+    var scalars = std.mem.splitScalar(u8, params_fields.next() orelse "", ':');
+    while (scalars.next()) |digits| {
+        const scalar = parseDigits(digits);
+        if (scalar == 0 or !isScalar(scalar) or isControl(scalar)) continue;
+        value.text.append(@intCast(scalar));
     }
     // Text without a key, such as input method output.
     if (code == 0) return if (value.text.len == 0) null else value;

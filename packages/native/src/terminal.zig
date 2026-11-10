@@ -11,6 +11,10 @@ const WidthMethod = utf8.WidthMethod;
 /// Terminal capability detection and management
 pub const Terminal = @This();
 
+const kitty_queries_max = 4;
+/// Kitty keyboard flags that stop raw ESC: disambiguate and report all keys.
+const kitty_escape_flags: u8 = 0b1001;
+
 pub const Capabilities = struct {
     kitty_keyboard: bool = false,
     kitty_graphics: bool = false,
@@ -244,6 +248,14 @@ state: struct {
     alt_screen: bool = false,
     kitty_keyboard: bool = false,
     kitty_keyboard_flags: u8 = 0,
+    /// Every Kitty keyboard push or pop starts a generation; only a reply to its own query confirms it.
+    kitty_generation: u32 = 0,
+    /// The terminal reported disambiguate or report-all for the current push.
+    kitty_confirmed: bool = false,
+    /// Generations of the unanswered `CSI ? u` queries, oldest first. Terminals answer in order, so a
+    /// reply answers the oldest; a lost reply only makes later ones answer older generations.
+    kitty_queries: [kitty_queries_max]u32 = @splat(0),
+    kitty_query_count: u8 = 0,
     bracketed_paste: bool = false,
     mouse: bool = false,
     mouse_movement: bool = true,
@@ -253,6 +265,7 @@ state: struct {
     theme_queries_sent: bool = false,
     focus_tracking: bool = false,
     modify_other_keys: bool = false,
+    unicode: bool = false,
     mouse_pointer: MousePointerStyle = .default,
     cursor: struct {
         row: u16 = 0,
@@ -340,6 +353,14 @@ pub fn resetOutputModes(self: *Terminal, tty: anytype) !void {
         try self.setColorSchemeUpdates(tty, false);
     }
 
+    // The DECRPM reply describes the terminal before setup. Put a mode it can change (not 3 or 4,
+    // permanent) back as it was: set for 1, reset otherwise.
+    const before = self.mode_2027 == 1;
+    if ((self.mode_2027 orelse 0) < 3 and self.state.unicode != before) {
+        try tty.writeAll(if (before) ansi.ANSI.unicodeSet else ansi.ANSI.unicodeReset);
+    }
+    self.state.unicode = false;
+
     try ansi.ANSI.setTerminalTitleOutput(tty, "");
 
     // OSC 111 is intentionally disabled for now. In Ghostty, sending the
@@ -380,16 +401,19 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     // Capture the current cursor position before temporary home-position queries.
     try tty.writeAll(ansi.ANSI.cursorPositionRequest);
 
-    // Probes are never DCS wrapped. tmux answers the probes it implements and
-    // drops the rest; passthrough replies are not routed back to the pane that
-    // asked.
+    // Probes are never DCS wrapped, and screen prints a DCS body as text. tmux
+    // answers the probes it implements and drops the rest; passthrough replies
+    // are not routed back to the pane that asked.
+    if (!self.insideScreen()) try tty.writeAll(ansi.ANSI.xtgettcapMs);
     if (self.is_foot) {
         try tty.writeAll(ansi.ANSI.capabilityQueriesFootIsBroken);
     } else {
         try tty.writeAll(ansi.ANSI.capabilityQueries);
-        // Windows always has 24-bit color; screen prints a DCS body as text.
-        if (builtin.os.tag != .windows and !self.caps.rgb and !self.insideScreen()) try tty.writeAll(ansi.ANSI.xtgettcapTruecolor);
+        if (!self.caps.rgb and !self.consoleTruecolor() and !self.insideScreen()) try tty.writeAll(ansi.ANSI.xtgettcapTruecolor);
     }
+    // Each setup starts a new queue with its startup query.
+    self.state.kitty_query_count = 0;
+    self.recordKittyQuery();
 
     // Inside tmux, graphics replies cannot describe the passthrough endpoint.
     if (!self.skip_graphics_query and !self.isInTmux()) {
@@ -414,14 +438,13 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     if (self.reply_sentinel) try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
 }
 
-pub fn enableDetectedFeatures(self: *Terminal, tty: anytype, use_kitty_keyboard: bool) !void {
-    if (builtin.os.tag == .windows) {
-        // Windows-specific defaults for ConPTY
-        self.caps.rgb = true;
-        self.caps.ansi256 = true;
-        self.caps.bracketed_paste = true;
-    }
+/// ConPTY draws 24-bit color, but a remote app's output never reaches this process's console.
+fn consoleTruecolor(self: *const Terminal) bool {
+    return builtin.os.tag == .windows and self.opts.remote_mode != .remote;
+}
 
+pub fn enableDetectedFeatures(self: *Terminal, tty: anytype, use_kitty_keyboard: bool) !void {
+    if (self.consoleTruecolor()) self.caps.rgb = true;
     self.checkEnvironmentOverrides();
 
     if (!self.state.modify_other_keys and !self.state.kitty_keyboard) {
@@ -435,8 +458,11 @@ pub fn enableDetectedFeatures(self: *Terminal, tty: anytype, use_kitty_keyboard:
         try self.setKittyKeyboard(tty, true, self.opts.kitty_keyboard_flags);
     }
 
-    if ((self.caps.unicode == .unicode or self.caps.unicode == .unicode_wide) and !self.caps.explicit_width) {
-        try tty.writeAll(ansi.ANSI.unicodeSet);
+    // A reply can arrive after setup enabled mode 2027 and switch the width method away from it.
+    const unicode = (self.caps.unicode == .unicode or self.caps.unicode == .unicode_wide) and !self.caps.explicit_width;
+    if (unicode != self.state.unicode) {
+        try tty.writeAll(if (unicode) ansi.ANSI.unicodeSet else ansi.ANSI.unicodeReset);
+        self.state.unicode = unicode;
     }
 
     if (self.caps.bracketed_paste) {
@@ -684,6 +710,7 @@ fn parseProgramStatusReply(self: *Terminal, response: []const u8) void {
 
 pub fn checkEnvironmentOverrides(self: *Terminal) void {
     defer self.caps.unicode = self.selectWidthMethod();
+    defer self.caps.ansi256 = self.caps.ansi256 or self.caps.rgb;
     if (self.isXtversionTmux()) {
         self.multiplexer = .tmux;
     } else if (self.isXtversionZellij()) {
@@ -702,10 +729,6 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
 
     // Always just try to enable bracketed paste, even if it was reported as not supported
     self.caps.bracketed_paste = true;
-
-    if (self.caps.rgb) {
-        self.caps.ansi256 = true;
-    }
 
     if (self.opts.remote_mode == .remote) {
         self.remote = true;
@@ -729,38 +752,38 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
             self.caps.ansi256 = true;
         }
     }
-    if (env_map.get("COLORTERM")) |colorterm| {
-        if (std.mem.eql(u8, colorterm, "truecolor") or
-            std.mem.eql(u8, colorterm, "24bit"))
-        {
-            self.caps.rgb = true;
-            self.caps.ansi256 = true;
-        }
+    if (self.insideScreen()) {
+        // Screen drops 24-bit colors unless its `truecolor` setting is on, and an inherited COLORTERM cannot tell.
+        self.caps.rgb = false;
+        self.caps.ansi256 = true;
+    } else if (env_map.get("COLORTERM")) |colorterm| {
+        if (std.mem.eql(u8, colorterm, "truecolor") or std.mem.eql(u8, colorterm, "24bit")) self.caps.rgb = true;
     }
-    if (self.identityEnv() == null) return;
-
+    // The explicit override, for screen with `truecolor on` or a terminal that answers no query.
+    const force_truecolor = env_map.get("OPENTUI_FORCE_TRUECOLOR") orelse "";
+    if (std.mem.eql(u8, force_truecolor, "1") or std.mem.eql(u8, force_truecolor, "true")) self.caps.rgb = true;
+    // A remote client's environment names only GNU screen, which answers no query: TERM forwarded by ssh, or STY.
+    const remote_env = self.identityEnv() == null;
     if (!self.term_info.from_xtversion) {
-        if (env_map.get("TMUX")) |_| {
+        if (!remote_env and env_map.get("TMUX") != null) {
             self.multiplexer = .tmux;
             self.caps.explicit_cursor_positioning = true;
-        } else if (env_map.get("ZELLIJ") != null or env_map.get("ZELLIJ_SESSION_NAME") != null or env_map.get("ZELLIJ_PANE_ID") != null) {
+        } else if (!remote_env and (env_map.get("ZELLIJ") != null or env_map.get("ZELLIJ_SESSION_NAME") != null or env_map.get("ZELLIJ_PANE_ID") != null)) {
             self.multiplexer = .zellij;
             if (self.term_info.name_len == 0) {
                 const name = "Zellij";
                 @memcpy(self.term_info.name[0..name.len], name);
                 self.term_info.name_len = name.len;
             }
-        } else if (env_map.get("STY") != null) {
+        } else if (self.insideScreen()) {
             self.multiplexer = .screen;
             self.skip_graphics_query = true;
             self.caps.explicit_cursor_positioning = true;
-        } else if (env_map.get("TERM")) |term| {
+            self.caps.osc52 = true;
+        } else if (!remote_env) {
+            const term = env_map.get("TERM") orelse "";
             if (std.mem.startsWith(u8, term, "tmux")) {
                 self.multiplexer = .tmux;
-                self.caps.explicit_cursor_positioning = true;
-            } else if (std.mem.startsWith(u8, term, "screen")) {
-                self.multiplexer = .screen;
-                self.skip_graphics_query = true;
                 self.caps.explicit_cursor_positioning = true;
             }
             if (std.mem.find(u8, term, "alacritty") != null) {
@@ -768,6 +791,7 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
             }
         }
     }
+    if (remote_env) return;
 
     if (env_map.get("TERM")) |term| {
         self.applyNotificationHeuristic(term);
@@ -847,11 +871,7 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
     }
 
     if (env_map.get("WT_SESSION") != null) {
-        self.caps.rgb = true;
-        self.caps.ansi256 = true;
-        if (builtin.os.tag == .windows and !self.term_info.from_xtversion and self.multiplexer == .none) {
-            self.caps.hyperlinks = true;
-        }
+        if (!self.insideScreen()) self.caps.rgb = true;
         self.setNotificationProtocol(.osc777, .heuristic);
     }
 
@@ -900,18 +920,6 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
         }
     }
 
-    if (!self.caps.hyperlinks and !self.term_info.from_xtversion) {
-        const is_wsl = env_map.get("WSL_DISTRO_NAME") != null or env_map.get("WSL_INTEROP") != null;
-        const has_wt_session = env_map.get("WT_SESSION") != null;
-        if (is_wsl and has_wt_session) {
-            if (env_map.get("TERM")) |term| {
-                if (std.mem.startsWith(u8, term, "xterm")) {
-                    self.caps.hyperlinks = true;
-                }
-            }
-        }
-    }
-
     if (!self.caps.hyperlinks and !self.term_info.from_xtversion and self.multiplexer == .none) {
         if (isHyperlinkHostEnv(env_map)) {
             self.caps.hyperlinks = true;
@@ -931,7 +939,7 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
             self.caps.osc52 = true;
         }
 
-        if (!self.caps.osc52 and (self.isInTmux() or self.isInScreen() or env_map.get("STY") != null)) {
+        if (!self.caps.osc52 and (self.isInTmux() or env_map.get("STY") != null)) {
             self.caps.osc52 = true;
         }
 
@@ -1021,20 +1029,45 @@ pub fn setFocusTracking(self: *Terminal, tty: anytype, enable: bool) !void {
     self.state.focus_tracking = enable;
 }
 
+/// Every push and pop goes through here, so each one starts a generation.
 pub fn setKittyKeyboard(self: *Terminal, tty: anytype, enable: bool, flags: u8) !void {
-    if (enable) {
-        if (!self.state.kitty_keyboard) {
-            try tty.print(ansi.ANSI.csiUPush, .{flags});
-            self.state.kitty_keyboard = true;
-            self.state.kitty_keyboard_flags = flags;
-        }
-    } else {
-        if (self.state.kitty_keyboard) {
-            try tty.writeAll(ansi.ANSI.csiUPop);
-            self.state.kitty_keyboard = false;
-            self.state.kitty_keyboard_flags = 0;
-        }
-    }
+    if (enable == self.state.kitty_keyboard) return;
+    if (enable) try tty.print(ansi.ANSI.csiUPush, .{flags}) else try tty.writeAll(ansi.ANSI.csiUPop);
+    self.state.kitty_keyboard = enable;
+    self.state.kitty_keyboard_flags = if (enable) flags else 0;
+    self.state.kitty_generation +%= 1;
+    self.state.kitty_confirmed = false;
+    // Without the sentinel the host's parser does not hold split replies, so it must see no new reply. A full queue
+    // means replies stopped; the push then stays unconfirmed.
+    if (!enable or !self.reply_sentinel or self.state.kitty_query_count == kitty_queries_max) return;
+    try tty.writeAll(ansi.ANSI.csiUQuery);
+    self.recordKittyQuery();
+}
+
+/// Whether the current push's own query is unanswered, so its reply may still come.
+pub fn kittyQueryOutstanding(self: *const Terminal) bool {
+    const count = self.state.kitty_query_count;
+    return self.reply_sentinel and self.state.kitty_keyboard and count != 0 and
+        self.state.kitty_queries[count - 1] == self.state.kitty_generation;
+}
+
+fn recordKittyQuery(self: *Terminal) void {
+    const count = self.state.kitty_query_count;
+    std.debug.assert(count < kitty_queries_max);
+    self.state.kitty_queries[count] = self.state.kitty_generation;
+    self.state.kitty_query_count = count + 1;
+}
+
+/// A `CSI ? flags u` reply answers the oldest query; it confirms only a query of the current push.
+fn answerKittyQuery(self: *Terminal, flags: u32) void {
+    const count = self.state.kitty_query_count;
+    if (count == 0) return;
+    const generation = self.state.kitty_queries[0];
+    std.mem.copyForwards(u32, self.state.kitty_queries[0 .. count - 1], self.state.kitty_queries[1..count]);
+    self.state.kitty_query_count = count - 1;
+    if (generation != self.state.kitty_generation) return;
+    if (self.state.kitty_keyboard_flags & kitty_escape_flags == 0 or flags & kitty_escape_flags == 0) return;
+    self.state.kitty_confirmed = true;
 }
 
 pub fn setModifyOtherKeys(self: *Terminal, tty: anytype, enable: bool) !void {
@@ -1099,8 +1132,9 @@ pub fn restoreTerminalModes(self: *Terminal, tty: anytype) !void {
     // Pop stale entry then re-push kitty keyboard protocol to avoid stack growth.
     // Both sequences are in the same write buffer so the terminal processes them atomically.
     if (self.state.kitty_keyboard) {
-        try tty.writeAll(ansi.ANSI.csiUPop);
-        try tty.print(ansi.ANSI.csiUPush, .{self.state.kitty_keyboard_flags});
+        const flags = self.state.kitty_keyboard_flags;
+        try self.setKittyKeyboard(tty, false, 0);
+        try self.setKittyKeyboard(tty, true, flags);
     }
 
     // Re-enable modifyOtherKeys if active
@@ -1438,18 +1472,14 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
     // Kitty keyboard protocol detection via CSI ? u response
     // Terminals supporting the protocol respond to CSI ? u with CSI ? <flags> u
     // Examples: \x1b[?0u (ghostty, alacritty), \x1b[?1u, etc.
-    if (std.mem.find(u8, response, "\x1b[?") != null and std.mem.find(u8, response, "u") != null) {
-        // Look for pattern \x1b[?Nu where N is 0-31
-        var i: usize = 0;
-        while (i + 4 < response.len) : (i += 1) {
-            if (response[i] == '\x1b' and i + 1 < response.len and response[i + 1] == '[' and i + 2 < response.len and response[i + 2] == '?') {
-                var num_end = i + 3;
-                while (num_end < response.len and response[num_end] >= '0' and response[num_end] <= '9') : (num_end += 1) {}
-                if (num_end > i + 3 and num_end < response.len and response[num_end] == 'u') {
-                    self.caps.kitty_keyboard = true;
-                    break;
-                }
-            }
+    var rest = response;
+    while (std.mem.find(u8, rest, "\x1b[?")) |start| {
+        rest = rest[start + 3 ..];
+        const digits = std.mem.indexOfNone(u8, rest, "0123456789") orelse rest.len;
+        if (digits != 0 and digits < rest.len and rest[digits] == 'u') {
+            self.caps.kitty_keyboard = true;
+            self.answerKittyQuery(std.fmt.parseInt(u32, rest[0..digits], 10) catch std.math.maxInt(u32));
+            break;
         }
     }
 
@@ -1558,7 +1588,9 @@ fn isHyperlinkHostEnv(env_map: *const std.process.Environ.Map) bool {
         const parsed = std.fmt.parseInt(u32, version, 10) catch return false;
         return parsed >= 5202;
     }
-    return false;
+    // WT_SESSION names Windows Terminal at the endpoint on any host OS, unless TERM names another terminal inside it.
+    const term = env_map.get("TERM") orelse "";
+    return env_map.get("WT_SESSION") != null and (term.len == 0 or std.mem.startsWith(u8, term, "xterm"));
 }
 
 pub fn synchronizedOutput(self: *const Terminal) bool {

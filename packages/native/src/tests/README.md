@@ -10,8 +10,8 @@ Run this command from `packages/core`:
 bun run test:native
 ```
 
-It checks the vendored Zig dependency checksums, runs `zig build test`, then
-tests and runs `examples/hello`.
+It checks the vendored Zig dependency checksums, runs `zig build test` and, when
+unfiltered, `zig build test-abi`, then tests and runs `examples/hello`.
 
 ### Measure-target lifetime
 

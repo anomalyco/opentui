@@ -19,10 +19,10 @@ const options: scene.FrameOptions = .{
     .max_host_requests = 1 << 20,
 };
 
-pub const Shape = enum { ui, boxes, scroll, wrapped_scroll, scroll_node };
+pub const Shape = enum { ui, boxes, scroll, wrapped_scroll, scroll_node, select, select_node };
 
 /// A frame kind: what changes before the frame.
-pub const Change = enum { unchanged, glyph, background, scroll, append, update_hook, paint_hook, reply_text };
+pub const Change = enum { unchanged, glyph, background, scroll, append, update_hook, paint_hook, reply_text, row_text, append_box, grow_last };
 
 /// One Session with a built scene and the nodes its frame kinds change.
 pub const Scene = struct {
@@ -34,6 +34,8 @@ pub const Scene = struct {
     /// The scroll content, the scroll node, or the root.
     content: context.Handle,
     scroll_node: bool = false,
+    /// The last select row's title.
+    last: context.Handle,
     next_num: u32,
     frames: u32 = 0,
 
@@ -45,13 +47,15 @@ pub const Scene = struct {
         const id = try owner.createSession(.{ .chunk_size = 64 * 1024, .chunk_count = 16, .span_capacity = 16 });
         try owner.attachSessionRenderer(id, width, height, .{ .remote_mode = .remote });
         const root = try owner.sceneCreateNode(id, c.OT_SCENE_ROOT, 1);
-        var self: Scene = .{ .owner = owner, .id = id, .root = root, .target = root, .content = root, .next_num = 2 };
+        var self: Scene = .{ .owner = owner, .id = id, .root = root, .target = root, .content = root, .last = root, .next_num = 2 };
         switch (shape) {
             .ui => try self.buildUi(),
             .boxes => try self.buildBoxes(size),
             .scroll => try self.buildScroll(size, 0, 0),
             .wrapped_scroll => try self.buildScroll(size, 6, 2),
             .scroll_node => try self.buildScrollNode(size),
+            .select => try self.buildSelect(size, false),
+            .select_node => try self.buildSelect(size, true),
         }
         // The first frame lays out and paints everything; frame kinds measure the next ones.
         _ = try self.frame(.unchanged);
@@ -151,6 +155,44 @@ pub const Scene = struct {
         for (0..size) |_| try self.addRow(0);
     }
 
+    /// A select list: an overflow-hidden viewport, or a culled scroll node, whose content holds
+    /// `size` row boxes, each with a growing title and a footer text. The eleventh row's title
+    /// is the target.
+    fn buildSelect(self: *Scene, size: u32, scroll_node: bool) !void {
+        if (scroll_node) {
+            self.content = try self.node(c.OT_SCENE_BOX, self.root);
+            self.scroll_node = true;
+            try self.float(self.content, c.OT_STYLE_FLOAT_FLEX_GROW, 1);
+            try self.owner.sceneSetScroll(self.content, .{ .culling = true });
+        } else {
+            const viewport = try self.node(c.OT_SCENE_BOX, self.root);
+            try self.float(viewport, c.OT_STYLE_FLOAT_FLEX_GROW, 1);
+            try self.owner.sceneSetStyle(viewport, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_OVERFLOW, 0, 0, c.OT_OVERFLOW_HIDDEN, 0);
+            self.content = try self.node(c.OT_SCENE_BOX, viewport);
+            try self.float(self.content, c.OT_STYLE_FLOAT_FLEX_SHRINK, 0);
+            try self.owner.sceneSetViewport(self.content, viewport);
+        }
+        for (0..size) |index| {
+            try self.addSelectRow();
+            if (index == 10) self.target = self.last;
+        }
+    }
+
+    fn addSelectRow(self: *Scene) !void {
+        const row = try self.node(c.OT_SCENE_BOX, self.content);
+        try self.float(row, c.OT_STYLE_FLOAT_FLEX_SHRINK, 0);
+        try self.owner.sceneSetStyle(row, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_FLEX_DIRECTION, 0, 0, c.OT_FLEX_DIRECTION_ROW, 0);
+        self.last = try self.text(row, "session title");
+        try self.float(self.last, c.OT_STYLE_FLOAT_FLEX_GROW, 1);
+        _ = try self.text(row, "2 days ago");
+    }
+
+    /// Lays out the scroll content's rows as a list.
+    pub fn setList(self: *Scene) !void {
+        const flags: u32 = if (self.scroll_node) c.OT_STYLE_CONTENT else 0;
+        try self.owner.sceneSetStyle(self.content, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_LAYOUT_MODE, 0, 0, c.OT_LAYOUT_MODE_LIST, flags);
+    }
+
     fn addRow(self: *Scene, depth: u32) !void {
         var parent = self.content;
         for (0..depth) |_| parent = try self.node(c.OT_SCENE_BOX, parent);
@@ -171,6 +213,15 @@ pub const Scene = struct {
                 _ = try self.owner.sceneScrollTo(self.content, .{ 0, if (odd) -1 else 1 }, .{ true, true }, false);
             } else try self.owner.scenePatchPaint(self.content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = if (odd) -1 else 0 }),
             .append => try self.addRow(0),
+            .row_text => try self.owner.sceneSetText(self.target, if (odd) "session title A" else "session title B"),
+            .append_box => try self.addSelectRow(),
+            // The last title gets one more line each frame, as a streaming message does.
+            .grow_last => {
+                var bytes: [16 * 1024]u8 = undefined;
+                const lines = @min(self.frames, bytes.len / 3);
+                for (0..lines) |line| @memcpy(bytes[3 * line ..][0..3], "ab\n");
+                try self.owner.sceneSetText(self.last, bytes[0 .. 3 * lines - 1]);
+            },
             .update_hook, .paint_hook, .reply_text => if (self.frames == 2) {
                 const flags: u32 = if (change == .paint_hook) c.OT_SCENE_HOOK_RENDER_AFTER else c.OT_SCENE_HOOK_UPDATE;
                 try self.owner.sceneSetHooks(self.target, flags, 1, 1, 1);
@@ -194,7 +245,7 @@ pub const Scene = struct {
     }
 };
 
-const Scenario = struct { name: []const u8, shape: Shape, size: u32, change: Change };
+const Scenario = struct { name: []const u8, shape: Shape, size: u32, change: Change, list: bool = false };
 
 const scenarios = [_]Scenario{
     .{ .name = "ui-90 unchanged", .shape = .ui, .size = 0, .change = .unchanged },
@@ -214,6 +265,17 @@ const scenarios = [_]Scenario{
     .{ .name = "scroll-node-10000 unchanged", .shape = .scroll_node, .size = 10_000, .change = .unchanged },
     .{ .name = "scroll-node-10000 scroll by one row", .shape = .scroll_node, .size = 10_000, .change = .scroll },
     .{ .name = "scroll-node-10000 append", .shape = .scroll_node, .size = 10_000, .change = .append },
+    .{ .name = "select-1000 one row", .shape = .select, .size = 1000, .change = .row_text },
+    .{ .name = "select-node-1000 one row", .shape = .select_node, .size = 1000, .change = .row_text },
+    .{ .name = "scroll-1000 append", .shape = .scroll, .size = 1000, .change = .append },
+    .{ .name = "scroll-node-1000 append", .shape = .scroll_node, .size = 1000, .change = .append },
+    .{ .name = "select-1000 one row list", .shape = .select, .size = 1000, .change = .row_text, .list = true },
+    .{ .name = "select-node-1000 one row list", .shape = .select_node, .size = 1000, .change = .row_text, .list = true },
+    .{ .name = "scroll-1000 append list", .shape = .scroll, .size = 1000, .change = .append, .list = true },
+    .{ .name = "scroll-node-1000 append list", .shape = .scroll_node, .size = 1000, .change = .append, .list = true },
+    .{ .name = "scroll-10000 append list", .shape = .scroll, .size = 10_000, .change = .append, .list = true },
+    .{ .name = "select-1000 append row list", .shape = .select, .size = 1000, .change = .append_box, .list = true },
+    .{ .name = "select-1000 grow last list", .shape = .select, .size = 1000, .change = .grow_last, .list = true },
 };
 
 const SAMPLES: usize = 40;
@@ -227,6 +289,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, show_mem: bool, bench_filte
         // Results use the caller's arena; the scene frees as it goes.
         var target = try Scene.init(std.heap.smp_allocator, io, scenario.shape, scenario.size);
         defer target.deinit();
+        if (scenario.list) try target.setList();
         var stats: bench_utils.BenchStats = .{};
         var work: renderer.FrameWork = .{};
         for (0..WARMUP_SAMPLES + SAMPLES) |sample| {

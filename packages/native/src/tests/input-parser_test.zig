@@ -236,13 +236,18 @@ fn split(harness: *Harness, chunks: []const []const u8) ![]const Got {
 }
 
 fn check(input: []const u8, expected: []const Expect) !void {
+    return checkWith(.{}, input, expected);
+}
+
+fn checkWith(expect: ip.Expectations, input: []const u8, expected: []const Expect) !void {
     var harness = try Harness.create();
     defer harness.deinit();
+    harness.parser.setExpectations(expect);
     try expectGot(input, expected, try harness.feed(input));
 }
 
-fn checkOne(cases: []const struct { []const u8, Expect }) !void {
-    for (cases) |case| try check(case[0], &.{case[1]});
+fn checkOne(expect: ip.Expectations, cases: []const struct { []const u8, Expect }) !void {
+    for (cases) |case| try checkWith(expect, case[0], &.{case[1]});
 }
 
 /// Feeds `head`, waits 100 ms, and feeds `tail`. The wait reports the first `at_wait` events of
@@ -295,7 +300,8 @@ fn x10(code: u8, x: u8, y: u8) [6]u8 {
 // parse.keypress.test.ts
 
 test "input parser text, controls, and Alt prefixes" {
-    try checkOne(&.{
+    // Confirmed Kitty reads a raw ESC and the rest of its read the same way (issue 466).
+    for ([_]ip.Expectations{ .{}, .{ .kitty_keyboard = true, .escape_prefix = true } }) |expect| try checkOne(expect, &.{
         .{ "a", Expect{ .kind = .key, .action = 1, .code = 'a', .flags = ip.flags.key_typed, .text = "a" } },
         .{ "A", kt('A', NONE, "A") },
         .{ "1", ch('1') },
@@ -447,7 +453,7 @@ test "input parser applies ESC ESC only to key sequences" {
 }
 
 test "input parser legacy navigation, function, and modified keys" {
-    try checkOne(&.{
+    try checkOne(.{}, &.{
         .{ "\x1bOP", k(K.f(1), NONE) },
         .{ "\x1bOQ", k(K.f(2), NONE) },
         .{ "\x1bOR", k(K.f(3), NONE) },
@@ -565,7 +571,7 @@ test "input parser legacy navigation, function, and modified keys" {
 }
 
 test "input parser modifyOtherKeys" {
-    try checkOne(&.{
+    try checkOne(.{}, &.{
         .{ "\x1b[27;2;49~", kt('1', SHIFT, "1") },
         .{ "\x1b[27;2;13~", k(K.enter, SHIFT) },
         .{ "\x1b[27;5;13~", Expect{ .kind = .key, .action = 1, .code = K.enter, .mods = CTRL, .flags = 0 } },
@@ -644,7 +650,7 @@ test "input parser Kitty keys report modifiers, events, and text" {
     const kitty = ip.flags.key_kitty;
     const caps: Mods = .{ .caps_lock = true };
     const num: Mods = .{ .num_lock = true };
-    try checkOne(&.{
+    try checkOne(.{}, &.{
         .{ "\x1b[97u", Expect{ .kind = .key, .action = 1, .code = 'a', .flags = kitty, .text = "a", .raw = "\x1b[97u" } },
         .{ "\x1b[97;2u", kt('a', SHIFT, "A") },
         .{ "\x1b[97:65;2u", kt('a', SHIFT, "A") },
@@ -717,6 +723,7 @@ test "input parser Kitty keys report modifiers, events, and text" {
         .{ "\x1b[1114112u", reply("\x1b[1114112u") },
         .{ "\x1b[55296u", reply("\x1b[55296u") },
         .{ "\x1b[3;5u", reply("\x1b[3;5u") },
+        .{ "\x1b[128::99;5u", reply("\x1b[128::99;5u") },
         .{ "\x1b[0u", reply("\x1b[0u") },
         .{ "\x1b[u", reply("\x1b[u") },
     });
@@ -728,11 +735,17 @@ test "input parser Kitty keys report modifiers, events, and text" {
         Expect{ .kind = .key, .action = 1, .code = 0, .flags = kitty, .text = "中文中文中文中文" },
     });
     try check("\x1b[0;;20013:25991:20013:25991:20013:25991:20013:25991:20013u", &.{
-        Expect{ .kind = .key, .action = 1, .code = 0, .flags = kitty | ip.flags.key_text_truncated, .text = "中文中文中文中文" },
+        Expect{ .kind = .key, .action = 1, .code = 0, .flags = kitty, .text = "中文中文中文中文中" },
     });
     try check("\x1b[0;;128512:128512:128512:128512:128512:128512:128512:128512:128512u", &.{
-        Expect{ .kind = .key, .action = 1, .code = 0, .flags = kitty | ip.flags.key_text_truncated, .text = utils.repeat(u8, "😀", 8) },
+        Expect{ .kind = .key, .action = 1, .code = 0, .flags = kitty, .text = utils.repeat(u8, "😀", 9) },
     });
+    try check("\x1b[0;;26412:26085:12399:26228:22825:12394:12426:12391:12377:12397u", &.{kt(0, NONE, "本日は晴天なりですね")});
+    // Text arrives whole up to sequence_bytes_max bytes before the final; a longer CSI is discarded.
+    try check("\x1b[0;;977" ++ utils.repeat(u8, ":977", 62) ++ "u", &.{
+        Expect{ .kind = .key, .action = 1, .code = 0, .flags = kitty, .text = utils.repeat(u8, "ϑ", 63) },
+    });
+    try check("\x1b[0;;0977" ++ utils.repeat(u8, ":977", 62) ++ "u", &.{});
     // Base-layout keys are reported as sent; key bindings decide policy (issue 050).
     try check("\x1b[97:65:113u", &.{Expect{ .kind = .key, .action = 1, .code = 'a', .base = 'q' }});
     try check("\x1b[12618::99;5u", &.{Expect{ .kind = .key, .action = 1, .code = 12618, .mods = CTRL, .base = 'c' }});
@@ -816,7 +829,7 @@ test "input parser X10 mouse reports" {
 
 test "input parser SGR mouse reports" {
     const all = mods(&.{ SHIFT, ALT, CTRL });
-    try checkOne(&.{
+    try checkOne(.{}, &.{
         .{ "\x1b[<0;11;6M", Expect{ .kind = .mouse, .action = 1, .code = 0, .x = 10, .y = 5, .raw = "\x1b[<0;11;6M", .text = "" } },
         .{ "\x1b[<0;11;6m", mouse(.up, 0, 10, 5, NONE) },
         .{ "\x1b[<1;11;6M", down(1, 10, 5) },
@@ -1167,11 +1180,143 @@ test "input parser times out partial units unless they may be mouse reports, Kit
     _ = try harness.feed("\x1b[" ++ utils.repeat(u8, "9", ip.sequence_bytes_max));
     try expectGot("", &.{}, try harness.wait(20));
     try expectGot("", &.{ ch('1'), ch('q') }, try harness.feed("1q"));
+    // With ESCAPE_PREFIX (confirmed Kitty) no unit has a deadline. A raw ESC and the byte after it in the same read
+    // are Alt and that key, as without the bit; a raw ESC that ends a read is the Escape key at once, and a unit that
+    // begins the next read is reinstated and no key. Without the bit each split one times out.
+    const confirmed: ip.Expectations = .{ .kitty_keyboard = true, .escape_prefix = true };
+    for ([_]struct { []const u8, []const u8, []const Expect }{
+        .{ "\x1bb", "", &.{k('b', ALT)} },
+        .{ "\x1b\x1b", "", &.{k(K.escape, ALT)} },
+        .{ "\x1b", "", &.{k(K.escape, NONE)} },
+        .{ "\x1b", "b", &.{ k(K.escape, NONE), ch('b') } },
+        .{ "\x1b", "\r", &.{ k(K.escape, NONE), k(K.enter, NONE) } },
+        .{ "\x1b", "B", &.{ k(K.escape, NONE), ch('B') } },
+        .{ "\x1b", "[", &.{ k(K.escape, NONE), ch('[') } },
+        .{ "\x1b", "\x1b[A", &.{ k(K.escape, NONE), k(K.up, NONE) } },
+        .{ "\x1b\x1b", "j", &.{ k(K.escape, ALT), ch('j') } },
+        .{ "\x1b\x1b", "[?62;22c", &.{ k(K.escape, ALT), reply("\x1b[?62;22c") } },
+        .{ "\x1b", "[27u", &.{ k(K.escape, NONE), reply("\x1b[27u") } },
+        .{ "\x1b", "[A", &.{ k(K.escape, NONE), reply("\x1b[A") } },
+        .{ "\x1b", "OP", &.{ k(K.escape, NONE), k(K.f(1), NONE) } },
+        .{ "\x1b", "[<0;1;1M", &.{ k(K.escape, NONE), down(0, 0, 0) } },
+        .{ "\x1b", "[?62;22c", &.{ k(K.escape, NONE), reply("\x1b[?62;22c") } },
+        .{ "\x1b", "]11;rgb:0/0/0\x07", &.{ k(K.escape, NONE), reply("\x1b]11;rgb:0/0/0\x07") } },
+        .{ "\x1b", "_Gi=31;OK\x1b\\", &.{ k(K.escape, NONE), reply("\x1b_Gi=31;OK\x1b\\") } },
+        .{ "\x1b", "P>|kitty\x1b\\", &.{ k(K.escape, NONE), reply("\x1bP>|kitty\x1b\\") } },
+        .{ "\x1b", "[[A", &.{ k(K.escape, NONE), reply("\x1b[[A") } },
+        .{ "\x1bO", "P", &.{k(K.f(1), NONE)} },
+        .{ "\x1b[1;5", "A", &.{k(K.up, CTRL)} },
+        .{ "\x1b[M ", "!!", &.{down(0, 0, 0)} },
+        .{ "\x1b]x", "\x07", &.{reply("\x1b]x\x07")} },
+        .{ "\x1bP+", "q\x1b\\", &.{reply("\x1bP+q\x1b\\")} },
+        .{ "\x1b_g", "\x1b\\", &.{reply("\x1b_g\x1b\\")} },
+        .{ "\x1b[" ++ utils.repeat(u8, "9", ip.sequence_bytes_max), "1q", &.{} },
+    }) |case| {
+        var held = try Harness.create();
+        defer held.deinit();
+        held.parser.setExpectations(confirmed);
+        _ = try held.feed(case[0]);
+        try testing.expectEqual(null, held.parser.deadlineNs());
+        _ = try held.wait(60_000);
+        _ = try held.feed(case[1]);
+        try expectGot(case[0], case[2], held.out.items);
+        if (case[1].len == 0) continue;
+        var timed = try Harness.create();
+        defer timed.deinit();
+        timed.parser.setExpectations(.{ .kitty_keyboard = true });
+        _ = try timed.feed(case[0]);
+        try testing.expect(timed.parser.deadlineNs() != null);
+    }
+    // A lone introducer after a read-end Escape is recovered as after a timeout, with or without the bit: it waits
+    // only while the sentinel is out, and is typed once that clears (`true`). Reads come 25 ms apart. Without the bit
+    // a held bare `ESC [` waits for its next byte instead.
+    for ([_]struct { []const []const u8, bool, []const bool, []const Expect }{
+        .{ &.{ "\x1b", "]" }, true, &.{ false, true }, &.{ k(K.escape, NONE), ch(']') } },
+        .{ &.{ "\x1b", "[" }, true, &.{true}, &.{ k(K.escape, NONE), ch('[') } },
+        .{ &.{ "\x1b", "[", "M", " ", "!", "!" }, false, &.{ false, true }, &([_]Expect{k(K.escape, NONE)} ++ typed("[M !!")) },
+    }) |case| for (case[2]) |prefix| {
+        var recovery = try Harness.create();
+        defer recovery.deinit();
+        var expect: ip.Expectations = .{ .replies = true, .sentinel = true, .kitty_keyboard = true, .escape_prefix = prefix };
+        recovery.parser.setExpectations(expect);
+        for (case[0]) |chunk| {
+            _ = try recovery.feed(chunk);
+            _ = try recovery.wait(25);
+        }
+        expect.sentinel = !case[1];
+        recovery.parser.setExpectations(expect);
+        _ = try recovery.wait(0);
+        try expectGot(case[0][1], case[3], recovery.out.items);
+    };
+    // A feed that stops for sink room right after an ESC leaves it to the rest of the same read.
+    var small = try Harness.init(4, 64 * 1024);
+    defer small.deinit();
+    small.parser.setExpectations(confirmed);
+    try expectGot("\xc3\x1bb", &.{ k('C', ALT), k('b', ALT) }, try small.feed("\xc3\x1bb"));
+    // An ESC that ended the read of the confirming reply, before the bit was set, is the Escape key on the next feed.
+    var late = try Harness.create();
+    defer late.deinit();
+    late.parser.setExpectations(.{ .kitty_keyboard = true });
+    _ = try late.feed("\x1b[?5u\x1b");
+    late.parser.setExpectations(confirmed);
+    _ = try late.wait(25);
+    _ = try late.feed("b");
+    try expectGot("", &.{ reply("\x1b[?5u"), k(K.escape, NONE), ch('b') }, late.out.items);
+    // While a push's `CSI ? u` is unanswered, its reply split by a pause is not typed. Chunks come one read each,
+    // with the pause between them. No key starts with `CSI ?`, and a held bare `ESC [` already waits for its next
+    // byte; a `?` continues it, or the `[` after a timed-out Escape, only with the rest in the same read.
+    const query: ip.Expectations = .{ .kitty_keyboard = true, .kitty_query = true };
+    for ([_]struct { ip.Expectations, u64, []const []const u8, []const Expect }{
+        .{ query, 25, &.{ "\x1b[?5", "u" }, &.{reply("\x1b[?5u")} },
+        .{ query, 60_000, &.{ "\x1b[?5", "u" }, &.{reply("\x1b[?5u")} },
+        .{ query, 25, &.{ "\x1b[?", "5u" }, &.{reply("\x1b[?5u")} },
+        .{ query, 25, &.{ "\x1b[", "?5u" }, &.{reply("\x1b[?5u")} },
+        .{ query, 25, &.{ "\x1b", "[?5u" }, &.{ k(K.escape, NONE), reply("\x1b[?5u") } },
+        .{ query, 25, &.{ "\x1b[?", "1;2c" }, &.{reply("\x1b[?1;2c")} },
+        // The tail never comes: digits join the fragment, another key ends it and is typed.
+        .{ query, 60_000, &.{ "\x1b[?5", "7", "j" }, &.{ frag("\x1b[?57"), ch('j') } },
+        .{ query, 60_000, &.{ "\x1b[?5", "7j" }, &.{ frag("\x1b[?57"), ch('j') } },
+        .{ query, 60_000, &.{ "\x1b[?5", ";j" }, &.{ frag("\x1b[?5;"), ch('j') } },
+        .{ query, 60_000, &.{ "\x1b[?5", "$j" }, &.{ frag("\x1b[?5$"), ch('j') } },
+        .{ query, 60_000, &.{ "\x1b[?5", "7hello" }, &([_]Expect{frag("\x1b[?57")} ++ typed("hello")) },
+        .{ query, 25, &.{ "\x1b[", "?hello" }, &([_]Expect{frag("\x1b[?")} ++ typed("hello")) },
+        .{ query, 60_000, &.{ "\x1b[?", "\x1b[A" }, &.{ frag("\x1b[?"), k(K.up, NONE) } },
+        // Typed after a pause, with fewer than two more bytes in the read: Alt+[ then `?`, and Escape then `[` and
+        // `?`, stay as today.
+        .{ query, 25, &.{ "\x1b[", "?j" }, &.{ frag("\x1b["), ch('?'), ch('j') } },
+        .{ query, 25, &.{ "\x1b", "[", "?" }, &.{ k(K.escape, NONE), ch('['), ch('?') } },
+        .{ query, 25, &.{ "\x1b", "[?j" }, &.{ k(K.escape, NONE), ch('['), ch('?'), ch('j') } },
+        // Only `?` and digits wait: a Kitty keyboard reply has no `;`.
+        .{ query, 25, &.{ "\x1b[?1;", "2c" }, &.{ frag("\x1b[?1;"), ch('2'), ch('c') } },
+        .{ query, 25, &.{ "\x1b", "j" }, &.{ k(K.escape, NONE), ch('j') } },
+        // Without an outstanding query the pause cuts the reply short, as before.
+        .{ kitty, 25, &.{ "\x1b[?5", "u" }, &.{ frag("\x1b[?5"), ch('u') } },
+        .{ kitty, 25, &.{ "\x1b[", "?5u" }, &.{ frag("\x1b["), ch('?'), ch('5'), ch('u') } },
+        .{ kitty, 25, &.{ "\x1b", "[?5u" }, &.{ k(K.escape, NONE), ch('['), ch('?'), ch('5'), ch('u') } },
+    }) |case| {
+        var split_reply = try Harness.create();
+        defer split_reply.deinit();
+        split_reply.parser.setExpectations(case[0]);
+        for (case[2]) |chunk| {
+            _ = try split_reply.feed(chunk);
+            _ = try split_reply.wait(case[1]);
+        }
+        try expectGot(case[2][0], case[3], split_reply.out.items);
+    }
+    // A push or pop clears the bit: a held unit gets its deadline back and is cut short on the next feed.
+    harness.parser.setExpectations(confirmed);
+    _ = try harness.feed("\x1bO");
+    try expectGot("", &.{}, try harness.wait(60_000));
+    harness.parser.setExpectations(.{ .kitty_keyboard = true });
+    try expectGot("", &.{frag("\x1bO")}, try harness.wait(0));
 }
 
 test "input parser types no reply byte at any cut or pause while a sentinel is out" {
-    const sentinel: ip.Expectations = .{ .replies = true, .sentinel = true };
-    for ([_][]const u8{
+    // Confirmed Kitty too: its lone Escape is a key at once instead of at the timeout.
+    for ([_]ip.Expectations{
+        .{ .replies = true, .sentinel = true },
+        .{ .replies = true, .sentinel = true, .kitty_keyboard = true, .escape_prefix = true },
+    }) |sentinel| for ([_][]const u8{
         "\x1b[?62;22c",          "\x1b[?2026;2$y",            "\x1b[?5u",                   "\x1b[24;80R",      "\x1b[4;600;800t",
         "\x1b]11;rgb:0/0/0\x07", "\x1b]4;1;rgb:cd/0/0\x1b\\", "\x1bP>|kitty(0.40.1)\x1b\\", "\x1bP1+r54\x1b\\", "\x1b_Gi=31;OK\x1b\\",
     }) |input| {
@@ -1186,8 +1331,9 @@ test "input parser types no reply byte at any cut or pause while a sentinel is o
             defer harness.deinit();
             harness.parser.setExpectations(sentinel);
             _ = try harness.feed(input[0..cut]);
-            // A lone Escape still times out; the reply after it is not typed.
-            try expectGot(input, if (cut == 1) &.{k(K.escape, NONE)} else &.{}, try harness.wait(pause));
+            // A lone Escape still is a key; the reply after it is not typed.
+            _ = try harness.wait(pause);
+            try expectGot(input, if (cut == 1) &.{k(K.escape, NONE)} else &.{}, harness.out.items);
             _ = try harness.feed(input[cut..]);
             _ = try harness.feed("j");
             if (!gotEql(whole.out.items, harness.out.items[@intFromBool(cut == 1)..])) {
@@ -1197,7 +1343,16 @@ test "input parser types no reply byte at any cut or pause while a sentinel is o
                 return error.TestUnexpectedResult;
             }
         };
-    }
+        // One byte per read with no pause: confirmed Kitty's Escape comes first, then the reply as a whole.
+        var bytes = try Harness.create();
+        defer bytes.deinit();
+        bytes.parser.setExpectations(sentinel);
+        for (input) |byte| _ = try bytes.feed(&.{byte});
+        _ = try bytes.feed("j");
+        const escaped = @intFromBool(sentinel.escape_prefix);
+        try expectGot(input, if (sentinel.escape_prefix) &.{k(K.escape, NONE)} else &.{}, bytes.out.items[0..escaped]);
+        try testing.expect(gotEql(whole.out.items, bytes.out.items[escaped..]));
+    };
 }
 
 /// Typed keys: Enter for `\r`, otherwise the byte.
@@ -1483,8 +1638,8 @@ test "input parser arbitrary bytes with uneven time stay bounded" {
         const chunk = try arbitraryBytes(testing.allocator, &seed, 64);
         defer testing.allocator.free(chunk);
         harness.now += (next(&seed) % 30) * ms;
-        // SENTINEL implies REPLIES.
-        const bits: u8 = @intCast(next(&seed) % 16);
+        // SENTINEL implies REPLIES, and ESCAPE_PREFIX implies KITTY_KEYBOARD.
+        const bits: u8 = @intCast(next(&seed) % 32);
         harness.parser.setExpectations(@bitCast(bits | bits >> 3));
         _ = try harness.feed(chunk);
         if (next(&seed) % 4 == 0) _ = try harness.wait(20);

@@ -12,34 +12,52 @@ test "Session palette queries admit only bounded read-only packets in output ord
     var now_ns: u64 = 0;
     var bytes: [16 * 1024]u8 = undefined;
     const queries = "\x1b]4;0;?\x07\x1b]4;255;?\x07\x1b]10;?\x07\x1b]19;?\x07";
-    try testing.expectError(error.TerminalInactive, f.value.control(.{ .palette_query = queries }));
+    try testing.expectError(error.TerminalInactive, f.value.control(.{ .palette_query = .{ .bytes = queries } }));
     try f.owner.setupSessionTerminal(f.id, .{});
     try f.drive(&now_ns, .active);
     const reservation = f.value.output.control_sequence;
     try f.value.write("before");
-    try f.value.control(.{ .palette_query = queries });
+    try f.value.control(.{ .palette_query = .{ .bytes = queries } });
     try f.value.write("after");
     try testing.expectEqualStrings("before" ++ queries ++ "after", try f.drain(&bytes));
+    try f.value.control(.{ .palette_query = .{ .bytes = queries, .sentinel = true } });
+    try testing.expectEqualStrings(queries ++ ansi.ANSI.primaryDeviceAttrs, try f.drain(&bytes));
     const wrapped = "\x1bPtmux;\x1b\x1b]4;0;?\x07\x1b\x1b]4;255;?\x07\x1b\\";
-    try f.value.control(.{ .palette_query = wrapped });
+    try f.value.control(.{ .palette_query = .{ .bytes = wrapped } });
     try testing.expectEqualStrings(wrapped, try f.drain(&bytes));
     var maximum: [session.control_packet_bytes_max]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&maximum);
     try writer.writeAll(ansi.ANSI.tmuxDcsStart);
     for (0..256) |index| try writer.print("\x1b\x1b]4;{d};?\x07", .{index});
     try writer.writeAll(ansi.ANSI.tmuxDcsEnd);
-    try f.value.control(.{ .palette_query = writer.buffered() });
+    try f.value.control(.{ .palette_query = .{ .bytes = writer.buffered() } });
     try testing.expectEqualStrings(writer.buffered(), try f.drain(&bytes));
+    // The DA1 follows the validated query in the same packet: 4093 bytes leave room for it, 4094 do not.
+    for ([_]usize{ 5, 6 }) |tens| {
+        writer = .fixed(&maximum);
+        for (0..tens) |_| try writer.writeAll("\x1b]4;10;?\x07");
+        for (0..511 - tens) |_| try writer.writeAll("\x1b]4;0;?\x07");
+        try testing.expectEqual(session.control_packet_bytes_max - 8 + tens, writer.buffered().len);
+        const before = f.value.getStats();
+        const sent = f.value.control(.{ .palette_query = .{ .bytes = writer.buffered(), .sentinel = true } });
+        if (tens == 6) {
+            try testing.expectError(error.ControlPacketTooLarge, sent);
+            try testing.expectEqualDeep(before, f.value.getStats());
+        } else {
+            try sent;
+            try testing.expectEqual(session.control_packet_bytes_max, (try f.drain(&bytes)).len);
+        }
+    }
     const oversized: [session.control_packet_bytes_max + 1]u8 = @splat('x');
     for ([_][]const u8{
         "",                              &oversized,                          "\x1b]4;256;?\x07", "\x1b]4;0;#ffffff\x07",
         "\x1b]10;?\x07\x1b]0;title\x07", "\x1b]18;?\x07",                     "\x1b]10;?",        "\x1bPtmux;\x1b\x1b]4;0;?\x07",
         "\x1bPtmux;\x1b\\",              "\x1bPtmux;\x1b\x1b]10;?\x07\x1b\\",
-    }) |invalid| {
+    }) |invalid| for ([_]bool{ false, true }) |sentinel| {
         const before = f.value.getStats();
-        try testing.expectError(error.InvalidOptions, f.value.control(.{ .palette_query = invalid }));
+        try testing.expectError(error.InvalidOptions, f.value.control(.{ .palette_query = .{ .bytes = invalid, .sentinel = sentinel } }));
         try testing.expectEqualDeep(before, f.value.getStats());
-    }
+    };
     try testing.expectEqualDeep(reservation, f.value.output.control_sequence);
 }
 
@@ -67,7 +85,7 @@ test "Session notification and palette rejection retain restoration reserves and
     const ticket = (try f.owner.readOutput(f.id, bytes[0..1])).?;
     const stats = f.value.getStats();
     try testing.expect(!try f.value.triggerNotification("pressure", null));
-    try testing.expectError(error.NoSpace, f.value.control(.{ .palette_query = "\x1b]4;0;?\x07" }));
+    try testing.expectError(error.NoSpace, f.value.control(.{ .palette_query = .{ .bytes = "\x1b]4;0;?\x07" } }));
     try testing.expectEqualDeep(before, f.value.renderer.?.terminal);
     try testing.expectEqualDeep(stats, f.value.getStats());
     try testing.expectEqualDeep(ticket, f.value.pending.?);
@@ -77,7 +95,7 @@ test "Session notification and palette rejection retain restoration reserves and
     try f.value.suspendTerminal();
     try testing.expectError(error.TerminalInactive, f.value.triggerNotification("suspending", null));
     try f.drive(&now_ns, .suspended);
-    try testing.expectError(error.TerminalInactive, f.value.control(.{ .palette_query = "\x1b]4;0;?\x07" }));
+    try testing.expectError(error.TerminalInactive, f.value.control(.{ .palette_query = .{ .bytes = "\x1b]4;0;?\x07" } }));
     try f.value.resumeTerminal();
     try f.drive(&now_ns, .active);
     try testing.expect(try f.value.triggerNotification("accepted", null));

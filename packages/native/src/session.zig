@@ -198,6 +198,13 @@ pub const ProgramStatus = struct {
     message: []const u8 = "",
 };
 
+/// Complete read-only OSC palette queries, optionally wrapped for tmux.
+pub const PaletteQuery = struct {
+    bytes: []const u8,
+    /// Appends DA1 after the validated queries, in the same packet.
+    sentinel: bool = false,
+};
+
 /// Byte slices are borrowed for this call only. Replies must contain complete
 /// 7-bit ASCII CSI, DCS, OSC, or APC capability responses, not input-stream chunks.
 pub const Control = union(enum) {
@@ -210,9 +217,11 @@ pub const Control = union(enum) {
     restore_modes,
     /// True appends DA1, the sentinel that ends this query batch.
     query_pixel_resolution: bool,
-    query_theme_colors,
-    /// Complete read-only OSC palette queries, optionally wrapped for tmux.
-    palette_query: []const u8,
+    /// The host stopped waiting for DA1 after a miss, so later pushes send no Kitty keyboard query.
+    end_reply_sentinel,
+    /// True appends DA1, the sentinel that ends this query batch.
+    query_theme_colors: bool,
+    palette_query: PaletteQuery,
     reset_background,
     /// Desired cursor state only; the frame encoder owns output admission.
     cursor: CursorOptions,
@@ -722,7 +731,7 @@ pub const Session = struct {
 
     /// Emitting controls use ordinary capacity, never restoration storage or headroom.
     /// Also accepts capability replies during setup after query publication and during resume.
-    /// Cursor intent is synchronous in any open phase; other controls require active.
+    /// Cursor intent and the sentinel end are synchronous in any open phase; other controls require active.
     /// Queued and copied output stays ahead.
     /// Rejection preserves state and output. No allocation or host I/O occurs.
     pub fn control(self: *Session, command: Control) Error!void {
@@ -743,13 +752,17 @@ pub const Session = struct {
             if (options.cursor) |cursor| value.terminal.setMousePointerStyle(cursor);
             return;
         }
+        if (command == .end_reply_sentinel) {
+            value.terminal.reply_sentinel = false;
+            return;
+        }
         // Malformed input is rejected in every phase, before lifecycle admission.
         switch (command) {
             .title => |title| try validateText(title, title_bytes_max),
             .kitty_keyboard_flags => |flags| {
                 if (flags & ~@as(u8, 0b11111) != 0) return error.InvalidOptions;
             },
-            .palette_query => |bytes| try validatePaletteQuery(bytes),
+            .palette_query => |query| try validatePaletteQuery(query.bytes),
             .program_status => |status| try validateProgramStatus(status),
             else => {},
         }
@@ -969,8 +982,13 @@ pub const Session = struct {
         }
         self.last_input_ns = now_ns;
         var expect = self.input_expect;
-        // The host only requests Kitty keyboard; setup pushes its flags once the terminal reports support.
-        if (self.renderer) |value| expect.kitty_keyboard = value.terminal.state.kitty_keyboard;
+        // The host only requests Kitty keyboard; setup pushes its flags once the terminal reports support,
+        // and the reply to the push's own query confirms them.
+        if (self.renderer) |value| {
+            expect.kitty_keyboard = value.terminal.state.kitty_keyboard;
+            expect.escape_prefix = value.terminal.state.kitty_confirmed;
+            expect.kitty_query = value.terminal.kittyQueryOutstanding();
+        }
         self.input.setExpectations(expect);
         const consumed = self.input.feed(bytes, now_ns, sink);
         return .{ .consumed = consumed, .discarded = self.input.discarded_count, .deadline_ns = self.input.deadlineNs() };
@@ -1128,15 +1146,15 @@ pub const Session = struct {
             try self.output.writeReservedControlAtomic(writer.buffered());
         }
         if (owned_environment) candidate.opts.env_map = &value.terminal.host_env_map.?;
+        // A reply that changes no capability, such as a Kitty keyboard confirmation, needs no repaint.
+        const repaint = !std.meta.eql(candidate.caps, value.terminal.caps) or candidate.multiplexer != value.terminal.multiplexer;
         self.queueSwitch(value);
         value.terminal = candidate;
         // Releases are not reported while mouse reporting is off (issue 426).
         if (progress.mouse != self.lifecycle.mouse) self.input.buttons_held = 0;
         self.lifecycle = progress;
         value.syncWidthMethod();
-        if (command != null and command.? == .capability_response) {
-            value.invalidateTerminalState();
-        }
+        if (command != null and command.? == .capability_response and repaint) value.invalidateTerminalState();
     }
 
     /// A packet that may switch the screen or Kitty keyboard was queued; the model has not taken it yet.
@@ -1180,10 +1198,16 @@ pub const Session = struct {
                 try writer.writeAll(ansi.ANSI.queryPixelSize);
                 if (sentinel) try writer.writeAll(ansi.ANSI.primaryDeviceAttrs);
             },
-            .query_theme_colors => try candidate.queryThemeColors(writer),
-            .palette_query => |bytes| try writer.writeAll(bytes),
+            .query_theme_colors => |sentinel| {
+                try candidate.queryThemeColors(writer);
+                if (sentinel) try writer.writeAll(ansi.ANSI.primaryDeviceAttrs);
+            },
+            .palette_query => |query| {
+                try writer.writeAll(query.bytes);
+                if (query.sentinel) try writer.writeAll(ansi.ANSI.primaryDeviceAttrs);
+            },
             .reset_background => try writer.writeAll(ansi.ANSI.resetTerminalBgColor),
-            .cursor => unreachable,
+            .cursor, .end_reply_sentinel => unreachable,
             .program_status => |status| writeProgramStatus(writer, status),
         }
     }
@@ -1244,7 +1268,7 @@ pub const Session = struct {
                 progress.step = .reset_output;
                 if (candidate.state.alt_screen) {
                     try candidate.exitAltScreen(writer);
-                } else if (builtin.os.tag == .windows and progress.screen_claimed and
+                } else if (builtin.os.tag == .windows and candidate.opts.remote_mode != .remote and progress.screen_claimed and
                     !value.useAlternateScreen and value.clearOnShutdown and value.renderOffset == 0)
                 {
                     try writer.writeByte('\r');
@@ -1564,6 +1588,7 @@ pub const Session = struct {
                 state.modify_other_keys = true;
                 state.bracketed_paste = true;
                 state.focus_tracking = true;
+                state.unicode = true;
             }
         }
         if (self.output.closed and self.isDrained()) self.state = .closed;

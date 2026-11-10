@@ -1,0 +1,1033 @@
+diff --git a/yoga/YGNodeStyle.cpp b/yoga/YGNodeStyle.cpp
+index 0d830fa..a7973ce 100644
+--- a/yoga/YGNodeStyle.cpp
++++ b/yoga/YGNodeStyle.cpp
+@@ -25,6 +25,7 @@ void updateStyle(YGNodeRef node, ValueT value) {
+   if ((style.*GetterT)() != value) {
+     if constexpr (std::is_enum_v<ValueT>) {
+       (style.*SetterT)(value);
++      resolveRef(node)->resetListSlots();
+       resolveRef(node)->markDirtyAndPropagate();
+     } else {
+       resolveRef(node)->updateStyle([&](Style& next) {
+@@ -53,6 +54,7 @@ void YGNodeCopyStyle(YGNodeRef dstNode, YGNodeConstRef srcNode) {
+   if (dst->style() != src->style()) {
+     auto next = src->style();
+     dst->style() = std::move(next);
++    dst->resetListSlots();
+     dst->markDirtyAndPropagate();
+   }
+ }
+diff --git a/yoga/algorithm/Align.h b/yoga/algorithm/Align.h
+index b12ae7f..ad9d830 100644
+--- a/yoga/algorithm/Align.h
++++ b/yoga/algorithm/Align.h
+@@ -22,7 +22,7 @@ inline Align resolveChildAlignment(
+       : child->style().alignSelf();
+ 
+   if (node->style().display() == Display::Flex && align == Align::Baseline &&
+-      isColumn(node->style().flexDirection())) {
++      (node->listLayout() || isColumn(node->style().flexDirection()))) {
+     return Align::FlexStart;
+   }
+ 
+diff --git a/yoga/algorithm/CalculateLayout.cpp b/yoga/algorithm/CalculateLayout.cpp
+index 3656146..c774da0 100644
+--- a/yoga/algorithm/CalculateLayout.cpp
++++ b/yoga/algorithm/CalculateLayout.cpp
+@@ -8,10 +8,16 @@
+ #include <algorithm>
+ #include <array>
+ #include <atomic>
++#include <bit>
+ #include <cfloat>
+ #include <cmath>
+ #include <cstddef>
++#include <cstdio>
++#include <cstdlib>
+ #include <cstring>
++#include <new>
++#include <tuple>
++#include <vector>
+ 
+ #include <yoga/Yoga.h>
+ 
+@@ -36,6 +42,8 @@
+ namespace facebook::yoga {
+ 
+ constinit std::atomic<uint32_t> gCurrentGenerationCount(0);
++// OpenTUI: list row epochs, slot stamps, and list pass ids; never 0.
++constinit std::atomic<uint64_t> gListStamp(0);
+ 
+ static bool hasAutoHorizontalMargin(const Style& style) {
+   for (const auto direction : {Direction::LTR, Direction::RTL}) {
+@@ -1734,6 +1742,677 @@ static void justifyMainAxis(
+   }
+ }
+ 
++// OpenTUI: a list box replaces STEPs 3-7 with the steps that flex takes for a
++// child that does not flex in a single-line column: STEP 3's basis, STEP 5's
++// call, justifyMainAxis at flex-start, and STEP 7's alignment. Rows never grow
++// or shrink; the box's flexDirection, flexWrap, and justifyContent, a row's
++// flexBasis, and main-axis auto margins do not apply. Rows get no main-axis
++// owner size, so their percent heights and vertical insets, and a percent gap
++// without a definite height, resolve against an indefinite height; and no
++// height cap, as in a column with overflow: scroll. Each float expression keeps
++// the statement of the flex step it copies, so the compiler contracts the same
++// expressions.
++//
++// A row's results depend only on the row and the slot key below, so a pass
++// reuses the stored results of a clean row instead of visiting it, and writes
++// its main position only when it moved. Sums run in the same order every pass.
++static bool sameBits(float a, float b) {
++  return std::bit_cast<uint32_t>(a) == std::bit_cast<uint32_t>(b);
++}
++
++static uint64_t nextListStamp() {
++  return gListStamp.fetch_add(1, std::memory_order_relaxed) + 1;
++}
++
++#ifdef OT_YOGA_TEST_ALLOCATOR
++static void saveListRow(
++    yoga::Node* node,
++    std::vector<std::tuple<yoga::Node*, LayoutResults, bool>>& saved) {
++  saved.emplace_back(node, node->getLayout(), node->getHasNewLayout());
++  for (yoga::Node* child : node->getChildren()) {
++    saveListRow(child, saved);
++  }
++}
++#endif
++
++static void calculateListLayout(
++    yoga::Node* const node,
++    const Direction direction,
++    const float innerWidth,
++    const float availableInnerHeight,
++    const SizingMode widthSizingMode,
++    const SizingMode heightSizingMode,
++    const float ownerWidth,
++    const float ownerHeight,
++    const bool performLayout,
++    LayoutData& layoutMarkerData,
++    const uint32_t depth,
++    const uint32_t generationCount,
++    float& availableInnerMainDim,
++    float& maxLineMainDim,
++    float& totalLineCrossDim,
++    bool& hasOutOfFlowRows) {
++  const auto& style = node->style();
++  const FlexDirection mainAxis = FlexDirection::Column;
++  const FlexDirection crossAxis = resolveCrossDirection(mainAxis, direction);
++  const bool stretchFit = widthSizingMode == SizingMode::StretchFit;
++  const float paddingAndBorderCross =
++      paddingAndBorderForAxis(node, crossAxis, direction, ownerWidth);
++  const float gap = style.computeGapForAxis(
++      mainAxis,
++      heightSizingMode == SizingMode::StretchFit ? availableInnerHeight
++                                                 : YGUndefined);
++  const auto stretchesCross = [&](const yoga::Node* child) {
++    return resolveChildAlignment(node, child) == Align::Stretch &&
++        !child->style().flexStartMarginIsAuto(crossAxis, direction) &&
++        !child->style().flexEndMarginIsAuto(crossAxis, direction);
++  };
++  const auto stretches = [&](yoga::Node* child) {
++    return stretchesCross(child) &&
++        !child->hasDefiniteLength(Dimension::Width, innerWidth);
++  };
++  const auto margin = [&](const yoga::Node* child, FlexDirection axis) {
++    return child->style().computeMarginForAxis(axis, innerWidth);
++  };
++  const auto ratio = [](const yoga::Node* child) {
++    return child->style().aspectRatio().unwrap();
++  };
++  // constrainMaxSizeForMode on both axes, then the row's call.
++  const auto layoutRow = [&](yoga::Node* child,
++                             float width,
++                             SizingMode widthMode,
++                             float height,
++                             SizingMode heightMode,
++                             bool layout,
++                             LayoutPassReason reason) {
++    constrainMaxSizeForMode(
++        child,
++        direction,
++        crossAxis,
++        innerWidth,
++        innerWidth,
++        &widthMode,
++        &width);
++    constrainMaxSizeForMode(
++        child,
++        direction,
++        mainAxis,
++        YGUndefined,
++        innerWidth,
++        &heightMode,
++        &height);
++    calculateLayoutInternal(
++        child,
++        width,
++        height,
++        direction,
++        widthMode,
++        heightMode,
++        innerWidth,
++        YGUndefined,
++        layout,
++        reason,
++        layoutMarkerData,
++        depth,
++        generationCount);
++  };
++  // STEP 3 (computeFlexBasisForChild).
++  const auto basis = [&](yoga::Node* child) {
++    const float paddingAndBorder =
++        paddingAndBorderForAxis(child, mainAxis, direction, innerWidth);
++    if (child->hasDefiniteLength(Dimension::Height, YGUndefined)) {
++      return yoga::maxOrDefined(
++                 child->getResolvedDimension(
++                     direction, Dimension::Height, YGUndefined, innerWidth),
++                 FloatOptional(paddingAndBorder))
++          .unwrap();
++    }
++    const float marginRow = margin(child, FlexDirection::Row);
++    const float marginColumn = margin(child, FlexDirection::Column);
++    const bool hasAspectRatio = child->style().aspectRatio().isDefined();
++    const bool definiteWidth =
++        child->hasDefiniteLength(Dimension::Width, innerWidth);
++    float width = innerWidth;
++    float height = YGUndefined;
++    SizingMode widthMode = yoga::isDefined(innerWidth) ? SizingMode::FitContent
++                                                       : SizingMode::MaxContent;
++    SizingMode heightMode = SizingMode::MaxContent;
++    if (definiteWidth) {
++      width = child
++                  ->getResolvedDimension(
++                      direction, Dimension::Width, innerWidth, innerWidth)
++                  .unwrap() +
++          marginRow;
++      widthMode = SizingMode::StretchFit;
++    }
++    if (hasAspectRatio && widthMode == SizingMode::StretchFit) {
++      height = marginColumn + (width - marginRow) / ratio(child);
++      heightMode = SizingMode::StretchFit;
++    }
++    if (!definiteWidth && stretchFit &&
++        resolveChildAlignment(node, child) == Align::Stretch) {
++      width = innerWidth;
++      widthMode = SizingMode::StretchFit;
++      if (hasAspectRatio) {
++        height = (width - marginRow) / ratio(child);
++        heightMode = SizingMode::StretchFit;
++      }
++    }
++    layoutRow(
++        child,
++        width,
++        widthMode,
++        height,
++        heightMode,
++        false,
++        LayoutPassReason::kMeasureChild);
++    return yoga::maxOrDefined(
++        child->getLayout().measuredDimension(Dimension::Height),
++        paddingAndBorder);
++  };
++  // STEP 5 (distributeFreeSpaceSecondPass) for a row that does not flex.
++  const auto measureRow = [&](yoga::Node* child, float mainSize, bool layout) {
++    const float marginMain = margin(child, mainAxis);
++    float width = innerWidth;
++    float height = mainSize + marginMain;
++    SizingMode widthMode = SizingMode::StretchFit;
++    if (child->style().aspectRatio().isDefined()) {
++      width = (height - marginMain) * ratio(child);
++      width += margin(child, crossAxis);
++    } else if (stretchFit && stretches(child)) {
++    } else if (!child->hasDefiniteLength(Dimension::Width, innerWidth)) {
++      widthMode = yoga::isUndefined(width) ? SizingMode::MaxContent
++                                           : SizingMode::FitContent;
++    } else {
++      width = child
++                  ->getResolvedDimension(
++                      direction, Dimension::Width, innerWidth, innerWidth)
++                  .unwrap() +
++          margin(child, crossAxis);
++      const bool isLoosePercentageMeasurement =
++          child->getProcessedDimension(Dimension::Width).isPercent() &&
++          !stretchFit;
++      widthMode = yoga::isUndefined(width) || isLoosePercentageMeasurement
++          ? SizingMode::MaxContent
++          : SizingMode::StretchFit;
++    }
++    layoutRow(
++        child,
++        width,
++        widthMode,
++        height,
++        SizingMode::StretchFit,
++        layout,
++        layout ? LayoutPassReason::kFlexLayout
++               : LayoutPassReason::kFlexMeasure);
++  };
++  // STEP 7: a stretched row's layout at the line's cross size, or the row's
++  // cross position in the container's cross size.
++  const auto alignRow = [&](yoga::Node* child,
++                            float lineCross,
++                            float container) {
++    float leadingCrossDim = style.computeFlexStartPaddingAndBorder(
++        crossAxis, direction, ownerWidth);
++    const Align alignItem = resolveChildAlignment(node, child);
++    const auto& childStyle = child->style();
++    if (stretchesCross(child)) {
++      if (!child->hasDefiniteLength(Dimension::Width, innerWidth)) {
++        float height = child->getLayout().measuredDimension(Dimension::Height);
++        float width = lineCross;
++        if (childStyle.aspectRatio().isDefined()) {
++          const float product = height * ratio(child);
++          width = margin(child, crossAxis) + product;
++        }
++        height += margin(child, mainAxis);
++        // Both sizes are defined, so constrainMaxSizeForMode keeps the modes.
++        layoutRow(
++            child,
++            width,
++            SizingMode::StretchFit,
++            height,
++            SizingMode::StretchFit,
++            true,
++            LayoutPassReason::kStretch);
++      }
++    } else {
++      const float remainingCrossDim =
++          container - child->dimensionWithMargin(crossAxis, innerWidth);
++      if (childStyle.flexStartMarginIsAuto(crossAxis, direction) &&
++          childStyle.flexEndMarginIsAuto(crossAxis, direction)) {
++        leadingCrossDim += yoga::maxOrDefined(0.0f, remainingCrossDim / 2);
++      } else if (childStyle.flexEndMarginIsAuto(crossAxis, direction)) {
++      } else if (childStyle.flexStartMarginIsAuto(crossAxis, direction)) {
++        leadingCrossDim += yoga::maxOrDefined(0.0f, remainingCrossDim);
++      } else if (alignItem == Align::FlexStart) {
++      } else if (alignItem == Align::Center) {
++        leadingCrossDim += remainingCrossDim / 2;
++      } else {
++        leadingCrossDim += remainingCrossDim;
++      }
++    }
++    child->setLayoutPosition(
++        child->getLayout().position(flexStartEdge(crossAxis)) + leadingCrossDim,
++        flexStartEdge(crossAxis));
++  };
++  // justifyMainAxis adds the gap before a row's size and no gap after the last
++  // row, so a row's size waits for the next row.
++  float mainDim =
++      style.computeFlexStartPaddingAndBorder(mainAxis, direction, ownerWidth);
++  float pendingMainDim = 0;
++  bool first = true;
++  const auto advance = [&](float size) {
++    if (!first) {
++      mainDim += gap;
++      mainDim += pendingMainDim;
++    }
++    first = false;
++    pendingMainDim = size;
++  };
++  const auto place = [&](yoga::Node* child, float size) {
++    advance(size);
++    if (performLayout) {
++      child->setLayoutPosition(
++          child->getLayout().position(flexStartEdge(mainAxis)) + mainDim,
++          flexStartEdge(mainAxis));
++    }
++  };
++  // A clean row moves only along the main axis, from its stored position.
++  const auto placeClean =
++      [&](yoga::Node* child, ListRowEntry& entry, float size) {
++        advance(size);
++        if (performLayout && !sameBits(entry.offset, mainDim)) {
++          entry.offset = mainDim;
++          child->setLayoutPosition(
++              entry.baseTop + mainDim, flexStartEdge(mainAxis));
++          child->setHasNewLayout(true);
++        }
++      };
++  const auto line = [&](float size) {
++    return boundAxis(
++               node,
++               crossAxis,
++               direction,
++               size + paddingAndBorderCross,
++               ownerWidth,
++               ownerWidth) -
++        paddingAndBorderCross;
++  };
++  float lineCross = line(innerWidth);
++
++  // The memo is off for a pass of a list with display: contents children, or
++  // when the entries cannot grow; that pass resets the slots.
++  ListState* memo = node->listState();
++  if (memo != nullptr) {
++    memo->pass = 0;
++    bool on = !node->hasContentsChildren();
++#ifdef OT_YOGA_TEST_ALLOCATOR
++    on = on && testListMemo != 0;
++#endif
++    if (on) {
++      try {
++        memo->entries.resize(node->getChildCount());
++      } catch (const std::bad_alloc&) {
++        on = false;
++      }
++    }
++    if (!on) {
++      memo->resetSlots();
++      memo = nullptr;
++    }
++  }
++  // Slot 0 is the layout pass's; measure passes share slots 1-3.
++  size_t s = 0;
++  ListSlot* slot = nullptr;
++  bool baselineAncestor = false;
++  if (memo != nullptr) {
++    const uint32_t version = node->getConfig()->getVersion();
++    const auto matches = [&](const ListSlot& key) {
++      return key.stamp != 0 && sameBits(key.innerWidth, innerWidth) &&
++          sameBits(key.ownerWidth, ownerWidth) &&
++          key.configVersion == version && key.widthMode == widthSizingMode &&
++          key.direction == direction;
++    };
++    if (!performLayout) {
++      s = 1;
++      while (s < memo->slots.size() && !matches(memo->slots[s])) {
++        s++;
++      }
++      if (s == memo->slots.size()) {
++        s = 1 + memo->nextMeasureSlot;
++        memo->nextMeasureSlot = (memo->nextMeasureSlot + 1) % 3;
++      }
++    }
++    slot = &memo->slots[s];
++    if (!matches(*slot)) {
++      *slot = {
++          .innerWidth = innerWidth,
++          .ownerWidth = ownerWidth,
++          .configVersion = version,
++          .widthMode = widthSizingMode,
++          .direction = direction,
++          .stamp = nextListStamp()};
++    }
++    memo->pass = nextListStamp();
++    // calculateBaseline reads the measured height of its baseline child,
++    // through any containers between.
++    for (auto owner = node->getOwner(); owner != nullptr;
++         owner = owner->getOwner()) {
++      if (!owner->listLayout() && isBaselineLayout(owner)) {
++        baselineAncestor = true;
++        break;
++      }
++    }
++  }
++
++  float sizeConsumed = 0;
++  float crossDim = 0;
++  float leadingGap = 0;
++  bool skipped = false;
++#ifdef OT_YOGA_TEST_ALLOCATOR
++  // A visit of a reused row gives its stored sizes and, in a layout pass, the
++  // values its subtree holds. Restores what the visit wrote.
++  const auto verify = [&](yoga::Node* child,
++                          const ListRowEntry& entry,
++                          const ListRowResult& result) {
++    if (testListMemo != 2) {
++      return;
++    }
++    std::vector<std::tuple<yoga::Node*, LayoutResults, bool>> saved;
++    saveListRow(child, saved);
++    const LayoutData data = layoutMarkerData;
++    const uint32_t visits = testListVisitCount;
++    child->processDimensions();
++    if (performLayout) {
++      child->setPosition(
++          child->resolveDirection(direction), innerWidth, YGUndefined);
++    }
++    const float baseTop = child->getLayout().position(flexStartEdge(mainAxis));
++    const float mainSize = boundAxisWithinMinAndMax(
++                               child,
++                               direction,
++                               mainAxis,
++                               FloatOptional{basis(child)},
++                               YGUndefined,
++                               ownerWidth)
++                               .unwrap();
++    const float marginMain = margin(child, mainAxis);
++    bool same = sameBits(mainSize + marginMain, result.outerMain);
++    if (stretchFit && !performLayout) {
++      same = same && sameBits(marginMain + mainSize, result.placeSize);
++    } else {
++      measureRow(child, mainSize, performLayout && !stretches(child));
++      same = same &&
++          sameBits(
++                 child->dimensionWithMargin(mainAxis, innerWidth),
++                 result.placeSize) &&
++          (stretchFit ||
++           sameBits(
++               child->dimensionWithMargin(crossAxis, innerWidth),
++               result.cross));
++    }
++    if (performLayout) {
++      same = same && sameBits(baseTop, entry.baseTop) &&
++          sameBits(entry.offset, mainDim);
++      child->setLayoutPosition(baseTop + mainDim, flexStartEdge(mainAxis));
++      alignRow(child, lineCross, stretchFit ? innerWidth : lineCross);
++      // In RTL the step writes the row's right edge, which has no raw slot
++      // and no rounding, and STEP 10 its left.
++      const auto cross = [&](const yoga::Node* n, const LayoutResults& l) {
++        return n == child && crossAxis == FlexDirection::RowReverse
++            ? l.position(PhysicalEdge::Right)
++            : l.rawPosition(PhysicalEdge::Left);
++      };
++      for (const auto& [savedNode, layout, _] : saved) {
++        const auto& now = savedNode->getLayout();
++        same = same &&
++            sameBits(cross(savedNode, now), cross(savedNode, layout)) &&
++            sameBits(
++                   now.rawPosition(PhysicalEdge::Top),
++                   layout.rawPosition(PhysicalEdge::Top)) &&
++            sameBits(
++                   now.rawDimension(Dimension::Width),
++                   layout.rawDimension(Dimension::Width)) &&
++            sameBits(
++                   now.rawDimension(Dimension::Height),
++                   layout.rawDimension(Dimension::Height));
++      }
++    }
++    for (const auto& [savedNode, layout, hasNewLayout] : saved) {
++      savedNode->setLayout(layout);
++      savedNode->setHasNewLayout(hasNewLayout);
++    }
++    layoutMarkerData = data;
++    testListVisitCount = visits;
++    if (!same) {
++      std::fprintf(stderr, "Yoga: a list reused a stale row\n");
++      std::abort();
++    }
++  };
++#endif
++  const auto rows = [&] {
++    sizeConsumed = 0;
++    crossDim = 0;
++    leadingGap = 0;
++    skipped = false;
++    hasOutOfFlowRows = false;
++    // The rows that calculateBaseline can pick: the first, or the first
++    // aligned to the baseline.
++    bool firstRow = true;
++    bool baselineFound = false;
++    size_t index = 0;
++    for (auto child : node->getLayoutChildren()) {
++#ifdef OT_YOGA_TEST_ALLOCATOR
++      // The list skips cloneChildrenIfNeeded.
++      yoga::assertFatalWithNode(
++          child,
++          node->hasContentsChildren() || child->getOwner() == node,
++          "A list row has another owner");
++#endif
++      ListRowEntry* entry = nullptr;
++      if (memo != nullptr) {
++        entry = &memo->entries[index++];
++        const uint64_t epoch = child->getLayout().listEpoch;
++        if (entry->epoch != epoch) {
++          *entry = {.epoch = epoch};
++        }
++        bool baselineRow = false;
++        if (baselineAncestor &&
++            child->style().positionType() != PositionType::Absolute) {
++          const bool aligned =
++              resolveChildAlignment(node, child) == Align::Baseline ||
++              child->isReferenceBaseline();
++          baselineRow = firstRow || (aligned && !baselineFound);
++          firstRow = false;
++          baselineFound = baselineFound || aligned;
++        }
++        // STEP 11 reads a static row's measured size, which a measure pass
++        // may have changed, so a layout pass visits static rows.
++        const bool staticLayout = performLayout &&
++            child->style().positionType() == PositionType::Static;
++        const ListRowResult& result = entry->results[s];
++        if (!baselineRow && !staticLayout && entry->epoch != 0 &&
++            result.stamp == slot->stamp && !child->isDirty()) {
++          skipped = true;
++          sizeConsumed += result.outerMain + leadingGap;
++          leadingGap = gap;
++          if (!stretchFit) {
++            crossDim = yoga::maxOrDefined(crossDim, result.cross);
++          } else {
++            placeClean(child, *entry, result.placeSize);
++          }
++#ifdef OT_YOGA_TEST_ALLOCATOR
++          // A fit-content layout pass checks a clean row once it is placed.
++          if (stretchFit || !performLayout) {
++            verify(child, *entry, result);
++          }
++#endif
++          continue;
++        }
++        entry->visited = memo->pass;
++      }
++#ifdef OT_YOGA_TEST_ALLOCATOR
++      ++testListVisitCount;
++#endif
++      child->processDimensions();
++      if (child->style().display() == Display::None) {
++        if (performLayout) {
++          zeroOutLayoutRecursively(child);
++          child->setHasNewLayout(true);
++          child->setDirty(false);
++        }
++        if (entry != nullptr) {
++          entry->results = {};
++        }
++        continue;
++      }
++      const bool absolute =
++          child->style().positionType() == PositionType::Absolute;
++      if (performLayout) {
++        child->setPosition(
++            child->resolveDirection(direction),
++            innerWidth,
++            absolute ? availableInnerHeight : YGUndefined);
++      }
++      hasOutOfFlowRows = hasOutOfFlowRows || absolute ||
++          child->style().positionType() == PositionType::Static;
++      if (absolute) {
++        if (entry != nullptr) {
++          entry->results = {};
++        }
++        continue;
++      }
++      // A changed row's results from an earlier generation no longer hold;
++      // later passes of this generation keep its epoch.
++      if (entry != nullptr &&
++          (entry->epoch == 0 ||
++           (child->isDirty() && entry->generation != generationCount))) {
++        entry->epoch = nextListStamp();
++        entry->generation = generationCount;
++        entry->results = {};
++        child->getLayout().listEpoch = entry->epoch;
++      }
++      // A baseline reads the first row's line, which flex may have set.
++      child->setLineIndex(0);
++      const float mainSize = boundAxisWithinMinAndMax(
++                                 child,
++                                 direction,
++                                 mainAxis,
++                                 FloatOptional{basis(child)},
++                                 YGUndefined,
++                                 ownerWidth)
++                                 .unwrap();
++      const float marginMain = margin(child, mainAxis);
++      sizeConsumed += mainSize + marginMain + leadingGap;
++      leadingGap = gap;
++      ListRowResult result{.outerMain = mainSize + marginMain};
++      if (!stretchFit) {
++        measureRow(child, mainSize, performLayout && !stretches(child));
++        crossDim = yoga::maxOrDefined(
++            crossDim, child->dimensionWithMargin(crossAxis, innerWidth));
++        result.placeSize = child->dimensionWithMargin(mainAxis, innerWidth);
++        result.cross = child->dimensionWithMargin(crossAxis, innerWidth);
++      } else if (!performLayout) {
++        // A measure pass skips STEP 5 (canSkipFlex).
++        result.placeSize = marginMain + mainSize;
++        place(child, result.placeSize);
++      } else {
++        measureRow(child, mainSize, !stretches(child));
++        result.placeSize = child->dimensionWithMargin(mainAxis, innerWidth);
++        const float baseTop =
++            child->getLayout().position(flexStartEdge(mainAxis));
++        place(child, result.placeSize);
++        alignRow(child, lineCross, innerWidth);
++        if (entry != nullptr) {
++          entry->baseTop = baseTop;
++          entry->offset = mainDim;
++        }
++      }
++      if (entry != nullptr) {
++        result.stamp = slot->stamp;
++        entry->results[s] = result;
++      }
++    }
++  };
++  rows();
++  if (!stretchFit) {
++    // The widest row sets the line, and STEP 7 stretches the others to it.
++    lineCross = line(crossDim);
++    if (memo != nullptr && performLayout) {
++      // A clean row's stretch and cross position hold for one line size.
++      if (skipped && !sameBits(lineCross, slot->lineCross)) {
++        slot->stamp = nextListStamp();
++        rows();
++        lineCross = line(crossDim);
++      }
++      slot->lineCross = lineCross;
++    }
++    size_t index = 0;
++    for (auto child : node->getLayoutChildren()) {
++      if (memo == nullptr) {
++        if (child->style().display() != Display::None &&
++            child->style().positionType() != PositionType::Absolute) {
++          place(child, child->dimensionWithMargin(mainAxis, innerWidth));
++          if (performLayout) {
++            alignRow(child, lineCross, lineCross);
++          }
++        }
++        continue;
++      }
++      // Rows without this pass's results are hidden or absolute.
++      ListRowEntry& entry = memo->entries[index++];
++      const ListRowResult& result = entry.results[s];
++      if (result.stamp != slot->stamp) {
++        continue;
++      }
++      if (!performLayout) {
++        advance(result.placeSize);
++      } else if (entry.visited != memo->pass) {
++        placeClean(child, entry, result.placeSize);
++#ifdef OT_YOGA_TEST_ALLOCATOR
++        verify(child, entry, result);
++#endif
++      } else {
++        entry.baseTop = child->getLayout().position(flexStartEdge(mainAxis));
++        place(child, result.placeSize);
++        entry.offset = mainDim;
++        alignRow(child, lineCross, lineCross);
++      }
++    }
++  }
++  if (!first) {
++    mainDim += pendingMainDim;
++  }
++  mainDim +=
++      style.computeFlexEndPaddingAndBorder(mainAxis, direction, ownerWidth);
++  maxLineMainDim = mainDim;
++  totalLineCrossDim += lineCross;
++  // STEP 5's clamp of the main size, which STEP 9 reads.
++  if (heightSizingMode != SizingMode::StretchFit) {
++    const float paddingAndBorderMain =
++        paddingAndBorderForAxis(node, mainAxis, direction, ownerWidth);
++    const float minInnerMainDim =
++        style
++            .resolvedMinDimension(
++                direction, Dimension::Height, ownerHeight, ownerWidth)
++            .unwrap() -
++        paddingAndBorderMain;
++    const float maxInnerMainDim =
++        style
++            .resolvedMaxDimension(
++                direction, Dimension::Height, ownerHeight, ownerWidth)
++            .unwrap() -
++        paddingAndBorderMain;
++    if (yoga::isDefined(minInnerMainDim) && sizeConsumed < minInnerMainDim) {
++      availableInnerMainDim = minInnerMainDim;
++    } else if (
++        yoga::isDefined(maxInnerMainDim) && sizeConsumed > maxInnerMainDim) {
++      availableInnerMainDim = maxInnerMainDim;
++    } else {
++      availableInnerMainDim = sizeConsumed;
++    }
++  }
++}
++
+ //
+ // This is the main routine that implements a subset of the flexbox layout
+ // algorithm described in the W3C CSS documentation:
+@@ -1943,8 +2622,11 @@ static void calculateLayoutImpl(
+   }
+ 
+   // At this point we know we're going to perform work. Ensure that each child
+-  // has a mutable copy.
+-  node->cloneChildrenIfNeeded();
++  // has a mutable copy. OpenTUI: list mode exists only on the scene's config,
++  // which never shares a node, so a list skips the walk over its rows.
++  if (!node->listLayout()) {
++    node->cloneChildrenIfNeeded();
++  }
+   if (!fixFlexBasisFitContent || !performLayout) {
+     node->setLayoutHadOverflow(false);
+   }
+@@ -1953,11 +2635,13 @@ static void calculateLayoutImpl(
+   cleanupContentsNodesRecursively(node, performLayout);
+ 
+   // STEP 1: CALCULATE VALUES FOR REMAINDER OF ALGORITHM
+-  const FlexDirection mainAxis =
+-      resolveDirection(node->style().flexDirection(), direction);
++  const FlexDirection mainAxis = node->listLayout()
++      ? FlexDirection::Column
++      : resolveDirection(node->style().flexDirection(), direction);
+   const FlexDirection crossAxis = resolveCrossDirection(mainAxis, direction);
+   const bool isMainAxisRow = isRow(mainAxis);
+-  const bool isNodeFlexWrap = node->style().flexWrap() != Wrap::NoWrap;
++  const bool isNodeFlexWrap =
++      !node->listLayout() && node->style().flexWrap() != Wrap::NoWrap;
+ 
+   const float mainAxisOwnerSize = isMainAxisRow ? ownerWidth : ownerHeight;
+   const float crossAxisOwnerSize = isMainAxisRow ? ownerHeight : ownerWidth;
+@@ -2008,7 +2692,7 @@ static void calculateLayoutImpl(
+ 
+   // Computed basis + margins + gap
+   float totalMainDim = 0;
+-  totalMainDim += computeFlexBasisForChildren(
++  totalMainDim += node->listLayout() ? 0.0f : computeFlexBasisForChildren(
+       node,
+       availableInnerWidth,
+       availableInnerHeight,
+@@ -2054,6 +2738,28 @@ static void calculateLayoutImpl(
+ 
+   // Max main dimension of all the lines.
+   float maxLineMainDim = 0;
++  // OpenTUI: a list without absolute or static rows has no STEP 11 work.
++  bool hasOutOfFlowRows = true;
++  if (node->listLayout()) {
++    calculateListLayout(
++        node,
++        direction,
++        availableInnerWidth,
++        availableInnerHeight,
++        widthSizingMode,
++        heightSizingMode,
++        ownerWidth,
++        ownerHeight,
++        performLayout,
++        layoutMarkerData,
++        depth,
++        generationCount,
++        availableInnerMainDim,
++        maxLineMainDim,
++        totalLineCrossDim,
++        hasOutOfFlowRows);
++    startOfLineIterator = node->getLayoutChildren().end();
++  }
+   for (; startOfLineIterator != node->getLayoutChildren().end(); lineCount++) {
+     auto flexLine = calculateFlexLine(
+         node,
+@@ -2677,7 +3383,8 @@ static void calculateLayoutImpl(
+ 
+   // As we only wrapped in normal direction yet, we need to reverse the
+   // positions on wrap-reverse.
+-  if (performLayout && node->style().flexWrap() == Wrap::WrapReverse) {
++  if (performLayout && isNodeFlexWrap &&
++      node->style().flexWrap() == Wrap::WrapReverse) {
+     for (auto child : node->getLayoutChildren()) {
+       if (child->style().positionType() != PositionType::Absolute) {
+         child->setLayoutPosition(
+@@ -2695,7 +3402,15 @@ static void calculateLayoutImpl(
+     const bool needsCrossTrailingPos = needsTrailingPosition(crossAxis);
+ 
+     if (needsMainTrailingPos || needsCrossTrailingPos) {
++      // OpenTUI: a list's clean rows keep their trailing positions: they
++      // change only with the list's width, and then the list visits them.
++      const ListState* list = node->listState();
++      const uint64_t pass = list != nullptr ? list->pass : 0;
++      size_t index = 0;
+       for (auto child : node->getLayoutChildren()) {
++        if (pass != 0 && list->entries[index++].visited != pass) {
++          continue;
++        }
+         // Absolute children will be handled by their containing block since we
+         // cannot guarantee that their positions are set when their parents are
+         // done with layout.
+@@ -2715,8 +3430,9 @@ static void calculateLayoutImpl(
+ 
+     // STEP 11: SIZING AND POSITIONING ABSOLUTE CHILDREN
+     // Let the containing block layout its absolute descendants.
+-    if (node->style().positionType() != PositionType::Static ||
+-        node->alwaysFormsContainingBlock() || depth == 1) {
++    if (hasOutOfFlowRows &&
++        (node->style().positionType() != PositionType::Static ||
++         node->alwaysFormsContainingBlock() || depth == 1)) {
+       layoutAbsoluteDescendants(
+           node,
+           node,
+diff --git a/yoga/algorithm/CalculateLayout.h b/yoga/algorithm/CalculateLayout.h
+index 0cc7c67..77e6261 100644
+--- a/yoga/algorithm/CalculateLayout.h
++++ b/yoga/algorithm/CalculateLayout.h
+@@ -14,6 +14,13 @@
+ 
+ namespace facebook::yoga {
+ 
++#ifdef OT_YOGA_TEST_ALLOCATOR
++// OpenTUI: rows that list walks visited (calculateListLayout).
++inline thread_local uint32_t testListVisitCount = 0;
++// OpenTUI: the list row memo: 0 off, 1 on, 2 on and checking each reuse.
++inline thread_local uint32_t testListMemo = 1;
++#endif
++
+ void calculateLayout(
+     yoga::Node* node,
+     float ownerWidth,
+diff --git a/yoga/node/LayoutResults.h b/yoga/node/LayoutResults.h
+index 9dab727..07a74d5 100644
+--- a/yoga/node/LayoutResults.h
++++ b/yoga/node/LayoutResults.h
+@@ -59,6 +59,9 @@ struct LayoutResults {
+   // to this node's children; NaN before the first pass and after a reset.
+   std::array<double, 2> roundedOrigin = {{YGUndefined, YGUndefined}};
+ 
++  // OpenTUI: the epoch of a list row's stored results; 0 after any reset.
++  uint64_t listEpoch = 0;
++
+   Direction direction() const {
+     return direction_;
+   }
+diff --git a/yoga/node/Node.h b/yoga/node/Node.h
+index e971de2..3ef1f8d 100644
+--- a/yoga/node/Node.h
++++ b/yoga/node/Node.h
+@@ -7,14 +7,17 @@
+ 
+ #pragma once
+ 
++#include <array>
+ #include <cstdint>
+ #include <cstdio>
++#include <memory>
+ #include <type_traits>
+ #include <utility>
+ #include <vector>
+ 
+ #include <yoga/Yoga.h>
+ #include <yoga/OTAllocator.h>
++#include <yoga/algorithm/SizingMode.h>
+ #include <yoga/node/LayoutableChildren.h>
+ 
+ #include <yoga/config/Config.h>
+@@ -33,6 +36,66 @@ struct YGNode {};
+ 
+ namespace facebook::yoga {
+ 
++// OpenTUI: a list box's stored row results (calculateListLayout). A slot is one
++// pass key: slot 0 is the layout pass, slots 1-3 measure passes.
++struct ListSlot {
++  float innerWidth = 0;
++  float ownerWidth = 0;
++  float lineCross = 0;
++  uint32_t configVersion = 0;
++  SizingMode widthMode = SizingMode::MaxContent;
++  Direction direction = Direction::Inherit;
++  uint64_t stamp = 0;
++};
++
++// One row's results in one slot: main size plus margin, the size its place
++// adds, and its cross size with margins.
++struct ListRowResult {
++  float outerMain = 0;
++  float placeSize = 0;
++  float cross = 0;
++  uint64_t stamp = 0;
++};
++
++// Index-aligned with the list's children. Epochs are unique, so another row at
++// this index never matches.
++struct ListRowEntry {
++  uint64_t epoch = 0;
++  uint32_t generation = 0;
++  uint64_t visited = 0;
++  std::array<ListRowResult, 4> results{};
++  // The layout slot's main position before placement, and the offset added.
++  float baseTop = 0;
++  float offset = 0;
++};
++
++struct ListState {
++  std::array<ListSlot, 4> slots{};
++  uint32_t nextMeasureSlot = 0;
++  // The pass that uses the entries, or 0 when the last pass did not.
++  uint64_t pass = 0;
++  ot::Vector<ListRowEntry> entries;
++
++  void resetSlots() {
++    for (auto& slot : slots) {
++      slot.stamp = 0;
++    }
++  }
++};
++
++// A copy starts empty, so a cloned list node lays out its rows from scratch.
++struct ListStateHolder {
++  std::unique_ptr<ListState> state;
++  ListStateHolder() = default;
++  ListStateHolder(const ListStateHolder&) noexcept {}
++  ListStateHolder& operator=(const ListStateHolder&) noexcept {
++    state.reset();
++    return *this;
++  }
++  ListStateHolder(ListStateHolder&&) noexcept = default;
++  ListStateHolder& operator=(ListStateHolder&&) noexcept = default;
++};
++
+ class YG_EXPORT Node : public ::YGNode {
+  public:
+   using LayoutableChildren = yoga::LayoutableChildren<Node>;
+@@ -80,6 +143,31 @@ class YG_EXPORT Node : public ::YGNode {
+     heightCapOnlyClamps_ = heightCapOnlyClamps;
+   }
+ 
++  // OpenTUI: lays out the in-flow children as a list (calculateListLayout).
++  bool listLayout() const {
++    return listLayout_;
++  }
++
++  // The bit is set after the allocation, so a failure leaves the node in flex.
++  void setListLayout(bool listLayout) {
++    if (listLayout_ != listLayout) {
++      listState_.state = listLayout ? ot::makeUnique<ListState>() : nullptr;
++      listLayout_ = listLayout;
++      markDirtyAndPropagate();
++    }
++  }
++
++  ListState* listState() const {
++    return listState_.state.get();
++  }
++
++  // A list's own style is an input of every row's results.
++  void resetListSlots() {
++    if (listState_.state) {
++      listState_.state->resetSlots();
++    }
++  }
++
+   YGSize measure(
+       float availableWidth,
+       MeasureMode widthMode,
+@@ -279,6 +367,7 @@ class YG_EXPORT Node : public ::YGNode {
+ 
+   void setStyle(const Style& style) {
+     style_ = style;
++    resetListSlots();
+   }
+ 
+   template <typename Update>
+@@ -287,6 +376,7 @@ class YG_EXPORT Node : public ::YGNode {
+     auto next = style_;
+     update(next);
+     style_ = std::move(next);
++    resetListSlots();
+     markDirtyAndPropagate();
+   }
+ 
+@@ -380,6 +470,7 @@ class YG_EXPORT Node : public ::YGNode {
+   bool isDirty_ : 1 = true;
+   bool alwaysFormsContainingBlock_ : 1 = false;
+   bool heightCapOnlyClamps_ : 1 = false;
++  bool listLayout_ : 1 = false;
+   NodeType nodeType_ : bitCount<NodeType>() = NodeType::Default;
+   void* context_ = nullptr;
+   YGMeasureFunc measureFunc_ = nullptr;
+@@ -397,6 +488,7 @@ class YG_EXPORT Node : public ::YGNode {
+   const Config* config_;
+   std::array<Style::SizeLength, 2> processedDimensions_{
+       {StyleSizeLength::undefined(), StyleSizeLength::undefined()}};
++  ListStateHolder listState_;
+ };
+ 
+ inline Node* resolveRef(const YGNodeRef ref) {

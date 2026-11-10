@@ -212,6 +212,15 @@ jobs:
             fi
           done
 
+          # The Rust crates are not published, but prepare-release gives them the same version.
+          RUST_VERSIONS=$(sed -n 's/^version = "\(.*\)"$/\1/p' packages/rust/Cargo.toml; grep -A1 -E '^name = "opentui(-ssh|-sys)?"$' packages/rust/Cargo.lock | sed -n 's/^version = "\(.*\)"$/\1/p')
+          if [ "$(echo $RUST_VERSIONS)" != "$TAG_VERSION $TAG_VERSION $TAG_VERSION $TAG_VERSION" ]; then
+            echo "❌ packages/rust versions ($(echo $RUST_VERSIONS)) do not match tag version ($TAG_VERSION)"
+            FAILED=true
+          else
+            echo "✅ packages/rust versions match: $TAG_VERSION"
+          fi
+
           if [ "$FAILED" = true ]; then
             echo ""
             echo "Version validation FAILED!"
@@ -298,12 +307,12 @@ jobs:
       # it, and the smoke tests can be downloading the unsigned one then.
       npmPackagesArtifact: ${{ needs.prepare.outputs.isDryRun == 'true' && format('npm-packages-{0}', needs.prepare.outputs.fullTag) || format('npm-packages-signed-{0}', needs.prepare.outputs.fullTag) }}
     env:
-      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
-      AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE }}
-      AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ vars.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+      AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE: ${{ vars.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE }}
+      AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT }}
 
     steps:
       - name: Skip code signing for dry runs
