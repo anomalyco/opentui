@@ -376,6 +376,20 @@ describe("measured text stays inside its parent's rounded content box", () => {
       ],
       [[5, { padding: 2 }]],
     ],
+    [
+      // Absolute, so the fresh copy rounds from the same origin.
+      "a cached measurement at a height within 1e-4 across a half cell",
+      { position: "absolute", height: 9.49988, alignItems: "flex-start" },
+      [[-1, 1, { content: "0\n1\n2\n3\n4\n5\n6\n7\n8\n9", flexGrow: 1, flexBasis: 0 }]],
+      [[-1, { height: 9.49995 }]],
+    ],
+    [
+      // 40 cells and the padding add up to 64 exactly; 63.9999008 leaves 39.999897 cells for the text.
+      "a max-content measurement within 1e-4 of an at-most width across a wrap",
+      { flexDirection: "row", overflow: "scroll", alignItems: "flex-start" },
+      [[-1, 40, { paddingLeft: 24.000003814697266 }]],
+      [[-1, { flexDirection: "column", overflow: "visible", width: 63.999900817871094 }]],
+    ],
     // A large flexShrink ratio moves a box by less than 1e-4 across the wrap at N - 1e-4 as the holder resizes.
     ...(
       [
