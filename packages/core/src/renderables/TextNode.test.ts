@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test"
+import { describe, expect, it, spyOn } from "bun:test"
 import { TextNodeRenderable, isTextNodeRenderable } from "./TextNode.js"
 import { RGBA } from "../lib/RGBA.js"
 import { StyledText, red, bold, t } from "../lib/styled-text.js"
@@ -264,18 +264,72 @@ describe("TextNodeRenderable", () => {
       node.add(child)
       node.add("Last")
 
-      node.remove(child.id)
+      node.remove(child)
 
       expect(node.children).toEqual(["First", "Last"])
       expect(child.parent).toBeNull()
     })
 
-    it("should throw error when child not found in remove", () => {
+    it("should remove duplicate-id children by first public match or exact object", () => {
       const node = new TextNodeRenderable({})
+      const first = new TextNodeRenderable({ id: "duplicate" })
+      const second = new TextNodeRenderable({ id: "duplicate" })
 
-      expect(() => {
-        node.remove("nonexistent-id")
-      }).toThrow("Child not found in children")
+      node.add(first)
+      node.add(second)
+
+      expect(node.getRenderable("duplicate")).toBe(first)
+
+      node.remove(second)
+
+      expect(node.children).toHaveLength(1)
+      expect(node.children[0]).toBe(first)
+      expect(first.parent).toBe(node)
+      expect(second.parent).toBeNull()
+      expect(node.getRenderable("duplicate")).toBe(first)
+
+      const found = node.getRenderable("duplicate")
+      expect(found).toBe(first)
+      if (found) node.remove(found)
+
+      expect(node.children).toHaveLength(0)
+      expect(first.parent).toBeNull()
+    })
+
+    it("should warn in dev instead of throwing for a child not contained by the node", () => {
+      const node = new TextNodeRenderable({})
+      const child = new TextNodeRenderable({})
+
+      const warnSpy = spyOn(console, "warn").mockImplementation(() => {})
+      try {
+        expect(() => node.remove(child)).not.toThrow()
+        expect(warnSpy).toHaveBeenCalledTimes(1)
+      } finally {
+        warnSpy.mockRestore()
+      }
+    })
+
+    it("should not warn when removing an actual child", () => {
+      const node = new TextNodeRenderable({})
+      const child = new TextNodeRenderable({})
+      node.add(child)
+
+      const warnSpy = spyOn(console, "warn").mockImplementation(() => {})
+      try {
+        node.remove(child)
+        expect(warnSpy).not.toHaveBeenCalled()
+      } finally {
+        warnSpy.mockRestore()
+      }
+    })
+
+    it("should reject string ids at runtime", () => {
+      const node = new TextNodeRenderable({})
+      const child = new TextNodeRenderable({ id: "child" })
+      node.add(child)
+
+      expect(() => (node as any).remove("child")).toThrow("remove expects a TextNodeRenderable child object")
+      expect(node.children[0]).toBe(child)
     })
   })
 

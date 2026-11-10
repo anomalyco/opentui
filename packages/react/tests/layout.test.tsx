@@ -101,6 +101,71 @@ describe("React Renderer | Layout Tests", () => {
     })
   })
 
+  describe("Duplicate IDs", () => {
+    it("removes the exact duplicate-id child during keyed list reconciliation", async () => {
+      let setItems!: (items: number[]) => void
+
+      function TestComponent() {
+        const [items, updateItems] = useState([0, 1, 2])
+        setItems = updateItems
+
+        return (
+          <box id="container">
+            {items.map((item) => (
+              <box key={item} id="duplicate" height={1} flexShrink={0} />
+            ))}
+          </box>
+        )
+      }
+
+      testSetup = await testRender(<TestComponent />, { width: 20, height: 5 })
+      await testSetup.renderOnce()
+
+      const container = testSetup.renderer.root.findDescendantById("container")!
+      const initialChildren = container.getChildren()
+      const removedChild = initialChildren[1]!
+
+      act(() => setItems([0, 2]))
+      await testSetup.renderOnce()
+
+      const children = container.getChildren()
+      expect(children).toHaveLength(2)
+      expect(children[0]).toBe(initialChildren[0])
+      expect(children[1]).toBe(initialChildren[2])
+      expect(removedChild.parent).toBeNull()
+      expect(children.every((child) => child.id === "duplicate" && child.parent === container)).toBe(true)
+    })
+  })
+
+  describe("Select Rendering", () => {
+    it("should restore the selection indicator when the prop resets", async () => {
+      let resetIndicator: () => void
+
+      function TestComponent() {
+        const [showSelectionIndicator, setShowSelectionIndicator] = useState<boolean | undefined>(false)
+        resetIndicator = () => setShowSelectionIndicator(undefined)
+
+        return (
+          <select
+            width={20}
+            height={2}
+            showDescription={false}
+            showSelectionIndicator={showSelectionIndicator}
+            options={[{ name: "Option", description: "" }]}
+          />
+        )
+      }
+
+      testSetup = await testRender(<TestComponent />, { width: 20, height: 2 })
+      await testSetup.renderOnce()
+      expect(testSetup.captureCharFrame().split("\n")[0]).toStartWith(" Option")
+
+      act(() => resetIndicator())
+      await testSetup.renderOnce()
+      expect(testSetup.captureCharFrame().split("\n")[0]).toStartWith(" ▶ Option")
+    })
+  })
+
   describe("Box Layout Rendering", () => {
     it("should render basic box layout correctly", async () => {
       testSetup = await testRender(

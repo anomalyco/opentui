@@ -29,6 +29,9 @@
 *.a     binary
 *.o     binary
 
+# Terminal byte fixtures: CRLF in them is data
+packages/rust/**/*.bin binary
+
 # Archives
 *.zip binary
 *.gz  binary

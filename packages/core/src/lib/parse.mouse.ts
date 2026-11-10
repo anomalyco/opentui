@@ -175,7 +175,7 @@ export class MouseParser {
       if (type === "down" && button !== 3) {
         this.mouseButtonsPressed.add(button)
       } else if (type === "up") {
-        this.mouseButtonsPressed.clear()
+        this.mouseButtonsPressed.delete(button)
       }
     }
 

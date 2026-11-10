@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, test } from "bun:test"
-import { testRender } from "../index.js"
+import { LayoutSlotRenderable, testRender } from "../index.js"
 import { createSignal, createEffect, createMemo, For, Show, Switch, Match, Index, ErrorBoundary } from "solid-js"
 
 let testSetup: Awaited<ReturnType<typeof testRender>>
@@ -215,7 +215,7 @@ describe("SolidJS Renderer - Control Flow Components", () => {
       expect(frame).not.toContain("Count is high")
     })
 
-    it("should handle <Show> without fallback", async () => {
+    it.each(["replacement", "renderer destruction"])("should handle <Show> without fallback (%s)", async (cleanup) => {
       const [visible, setVisible] = createSignal(true)
 
       testSetup = await testRender(
@@ -247,6 +247,25 @@ describe("SolidJS Renderer - Control Flow Components", () => {
       frame = testSetup.captureCharFrame()
       expect(frame).not.toContain("Visible content")
       expect(frame).toContain("Always visible")
+
+      const placeholder = children.find((child) => child instanceof LayoutSlotRenderable)!
+      try {
+        expect(placeholder).toBeInstanceOf(LayoutSlotRenderable)
+        expect(placeholder.isFreed()).toBe(false)
+
+        if (cleanup === "replacement") {
+          setVisible(true)
+        } else {
+          testSetup.renderer.destroy()
+        }
+        await new Promise<void>((resolve) => process.nextTick(resolve))
+
+        expect(placeholder.parent).toBeNull()
+        expect(placeholder.isFreed()).toBe(true)
+      } finally {
+        testSetup.renderer.destroy()
+        placeholder?.destroy()
+      }
     })
 
     it("should conditionally render content with <Show> in the correct order", async () => {
@@ -938,6 +957,54 @@ describe("SolidJS Renderer - Control Flow Components", () => {
       expect(frame).toContain(content)
       expect(frame).not.toContain("&lt;")
       expect(frame).not.toContain("&gt;")
+    })
+
+    it("only decodes terminated entities in static JSX text", async () => {
+      testSetup = await testRender(
+        () => (
+          <box>
+            <text>&register &parameters=1 &lt;&amp;&gt;</text>
+          </box>
+        ),
+        { width: 60, height: 5 },
+      )
+
+      await testSetup.renderOnce()
+
+      expect(testSetup.captureCharFrame()).toContain("&register &parameters=1 <&>")
+    })
+
+    it("preserves dynamic text during creation and replacement", async () => {
+      const [content, setContent] = createSignal("https://example.com/?&reg=US&para=1&times=2 &copy;")
+
+      testSetup = await testRender(
+        () => (
+          <box>
+            <text>{content()}</text>
+          </box>
+        ),
+        { width: 80, height: 5 },
+      )
+
+      await testSetup.renderOnce()
+      expect(testSetup.captureCharFrame()).toContain(content())
+
+      setContent("&register &parameters=1 &copy;")
+      await testSetup.renderOnce()
+      expect(testSetup.captureCharFrame()).toContain(content())
+    })
+
+    it("preserves dynamic content properties", async () => {
+      const [content, setContent] = createSignal("&register &copy;")
+
+      testSetup = await testRender(() => <text content={content()} />, { width: 60, height: 5 })
+
+      await testSetup.renderOnce()
+      expect(testSetup.captureCharFrame()).toContain(content())
+
+      setContent("&parameters=1 &copy;")
+      await testSetup.renderOnce()
+      expect(testSetup.captureCharFrame()).toContain(content())
     })
   })
 })

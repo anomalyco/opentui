@@ -1,0 +1,141 @@
+#!/bin/sh
+set -eu
+
+VENDOR_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+OUTPUT="$VENDOR_DIR/zig-deps.tar.gz"
+OUTPUT_TMP="$OUTPUT.$$.tmp"
+MANIFEST="$VENDOR_DIR/zig-deps.sha256"
+LC_ALL=C
+export LC_ALL
+
+GHOSTTY_COMMIT=aeda37b305ee3d897ff1bfeddfe39d7fa9366a74
+GHOSTTY_SHA256=5ee98bf64d6cd93deded555b83d335ca20aca799536d1c7cae1a5d6b7799038e
+UUCODE_GHOSTTY_COMMIT=ea62149739404a73c202b48a33bf6dd2af4bd9b0
+UUCODE_GHOSTTY_SHA256=f37c4071a217853450d084cb9c12b6d4b68f887eb9cb42fe77a84f86056eacbf
+UUCODE_OPENTUI_COMMIT=d500967026220f5e283088dc69e95aa79cdaa5a0
+UUCODE_OPENTUI_SHA256=94e85a3754410df19d08344e3ed562a6a4cd7b6e0c5fbce7de55b54b6e9eca66
+YOGA_COMMIT=41118bd3a86c637fdb43a90fd596e78375137d0f
+YOGA_SHA256=afddb3b7c273642223d4237f82a41a5bfe1ad865fff1317ef6c38eaf7c9026a4
+
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256_file() { sha256sum "$1" | cut -d ' ' -f 1; }
+elif command -v shasum >/dev/null 2>&1; then
+  sha256_file() { shasum -a 256 "$1" | cut -d ' ' -f 1; }
+else
+  echo "error: sha256sum or shasum is required" >&2
+  exit 1
+fi
+
+# The archive and every input that produced it: this script's pins and the
+# OpenTUI changes. A mismatch means one changed without the other.
+manifest() (
+  cd "$VENDOR_DIR"
+  for path in zig-deps.tar.gz update-zig-deps.sh zig-deps/*; do
+    printf '%s  %s\n' "$(sha256_file "$path")" "$path"
+  done
+)
+
+if [ "${1:-}" = --check ]; then
+  if [ "$(manifest)" != "$(cat "$MANIFEST")" ]; then
+    echo "error: vendored Zig dependencies differ from $MANIFEST" >&2
+    echo "Run 'bun run vendor:update:zig' from packages/core." >&2
+    manifest | diff "$MANIFEST" - >&2 || true
+    exit 1
+  fi
+  exit 0
+fi
+
+for command_name in curl git gzip tar; do
+  command -v "$command_name" >/dev/null 2>&1 || {
+    echo "error: required command not found: $command_name" >&2
+    exit 1
+  }
+done
+
+download() {
+  url=$1
+  output=$2
+  expected=$3
+  echo "Downloading $url"
+  curl -fsSL --retry 3 --retry-delay 1 "$url" -o "$output"
+  actual=$(sha256_file "$output")
+  if [ "$actual" != "$expected" ]; then
+    echo "error: SHA-256 mismatch for $url" >&2
+    echo "expected: $expected" >&2
+    echo "actual:   $actual" >&2
+    exit 1
+  fi
+}
+
+extract() {
+  archive=$1
+  destination=$2
+  mkdir -p "$destination"
+  tar -xzf "$archive" --strip-components=1 -C "$destination"
+}
+
+TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/opentui-zig-vendor.XXXXXX")
+cleanup() {
+  rm -rf "$TMP_DIR"
+  rm -f "$OUTPUT_TMP"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+SOURCE_DIR="$TMP_DIR/source"
+DEPS_DIR="$TMP_DIR/zig-deps"
+
+download "https://github.com/ghostty-org/ghostty/archive/$GHOSTTY_COMMIT.tar.gz" "$TMP_DIR/ghostty.tar.gz" "$GHOSTTY_SHA256"
+download "https://github.com/jacobsandlund/uucode/archive/$UUCODE_GHOSTTY_COMMIT.tar.gz" "$TMP_DIR/uucode-ghostty.tar.gz" "$UUCODE_GHOSTTY_SHA256"
+download "https://github.com/jacobsandlund/uucode/archive/$UUCODE_OPENTUI_COMMIT.tar.gz" "$TMP_DIR/uucode-opentui.tar.gz" "$UUCODE_OPENTUI_SHA256"
+download "https://github.com/facebook/yoga/archive/$YOGA_COMMIT.tar.gz" "$TMP_DIR/yoga.tar.gz" "$YOGA_SHA256"
+
+extract "$TMP_DIR/ghostty.tar.gz" "$SOURCE_DIR/ghostty"
+mkdir -p "$DEPS_DIR/ghostty/pkg"
+cp "$SOURCE_DIR/ghostty/LICENSE" "$DEPS_DIR/ghostty/LICENSE"
+cp -R "$SOURCE_DIR/ghostty/include" "$SOURCE_DIR/ghostty/src" "$DEPS_DIR/ghostty/"
+rm -rf "$DEPS_DIR/ghostty/src/font/res"
+cp -R "$SOURCE_DIR/ghostty/pkg/android-ndk" "$SOURCE_DIR/ghostty/pkg/apple-sdk" "$DEPS_DIR/ghostty/pkg/"
+cp "$VENDOR_DIR/zig-deps/ghostty-build.zig" "$DEPS_DIR/ghostty/build.zig"
+cp "$VENDOR_DIR/zig-deps/ghostty-build.zig.zon" "$DEPS_DIR/ghostty/build.zig.zon"
+git -C "$DEPS_DIR/ghostty" apply "$VENDOR_DIR/zig-deps/ghostty-shared-deps.patch"
+git -C "$DEPS_DIR/ghostty" apply "$VENDOR_DIR/zig-deps/ghostty-zig-0.17.patch"
+
+for name in uucode-ghostty uucode-opentui; do
+  extract "$TMP_DIR/$name.tar.gz" "$SOURCE_DIR/$name"
+  mkdir -p "$DEPS_DIR/$name"
+  cp -R "$SOURCE_DIR/$name/LICENSE.md" "$SOURCE_DIR/$name/build.zig" "$SOURCE_DIR/$name/build.zig.zon" \
+    "$SOURCE_DIR/$name/src" "$SOURCE_DIR/$name/ucd" "$DEPS_DIR/$name/"
+done
+# Ghostty needs the newer uucode code, but its Unicode 18 data would give the embedded terminal other
+# widths than OpenTUI text (Unicode 17) and most hosts. Keep OpenTUI's Unicode 17 data files in both
+# copies; revisit this on the next Ghostty update.
+(cd "$DEPS_DIR/uucode-opentui/ucd" && find . -name '*.txt') | while read -r path; do
+  cp "$DEPS_DIR/uucode-opentui/ucd/$path" "$DEPS_DIR/uucode-ghostty/ucd/$path"
+done
+
+extract "$TMP_DIR/yoga.tar.gz" "$SOURCE_DIR/yoga"
+mkdir -p "$DEPS_DIR/yoga"
+cp "$SOURCE_DIR/yoga/LICENSE" "$DEPS_DIR/yoga/LICENSE"
+cp -R "$SOURCE_DIR/yoga/yoga" "$DEPS_DIR/yoga/yoga"
+git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-error-boundary.patch"
+git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-cache-rounding.patch"
+git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-node-reuse.patch"
+git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-absolute-edge-rounding.patch"
+git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-finite-percent.patch"
+git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-measure-height-cap.patch"
+git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-cache-margin.patch"
+git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-measure-cache-bounds.patch"
+git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-cache-owner-size.patch"
+git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-list-layout.patch"
+
+find "$DEPS_DIR" -type d -exec chmod 0755 {} +
+find "$DEPS_DIR" -type f -exec chmod 0644 {} +
+ARCHIVE="$TMP_DIR/zig-deps.tar"
+tar --sort=name --mtime='UTC 2020-01-01' --owner=0 --group=0 --numeric-owner -C "$DEPS_DIR" \
+  -cf "$ARCHIVE" ghostty uucode-ghostty uucode-opentui yoga
+gzip -n -9 "$ARCHIVE"
+cp "$ARCHIVE.gz" "$OUTPUT_TMP"
+mv "$OUTPUT_TMP" "$OUTPUT"
+manifest > "$MANIFEST"
+
+echo "Updated $OUTPUT"

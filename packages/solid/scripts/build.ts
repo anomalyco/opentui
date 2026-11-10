@@ -175,12 +175,11 @@ await buildMainEntryPoint({
   target: "bun",
 })
 
-await buildMainEntryPoint({
-  entryPoint: "components.ts",
-  label: "components",
-  outputFile: "components.js",
-  target: "node",
-})
+console.log("Building components entry point...")
+writeFileSync(
+  join(distDir, "components.js"),
+  `export { extend, getComponentCatalogue } from ${JSON.stringify(packageJson.name)}\n`,
+)
 
 console.log("Generating TypeScript declarations...")
 

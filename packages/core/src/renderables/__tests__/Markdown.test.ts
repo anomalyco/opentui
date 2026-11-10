@@ -1,3 +1,4 @@
+import type { Renderable } from "../../Renderable.js"
 import { test, expect, beforeAll, beforeEach, afterEach, afterAll } from "bun:test"
 import { Edge } from "../../yoga.js"
 import { Lexer } from "marked"
@@ -17,23 +18,31 @@ import {
   type MockMouse,
   type TestRenderer,
   MockTreeSitterClient,
+  setRendererCapabilities,
   TestRecorder,
 } from "../../testing.js"
 import { ManualClock } from "../../testing/manual-clock.js"
+import { createTestStdout } from "../../testing/test-streams.js"
+import { NativeSession } from "../../NativeSession.js"
 import { TextAttributes, type CapturedFrame } from "../../types.js"
+import type { SimpleHighlight } from "../../lib/tree-sitter/types.js"
+import { stringWidth } from "../../platform/runtime.js"
 
 let renderer: TestRenderer
 let mockMouse: MockMouse
 let renderOnce: () => Promise<void>
 let captureFrame: () => string
 let captureSpans: () => CapturedFrame
+let resizeRenderer: (width: number, height: number) => void
 let markdownTreeSitterClient: TreeSitterClient
 let mockTreeSitterClients: MockTreeSitterClient[] = []
 const HIGHLIGHT_TIMEOUT_MS = 5000
 
-const syntaxStyle = SyntaxStyle.fromStyles({
-  default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-})
+let syntaxStyle: SyntaxStyle
+const ISSUE_TABLE_MARKDOWN = `| Rank | Issue | Size | Why It Is Ready | Likely Surface |
+| --- | --- | --- | --- | --- |
+| 1 | A moderately long linked issue title | XS | A longer prose explanation of why the issue is ready. | packages/tui/src/context/sdk.tsx |
+| 2 | Another moderately long linked issue title | XS/S | Another longer prose explanation. | packages/core/src/tool/subagent.ts |`
 
 beforeAll(async () => {
   const dataPath = join(tmpdir(), "tree-sitter-markdown-renderable-test-data")
@@ -47,16 +56,20 @@ beforeEach(async () => {
   mockTreeSitterClients = []
   const testRenderer = await createTestRenderer({ width: 60, height: 40 })
   renderer = testRenderer.renderer
+  syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: RGBA.fromValues(1, 1, 1, 1) } }, renderer.nativeScene!)
   mockMouse = testRenderer.mockMouse
   renderOnce = testRenderer.renderOnce
   captureFrame = testRenderer.captureCharFrame
   captureSpans = testRenderer.captureSpans
+  resizeRenderer = testRenderer.resize
 })
 
 afterEach(async () => {
   if (renderer) {
     renderer.destroy()
+    await renderer.closed
   }
+  syntaxStyle?.destroy()
 
   for (const client of mockTreeSitterClients) {
     client.resolveAllHighlightOnce()
@@ -80,6 +93,23 @@ function createMockTreeSitterClient(): MockTreeSitterClient {
   mockTreeSitterClients.push(client)
   return client
 }
+
+test.each([
+  ["content", "```\nnew\n```"],
+  ["streaming", true],
+  ["renderNode", () => null],
+  ["internalBlockMode", "top-level"],
+] as const)("%s rejection preserves state and permits retry", (property, value) => {
+  const markdown = createMarkdownRenderable({ content: "```\nold\n```", syntaxStyle })
+  renderer.root.add(markdown)
+  const before = markdown[property]
+  const host = renderer.nativeScene.driver.renderLib.getYogaHost()
+  host.invokeCallback(() => Object.assign(markdown, { [property]: value }))
+  expect(() => host.throwCallbackError()).toThrow("Cannot mutate Yoga during a callback")
+  expect(markdown[property]).toBe(before)
+  Object.assign(markdown, { [property]: value })
+  expect(markdown[property]).toBe(value)
+})
 
 async function flushAsync(): Promise<void> {
   await Promise.resolve()
@@ -166,13 +196,29 @@ function findSpanContaining(frame: CapturedFrame, text: string) {
   return undefined
 }
 
-function getMarginBottom(renderable: { getLayoutNode(): { getMargin(edge: Edge): unknown } }): number {
-  const margin = renderable.getLayoutNode().getMargin(Edge.Bottom) as unknown
+function findRenderedText(text: string): { x: number; y: number } {
+  const lines = captureFrame().split("\n")
+  const y = lines.findIndex((line) => line.includes(text))
+  expect(y).toBeGreaterThanOrEqual(0)
+  return { x: stringWidth(lines[y]!.slice(0, lines[y]!.indexOf(text))), y }
+}
+
+function getMarginBottom(renderable: Renderable): number {
+  const margin = renderable.getMargin(Edge.Bottom) as unknown
   if (typeof margin === "number") return margin
   if (typeof margin === "object" && margin && "value" in margin && typeof margin.value === "number") {
     return margin.value
   }
   return 0
+}
+
+function getTableColumnWidths(headerY: number): number[] {
+  const borderXs = renderer.currentRenderBuffer.withBuffers(({ char }) =>
+    Array.from({ length: renderer.width }, (_, x) => x).filter(
+      (x) => char[headerY * renderer.width + x] === "│".codePointAt(0),
+    ),
+  )
+  return borderXs.slice(1).map((x, index) => x - borderXs[index]! - 1)
 }
 
 test("basic table alignment", async () => {
@@ -211,6 +257,61 @@ test("tableOptions.widthMode configures markdown table layout", async () => {
   expect(table).toBeInstanceOf(TextTableRenderable)
   expect(table.columnWidthMode).toBe("full")
   expect(table.columnFitter).toBe("balanced")
+})
+
+test("wide five-column tables preserve short metadata columns", async () => {
+  resizeRenderer(110, 40)
+  const md = createMarkdownRenderable({
+    id: "markdown-wide-metadata-table",
+    content: ISSUE_TABLE_MARKDOWN,
+    syntaxStyle,
+    internalBlockMode: "top-level",
+    tableOptions: { style: "grid" },
+  })
+
+  renderer.root.add(md)
+  await renderMarkdownRenderable(md)
+
+  const frame = captureFrame()
+  const headerY = frame.split("\n").findIndex((line) => line.includes("Ran"))
+  expect(headerY).toBeGreaterThanOrEqual(0)
+
+  const columnWidths = getTableColumnWidths(headerY)
+
+  expect(columnWidths).toEqual([4, 32, 4, 36, 28])
+  expect(columnWidths.reduce((sum, width) => sum + width, 0)).toBe(104)
+  expect(columnWidths[0]).toBeGreaterThanOrEqual(4)
+  expect(columnWidths[2]).toBeGreaterThanOrEqual(4)
+  expect(columnWidths[1]).toBeGreaterThanOrEqual("Issue".length)
+  expect(columnWidths[3]).toBeGreaterThanOrEqual("Why It Is Ready".length)
+  expect(columnWidths[4]).toBeGreaterThanOrEqual("Likely Surface".length)
+  expect(frame).toContain("│Rank")
+  expect(frame).toContain("│Size")
+  expect(frame).toContain("XS/S")
+})
+
+test("five-column tables still shrink metadata columns when constrained", async () => {
+  resizeRenderer(20, 120)
+  const md = createMarkdownRenderable({
+    id: "markdown-narrow-metadata-table",
+    content: ISSUE_TABLE_MARKDOWN,
+    syntaxStyle,
+    internalBlockMode: "top-level",
+    tableOptions: { style: "grid" },
+  })
+
+  renderer.root.add(md)
+  await renderMarkdownRenderable(md)
+
+  const frame = captureFrame()
+  const headerY = frame.split("\n").findIndex((line) => line.includes("│"))
+  expect(headerY).toBeGreaterThanOrEqual(0)
+
+  const columnWidths = getTableColumnWidths(headerY)
+  expect(columnWidths.reduce((sum, width) => sum + width, 0)).toBe(14)
+  expect(columnWidths.every((width) => width >= 1)).toBe(true)
+  expect(columnWidths[0]).toBeLessThan(4)
+  expect(columnWidths[2]).toBeLessThan(4)
 })
 
 test("tableOptions updates existing markdown table renderable", async () => {
@@ -820,6 +921,23 @@ test("table with many columns", async () => {
   `)
 })
 
+test("a table may hold more native objects than the renderer's initial object capacity", async () => {
+  // Each cell holds a text buffer and a view, so 4 x 21 cells need more than 64 slots.
+  const stdout = createTestStdout(20, 4)
+  const nativeSession = new NativeSession(stdout, { context: { objectCapacity: 64, renderCellsMax: 1_000_000 } })
+  const setup = await createTestRenderer({ width: 20, height: 4, stdout, nativeSession, bufferedOutput: "stdout" })
+  try {
+    const rows = Array.from({ length: 21 }, (_, r) => `|${r}|${r}|${r}|${r}|${r === 0 ? "\n|-|-|-|-|" : ""}`)
+    const syntaxStyle = SyntaxStyle.create(setup.renderer.nativeScene)
+    setup.renderer.root.add(new MarkdownRenderable(setup.renderer, { content: rows.join("\n"), syntaxStyle }))
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).toContain("│0   │0   │0   │0  │")
+  } finally {
+    setup.renderer.destroy()
+    await setup.renderer.closed
+  }
+})
+
 test("no tables returns original content", async () => {
   const markdown = `# Just a heading
 
@@ -1149,6 +1267,7 @@ test("code block concealment is disabled by default", async () => {
 })
 
 test("code block concealment can be enabled with concealCode", async () => {
+  setRendererCapabilities(renderer, { hyperlinks: false })
   const mockTreeSitterClient = createMockTreeSitterClient()
   mockTreeSitterClient.setMockResult({
     highlights: [[0, 1, "conceal", { conceal: "" }]],
@@ -1156,11 +1275,12 @@ test("code block concealment can be enabled with concealCode", async () => {
 
   const md = createMarkdownRenderable({
     id: "markdown-code-conceal-enabled",
-    content: "```markdown\n# Hidden heading\n```",
+    content: "```markdown\n# Hidden heading\n```\n\nPlain **prose**\n\n| Name |\n|---|\n| Value |",
     syntaxStyle,
     conceal: true,
     concealCode: true,
     treeSitterClient: mockTreeSitterClient,
+    tableOptions: { widthMode: "content" },
   })
 
   renderer.root.add(md)
@@ -1168,13 +1288,29 @@ test("code block concealment can be enabled with concealCode", async () => {
   expect(mockTreeSitterClient.isHighlighting()).toBe(true)
 
   const codeBlock = md._blockStates[0]?.renderable as CodeRenderable
+  const prose = md._blockStates[1]!.renderable as CodeRenderable
+  const table = md._blockStates[2]!.renderable as TextTableRenderable
   mockTreeSitterClient.resolveAllHighlightOnce()
-  await waitForHighlight(codeBlock)
+  await Promise.all([waitForHighlight(codeBlock), waitForHighlight(prose)])
   await renderer.idle()
 
+  const onHighlight = prose.onHighlight
+  const tableContent = table.content
   const frame = captureFrame()
   expect(frame).not.toContain("# Hidden heading")
   expect(frame).toContain("Hidden heading")
+
+  for (const hyperlinks of [true, false]) {
+    renderer.emit("capabilities", setRendererCapabilities(renderer, { hyperlinks }))
+    await renderOnce()
+
+    expect(codeBlock.onHighlight).toBeUndefined()
+    expect(prose.onHighlight).toBe(onHighlight)
+    expect(md._blockStates[2]!.renderable).toBe(table)
+    expect(table.content).toBe(tableContent)
+    expect(mockTreeSitterClient.isHighlighting()).toBe(false)
+    expect(captureFrame()).toBe(frame)
+  }
 })
 
 test("toggling concealCode updates existing code block renderables", async () => {
@@ -1755,11 +1891,14 @@ test("blockquote uses markup.quote style for text and conceal style for bar", as
   const md = createMarkdownRenderable({
     id: "markdown-blockquote-style",
     content: "> Quote text",
-    syntaxStyle: SyntaxStyle.fromStyles({
-      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-      conceal: { fg: concealColor },
-      "markup.quote": { fg: quoteColor, italic: true },
-    }),
+    syntaxStyle: SyntaxStyle.fromStyles(
+      {
+        default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+        conceal: { fg: concealColor },
+        "markup.quote": { fg: quoteColor, italic: true },
+      },
+      renderer.nativeScene,
+    ),
   })
 
   renderer.root.add(md)
@@ -1778,19 +1917,25 @@ test("blockquote updates quote text and bar colors when syntaxStyle changes", as
   const quoteColor2 = RGBA.fromValues(0.75, 0.5, 0.25, 1)
   const concealColor1 = RGBA.fromValues(0.1, 0.2, 0.3, 1)
   const concealColor2 = RGBA.fromValues(0.3, 0.2, 0.1, 1)
-  const theme1 = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    conceal: { fg: concealColor1 },
-    "markup.quote": { fg: quoteColor1, italic: true },
-  })
-  const theme2 = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    conceal: { fg: concealColor2 },
-    "markup.quote": { fg: quoteColor2, italic: true },
-  })
+  const theme1 = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      conceal: { fg: concealColor1 },
+      "markup.quote": { fg: quoteColor1, italic: true },
+    },
+    renderer.nativeScene,
+  )
+  const theme2 = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      conceal: { fg: concealColor2 },
+      "markup.quote": { fg: quoteColor2, italic: true },
+    },
+    renderer.nativeScene,
+  )
   const md = createMarkdownRenderable({
     id: "markdown-blockquote-style-update",
-    content: "> Quote text",
+    content: "> Quote text\n\n---",
     syntaxStyle: theme1,
   })
 
@@ -1798,6 +1943,7 @@ test("blockquote updates quote text and bar colors when syntaxStyle changes", as
   await renderMarkdownRenderable(md)
   expect(findSpanContaining(captureSpans(), "│")?.fg?.toInts()).toEqual(concealColor1.toInts())
   expect(findSpanContaining(captureSpans(), "Quote text")?.fg?.toInts()).toEqual(quoteColor1.toInts())
+  expect(findSpanContaining(captureSpans(), "─")?.fg?.toInts()).toEqual(concealColor1.toInts())
 
   md.syntaxStyle = theme2
   renderer.requestRender()
@@ -1805,6 +1951,86 @@ test("blockquote updates quote text and bar colors when syntaxStyle changes", as
 
   expect(findSpanContaining(captureSpans(), "│")?.fg?.toInts()).toEqual(concealColor2.toInts())
   expect(findSpanContaining(captureSpans(), "Quote text")?.fg?.toInts()).toEqual(quoteColor2.toInts())
+  expect(findSpanContaining(captureSpans(), "─")?.fg?.toInts()).toEqual(concealColor2.toInts())
+})
+
+for (const [name, options] of [
+  ["coalesced", { internalBlockMode: "coalesced" }],
+  ["top-level", { internalBlockMode: "top-level" }],
+  ["coalesced with renderNode", { internalBlockMode: "coalesced", renderNode: () => undefined }],
+] as const) {
+  test(`list items follow fg and syntax style changes with ${name}`, async () => {
+    const fg1 = RGBA.fromValues(0.25, 0.5, 0.75, 1)
+    const fg2 = RGBA.fromValues(0.75, 0.5, 0.25, 1)
+    const theme = (fg: RGBA) =>
+      SyntaxStyle.fromStyles({ "markup.raw": { fg }, "markup.list": { fg } }, renderer.nativeScene)
+    const md = createMarkdownRenderable({
+      id: `markdown-list-style-update-${name}`,
+      content:
+        "# Intro\n\n---\n\n- item with `code`\n- second item\n  - nested item\n- third\n  > quoted\n- fenced\n  ```ts\n  const a = 1\n  ```\n\n| H |\n| --- |\n| `cell` |\n\n| Only |\n| --- |",
+      syntaxStyle: theme(fg2),
+      fg: fg1,
+      streaming: true,
+      ...options,
+    })
+    const spans = [
+      ["Intro", fg1, fg2],
+      ["─", fg1, fg2],
+      ["second item", fg1, fg2],
+      ["nested item", fg1, fg2],
+      ["code", fg2, fg1],
+      ["- ", fg2, fg1],
+      ["cell", fg2, fg1],
+    ] as const
+    const colors = () => spans.map(([text]) => findSpanContaining(captureSpans(), text)?.fg?.toInts())
+    const codeBlocks = (node: Renderable): CodeRenderable[] =>
+      node instanceof CodeRenderable && node.filetype === "typescript" ? [node] : node.getChildren().flatMap(codeBlocks)
+
+    renderer.root.add(md)
+    await renderMarkdownRenderable(md)
+    expect(colors()).toEqual(spans.map(([, before]) => before.toInts()))
+    const frame = captureFrame()
+
+    md.streaming = false
+    await renderOnce()
+    expect(captureFrame()).toBe(frame)
+    expect(codeBlocks(md).map((code) => code.streaming)).not.toContain(true)
+
+    md.fg = fg2
+    md.syntaxStyle = theme(fg1)
+    await renderOnce()
+    expect(captureFrame()).toBe(frame)
+    await renderMarkdownRenderable(md)
+    expect(colors()).toEqual(spans.map(([, , after]) => after.toInts()))
+    expect(captureFrame()).toBe(frame)
+  })
+}
+
+test("table cells use the markdown fg and follow fg changes", async () => {
+  const fg1 = RGBA.fromValues(0.25, 0.5, 0.75, 1)
+  const fg2 = RGBA.fromValues(0.75, 0.5, 0.25, 1)
+  const md = createMarkdownRenderable({
+    id: "markdown-table-fg",
+    content: "[ref]: https://example.com\n\nIntro\n\n| Head |\n| --- |\n| Cell [OpenTUI][ref] |",
+    syntaxStyle: SyntaxStyle.fromStyles({}, renderer.nativeScene),
+    fg: fg1,
+    streaming: true,
+  })
+
+  renderer.root.add(md)
+  await renderMarkdownRenderable(md)
+  expect(md._blockStates.at(-1)?.renderable).toBeInstanceOf(TextTableRenderable)
+  expect(findSpanContaining(captureSpans(), "Head")?.fg?.toInts()).toEqual(fg1.toInts())
+  expect(findSpanContaining(captureSpans(), "Cell")?.fg?.toInts()).toEqual(fg1.toInts())
+
+  md.fg = fg2
+  renderer.requestRender()
+  await renderMarkdownRenderable(md)
+
+  expect(findSpanContaining(captureSpans(), "Head")?.fg?.toInts()).toEqual(fg2.toInts())
+  expect(findSpanContaining(captureSpans(), "Cell")?.fg?.toInts()).toEqual(fg2.toInts())
+  // A restyle must not re-lex the streaming tail without the earlier link definition.
+  expect(captureFrame()).toContain("OpenTUI (https://example.com)")
 })
 
 test("fenced diff blocks color added and removed lines", async () => {
@@ -1820,11 +2046,14 @@ test("fenced diff blocks color added and removed lines", async () => {
     id: "markdown-diff-fence",
     content: "```diff\n- old\n+ new\n unchanged\n```",
     treeSitterClient: mockTreeSitterClient,
-    syntaxStyle: SyntaxStyle.fromStyles({
-      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-      "diff.minus": { fg: RGBA.fromValues(1, 0, 0, 1) },
-      "diff.plus": { fg: RGBA.fromValues(0, 1, 0, 1) },
-    }),
+    syntaxStyle: SyntaxStyle.fromStyles(
+      {
+        default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+        "diff.minus": { fg: RGBA.fromValues(1, 0, 0, 1) },
+        "diff.plus": { fg: RGBA.fromValues(0, 1, 0, 1) },
+      },
+      renderer.nativeScene,
+    ),
   })
 
   renderer.root.add(md)
@@ -1891,6 +2120,553 @@ test("inline formatting with conceal=false", async () => {
 })
 
 // Link tests
+
+for (const hyperlinks of [false, true]) {
+  for (const named of [true, false]) {
+    test(`${named ? "named" : "bare"} Unicode links after multibyte text preserve hyperlink metadata with hyperlinks=${hyperlinks}`, async () => {
+      setRendererCapabilities(renderer, { hyperlinks })
+      resizeRenderer(120, 10)
+      const prefix = "caf\u00e9 \u4e2d\u6587 \u{1f680} e\u0301 "
+      const url = "https://example.com/caf\u00e9"
+      const label = named ? "R\u00e9f\u{1f680}" : url
+      const md = createMarkdownRenderable({
+        id: "markdown-unicode-links",
+        content: `${prefix}${named ? `[${label}](${url})` : url} after`,
+        syntaxStyle,
+      })
+
+      renderer.root.add(md)
+      await renderMarkdownRenderable(md)
+
+      const visibleLink = named && !hyperlinks ? `${label} (${url})` : label
+      expect(captureFrame()).toContain(`${prefix}${visibleLink} after`)
+      const position = findRenderedText(label)
+      expect(position.x).toBe(stringWidth(prefix))
+      for (let offset = 0; offset < stringWidth(label); offset++) {
+        expect(renderer.getLinkAt(position.x + offset, position.y)).toBe(url)
+      }
+      expect(renderer.getLinkAt(position.x - 1, position.y)).toBeNull()
+      expect(renderer.getLinkAt(position.x + stringWidth(visibleLink), position.y)).toBeNull()
+    })
+  }
+
+  test(`named and bare prose and table links preserve hyperlink metadata with hyperlinks=${hyperlinks}`, async () => {
+    setRendererCapabilities(renderer, { hyperlinks })
+    resizeRenderer(260, 40)
+    const md = createMarkdownRenderable({
+      id: "markdown-link-capabilities",
+      content:
+        "Before [Prose](https://example.com/named-prose) after https://example.com/prose " +
+        "and <https://example.com/auto-prose> **https://example.com/bold-prose** " +
+        "https://example.com/it's-prose " +
+        "[https://example.com/identical-prose](https://example.com/identical-prose)\n\n" +
+        "| Named |\n|---|\n| [Table](https://example.com/named-table) |\n\n" +
+        "| Link |\n|---|\n| https://example.com/table |\n| <https://example.com/auto-table> |\n" +
+        "| https://example.com/it's-table |\n" +
+        "| [https://example.com/identical-table](https://example.com/identical-table) |",
+      syntaxStyle,
+      tableOptions: { widthMode: "content" },
+    })
+
+    renderer.root.add(md)
+    await renderMarkdownRenderable(md)
+
+    const frame = captureFrame()
+    expect(frame).toContain(hyperlinks ? "Before Prose after" : "Before Prose (https://example.com/named-prose) after")
+    expect(frame).toContain(hyperlinks ? "│Table│" : "│Table (https://example.com/named-table)│")
+    expect(frame).not.toContain("<https://")
+
+    for (const [text, url] of [
+      ["Prose", "https://example.com/named-prose"],
+      ["Table", "https://example.com/named-table"],
+    ] as const) {
+      if (hyperlinks) expect(frame).not.toContain(url)
+      const position = findRenderedText(text)
+      for (let offset = 0; offset < text.length; offset++) {
+        expect(renderer.getLinkAt(position.x + offset, position.y)).toBe(url)
+      }
+    }
+
+    for (const url of [
+      "https://example.com/prose",
+      "https://example.com/table",
+      "https://example.com/auto-prose",
+      "https://example.com/auto-table",
+      "https://example.com/bold-prose",
+      "https://example.com/it's-prose",
+      "https://example.com/it's-table",
+      "https://example.com/identical-prose",
+      "https://example.com/identical-table",
+    ]) {
+      expect(frame.split(url)).toHaveLength(2)
+      const position = findRenderedText(url)
+      expect(renderer.getLinkAt(position.x, position.y)).toBe(url)
+      expect(renderer.getLinkAt(position.x + url.length - 1, position.y)).toBe(url)
+    }
+  })
+
+  test(`streaming Markdown links are clickable before highlighting with hyperlinks=${hyperlinks}`, async () => {
+    setRendererCapabilities(renderer, { hyperlinks })
+    resizeRenderer(160, 10)
+    const client = createMockTreeSitterClient()
+    const md = createMarkdownRenderable({
+      id: "markdown-streaming-link-preview",
+      content:
+        "Read [**OpenTUI**](https://example.com/docs) and https://example.com/bare " +
+        "with [![Logo](https://example.com/image)](https://example.com/outer)",
+      syntaxStyle,
+      streaming: true,
+      treeSitterClient: client,
+    })
+
+    renderer.root.add(md)
+    await renderOnce()
+
+    expect(client.isHighlighting()).toBe(true)
+    const frame = captureFrame()
+    expect(frame).toContain(hyperlinks ? "Read OpenTUI and" : "Read OpenTUI (https://example.com/docs) and")
+    expect(frame.match(/https:\/\/example\.com\/bare/g)).toHaveLength(1)
+
+    const label = findRenderedText("OpenTUI")
+    const bare = findRenderedText("https://example.com/bare")
+    const image = findRenderedText("Logo")
+    expect(renderer.getLinkAt(label.x, label.y)).toBe("https://example.com/docs")
+    expect(renderer.getLinkAt(bare.x, bare.y)).toBe("https://example.com/bare")
+    expect(renderer.getLinkAt(image.x, image.y)).toBe("https://example.com/outer")
+
+    renderer.emit("capabilities", setRendererCapabilities(renderer, { hyperlinks: !hyperlinks }))
+    await renderOnce()
+
+    expect(client.isHighlighting()).toBe(true)
+    expect(captureFrame()).toContain(hyperlinks ? "Read OpenTUI (https://example.com/docs) and" : "Read OpenTUI and")
+    const refreshedLabel = findRenderedText("OpenTUI")
+    const refreshedImage = findRenderedText("Logo")
+    expect(renderer.getLinkAt(refreshedLabel.x, refreshedLabel.y)).toBe("https://example.com/docs")
+    expect(renderer.getLinkAt(refreshedImage.x, refreshedImage.y)).toBe("https://example.com/outer")
+
+    const code = md._blockStates[0]!.renderable as CodeRenderable
+    const changes: Array<{ source: string; visible: string }> = []
+    code.on("line-info-change", () => changes.push({ source: code.content, visible: code.plainText }))
+
+    md.content = "[Updated](custom://target)"
+
+    expect(changes).toEqual([
+      { source: "[Updated](custom://target)", visible: hyperlinks ? "Updated (custom://target)" : "Updated" },
+    ])
+    await renderOnce()
+
+    const updated = findRenderedText("Updated")
+    expect(renderer.getLinkAt(updated.x, updated.y)).toBe("custom://target")
+  })
+}
+
+test("one-character and formatted prose and table labels preserve hyperlinks", async () => {
+  setRendererCapabilities(renderer, { hyperlinks: true })
+  const md = createMarkdownRenderable({
+    id: "markdown-formatted-links",
+    content:
+      "[x](https://example.com/one) and [**bold *nested*** *em* `code`](https://example.com/prose)\n\n" +
+      "| Link |\n|---|\n| [y](https://example.com/two) |\n" +
+      "| [**strong *inner*** *italic* `cell`](https://example.com/table) |\n" +
+      "| [![Logo](https://example.com/image)](https://example.com/outer) |",
+    syntaxStyle,
+    tableOptions: { widthMode: "content" },
+  })
+
+  renderer.root.add(md)
+  await renderMarkdownRenderable(md)
+
+  for (const [text, url] of [
+    ["x", "https://example.com/one"],
+    ["bold", "https://example.com/prose"],
+    ["nested", "https://example.com/prose"],
+    ["em", "https://example.com/prose"],
+    ["code", "https://example.com/prose"],
+    ["y", "https://example.com/two"],
+    ["strong", "https://example.com/table"],
+    ["inner", "https://example.com/table"],
+    ["italic", "https://example.com/table"],
+    ["cell", "https://example.com/table"],
+    ["Logo", "https://example.com/outer"],
+  ] as const) {
+    const position = findRenderedText(text)
+    for (let offset = 0; offset < text.length; offset++) {
+      expect(renderer.getLinkAt(position.x + offset, position.y)).toBe(url)
+    }
+  }
+
+  expect(captureFrame()).not.toContain("https://example.com/")
+})
+
+test("compact prose links conceal titled, spaced, angle-bracketed, nested, and escaped destinations", async () => {
+  setRendererCapabilities(renderer, { hyperlinks: true })
+  const md = createMarkdownRenderable({
+    id: "markdown-complex-link-destinations",
+    content:
+      '[Titled](https://example.com/title "tip")\n\n' +
+      "[Angle](<https://example.com/angle>)\n\n" +
+      '[Spaced]( https://example.com/spaced "spaced tip")\n\n' +
+      '[Spaced angle]( <https://example.com/spaced-angle> "angle tip")\n\n' +
+      "[Nested](https://example.com/a_(b))\n\n" +
+      "[Escaped](https://example.com/a\\_b\\(c\\))",
+    syntaxStyle,
+  })
+
+  renderer.root.add(md)
+  await renderMarkdownRenderable(md)
+
+  for (const [text, url] of [
+    ["Titled", "https://example.com/title"],
+    ["Angle", "https://example.com/angle"],
+    ["Spaced", "https://example.com/spaced"],
+    ["Spaced angle", "https://example.com/spaced-angle"],
+    ["Nested", "https://example.com/a_(b)"],
+    ["Escaped", "https://example.com/a_b(c)"],
+  ] as const) {
+    const position = findRenderedText(text)
+    expect(renderer.getLinkAt(position.x, position.y)).toBe(url)
+  }
+
+  expect(captureFrame()).not.toContain("https://example.com/")
+  expect(captureFrame()).not.toContain("tip")
+})
+
+for (const [label, ending, supported] of [
+  ["maximum ASCII", "a", true],
+  ["oversized ASCII", "aa", false],
+  ["maximum UTF-8", "\u00e9", true],
+  ["oversized UTF-8", "\u00e9a", false],
+  ["maximum escaped ASCII", "\\_", true],
+  ["maximum custom scheme", "a", true],
+] as const) {
+  test(`${label} Markdown destinations respect the native link-pool UTF-8 capacity`, async () => {
+    setRendererCapabilities(renderer, { hyperlinks: true })
+    resizeRenderer(560, 12)
+
+    const custom = label === "maximum custom scheme"
+    const prefix = custom ? "custom+v1://example.test/" : "https://example.com/"
+    const destination = prefix + "a".repeat(511 - prefix.length - (ending.startsWith("\u00e9") ? 1 : 0)) + ending
+    const target = destination.replace("\\_", "_")
+    const md = createMarkdownRenderable({
+      id: "markdown-link-native-capacity",
+      content: `[Prose](${destination})\n\n| Link |\n|---|\n| [Table](${destination}) |`,
+      syntaxStyle,
+      tableOptions: { widthMode: "content" },
+    })
+
+    renderer.root.add(md)
+    await renderMarkdownRenderable(md)
+
+    const frame = captureFrame()
+    const prose = findRenderedText("Prose")
+    const table = findRenderedText("Table")
+    expect(new TextEncoder().encode(target)).toHaveLength(supported ? 512 : 513)
+    if (ending === "\\_") expect(new TextEncoder().encode(destination)).toHaveLength(513)
+    if (custom) expect(md.content).not.toContain("http")
+    if (supported) {
+      expect(frame).not.toContain(target)
+      expect(renderer.getLinkAt(prose.x, prose.y)).toBe(target)
+      expect(renderer.getLinkAt(table.x, table.y)).toBe(target)
+    } else {
+      expect(frame).toContain(`Prose (${destination})`)
+      expect(frame).toContain(`Table (${destination})`)
+      expect(renderer.getLinkAt(prose.x, prose.y)).toBeNull()
+      expect(renderer.getLinkAt(table.x, table.y)).toBeNull()
+    }
+  })
+}
+
+test("bare URLs inside inline and fenced code are not hyperlinks", async () => {
+  setRendererCapabilities(renderer, { hyperlinks: true })
+  const md = createMarkdownRenderable({
+    id: "markdown-code-links",
+    content:
+      "Inline `https://example.com/inline`\n\n```text\nhttps://example.com/fenced\n```\n\n" +
+      "| Link |\n|---|\n| `https://example.com/cell` |",
+    syntaxStyle,
+    tableOptions: { widthMode: "content" },
+  })
+
+  renderer.root.add(md)
+  await renderMarkdownRenderable(md)
+
+  for (const url of ["https://example.com/inline", "https://example.com/fenced", "https://example.com/cell"]) {
+    const position = findRenderedText(url)
+    expect(renderer.getLinkAt(position.x, position.y)).toBeNull()
+  }
+})
+
+test("wrapped markdown link labels preserve hyperlink metadata on every row", async () => {
+  setRendererCapabilities(renderer, { hyperlinks: true })
+  resizeRenderer(18, 20)
+  const md = createMarkdownRenderable({
+    id: "markdown-wrapped-link",
+    content: "Visit [first second third](https://example.com/wrapped)",
+    syntaxStyle,
+  })
+
+  renderer.root.add(md)
+  await renderMarkdownRenderable(md)
+
+  for (const text of ["first", "second", "third"]) {
+    const position = findRenderedText(text)
+    expect(renderer.getLinkAt(position.x, position.y)).toBe("https://example.com/wrapped")
+  }
+
+  expect(captureFrame()).not.toContain("https://")
+})
+
+for (const [internalBlockMode, wrapped] of [
+  ["coalesced", false],
+  ["top-level", false],
+  ["coalesced", true],
+] as const) {
+  test(`hyperlink capability changes refresh existing ${internalBlockMode}${wrapped ? " wrapped" : ""} prose and table renderables`, async () => {
+    setRendererCapabilities(renderer, { hyperlinks: false })
+    const md = createMarkdownRenderable({
+      id: "markdown-capability-transition",
+      content: "[Prose](https://example.com/prose)\n\n| Link |\n|---|\n| [Table](https://example.com/table) |",
+      syntaxStyle,
+      internalBlockMode,
+      tableOptions: { widthMode: "content" },
+      renderNode: wrapped
+        ? (_token, context) => {
+            const child = context.defaultRender()
+            if (!child) return undefined
+            const wrapper = new BoxRenderable(renderer, { width: "100%", flexDirection: "column" })
+            wrapper.add(child)
+            return wrapper
+          }
+        : undefined,
+    })
+
+    renderer.root.add(md)
+    await renderMarkdownRenderable(md)
+
+    const prose = md._blockStates[0]!.renderable
+    const table = md._blockStates[1]!.renderable
+    expect(captureFrame()).toContain("Prose (https://example.com/prose)")
+    expect(captureFrame()).toContain("Table (https://example.com/table)")
+
+    const recorder = new TestRecorder(renderer)
+    recorder.rec()
+    renderer.emit("capabilities", setRendererCapabilities(renderer, { hyperlinks: true }))
+    await renderMarkdownRenderable(md)
+    recorder.stop()
+
+    expect(md._blockStates[0]!.renderable).toBe(prose)
+    expect(md._blockStates[1]!.renderable).toBe(table)
+    expect(captureFrame()).toContain("Prose")
+    expect(captureFrame()).toContain("Table")
+    expect(captureFrame()).not.toContain("https://example.com/")
+    for (const recorded of recorder.recordedFrames) {
+      expect(recorded.frame).toContain("Prose")
+      expect(recorded.frame).toContain("Table")
+    }
+
+    renderer.emit("capabilities", setRendererCapabilities(renderer, { hyperlinks: false }))
+    await renderMarkdownRenderable(md)
+
+    expect(md._blockStates[0]!.renderable).toBe(prose)
+    expect(md._blockStates[1]!.renderable).toBe(table)
+    expect(captureFrame()).toContain("Prose (https://example.com/prose)")
+    expect(captureFrame()).toContain("Table (https://example.com/table)")
+  })
+}
+
+test("hyperlink capability changes preserve custom Markdown code callbacks", async () => {
+  setRendererCapabilities(renderer, { hyperlinks: false })
+  const onHighlight = (highlights: SimpleHighlight[]) => highlights
+  const md = createMarkdownRenderable({
+    id: "markdown-capability-custom-code",
+    content: "Custom\n\nDelegated\n\nplain",
+    syntaxStyle,
+    renderNode: (token, context) => {
+      if (token.raw.startsWith("Custom")) {
+        return new CodeRenderable(renderer, {
+          id: "custom-markdown-code",
+          content: token.raw,
+          filetype: "markdown",
+          syntaxStyle,
+          treeSitterClient: markdownTreeSitterClient,
+          onHighlight,
+        })
+      }
+
+      const renderable = context.defaultRender() as CodeRenderable
+      if (token.raw.startsWith("Delegated")) renderable.onHighlight = onHighlight
+      else renderable.content = "[Injected](custom://target)"
+      return renderable
+    },
+  })
+
+  renderer.root.add(md)
+  await renderMarkdownRenderable(md)
+
+  const custom = md._blockStates[0]!.renderable as CodeRenderable
+  const delegated = md._blockStates[1]!.renderable as CodeRenderable
+  const injected = md._blockStates[2]!.renderable as CodeRenderable
+  expect(captureFrame()).toContain("Injected (custom://target)")
+  let label = findRenderedText("Injected")
+  expect(renderer.getLinkAt(label.x, label.y)).toBe("custom://target")
+
+  renderer.emit("capabilities", setRendererCapabilities(renderer, { hyperlinks: true }))
+  await renderMarkdownRenderable(md)
+
+  expect(custom.onHighlight).toBe(onHighlight)
+  expect(delegated.onHighlight).toBe(onHighlight)
+  expect(md._blockStates[2]!.renderable).toBe(injected)
+  expect(captureFrame()).toContain("Injected")
+  expect(captureFrame()).not.toContain("custom://target")
+  label = findRenderedText("Injected")
+  expect(renderer.getLinkAt(label.x, label.y)).toBe("custom://target")
+})
+
+test("hyperlink capability changes preserve custom table content", async () => {
+  setRendererCapabilities(renderer, { hyperlinks: false })
+  const md = createMarkdownRenderable({
+    id: "markdown-capability-custom-table",
+    content: "| Link |\n|---|\n| [Markdown](https://example.com/markdown) |",
+    syntaxStyle,
+    renderNode: (token) =>
+      token.type === "table"
+        ? new TextTableRenderable(renderer, {
+            content: [[[{ __isChunk: true, text: "Application-owned content", attributes: 0 }]]],
+            columnWidthMode: "content",
+          })
+        : undefined,
+  })
+
+  renderer.root.add(md)
+  await renderMarkdownRenderable(md)
+
+  const table = md._blockStates[0]!.renderable as TextTableRenderable
+  const content = table.content
+  expect(captureFrame()).toContain("Application-owned content")
+
+  for (const hyperlinks of [true, false]) {
+    renderer.emit("capabilities", setRendererCapabilities(renderer, { hyperlinks }))
+    await renderMarkdownRenderable(md)
+
+    expect(md._blockStates[0]!.renderable).toBe(table)
+    expect(table.content).toBe(content)
+    expect(captureFrame()).toContain("Application-owned content")
+    expect(captureFrame()).not.toContain("Markdown")
+  }
+})
+
+for (const wrapped of [false, true]) {
+  test(`hyperlink capability changes refresh nested prose and tables in ${wrapped ? "wrapped " : ""}top-level lists`, async () => {
+    setRendererCapabilities(renderer, { hyperlinks: false })
+    const md = createMarkdownRenderable({
+      id: "markdown-capability-nested-table",
+      content:
+        "- [Before](https://example.com/prose)\n\n  | Link |\n  |---|\n  | [Nested](https://example.com/nested) |",
+      syntaxStyle,
+      internalBlockMode: "top-level",
+      tableOptions: { widthMode: "content" },
+      renderNode: wrapped
+        ? (token, context) => {
+            if (token.type !== "list") return undefined
+            const wrapper = new BoxRenderable(renderer, { width: "100%", flexDirection: "column" })
+            wrapper.add(context.defaultRender()!)
+            return wrapper
+          }
+        : undefined,
+    })
+
+    renderer.root.add(md)
+    await renderMarkdownRenderable(md)
+
+    const block = md._blockStates[0]!.renderable
+    const list = wrapped ? block.getChildren()[0]! : block
+    const content = list.getChildren()[0]!.getChildren()[1]!
+    const prose = content.getChildren()[0]!
+    const table = content.getChildren()[1]!
+    expect(prose).toBeInstanceOf(CodeRenderable)
+    expect(table).toBeInstanceOf(TextTableRenderable)
+    expect(captureFrame()).toContain("Before (https://example.com/prose)")
+    expect(captureFrame()).toContain("Nested (https://example.com/nested)")
+
+    renderer.emit("capabilities", setRendererCapabilities(renderer, { hyperlinks: true }))
+    await renderMarkdownRenderable(md)
+
+    expect(md._blockStates[0]!.renderable).toBe(block)
+    expect(wrapped ? block.getChildren()[0] : block).toBe(list)
+    expect(list.getChildren()[0]!.getChildren()[1]).toBe(content)
+    expect(content.getChildren()[0]).toBe(prose)
+    expect(content.getChildren()[1]).toBe(table)
+    expect(captureFrame()).not.toContain("https://example.com/")
+    for (const [text, url] of [
+      ["Before", "https://example.com/prose"],
+      ["Nested", "https://example.com/nested"],
+    ] as const) {
+      const compact = findRenderedText(text)
+      expect(renderer.getLinkAt(compact.x, compact.y)).toBe(url)
+    }
+
+    renderer.emit("capabilities", setRendererCapabilities(renderer, { hyperlinks: false }))
+    await renderMarkdownRenderable(md)
+
+    expect(md._blockStates[0]!.renderable).toBe(block)
+    expect(wrapped ? block.getChildren()[0] : block).toBe(list)
+    expect(list.getChildren()[0]!.getChildren()[1]).toBe(content)
+    expect(content.getChildren()[0]).toBe(prose)
+    expect(content.getChildren()[1]).toBe(table)
+    expect(captureFrame()).toContain("Before (https://example.com/prose)")
+    expect(captureFrame()).toContain("Nested (https://example.com/nested)")
+  })
+}
+
+test("dense Markdown link highlights conceal every destination", () => {
+  setRendererCapabilities(renderer, { hyperlinks: true })
+  const md = createMarkdownRenderable({ id: "markdown-dense-link-highlights", syntaxStyle })
+  const addMarkdownLinkHighlights = (
+    md as unknown as { addMarkdownLinkHighlights: (items: SimpleHighlight[], source: string) => SimpleHighlight[] }
+  ).addMarkdownLinkHighlights.bind(md)
+  const highlights: SimpleHighlight[] = [
+    [0, 9, "markup.strong"],
+    [0, 2, "conceal", { conceal: "" }],
+    [2, 7, "markup.link.label"],
+    [7, 9, "conceal", { conceal: "" }],
+    [14, 20, "markup.raw"],
+  ]
+
+  expect(addMarkdownLinkHighlights(highlights, "**label** and `code`")).toBe(highlights)
+  highlights.length = 0
+  let content = ""
+
+  for (let index = 0; index < 1024; index++) {
+    const start = content.length
+    const destination = `https://example.com/${index}`
+    content += `[x](${destination}) `
+    highlights.push(
+      [start + 1, start + 2, "markup.link.label"],
+      [start + 2, start + 3, "conceal", { conceal: " " }],
+      [start + 4, start + 4 + destination.length, "markup.link.url"],
+      [start + 4 + destination.length, start + 5 + destination.length, "markup.link"],
+    )
+  }
+
+  const modified = addMarkdownLinkHighlights(highlights, content)
+
+  expect(modified.filter(([, , group, meta]) => group === "conceal" && meta?.isInjection)).toHaveLength(1024)
+  expect(modified.filter(([, , group, meta]) => group === "conceal" && meta?.conceal === " ")).toHaveLength(0)
+})
+
+test("multiple markdown renderables share and clean up one renderer capability listener", () => {
+  const listenersBefore = renderer.listenerCount("capabilities")
+  const renderables = Array.from({ length: 12 }, (_, index) =>
+    createMarkdownRenderable({
+      id: `markdown-shared-capability-listener-${index}`,
+      syntaxStyle,
+    }),
+  )
+
+  expect(renderer.listenerCount("capabilities")).toBe(listenersBefore + 1)
+  for (const renderable of renderables) renderable.destroyRecursively()
+  expect(renderer.listenerCount("capabilities")).toBe(listenersBefore)
+})
 
 test("links with conceal mode", async () => {
   const markdown = `Check out [OpenTUI](https://github.com/sst/opentui) for more.`
@@ -2414,6 +3190,83 @@ test("renderNode setter rerenders same-type top-level blocks", async () => {
   `)
 })
 
+for (const [internalBlockMode, defaultCalls] of [
+  ["coalesced", []],
+  ["top-level", ["paragraph"]],
+] as const) {
+  test(`style changes call renderNode again for custom ${internalBlockMode} blocks before layout`, async () => {
+    let label = "old"
+    const rendered: string[] = []
+    const md = createMarkdownRenderable({
+      content: "# Heading\n\n> quote\n\n---\n\nbody",
+      syntaxStyle,
+      streaming: true,
+      internalBlockMode,
+      renderNode: (token, context) => {
+        rendered.push(token.type)
+        if (token.type === "heading") return new TextRenderable(renderer, { content: label, width: 3, height: 1 })
+        if (token.type === "blockquote" || token.type === "hr") {
+          return new BoxRenderable(renderer, { height: 3, border: true, borderColor: "#ff0000" })
+        }
+        return context.defaultRender()
+      },
+    })
+    const shape = () =>
+      md
+        .getChildren()
+        .map((child) => child.constructor.name + (child instanceof BoxRenderable ? child.borderColor : ""))
+    renderer.root.add(md)
+    await renderOnce()
+    const expected = shape()
+    expect(expected).toEqual([
+      "TextRenderable",
+      "BoxRenderable" + RGBA.fromHex("#ff0000"),
+      "BoxRenderable" + RGBA.fromHex("#ff0000"),
+      "CodeRenderable",
+    ])
+    rendered.length = 0
+    md.content += " more"
+    await renderOnce()
+    expect(rendered).toEqual(["paragraph"])
+    const body = md.getChildren()[3]
+    const order: string[] = []
+    const add = md.add.bind(md)
+    md.add = (child, index) => {
+      order.push("add")
+      return add(child, index)
+    }
+    md.renderBefore = () => order.push("before")
+
+    for (const [deferred, change] of [
+      [
+        true,
+        () => {
+          md.syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: RGBA.fromHex("#00ff00") } }, renderer.nativeScene)
+          md.fg = "#0000ff"
+        },
+      ],
+      [true, () => (md.conceal = false)],
+      [false, () => md.refreshStyles()],
+      [false, () => (md.streaming = false)],
+    ] as const) {
+      const heading = md.getChildren()[0]
+      label = label === "old" ? "new" : "old"
+      rendered.length = 0
+      order.length = 0
+      change()
+      expect(heading.isDestroyed).toBe(!deferred)
+      await renderOnce()
+
+      expect(rendered).toEqual(["heading", "blockquote", "hr", ...defaultCalls])
+      expect(order.slice(0, 4)).toEqual(["add", "add", "add", "before"])
+      expect(shape()).toEqual(expected)
+      expect(heading.isDestroyed).toBe(true)
+      expect(md.getChildren()[3]).toBe(body)
+      expect(captureFrame().split("\n")[0].trimEnd()).toBe(label)
+    }
+  })
+}
+
 test("internalBlockMode setter updates existing markdown renderable", async () => {
   const md = createMarkdownRenderable({
     id: "internal-block-mode-setter",
@@ -2448,6 +3301,9 @@ test("custom top-level renderNode can increase default block margins", async () 
   await renderMarkdownRenderable(md)
 
   expect(md._blockStates.map((state) => state.renderable.marginTop ?? 0)).toEqual([0, 2])
+  md.fg = "#123456"
+  await renderMarkdownRenderable(md)
+  expect(md._blockStates.map((state) => state.renderable.marginTop ?? 0)).toEqual([0, 2])
 })
 
 test("custom renderNode returning null uses default", async () => {
@@ -2474,6 +3330,33 @@ Paragraph text.`,
     Paragraph text."
   `)
 })
+
+for (const [name, options] of [
+  ["coalesced", {}],
+  ["top-level", { internalBlockMode: "top-level" }],
+  ["coalesced with renderNode", { renderNode: (_token, context) => context.defaultRender() }],
+] satisfies [string, Partial<MarkdownOptions>][]) {
+  test(`non-streaming edit that extends the last block draws like fresh content with ${name}`, async () => {
+    for (const [before, after] of [
+      ["> one", "> one\n> two"],
+      ["Paragraph\n\n# Heading", "Paragraph\n\n# Heading 2"],
+    ]) {
+      const fresh = createMarkdownRenderable({ content: after, syntaxStyle, ...options })
+      renderer.root.add(fresh)
+      await renderMarkdownRenderable(fresh)
+      const expected = captureFrame()
+      fresh.destroy()
+
+      const md = createMarkdownRenderable({ content: before, syntaxStyle, ...options })
+      renderer.root.add(md)
+      await renderMarkdownRenderable(md)
+      md.content = after
+      await renderMarkdownRenderable(md)
+      expect(captureFrame()).toBe(expected)
+      md.destroy()
+    }
+  })
+}
 
 // Incomplete/invalid markdown tests
 
@@ -2679,7 +3562,7 @@ test("internalBlockMode=top-level preserves top-level block boundaries", async (
 test("internalBlockMode=top-level reuses table renderable when rows stream in", async () => {
   const md = createMarkdownRenderable({
     id: "markdown-top-level-table-reuse",
-    content: "| A | B |\n|---|---|\n| 1 | 2 |",
+    content: "Intro\n\n| A | B |\n|---|---|",
     syntaxStyle,
     streaming: true,
     internalBlockMode: "top-level",
@@ -2688,14 +3571,17 @@ test("internalBlockMode=top-level reuses table renderable when rows stream in", 
 
   renderer.root.add(md)
   await renderMarkdownRenderable(md)
+  md.content += "\n| 1 | 2 |"
+  await renderMarkdownRenderable(md)
 
-  const table = md._blockStates[0]?.renderable
+  const table = md._blockStates[1]?.renderable
   expect(table).toBeInstanceOf(TextTableRenderable)
+  expect(findRenderedText("A").y).toBe(2)
 
   md.content += "\n| 3 | 4 |"
   await renderMarkdownRenderable(md)
 
-  expect(md._blockStates[0]?.renderable).toBe(table)
+  expect(md._blockStates[1]?.renderable).toBe(table)
 })
 
 test("internalBlockMode=top-level updates code renderable filetype when fence changes to diff", async () => {
@@ -3148,12 +4034,15 @@ The fenced block above appears near the top so streaming mode exercises a larger
   const md = createMarkdownRenderable({
     id: "markdown-streaming-demo-fence-no-flicker",
     content: "",
-    syntaxStyle: SyntaxStyle.fromStyles({
-      default: { fg: defaultFg },
-      keyword: { fg: keywordFg },
-      "markup.heading.1": { fg: RGBA.fromValues(0, 1, 0, 1) },
-      "markup.strong": { fg: RGBA.fromValues(0, 1, 1, 1), bold: true },
-    }),
+    syntaxStyle: SyntaxStyle.fromStyles(
+      {
+        default: { fg: defaultFg },
+        keyword: { fg: keywordFg },
+        "markup.heading.1": { fg: RGBA.fromValues(0, 1, 0, 1) },
+        "markup.strong": { fg: RGBA.fromValues(0, 1, 1, 1), bold: true },
+      },
+      renderer.nativeScene,
+    ),
     fg: defaultFg,
     bg: RGBA.fromValues(0, 0, 0, 1),
     conceal: true,
@@ -3252,6 +4141,8 @@ test("internalBlockMode=top-level exposes a conservative stable block prefix", a
 
   expect(md._blockStates.map((state) => state.token.type)).toEqual(["heading", "paragraph", "paragraph"])
   expect(md._stableBlockCount).toBe(1)
+  md.streaming = false
+  expect(md._stableBlockCount).toBe(3)
 })
 
 test("default block mode still coalesces ordinary markdown blocks", async () => {
@@ -3366,6 +4257,29 @@ test("streaming property can be toggled", async () => {
     .join("\n")
     .trimEnd()
   expect(frame).toContain("Hello")
+})
+
+test("completing a stream keeps rendered Markdown visible", async () => {
+  const md = createMarkdownRenderable({
+    id: "markdown-stream-completion",
+    content: "# Hello\n\nResponse remains visible",
+    syntaxStyle,
+    streaming: true,
+    internalBlockMode: "top-level",
+  })
+
+  renderer.root.add(md)
+  await renderMarkdownRenderable(md)
+
+  const recorder = new TestRecorder(renderer)
+  recorder.rec()
+
+  md.streaming = false
+  await renderMarkdownRenderable(md)
+  recorder.stop()
+
+  expect(recorder.recordedFrames.length).toBeGreaterThan(0)
+  expect(recorder.recordedFrames.every((frame) => frame.frame.includes("Response remains visible"))).toBe(true)
 })
 
 test("clearCache forces full rebuild", async () => {
@@ -3886,15 +4800,21 @@ test("conceal change updates rendered content", async () => {
 })
 
 test("theme switching (syntaxStyle change)", async () => {
-  const theme1 = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 0, 0, 1) }, // Red
-    "markup.heading.1": { fg: RGBA.fromValues(0, 1, 0, 1), bold: true }, // Green
-  })
+  const theme1 = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 0, 0, 1) }, // Red
+      "markup.heading.1": { fg: RGBA.fromValues(0, 1, 0, 1), bold: true }, // Green
+    },
+    renderer.nativeScene,
+  )
 
-  const theme2 = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(0, 0, 1, 1) }, // Blue
-    "markup.heading.1": { fg: RGBA.fromValues(1, 1, 0, 1), bold: true }, // Yellow
-  })
+  const theme2 = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(0, 0, 1, 1) }, // Blue
+      "markup.heading.1": { fg: RGBA.fromValues(1, 1, 0, 1), bold: true }, // Yellow
+    },
+    renderer.nativeScene,
+  )
 
   // Use the EXACT content from markdown-demo.ts to reproduce the issue
   const content = `# OpenTUI Markdown Demo

@@ -192,7 +192,8 @@ export function run(renderer: CliRenderer): void {
       // Remove any wheel pixels that are no longer part of the wheel
       for (const pixelId of activeWheelPixels) {
         if (!newWheelPixels.has(pixelId)) {
-          tabGroup.remove(pixelId)
+          const pixel = tabGroup.getRenderable(pixelId)
+          if (pixel) tabGroup.remove(pixel)
           activeWheelPixels.delete(pixelId)
         }
       }
@@ -204,7 +205,8 @@ export function run(renderer: CliRenderer): void {
     },
     hide: () => {
       for (const pixelId of activeWheelPixels) {
-        renderer.root.remove(pixelId)
+        const pixel = renderer.root.getRenderable(pixelId)
+        if (pixel) renderer.root.remove(pixel)
       }
       activeWheelPixels.clear()
     },
@@ -1040,7 +1042,7 @@ export function destroy(renderer: CliRenderer): void {
   }
 
   if (globalTabController) {
-    renderer.root.remove(globalTabController.id)
+    globalTabController.destroyRecursively()
     globalTabController = null
   }
 

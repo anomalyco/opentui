@@ -1,0 +1,210 @@
+#!/usr/bin/env node
+// Build the story player data from an asciicast recording:
+//
+//   bin/build recording.cast       # create/reuse a config, then build
+//   bin/build story.config.json    # build from an edited config
+//
+// Chapters are defined per marker ("marker"), by first appearance of on-screen
+// text ("when"), or by timestamp ("atMs"). The cast is replayed through the
+// xterm.js headless emulator; colors come from (in order of precedence) the
+// configured theme file, the theme embedded in the cast by the recording
+// terminal, or the bundled default theme.
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { parseCast, markers } from "../lib/cast.mjs";
+import { createReplay } from "../lib/replay.mjs";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const toolDir = path.resolve(here, "..");
+const inputPath = process.argv[2] ?? path.join(toolDir, "story.config.json");
+let configPath = path.resolve(inputPath);
+let config;
+let cast;
+
+if (path.extname(inputPath) === ".cast") {
+  const castPath = configPath;
+  const name = path.basename(castPath, ".cast");
+  configPath = path.join(toolDir, `${name}.story.config.json`);
+
+  if (existsSync(configPath)) {
+    config = JSON.parse(readFileSync(configPath, "utf8"));
+    process.stdout.write(`using ${path.relative(process.cwd(), configPath)}\n`);
+  } else {
+    cast = parseCast(readFileSync(castPath, "utf8"));
+    const castMarkers = markers(cast).filter(
+      (marker, index, all) =>
+        marker.at > 0 &&
+        marker.at < cast.durationMs &&
+        (index === 0 || marker.at !== all[index - 1].at),
+    );
+    const boundaries = [
+      { at: 0, marker: null },
+      ...castMarkers.map((marker) => ({ at: marker.at, marker })),
+    ];
+    const formatTime = (milliseconds) => {
+      const seconds = Math.round(milliseconds / 1000);
+      return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+    };
+
+    config = {
+      title: name
+        .replace(/[-_]+/g, " ")
+        .replace(/\b\w/g, (character) => character.toUpperCase()),
+      recording: path.relative(toolDir, castPath).split(path.sep).join("/"),
+      sampleMs: 90,
+      output: {
+        story: `../../public/recordings/${name}.json`,
+      },
+      chapters: boundaries.map((boundary, index) => {
+        const end = boundaries[index + 1]?.at ?? cast.durationMs;
+        const markerLabel = boundary.marker?.label;
+        const label = markerLabel && !/^marker-\d+$/.test(markerLabel)
+          ? markerLabel
+              .replace(/[-_]+/g, " ")
+              .replace(/\b\w/g, (character) => character.toUpperCase())
+          : `Chapter ${index + 1}`;
+        return {
+          ...(boundary.marker ? { marker: boundary.marker.label } : { atMs: 0 }),
+          label,
+          captionTitle: label,
+          caption: `Recording from ${formatTime(boundary.at)} to ${formatTime(end)}.`,
+        };
+      }),
+    };
+
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    const boundaryLabel = boundaries.length === 1 ? "boundary" : "boundaries";
+    process.stdout.write(
+      `created ${path.relative(process.cwd(), configPath)} from ${boundaries.length} chapter ${boundaryLabel}\n`,
+    );
+  }
+} else {
+  config = JSON.parse(readFileSync(configPath, "utf8"));
+}
+
+const configDir = path.dirname(path.resolve(configPath));
+const resolve = (relative) => path.resolve(configDir, relative);
+
+cast ??= parseCast(readFileSync(resolve(config.recording), "utf8"));
+const sampleMs = config.sampleMs ?? 90;
+
+let theme;
+let themeSource;
+if (config.theme) {
+  theme = JSON.parse(readFileSync(resolve(config.theme), "utf8"));
+  themeSource = config.theme;
+} else if (cast.theme) {
+  theme = cast.theme;
+  themeSource = "embedded in recording";
+} else {
+  theme = JSON.parse(readFileSync(path.join(here, "../themes/github-dark.json"), "utf8"));
+  themeSource = "themes/github-dark.json (default)";
+}
+
+const castMarkers = markers(cast);
+const replay = await createReplay(cast, theme);
+
+// One pass over the whole timeline; chapter boundaries are resolved as the
+// samples stream by.
+const sampleTimes = [];
+for (let at = 0; at < cast.durationMs; at += sampleMs) sampleTimes.push(at);
+sampleTimes.push(cast.durationMs);
+
+const samples = [];
+for (const at of sampleTimes) {
+  const { rows, text } = await replay.sample(at);
+  samples.push({ at, rows, text });
+}
+replay.dispose();
+
+function chapterStart(chapter, index, previousStart) {
+  if (chapter.marker !== undefined) {
+    const marker = castMarkers.find((entry) => entry.label === chapter.marker);
+    if (!marker) {
+      const known = castMarkers.map((entry) => `${entry.label}@${entry.at}ms`).join(", ") || "none";
+      throw new Error(`marker "${chapter.marker}" not found; recording has: ${known}`);
+    }
+    return marker.at;
+  }
+  if (chapter.atMs !== undefined) return chapter.atMs;
+  if (chapter.when !== undefined) {
+    const found = samples.find(
+      (sample) => sample.at > (index === 0 ? -1 : previousStart) && sample.text.includes(chapter.when),
+    );
+    if (!found) throw new Error(`chapter "${chapter.label}": text never appeared: ${chapter.when}`);
+    return found.at;
+  }
+  if (index === 0) return 0;
+  throw new Error(`chapter "${chapter.label}" needs one of: marker, when, atMs`);
+}
+
+const starts = [];
+config.chapters.forEach((chapter, index) => {
+  const start = chapterStart(chapter, index, starts[index - 1] ?? 0);
+  if (index > 0 && start <= starts[index - 1]) {
+    throw new Error(`chapter "${chapter.label}" starts at ${start}ms, before the previous chapter`);
+  }
+  starts.push(start);
+});
+
+const ends = starts.map((start, index) => {
+  const naturalEnd = starts[index + 1] ?? cast.durationMs;
+  const duration = config.chapters[index].durationMs;
+  if (duration === undefined) return naturalEnd;
+  if (!Number.isFinite(duration) || duration <= 0) {
+    throw new Error(`chapter "${config.chapters[index].label}": durationMs must be positive`);
+  }
+  return Math.min(naturalEnd, start + duration);
+});
+
+const chapters = config.chapters.map((chapter, index) => {
+  const start = starts[index];
+  const end = ends[index];
+  const holdMs = chapter.holdMs ?? 0;
+  if (!Number.isFinite(holdMs) || holdMs < 0) {
+    throw new Error(`chapter "${chapter.label}": holdMs cannot be negative`);
+  }
+  const frames = [];
+  let previousKey = null;
+
+  for (const sample of samples) {
+    if (sample.at < start || sample.at >= end) continue;
+    const key = JSON.stringify(sample.rows);
+    if (key === previousKey) continue;
+    previousKey = key;
+    frames.push({ at: frames.length === 0 ? 0 : sample.at - start, rows: sample.rows });
+  }
+  if (index === config.chapters.length - 1 && end === cast.durationMs) {
+    const final = samples[samples.length - 1];
+    if (JSON.stringify(final.rows) !== previousKey) {
+      frames.push({ at: final.at - start, rows: final.rows });
+    }
+  }
+
+  process.stdout.write(`chapter ${chapter.label}: starts ${start}ms, ${frames.length} frames\n`);
+  return {
+    label: chapter.label,
+    captionTitle: chapter.captionTitle,
+    caption: chapter.caption,
+    durationMs: end - start,
+    ...(holdMs > 0 ? { holdMs } : {}),
+    frames,
+  };
+});
+
+const story = {
+  title: config.title,
+  cols: cast.cols,
+  rows: cast.rows,
+  background: theme.background,
+  foreground: theme.foreground,
+  chapters,
+};
+
+const storyPath = resolve(config.output?.story ?? path.join(toolDir, "../../public/recordings/story.json"));
+const storyJson = JSON.stringify(story);
+mkdirSync(path.dirname(storyPath), { recursive: true });
+writeFileSync(storyPath, storyJson);
+process.stdout.write(`theme: ${theme.name ?? "unnamed"} (${themeSource})\n`);
+process.stdout.write(`wrote ${path.relative(process.cwd(), storyPath)} (${Math.round(Buffer.byteLength(storyJson) / 1024)} KB)\n`);

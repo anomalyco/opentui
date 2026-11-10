@@ -64,7 +64,7 @@ function addLogLine(renderer: CliRenderer, text: string, color: RGBA) {
 
   // Remove old renderables
   for (const r of logRenderables) {
-    logBox.remove(r.id)
+    logBox.remove(r)
     r.destroy()
   }
   logRenderables.length = 0
@@ -281,12 +281,12 @@ export function destroy(renderer: CliRenderer): void {
 
   // Clean up renderables
   if (mouseArea) {
-    renderer.root.remove(mouseArea.id)
+    renderer.root.remove(mouseArea)
     mouseArea.destroy()
     mouseArea = null
   }
   if (container) {
-    renderer.root.remove(container.id)
+    renderer.root.remove(container)
     container.destroyRecursively()
     container = null
   }

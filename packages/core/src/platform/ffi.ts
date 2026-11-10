@@ -162,6 +162,17 @@ export const POINTER_NEGATIVE = "Pointer must be non-negative"
 export const POINTER_OFFSET_NEGATIVE = "Pointer offset must be non-negative"
 export const POINTER_OFFSET_UNSAFE = "Pointer offset must be a safe integer"
 export const POINTER_UNSAFE = "Pointer exceeds safe integer range"
+const arrayBufferByteLength = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength")?.get
+
+function isArrayBuffer(value: unknown): value is ArrayBuffer {
+  if (value === null || typeof value !== "object" || arrayBufferByteLength == null) return false
+  try {
+    arrayBufferByteLength.call(value)
+    return true
+  } catch {
+    return false
+  }
+}
 
 function unavailable(cause?: unknown): never {
   throw new Error(FFI_UNAVAILABLE, { cause })
@@ -188,6 +199,7 @@ const isBun =
   typeof process.versions === "object" &&
   process.versions !== null &&
   typeof process.versions.bun === "string"
+export const usesBunFFI = isBun
 
 const requireModule = createRequire(import.meta.url)
 const backend = loadBackend()
@@ -223,6 +235,11 @@ export function toPointer(value: PointerInput): Pointer {
 
 export function ffiBool(value: boolean): 0 | 1 {
   return value ? 1 : 0
+}
+
+export function trimNodeFFIOutputBytes(buffer: Uint8Array, length: number): Uint8Array {
+  if (length === buffer.byteLength) return buffer
+  return new Uint8Array((buffer.buffer as ArrayBuffer).transferToFixedLength(length))
 }
 
 // Convert a bigint pointer to a number only when JavaScript can represent it
@@ -380,7 +397,7 @@ export function createNodeBackend(nodeFfi: NodeFfiBackend): FfiBackend {
       let libraryClosed = false
 
       return {
-        symbols: wrapNodeSymbols(functions, symbols, nodeFfi),
+        symbols: wrapNodeSymbols(functions, symbols),
         createCallback(callback, definition) {
           if (closed) {
             throw new Error(LIBRARY_CLOSED)
@@ -446,42 +463,151 @@ function normalizeNodeDefinitions<Fns extends Record<string, FFIFunction>>(
 function wrapNodeSymbols<Fns extends Record<string, FFIFunction>>(
   functions: Record<string, (...args: any[]) => any>,
   definitions: Fns,
-  nodeFfi: NodeFfiBackend,
 ): { [K in keyof Fns]: (...args: any[]) => any } {
   return Object.fromEntries(
-    Object.entries(functions).map(([name, fn]) => [name, wrapNodeSymbol(fn, definitions[name], nodeFfi)]),
+    Object.entries(functions).map(([name, fn]) => [name, wrapNodeSymbol(fn, definitions[name])]),
   ) as { [K in keyof Fns]: (...args: any[]) => any }
 }
 
-function wrapNodeSymbol(
-  fn: (...args: any[]) => any,
-  definition: FFIFunction,
-  nodeFfi: NodeFfiBackend,
-): (...args: any[]) => any {
-  const pointerArgIndexes = (definition.args ?? []).flatMap((type, index) =>
-    isNodePointerArgumentType(type) ? [index] : [],
-  )
+const NODE_ARGUMENT_AS_IS = 0
+const NODE_ARGUMENT_POINTER = 1
+const NODE_ARGUMENT_INT32 = 2
 
-  if (pointerArgIndexes.length === 0) {
+function toNodeArgumentKind(type: FFITypeOrString): number {
+  if (isNodePointerArgumentType(type)) return NODE_ARGUMENT_POINTER
+  const nodeType = toNodeFFIType(type, "parameter")
+  return nodeType === "i32" || nodeType === "u32" ? NODE_ARGUMENT_INT32 : NODE_ARGUMENT_AS_IS
+}
+
+function toNodeArgument(value: unknown, kind: number): unknown {
+  if (kind === NODE_ARGUMENT_POINTER) return toNodePointerArgumentFast(value)
+  // node:ffi rejects -0 for i32 and u32 arguments; Bun passes it as 0.
+  return kind === NODE_ARGUMENT_INT32 && value === 0 ? 0 : value
+}
+
+function wrapNodeSymbol(fn: (...args: any[]) => any, definition: FFIFunction): (...args: any[]) => any {
+  const kinds = (definition.args ?? []).map(toNodeArgumentKind)
+  const pointerCount = kinds.filter((kind) => kind === NODE_ARGUMENT_POINTER).length
+
+  if (kinds.every((kind) => kind === NODE_ARGUMENT_AS_IS)) {
     return fn
   }
+
+  // Fixed wrappers avoid rest/slice/spread overhead on pointer-heavy signatures. One-pointer arity 7 is faster generic.
+  if (kinds.length === 7 && pointerCount >= 2) {
+    return wrapNodeSymbol7(fn, kinds)
+  }
+
+  if (kinds.length === 8) {
+    return wrapNodeSymbol8(fn, kinds)
+  }
+
+  const [kind0, kind1, kind2] = kinds
+
+  switch (kinds.length) {
+    case 1:
+      return function (arg0: unknown) {
+        if (arguments.length !== 1) return Reflect.apply(fn, undefined, arguments)
+        return fn(toNodeArgument(arg0, kind0!))
+      }
+    case 2:
+      return function (arg0: unknown, arg1: unknown) {
+        if (arguments.length !== 2) return Reflect.apply(fn, undefined, arguments)
+        return fn(toNodeArgument(arg0, kind0!), toNodeArgument(arg1, kind1!))
+      }
+    case 3:
+      return function (arg0: unknown, arg1: unknown, arg2: unknown) {
+        if (arguments.length !== 3) return Reflect.apply(fn, undefined, arguments)
+        return fn(toNodeArgument(arg0, kind0!), toNodeArgument(arg1, kind1!), toNodeArgument(arg2, kind2!))
+      }
+  }
+
+  const adaptedIndexes = kinds.flatMap((kind, index) => (kind === NODE_ARGUMENT_AS_IS ? [] : [index]))
 
   return (...args: any[]) => {
     const normalizedArgs = args.slice()
 
-    for (const index of pointerArgIndexes) {
-      normalizedArgs[index] = toNodePointerArgument(nodeFfi, normalizedArgs[index])
+    for (const index of adaptedIndexes) {
+      normalizedArgs[index] = toNodeArgument(normalizedArgs[index], kinds[index]!)
     }
 
     return fn(...normalizedArgs)
   }
 }
 
+function wrapNodeSymbol7(fn: (...args: any[]) => any, kinds: number[]): (...args: any[]) => any {
+  const [kind0, kind1, kind2, kind3, kind4, kind5, kind6] = kinds
+
+  return function (
+    arg0: unknown,
+    arg1: unknown,
+    arg2: unknown,
+    arg3: unknown,
+    arg4: unknown,
+    arg5: unknown,
+    arg6: unknown,
+  ) {
+    if (arguments.length !== 7) return Reflect.apply(fn, undefined, arguments)
+    return fn(
+      toNodeArgument(arg0, kind0!),
+      toNodeArgument(arg1, kind1!),
+      toNodeArgument(arg2, kind2!),
+      toNodeArgument(arg3, kind3!),
+      toNodeArgument(arg4, kind4!),
+      toNodeArgument(arg5, kind5!),
+      toNodeArgument(arg6, kind6!),
+    )
+  }
+}
+
+function wrapNodeSymbol8(fn: (...args: any[]) => any, kinds: number[]): (...args: any[]) => any {
+  const [kind0, kind1, kind2, kind3, kind4, kind5, kind6, kind7] = kinds
+
+  return function (
+    arg0: unknown,
+    arg1: unknown,
+    arg2: unknown,
+    arg3: unknown,
+    arg4: unknown,
+    arg5: unknown,
+    arg6: unknown,
+    arg7: unknown,
+  ) {
+    if (arguments.length !== 8) return Reflect.apply(fn, undefined, arguments)
+    return fn(
+      toNodeArgument(arg0, kind0!),
+      toNodeArgument(arg1, kind1!),
+      toNodeArgument(arg2, kind2!),
+      toNodeArgument(arg3, kind3!),
+      toNodeArgument(arg4, kind4!),
+      toNodeArgument(arg5, kind5!),
+      toNodeArgument(arg6, kind6!),
+      toNodeArgument(arg7, kind7!),
+    )
+  }
+}
+
+function toNodePointerArgumentFast(value: unknown): bigint | ArrayBuffer | ArrayBufferView {
+  if (typeof value === "bigint") {
+    return value >= 0n ? value : toNodePointerArgument(value)
+  }
+
+  if (ArrayBuffer.isView(value) && value.byteLength > 0 && value.buffer instanceof ArrayBuffer) {
+    return value
+  }
+
+  if (value instanceof ArrayBuffer && value.byteLength > 0) {
+    return value
+  }
+
+  return toNodePointerArgument(value)
+}
+
 function isNodePointerArgumentType(type: FFITypeOrString): boolean {
   return type === FFIType.ptr || type === FFIType.pointer || type === FFIType.function || type === FFIType.callback
 }
 
-function toNodePointerArgument(nodeFfi: NodeFfiBackend, value: unknown): bigint {
+function toNodePointerArgument(value: unknown): bigint | ArrayBuffer | ArrayBufferView {
   if (value == null) {
     return 0n
   }
@@ -491,19 +617,23 @@ function toNodePointerArgument(nodeFfi: NodeFfiBackend, value: unknown): bigint 
   }
 
   if (ArrayBuffer.isView(value)) {
+    if (!isArrayBuffer(value.buffer)) {
+      throw new TypeError(NODE_PTR_VALUE)
+    }
+
     if (value.byteLength === 0) {
       return 0n
     }
 
-    return toNodeSourcePointer(nodeFfi, value)
+    return value
   }
 
-  if (value instanceof ArrayBuffer) {
+  if (isArrayBuffer(value)) {
     if (value.byteLength === 0) {
       return 0n
     }
 
-    return toNodeSourcePointer(nodeFfi, value)
+    return value
   }
 
   throw new TypeError(NODE_POINTER_ARGUMENT)
@@ -511,14 +641,14 @@ function toNodePointerArgument(nodeFfi: NodeFfiBackend, value: unknown): bigint 
 
 function toNodeSourcePointer(nodeFfi: NodeFfiBackend, value: PointerSource): bigint {
   if (ArrayBuffer.isView(value)) {
-    if (!(value.buffer instanceof ArrayBuffer)) {
+    if (!isArrayBuffer(value.buffer)) {
       throw new TypeError(NODE_PTR_VALUE)
     }
 
     return nodeFfi.getRawPointer(value.buffer) + BigInt(value.byteOffset)
   }
 
-  if (value instanceof ArrayBuffer) {
+  if (isArrayBuffer(value)) {
     return nodeFfi.getRawPointer(value)
   }
 
@@ -626,7 +756,11 @@ function toNodeFFIType(type: FFITypeOrString, position: "parameter" | "result"):
       // Bun's N-API bridge types are not equivalent to raw Node FFI pointers.
       throw new Error(NODE_NAPI_UNSUPPORTED)
     case FFIType.buffer:
-      return "buffer"
+      // Keep `buffer` on the pointer path. Node 26.4's Linux fast-buffer trampoline
+      // can pass a null pointer for multi-argument signatures, and later Fast FFI
+      // still treats buffer-shaped args more tightly than pointer args. The pointer
+      // path still borrows the owner for the call.
+      return "pointer"
     default:
       return unsupportedNodeFFIType(type)
   }

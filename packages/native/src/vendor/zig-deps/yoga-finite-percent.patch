@@ -1,0 +1,62 @@
+diff --git a/yoga/style/Style.h b/yoga/style/Style.h
+index 9ce453b7..027e4ea0 100644
+--- a/yoga/style/Style.h
++++ b/yoga/style/Style.h
+@@ -913,7 +913,7 @@ class YG_EXPORT Style {
+     }
+     if (handle.isPercent()) {
+       return FloatOptional{
+-          pool_.getStoredValue(handle) * referenceLength * 0.01f};
++          resolveFinitePercent(pool_.getStoredValue(handle), referenceLength)};
+     }
+     return FloatOptional{};
+   }
+diff --git a/yoga/style/StyleLength.h b/yoga/style/StyleLength.h
+index 8099ce7d..8dc6383f 100644
+--- a/yoga/style/StyleLength.h
++++ b/yoga/style/StyleLength.h
+@@ -12,6 +12,12 @@
+ 
+ namespace facebook::yoga {
+ 
++// OpenTUI: keep sums of resolved lengths finite. NaN stays undefined.
++constexpr float resolveFinitePercent(float percent, float referenceLength) {
++  const float resolved = percent * referenceLength * 0.01f;
++  return resolved > 1e30f ? 1e30f : resolved < -1e30f ? -1e30f : resolved;
++}
++
+ /**
+  * Style::Length represents a CSS Value which may be one of:
+  * 1. Undefined
+@@ -85,7 +91,8 @@ class StyleLength {
+       case Unit::Point:
+         return value_;
+       case Unit::Percent:
+-        return FloatOptional{value_.unwrap() * referenceLength * 0.01f};
++        return FloatOptional{
++            resolveFinitePercent(value_.unwrap(), referenceLength)};
+       default:
+         return FloatOptional{};
+     }
+diff --git a/yoga/style/StyleSizeLength.h b/yoga/style/StyleSizeLength.h
+index 76e079b2..d9828804 100644
+--- a/yoga/style/StyleSizeLength.h
++++ b/yoga/style/StyleSizeLength.h
+@@ -9,6 +9,7 @@
+ 
+ #include <yoga/enums/Unit.h>
+ #include <yoga/numeric/FloatOptional.h>
++#include <yoga/style/StyleLength.h>
+ 
+ namespace facebook::yoga {
+ 
+@@ -116,7 +117,8 @@ class StyleSizeLength {
+       case Unit::Point:
+         return value_;
+       case Unit::Percent:
+-        return FloatOptional{value_.unwrap() * referenceLength * 0.01f};
++        return FloatOptional{
++            resolveFinitePercent(value_.unwrap(), referenceLength)};
+       default:
+         return FloatOptional{};
+     }

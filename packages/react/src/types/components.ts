@@ -8,6 +8,8 @@ import type {
   CodeRenderable,
   DiffRenderable,
   DiffRenderableOptions,
+  ImageRenderable,
+  ImageRenderableOptions,
   InputRenderable,
   InputRenderableOptions,
   LineNumberOptions,
@@ -30,6 +32,8 @@ import type {
   TextNodeRenderable,
   TextOptions,
   TextRenderable,
+  VideoRenderable,
+  VideoRenderableOptions,
   CursorChangeEvent,
   ContentChangeEvent,
   KeyEvent,
@@ -99,7 +103,20 @@ export type GetNonStyledProperties<TConstructor> =
                   | "drawUnstyledText"
               : TConstructor extends RenderableConstructor<MarkdownRenderable>
                 ? NonStyledProps | "content" | "syntaxStyle" | "treeSitterClient" | "conceal" | "renderNode"
-                : NonStyledProps
+                : TConstructor extends RenderableConstructor<ImageRenderable>
+                  ? NonStyledProps | "source"
+                  : TConstructor extends RenderableConstructor<VideoRenderable>
+                    ?
+                        | NonStyledProps
+                        | "source"
+                        | "autoplay"
+                        | "loop"
+                        | "audio"
+                        | "muted"
+                        | "volume"
+                        | "avSyncOffsetMs"
+                        | "maxFps"
+                    : NonStyledProps
 
 // ============================================================================
 // Component Props System
@@ -154,6 +171,10 @@ export type TextareaProps = ComponentProps<TextareaOptions, TextareaRenderable> 
 }
 
 export type CodeProps = ComponentProps<CodeOptions, CodeRenderable>
+
+export type ImageProps = ComponentProps<ImageRenderableOptions, ImageRenderable>
+
+export type VideoProps = ComponentProps<VideoRenderableOptions, VideoRenderable>
 
 export type MarkdownProps = ComponentProps<MarkdownOptions, MarkdownRenderable>
 

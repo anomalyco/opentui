@@ -1,65 +1,32 @@
 ---
-title: Core
+title: Core plugin slots
 description: Framework-free slot hosting with BaseRenderable nodes
-order: 2
 ---
 
-# Core slots
+# Core plugin slots
 
-This page shows the core host API for plugin slots.
+This page shows the Core host API for plugin slots.
 
-Use slots when you want external modules to render `BaseRenderable` UI in host-defined layout regions without forking the app. The host keeps control of layout and slot typing; plugins only render through the APIs you expose.
+Use Core slots when registered plugins must return `BaseRenderable` nodes for host-defined layout regions. The host
+keeps control of layout and slot types. Plugins render only through the context and data that the host supplies.
 
-If you have not read the shared model yet, start with [Plugin Slots](/docs/plugins/slots).
+Start with [Plugin slots](/docs/plugins/slots) for the shared registry, mode, ordering, and error model.
 
-## What core adds
+## What Core adds
 
-On top of `createSlotRegistry`, core provides:
+Core adds these APIs to `createSlotRegistry`:
 
-- `createCoreSlotRegistry` — create a registry typed for `BaseRenderable` nodes
-- `registerCorePlugin` — register a plugin using the core-specific `CorePlugin` interface
-- `SlotRenderable` — a `Renderable` that mounts a slot into the renderable tree
-- `resolveCoreSlot` — resolve slot entries without mounting
-- `@opentui/core/runtime-plugin-support` / `createRuntimePlugin` — runtime module support for external plugin/module loading in Bun
+- `createCoreSlotRegistry`: Creates a registry for `BaseRenderable` nodes.
+- `registerCorePlugin`: Registers the Core-specific `CorePlugin` interface.
+- `SlotRenderable`: Mounts a slot in the renderable tree.
+- `resolveCoreSlot`: Resolves entries without mounting them.
 
 Core slot renderers receive both the host context and slot data: `(ctx, data) => BaseRenderable`.
 
 `createCoreSlotRegistry` accepts the same [`SlotRegistryOptions`](/docs/plugins/slots#registry-options) as `createSlotRegistry`.
 
-## Runtime-loaded external plugins
-
-If your app loads plugin modules from disk at runtime, import this once in your app entry:
-
-```ts
-import "@opentui/core/runtime-plugin-support"
-```
-
-This installs Bun runtime support for `@opentui/core` plus default core runtime entrypoints (`@opentui/core/testing`). Add first-party package runtime modules explicitly when a plugin imports them.
-
-If you need additional host-resolved modules, configure runtime support before the side-effect import is loaded:
-
-```ts
-const { ensureRuntimePluginSupport } = await import("@opentui/core/runtime-plugin-support/configure")
-
-ensureRuntimePluginSupport({
-  additional: {
-    "my-runtime-module": { marker: "ok" },
-  },
-})
-```
-
-For plugins that import `@opentui/three`, install `@opentui/three` in the host app and pass its runtime module map:
-
-```ts
-import { runtimeModules as threeRuntimeModules } from "@opentui/three/runtime-modules"
-import { ensureRuntimePluginSupport } from "@opentui/core/runtime-plugin-support/configure"
-
-ensureRuntimePluginSupport({
-  additional: threeRuntimeModules,
-})
-```
-
-The side-effect import and configurable entrypoint install the same runtime plugin. Late additions throw with a clear error instead of being ignored.
+Core hosts use `@opentui/core/runtime-plugin-support` when contributions come from Bun runtime-loaded modules. See
+[Load plugins and modules at runtime](/docs/extend/runtime-plugins) for setup and module maps.
 
 ## `CorePlugin` interface
 
@@ -68,14 +35,19 @@ The side-effect import and configurable entrypoint install the same runtime plug
 | `id`      | `string`                                          | yes      | Unique identifier. Duplicate ids throw.                                                    |
 | `order`   | `number`                                          | no       | Sort priority (ascending). Defaults to `0`.                                                |
 | `setup`   | `(ctx, renderer) => void`                         | no       | Called once at registration time. If it throws, the plugin is not registered.              |
-| `dispose` | `() => void`                                      | no       | Called when the plugin is unregistered or the registry is cleared.                         |
+| `dispose` | `() => void`                                      | no       | OpenTUI calls it when the registry unregisters the plugin or clears all plugins.           |
 | `slots`   | `Partial<Record<SlotName, CoreSlotContribution>>` | yes      | Each value is a renderer function or a [managed slot object](#managed-slot-contributions). |
 
-A `CoreSlotContribution` is either a plain renderer `(ctx, data) => BaseRenderable` or a `CoreManagedSlot` with lifecycle hooks.
+A `CoreSlotContribution` is a plain renderer `(ctx, data) => BaseRenderable` or a `CoreManagedSlot` with node ownership
+hooks.
 
 ## Basic usage
 
-A `SlotRenderable` extends `Renderable`, so it can be added to any parent like a `BoxRenderable`. It resolves plugins from the registry, manages their lifecycle, and reconciles their output as its children.
+A `SlotRenderable` extends `Renderable`, so any renderable parent can own it. It resolves contributions and reconciles
+their output as child nodes.
+
+Each contribution must return one synchronous `BaseRenderable`. A promise, the slot mount itself, or a node attached
+to another parent causes a reported render failure.
 
 ```typescript
 import {
@@ -133,34 +105,35 @@ slot.refresh()
 slot.destroy()
 ```
 
-`registerCorePlugin` returns an unregister function (`() => void`). Calling it removes the plugin and invokes its `dispose` hook.
+`registerCorePlugin` returns an unregister function. Calling it removes the plugin and calls its `dispose` hook.
 
-Because `SlotRenderable` extends `Renderable`, it accepts all standard layout options (`width`, `height`, `flexDirection`, `padding`, etc.) alongside the slot-specific options.
+Because `SlotRenderable` extends `Renderable`, it accepts standard layout options such as `width`, `height`,
+`flexDirection`, and `padding`.
 
 ## `SlotRenderable` options
 
 | Option                     | Type                                                                | Required | Description                                                                                                |
 | -------------------------- | ------------------------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------- |
-| `id`                       | `string`                                                            | yes      | Unique renderable identifier (inherited from `RenderableOptions`)                                          |
+| `id`                       | `string`                                                            | no       | Unique renderable identifier. OpenTUI generates one when omitted.                                          |
 | `registry`                 | `CoreSlotRegistry`                                                  | yes      | The registry to read plugins from                                                                          |
 | `name`                     | slot name                                                           | yes      | Which slot to mount                                                                                        |
 | `data`                     | object                                                              | no       | Slot data passed to plugin renderers as the second argument                                                |
 | `mode`                     | `SlotMode`                                                          | no       | `"append"` (default), `"replace"`, or `"single_winner"`. See [slot modes](/docs/plugins/slots#slot-modes). |
 | `fallback`                 | `BaseRenderable \| BaseRenderable[] \| () => ...`                   | no       | Fallback nodes or a factory that creates them                                                              |
 | `pluginFailurePlaceholder` | `(failure, ctx) => BaseRenderable \| BaseRenderable[] \| undefined` | no       | Creates placeholder UI when a plugin throws                                                                |
-| _...layout options_        | `RenderableOptions`                                                 | no       | Standard layout props: `width`, `height`, `flexDirection`, `padding`, etc.                                 |
+| _layout options_           | `RenderableOptions`                                                 | no       | `width`, `height`, `flexDirection`, `padding`, and other standard layout props                             |
 
 ## Instance API
 
-| Member      | Description                                                                                                                                                                                                                                                                                                                                                                                  |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mode`      | Getter/setter. Changing the mode automatically refreshes the slot.                                                                                                                                                                                                                                                                                                                           |
-| `refresh()` | Re-resolve plugins and reconcile mounted children.                                                                                                                                                                                                                                                                                                                                           |
-| `destroy()` | Inherits from `Renderable`. In addition to the standard cleanup, `SlotRenderable` unsubscribes from the registry, calls `onDeactivate` on active managed slots, then calls `onDispose` on all managed slots. Host-owned nodes (plain function contributions) are destroyed; plugin-owned nodes (managed slot contributions) are detached but left for the plugin to clean up in `onDispose`. |
+| Member      | Description                                                                                                                                                                                                                                                                        |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mode`      | Getter/setter. Changing the mode automatically refreshes the slot.                                                                                                                                                                                                                 |
+| `refresh()` | Re-resolve plugins and reconcile mounted children.                                                                                                                                                                                                                                 |
+| `destroy()` | Inherits from `Renderable`. `SlotRenderable` unsubscribes from the registry, calls `onDeactivate` on active managed slots, and then calls `onDispose` on all managed slots. It destroys host-owned nodes. It detaches plugin-owned nodes for the plugin to release in `onDispose`. |
 
 ## `resolveCoreSlot`
 
-Resolve slot entries without mounting them. Useful when you need to inspect or render plugin output manually.
+Resolve slot entries without mounting them. Use this API to inspect or render contribution output manually.
 
 ```typescript
 import { createCliRenderer, createCoreSlotRegistry, resolveCoreSlot } from "@opentui/core"
@@ -177,7 +150,7 @@ const entries = resolveCoreSlot(registry, "statusbar")
 
 ## Plugin failure placeholders
 
-If a plugin throws during slot render, you can provide host-controlled fallback UI for that plugin failure:
+If a contribution throws while it renders, the host can create placeholder nodes for that failure:
 
 ```typescript
 const slot = new SlotRenderable(renderer, {
@@ -193,9 +166,13 @@ const slot = new SlotRenderable(renderer, {
 })
 ```
 
+The registry reports contribution failures with source `core` and phase `render`. If the placeholder throws, the
+registry reports phase `error_placeholder`, and that contribution has no placeholder output. The host owns and destroys
+placeholder nodes.
+
 ## Managed slot contributions
 
-A core slot contribution can be a plain function or a managed slot object with lifecycle hooks:
+A Core slot contribution can be a plain function or a managed slot object with node ownership hooks:
 
 ```typescript
 registerCorePlugin(registry, {
@@ -206,13 +183,13 @@ registerCorePlugin(registry, {
         return new TextRenderable(renderer, { id: "managed", content: "managed" })
       },
       onActivate(ctx) {
-        // plugin became active in this slot (visible)
+        // The contribution became active in this slot.
       },
       onDeactivate(ctx) {
-        // plugin is no longer active (e.g. mode changed to single_winner and this plugin lost)
+        // The contribution is no longer active.
       },
       onDispose(ctx) {
-        // plugin is removed/disposed for this slot
+        // Release the plugin-owned nodes for this slot.
       },
     },
   },
@@ -221,25 +198,26 @@ registerCorePlugin(registry, {
 
 ### `CoreManagedSlot` interface
 
-| Field          | Type                            | Required | Description                                                          |
-| -------------- | ------------------------------- | -------- | -------------------------------------------------------------------- |
-| `render`       | `(ctx, data) => BaseRenderable` | yes      | Creates the renderable node for this slot                            |
-| `onActivate`   | `(ctx) => void`                 | no       | Called when the plugin becomes active (visible) in the slot          |
-| `onDeactivate` | `(ctx) => void`                 | no       | Called when the plugin is no longer active (e.g. lost single_winner) |
-| `onDispose`    | `(ctx) => void`                 | no       | Called when the plugin is removed or the slot is destroyed           |
+| Field          | Type                            | Required | Description                                                             |
+| -------------- | ------------------------------- | -------- | ----------------------------------------------------------------------- |
+| `render`       | `(ctx, data) => BaseRenderable` | yes      | Creates the renderable node for this slot                               |
+| `onActivate`   | `(ctx) => void`                 | no       | Runs when the contribution becomes active in the slot                   |
+| `onDeactivate` | `(ctx) => void`                 | no       | Runs when the contribution is no longer active                          |
+| `onDispose`    | `(ctx) => void`                 | no       | Runs when the registry removes the plugin or the host destroys the slot |
 
 ### Node ownership
 
-When a slot contribution is a **plain function**, the host owns the returned nodes. On deactivation or disposal, the host detaches and destroys them.
+For a plain function contribution, the host owns the returned nodes. On deactivation or disposal, the host detaches
+and destroys them.
 
-When a slot contribution is a **managed slot object**, the plugin owns the nodes. On deactivation the host detaches them but does _not_ destroy them — the plugin can reuse them if it becomes active again. On disposal, `onDispose` is called so the plugin can clean up.
+For a managed contribution, the plugin owns the returned nodes. On deactivation, the host detaches them but does not
+destroy them. The plugin can retain and return those nodes if the contribution becomes active again. On disposal, the
+host calls `onDispose`. The plugin must then destroy or release its nodes.
 
-## Observability
+Destroying `SlotRenderable` unsubscribes it from the registry. It calls `onDeactivate` for active managed
+contributions, then calls `onDispose` for all managed contributions. Host-owned failure placeholders and fallback nodes
+are also destroyed.
 
-```typescript
-registry.onPluginError((event) => {
-  console.error(event.pluginId, event.phase, event.source, event.error.message)
-})
-```
+## Example
 
-Example: `packages/examples/src/core-plugin-slots-demo.ts`
+See the [Core plugin slots example](https://github.com/anomalyco/opentui/blob/main/packages/examples/src/core-plugin-slots-demo.ts).

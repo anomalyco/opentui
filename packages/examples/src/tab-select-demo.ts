@@ -193,13 +193,14 @@ export function destroy(rendererInstance: CliRenderer): void {
   }
 
   if (tabSelect) {
-    rendererInstance.root.remove(tabSelect.id)
+    rendererInstance.root.remove(tabSelect)
     tabSelect.destroy()
     tabSelect = null
   }
 
   if (parentContainer) {
-    rendererInstance.root.remove("tab-select-container")
+    const tabSelectContainer = rendererInstance.root.getRenderable("tab-select-container")
+    tabSelectContainer?.destroyRecursively()
     parentContainer = null
   }
 

@@ -1,15 +1,25 @@
 import {
   CliRenderer,
+  CliRenderEvents,
   createCliRenderer,
+  createClipboard,
+  createHostClipboard,
+  createRendererClipboardAdapter,
   TextareaRenderable,
   BoxRenderable,
   TextRenderable,
   LineNumberRenderable,
   KeyEvent,
+  MouseButton,
+  PasteEvent,
   t,
   bold,
   cyan,
   fg,
+  type ClipboardSelection,
+  type ClipboardService,
+  type HostClipboardService,
+  type Selection,
 } from "@opentui/core"
 import { setupCommonDemoKeys } from "./lib/standalone-keys.js"
 
@@ -41,6 +51,13 @@ SELECTION:
   • Alt+Shift+Left/Right to select word forward/backward
   • Alt+Shift+A/E to select to visual line start/end
 
+CLIPBOARD:
+  • Ctrl+Y to copy selected text
+  • Ctrl+V to paste from the system clipboard
+  • Terminal paste shortcuts also insert text
+  • Linux: selecting text updates the primary selection
+  • Linux: middle-click to paste the primary selection
+
 EDITING:
   • Type any text to insert
   • Backspace/Delete to remove text
@@ -60,8 +77,10 @@ UNDO/REDO:
 VIEW:
   • Shift+W to toggle wrap mode (word/char/none)
   • Shift+L to toggle line numbers
+  • Shift+S to toggle selection occupancy (cell/boundary)
   • Shift+H to toggle diff highlights (colors + +/- signs)
   • Shift+D to toggle diagnostics (error/warning/info emojis)
+  • Shift+C to toggle cursor style (block/line)
   • Ctrl+] to increase scroll speed
   • Ctrl+[ to decrease scroll speed
 
@@ -81,11 +100,127 @@ let parentContainer: BoxRenderable | null = null
 let editor: TextareaRenderable | null = null
 let editorWithLines: LineNumberRenderable | null = null
 let statusText: TextRenderable | null = null
-let highlightsEnabled: boolean = false
-let diagnosticsEnabled: boolean = false
+let clipboard: ClipboardService | null = null
+let keyHandler: ((key: KeyEvent) => void) | null = null
+let selectionHandler: ((selection: Selection) => void) | null = null
+let rendererDestroyHandler: (() => void) | null = null
+let destroyPromise: Promise<void> | null = null
+let clipboardStatus = "Clipboard ready"
+let highlightsEnabled: boolean = true
+let diagnosticsEnabled: boolean = true
 
-export async function run(rendererInstance: CliRenderer): Promise<void> {
+const IS_LINUX = process.platform === "linux"
+const INHERITED_WAYLAND_ONLY =
+  IS_LINUX && Boolean(process.env.WAYLAND_SOCKET) && !process.env.WAYLAND_DISPLAY && !process.env.DISPLAY
+let inheritedWaylandServiceCreated = false
+const MAX_QUEUED_CLIPBOARD_OPERATIONS = 16
+type ClipboardOperationQueue = { tail: Promise<void>; pending: number }
+const clipboardOperationQueues: Record<ClipboardSelection, ClipboardOperationQueue> = {
+  clipboard: { tail: Promise.resolve(), pending: 0 },
+  primary: { tail: Promise.resolve(), pending: 0 },
+}
+
+function errorMessage(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ")
+}
+
+function matchesControlKey(key: KeyEvent, name: string): boolean {
+  const baseCode = name.charCodeAt(0)
+  const matchesName = key.name === name || key.baseCode === baseCode || key.baseCode === baseCode - 32
+  return matchesName && key.ctrl && !key.shift && !key.meta && !key.super && !key.hyper
+}
+
+function queueClipboardOperation(selection: ClipboardSelection, operation: () => Promise<void>): void {
+  const queue = clipboardOperationQueues[selection]
+  if (queue.pending >= MAX_QUEUED_CLIPBOARD_OPERATIONS) {
+    clipboardStatus = "Clipboard busy"
+    return
+  }
+
+  queue.pending += 1
+  const queued = queue.tail.then(operation)
+  queue.tail = queued.catch((error) => {
+    clipboardStatus = `Clipboard failed: ${errorMessage(error)}`
+  })
+  void queue.tail.then(() => {
+    queue.pending -= 1
+  })
+}
+
+async function writeClipboardText(text: string, selection: ClipboardSelection, successStatus: string): Promise<void> {
+  const service = clipboard
+  if (!service) {
+    clipboardStatus = "Clipboard unavailable"
+    return
+  }
+
+  clipboardStatus = selection === "primary" ? "Updating primary selection..." : "Copying selection..."
+  try {
+    const result = await service.writeText(text, {
+      destination: selection === "primary" ? "host-only" : "best-available",
+      selection,
+      allowRemoteHost: selection === "primary",
+    })
+    if (service !== clipboard) return
+
+    if (result.host.status === "written") {
+      clipboardStatus = successStatus
+    } else if (result.terminal.status === "attempted") {
+      clipboardStatus = `${successStatus} (terminal request sent)`
+    } else if (result.host.status === "failed") {
+      clipboardStatus = `Copy failed: ${errorMessage(result.host.error)}`
+    } else {
+      clipboardStatus = `Copy failed: host ${result.host.status}, terminal ${result.terminal.status}`
+    }
+  } catch (error) {
+    if (service === clipboard) clipboardStatus = `Copy failed: ${errorMessage(error)}`
+  }
+}
+
+function queueClipboardWrite(text: string, selection: ClipboardSelection, successStatus: string): void {
+  queueClipboardOperation(selection, () => writeClipboardText(text, selection, successStatus))
+}
+
+function pasteClipboardText(selection: ClipboardSelection): void {
+  queueClipboardOperation(selection, async () => {
+    const service = clipboard
+    const target = editor
+    if (!service || !target || target.isDestroyed) {
+      clipboardStatus = "Clipboard unavailable"
+      return
+    }
+
+    const source = selection === "primary" ? "primary selection" : "clipboard"
+    clipboardStatus = `Reading ${source}...`
+    try {
+      const result = await service.read({ preferredTypes: ["text/plain"], selection })
+      if (service !== clipboard || target !== editor || target.isDestroyed) return
+
+      if (result.status !== "read") {
+        const detail = result.status === "failed" ? `: ${errorMessage(result.error)}` : ""
+        clipboardStatus = `Paste failed: ${result.status}${detail}`
+        return
+      }
+
+      if (result.representation.bytes.length === 0) {
+        clipboardStatus = `${source} is empty`
+        return
+      }
+
+      target.handlePaste(new PasteEvent(result.representation.bytes, { mimeType: "text/plain", kind: "text" }))
+      clipboardStatus = `Pasted from ${source}`
+    } catch (error) {
+      if (service === clipboard) clipboardStatus = `Paste failed: ${errorMessage(error)}`
+    }
+  })
+}
+
+function setupEditor(rendererInstance: CliRenderer): void {
   renderer = rendererInstance
+  rendererDestroyHandler = () => {
+    void destroy(rendererInstance).catch((error) => console.error("Failed to clean up editor:", error))
+  }
+  rendererInstance.once(CliRenderEvents.DESTROY, rendererDestroyHandler)
   renderer.setBackgroundColor("#0D1117")
 
   parentContainer = new BoxRenderable(renderer, {
@@ -130,6 +265,14 @@ export async function run(rendererInstance: CliRenderer): Promise<void> {
     bg: "#161b22", // Slightly darker than editor background for distinction
     width: "100%",
     height: "100%",
+    onMouseDown: (event) => {
+      if (!IS_LINUX || event.button !== MouseButton.MIDDLE) return
+
+      event.preventDefault()
+      event.stopPropagation()
+      editor?.focus()
+      pasteClipboardText("primary")
+    },
   })
 
   editorBox.add(editorWithLines)
@@ -143,6 +286,7 @@ export async function run(rendererInstance: CliRenderer): Promise<void> {
   parentContainer.add(statusText)
 
   editor.focus()
+  if (rendererInstance.isDestroyed) throw new Error("Renderer was destroyed during editor setup")
 
   rendererInstance.setFrameCallback(async () => {
     if (statusText && editor && !editor.isDestroyed) {
@@ -151,15 +295,35 @@ export async function run(rendererInstance: CliRenderer): Promise<void> {
         const wrap = editor.wrapMode !== "none" ? "ON" : "OFF"
         const highlights = highlightsEnabled ? "ON" : "OFF"
         const diagnostics = diagnosticsEnabled ? "ON" : "OFF"
+        const selectionOccupancy = editor.selectionOccupancy.toUpperCase()
+        const cursorStyle = (editor.cursorStyle.style ?? "block").toUpperCase()
         const scrollSpeed = editor.scrollSpeed
-        statusText.content = `Line ${cursor.row + 1}, Col ${cursor.col + 1} | Wrap: ${wrap} | Diff: ${highlights} | Diag: ${diagnostics} | Scroll: ${scrollSpeed} lines/s`
+        statusText.content = `Line ${cursor.row + 1}, Col ${cursor.col + 1} | ${clipboardStatus} | Wrap: ${wrap} | Selection: ${selectionOccupancy} | Diff: ${highlights} | Diag: ${diagnostics} | Cursor: ${cursorStyle} | Scroll: ${scrollSpeed} lines/s`
       } catch (error) {
         // Ignore errors during shutdown
       }
     }
   })
 
-  rendererInstance.keyInput.on("keypress", (key: KeyEvent) => {
+  keyHandler = (key: KeyEvent) => {
+    if (editor?.focused && matchesControlKey(key, "v")) {
+      key.preventDefault()
+      key.stopPropagation()
+      pasteClipboardText("clipboard")
+      return
+    }
+    if (editor?.focused && matchesControlKey(key, "y")) {
+      key.preventDefault()
+      key.stopPropagation()
+      const selectedText = rendererInstance.getSelection()?.getSelectedText() || editor.getSelectedText()
+      if (selectedText) {
+        queueClipboardWrite(selectedText, "clipboard", "Selection copied")
+      } else {
+        clipboardStatus = "Nothing selected"
+      }
+      return
+    }
+
     if (key.shift && key.name === "l") {
       key.preventDefault()
       if (editorWithLines && !editorWithLines.isDestroyed) {
@@ -172,6 +336,19 @@ export async function run(rendererInstance: CliRenderer): Promise<void> {
         const currentMode = editor.wrapMode
         const nextMode = currentMode === "word" ? "char" : currentMode === "char" ? "none" : "word"
         editor.wrapMode = nextMode
+      }
+    }
+    if (key.shift && key.name === "s") {
+      key.preventDefault()
+      if (editor && !editor.isDestroyed) {
+        editor.selectionOccupancy = editor.selectionOccupancy === "cell" ? "boundary" : "cell"
+      }
+    }
+    if (key.shift && key.name === "c") {
+      key.preventDefault()
+      if (editor && !editor.isDestroyed) {
+        const thin = editor.cursorStyle.style === "line"
+        editor.cursorStyle = thin ? { style: "block", blinking: true } : { style: "line", blinking: false }
       }
     }
     if (key.shift && key.name === "h") {
@@ -299,24 +476,109 @@ export async function run(rendererInstance: CliRenderer): Promise<void> {
         editor.scrollSpeed = Math.max(4, editor.scrollSpeed - 4)
       }
     }
-  })
+  }
+  rendererInstance.keyInput.on("keypress", keyHandler)
+
+  if (IS_LINUX) {
+    selectionHandler = (selection) => {
+      const selectedText = selection.getSelectedText()
+      if (selectedText) queueClipboardWrite(selectedText, "primary", "Primary selection updated")
+    }
+    rendererInstance.on(CliRenderEvents.SELECTION, selectionHandler)
+  }
 }
 
-export function destroy(rendererInstance: CliRenderer): void {
-  rendererInstance.clearFrameCallbacks()
-  parentContainer?.destroy()
-  parentContainer = null
-  editorWithLines = null
-  editor = null
-  statusText = null
-  renderer = null
+export async function run(rendererInstance: CliRenderer): Promise<void> {
+  if (destroyPromise) await destroyPromise
+  if (renderer) throw new Error("Editor demo is already running")
+  if (rendererInstance.isDestroyed) throw new Error("Cannot run editor demo with a destroyed renderer")
+
+  destroyPromise = null
+  clipboardStatus = "Clipboard ready"
+  let host: HostClipboardService | null = null
+
+  if (INHERITED_WAYLAND_ONLY && inheritedWaylandServiceCreated) {
+    clipboardStatus = "Host clipboard unavailable: inherited Wayland socket already used"
+    setupEditor(rendererInstance)
+    return
+  }
+
+  try {
+    host = createHostClipboard()
+    clipboard = createClipboard({
+      host,
+      terminal: createRendererClipboardAdapter(rendererInstance),
+    })
+    host = null
+    if (INHERITED_WAYLAND_ONLY) inheritedWaylandServiceCreated = true
+    setupEditor(rendererInstance)
+  } catch (error) {
+    try {
+      if (clipboard) await destroy(rendererInstance)
+      else if (host) await host.dispose()
+    } catch (cleanupError) {
+      console.error("Failed to clean up editor clipboard:", cleanupError)
+    }
+    throw error
+  }
+}
+
+export function destroy(rendererInstance: CliRenderer): Promise<void> {
+  destroyPromise ??= Promise.resolve().then(async () => {
+    const service = clipboard
+    const activeClipboardOperations = Object.values(clipboardOperationQueues).map((queue) => queue.tail)
+    const activeKeyHandler = keyHandler
+    const activeSelectionHandler = selectionHandler
+    const activeRendererDestroyHandler = rendererDestroyHandler
+    const container = parentContainer
+    clipboard = null
+    keyHandler = null
+    selectionHandler = null
+    rendererDestroyHandler = null
+    parentContainer = null
+    editorWithLines = null
+    editor = null
+    statusText = null
+    renderer = null
+
+    try {
+      if (activeKeyHandler) rendererInstance.keyInput.off("keypress", activeKeyHandler)
+      if (activeSelectionHandler) rendererInstance.off(CliRenderEvents.SELECTION, activeSelectionHandler)
+      if (activeRendererDestroyHandler) rendererInstance.off(CliRenderEvents.DESTROY, activeRendererDestroyHandler)
+
+      rendererInstance.clearFrameCallbacks()
+      rendererInstance.clearSelection()
+      container?.destroyRecursively()
+    } finally {
+      try {
+        await service?.dispose()
+      } finally {
+        await Promise.all(activeClipboardOperations)
+      }
+    }
+  })
+  return destroyPromise
 }
 
 if (import.meta.main) {
   const renderer = await createCliRenderer({
-    exitOnCtrlC: true,
+    exitOnCtrlC: false,
     targetFps: 60,
   })
-  run(renderer)
+  try {
+    await run(renderer)
+  } catch (error) {
+    renderer.destroy()
+    throw error
+  }
   setupCommonDemoKeys(renderer)
+  renderer.keyInput.on("keypress", (key: KeyEvent) => {
+    if (matchesControlKey(key, "c") || matchesControlKey(key, "q")) {
+      key.preventDefault()
+      key.stopPropagation()
+      void destroy(renderer)
+        .catch((error) => console.error("Failed to clean up editor:", error))
+        .finally(() => renderer.destroy())
+    }
+  })
 }

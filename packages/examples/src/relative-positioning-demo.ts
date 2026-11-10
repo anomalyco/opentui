@@ -306,7 +306,8 @@ export function destroy(renderer: CliRenderer): void {
     globalKeyboardHandler = null
   }
 
-  renderer.root.remove("root-container")
+  const rootContainer = renderer.root.getRenderable("root-container")
+  rootContainer?.destroyRecursively()
 
   renderer.clearFrameCallbacks()
   renderer.setCursorPosition(0, 0, false)

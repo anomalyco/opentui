@@ -3,6 +3,21 @@ import { parseColor, RGBA, type ColorInput } from "../lib/RGBA.js"
 import { Renderable, type RenderableOptions } from "../Renderable.js"
 import type { RenderContext } from "../types.js"
 
+const transparent = RGBA.fromValues(0, 0, 0, 0)
+
+/** The cells that drawTextFit keeps of text within maxWidth: printable ASCII is one cell per byte. */
+function fittedWidth(buffer: OptimizedBuffer, text: string, maxWidth: number): number {
+  if (/^[\x20-\x7e]*$/.test(text)) return Math.min(text.length, maxWidth)
+  const encoded = buffer.encodeUnicode(text)
+  let width = 0
+  for (const glyph of encoded.data) {
+    if (width + glyph.width > maxWidth) break
+    width += glyph.width
+  }
+  buffer.freeUnicode(encoded)
+  return width
+}
+
 export interface TimeToFirstDrawOptions extends RenderableOptions<TimeToFirstDrawRenderable> {
   fg?: ColorInput
   label?: string
@@ -27,6 +42,10 @@ export class TimeToFirstDrawRenderable extends Renderable {
     this.textColor = parseColor(options.fg ?? "#AAAAAA")
     this.label = options.label ?? "Time to first draw"
     this.precision = this.normalizePrecision(options.precision ?? 2)
+  }
+
+  protected override defaultDimension(kind: "width" | "height"): number | `${number}%` {
+    return kind === "width" ? "100%" : 1
   }
 
   public get runtimeMs(): number | null {
@@ -73,10 +92,10 @@ export class TimeToFirstDrawRenderable extends Renderable {
 
     const content = `${this.label}: ${this._runtimeMs.toFixed(this.precision)}ms`
     const maxWidth = Math.max(this.width, 1)
-    const visibleContent = content.length > maxWidth ? content.slice(0, maxWidth) : content
-    const centeredX = this.x + Math.max(0, Math.floor((maxWidth - visibleContent.length) / 2))
+    const [x, y] = this._paintOrigin(buffer)
+    const width = fittedWidth(buffer, content, maxWidth)
 
-    buffer.drawText(visibleContent, centeredX, this.y, this.textColor)
+    buffer.drawTextFit(content, x + Math.floor((maxWidth - width) / 2), y, width, this.textColor, transparent)
   }
 
   private normalizePrecision(value: number): number {

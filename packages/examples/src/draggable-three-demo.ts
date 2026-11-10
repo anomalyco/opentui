@@ -243,7 +243,8 @@ export function destroy(renderer: CliRenderer): void {
   }
 
   if (parentContainer) {
-    renderer.root.remove("draggable-three-container")
+    const draggableThreeContainer = renderer.root.getRenderable("draggable-three-container")
+    draggableThreeContainer?.destroyRecursively()
     parentContainer = null
   }
 }

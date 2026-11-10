@@ -1,0 +1,375 @@
+---
+title: Editing buffers and views
+description: Choose, operate, and dispose OpenTUI text and editing buffers without mixing byte, string, grapheme, or cell offsets
+---
+
+# Editing buffers and views
+
+This advanced reference is for component authors who need OpenTUI's public native text-buffer and editor layers.
+
+Use [Input](/docs/components/input), [Textarea](/docs/components/textarea), or [Code](/docs/components/code) for normal
+application UI. Use these classes when a custom renderable must own native text storage, wrapping, selection, editing,
+or viewport state.
+
+## Layer and ownership model
+
+| Layer                  | Purpose                                                                                          | Ownership                                            |
+| ---------------------- | ------------------------------------------------------------------------------------------------ | ---------------------------------------------------- |
+| `TextBuffer`           | Stores read-only or replaceable styled text and highlights                                       | The creator calls `destroy()`                        |
+| `TextBufferView`       | Adds wrapping, alignment, viewport, truncation, and selection to a `TextBuffer`                  | The creator destroys the view before its buffer      |
+| `EditBuffer`           | Adds a cursor, incremental edits, word movement, and undo history                                | The creator calls `destroy()`                        |
+| `EditorView`           | Adds wrapping, viewport, visual movement, selection, and extmarks to an `EditBuffer`             | The creator destroys the view before its edit buffer |
+| `TextBufferRenderable` | Uses private scene text by default, or explicit buffers and views for resource-backed subclasses | Its `destroy()` releases its owned text resources    |
+| `EditBufferRenderable` | Owns an `EditBuffer` and editor view bound to a native scene node                                | Its `destroy()` releases the view before the buffer  |
+
+Buffers and styles require an explicit owner. Use the destination's `renderer.nativeScene`, or a
+`ResourceContext` for standalone work. Views inherit their source buffer's owner and do not extend its lifetime.
+
+```typescript
+import { ResourceContext, TextBuffer, TextBufferView } from "@opentui/core"
+
+const owner = new ResourceContext({ objectCapacity: 2, renderCellsMax: 1 })
+try {
+  const buffer = TextBuffer.create("unicode", owner)
+  const view = TextBufferView.create(buffer)
+  buffer.setText("first line\nsecond line")
+  view.setWrapMode("word")
+  view.setViewport(0, 0, 20, 4)
+  console.log(view.lineInfo)
+  view.destroy()
+  buffer.destroy()
+} finally {
+  owner.destroy()
+}
+```
+
+Every class rejects most operations after destruction. Each `destroy()` method is idempotent.
+
+These native classes run in the supported Bun and Node.js Core runtimes. Read
+[Runtime and platform support](/docs/getting-started/runtime-support) for native artifact and FFI requirements.
+
+## Offset units
+
+Do not interchange these units:
+
+| Unit                  | Meaning                                                                    | Used by                                                           |
+| --------------------- | -------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| UTF-8 bytes           | Encoded storage and output-buffer capacity                                 | `TextBuffer.byteSize` and native text storage                     |
+| UTF-16 code units     | JavaScript string indexing and `string.length`                             | JavaScript only                                                   |
+| Unicode code points   | Scalar values                                                              | `setTabIndicator()` when given a string uses its first code point |
+| Graphemes             | User-perceived text clusters                                               | Cursor movement, deletion, and boundary snapping                  |
+| Display columns       | Terminal cell width under the selected width method                        | Rows, columns, highlights, selection, and cursor positions        |
+| Global display offset | Display columns from the buffer start, with each line break counted as one | Cursor offsets, selections, ranges, and extmarks                  |
+
+`TextBuffer.length` is the sum of line display widths. It excludes line breaks. `TextBuffer.byteSize` is the UTF-8
+output size and includes one byte for each normalized line break.
+
+`LogicalCursor.row` and `LogicalCursor.col` are document coordinates. `col` uses display columns. Its `offset` is a
+global display offset.
+
+`VisualCursor.visualRow` and `visualCol` are relative to the viewport. `logicalRow` and `logicalCol` are document
+coordinates. Its `offset` is also a global display offset.
+
+## `TextBuffer`
+
+Create a buffer with `TextBuffer.create(widthMethod, owner)`. The width method is `"unicode"` or `"wcwidth"`.
+
+| API                                                                     | Behavior                                                                       |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `setText(text)`                                                         | Replaces text with a native-owned copy                                         |
+| `append(text)`                                                          | Appends a native-owned copy of the supplied text                               |
+| `loadFile(path)`                                                        | Reads a file into native-owned text storage and rejects invalid UTF-8          |
+| `setStyledText(styledText)`                                             | Replaces content with styled chunks and optional links                         |
+| `getPlainText()`                                                        | Queries the exact UTF-8 byte count, then copies and decodes the full text      |
+| `getTextRange(start, end)`                                              | Reads a half-open global display-offset range                                  |
+| `getLineCount()`                                                        | Returns logical line count                                                     |
+| `setDefaultFg`, `setDefaultBg`, `setDefaultAttributes`, `resetDefaults` | Set defaults for content without explicit style                                |
+| `setSyntaxStyle`, `getSyntaxStyle`                                      | Attach or inspect a borrowed `SyntaxStyle`                                     |
+| `setTabWidth`, `getTabWidth`                                            | Set or read tab width in display columns                                       |
+| `clear()`                                                               | Clears text but keeps highlights, arena capacity, and the reusable memory slot |
+| `reset()`                                                               | Clears text, highlights, arena state, and the complete memory registry         |
+
+`TextBuffer` does not supply a cursor or incremental edits. Use `EditBuffer` for those operations.
+
+The caller owns a `SyntaxStyle` passed to `setSyntaxStyle()`. The style and buffer must share the same `ResourceContext`.
+You can share a style across detached Sessions within that Context.
+For a different Context, pass the theme definitions to `SyntaxStyle.fromStyles(definitions, destinationOwner)`.
+Attachment does not allocate or update a mirror. Before you detach or destroy a style, make sure that no consumer needs it.
+
+## `TextBufferView`
+
+A view tracks source-buffer changes automatically. It stores view state, not another copy of the text.
+
+A new low-level view has no wrap width, `"none"` wrap mode, `"left"` text alignment, no viewport, no selection, and
+truncation disabled. Its `"..."` ellipsis uses static bytes, not a memory-registry slot.
+
+| API                                                     | Behavior                                                            |
+| ------------------------------------------------------- | ------------------------------------------------------------------- |
+| `setWrapMode("none" \| "char" \| "word")`               | Selects wrapping policy                                             |
+| `setWrapWidth(width \| null)`                           | Sets the wrap width, where `null` passes native width `0`           |
+| `setTextAlign("left" \| "center" \| "right")`           | Pads each rendered line within the viewport width. Default `"left"` |
+| `setFirstLineOffset(offset)`                            | Reduces available width on the first visual line                    |
+| `setViewportSize(width, height)`                        | Changes viewport dimensions while preserving its offset             |
+| `setViewport(x, y, width, height)`                      | Sets horizontal and vertical cell offsets and dimensions            |
+| `setTruncate(boolean)`                                  | Enables or disables the view's ellipsis form                        |
+| `setTabIndicator(value)`, `setTabIndicatorColor(color)` | Sets the tab glyph and color                                        |
+| `lineInfo`                                              | Returns cached visual-line data for the active viewport             |
+| `logicalLineInfo`                                       | Returns visual-line data without viewport restriction               |
+| `getVirtualLineCount()`                                 | Returns wrapped visual-line count                                   |
+| `measureForDimensions(width, height)`                   | Measures without changing the active viewport cache                 |
+| `getPlainText()`                                        | Copies the full backing document through its exact-count reader     |
+
+`setSelection()` and `updateSelection()` use global display offsets. `setLocalSelection()` and
+`updateLocalSelection()` convert viewport-relative cell coordinates. They subtract the draw-time alignment pad so a
+click maps to the painted character. Reset the matching form when the selection ends.
+
+## `EditBuffer`
+
+`EditBuffer.create(widthMethod, owner)` creates editable native text storage with one primary cursor.
+
+| Group               | API                                                                                                    |
+| ------------------- | ------------------------------------------------------------------------------------------------------ |
+| Replace content     | `setText`, `setTextOwned`, `replaceText`, `replaceTextOwned`, `clear`                                  |
+| Insert and delete   | `insertChar`, `insertText`, `deleteChar`, `deleteCharBackward`, `deleteRange`, `newLine`, `deleteLine` |
+| Move                | `moveCursorLeft`, `moveCursorRight`, `moveCursorUp`, `moveCursorDown`, `gotoLine`                      |
+| Set cursor          | `setCursor`, `setCursorToLineCol`, `setCursorByOffset`                                                 |
+| Read cursor         | `getCursorPosition`, `getNextWordBoundary`, `getPrevWordBoundary`, `getEOL`                            |
+| Convert coordinates | `offsetToPosition`, `positionToOffset`, `getLineStartOffset`, `measureText`                            |
+| Read text           | `getText`, `getTextRange`, `getTextRangeByCoords`, `getLineCount`                                      |
+| History             | `undo`, `redo`, `canUndo`, `canRedo`, `clearHistory`                                                   |
+| Style               | Default-style, syntax-style, and highlight methods shared with `TextBuffer`                            |
+| Diagnostics         | `debugLogRope` writes the native rope structure to the debug logger                                    |
+
+`setText()` resets history and the native add buffer. `replaceText()` creates an undo point. All replacement methods
+copy text into native-owned memory. The `Owned` variants retain the same public behavior without a borrowed-memory path.
+
+An editor keeps every control character and shows it as notation, as Vim does. C0 controls other than tab, carriage
+return, and line feed show as `^@` to `^_` in two cells, DEL as `^?` in two cells, and C1 controls as lowercase hex
+`<80>` to `<9f>` in four cells. The cursor stops before each control and deletes it as one unit, wrapping never splits
+its notation, and `getText()`, history, and selected text return the original characters. Tab, carriage return, and
+line feed keep their meaning. The same rule applies to editor placeholders, `Textarea.initialValue`, and `Input.value`.
+`Input.maxLength` counts the characters of the value, controls included. Read-only text, such as `TextRenderable`,
+still gives controls no cells. `Textarea` and `Input` ignore key sequences that contain control characters.
+
+Pasted text keeps its controls, but `Textarea` and `Input` remove terminal escape sequences from it with
+`stripAnsiSequences()`, the same way on Bun and Node: control sequences such as `ESC [31m`, control strings such as
+OSC titles and hyperlinks through BEL or ST, other escapes such as `ESC ( B`, and their C1 forms. A sequence ends at
+the first character that cannot continue it, and a lone ESC or a sequence that the paste cuts off is removed too, so a
+paste never inserts ESC.
+
+`measureText(text)` returns the global display offset at the end of `text` as the buffer would lay it out, without
+storing it. It uses the buffer's width method, tab width, and control notation, and counts each line break as one.
+JavaScript width functions such as `Bun.stringWidth()` and `string-width` give controls and tabs no cells and count
+no line breaks, so do not use them for editor offsets. To map a string index in the buffer text to an offset, measure
+the text before it. To map an offset to a string index, take the length of `getTextRange(0, offset)`:
+
+```typescript
+buffer.setText("\f@file")
+const text = buffer.getText()
+const offset = buffer.measureText(text.slice(0, text.indexOf("@"))) // 2: ^L takes two cells
+buffer.getTextRange(0, offset).length // 1: the index of "@"
+```
+
+To measure text that is not in a buffer, call `measureEditText(text, { widthMethod, tabWidth })`. It needs no
+`EditBuffer` or owner, and returns what `measureText()` returns on an edit buffer with that width method and tab width.
+`tabWidth` defaults to the tab width of a new edit buffer, which is 2, and rounds as `setTabWidth()` does. Pass the
+settings of the editor that will hold the text. `Textarea` and `Input` use the renderer's width method and the default
+tab width:
+
+```typescript
+import { createCliRenderer, measureEditText } from "@opentui/core"
+
+const renderer = await createCliRenderer()
+measureEditText("\f@file", { widthMethod: renderer.widthMethod }) // 7: ^L takes two cells
+measureEditText("a\tb", { widthMethod: renderer.widthMethod, tabWidth: 4 }) // 6
+```
+
+The edit buffer emits native `"cursor-changed"` and `"content-changed"` events through its `EventEmitter` interface.
+`undo()` and `redo()` also emit `"cursorChanged"`. Native code reports each event during the edit call. Core then
+delivers it to listeners in a microtask, so listeners run after the edit call returns. Events are scoped to the
+buffer's Context and resource generation. Destroying the buffer or Context suppresses queued delivery.
+
+## `EditorView`
+
+Create a view with `EditorView.create(editBuffer, viewportWidth, viewportHeight)`.
+
+The new view starts at viewport offset `(0, 0)`, uses `"none"` wrap mode, and has a scroll margin of `0.15`. A later
+`setScrollMargin()` call clamps its value to `0..0.5`.
+
+| Group                | API                                                                                                                |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Viewport             | `setViewportSize`, `setViewport`, `getViewport`, `setScrollMargin`                                                 |
+| Wrapping and lines   | `setWrapMode`, `getVirtualLineCount`, `getTotalVirtualLineCount`, `getLineInfo`, `getLogicalLineInfo`              |
+| Selection            | Global and local selection methods, `getSelection`, `hasSelection`, `getSelectedText`, `deleteSelectedText`        |
+| Cursor               | `getCursor`, `getVisualCursor`, `setCursorByOffset`, visual up/down, word boundaries, visual and logical line ends |
+| Content              | `getText`, `setPlaceholderStyledText`, tab-indicator methods                                                       |
+| Measurement          | `measureForDimensions`                                                                                             |
+| Experimental markers | Lazy `extmarks` controller                                                                                         |
+
+`setViewport(x, y, width, height, moveCursor = true)` moves the cursor into the visible area by default. Local
+selection methods default `updateCursor` and `followCursor` to `false`.
+
+## Line information
+
+`LineInfo` contains parallel arrays:
+
+| Field              | Meaning                                                   |
+| ------------------ | --------------------------------------------------------- |
+| `lineStartCols`    | Global display-column start for each reported visual line |
+| `lineWidthCols`    | Display width of each reported visual line                |
+| `lineWidthColsMax` | Maximum width in the result                               |
+| `lineSources`      | Logical source-line index for each visual line            |
+| `lineWraps`        | Wrap index inside that logical line                       |
+
+`LineInfoProvider` is the shared contract used by line gutters. It exposes `lineInfo`, `lineCount`,
+`virtualLineCount`, and `scrollY`. See [Line number gutter](/docs/components/line-number) for its normal use.
+
+## Selection and highlight ranges
+
+Selection ranges are half-open global display-offset ranges. A line break contributes one unit. A wide grapheme
+contributes its terminal width.
+
+If a boundary falls inside a grapheme, extraction snaps to grapheme boundaries. A start boundary snaps backward and
+includes that grapheme. An end boundary also includes a grapheme that starts before the boundary.
+
+Range and selected-text extraction use the buffer's selected width method, including `"wcwidth"`.
+The byte-count query and copy use the same grapheme boundaries.
+Selected-text reads do not prepare virtual lines, follow the cursor, or change the viewport.
+Coordinate-based edit ranges can prepare the document's marker cache.
+Read the native [copy rules](/docs/native/resources#read-text-and-geometry) for output units and capacity failures.
+
+`addHighlight(line, highlight)` uses display columns on one logical line. `addHighlightByCharRange()` has a historical
+name. Its offsets are global display-width units with line breaks excluded. Both forms use half-open `start` and `end`.
+
+`Highlight` also carries `styleId`, optional `priority`, and optional `hlRef`. Native transport stores priority as `u8`
+and the reference as `u16`, and it rejects larger values with `InvalidArgument`. Use `removeHighlightsByRef()`, line clearing, or full clearing to release highlight state.
+
+The public highlight methods are `addHighlight()`, `addHighlightByCharRange()`, `removeHighlightsByRef()`,
+`clearLineHighlights()`, `clearAllHighlights()`, and `getLineHighlights()`. `TextBuffer` also exposes
+`getHighlightCount()`.
+
+## Resource limits
+
+The Context's resource handles, including buffers and views, start at `objectCapacity` slots and grow to at most
+4,194,304, or `objectCapacity` if it is larger. Native text storage also requires memory and can reject allocation. A
+JavaScript string parameter does not imply unlimited capacity.
+
+Each native text buffer also has 255 byte-source registrations. A Context-owned `TextBuffer` reserves one, and each
+nonempty `append()` uses another. After 254 appends without replacement, further appends reject with `OutOfMemory`,
+regardless of available memory or `objectCapacity`.
+
+Batch small streamed chunks when possible. A successful `setText()` reclaims append registrations. For plain text,
+`buffer.setText(buffer.getPlainText())` preserves the content and restores append capacity; it is not a lossless
+styled-content compaction operation. `clear()` does not recover these registrations. `reset()` does, but discards
+content and highlights.
+
+Text getters query the exact byte count before copying. They skip the copy call for empty results.
+They do not truncate output at a fixed 1 MiB limit.
+`TextBuffer.reset()` preserves live views, including their truncation ellipsis.
+
+## `cursorCharacterOffset` limitation
+
+`EditBufferRenderable.cursorCharacterOffset` is not a general JavaScript string index. The implementation reads a
+global display-width offset and uses it to index a JavaScript string by UTF-16 code unit.
+
+The result is unreliable after wide CJK text, emoji, line breaks, combining sequences, or other complex graphemes. It
+also returns a nearby character at some end-of-line and end-of-buffer positions. Use `logicalCursor`, `visualCursor`,
+`offsetToPosition()`, and `positionToOffset()` for display coordinates. Use `measureText()` or `measureEditText()` and
+`getTextRange()` to map between a JavaScript string index and an offset.
+
+## Renderable base classes
+
+The default `TextBufferRenderable` constructor uses the scene's private document/view aggregate.
+It does not create the protected TypeScript `textBuffer` or `textBufferView` wrappers.
+Use `TextRenderable.content` for ordinary text updates.
+
+A resource-backed subclass must declare native kind `"text_view"` and pass `true` as the third base-constructor argument.
+The base then creates the protected wrappers and binds the view to the node.
+This complete example uses that path:
+
+```typescript example=shared-text
+import {
+  TextBufferRenderable,
+  type NativeRenderableIntegration,
+  type RenderContext,
+  type TextBufferOptions,
+} from "@opentui/core"
+import { createTestRenderer } from "@opentui/core/testing"
+
+class SharedText extends TextBufferRenderable {
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
+    ...TextBufferRenderable.nativeIntegration,
+    kind: "text_view",
+  }
+
+  constructor(ctx: RenderContext, options: TextBufferOptions) {
+    super(ctx, options, true)
+  }
+
+  setText(text: string): void {
+    this.textBuffer.setText(text)
+    this.updateTextInfo()
+  }
+}
+
+const { renderer, renderOnce, captureCharFrame } = await createTestRenderer({ width: 5, height: 1 })
+try {
+  const text = new SharedText(renderer, { width: 5, height: 1 })
+  renderer.root.add(text)
+  text.setText("Hello")
+  await renderOnce()
+  console.log(captureCharFrame().trimEnd())
+} finally {
+  renderer.destroy()
+  await renderer.closed
+}
+```
+
+Output:
+
+```text example=shared-text-output
+Hello
+```
+
+Only the resource-backed path permits direct updates through the protected buffer.
+Call `updateTextInfo()` after those updates to refresh selection and request rendering.
+The [integration description](/docs/extend/custom-renderables#declare-native-integration) controls native drawing and host hooks.
+
+`EditBufferRenderable` exposes readonly `editBuffer` and `editorView` properties. It supplies cursor display,
+selection, scrolling, edit commands, highlights, and content-change events. Subclasses add input policy and component
+options.
+
+Do not destroy an owned buffer or view separately. Destroy the renderable. Read
+[Custom renderables](/docs/extend/custom-renderables#clean-up-ownership) for final cleanup.
+
+## Experimental extmarks
+
+Extmarks are an experimental simulated implementation. They are scheduled to move to native code. Do not treat them
+as stable native markers.
+
+The lazy `EditorView.extmarks` property creates an `ExtmarksController`. The controller monkey-patches cursor, edit,
+selection-delete, undo, and redo methods on its specific `EditBuffer` and `EditorView`. `destroy()` restores those
+methods, removes its `content-changed` listener, and clears marker state.
+
+An extmark stores a half-open global display-offset range, `virtual`, optional style and priority values, arbitrary
+data, a numeric type, and optional metadata. Public operations are:
+
+- `create`, `delete`, `get`, `getAll`, `getVirtual`, and `getAtOffset`
+- `registerType`, `getTypeId`, `getTypeName`, and `getAllForTypeId`
+- `getMetadataFor`, `adjustExtmarksAfterDeletion`, `clear`, and `destroy`
+
+Virtual extmarks make wrapped cursor methods skip the marked range. Styled extmarks rebuild all buffer highlights after
+changes. A styled extmark's priority must be in the highlight range `0..255`; otherwise `create` throws and keeps no
+extmark. The simulation scans JavaScript text and adjusts offsets in JavaScript, so it inherits the offset limitations
+on this page.
+
+`EditorView.destroy()` destroys a lazy controller after the native view. If you call `createExtmarksController()`
+directly, destroy the controller before the view and edit buffer.
+
+## Next
+
+- [Input](/docs/components/input) and [Textarea](/docs/components/textarea) cover supported editing components.
+- [Code](/docs/components/code) covers read-only syntax-highlighted content.
+- [Text and terminal cells](/docs/core-concepts/text-and-cells) defines graphemes and display width.
+- [Interaction, focus, and selection](/docs/core-concepts/interaction) defines shared selection ownership.
+- [API and symbol index](/docs/reference/api-index) lists the exported types.

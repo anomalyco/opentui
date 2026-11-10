@@ -189,7 +189,7 @@ export function run(renderer: CliRenderer): void {
   rootGroup.add(styledText)
 
   const styledText2 = new DraggableStyledText(renderer, "draggable-styled-text-2", 18, 16)
-  styledText2.content = t`${bold(fg("#55FF55", "Emoji Check:"))} ✅ 👩🏽‍💻  👨‍👩‍👧‍👦  🏳️‍🌈
+  styledText2.content = t`${bold(fg("#55FF55")("Emoji Check:"))} ✅ 👩🏽‍💻  👨‍👩‍👧‍👦  🏳️‍🌈
 ${underline("Drag me too:")} 🇺🇸  🇩🇪  🇯🇵  🇮🇳  a̐éö̲`
   rootGroup.add(styledText2)
 
@@ -199,15 +199,29 @@ ${underline("Drag me too:")} 🇺🇸  🇩🇪  🇯🇵  🇮🇳  a̐éö̲
     left: 2,
     top: 1,
     zIndex: 3,
-    content: "V: Toggle vignette",
+    content: `Width: ${renderer.widthMethod} | V: Toggle vignette | The bars below should align`,
     fg: "#AAFFAA",
   })
   rootGroup.add(hintText)
 
+  const alignmentText = new TextRenderable(renderer, {
+    id: "full-unicode-alignment",
+    position: "absolute",
+    left: 2,
+    top: 2,
+    zIndex: 3,
+    selectable: false,
+    content:
+      "1234567890123456789012345678901234567890| 40-cell ruler\nOpenCode search configuration പരിശോധിക്കൽ| Malayalam",
+    fg: "#FFFFFF",
+    bg: "#001122",
+  })
+  rootGroup.add(alignmentText)
+
   const keyHandler = (key: KeyEvent): void => {
     if (key.name?.toLowerCase() !== "v") return
     vignetteEnabled = !vignetteEnabled
-    hintText.content = `V: Toggle vignette (${vignetteEnabled ? "ON" : "OFF"})`
+    hintText.content = `Width: ${renderer.widthMethod} | V: Toggle vignette (${vignetteEnabled ? "ON" : "OFF"}) | The bars below should align`
 
     renderer.clearPostProcessFns()
     if (vignetteEnabled) {
@@ -231,7 +245,8 @@ export function destroy(renderer: CliRenderer): void {
     renderer.keyInput.off("keypress", demoState.keyHandler)
   }
   renderer.clearPostProcessFns()
-  renderer.root.remove("full-unicode-root")
+  const root = renderer.root.getRenderable("full-unicode-root")
+  root?.destroyRecursively()
   demoState = null
 }
 

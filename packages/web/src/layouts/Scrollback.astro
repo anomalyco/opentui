@@ -1,0 +1,33 @@
+---
+import type { ComponentProps } from "astro/types"
+import SiteFooter from "../components/SiteFooter.astro"
+import SitePage from "./SitePage.astro"
+
+interface Props {
+  title: string
+  description: string
+  footerLinks?: boolean
+  footerAnimation?: ComponentProps<typeof SiteFooter>["animation"]
+}
+
+const { title, description, footerLinks = false, footerAnimation } = Astro.props
+---
+
+<SitePage {title} {description} {footerLinks} {footerAnimation} reading><slot /></SitePage>
+
+<style>
+  /* The title and its gray meta line read as one unit; two blank lines
+   * separate the document header from the text. */
+  :global(.scrollback-post header) {
+    margin-block-end: 3rem;
+  }
+
+  :global(.scrollback-post h1) {
+    margin-block: 0;
+  }
+
+  :global(.scrollback-meta) {
+    margin: 0;
+    color: var(--muted-color);
+  }
+</style>

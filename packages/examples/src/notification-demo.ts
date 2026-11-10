@@ -440,7 +440,7 @@ export function destroy(rendererInstance: CliRenderer): void {
     capabilityHandler = null
   }
   if (root) {
-    rendererInstance.root.remove(root.id)
+    rendererInstance.root.remove(root)
     root.destroyRecursively()
   }
 

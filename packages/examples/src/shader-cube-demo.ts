@@ -987,7 +987,7 @@ export function destroy(renderer: CliRenderer): void {
   if (!demoState) return
 
   renderer.keyInput.off("keypress", demoState.keyHandler)
-  renderer.root.removeListener("resize", demoState.resizeHandler)
+  renderer.off("resize", demoState.resizeHandler)
 
   if (demoState.frameCallbackId) {
     renderer.clearFrameCallbacks()
@@ -996,8 +996,10 @@ export function destroy(renderer: CliRenderer): void {
   demoState.engine.destroy()
   renderer.clearPostProcessFns()
 
-  renderer.root.remove("shader-cube-main")
-  renderer.root.remove("shader-cube-container")
+  for (const id of ["shader-cube-main", "shader-cube-container"]) {
+    const child = renderer.root.getRenderable(id)
+    child?.destroyRecursively()
+  }
 
   demoState = null
 }

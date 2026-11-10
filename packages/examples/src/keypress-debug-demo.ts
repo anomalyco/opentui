@@ -729,7 +729,7 @@ export function destroy(renderer: CliRenderer): void {
   }
 
   if (mainContainer) {
-    renderer.root.remove(mainContainer.id)
+    renderer.root.remove(mainContainer)
     mainContainer.destroyRecursively()
     mainContainer = null
   }

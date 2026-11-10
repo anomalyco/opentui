@@ -1,6 +1,5 @@
 import { readFile } from "node:fs/promises"
 import { Color, Texture, DataTexture, NearestFilter, ClampToEdgeWrapping, RGBAFormat, UnsignedByteType } from "three"
-import { Jimp } from "jimp"
 
 interface SimpleImageData {
   data: Uint8ClampedArray
@@ -16,6 +15,7 @@ export class TextureUtils {
    */
   static async loadTextureFromFile(path: string): Promise<DataTexture | null> {
     try {
+      const { Jimp } = await import("jimp")
       const buffer = await readFile(path)
       const image = await Jimp.read(buffer)
 

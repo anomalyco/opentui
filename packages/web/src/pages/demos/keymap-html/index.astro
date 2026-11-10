@@ -1,5 +1,9 @@
 ---
+import SocialMeta from "../../../components/SocialMeta.astro"
 import demoStylesUrl from "../../../styles/keymap-html-demo.css?url"
+
+const title = "HTML Keymap Demo | OpenTUI"
+const description = "Use OpenTUI keymap leader bindings and ex commands in HTML."
 ---
 
 <!doctype html>
@@ -7,7 +11,9 @@ import demoStylesUrl from "../../../styles/keymap-html-demo.css?url"
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>HTML Keymap Demo</title>
+    <meta name="description" content={description} />
+    <title>{title}</title>
+    <SocialMeta {title} {description} />
     <link rel="icon" href="/favicon.svg" />
     <link rel="stylesheet" href={demoStylesUrl} />
   </head>

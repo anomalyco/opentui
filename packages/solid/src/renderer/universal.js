@@ -5,6 +5,7 @@ const memo = (fn) => createMemo(() => fn())
 export function createRenderer({
   createElement,
   createTextNode,
+  createDynamicTextNode,
   createSlotNode,
   isTextNode,
   replaceText,
@@ -31,13 +32,13 @@ export function createRenderer({
         let node = current[0]
         if (node && isTextNode(node)) {
           replaceText(node, value)
-        } else node = createTextNode(value)
+        } else node = createDynamicTextNode(value)
         current = cleanChildren(parent, current, marker, node)
       } else {
         if (current !== "" && typeof current === "string") {
           replaceText(getFirstChild(parent), (current = value))
         } else {
-          cleanChildren(parent, current, marker, createTextNode(value))
+          cleanChildren(parent, current, marker, createDynamicTextNode(value))
           current = value
         }
       }
@@ -64,7 +65,7 @@ export function createRenderer({
           if (current.length === 0) {
             appendNodes(parent, array, marker)
           } else reconcileArrays(parent, current, array)
-        } else if (current == null || current === "") {
+        } else if (current == null || !getFirstChild(parent)) {
           appendNodes(parent, array)
         } else {
           reconcileArrays(parent, (multi && current) || [getFirstChild(parent)], array)
@@ -75,7 +76,7 @@ export function createRenderer({
       if (Array.isArray(current)) {
         if (multi) return (current = cleanChildren(parent, current, marker, value))
         cleanChildren(parent, current, null, value)
-      } else if (current == null || current === "" || !getFirstChild(parent)) {
+      } else if (current == null || !getFirstChild(parent)) {
         insertNode(parent, value)
       } else replaceNode(parent, value, getFirstChild(parent))
       current = value
@@ -91,7 +92,7 @@ export function createRenderer({
       else if (Array.isArray(item)) {
         dynamic = normalizeIncomingArray(normalized, item) || dynamic
       } else if ((t = typeof item) === "string" || t === "number") {
-        normalized.push(createTextNode(item))
+        normalized.push(createDynamicTextNode(item))
       } else if (t === "function") {
         if (unwrap) {
           while (typeof item === "function") item = item()

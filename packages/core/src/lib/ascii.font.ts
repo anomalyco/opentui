@@ -248,11 +248,6 @@ export function renderFontToFrameBuffer(
   }
 
   const colors = Array.isArray(color) ? color : [color]
-
-  if (y < 0 || y + fontDef.lines > height) {
-    return { width: 0, height: fontDef.lines }
-  }
-
   let currentX = x
   const startX = x
 

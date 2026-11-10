@@ -1,98 +1,127 @@
 ---
-title: Hosts
-description: Built-in OpenTUI and HTML adapters plus the KeymapHost contract
-order: 2
-navTitle: Hosts
+title: Keymap hosts
+description: Connect Keymap to OpenTUI, HTML, or a custom input host
 ---
 
 # Keymap hosts
 
-OpenTUI Keymap is host-agnostic. A host adapts a runtime's focus model, hierarchy, key events and lifecycle into `KeymapHost<TTarget, TEvent>` so the shared engine can work against it.
+A host connects the shared Keymap engine to a runtime's targets, focus, keyboard events, metadata, and lifecycle.
+This page is the reference for `KeymapHost<TTarget, TEvent>` and the two built-in adapters.
 
-The package ships two built-in hosts:
+Use `@opentui/keymap/opentui` for terminal apps built on `CliRenderer` and `Renderable`.
+Use `@opentui/keymap/html` for browser UIs rooted in an `HTMLElement`.
 
-- `@opentui/keymap/opentui` for terminal apps built on `CliRenderer` and `Renderable`
-- `@opentui/keymap/html` for browser UIs rooted in an `HTMLElement`
+Start with [Keymap](/docs/keymap/overview) if you need the register, dispatch, and query model first.
 
-If you have not read the shared model yet, start with [Keymap overview](/docs/keymap/overview).
+## Host responsibilities
 
-## What a host does
+The engine treats targets and events as opaque host values. A host supplies these behaviors:
 
-The keymap core does not know about DOM nodes, terminal renderables or any other UI tree. It only knows about host targets and host events.
-
-- `target` on a local layer is a host target object.
-- `focus` and `focus-within` activation come from the host's focused target and parent traversal.
-- key press and key release events come from the host event stream.
-- local layers are cleaned up when the host reports that their target was destroyed or removed.
-- host metadata describes platform shortcut conventions and modifier support for addons.
-- `runCommand()` and `dispatchCommand()` need the host to create a synthetic event for programmatic execution.
-- raw input interception only exists when the host implements the optional raw-input hook.
+- Identify the root and the current focused target.
+- Traverse from a focused target to its parents.
+- Report whether the host or a target is destroyed.
+- Send key press, key release, and focus events.
+- Report target destruction so local layers can unregister.
+- Supply platform and modifier capabilities.
+- Create a command event when a programmatic command does not supply one.
+- Optionally send raw input before key parsing.
+- Optionally report host destruction.
 
 ## `KeymapHost`
 
-| Member                              | Required | Purpose                                                                                                    |
-| ----------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------- |
-| `metadata`                          | yes      | Platform, primary shortcut modifier and modifier capability metadata                                       |
-| `rootTarget`                        | yes      | Root target for the host hierarchy                                                                         |
-| `isDestroyed`                       | yes      | Host lifetime flag                                                                                         |
-| `getFocusedTarget()`                | yes      | Returns the currently focused target or `null`                                                             |
-| `getParentTarget(target)`           | yes      | Parent traversal used for `focus-within` matching                                                          |
-| `isTargetDestroyed(target)`         | yes      | Target liveness check                                                                                      |
-| `onKeyPress(listener)`              | yes      | Subscribes to press events                                                                                 |
-| `onKeyRelease(listener)`            | yes      | Subscribes to release events                                                                               |
-| `onFocusChange(listener)`           | yes      | Subscribes to focus changes                                                                                |
-| `onTargetDestroy(target, listener)` | yes      | Notifies when a local layer target is destroyed or removed                                                 |
-| `createCommandEvent()`              | yes      | Creates the synthetic event used by `runCommand()` and `dispatchCommand()`                                 |
-| `onDestroy(listener)`               | no       | Optional host-destroy notification                                                                         |
-| `onRawInput(listener)`              | no       | Optional raw input hook used before key parsing. The listener returns `true` when it consumed the sequence |
+| Member                              | Required | Purpose                                                             |
+| ----------------------------------- | -------- | ------------------------------------------------------------------- |
+| `metadata`                          | yes      | Platform, primary shortcut modifier, and modifier capabilities      |
+| `rootTarget`                        | yes      | Root of the target hierarchy                                        |
+| `isDestroyed`                       | yes      | Current host lifetime state                                         |
+| `getFocusedTarget()`                | yes      | Return the focused target or `null`                                 |
+| `getParentTarget(target)`           | yes      | Return the target's parent or `null`                                |
+| `isTargetDestroyed(target)`         | yes      | Test target liveness                                                |
+| `onKeyPress(listener)`              | yes      | Subscribe to press events and return a disposer                     |
+| `onKeyRelease(listener)`            | yes      | Subscribe to release events and return a disposer                   |
+| `onFocusChange(listener)`           | yes      | Subscribe to focus changes and return a disposer                    |
+| `onTargetDestroy(target, listener)` | yes      | Subscribe to one target's destruction and return a disposer         |
+| `createCommandEvent()`              | yes      | Create the default event for `runCommand()` and `dispatchCommand()` |
+| `onDestroy(listener)`               | no       | Subscribe to host destruction and return a disposer                 |
+| `onRawInput(listener)`              | no       | Send raw input before key parsing and return a disposer             |
 
-If you are building your own runtime adapter, implement this contract and pass it to `new Keymap(host)`.
+Pass a custom implementation to `new Keymap(host)`. The constructor throws if `host.isDestroyed` is already `true`.
 
-Host metadata is available through `keymap.getHostMetadata()`. `primaryModifier` is the modifier that addon syntax such as `mod+s` should resolve to. Capability values are `supported`, `unsupported` or `unknown`; terminal hosts use `unknown` when the event type can represent a modifier but actual terminal delivery depends on protocol support.
+### Focus hierarchy
 
-| Metadata field    | Meaning                                                          |
-| ----------------- | ---------------------------------------------------------------- |
-| `platform`        | `macos`, `windows`, `linux` or `unknown`                         |
-| `primaryModifier` | `super` on macOS, `ctrl` on Windows/Linux, or `unknown`          |
-| `modifiers`       | Host capability for `ctrl`, `shift`, `meta`, `super` and `hyper` |
+A targetless layer is global. A targeted layer defaults to `targetMode: "focus-within"`.
+It is active when its target is on the focused target's parent path.
 
-Host key events must satisfy `KeymapEvent`:
+`targetMode: "focus"` requires an exact focused-target match. If no target has focus, the activation path starts at
+`rootTarget`. Layer precedence still comes from priority and registration order, not hierarchy depth.
 
-| Member                    | Purpose                                                                           |
-| ------------------------- | --------------------------------------------------------------------------------- |
-| `name`                    | Normalized key name                                                               |
-| `ctrl` / `shift` / `meta` | Modifier state                                                                    |
-| `super` / `hyper`         | Optional extra modifier state                                                     |
-| `preventDefault()`        | Prevent the matched event from reaching the host target                           |
-| `stopPropagation()`       | Stop later listeners from seeing the event and set `propagationStopped` to `true` |
-| `propagationStopped`      | `true` after `stopPropagation()` was called                                       |
+Every focus change clears the pending key sequence. The engine also updates state subscribers after the change.
 
-If your host implements `onRawInput()`, it must call each listener before key parsing and stop when a listener returns `true`.
+### Target lifecycle
 
-## Built-in host helpers
+`onTargetDestroy()` lets the engine unregister a layer that owns that target. The returned subscription disposer must
+remove only that listener. `isTargetDestroyed()` is the fallback liveness check during registration and activation.
 
-Both built-in host packages export adapter-specific helpers. Import the shared `Keymap`, stringifiers and core types from `@opentui/keymap`.
+### Host metadata
 
-| Package                   | Host adapter                        | Bare keymap helper              | Default helper                         |
+`keymap.getHostMetadata()` returns `HostMetadata`:
+
+| Field             | Values                                 | Meaning                                                      |
+| ----------------- | -------------------------------------- | ------------------------------------------------------------ |
+| `platform`        | `macos`, `windows`, `linux`, `unknown` | Host platform for shortcut policy                            |
+| `primaryModifier` | `super`, `ctrl`, `unknown`             | Modifier for addon syntax such as `mod+s`                    |
+| `modifiers`       | `Record<HostModifier, HostCapability>` | Capability for `ctrl`, `shift`, `meta`, `super`, and `hyper` |
+
+Each capability is `supported`, `unsupported`, or `unknown`. Use `unknown` when an event can represent a modifier but
+the runtime cannot prove that input will deliver it.
+
+### Key events
+
+Host events must implement `KeymapEvent`:
+
+| Member                  | Purpose                                                |
+| ----------------------- | ------------------------------------------------------ |
+| `name`                  | Normalized key name                                    |
+| `ctrl`, `shift`, `meta` | Required modifier state                                |
+| `super`, `hyper`        | Optional modifier state                                |
+| `preventDefault()`      | Prevent the matched event's default host behavior      |
+| `stopPropagation()`     | Stop later host listeners and set `propagationStopped` |
+| `propagationStopped`    | Report whether propagation stopped                     |
+
+If a host supplies `onRawInput()`, it must call raw listeners before key parsing. It must stop when a listener returns
+`true`.
+
+See [Keyboard input](/docs/core-concepts/keyboard) for OpenTUI `KeyEvent` fields and terminal protocol behavior.
+
+### Host cleanup
+
+The engine subscribes to host input and focus when you construct `Keymap`. If the host supplies `onDestroy()`, host
+destruction clears pending input, disposes acquired resources, detaches target listeners, and removes host listeners.
+
+`Keymap` has no separate public `destroy()` method. The host owns the engine lifetime.
+See [Lifecycle and cleanup](/docs/core-concepts/lifecycle) for renderer ownership and shutdown paths.
+
+## Built-in helper summary
+
+| Package                   | Host factory                        | Bare keymap factory             | Default keymap factory                 |
 | ------------------------- | ----------------------------------- | ------------------------------- | -------------------------------------- |
 | `@opentui/keymap/opentui` | `createOpenTuiKeymapHost(renderer)` | `createOpenTuiKeymap(renderer)` | `createDefaultOpenTuiKeymap(renderer)` |
 | `@opentui/keymap/html`    | `createHtmlKeymapHost(root)`        | `createHtmlKeymap(root)`        | `createDefaultHtmlKeymap(root)`        |
 
-- The host adapter returns a `KeymapHost` implementation.
-- The bare helper creates a `new Keymap(host)` with only the host installed; parser and addon stages remain opt-in.
-- The default helper starts from the bare helper and installs the small default addon set for that host.
+A host factory returns `KeymapHost`. A bare keymap factory adds only the host.
+A default keymap factory also installs the small default addon set for that host.
 
-## OpenTUI host
+## OpenTUI adapter
 
-`@opentui/keymap/opentui` is the host package for terminal apps built on `@opentui/core`.
+`@opentui/keymap/opentui` exports exactly these runtime helpers:
 
-### What it adds
+- `createOpenTuiKeymapHost(renderer)`
+- `createOpenTuiKeymap(renderer)`
+- `createDefaultOpenTuiKeymap(renderer)`
 
-- `createOpenTuiKeymapHost(renderer)` - adapts `CliRenderer` and `Renderable` to `KeymapHost`
-- `createOpenTuiKeymap(renderer)` - creates a bare `Keymap<Renderable, KeyEvent>`
-- `createDefaultOpenTuiKeymap(renderer)` - creates an OpenTUI keymap with default keys, enabled fields and metadata fields installed
+The entry point uses `CliRenderer`, `Renderable`, and `KeyEvent` from `@opentui/core`.
 
-### Basic usage
+### Create an OpenTUI keymap
 
 ```ts
 import { createCliRenderer } from "@opentui/core"
@@ -104,81 +133,78 @@ const keymap = createDefaultOpenTuiKeymap(renderer)
 keymap.registerLayer({
   commands: [
     {
-      name: "quit",
+      name: "app.quit",
       run() {
         renderer.destroy()
       },
     },
   ],
-  bindings: [{ key: "q", cmd: "quit" }],
+  bindings: [{ key: "q", cmd: "app.quit" }],
 })
 ```
 
-If you want to control the installed addons yourself, start from `createOpenTuiKeymap(renderer)` and register addons manually.
+Use `createOpenTuiKeymap(renderer)` when you want to install every parser and addon yourself.
+Both keymap factories throw if the renderer is already destroyed.
 
-### Host behavior
+### OpenTUI behavior
 
-| Behavior                | OpenTUI adapter                                                                                                                                       |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Root target             | `renderer.root`                                                                                                                                       |
-| Focused target          | `renderer.currentFocusedRenderable` when still focused and not destroyed                                                                              |
-| Parent traversal        | `Renderable.parent`                                                                                                                                   |
-| Target destroy tracking | `RenderableEvents.DESTROYED`                                                                                                                          |
-| Host destroy tracking   | `CliRenderEvents.DESTROY`                                                                                                                             |
-| Press/release events    | `renderer.keyInput` `keypress` and `keyrelease`                                                                                                       |
-| Raw input interception  | `renderer.prependInputHandler(...)`                                                                                                                   |
-| Synthetic command event | New `KeyEvent` with `name: "command"`                                                                                                                 |
-| Host metadata           | Runtime platform; `ctrl`, `shift` and `meta` supported; `super`/`hyper` supported when terminal capabilities report Kitty keyboard, otherwise unknown |
+| Host behavior           | OpenTUI adapter                                                          |
+| ----------------------- | ------------------------------------------------------------------------ |
+| Root target             | `renderer.root`                                                          |
+| Focused target          | `renderer.currentFocusedRenderable` when it is focused and not destroyed |
+| Parent traversal        | `Renderable.parent`                                                      |
+| Target destruction      | `RenderableEvents.DESTROYED`                                             |
+| Host destruction        | `CliRenderEvents.DESTROY`                                                |
+| Press and release       | `renderer.keyInput` events `keypress` and `keyrelease`                   |
+| Focus changes           | `CliRenderEvents.FOCUSED_RENDERABLE`                                     |
+| Raw input               | `renderer.prependInputHandler(...)`                                      |
+| Synthetic command event | A new `KeyEvent` with `name: "command"`                                  |
+| Metadata                | Runtime platform and terminal keyboard capabilities                      |
 
-`createOpenTuiKeymap(renderer)` throws if the renderer is already destroyed.
+The adapter reports `ctrl`, `shift`, and `meta` as supported. It reports `super` and `hyper` as supported when the
+renderer detects Kitty keyboard support. Otherwise, it reports those capabilities as unknown.
 
-### Default helper
+Press and release events keep all OpenTUI-specific `KeyEvent` fields. Addons can therefore read fields such as
+`baseCode`.
 
-`createDefaultOpenTuiKeymap(renderer)` installs:
+### OpenTUI default set
 
-- `registerDefaultKeys()`
-- `registerEnabledFields()`
-- `registerMetadataFields()`
+`createDefaultOpenTuiKeymap(renderer)` installs these addons in order:
 
-It does not install leader tokens, ex commands, disambiguation addons, warning analyzers, base-layout fallback or textarea helpers. Call `registerBaseLayoutFallback()` from `@opentui/keymap/addons/opentui` if you want bindings to ignore active keyboard-layout changes.
+1. `registerDefaultKeys()`
+2. `registerEnabledFields()`
+3. `registerMetadataFields()`
 
-### Event notes
+It does not install leader keys, ex commands, sequence disambiguation, warning analyzers, base-layout fallback, or
+textarea integration.
 
-- Press and release events come directly from the renderer's key input stream.
-- Programmatic `runCommand()` and `dispatchCommand()` calls receive the synthetic `KeyEvent` created by `createCommandEvent()`.
-- Kitty-specific fields on `KeyEvent`, such as `baseCode`, stay available to addons like `registerBaseLayoutFallback()`.
+`@opentui/keymap/addons/opentui` adds these OpenTUI integrations:
 
-### OpenTUI-specific addons
+- `registerBaseLayoutFallback()`
+- `createTextareaBindings()`
+- `registerEditBufferCommands()`
+- `registerTextareaMappingSuspension()`
+- `registerManagedTextareaLayer()`
 
-`@opentui/keymap/addons/opentui` adds helpers on top of the shared addon set:
+See the complete [OpenTUI keymap example](https://github.com/anomalyco/opentui/blob/main/packages/examples/src/keymap-demo.ts).
 
-- `registerBaseLayoutFallback()` - match against Kitty base-layout codepoints
-- `createTextareaBindings()` - generate textarea bindings from the shared edit-buffer command set
-- `registerEditBufferCommands()` - register the edit-buffer command layer against `renderer.currentFocusedEditor`
-- `registerTextareaMappingSuspension()` - suspend a focused `TextareaRenderable`'s built-in mapped shortcuts
-- `registerManagedTextareaLayer()` - high-level textarea integration combining the helpers above
+## HTML adapter
 
-Example: `packages/examples/src/keymap-demo.ts`
+`@opentui/keymap/html` exports these runtime values and the `HtmlKeymapEvent` type:
 
-See [Built-in Addons](/docs/keymap/addons) for the rest of the shipped addon surface and [Custom Addons](/docs/keymap/custom-addons) for addon authoring.
+- `normalizeHtmlKeyName(key)`
+- `createHtmlKeymapEvent(event?)`
+- `createHtmlKeymapHost(root)`
+- `htmlEventMatchResolver`
+- `createHtmlKeymap(root)`
+- `createDefaultHtmlKeymap(root)`
+- `HtmlKeymapEvent`
 
-## HTML host
-
-`@opentui/keymap/html` is the host package for browser UIs rooted in an `HTMLElement` subtree.
+`HtmlKeymapEvent` extends `KeymapEvent` and can include `originalEvent: KeyboardEvent`.
 
 Live demo: [HTML keymap demo](/demos/keymap-html/)
 
-### What it adds
-
-- `HtmlKeymapEvent` - shared keymap event plus optional `originalEvent: KeyboardEvent`
-- `normalizeHtmlKeyName(key)` - normalizes browser `event.key` values to keymap names
-- `createHtmlKeymapEvent(event?)` - wraps a `KeyboardEvent` in `HtmlKeymapEvent`
-- `createHtmlKeymapHost(root)` - adapts an `HTMLElement` subtree to `KeymapHost`
-- `htmlEventMatchResolver` - HTML-specific event matcher for browser key events
-- `createHtmlKeymap(root)` - creates a bare `Keymap<HTMLElement, HtmlKeymapEvent>`
-- `createDefaultHtmlKeymap(root)` - creates an HTML keymap with default keys, enabled fields, metadata fields and HTML event matching installed
-
-### Basic usage
+### Create an HTML keymap
 
 ```ts
 import { createDefaultHtmlKeymap } from "@opentui/keymap/html"
@@ -189,68 +215,82 @@ const keymap = createDefaultHtmlKeymap(root)
 keymap.registerLayer({
   commands: [
     {
-      name: "toggle-help",
+      name: "help.toggle",
       run() {
         document.body.classList.toggle("help-open")
       },
     },
   ],
-  bindings: [{ key: "?", cmd: "toggle-help" }],
+  bindings: [{ key: "?", cmd: "help.toggle" }],
 })
 ```
 
-If you want to control parser or event-matching stages yourself, start from `createHtmlKeymap(root)` and install the pieces manually.
+Use `createHtmlKeymap(root)` when you want to install parsers and event matchers yourself.
 
-### Key normalization
+### HTML key normalization
 
-| Browser input | Keymap result | Notes                                                                 |
-| ------------- | ------------- | --------------------------------------------------------------------- |
-| `ArrowLeft`   | `left`        | Navigation keys are normalized to the shared canonical names          |
-| `Enter`       | `return`      | Canonical name is `return`; display stringifiers render it as `enter` |
-| `A`           | `a`           | Printable names are lowercased                                        |
-| `F12`         | `f12`         | Function keys are normalized to lowercase                             |
-| `altKey`      | `meta`        | Keymap uses `meta` for Alt/Option                                     |
-| `metaKey`     | `super`       | Keymap uses `super` for the platform Meta key                         |
+| Browser input | Keymap value | Notes                                                |
+| ------------- | ------------ | ---------------------------------------------------- |
+| `ArrowLeft`   | `left`       | Navigation keys use shared names                     |
+| `Enter`       | `return`     | Stringifiers display the canonical stroke as `enter` |
+| `A`           | `a`          | Printable names become lowercase                     |
+| `F12`         | `f12`        | Function keys become lowercase                       |
+| `altKey`      | `meta`       | Keymap uses `meta` for Alt or Option                 |
+| `metaKey`     | `super`      | Keymap uses `super` for the platform Meta key        |
 
-The HTML matcher also adds an unshifted match candidate for shifted printable punctuation, so bindings such as `":"` and `"?"` work as literal keys instead of forcing `shift+semicolon`-style spellings.
+The HTML event matcher adds an unshifted candidate for shifted printable punctuation. A key binding such as `"?"`
+can therefore match without the spelling `"shift+?"`.
 
-### Host behavior
+### HTML behavior
 
-| Behavior                | HTML adapter                                                                         |
-| ----------------------- | ------------------------------------------------------------------------------------ |
-| Root target             | The `HTMLElement` passed to `createHtmlKeymapHost()` / `createHtmlKeymap()`          |
-| Focused target          | `document.activeElement` when it is the root or a descendant                         |
-| Parent traversal        | `HTMLElement.parentElement`                                                          |
-| Target destroy tracking | `MutationObserver` over the root subtree when available                              |
-| Host destroy tracking   | None; root reachability is the lifetime model                                        |
-| Press/release events    | `keydown` and `keyup` listeners on the root in capture phase                         |
-| Raw input interception  | Not provided by the HTML host                                                        |
-| Synthetic command event | `createHtmlKeymapEvent()` with no DOM event                                          |
-| Host metadata           | Browser platform; `ctrl`, `shift`, `meta` and `super` supported; `hyper` unsupported |
+| Host behavior           | HTML adapter                                                         |
+| ----------------------- | -------------------------------------------------------------------- |
+| Root target             | The `HTMLElement` passed to the factory                              |
+| Focused target          | `document.activeElement` when it is the root or a descendant         |
+| Parent traversal        | `HTMLElement.parentElement`                                          |
+| Target destruction      | `MutationObserver` on the root subtree when available                |
+| Host destruction        | No explicit destroy event                                            |
+| Press and release       | Capture-phase `keydown` and `keyup` listeners on the root            |
+| Focus changes           | Capture-phase `focusin` and `focusout`, followed by a microtask read |
+| Raw input               | Not available                                                        |
+| Synthetic command event | `createHtmlKeymapEvent()` without a DOM event                        |
+| Metadata                | Browser platform with `hyper` unsupported                            |
 
-When a target element disconnects from the rooted subtree, local layers registered against it are removed.
+When `MutationObserver` is available, removing a target from the root unregisters its local layers.
+Without it, the liveness check keeps the target inactive, but the layer remains until its disposer runs.
 
-### Default helper
+The HTML host has no explicit destroy signal. Dispose registrations when you remove a root that remains reachable.
 
-`createDefaultHtmlKeymap(root)` installs:
+### HTML default set
 
-- `registerDefaultKeys()`
-- `registerEnabledFields()`
-- `registerMetadataFields()`
-- `htmlEventMatchResolver` via `prependEventMatchResolver(...)` so HTML-specific matching runs before the canonical matcher
+`createDefaultHtmlKeymap(root)` installs these features in order:
 
-Call `prependEventMatchResolver(...)` for any custom resolver that must run before the HTML matcher.
+1. `registerDefaultKeys()`
+2. `registerEnabledFields()`
+3. `registerMetadataFields()`
+4. `htmlEventMatchResolver` through `prependEventMatchResolver(...)`
+
+The prepend call makes the HTML candidates run before the shared canonical event matcher.
 
 ## Custom hosts
 
-If neither built-in host fits your runtime, implement `KeymapHost` yourself and construct the engine directly:
+Implement `KeymapHost` when neither built-in adapter matches your runtime:
 
 ```ts
 import { Keymap, type KeymapHost } from "@opentui/keymap"
 
-const keymap = new Keymap(host as KeymapHost<object>)
+function createCustomKeymap(host: KeymapHost<object>) {
+  return new Keymap(host)
+}
 ```
 
-Custom hosts must provide conservative metadata. Use `unknown` when the host cannot prove a platform or modifier capability.
+Return a disposer from every subscription. Use conservative metadata and report `unknown` for capabilities that the
+host cannot prove.
 
-Use [Core](/docs/keymap/core) for the bare engine APIs and extension points.
+## Related pages
+
+- [Core keymap API](/docs/keymap/core) lists the host-independent engine methods.
+- [Built-in keymap addons](/docs/keymap/addons) lists the shipped parser and host integrations.
+- [Custom keymap addons](/docs/keymap/custom-addons) defines addon callbacks and cleanup rules.
+- [Keyboard input](/docs/core-concepts/keyboard) defines OpenTUI keyboard events.
+- [Lifecycle and cleanup](/docs/core-concepts/lifecycle) defines renderer shutdown ownership.

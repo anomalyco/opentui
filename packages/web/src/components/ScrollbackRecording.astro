@@ -1,0 +1,37 @@
+---
+import type { ComponentProps } from "astro/types"
+import TerminalIllustration from "./TerminalIllustration.astro"
+
+type Story = ComponentProps<typeof TerminalIllustration>["stories"][number]
+
+interface Props {
+  label: string
+  stories: Story[]
+  // "visible" (default) overlays play/pause on the recording. "below" renders
+  // chapter captions and navigation in the page flow under it. "hidden" shows
+  // only the recording.
+  controls?: "hidden" | "visible" | "below"
+}
+
+const { label, stories, controls = "visible" } = Astro.props
+---
+
+<div class="scrollback-recording">
+  <TerminalIllustration {label} {stories} {controls} recordingAspectRatio />
+</div>
+
+<style>
+  .scrollback-recording {
+    margin-block: 1.5rem;
+  }
+
+  .scrollback-recording :global(.terminal-illustration) {
+    width: 100%;
+  }
+
+  /* Keep the article's single left edge: anchor the screen to it instead of
+     floating it in the middle of the column. */
+  .scrollback-recording :global(.terminal-illustration__viewport) {
+    justify-content: flex-start;
+  }
+</style>

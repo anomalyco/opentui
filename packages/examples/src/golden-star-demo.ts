@@ -9,6 +9,7 @@ import {
   ASCIIFontRenderable,
   type ASCIIFontName,
   type OptimizedBuffer,
+  type KeyEvent,
 } from "@opentui/core"
 import {
   Scene as ThreeScene,
@@ -321,6 +322,7 @@ export async function run(renderer: CliRenderer): Promise<void> {
     backgroundColor: RGBA.fromInts(0, 0, 0, 0),
     alpha: true,
   })
+  framebufferRenderable.once("destroyed", () => engine.destroy())
   await engine.init()
 
   const sceneRoot = new ThreeScene()
@@ -476,6 +478,7 @@ export async function run(renderer: CliRenderer): Promise<void> {
   }
 
   renderer.on("resize", resizeHandler)
+  framebufferRenderable.once("destroyed", () => renderer.off("resize", resizeHandler))
 
   const bandPadding = 2
   const gradientBand = new FrameBufferRenderable(renderer, {
@@ -533,7 +536,7 @@ export async function run(renderer: CliRenderer): Promise<void> {
 
   let isHellMode = false
 
-  renderer.keyInput.on("keypress", (keyEvent) => {
+  const keyHandler = (keyEvent: KeyEvent) => {
     if (keyEvent.name === "b") {
       gradientBand.visible = !gradientBand.visible
     } else if (keyEvent.name === "h") {
@@ -589,7 +592,9 @@ export async function run(renderer: CliRenderer): Promise<void> {
         if (rightHornNode) rightHornNode.visible = false
       }
     }
-  })
+  }
+  renderer.keyInput.on("keypress", keyHandler)
+  framebufferRenderable.once("destroyed", () => renderer.keyInput.off("keypress", keyHandler))
 
   const overlayContainer = new BoxRenderable(renderer, {
     id: "overlay",
@@ -917,15 +922,16 @@ export async function run(renderer: CliRenderer): Promise<void> {
       char.bottom = Math.round(Math.max(0, jump))
     }
 
-    engine.drawScene(sceneRoot, framebuffer, deltaTime)
+    await engine.drawScene(sceneRoot, framebuffer, deltaTime)
   })
 }
 
 export function destroy(renderer: CliRenderer): void {
   renderer.clearFrameCallbacks()
-  renderer.root.remove("golden-star-main")
-  renderer.root.remove("overlay")
-  renderer.root.remove("gradientBand")
+  for (const id of ["golden-star-main", "overlay", "gradientBand"]) {
+    const child = renderer.root.getRenderable(id)
+    child?.destroyRecursively()
+  }
 }
 
 if (import.meta.main) {

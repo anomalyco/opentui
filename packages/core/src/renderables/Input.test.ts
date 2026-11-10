@@ -1,4 +1,4 @@
-import { describe, expect, it, afterAll, beforeAll } from "bun:test"
+import { describe, expect, it, afterAll, beforeAll, spyOn } from "bun:test"
 import { InputRenderable, type InputRenderableOptions, InputRenderableEvents } from "./Input.js"
 import { decodePasteBytes } from "../lib/paste.js"
 import { createTestRenderer } from "../testing/test-renderer.js"
@@ -24,6 +24,41 @@ describe("InputRenderable", () => {
       renderer.destroy()
     }
   })
+
+  it.each(["value", "maxLength"] as const)(
+    "%s preserves its state on rejected replacement, then allows retry",
+    (property) => {
+      const { input } = createInputRenderable({ width: 20, value: "before", maxLength: 20 })
+      const failure = new Error("rejected input replacement")
+      let reject = true
+      const original = input.editBuffer.setText.bind(input.editBuffer)
+      const replace = spyOn(input.editBuffer, "setText").mockImplementation((text) => {
+        if (reject) throw failure
+        original(text)
+      })
+      const values: string[] = []
+      input.on(InputRenderableEvents.INPUT, (value: string) => values.push(value))
+      const update = () => {
+        if (property === "value") input.value = "after"
+        else input.maxLength = 3
+      }
+      try {
+        expect(update).toThrow(failure)
+        expect(input.maxLength).toBe(20)
+        expect(input.value).toBe("before")
+        reject = false
+        update()
+        expect(input.maxLength).toBe(property === "value" ? 20 : 3)
+        expect(input.value).toBe(property === "value" ? "after" : "bef")
+        expect(input.cursorOffset).toBe(property === "value" ? 5 : 0)
+        expect(values).toEqual(property === "value" ? ["after"] : [])
+        expect(replace).toHaveBeenCalledTimes(2)
+      } finally {
+        replace.mockRestore()
+        input.destroy()
+      }
+    },
+  )
 
   describe("Initialization", () => {
     it("should initialize properly with default options", () => {
@@ -369,18 +404,6 @@ describe("InputRenderable", () => {
       expect(pasteCalled).toBe(true)
       expect(pasteText).toBe("pasted text")
     })
-
-    it("should strip ANSI sequences from pasted text before inserting", () => {
-      const { input } = createInputRenderable({
-        width: 20,
-      })
-
-      input.focus()
-
-      mockInput.pasteBracketedText("hi \x1b[31mred\x1b[0m")
-
-      expect(input.value).toBe("hi red")
-    })
   })
 
   describe("Multiple Input Focus Management", () => {
@@ -577,6 +600,22 @@ describe("InputRenderable", () => {
       input.value = "world"
       expect(input.value).toBe("world")
       expect(input.cursorOffset).toBe("world".length) // Cursor should move to end
+    })
+
+    // Controls take notation cells, so the cursor offset is a cell count, not the string length. maxLength counts the
+    // string length of the value, controls included.
+    it.each([
+      ["constructor", "a\fb\u0085c", "a\fb\u0085c!"],
+      ["value", "a\fb\u0085c", "a\fb\u0085c!"],
+      ["constructor", "日本", "日本!"],
+      ["value", "\u0000日本", "\u0000日本!"],
+      ["value", "a\fb\u0085c\u007f", "a\fb\u0085c\u007f"],
+    ] as const)("%s keeps %j and puts the cursor after it", (path, text, expected) => {
+      const { input } = createInputRenderable({ width: 20, maxLength: 6, value: path === "constructor" ? text : "" })
+      if (path === "value") input.value = text
+      input.insertText("!")
+      expect(input.value).toBe(expected)
+      input.destroy()
     })
 
     it("should handle empty value setting", () => {

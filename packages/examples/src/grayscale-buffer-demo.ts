@@ -232,7 +232,8 @@ export function destroy(renderer: CliRenderer): void {
     keyListener = null
   }
 
-  renderer.root.remove("grayscale-demo")
+  const grayscaleDemo = renderer.root.getRenderable("grayscale-demo")
+  grayscaleDemo?.destroy()
   framebuffer = null
   leftBuffer = null
   rightBuffer = null

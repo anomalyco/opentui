@@ -1,0 +1,39 @@
+---
+title: Native crash debugging
+description: Resolve native crash addresses with matching release symbols
+---
+
+# Native crash debugging
+
+Download `opentui-symbols-v<VERSION>-<platform>-<arch>[-musl].zip` from the matching
+[GitHub Release](https://github.com/anomalyco/opentui/releases). Use the exact version, architecture, and Linux libc.
+Older releases may not have symbol archives. A separately compiled Debug build has different code and cannot substitute.
+
+## Load the symbols
+
+- **Linux:** place `libopentui.so.debug` beside the matching library or in its `.debug` subdirectory.
+  GDB finds it through `.gnu_debuglink`; the ELF build IDs also match.
+  Use `gdb /path/to/executable /path/to/core` for a core dump.
+- **macOS:** load `libopentui.dylib.dSYM` with LLDB's `target symbols add /path/to/libopentui.dylib.dSYM`.
+  Check matching UUIDs with `dwarfdump --uuid`.
+- **Windows:** add the directory containing `opentui.pdb` to the debugger's symbol path and reload symbols.
+  Its GUID and age must match the DLL's CodeView record.
+
+Each archive's `manifest.json` records the version, target/ABI, source commit, binary identity, and symbol checksums.
+The binary checksum is **before signing**; Windows signing changes that checksum, not the PDB identity.
+
+## Report a crash
+
+Include the OpenTUI and runtime versions, OS/architecture/libc, reproduction steps, and a native trace or core/minidump.
+Raw addresses need module identities and load addresses to account for ASLR. Symbols do not capture crashes or recover
+optimized-out variables. Inspect dumps before sharing: they can contain application data and secrets.
+
+## For contributors
+
+`build:native` builds ReleaseFast once with debug information, saves separate symbols outside npm,
+and strips only the distribution copy. Linux uses binutils; macOS cross-builds use LLVM through
+`LLVM_BIN=$(brew --prefix llvm)/bin` plus Xcode tools. Windows uses LLVM's `llvm-readobj` and `llvm-pdbutil`.
+Generate dSYMs before deleting the Zig object cache. `build:native:dev` remains unstripped.
+
+Release symbol archives stay attached to their GitHub Release, outside npm. PR and snapshot artifacts retain their
+short-lived CI retention policy.

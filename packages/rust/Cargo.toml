@@ -1,0 +1,8 @@
+[workspace]
+members = ["crates/opentui-sys", "crates/opentui", "crates/opentui-ssh"]
+resolver = "3"
+
+[workspace.package]
+version = "0.8.3"
+edition = "2024"
+license = "MIT"

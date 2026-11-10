@@ -39,13 +39,14 @@ export class TextNodeRenderable extends BaseRenderable {
   private _attributes: number
   private _link?: { url: string }
   private _children: (string | TextNodeRenderable)[] = []
+  private dirtyRevision = 0
   public parent: TextNodeRenderable | null = null
 
   constructor(options: TextNodeOptions) {
     super(options)
 
-    this._fg = options.fg ? parseColor(options.fg) : undefined
-    this._bg = options.bg ? parseColor(options.bg) : undefined
+    this._fg = options.fg ? RGBA.clone(parseColor(options.fg)) : undefined
+    this._bg = options.bg ? RGBA.clone(parseColor(options.bg)) : undefined
     this._attributes = options.attributes ?? 0
     this._link = options.link
   }
@@ -55,6 +56,21 @@ export class TextNodeRenderable extends BaseRenderable {
   }
 
   public set children(children: (string | TextNodeRenderable)[]) {
+    for (const child of this._children) {
+      if (isTextNodeRenderable(child) && child.parent === this) {
+        child.parent = null
+      }
+    }
+
+    for (const child of children) {
+      if (isTextNodeRenderable(child)) {
+        if (child.parent && child.parent !== this) {
+          child.parent.remove(child)
+        }
+        child.parent = this
+      }
+    }
+
     this._children = children
     this.requestRender()
   }
@@ -62,6 +78,11 @@ export class TextNodeRenderable extends BaseRenderable {
   public requestRender(): void {
     this.markDirty()
     this.parent?.requestRender()
+  }
+
+  protected override markDirty(): void {
+    super.markDirty()
+    this.dirtyRevision++
   }
 
   public add(obj: TextNodeRenderable | StyledText | string, index?: number): number {
@@ -79,15 +100,8 @@ export class TextNodeRenderable extends BaseRenderable {
     }
 
     if (isTextNodeRenderable(obj)) {
-      if (index !== undefined) {
-        this._children.splice(index, 0, obj)
-        obj.parent = this
-        this.requestRender()
-        return index
-      }
-
-      const insertIndex = this._children.length
-      this._children.push(obj)
+      const insertIndex = this.prepareChildInsert(obj, index)
+      this._children.splice(insertIndex, 0, obj)
       obj.parent = this
       this.requestRender()
       return insertIndex
@@ -112,11 +126,42 @@ export class TextNodeRenderable extends BaseRenderable {
     throw new Error("TextNodeRenderable only accepts strings, TextNodeRenderable instances, or StyledText instances")
   }
 
+  private prepareChildInsert(child: TextNodeRenderable, index?: number): number {
+    let insertIndex = index ?? this._children.length
+
+    if (child.parent && child.parent !== this) {
+      child.parent.remove(child)
+    } else if (child.parent === this) {
+      const currentIndex = this._children.indexOf(child)
+      if (currentIndex !== -1) {
+        this._children.splice(currentIndex, 1)
+        if (currentIndex < insertIndex) insertIndex -= 1
+      }
+    }
+
+    return Math.max(0, Math.min(insertIndex, this._children.length))
+  }
+
   public replace(obj: TextNodeRenderable | string, index: number) {
-    this._children[index] = obj
-    if (typeof obj !== "string") {
+    const existing = this._children[index]
+    if (isTextNodeRenderable(existing) && existing.parent === this) {
+      existing.parent = null
+    }
+
+    if (isTextNodeRenderable(obj)) {
+      if (obj.parent && obj.parent !== this) {
+        obj.parent.remove(obj)
+      } else if (obj.parent === this) {
+        const currentIndex = this._children.indexOf(obj)
+        if (currentIndex !== -1 && currentIndex !== index) {
+          this._children.splice(currentIndex, 1)
+          if (currentIndex < index) index -= 1
+        }
+      }
       obj.parent = this
     }
+
+    this._children[index] = obj
     this.requestRender()
   }
 
@@ -133,12 +178,18 @@ export class TextNodeRenderable extends BaseRenderable {
       throw new Error("Anchor node not found in children")
     }
 
+    if (child === anchorNode) {
+      return this
+    }
+
+    if (isTextNodeRenderable(child)) {
+      this.add(child, anchorIndex)
+      return this
+    }
+
     if (typeof child === "string") {
       this._children.splice(anchorIndex, 0, child)
-    } else if (isTextNodeRenderable(child)) {
-      this._children.splice(anchorIndex, 0, child)
-      child.parent = this
-    } else if (child instanceof StyledText) {
+    } else if (isStyledText(child)) {
       const textNodes = styledTextToTextNodes(child)
       this._children.splice(anchorIndex, 0, ...textNodes)
       textNodes.forEach((node) => (node.parent = this))
@@ -150,21 +201,30 @@ export class TextNodeRenderable extends BaseRenderable {
     return this
   }
 
-  public remove(id: string): this {
-    const childIndex = this.getRenderableIndex(id)
-    if (childIndex === -1) {
-      throw new Error("Child not found in children")
+  public remove(child: BaseRenderable): void {
+    if (!isTextNodeRenderable(child)) {
+      throw new Error("remove expects a TextNodeRenderable child object")
     }
 
-    const child = this._children[childIndex] as TextNodeRenderable
+    const childIndex = this._children.indexOf(child)
+    if (childIndex === -1) {
+      if (process.env.NODE_ENV !== "production") {
+        console.warn(`TextNodeRenderable with id ${child.id} is not a child of ${this.id}, skipping remove`)
+      }
+      return
+    }
 
     this._children.splice(childIndex, 1)
     child.parent = null
     this.requestRender()
-    return this
   }
 
   public clear(): void {
+    for (const child of this._children) {
+      if (isTextNodeRenderable(child) && child.parent === this) {
+        child.parent = null
+      }
+    }
     this._children = []
     this.requestRender()
   }
@@ -176,8 +236,8 @@ export class TextNodeRenderable extends BaseRenderable {
     link?: { url: string }
   } {
     return {
-      fg: this._fg ?? parentStyle.fg,
-      bg: this._bg ?? parentStyle.bg,
+      fg: this.fg ?? parentStyle.fg,
+      bg: this.bg ?? parentStyle.bg,
       attributes: this._attributes | parentStyle.attributes,
       link: this._link ?? parentStyle.link,
     }
@@ -190,6 +250,31 @@ export class TextNodeRenderable extends BaseRenderable {
       attributes: 0,
     },
   ): TextChunk[] {
+    return this.gatherChunks(parentStyle)
+  }
+
+  /** @internal Defer cleaning until replacement accepts, without consuming reentrant mutations. */
+  public prepareWithInheritedStyle(parentStyle: Parameters<TextNodeRenderable["mergeStyles"]>[0]): {
+    chunks: TextChunk[]
+    acknowledge: () => void
+  } {
+    const revisions = new Map<TextNodeRenderable, number>()
+    const chunks = this.gatherChunks(parentStyle, revisions)
+    return {
+      chunks,
+      acknowledge: () => {
+        for (const [node, revision] of revisions) {
+          if (node.dirtyRevision === revision) node.markClean()
+        }
+      },
+    }
+  }
+
+  private gatherChunks(
+    parentStyle: Parameters<TextNodeRenderable["mergeStyles"]>[0],
+    revisions?: Map<TextNodeRenderable, number>,
+  ): TextChunk[] {
+    revisions?.set(this, this.dirtyRevision)
     const currentStyle = this.mergeStyles(parentStyle)
 
     const chunks: TextChunk[] = []
@@ -205,12 +290,14 @@ export class TextNodeRenderable extends BaseRenderable {
           link: currentStyle.link,
         })
       } else {
-        const childChunks = child.gatherWithInheritedStyle(currentStyle)
+        const childChunks = revisions
+          ? child.gatherChunks(currentStyle, revisions)
+          : child.gatherWithInheritedStyle(currentStyle)
         chunks.push(...childChunks)
       }
     }
 
-    this.markClean()
+    if (!revisions) this.markClean()
 
     return chunks
   }
@@ -256,7 +343,7 @@ export class TextNodeRenderable extends BaseRenderable {
   }
 
   public get fg(): RGBA | undefined {
-    return this._fg
+    return this._fg ? RGBA.clone(this._fg) : undefined
   }
 
   public set fg(fg: RGBA | string | undefined) {
@@ -265,7 +352,7 @@ export class TextNodeRenderable extends BaseRenderable {
       this.requestRender()
       return
     }
-    this._fg = parseColor(fg)
+    this._fg = RGBA.clone(parseColor(fg))
     this.requestRender()
   }
 
@@ -275,12 +362,12 @@ export class TextNodeRenderable extends BaseRenderable {
       this.requestRender()
       return
     }
-    this._bg = parseColor(bg)
+    this._bg = RGBA.clone(parseColor(bg))
     this.requestRender()
   }
 
   public get bg(): RGBA | undefined {
-    return this._bg
+    return this._bg ? RGBA.clone(this._bg) : undefined
   }
 
   public set attributes(attributes: number) {
@@ -320,6 +407,6 @@ export class RootTextNodeRenderable extends TextNodeRenderable {
 
   public requestRender(): void {
     this.markDirty()
-    this.ctx.requestRender()
+    this.textParent.requestRender()
   }
 }

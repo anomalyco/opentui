@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import { OptimizedBuffer } from "../buffer.js"
 import { RGBA } from "../lib/RGBA.js"
 import { bold, green, red, yellow } from "../lib/styled-text.js"
@@ -7,6 +7,7 @@ import type { CapturedFrame } from "../types.js"
 import { BoxRenderable } from "./Box.js"
 import { ScrollBoxRenderable } from "./ScrollBox.js"
 import { TextRenderable } from "./Text.js"
+import { allocateProportionalColumnWidths } from "./text-table-width.js"
 import { TextTableRenderable, type TextTableCellContent, type TextTableContent } from "./TextTable.js"
 
 const VERTICAL_BORDER_CP = "│".codePointAt(0)!
@@ -20,17 +21,17 @@ let resizeRenderer: (width: number, height: number) => void
 let mockMouse: MockMouse
 
 function getCharAt(buffer: TestRenderer["currentRenderBuffer"], x: number, y: number): number {
-  return buffer.buffers.char[y * buffer.width + x] ?? 0
+  return buffer.withBuffers(({ char }) => char[y * buffer.width + x] ?? 0)
 }
 
 function getFgAt(buffer: TestRenderer["currentRenderBuffer"], x: number, y: number): RGBA {
   const index = (y * buffer.width + x) * 4
-  return RGBA.fromArray(buffer.buffers.fg.slice(index, index + 4))
+  return buffer.withBuffers(({ fg }) => RGBA.fromArray(fg.slice(index, index + 4)))
 }
 
 function getBgAt(buffer: TestRenderer["currentRenderBuffer"], x: number, y: number): RGBA {
   const index = (y * buffer.width + x) * 4
-  return RGBA.fromArray(buffer.buffers.bg.slice(index, index + 4))
+  return buffer.withBuffers(({ bg }) => RGBA.fromArray(bg.slice(index, index + 4)))
 }
 
 function findVerticalBorderXs(buffer: TestRenderer["currentRenderBuffer"], y: number): number[] {
@@ -185,6 +186,123 @@ afterEach(() => {
 })
 
 describe("TextTableRenderable", () => {
+  test("proportional allocation preserves square-root priority regressions", () => {
+    expect(allocateProportionalColumnWidths([91, 9], 37, 1)).toEqual([28, 9])
+    expect(allocateProportionalColumnWidths([91, 9], 38, 1)).toEqual([29, 9])
+    expect(allocateProportionalColumnWidths([1000, 100], 401, 1)).toEqual([305, 96])
+    expect(allocateProportionalColumnWidths([1000, 100], 402, 1)).toEqual([305, 97])
+    expect(allocateProportionalColumnWidths([4, 49, 4, 54, 38], 104, 1)).toEqual([4, 33, 4, 34, 29])
+    expect(allocateProportionalColumnWidths([2_516_760, 2_528_584], 58_886, 1)).toEqual([29_408, 29_478])
+  })
+
+  test("proportional allocation resolves exact priority ties by lower index", () => {
+    expect(allocateProportionalColumnWidths([7, 7, 7], 10, 3)).toEqual([4, 3, 3])
+    expect(allocateProportionalColumnWidths([7, 7, 7], 11, 3)).toEqual([4, 4, 3])
+    expect(allocateProportionalColumnWidths([7, 7, 7], 12, 3)).toEqual([4, 4, 4])
+    expect(allocateProportionalColumnWidths([7, 7, 7], 13, 3)).toEqual([5, 4, 4])
+    expect(allocateProportionalColumnWidths([7, 7, 7], 17, 3)).toEqual([6, 6, 5])
+    expect(allocateProportionalColumnWidths([7, 7, 7], 20, 3)).toEqual([7, 7, 6])
+    expect(allocateProportionalColumnWidths([19, 3], 5, 1)).toEqual([4, 1])
+    expect(allocateProportionalColumnWidths([4_000_000_001, 1_000_000_001], 300_001, 1)).toEqual([200_001, 100_000])
+  })
+
+  test("renders unequal-capacity priority ties in lower column index order", async () => {
+    // Capacities 18 and 2 make the third and first growth cells exact priority ties.
+    const table = new TextTableRenderable(renderer, {
+      left: 0,
+      top: 0,
+      width: 8,
+      wrapMode: "word",
+      content: [[cell("ABCDEFGHIJKLMNOPQRS"), cell("XYZ")]],
+    })
+
+    renderer.root.add(table)
+    await renderOnce()
+
+    const rowY = captureFrame()
+      .split("\n")
+      .findIndex((line) => line.includes("A") && line.includes("X"))
+    expect(rowY).toBeGreaterThanOrEqual(0)
+    expect(findVerticalBorderXs(renderer.currentRenderBuffer, rowY)).toEqual([0, 5, 7])
+  })
+
+  test("renders padded unequal-capacity priority ties in lower column index order", async () => {
+    const table = new TextTableRenderable(renderer, {
+      left: 0,
+      top: 0,
+      width: 12,
+      cellPaddingX: 1,
+      wrapMode: "word",
+      content: [[cell("ABCDEFGHIJKLMNOPQRS"), cell("XYZ")]],
+    })
+
+    renderer.root.add(table)
+    await renderOnce()
+
+    const rowY = captureFrame()
+      .split("\n")
+      .findIndex((line) => line.includes("A") && line.includes("X"))
+    expect(rowY).toBeGreaterThanOrEqual(0)
+    expect(findVerticalBorderXs(renderer.currentRenderBuffer, rowY)).toEqual([0, 7, 11])
+  })
+
+  test("proportional allocation clamps targets and preserves hard minimums and intrinsic caps", () => {
+    expect(allocateProportionalColumnWidths([4, 49, 4, 54, 38], 3, 1)).toEqual([1, 1, 1, 1, 1])
+    expect(allocateProportionalColumnWidths([4, 49, 4, 54, 38], 149, 1)).toEqual([4, 49, 4, 54, 38])
+    expect(allocateProportionalColumnWidths([4, 49, 4, 54, 38], 200, 1)).toEqual([4, 49, 4, 54, 38])
+    expect(allocateProportionalColumnWidths([2, 8, 20], 14, 3)).toEqual([3, 5, 6])
+  })
+
+  test("proportional allocation is exact and prefix-monotonic across deterministic vectors", () => {
+    let seed = 0x1259
+    const vectors = Array.from({ length: 40 }, (_, vectorIdx) => {
+      seed = (seed * 1664525 + 1013904223) >>> 0
+      const minWidth = 1 + (seed % 4)
+      return {
+        minWidth,
+        widths: Array.from({ length: 1 + (vectorIdx % 8) }, () => {
+          seed = (seed * 1664525 + 1013904223) >>> 0
+          return minWidth + (seed % 80)
+        }),
+      }
+    })
+
+    for (const { widths, minWidth } of vectors) {
+      const minimumTotal = minWidth * widths.length
+      const intrinsicTotal = widths.reduce((sum, width) => sum + width, 0)
+      let previous = allocateProportionalColumnWidths(widths, minimumTotal, minWidth)
+      const capacity = widths.map((width) => width - minWidth)
+      const expectedGrowth = new Array(widths.length).fill(0)
+
+      for (let target = minimumTotal + 1; target <= intrinsicTotal; target++) {
+        let bestIdx = -1
+        for (let idx = 0; idx < capacity.length; idx++) {
+          if (expectedGrowth[idx] >= capacity[idx]!) continue
+          if (bestIdx === -1) {
+            bestIdx = idx
+            continue
+          }
+
+          const candidate = BigInt(expectedGrowth[idx]! + 1)
+          const best = BigInt(expectedGrowth[bestIdx]! + 1)
+          const candidatePriority = candidate * candidate * BigInt(capacity[bestIdx]!)
+          const bestPriority = best * best * BigInt(capacity[idx]!)
+          if (candidatePriority < bestPriority) bestIdx = idx
+        }
+        expectedGrowth[bestIdx] += 1
+
+        const next = allocateProportionalColumnWidths(widths, target, minWidth)
+        const deltas = next.map((width, idx) => width - previous[idx]!)
+        expect(next).toEqual(expectedGrowth.map((growth) => growth + minWidth))
+        expect(next.reduce((sum, width) => sum + width, 0)).toBe(target)
+        expect(next.every((width, idx) => width >= minWidth && width <= widths[idx]!)).toBe(true)
+        expect(deltas.filter((delta) => delta === 1)).toHaveLength(1)
+        expect(deltas.every((delta) => delta === 0 || delta === 1)).toBe(true)
+        previous = next
+      }
+    }
+  })
+
   test("renders a basic table with styled cell chunks", async () => {
     const content: TextTableContent = [
       [[bold("Name")], [bold("Status")], [bold("Notes")]],
@@ -237,40 +355,32 @@ describe("TextTableRenderable", () => {
     expect(frame).toContain("Description")
   })
 
-  test("keeps intrinsic width in content mode when extra space is available", async () => {
-    const table = new TextTableRenderable(renderer, {
-      left: 0,
-      top: 0,
-      width: 34,
-      wrapMode: "word",
-      columnWidthMode: "content",
-      content: [
-        [cell("A"), cell("B")],
-        [cell("1"), cell("2")],
-      ],
-    })
-
+  test("rejected wrapMode preserves state and permits retry", () => {
+    const table = new TextTableRenderable(renderer, { wrapMode: "word", content: [[cell("alpha beta gamma")]] })
+    const observer = new BoxRenderable(renderer, { position: "absolute", alignSelf: "flex-start" })
     renderer.root.add(table)
-    await renderOnce()
-
-    const lines = captureFrame().split("\n")
-    const headerY = lines.findIndex((line) => line.includes("A") && line.includes("B"))
-    expect(headerY).toBeGreaterThanOrEqual(0)
-
-    const buffer = renderer.currentRenderBuffer
-    const borderXs = findVerticalBorderXs(buffer, headerY)
-
-    expect(borderXs.length).toBe(3)
-    expect(borderXs[0]).toBe(0)
-    expect(borderXs[borderXs.length - 1]).toBeLessThan(33)
+    renderer.root.add(observer)
+    observer.setMeasureProvider(() => {
+      table.wrapMode = "char"
+      return { width: 1, height: 1 }
+    })
+    expect(() => renderer.nativeScene.measureSnapshot(observer)).toThrow("Cannot mutate Yoga during a callback")
+    expect(table.wrapMode).toBe("word")
+    observer.setMeasureProvider(null)
+    table.wrapMode = "char"
+    expect(table.wrapMode).toBe("char")
   })
 
-  test("fills available width by default in full mode", async () => {
+  test.each([
+    ["fills available width by default in full mode", undefined, [0, 17, 33]],
+    ["keeps intrinsic width in content mode when extra space is available", "content" as const, [0, 2, 4]],
+  ])("%s", async (_name, columnWidthMode, expected) => {
     const table = new TextTableRenderable(renderer, {
       left: 0,
       top: 0,
       width: 34,
       wrapMode: "word",
+      columnWidthMode,
       content: [
         [cell("A"), cell("B")],
         [cell("1"), cell("2")],
@@ -287,7 +397,7 @@ describe("TextTableRenderable", () => {
     const buffer = renderer.currentRenderBuffer
     const borderXs = findVerticalBorderXs(buffer, headerY)
 
-    expect(borderXs).toEqual([0, 17, 33])
+    expect(borderXs).toEqual(expected)
   })
 
   test("fills available width in no-wrap mode when columnWidthMode is full", async () => {
@@ -364,6 +474,26 @@ describe("TextTableRenderable", () => {
 
     const borderXs = findVerticalBorderXs(renderer.currentRenderBuffer, headerY)
     expect(borderXs).toEqual([0, 4, 8])
+  })
+
+  test("preserves padded hard minimums when constrained", async () => {
+    const table = new TextTableRenderable(renderer, {
+      left: 0,
+      top: 0,
+      width: 13,
+      cellPaddingX: 1,
+      wrapMode: "word",
+      content: [[cell("Alpha"), cell("Bravo"), cell("Charlie")]],
+    })
+
+    renderer.root.add(table)
+    await renderOnce()
+
+    const headerY = captureFrame()
+      .split("\n")
+      .findIndex((line) => line.includes("A") && line.includes("B") && line.includes("C"))
+    expect(headerY).toBeGreaterThanOrEqual(0)
+    expect(findVerticalBorderXs(renderer.currentRenderBuffer, headerY)).toEqual([0, 4, 8, 12])
   })
 
   test("reflows when columnWidthMode is changed after initial render", async () => {
@@ -615,6 +745,36 @@ describe("TextTableRenderable", () => {
     expect(after).toMatchSnapshot("content setter update")
   })
 
+  test("replaces same-shape content in one batch and falls back to new cells beyond the batch limit", async () => {
+    // 300 changed cells exceed OT_TEXT_REPLACEMENT_COUNT_MAX (256).
+    const grid = (tag: string, rows: number) =>
+      Array.from({ length: rows }, (_, row) => [cell(`${tag}${row}`), row === 1 ? null : cell(tag)])
+    const table = new TextTableRenderable(renderer, { left: 0, top: 0, wrapMode: "none", content: grid("a", 3) })
+    renderer.root.add(table)
+    const create = spyOn(renderer.nativeScene.driver.renderLib, "createContextTextBuffer")
+    const rows = async () => {
+      await renderOnce()
+      return captureFrame()
+        .split("\n")
+        .filter((line) => /[a-z]\d/.test(line))
+        .slice(0, 3)
+        .map((line) => line.replace(/[│ ]+/g, " ").trim())
+    }
+    try {
+      table.content = grid("b", 3)
+      expect(await rows()).toEqual(["b0 b", "b1", "b2 b"])
+      expect(create).toHaveBeenCalledTimes(0)
+      // A sparse row renders empty cells.
+      table.content = [...grid("c", 150), undefined as never]
+      create.mockClear()
+      table.content = grid("d", 151)
+      expect(await rows()).toEqual(["d0 d", "d1", "d2 d"])
+      expect(create).toHaveBeenCalledTimes(301)
+    } finally {
+      create.mockRestore()
+    }
+  })
+
   test("renders a final bottom border", async () => {
     const table = new TextTableRenderable(renderer, {
       left: 0,
@@ -807,7 +967,7 @@ describe("TextTableRenderable", () => {
     await mockMouse.drag(anchor.x + 3, anchor.y, anchor.x + 5, anchor.y)
     await renderOnce()
 
-    expect(table.getSelectedText()).toBe("ha")
+    expect(table.getSelectedText()).toBe("hab")
   })
 
   test("selects the full anchor cell once focus leaves that cell", async () => {
@@ -879,7 +1039,8 @@ describe("TextTableRenderable", () => {
     expect(table.getSelectedText()).toBe("colB\tcolC\na1\tb1\tc1\na2\tb2\tc2\na3\tb3\tc3")
   })
 
-  test("selection colors reset when drag retracts back to the anchor", async () => {
+  // An opaque table background redraws the selection rows directly into the table's buffer.
+  test.each([undefined, "#000000"])("selection colors reset when drag retracts (table background %s)", async (bg) => {
     const defaultFg = RGBA.fromHex("#111111")
     const defaultBg = RGBA.fromValues(0, 0, 0, 1)
     const selectionFg = RGBA.fromHex("#fefefe")
@@ -888,6 +1049,7 @@ describe("TextTableRenderable", () => {
     const table = new TextTableRenderable(renderer, {
       left: 0,
       top: 0,
+      backgroundColor: bg,
       fg: defaultFg,
       bg: defaultBg,
       selectionFg,
@@ -1313,7 +1475,7 @@ describe("TextTableRenderable", () => {
     root.add(
       new BoxRenderable(renderer, {
         width: "100%",
-        height: 16,
+        height: 18,
         flexGrow: 0,
         flexShrink: 0,
       }),

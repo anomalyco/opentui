@@ -201,6 +201,7 @@ export class Keymap<TTarget extends object, TEvent extends KeymapEvent = KeymapE
       conditions: this.#conditions,
       catalog: this.#catalog,
       activation: this.#activation,
+      layers: this.#layers,
     }
   }
 

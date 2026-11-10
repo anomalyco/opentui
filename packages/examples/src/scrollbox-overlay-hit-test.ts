@@ -181,10 +181,8 @@ export function destroy(renderer: CliRenderer): void {
     renderer.keyInput.off("keypress", keyHandler)
   }
 
-  renderer.root.getChildren().forEach((child) => {
-    renderer.root.remove(child.id)
-    child.destroyRecursively()
-  })
+  renderer.root.getRenderable("app")?.destroyRecursively()
+  overlay?.destroyRecursively()
 
   overlay = null
   dialog = null

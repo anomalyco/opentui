@@ -25,6 +25,23 @@ describe("native Yoga FFI facade", () => {
     config.free()
   })
 
+  test("returns independent computed-layout snapshots", () => {
+    const node = Yoga.Node.create()
+    node.setWidth(10)
+    node.setHeight(5)
+    node.calculateLayout(undefined, undefined, Direction.LTR)
+    const first = node.getComputedLayout()
+
+    node.setWidth(20)
+    node.calculateLayout(undefined, undefined, Direction.LTR)
+    const second = node.getComputedLayout()
+
+    expect(first.width).toBe(10)
+    expect(second.width).toBe(20)
+    expect(first).not.toBe(second)
+    node.freeRecursive()
+  })
+
   test("supports percentage margins and RTL computed edges", () => {
     const root = Yoga.Node.create()
     root.setWidth(100)

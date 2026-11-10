@@ -1,3 +1,11 @@
+import { ResourceContext } from "@opentui/core"
+
+let resourceContext: ResourceContext
+beforeEach(() => {
+  resourceContext = new ResourceContext({ objectCapacity: 65536, renderCellsMax: 1000000 })
+})
+afterEach(() => resourceContext.destroy())
+
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import { testRender } from "../index.js"
 import { SyntaxStyle, RGBA } from "@opentui/core"
@@ -19,11 +27,14 @@ describe("DiffRenderable with SolidJS", () => {
   })
 
   test("renders unified diff without glitching", async () => {
-    const syntaxStyle = SyntaxStyle.fromStyles({
-      keyword: { fg: RGBA.fromValues(0.78, 0.57, 0.92, 1) },
-      function: { fg: RGBA.fromValues(0.51, 0.67, 1, 1) },
-      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    })
+    const syntaxStyle = SyntaxStyle.fromStyles(
+      {
+        keyword: { fg: RGBA.fromValues(0.78, 0.57, 0.92, 1) },
+        function: { fg: RGBA.fromValues(0.51, 0.67, 1, 1) },
+        default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      },
+      resourceContext,
+    )
 
     const diffContent = `--- a/test.js
 +++ b/test.js
@@ -97,11 +108,14 @@ describe("DiffRenderable with SolidJS", () => {
   })
 
   test("renders split diff correctly", async () => {
-    const syntaxStyle = SyntaxStyle.fromStyles({
-      keyword: { fg: RGBA.fromValues(0.78, 0.57, 0.92, 1) },
-      function: { fg: RGBA.fromValues(0.51, 0.67, 1, 1) },
-      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    })
+    const syntaxStyle = SyntaxStyle.fromStyles(
+      {
+        keyword: { fg: RGBA.fromValues(0.78, 0.57, 0.92, 1) },
+        function: { fg: RGBA.fromValues(0.51, 0.67, 1, 1) },
+        default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      },
+      resourceContext,
+    )
 
     const diffContent = `--- a/test.js
 +++ b/test.js
@@ -137,10 +151,13 @@ describe("DiffRenderable with SolidJS", () => {
   })
 
   test("handles double-digit line numbers with proper left padding", async () => {
-    const syntaxStyle = SyntaxStyle.fromStyles({
-      keyword: { fg: RGBA.fromValues(0.78, 0.57, 0.92, 1) },
-      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    })
+    const syntaxStyle = SyntaxStyle.fromStyles(
+      {
+        keyword: { fg: RGBA.fromValues(0.78, 0.57, 0.92, 1) },
+        default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      },
+      resourceContext,
+    )
 
     const diffWith10PlusLines = `--- a/test.js
 +++ b/test.js
@@ -207,11 +224,14 @@ describe("DiffRenderable with SolidJS", () => {
   })
 
   test("handles conditional removal of diff element", async () => {
-    const syntaxStyle = SyntaxStyle.fromStyles({
-      keyword: { fg: RGBA.fromValues(0.78, 0.57, 0.92, 1) },
-      function: { fg: RGBA.fromValues(0.51, 0.67, 1, 1) },
-      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    })
+    const syntaxStyle = SyntaxStyle.fromStyles(
+      {
+        keyword: { fg: RGBA.fromValues(0.78, 0.57, 0.92, 1) },
+        function: { fg: RGBA.fromValues(0.51, 0.67, 1, 1) },
+        default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      },
+      resourceContext,
+    )
 
     const diffContent = `--- a/test.js
 +++ b/test.js
@@ -289,11 +309,14 @@ describe("DiffRenderable with SolidJS", () => {
   })
 
   test("handles conditional removal of split diff element", async () => {
-    const syntaxStyle = SyntaxStyle.fromStyles({
-      keyword: { fg: RGBA.fromValues(0.78, 0.57, 0.92, 1) },
-      function: { fg: RGBA.fromValues(0.51, 0.67, 1, 1) },
-      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    })
+    const syntaxStyle = SyntaxStyle.fromStyles(
+      {
+        keyword: { fg: RGBA.fromValues(0.78, 0.57, 0.92, 1) },
+        function: { fg: RGBA.fromValues(0.51, 0.67, 1, 1) },
+        default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      },
+      resourceContext,
+    )
 
     const diffContent = `--- a/test.js
 +++ b/test.js
@@ -359,14 +382,17 @@ describe("DiffRenderable with SolidJS", () => {
   })
 
   test("split diff with word wrapping: toggling vs setting from start should match", async () => {
-    const syntaxStyle = SyntaxStyle.fromStyles({
-      keyword: { fg: RGBA.fromValues(0.78, 0.57, 0.92, 1) },
-      "keyword.import": { fg: RGBA.fromValues(0.78, 0.57, 0.92, 1) },
-      string: { fg: RGBA.fromValues(0.65, 0.84, 1, 1) },
-      comment: { fg: RGBA.fromValues(0.55, 0.58, 0.62, 1), italic: true },
-      function: { fg: RGBA.fromValues(0.51, 0.67, 1, 1) },
-      default: { fg: RGBA.fromValues(0.9, 0.93, 0.95, 1) },
-    })
+    const syntaxStyle = SyntaxStyle.fromStyles(
+      {
+        keyword: { fg: RGBA.fromValues(0.78, 0.57, 0.92, 1) },
+        "keyword.import": { fg: RGBA.fromValues(0.78, 0.57, 0.92, 1) },
+        string: { fg: RGBA.fromValues(0.65, 0.84, 1, 1) },
+        comment: { fg: RGBA.fromValues(0.55, 0.58, 0.62, 1), italic: true },
+        function: { fg: RGBA.fromValues(0.51, 0.67, 1, 1) },
+        default: { fg: RGBA.fromValues(0.9, 0.93, 0.95, 1) },
+      },
+      resourceContext,
+    )
 
     // Use the actual diff content from the demo
     const diffContent = `Index: packages/examples/src/index.ts

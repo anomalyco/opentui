@@ -119,6 +119,17 @@ describe("env registry", () => {
     expect(env.TEST_DEFAULT).toBe("default_value")
   })
 
+  test("should return undefined for optional env vars when not set", () => {
+    registerEnvVar({
+      name: "TEST_OPTIONAL",
+      description: "An optional test variable",
+      type: "string",
+      required: false,
+    })
+
+    expect(env.TEST_OPTIONAL).toBeUndefined()
+  })
+
   test("should throw error for required env var not set", () => {
     registerEnvVar({
       name: "TEST_REQUIRED",

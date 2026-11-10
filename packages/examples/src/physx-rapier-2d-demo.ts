@@ -112,8 +112,10 @@ function cleanupPendingDemoState(renderer: CliRenderer, state: PendingDemoState)
   }
 
   if (!renderer.isDestroyed) {
-    renderer.root.remove("rapier-main")
-    renderer.root.remove("rapier-container")
+    for (const id of ["rapier-main", "rapier-container"]) {
+      const child = renderer.root.getRenderable(id)
+      child?.destroyRecursively()
+    }
   }
 
   if (pendingDemoState === state) {
@@ -143,8 +145,10 @@ function cleanupDemoState(renderer: CliRenderer, state: DemoState): void {
   state.engine.destroy()
 
   if (!renderer.isDestroyed) {
-    renderer.root.remove("rapier-main")
-    renderer.root.remove("rapier-container")
+    for (const id of ["rapier-main", "rapier-container"]) {
+      const child = renderer.root.getRenderable(id)
+      child?.destroyRecursively()
+    }
   }
 }
 

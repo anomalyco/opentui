@@ -1,0 +1,32 @@
+name: Enable Linux core dumps
+description: Point Linux core dumps at the workspace so a later step can upload them.
+
+runs:
+  using: composite
+  steps:
+    - name: Enable Linux core dumps
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -eu
+        dump_dir="${GITHUB_WORKSPACE}/.crash-dumps"
+        mkdir -p "$dump_dir"
+
+        echo "core_pattern=$(cat /proc/sys/kernel/core_pattern)"
+        echo "core_uses_pid=$(cat /proc/sys/kernel/core_uses_pid 2>/dev/null || true)"
+        ulimit -c || true
+
+        if ! sudo -n true 2>/dev/null; then
+          echo "No passwordless sudo; test steps must still raise ulimit -c."
+          echo "Existing core handlers will be scanned after a crash."
+          exit 0
+        fi
+
+        # A path pattern writes into the workspace. A piped handler (apport /
+        # systemd-coredump) can still produce a dump, but the file is not ours
+        # unless we collect it later. Some hosted runners refuse this sysctl.
+        if printf '%s\n' "${dump_dir}/core.%e.%p.%s.%t" | sudo tee /proc/sys/kernel/core_pattern >/dev/null; then
+          echo "core_pattern now=$(cat /proc/sys/kernel/core_pattern)"
+        else
+          echo "Could not replace core_pattern; will collect from the existing handler after a crash."
+        fi

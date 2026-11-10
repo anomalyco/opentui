@@ -140,7 +140,7 @@ function removeDemoRenderable(renderer: CliRenderer): void {
     return
   }
 
-  renderer.root.getRenderable("live-demo-main-group")?.remove(demoRenderable.id)
+  demoRenderable.destroyRecursively()
   demoRenderable = null
   updateStatusText("Removed demo renderable")
 }

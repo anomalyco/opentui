@@ -1,0 +1,92 @@
+---
+title: Fixing Markdown Tables
+description: Markdown tables now wrap text, support columnar selection, and draw proper border conjunctions.
+date: 2026-02-26
+author: kmdr
+tags: [internals, tables, performance, zig]
+---
+
+import ScrollbackRecording from "../../components/ScrollbackRecording.astro"
+
+_"Please fix Markdown tables, but make it family friendly!"_
+
+Okay: text-only, wrapping, columnar selection, proper border conjunctions, fill
+full width, in opencode beta now.
+
+_"What took so long?"_
+
+Here's a writeup.
+
+## The naive approach
+
+OpenTUI uses yoga layout and has elements called Renderables. Boxes with
+borders, plain text, code with tree-sitter backed highlighting and other
+primitives. Organised in a tree structure resembling somewhat of a DOM.
+
+Approaching a table naively, given the primitives are there, one would think to
+just stack box and text elements the right way in a flex-box layout to visually
+represent a table. Boxes support borders. Problem solved.
+
+This is what an LLM would one-shot in a working state, given OpenTUI's API
+surface. Ignoring the fact that just using box local borders don't handle border
+conjunctions properly.
+
+Benchmarking something like that quickly shows that instantiating an average
+table takes >70ms and incremental updates become expensive. Hugely due to
+yoga-layout via wasm having a painful price on yoga API calls. The whole ordeal
+becomes memory hungry, because a Text element handles more than just plain text.
+A simple 4x6 table needs a Box and Text per cell, ending up with 48 heavy nodes
+that yoga must lay out.
+
+## "But that's just OpenTUI being slow"
+
+Yes, but no. Yoga should be integrated in the zig native binary core of OpenTUI.
+It is on the roadmap to do so, which will speed up render passes by 2-5x.
+
+Yoga-layout has an open PR to support CSS Grids, which would greatly ease
+building something like a table. We will use that for fully laid out tables when
+it gets there.
+
+Below the typescript core level Renderables, there are lower level primitives
+like `TextBuffer`s and `TextBufferView`s, bound via FFI and completely handled
+in Zig.
+
+## A better idea
+
+I was stuck expecting a table primitive to handle a full layout like a table in
+the browser does. For Markdown all we need is a text-only table. So we had to
+come up with a better idea, something that is feasible now.
+
+A table layout is pretty straight forward. No need to have yoga deal with that.
+Using `TextBufferView`s for cells directly gives lower level control and
+eliminates some overhead that Boxes and Text renderables have. A simple native
+method to draw a grid with proper conjunctions is a nice library method. It will
+surely be used for other cases, so that's what we added.
+
+Using this simplified approach we were able to bring down initial instantiation
+to &lt;1ms, more than 70x improvement. With a far smaller memory footprint.
+
+Given all the low level primitives are known and implementing a text-only table
+like this is possible, Codex was of great help to carve out the PoC, setup the
+benchmarks and tests.
+
+That's only a fraction of what was needed though. The table needs options to span
+the full available width, render different border styles, show/hide borders,
+padding, selection etc.
+
+So many iterations later OpenTUI now has a text-only, performant and relatively
+cheap `TextTable` that we can leverage to render Markdown tables in a
+streaming/incremental manner. Efficiently and properly.
+
+<ScrollbackRecording
+  label="An OpenCode session streaming a Markdown answer and rendering a table"
+  controls="below"
+  stories={[
+    {
+      src: "/recordings/opencode-markdown-table.json",
+      title: "Markdown tables in opencode",
+      tone: "recorded",
+      background: "recorded",
+    },
+  ]}
+/>

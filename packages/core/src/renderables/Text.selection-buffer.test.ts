@@ -77,15 +77,16 @@ describe("TextRenderable Selection - Buffer Validation", () => {
     expect(text3.hasSelection()).toBe(false)
 
     expect(text1.getSelectedText()).toBe("This is a paragraph in the first box.")
-    expect(text2.getSelectedText()).toBe("It contain")
+    expect(text2.getSelectedText()).toBe("It contains")
 
-    const buffers = currentRenderer.currentRenderBuffer.buffers
     const width = currentRenderer.currentRenderBuffer.width
     const expectedBg = RGBA.fromHex("#4a5568")
 
     const getBgAt = (x: number, y: number) => {
       const index = y * width + x
-      return RGBA.fromArray(buffers.bg.slice(index * 4, index * 4 + 4))
+      return currentRenderer.currentRenderBuffer.withBuffers(({ bg }) =>
+        RGBA.fromArray(bg.slice(index * 4, index * 4 + 4)),
+      )
     }
 
     for (let col = text1.x; col < text1.x + text1.plainText.length; col++) {
@@ -97,7 +98,7 @@ describe("TextRenderable Selection - Buffer Validation", () => {
       expect(bgMatches).toBe(true)
     }
 
-    for (let col = text2.x; col < text2.x + 10; col++) {
+    for (let col = text2.x; col < text2.x + 11; col++) {
       const bg = getBgAt(col, text2.y)
       const bgMatches =
         Math.abs(bg.r - expectedBg.r) < 0.01 &&
@@ -106,7 +107,7 @@ describe("TextRenderable Selection - Buffer Validation", () => {
       expect(bgMatches).toBe(true)
     }
 
-    for (let col = text2.x + 10; col < text2.x + text2.plainText.length; col++) {
+    for (let col = text2.x + 11; col < text2.x + text2.plainText.length; col++) {
       const bg = getBgAt(col, text2.y)
       const bgMatches =
         Math.abs(bg.r - expectedBg.r) < 0.01 &&

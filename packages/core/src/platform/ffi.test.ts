@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
+import { runInNewContext } from "node:vm"
 import {
   BUN_DLOPEN_NULL,
   FFIType,
@@ -19,12 +20,28 @@ import {
   createBunBackend,
   createNodeBackend,
   ffiBool,
+  trimNodeFFIOutputBytes,
   toPointer,
   type FFICallbackInstance,
   type Pointer,
 } from "./ffi.js"
 
 const IS_BUN = typeof process.versions?.bun === "string"
+
+test("trims fresh Node FFI output buffers without copying", () => {
+  const partial = new Uint8Array([1, 2, 3, 4])
+  const partialBuffer = partial.buffer
+  const trimmed = trimNodeFFIOutputBytes(partial, 2)
+
+  expect([...trimmed]).toEqual([1, 2])
+  expect(trimmed.byteLength).toBe(2)
+  expect(trimmed.buffer.byteLength).toBe(2)
+  expect(partialBuffer.byteLength).toBe(0)
+
+  const full = new Uint8Array([5, 6])
+  expect(trimNodeFFIOutputBytes(full, full.byteLength)).toBe(full)
+  expect(full.buffer.byteLength).toBe(2)
+})
 
 function createMockBackend() {
   const events: string[] = []
@@ -354,7 +371,7 @@ describe("platform/ffi", () => {
     expect(symbolDefinitions).toEqual([
       {
         pointers: {
-          arguments: ["pointer", "pointer", "pointer", "pointer", "buffer", "string"],
+          arguments: ["pointer", "pointer", "pointer", "pointer", "pointer", "string"],
           return: "void",
         },
       },
@@ -386,26 +403,125 @@ describe("platform/ffi", () => {
     ])
   })
 
-  test("normalizes Node ptr-like arguments from pointers, views, and null", () => {
+  test("preserves Node borrowed pointer arguments and normalizes raw pointers and null", () => {
     const { backend, functionCalls } = createMockNodeBackend()
     const buffer = new ArrayBuffer(16)
     const view = new Uint8Array(buffer, 4, 8)
     const emptyView = new Uint8Array(buffer, 0, 0)
     const library = backend.dlopen("mock", {
       pointers: {
-        args: [FFIType.ptr, FFIType.pointer, FFIType.callback, FFIType.function],
+        args: [FFIType.ptr, FFIType.pointer, FFIType.callback, FFIType.function, FFIType.ptr],
         returns: FFIType.void,
       },
     })
 
-    library.symbols.pointers(view, null, 77 as Pointer, emptyView)
+    library.symbols.pointers(buffer, view, null, 77 as Pointer, emptyView)
 
-    expect(functionCalls).toEqual([
-      {
-        name: "pointers",
-        args: [1004n, 0n, 77n, 0n],
+    expect(functionCalls).toHaveLength(1)
+    expect(functionCalls[0]?.name).toBe("pointers")
+    expect(functionCalls[0]?.args[0]).toBe(buffer)
+    expect(functionCalls[0]?.args[1]).toBe(view)
+    expect(functionCalls[0]?.args[2]).toBe(0n)
+    expect(functionCalls[0]?.args[3]).toBe(77n)
+    expect(functionCalls[0]?.args[4]).toBe(0n)
+  })
+
+  test("keeps supported Node pointer wrappers fixed-arity", () => {
+    const { backend, functionCalls } = createMockNodeBackend()
+    const library = backend.dlopen("mock", {
+      one: { args: [FFIType.ptr], returns: FFIType.void },
+      two: { args: [FFIType.ptr, FFIType.u32], returns: FFIType.void },
+      three: { args: [FFIType.ptr, FFIType.u32, FFIType.ptr], returns: FFIType.void },
+      four: { args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.ptr], returns: FFIType.void },
+      five: { args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.ptr], returns: FFIType.void },
+      six: {
+        args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.ptr],
+        returns: FFIType.void,
       },
+      seven: {
+        args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.ptr],
+        returns: FFIType.void,
+      },
+      sevenOnePointer: {
+        args: [FFIType.u32, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.u32],
+        returns: FFIType.void,
+      },
+      eight: {
+        args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.ptr],
+        returns: FFIType.void,
+      },
+    })
+
+    expect(library.symbols.one.length).toBe(1)
+    expect(library.symbols.two.length).toBe(2)
+    expect(library.symbols.three.length).toBe(3)
+    expect(library.symbols.four.length).toBe(0)
+    expect(library.symbols.five.length).toBe(0)
+    expect(library.symbols.six.length).toBe(0)
+    expect(library.symbols.seven.length).toBe(7)
+    expect(library.symbols.sevenOnePointer.length).toBe(0)
+    expect(library.symbols.eight.length).toBe(8)
+
+    library.symbols.two(10n as Pointer)
+    library.symbols.two(10n as Pointer, 20, 30)
+    expect(functionCalls.map((call) => call.args)).toEqual([[10n], [10n, 20, 30]])
+  })
+
+  test("normalizes pointers and -0 i32 and u32 arguments in Node wrappers", () => {
+    const { backend, functionCalls } = createMockNodeBackend()
+    const buffer = new ArrayBuffer(16)
+    const view = new Uint8Array(buffer, 4, 8)
+    const library = backend.dlopen("mock", {
+      seven: {
+        args: [FFIType.ptr, FFIType.u32, FFIType.i32, FFIType.f32, FFIType.u32, FFIType.ptr, FFIType.ptr],
+        returns: FFIType.void,
+      },
+      eight: {
+        args: [FFIType.u32, FFIType.ptr, FFIType.f64, FFIType.i32, FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.i32],
+        returns: FFIType.void,
+      },
+      one: { args: [FFIType.u32], returns: FFIType.void },
+      two: { args: [FFIType.f64, FFIType.u32], returns: FFIType.void },
+      three: { args: [FFIType.int, FFIType.ptr, FFIType.uint32_t], returns: FFIType.void },
+      plain: { args: [FFIType.int32_t, FFIType.u32, FFIType.f32, FFIType.u8], returns: FFIType.void },
+    })
+
+    library.symbols.seven(buffer, -0, -0, -0, -0, null, 77 as Pointer)
+    library.symbols.eight(-0, view, -0, -0, -0, null, 88 as Pointer, -0)
+    library.symbols.seven(10n as Pointer)
+    library.symbols.eight(1, 20n as Pointer, 2, 3, 4, 30n as Pointer, 40n as Pointer, 5, 6)
+    library.symbols.one(-0)
+    library.symbols.two(-0, -0)
+    library.symbols.three(-0, null, -0)
+    library.symbols.plain(-0, -0, -0, -0)
+
+    expect(functionCalls.map((call) => call.args)).toEqual([
+      [buffer, 0, 0, -0, 0, 0n, 77n],
+      [0, view, -0, 0, 0, 0n, 88n, 0],
+      [10n],
+      [1, 20n, 2, 3, 4, 30n, 40n, 5, 6],
+      [0],
+      [-0, 0],
+      [0, 0n, 0],
+      [0, 0, -0, -0],
     ])
+  })
+
+  test("accepts cross-realm ArrayBuffers and views at Node pointer boundaries", () => {
+    const { backend, functionCalls } = createMockNodeBackend()
+    const buffer = runInNewContext("new ArrayBuffer(16)") as ArrayBuffer
+    const view = runInNewContext("new Uint8Array(new ArrayBuffer(16), 4, 8)") as Uint8Array
+    const library = backend.dlopen("mock", {
+      pointers: {
+        args: [FFIType.ptr, FFIType.ptr],
+        returns: FFIType.void,
+      },
+    })
+
+    expect(backend.ptr(buffer)).toBe(1000n as Pointer)
+    expect(backend.ptr(view)).toBe(1104n as Pointer)
+    library.symbols.pointers(buffer, view)
+    expect(functionCalls[0]?.args).toEqual([buffer, view])
   })
 
   test("rejects invalid Node ptr-like arguments deterministically", () => {

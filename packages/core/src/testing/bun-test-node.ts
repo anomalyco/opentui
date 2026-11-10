@@ -116,10 +116,16 @@ function readSnapshotFile(snapshotPath: string): Map<string, string> {
 
   if (existsSync(snapshotPath)) {
     const contents = normalizeNewlines(readFileSync(snapshotPath, "utf8"))
-    const snapshotPattern = /exports\[`([\s\S]*?)`\] = `\n([\s\S]*?)\n`;/g
+    const snapshotPattern = /exports\[`((?:\\[\s\S]|[^\\`])*)`\] = `((?:\\[\s\S]|[^\\`])*)`;/g
 
     for (const match of contents.matchAll(snapshotPattern)) {
-      snapshots.set(match[1], match[2])
+      const key = match[1].replace(/\\(\\|`|\$\{)/g, "$1")
+      // Undo template delimiters, but keep doubled backslashes for serializeSnapshotValue().
+      let value = match[2].replace(/\\(\\|`|\$\{)/g, (escape, value) => (value === "\\" ? escape : value))
+      if (value.startsWith("\n") && value.endsWith("\n")) {
+        value = value.slice(1, -1)
+      }
+      snapshots.set(key, value)
     }
   }
 
@@ -228,7 +234,11 @@ function createTestVariant(base: AnyFunction): AnyFunction {
 function formatEachName(name: string, args: readonly unknown[]): string {
   let index = 0
 
-  return name.replace(/%s/g, () => String(args[index++]))
+  return name.replace(/%[sj]/g, (placeholder) => {
+    const value = args[index++]
+    if (placeholder === "%j") return JSON.stringify(value) ?? placeholder
+    return typeof value === "string" ? value : placeholder
+  })
 }
 
 function createEach(base: AnyFunction) {
@@ -324,6 +334,12 @@ function isObjectLike(value: unknown): value is Record<PropertyKey, unknown> {
   return (typeof value === "object" || typeof value === "function") && value !== null
 }
 
+function isRecordLike(value: unknown): value is Record<PropertyKey, unknown> {
+  if (!isObjectLike(value) || Array.isArray(value)) return false
+  const prototype = Object.getPrototypeOf(value)
+  return prototype === null || Object.getPrototypeOf(prototype) === null
+}
+
 function isAsymmetricMatcher(value: unknown): value is AsymmetricMatcher {
   return isObjectLike(value) && value[asymmetricMatcher] === true && typeof value.matches === "function"
 }
@@ -364,6 +380,19 @@ function valuesEqual(received: unknown, expected: unknown): boolean {
     }
 
     return true
+  }
+
+  if (isRecordLike(received) && isRecordLike(expected)) {
+    const receivedKeys = Reflect.ownKeys(received).filter((key) =>
+      Object.prototype.propertyIsEnumerable.call(received, key),
+    )
+    const expectedKeys = Reflect.ownKeys(expected).filter((key) =>
+      Object.prototype.propertyIsEnumerable.call(expected, key),
+    )
+    return (
+      receivedKeys.length === expectedKeys.length &&
+      expectedKeys.every((key) => Object.hasOwn(received, key) && valuesEqual(received[key], expected[key]))
+    )
   }
 
   return isDeepStrictEqual(received, expected)
@@ -499,6 +528,12 @@ class AsyncExpectation<T> {
 
   async toContain(expected: unknown): Promise<void> {
     new Expectation(await this.unwrap(), this.inverted).toContain(expected)
+  }
+
+  async toHaveProperty(property: PropertyKey, expectedValue?: unknown): Promise<void> {
+    const expectation = new Expectation(await this.unwrap(), this.inverted)
+    if (arguments.length < 2) expectation.toHaveProperty(property)
+    else expectation.toHaveProperty(property, expectedValue)
   }
 
   async toMatchSnapshot(snapshotName?: string): Promise<void> {

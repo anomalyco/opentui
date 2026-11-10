@@ -144,15 +144,16 @@ if [ "$LINK_SOLID" = true ]; then
   else
     echo "  Using target's solid-js: $TARGET_SOLIDJS"
 
-    # Point opentui's package-level solid-js at the target's copy.
-    # Bun workspace hoisting creates packages/solid/node_modules/solid-js
-    # pointing to opentui's own .bun cache — override it.
-    OPENTUI_SOLID_SOLIDJS="$OPENTUI_ROOT/packages/solid/node_modules/solid-js"
-    if [ -e "$OPENTUI_SOLID_SOLIDJS" ] || [ -L "$OPENTUI_SOLID_SOLIDJS" ]; then
-      rm -rf "$OPENTUI_SOLID_SOLIDJS"
-    fi
-    ln -s "$TARGET_SOLIDJS" "$OPENTUI_SOLID_SOLIDJS"
-    echo "  ✓ Linked packages/solid/node_modules/solid-js -> target's solid-js"
+    # Point framework packages at the target's copy. Keymap's Solid adapter also
+    # creates contexts, so it must share the same runtime as the provider.
+    for package in solid keymap; do
+      OPENTUI_PACKAGE_SOLIDJS="$OPENTUI_ROOT/packages/$package/node_modules/solid-js"
+      if [ -e "$OPENTUI_PACKAGE_SOLIDJS" ] || [ -L "$OPENTUI_PACKAGE_SOLIDJS" ]; then
+        rm -rf "$OPENTUI_PACKAGE_SOLIDJS"
+      fi
+      ln -s "$TARGET_SOLIDJS" "$OPENTUI_PACKAGE_SOLIDJS"
+      echo "  ✓ Linked packages/$package/node_modules/solid-js -> target's solid-js"
+    done
 
     # Also override the top-level resolution for any other opentui code
     # that might resolve solid-js from the workspace root.

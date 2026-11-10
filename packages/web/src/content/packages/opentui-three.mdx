@@ -1,0 +1,33 @@
+---
+id: opentui-three
+name: OpenTUI Three
+summary: Three.js WebGPU renderer for OpenTUI.
+kind: renderer
+official: true
+source:
+  url: https://github.com/anomalyco/opentui
+  directory: packages/three
+surfaces:
+  - name: TypeScript
+    language: typescript
+    import: "@opentui/three"
+    docs: /docs/reference/three
+distributions:
+  - type: npm
+    identifier: "@opentui/three"
+    install: bun add @opentui/three three@0.177.0 bun-webgpu@0.1.7
+links:
+  docs: /docs/reference/three
+categories:
+  - rendering
+---
+
+`@opentui/three` connects Three.js WebGPU scenes to OpenTUI buffers. Use `ThreeRenderable` to place a scene in the
+render tree.
+
+The package is Bun-only. It requires `three` 0.177.0, `bun-webgpu` 0.1.7, Rapier, and Planck. Its root currently imports
+all three optional dependencies.
+
+Read the [Three.js WebGPU integration](/docs/reference/three),
+[runtime and platform support](/docs/getting-started/runtime-support), and
+[runtime module loading](/docs/extend/runtime-plugins).

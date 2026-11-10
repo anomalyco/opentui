@@ -1,8 +1,8 @@
-import { TextNodeRenderable, TextRenderable, type Renderable } from "@opentui/core"
+import { ImageRenderable, TextNodeRenderable, TextRenderable, type Renderable } from "@opentui/core"
 import pkgJson from "../../package.json" with { type: "json" }
 import { createContext } from "react"
 import type { HostConfig, ReactContext } from "react-reconciler"
-import { DefaultEventPriority, NoEventPriority } from "react-reconciler/constants"
+import { DefaultEventPriority, NoEventPriority } from "react-reconciler/constants.js"
 import { getComponentCatalogue } from "../components/index.js"
 import { textNodeKeys, type TextNodeKey } from "../components/text.js"
 import type { Container, HostContext, Instance, Props, PublicInstance, TextInstance, Type } from "../types/host.js"
@@ -10,6 +10,11 @@ import { getNextId } from "../utils/id.js"
 import { setInitialProperties, updateProperties } from "../utils/index.js"
 
 let currentUpdatePriority = NoEventPriority
+
+function initialInstanceProps(type: Type, props: Props): Props {
+  if (type !== "image" || props.source === undefined) return props
+  return { ...props, source: undefined }
+}
 
 // Required by the reconciler at runtime but missing from @types/react-reconciler.
 // Remove this intersection when DefinitelyTyped catches up.
@@ -59,7 +64,9 @@ export const hostConfig: HostConfig<
 
     return new components[type](rootContainerInstance.ctx, {
       id,
-      ...props,
+      ...initialInstanceProps(type, props),
+      // setInitialProperties assigns crop, so an invalid one reports once.
+      ...("crop" in props && { crop: undefined }),
     })
   },
 
@@ -68,9 +75,13 @@ export const hostConfig: HostConfig<
     parent.add(child)
   },
 
-  // Remove a child from a parent
+  // Remove a child from a parent. During coordinated teardown (for example
+  // renderer.destroy() triggering root.unmount() via onDestroy) the renderable
+  // tree may already be destroyed when React commits its deletion effects, so
+  // an already-detached child is expected and must not be re-removed.
   removeChild(parent: Instance, child: Instance) {
-    parent.remove(child.id)
+    if (!child.parent) return
+    parent.remove(child)
   },
 
   // Insert a child before another child
@@ -83,9 +94,11 @@ export const hostConfig: HostConfig<
     parent.insertBefore(child, beforeChild)
   },
 
-  // Remove a child from container
+  // Remove a child from container. Skips children that were already detached
+  // by renderer teardown; see removeChild.
   removeChildFromContainer(parent: Container, child: Instance) {
-    parent.remove(child.id)
+    if (!child.parent) return
+    parent.remove(child)
   },
 
   // Prepare for commit
@@ -145,12 +158,13 @@ export const hostConfig: HostConfig<
     rootContainerInstance: Container,
     hostContext: HostContext,
   ) {
-    setInitialProperties(instance, type, props)
-    return false
+    setInitialProperties(instance, type, initialInstanceProps(type, props))
+    return type === "image" && props.source !== undefined
   },
 
   // Commit mount
   commitMount(instance: Instance, type: Type, props: Props, internalInstanceHandle: any) {
+    if (instance instanceof ImageRenderable) instance.source = props.source
     // We could focus the instance here, but we're handling focus in setInitialProperties
   },
 
@@ -194,7 +208,7 @@ export const hostConfig: HostConfig<
   clearContainer(container: Container) {
     // Remove all children
     const children = container.getChildren()
-    children.forEach((child) => container.remove(child.id))
+    children.forEach((child) => container.remove(child))
   },
 
   // Misc

@@ -1,0 +1,24 @@
+diff --git a/yoga/node/Node.cpp b/yoga/node/Node.cpp
+index dc6c664a..5f91cc47 100644
+--- a/yoga/node/Node.cpp
++++ b/yoga/node/Node.cpp
+@@ -411,7 +411,7 @@ Direction Node::resolveDirection(const Direction ownerDirection) {
+ 
+ void Node::clearChildren() {
+   children_.clear();
+-  children_.shrink_to_fit();
++  contentsChildrenCount_ = 0;
+ }
+ 
+ // Other Methods
+@@ -506,7 +506,10 @@ void Node::reset() {
+   yoga::assertFatalWithNode(
+       this, owner_ == nullptr, "Cannot reset a node still attached to a owner");
+ 
++  // Retain only detached pointer storage; all style and layout state is fresh.
++  auto children = std::move(children_);
+   *this = Node{getConfig()};
++  children_ = std::move(children);
+ }
+ 
+ } // namespace facebook::yoga

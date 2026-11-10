@@ -1,4 +1,4 @@
-import { describe, expect, it, afterEach } from "bun:test"
+import { describe, expect, it, afterEach, spyOn } from "bun:test"
 import { TextareaRenderable } from "../renderables/Textarea.js"
 import { createTestRenderer, type TestRenderer, type MockInput } from "../testing/test-renderer.js"
 import { type ExtmarksController } from "./extmarks.js"
@@ -431,6 +431,26 @@ describe("ExtmarksController", () => {
       expect(extmark?.end).toBe(13)
     })
 
+    it("should adjust extmark positions after typing, pasting, newline, and delete on a later line", async () => {
+      await setup("ab\ncd efgh")
+
+      const id = extmarks.create({ start: 6, end: 10 })
+
+      textarea.focus()
+      textarea.cursorOffset = 3
+      textarea.insertChar("X")
+      await currentMockInput.pasteBracketedText("YZ")
+      const typed = extmarks.create({ start: 3, end: 6 })
+      textarea.newLine()
+      currentMockInput.pressKey("DELETE")
+
+      expect(extmarks.get(typed)).toMatchObject({ start: 3, end: 6 })
+      const extmark = extmarks.get(id)
+      expect(textarea.plainText).toBe("ab\nXYZ\nd efgh")
+      expect(extmark?.start).toBe(9)
+      expect(extmark?.end).toBe(13)
+    })
+
     it("should expand extmark when inserting inside", async () => {
       await setup("Hello World")
 
@@ -598,7 +618,7 @@ describe("ExtmarksController", () => {
     it("should apply highlight for extmark with styleId", async () => {
       await setup("Hello World")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("link", {
         fg: RGBA.fromValues(0, 0, 1, 1),
       })
@@ -621,7 +641,7 @@ describe("ExtmarksController", () => {
     it("should correctly position highlights in middle of single line", async () => {
       await setup("AAAA")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("test", {
         fg: RGBA.fromValues(1, 0, 0, 1),
       })
@@ -644,7 +664,7 @@ describe("ExtmarksController", () => {
     it("should correctly position highlights across newlines", async () => {
       await setup("AAAA\nBBBB\nCCCC")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("test", {
         fg: RGBA.fromValues(1, 0, 0, 1),
       })
@@ -679,7 +699,7 @@ describe("ExtmarksController", () => {
     it("should correctly position multiline highlights", async () => {
       await setup("AAA\nBBB\nCCC")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("test", {
         fg: RGBA.fromValues(0, 1, 0, 1),
       })
@@ -721,7 +741,7 @@ describe("ExtmarksController", () => {
     it("should update highlights when extmark position changes", async () => {
       await setup("Hello World")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("link", {
         fg: RGBA.fromValues(0, 0, 1, 1),
       })
@@ -746,7 +766,7 @@ describe("ExtmarksController", () => {
     it("should remove highlight when extmark is deleted", async () => {
       await setup("Hello World")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("link", {
         fg: RGBA.fromValues(0, 0, 1, 1),
       })
@@ -766,6 +786,26 @@ describe("ExtmarksController", () => {
 
       const highlightsAfter = textarea.getLineHighlights(0)
       expect(highlightsAfter.length).toBe(0)
+    })
+
+    it("should not keep an extmark whose highlight native rejects", async () => {
+      await setup("Hello World")
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
+      const styleId = style.registerStyle("link", { fg: RGBA.fromValues(0, 0, 1, 1) })
+      textarea.syntaxStyle = style
+      const kept = extmarks.create({ start: 0, end: 5, styleId, priority: 255 })
+      const errors = spyOn(console, "error")
+      try {
+        expect(() => extmarks.create({ start: 6, end: 11, styleId, priority: 256 })).toThrow()
+        expect(extmarks.getAll().map((extmark) => extmark.id)).toEqual([kept])
+        textarea.focus()
+        currentMockInput.pressKey("X")
+        await renderOnce()
+        expect(errors).not.toHaveBeenCalled()
+        expect(textarea.getLineHighlights(0)).toMatchObject([{ start: 1, end: 6, styleId, priority: 255 }])
+      } finally {
+        errors.mockRestore()
+      }
     })
   })
 
@@ -858,7 +898,7 @@ describe("ExtmarksController", () => {
     it("should highlight only virtual marker without extending to end of line", async () => {
       await setup("text [VIRTUAL] more text")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("virtual", {
         fg: RGBA.fromValues(0.3, 0.7, 1.0, 1.0),
         bg: RGBA.fromValues(0.1, 0.2, 0.3, 1.0),
@@ -886,7 +926,7 @@ describe("ExtmarksController", () => {
     it("should highlight virtual marker in middle with text after", async () => {
       await setup("abc [MARKER] def")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("virtual", {
         fg: RGBA.fromValues(0.3, 0.7, 1.0, 1.0),
       })
@@ -916,7 +956,7 @@ describe("ExtmarksController", () => {
 
       await setup(text)
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("virtual", {
         fg: RGBA.fromValues(0.3, 0.7, 1.0, 1.0),
         bg: RGBA.fromValues(0.1, 0.2, 0.3, 1.0),
@@ -961,7 +1001,7 @@ Try moving your cursor through the [VIRTUAL] markers below:
 
       await setup(initialContent)
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const virtualStyleId = style.registerStyle("virtual", {
         fg: RGBA.fromValues(0.3, 0.7, 1.0, 1.0),
         bg: RGBA.fromValues(0.1, 0.2, 0.3, 1.0),
@@ -1008,7 +1048,7 @@ Try moving your cursor through the [VIRTUAL] markers below:
     it("should maintain correct positions after deleting first extmark", async () => {
       await setup("abc [VIRTUAL] def [VIRTUAL] ghi")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("virtual", {
         fg: RGBA.fromValues(0.3, 0.7, 1.0, 1.0),
       })
@@ -1064,7 +1104,7 @@ Press ESC to return to main menu.`
 
       await setup(initialContent)
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const virtualStyleId = style.registerStyle("virtual", {
         fg: RGBA.fromValues(0.3, 0.7, 1.0, 1.0),
         bg: RGBA.fromValues(0.1, 0.2, 0.3, 1.0),
@@ -1445,58 +1485,25 @@ Press ESC to return to main menu.`
   })
 
   describe("deleteLine() Operations", () => {
-    it("should adjust extmark positions after deleteLine before extmark", async () => {
-      await setup("Line1\nLine2\nLine3")
-
-      const id = extmarks.create({
-        start: 12,
-        end: 17,
-      })
-
+    // Offsets count display cells. Wide text and controls take more cells than string units, and the last line goes
+    // with the line break before it.
+    it.each<[string, number, number, number, [number, number] | null, string]>([
+      ["Line1\nLine2\nLine3", 3, 12, 17, [6, 11], "Line2\nLine3"],
+      ["Line1\nLine2\nLine3", 8, 6, 11, null, "Line1\nLine3"],
+      ["Line1\nLine2\nLine3", 8, 0, 5, [0, 5], "Line1\nLine3"],
+      ["日日日\nxyz", 0, 7, 10, [0, 3], "xyz"],
+      ["\f\f\f\nxyz", 0, 7, 10, [0, 3], "xyz"],
+      ["ab\ncd", 4, 0, 3, [0, 2], "ab"],
+      ["\f\f", 2, 0, 6, [0, 2], ""],
+    ])("deletes the line of %j at %d and moves [%d, %d) to %j", async (text, cursor, start, end, expected, rest) => {
+      await setup(text)
+      const id = extmarks.create({ start, end })
       textarea.focus()
-      textarea.cursorOffset = 3
-
+      textarea.cursorOffset = cursor
       textarea.deleteLine()
-
       const extmark = extmarks.get(id)
-      expect(extmark?.start).toBe(6)
-      expect(extmark?.end).toBe(11)
-      expect(textarea.plainText).toBe("Line2\nLine3")
-    })
-
-    it("should remove extmark when deleteLine on line containing it", async () => {
-      await setup("Line1\nLine2\nLine3")
-
-      const id = extmarks.create({
-        start: 6,
-        end: 11,
-      })
-
-      textarea.focus()
-      textarea.cursorOffset = 8
-
-      textarea.deleteLine()
-
-      expect(extmarks.get(id)).toBeNull()
-      expect(textarea.plainText).toBe("Line1\nLine3")
-    })
-
-    it("should not adjust extmark when deleteLine after", async () => {
-      await setup("Line1\nLine2\nLine3")
-
-      const id = extmarks.create({
-        start: 0,
-        end: 5,
-      })
-
-      textarea.focus()
-      textarea.cursorOffset = 8
-
-      textarea.deleteLine()
-
-      const extmark = extmarks.get(id)
-      expect(extmark?.start).toBe(0)
-      expect(extmark?.end).toBe(5)
+      expect(extmark && [extmark.start, extmark.end]).toEqual(expected)
+      expect(textarea.plainText).toBe(rest)
     })
   })
 
@@ -1615,7 +1622,7 @@ Press ESC to return to main menu.`
       textarea.focus()
       textarea.cursorOffset = 0
 
-      currentMockInput.pressArrow("right", { shift: true })
+      // Inclusive selection: 3 shift+right presses select 4 cells ("hell").
       currentMockInput.pressArrow("right", { shift: true })
       currentMockInput.pressArrow("right", { shift: true })
       currentMockInput.pressArrow("right", { shift: true })
@@ -1642,7 +1649,7 @@ Press ESC to return to main menu.`
       textarea.focus()
       textarea.cursorOffset = 0
 
-      currentMockInput.pressArrow("right", { shift: true })
+      // Inclusive selection: 3 shift+right presses select 4 cells ("hell").
       currentMockInput.pressArrow("right", { shift: true })
       currentMockInput.pressArrow("right", { shift: true })
       currentMockInput.pressArrow("right", { shift: true })
@@ -1669,7 +1676,7 @@ Press ESC to return to main menu.`
       textarea.focus()
       textarea.cursorOffset = 0
 
-      currentMockInput.pressArrow("right", { shift: true })
+      // Inclusive selection: 4 shift+right presses select 5 cells ("hello").
       currentMockInput.pressArrow("right", { shift: true })
       currentMockInput.pressArrow("right", { shift: true })
       currentMockInput.pressArrow("right", { shift: true })
@@ -1696,7 +1703,7 @@ Press ESC to return to main menu.`
       textarea.focus()
       textarea.cursorOffset = 0
 
-      for (let i = 0; i < 12; i++) {
+      for (let i = 0; i < 11; i++) {
         currentMockInput.pressArrow("right", { shift: true })
       }
 
@@ -1721,7 +1728,7 @@ Press ESC to return to main menu.`
       textarea.focus()
       textarea.cursorOffset = 7
 
-      for (let i = 0; i < 7; i++) {
+      for (let i = 0; i < 6; i++) {
         currentMockInput.pressArrow("right", { shift: true })
       }
 
@@ -1729,12 +1736,14 @@ Press ESC to return to main menu.`
 
       currentMockInput.pressBackspace()
 
-      expect(textarea.plainText).toBe("Line 1\nLine 3\nLine 4")
+      // Charwise selection at EOL does not include the newline (Vim v$),
+      // so the emptied line remains.
+      expect(textarea.plainText).toBe("Line 1\n\nLine 3\nLine 4")
 
       const extmark = extmarks.get(id)
       expect(extmark).not.toBeNull()
-      expect(extmark?.start).toBe(14)
-      expect(extmark?.end).toBe(20)
+      expect(extmark?.start).toBe(15)
+      expect(extmark?.end).toBe(21)
     })
 
     it("should adjust multiple extmarks after deleting multiline selection", async () => {
@@ -1753,7 +1762,7 @@ Press ESC to return to main menu.`
       textarea.focus()
       textarea.cursorOffset = 0
 
-      for (let i = 0; i < 8; i++) {
+      for (let i = 0; i < 7; i++) {
         currentMockInput.pressArrow("right", { shift: true })
       }
 
@@ -1761,18 +1770,19 @@ Press ESC to return to main menu.`
 
       currentMockInput.pressBackspace()
 
-      expect(textarea.plainText).toBe("CCC\nDDD")
+      // Charwise selection at EOL does not include the trailing newline.
+      expect(textarea.plainText).toBe("\nCCC\nDDD")
 
       const extmark1 = extmarks.get(id1)
       expect(extmark1).not.toBeNull()
-      expect(extmark1?.start).toBe(0)
-      expect(extmark1?.end).toBe(3)
+      expect(extmark1?.start).toBe(1)
+      expect(extmark1?.end).toBe(4)
       expect(textarea.plainText.substring(extmark1!.start, extmark1!.end)).toBe("CCC")
 
       const extmark2 = extmarks.get(id2)
       expect(extmark2).not.toBeNull()
-      expect(extmark2?.start).toBe(4)
-      expect(extmark2?.end).toBe(7)
+      expect(extmark2?.start).toBe(5)
+      expect(extmark2?.end).toBe(8)
       expect(textarea.plainText.substring(extmark2!.start, extmark2!.end)).toBe("DDD")
     })
 
@@ -1787,7 +1797,7 @@ Press ESC to return to main menu.`
       textarea.focus()
       textarea.cursorOffset = 0
 
-      for (let i = 0; i < 8; i++) {
+      for (let i = 0; i < 7; i++) {
         currentMockInput.pressArrow("right", { shift: true })
       }
 
@@ -1795,12 +1805,13 @@ Press ESC to return to main menu.`
 
       currentMockInput.pressBackspace()
 
-      expect(textarea.plainText).toBe("CCC\nDDD\nEEE")
+      // Charwise selection at EOL does not include the trailing newline.
+      expect(textarea.plainText).toBe("\nCCC\nDDD\nEEE")
 
       const extmark = extmarks.get(id)
       expect(extmark).not.toBeNull()
-      expect(extmark?.start).toBe(4)
-      expect(extmark?.end).toBe(11)
+      expect(extmark?.start).toBe(5)
+      expect(extmark?.end).toBe(12)
       expect(textarea.plainText.substring(extmark!.start, extmark!.end)).toBe("DDD\nEEE")
     })
 
@@ -1815,7 +1826,7 @@ Press ESC to return to main menu.`
       textarea.focus()
       textarea.cursorOffset = 4
 
-      for (let i = 0; i < 6; i++) {
+      for (let i = 0; i < 5; i++) {
         currentMockInput.pressArrow("right", { shift: true })
       }
 
@@ -1847,7 +1858,7 @@ Press ESC to return to main menu.`
       textarea.focus()
       textarea.cursorOffset = 0
 
-      for (let i = 0; i < 18; i++) {
+      for (let i = 0; i < 17; i++) {
         currentMockInput.pressArrow("right", { shift: true })
       }
 
@@ -1855,25 +1866,26 @@ Press ESC to return to main menu.`
 
       currentMockInput.pressBackspace()
 
-      expect(textarea.plainText).toBe("Line4\nLine5")
+      // Charwise selection at EOL does not include the trailing newline.
+      expect(textarea.plainText).toBe("\nLine4\nLine5")
 
       const extmark1 = extmarks.get(id1)
       expect(extmark1).not.toBeNull()
-      expect(extmark1?.start).toBe(0)
-      expect(extmark1?.end).toBe(5)
+      expect(extmark1?.start).toBe(1)
+      expect(extmark1?.end).toBe(6)
       expect(textarea.plainText.substring(extmark1!.start, extmark1!.end)).toBe("Line4")
 
       const extmark2 = extmarks.get(id2)
       expect(extmark2).not.toBeNull()
-      expect(extmark2?.start).toBe(6)
-      expect(extmark2?.end).toBe(11)
+      expect(extmark2?.start).toBe(7)
+      expect(extmark2?.end).toBe(12)
       expect(textarea.plainText.substring(extmark2!.start, extmark2!.end)).toBe("Line5")
     })
   })
 
   describe("Edge Cases", () => {
     it("should handle extmark at start of text", async () => {
-      await setup("Hello World")
+      await setup("Hello\nWorld")
 
       const id = extmarks.create({
         start: 0,
@@ -1886,6 +1898,14 @@ Press ESC to return to main menu.`
 
       currentMockInput.pressArrow("right")
       expect(textarea.cursorOffset).toBe(5)
+      currentMockInput.pressArrow("left")
+      expect(textarea.cursorOffset).toBe(0)
+      textarea.editBuffer.setCursorByOffset(5)
+      textarea.editBuffer.setCursorByOffset(0)
+      expect(textarea.cursorOffset).toBe(0)
+      textarea.cursorOffset = 6
+      currentMockInput.pressArrow("up")
+      expect(textarea.cursorOffset).toBe(0)
 
       const extmark = extmarks.get(id)
       expect(extmark).not.toBeNull()
@@ -2772,7 +2792,8 @@ Press ESC to return to main menu.`
       textarea.focus()
       textarea.cursorOffset = 0
 
-      for (let i = 0; i < 5; i++) {
+      // Inclusive selection: 4 shift+right presses select 5 cells ("Hello").
+      for (let i = 0; i < 4; i++) {
         currentMockInput.pressArrow("right", { shift: true })
       }
 

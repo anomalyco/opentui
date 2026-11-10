@@ -530,12 +530,12 @@ exports[`DiffRenderable - back-to-back change blocks without context lines in sp
 
 exports[`DiffRenderable - very long lines wrapping multiple times in split view: split view multi-wrap lines 1`] = `
 " 1   short line                          1   short line                         
- 2 - This is an extremely long line      2 + This is an extremely long line     
-     that will definitely wrap multiple      that has been modified and will    
-     times when rendered in a split          definitely wrap multiple times     
-     view with word wrapping enabled         when rendered in a split view with 
-     because it contains so many words       word wrapping enabled because it   
-     and characters                          contains so many words and         
+ 2 - This is an extremely long line that 2 + This is an extremely long line that
+     will definitely wrap multiple times     has been modified and will         
+     when rendered in a split view with      definitely wrap multiple times when
+     word wrapping enabled because it        rendered in a split view with word 
+     contains so many words and              wrapping enabled because it        
+     characters                              contains so many words and         
                                              characters and even more content   
  3   another short line                  3   another short line                 
                                                                                 

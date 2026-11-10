@@ -1,82 +1,30 @@
 ---
-title: Solid
+title: Solid plugin slots
 description: Solid slot components backed by the shared plugin registry
-order: 4
 ---
 
-# Solid slots
+# Solid plugin slots
 
 This page shows Solid integration for plugin slots.
 
-Use slots when you want external modules to contribute `JSX.Element` UI in host-defined regions without forking your app. The host keeps ownership of layout and slot typing; plugins only see the context and props you expose.
+Use Solid slots when registered plugins must return `JSX.Element` values for host-defined regions. The host owns the
+layout and slot types. Plugins receive only the context and props that the host supplies.
 
-If you have not read the shared model yet, start with [Plugin Slots](/docs/plugins/slots).
-
-## Runtime-loaded external plugins
-
-If your app loads plugins from disk at runtime (for example `await import(fileUrl)`), add this import once in your app entry:
-
-```ts
-import "@opentui/solid/runtime-plugin-support"
-```
-
-This is a Bun drop-in that installs runtime transform support so external TS/TSX plugin modules use the same runtime instances as the host app (`@opentui/solid`, `@opentui/core`, `@opentui/core/testing`, `solid-js`, and `solid-js/store`). If a plugin imports another OpenTUI package, provide that package through `additional` runtime modules.
-
-Use this for plugin systems in both normal Bun runs and standalone compiled executables.
-
-```ts
-import "@opentui/solid/runtime-plugin-support"
-
-const mod = await import(pathToFileURL(pluginPath).href)
-registry.register(mod.loadExternalPlugin())
-```
-
-If plugins need additional host-resolved modules, configure runtime support before the side-effect import is loaded:
-
-```ts
-import { ensureRuntimePluginSupport } from "@opentui/solid/runtime-plugin-support/configure"
-
-ensureRuntimePluginSupport({
-  additional: {
-    "my-runtime-module": { marker: "ok" },
-  },
-})
-```
-
-First-party packages expose side-effect-free runtime module maps. For keymap-aware Solid plugins:
-
-```ts
-import { runtimeModules as keymapRuntimeModules } from "@opentui/keymap/runtime-modules"
-import { ensureRuntimePluginSupport } from "@opentui/solid/runtime-plugin-support/configure"
-
-ensureRuntimePluginSupport({
-  additional: keymapRuntimeModules,
-})
-```
-
-For plugins that import `@opentui/three`, install `@opentui/three` in the host app and pass its runtime modules explicitly:
-
-```ts
-import { runtimeModules as threeRuntimeModules } from "@opentui/three/runtime-modules"
-import { ensureRuntimePluginSupport } from "@opentui/solid/runtime-plugin-support/configure"
-
-ensureRuntimePluginSupport({
-  additional: threeRuntimeModules,
-})
-```
-
-The side-effect import and configurable entrypoint install the same runtime plugin. Late additions throw with a clear error instead of being ignored.
+Start with [Plugin slots](/docs/plugins/slots) for the shared registry, mode, ordering, and error model.
 
 ## What Solid adds
 
-- `createSolidSlotRegistry(renderer, context, options?)` — create a registry typed for `JSX.Element`. Accepts the same [`SlotRegistryOptions`](/docs/plugins/slots#registry-options) as `createSlotRegistry`.
-- `Slot<TSlots, TContext>` — generic slot component that takes `registry` as a required prop
-- `createSlot(registry, options?)` — optional convenience helper that returns a registry-bound `<Slot />` component
-- `SolidPlugin<TSlots, TContext>` — convenience type alias for a plugin that returns `JSX.Element`
-- `@opentui/solid/runtime-plugin-support` — one-line runtime support for external plugin/module loading
-- `@opentui/solid/runtime-plugin-support/configure` — configurable runtime support without import-time side effects
+- `createSolidSlotRegistry(renderer, context, options?)`: Creates a registry for `JSX.Element` values.
+- `Slot<TSlots, TContext>`: Renders a slot from the required `registry` prop.
+- `createSlot(registry, options?)`: Returns a registry-bound `<Slot />` component.
+- `SolidPlugin<TSlots, TContext>`: Describes a plugin that contributes `JSX.Element` values.
 
-Register plugins directly with `registry.register()` — no wrapper function is needed (unlike core's `registerCorePlugin`).
+`createSolidSlotRegistry` accepts the shared [`SlotRegistryOptions`](/docs/plugins/slots#registry-options). Register
+plugins directly with `registry.register()`. Unlike Core, Solid does not need a registration wrapper or managed
+renderable ownership hooks.
+
+Solid hosts use `@opentui/solid/runtime-plugin-support` when contributions come from Bun runtime-loaded TSX modules.
+See [Load plugins and modules at runtime](/docs/extend/runtime-plugins) for setup and module maps.
 
 ## Basic usage
 
@@ -115,7 +63,7 @@ render(() => <App />, renderer)
 
 ## Optional convenience helper
 
-If you prefer not to pass `registry` each time, you can still bind one once:
+Bind a registry once when you do not want to pass it to each slot:
 
 ```tsx
 const AppSlot = createSlot(registry)
@@ -130,7 +78,7 @@ const AppSlot = createSlot(registry)
 | `mode`                     | `SlotMode`                                   | no       | `"append"` (default), `"replace"`, or `"single_winner"`. See [slot modes](/docs/plugins/slots#slot-modes). |
 | `pluginFailurePlaceholder` | `(failure: PluginErrorEvent) => JSX.Element` | no       | Per-slot placeholder UI when a plugin throws                                                               |
 | `children`                 | `JSX.Element`                                | no       | Fallback UI                                                                                                |
-| _remaining_                | `Slots[name]`                                | —        | Slot-specific props forwarded to plugin renderers                                                          |
+| _remaining_                | `Slots[name]`                                | varies   | Slot-specific props forwarded to plugin renderers                                                          |
 
 ## `SolidSlotOptions` (for `createSlot`)
 
@@ -148,16 +96,43 @@ const Slot = createSlot(registry, {
 })
 ```
 
-If a plugin throws, the slot renders the placeholder. If no placeholder is provided (or it returns `null`), the slot falls back to `children`.
+If a contribution throws, the slot renders the placeholder. In `single_winner` mode, the slot uses `children` if no
+placeholder exists or the placeholder returns `null`.
 
-Plugins that throw during the initial render call are caught inline. Plugins that throw during a Solid re-render are caught by an internal `<ErrorBoundary>` that reports the error to the registry.
+In `replace` mode, an initial contribution failure without a usable placeholder adds no output. If every initial
+contribution fails this way, the slot uses `children`.
 
-## Observability
+A later subtree failure uses `children` in `single_winner` mode and in `replace` mode with one contribution. In
+`replace` mode with multiple contributions, only the failed subtree disappears.
+
+The slot catches a failure from the initial contribution call directly. An internal Solid `<ErrorBoundary>` catches
+failures from the reactive subtree. If the placeholder throws, the registry reports an `error_placeholder` failure and
+treats the placeholder as unavailable.
+
+## Lifecycle and disposal
+
+The `<Slot>` component subscribes to registry changes in its Solid owner. Owner cleanup removes that subscription and
+disposes contribution subtrees. Solid owns the lifecycle of the returned `JSX.Element` values.
+
+When a component registers a plugin, register its cleanup with `onCleanup`:
 
 ```tsx
-registry.onPluginError((event) => {
-  console.error(event.pluginId, event.phase, event.source, event.error.message)
+import { onCleanup } from "solid-js"
+
+const unregister = registry.register({
+  id: "clock-plugin",
+  slots: {
+    statusbar: () => <text>clock</text>,
+  },
 })
+
+onCleanup(unregister)
 ```
 
-Example: `packages/solid/examples/components/plugin-slots-demo.tsx`
+Unregistration calls the plugin's `dispose` hook. Renderer destruction disposes the Solid root, clears the registry,
+and calls `dispose`. Unlike Core managed contributions, Solid contributions do not receive `onActivate`,
+`onDeactivate`, or `onDispose` node hooks. Unlike React, Solid uses owner cleanup rather than effect cleanup.
+
+## Example
+
+See the [Solid plugin slots example](https://github.com/anomalyco/opentui/blob/main/packages/solid/examples/components/plugin-slots-demo.tsx).

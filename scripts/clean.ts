@@ -30,7 +30,7 @@ Removes build artifacts from the OpenTUI workspace.
 
 Scopes (combine freely; if none given, lib + native + caches are cleaned):
   --lib        Library outputs: packages/*/dist, *.tsbuildinfo, *.tgz, out/, packed/
-  --native     Native (Zig) artifacts: .zig-cache/, zig-out/, src/zig/lib/,
+  --native     Native (Zig) artifacts under packages/native,
                and prebuilt @opentui/core-<platform>-<arch> in node_modules
   --caches     Caches & coverage: .cache/, coverage/, *.lcov
   --deps       node_modules in the root and every package (full reset)
@@ -137,14 +137,24 @@ function collectTargets(flags: Flags): CleanTarget[] {
   }
 
   if (wantNative) {
-    const zigDir = join(packagesDir, "core", "src", "zig")
+    const zigDir = join(packagesDir, "native")
     add(join(zigDir, ".zig-cache"), "zig cache")
     add(join(zigDir, "zig-out"), "zig build output")
     add(join(zigDir, "lib"), "zig prebuilt libs")
+    add(join(zigDir, "zig-pkg"), "zig dependencies")
+    add(join(zigDir, "examples", "hello", ".zig-cache"), "zig cache")
+    add(join(zigDir, "examples", "hello", "zig-out"), "zig build output")
+    add(join(zigDir, "examples", "hello", "zig-pkg"), "zig dependencies")
+
+    const legacyZigDir = join(packagesDir, "core", "src", "zig")
+    add(join(legacyZigDir, ".zig-cache"), "zig cache")
+    add(join(legacyZigDir, "zig-out"), "zig build output")
+    add(join(legacyZigDir, "lib"), "zig prebuilt libs")
+    add(join(legacyZigDir, "zig-pkg"), "zig dependencies")
 
     const coreOpentui = join(packagesDir, "core", "node_modules", "@opentui")
     for (const entry of safeReaddir(coreOpentui)) {
-      if (entry.isDirectory() && /^core-(darwin|linux|win32)-(x64|arm64)$/.test(entry.name)) {
+      if (entry.isDirectory() && /^core-(darwin|linux|win32)-(x64|arm64)(?:-musl)?$/.test(entry.name)) {
         add(join(coreOpentui, entry.name), "prebuilt native package")
       }
     }

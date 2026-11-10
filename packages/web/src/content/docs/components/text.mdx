@@ -1,7 +1,6 @@
 ---
 title: Text
 description: Display styled text content
-order: 1
 skill:
   entry: true
   intents: [text, styling, content, selection]
@@ -9,9 +8,19 @@ skill:
 
 # Text
 
-Display styled text content with support for colors, attributes, and text selection.
+`Text` displays styled text with colors, attributes, and selection. Use it for labels and prose. Use [Code](/docs/components/code) or [Markdown](/docs/components/markdown) for parsed rich content.
 
-## Basic Usage
+## Availability
+
+| Field           | Availability         |
+| --------------- | -------------------- |
+| Package         | `@opentui/core`      |
+| Core renderable | `TextRenderable`     |
+| React           | `<text>` (automatic) |
+| Solid           | `<text>` (automatic) |
+| Status          | Built in             |
+
+## Basic usage
 
 ### Renderable API
 
@@ -29,24 +38,9 @@ const text = new TextRenderable(renderer, {
 renderer.root.add(text)
 ```
 
-### Construct API
-
-```typescript
-import { Text, createCliRenderer } from "@opentui/core"
-
-const renderer = await createCliRenderer()
-
-renderer.root.add(
-  Text({
-    content: "Hello, OpenTUI!",
-    fg: "#00FF00",
-  }),
-)
-```
-
 ## Text attributes
 
-Combine multiple text attributes using bitwise OR:
+Combine text attributes with bitwise OR:
 
 ```typescript
 import { TextRenderable, TextAttributes } from "@opentui/core"
@@ -57,6 +51,14 @@ const styledText = new TextRenderable(renderer, {
   fg: "#FFFF00",
   attributes: TextAttributes.BOLD | TextAttributes.UNDERLINE,
 })
+```
+
+You can also apply bold, italic, and underline separately:
+
+```text terminal=text-attributes
+bold       Important message
+italic     Additional context
+underline  Documentation
 ```
 
 ### Available attributes
@@ -74,7 +76,7 @@ const styledText = new TextRenderable(renderer, {
 
 ## Template literals for rich text
 
-Use the `t` template literal for inline styling within a single text element:
+Use the `t` template tag to style parts of one text element:
 
 ```typescript
 import { TextRenderable, t, bold, underline, fg, bg, italic } from "@opentui/core"
@@ -104,6 +106,10 @@ t`${bg("#0000FF")("blue background")}`
 t`${bold(fg("#FFFF00")("bold yellow"))}`
 ```
 
+React and Solid can compose inline `<span>`, `<b>`, `<strong>`, `<i>`, `<em>`, `<u>`, `<br>`, and `<a href>` elements
+inside `<text>`. They are text-only children. They cannot mount directly under a Box or another layout element. See
+[inline text elements](/docs/components#inline-text-elements) for availability.
+
 ## Positioning
 
 ```typescript
@@ -116,9 +122,39 @@ const text = new TextRenderable(renderer, {
 })
 ```
 
+## Align lines
+
+`textAlign` pads each rendered line inside the text width. The pad for one line does not depend on the longest line.
+
+```typescript
+const text = new TextRenderable(renderer, {
+  content: "hi\nworld",
+  width: 10,
+  height: 2,
+  textAlign: "center",
+})
+```
+
+```text terminal=text-align-lines
+left        center      right
+0123456789  0123456789  0123456789
+hi              hi              hi
+world         world          world
+```
+
+`"left"` is the default. `"center"` and `"right"` use leftover columns in the text width. A line that already fills the text width does not move.
+
+Set a width, or let a parent stretch the text. Alignment has no effect when every line already fills the text width.
+
+Wrapping runs first. Then `textAlign` pads each rendered line.
+
+Change `textAlign` after mount with `text.textAlign = "right"`. `CodeRenderable` inherits the same option.
+
+`textAlign` does not replace [Yoga box alignment](/docs/core-concepts/layout#alignment).
+
 ## Text selection
 
-Enable text selection for copying:
+Text selection lets users copy text. It is on by default:
 
 ```typescript
 const selectableText = new TextRenderable(renderer, {
@@ -136,40 +172,48 @@ const nonSelectable = new TextRenderable(renderer, {
 
 ## Properties
 
-| Property                         | Type                              | Default      | Description                  |
-| -------------------------------- | --------------------------------- | ------------ | ---------------------------- |
-| `content`                        | `string \| StyledText`            | `""`         | The text content to display  |
-| `fg`                             | `string \| RGBA`                  | -            | Foreground (text) color      |
-| `bg`                             | `string \| RGBA`                  | -            | Background color             |
-| `attributes`                     | `TextAttributes`                  | `0`          | Text styling attributes      |
-| `selectable`                     | `boolean`                         | `true`       | Whether text can be selected |
-| `position`                       | `"relative" \| "absolute"`        | `"relative"` | Positioning mode             |
-| `left`, `top`, `right`, `bottom` | `number \| "auto" \| "{number}%"` | -            | Position offsets             |
+| Property                         | Type                              | Default      | Description                              |
+| -------------------------------- | --------------------------------- | ------------ | ---------------------------------------- |
+| `content`                        | `string \| StyledText`            | `""`         | The text content to display              |
+| `fg`                             | `string \| RGBA`                  | `#FFFFFF`    | Foreground (text) color                  |
+| `bg`                             | `string \| RGBA`                  | transparent  | Background color                         |
+| `attributes`                     | `TextAttributes`                  | `0`          | Text styling attributes                  |
+| `selectable`                     | `boolean`                         | `true`       | Whether users can select the text        |
+| `wrapMode`                       | `"none" \| "char" \| "word"`      | `"word"`     | Line wrapping mode                       |
+| `textAlign`                      | `"left" \| "center" \| "right"`   | `"left"`     | Per-line alignment within the text width |
+| `position`                       | `"relative" \| "absolute"`        | `"relative"` | Positioning mode                         |
+| `left`, `top`, `right`, `bottom` | `number \| "auto" \| "{number}%"` | -            | Position offsets                         |
 
 ## Example: status bar
 
 ```typescript
-import { Text, Box, t, bold, fg } from "@opentui/core"
+import { TextRenderable, BoxRenderable, t, bold, fg } from "@opentui/core"
 
-const statusBar = Box(
-  {
-    position: "absolute",
-    bottom: 0,
-    width: "100%",
-    height: 1,
-    backgroundColor: "#333333",
-    flexDirection: "row",
-    justifyContent: "space-between",
-    paddingLeft: 1,
-    paddingRight: 1,
-  },
-  Text({
+const statusBar = new BoxRenderable(renderer, {
+  position: "absolute",
+  bottom: 0,
+  width: "100%",
+  height: 1,
+  backgroundColor: "#333333",
+  flexDirection: "row",
+  justifyContent: "space-between",
+  paddingLeft: 1,
+  paddingRight: 1,
+})
+statusBar.add(
+  new TextRenderable(renderer, {
     content: t`${bold("myfile.ts")} - ${fg("#888888")("TypeScript")}`,
   }),
-  Text({
+)
+statusBar.add(
+  new TextRenderable(renderer, {
     content: t`Ln ${fg("#00FF00")("42")}, Col ${fg("#00FF00")("15")}`,
   }),
 )
 
 renderer.root.add(statusBar)
 ```
+
+## Related concepts
+
+Read [Text and terminal cells](/docs/core-concepts/text-and-cells) for graphemes, wrapping, alignment, and display-cell widths. See [Colors](/docs/core-concepts/colors), [Layout](/docs/core-concepts/layout), and [Interaction, focus, and selection](/docs/core-concepts/interaction) for shared behavior. Use [Box](/docs/components/box) to lay out text with other components.

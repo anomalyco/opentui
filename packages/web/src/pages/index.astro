@@ -1,421 +1,429 @@
 ---
-import Base from "../layouts/Base.astro"
-import TuiSurface from "../components/TuiSurface.astro"
+import OpenTUILogo from "../components/OpenTUILogo.astro"
+import SiteFooter from "../components/SiteFooter.astro"
+import landingVideos from "../data/landing-videos.json"
+import Minimal from "../layouts/Minimal.astro"
 
-const installCommands = {
-  create: { cmd: "bun create", pkg: "tui" },
-  manual: { cmd: "bun add", pkg: "@opentui/core" },
-  skill: { cmd: "npx skills add", pkg: "anomalyco/opentui --skill opentui --global" },
-}
-
-const features = [
-  {
-    type: "layout",
-    title: "Flexbox layout",
-    description: "Yoga-powered layout engine with familiar CSS-like positioning and sizing"
-  },
-  {
-    type: "syntax",
-    title: "Syntax highlighting",
-    description: "Built-in tree-sitter integration for beautiful code rendering"
-  },
-  {
-    type: "components",
-    title: "Rich components",
-    description: "Text, Box, Input, Select, ScrollBox, Code, Diff, and more"
-  },
-  {
-    type: "keyboard",
-    title: "Keyboard handling",
-    description: "Focus management and input handling built in"
-  },
-  {
-    type: "react",
-    title: "React and Solid.js",
-    description: "First-class bindings for building UIs with your favorite framework"
-  },
-  {
-    type: "animations",
-    title: "Animations",
-    description: "Timeline API for smooth, performant terminal animations"
-  },
-]
+const description =
+  "OpenTUI is a library to build terminal user interfaces in TypeScript, React, or Solid, on a native Zig renderer."
+const title = "OpenTUI"
+const videos = Object.fromEntries(landingVideos.map((video) => [video.slug, video]))
 ---
 
-<Base title="OpenTUI - Terminal UIs">
-  <main class="landing">
-    <div class="landing-container">
-      <!-- Header -->
-      <header class="landing-header">
-        <a href="/" class="landing-logo">
-          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <rect x="2" y="3" width="20" height="18" fill="currentColor" />
-            <rect x="6" y="8" width="3" height="8" fill="hsl(0, 20%, 99%)" />
-          </svg>
-          OpenTUI
-        </a>
-        <button
-          class="mobile-menu-btn"
-          aria-label="Open navigation menu"
-          aria-expanded="false"
-          aria-controls="landing-mobile-nav"
-        >
-          <svg class="menu-icon" viewBox="0 0 24 24" fill="currentColor">
-            <rect x="5" y="8" width="14" height="2"></rect>
-            <rect x="5" y="14" width="14" height="2"></rect>
-          </svg>
-          <svg class="close-icon" viewBox="0 0 24 24" fill="currentColor">
-            <rect x="5" y="11" width="14" height="2" transform="rotate(45 12 12)"></rect>
-            <rect x="5" y="11" width="14" height="2" transform="rotate(-45 12 12)"></rect>
-          </svg>
-        </button>
-        <nav class="landing-nav">
-          <a href="https://github.com/anomalyco/opentui" target="_blank" rel="noopener noreferrer">GitHub</a>
-          <a href="/docs/getting-started">Docs</a>
-        </nav>
-      </header>
+<Minimal {title} description={description}>
+  <main class="reading">
+    <header>
+      <h1><OpenTUILogo class="logo" title="OpenTUI" /></h1>
+      <p>A library to build terminal user interfaces.</p>
+    </header>
 
-      <!-- Mobile nav overlay -->
-      <nav class="mobile-nav" id="landing-mobile-nav">
-        <a href="https://github.com/anomalyco/opentui" target="_blank" rel="noopener noreferrer">GitHub</a>
-        <a href="/docs/getting-started">Docs</a>
-      </nav>
+    <div class="band">
+      <div class="screen" id="feature-video" aria-hidden="true">
+        <div class="video-frame">
+          <video muted loop playsinline preload="metadata"></video>
+          <button class="audio-toggle" type="button" aria-label="Enable audio" title="Enable audio" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 9v6h4l5 4V5L8 9H4z"></path>
+              <path class="sound-on" d="M16 9a4 4 0 0 1 0 6m2.5-8.5a7.5 7.5 0 0 1 0 11"></path>
+              <path class="sound-off" d="m16.5 9.5 5 5m0-5-5 5"></path>
+            </svg>
+          </button>
+        </div>
+        <p class="caption"><span></span> <a href=""></a>.</p>
+      </div>
 
-      <!-- Content -->
-      <div class="landing-content">
-        <!-- Hero -->
-        <section class="hero">
-          <div class="hero-content">
-            <div class="hero-copy">
-              <h1>Terminal UIs on a Native Zig Core</h1>
-              <p class="hero-subtitle">
-                Build rich, interactive terminal interfaces with TypeScript bindings, first-class React/Solid support, and a C ABI for any language.
-              </p>
-            </div>
+      <div class="copy">
+        <ul>
+          <li>
+            <button
+              type="button"
+              data-video={videos.video.file}
+              data-source={videos.video.source}
+              data-credit={videos.video.credit}
+              data-has-audio={videos.video.hasAudio}
+              data-author={`@${videos.video.handle}`}>It is written in Zig.</button
+            >
+          </li>
+          <li>
+            <button
+              type="button"
+              data-video={videos.components.file}
+              data-source={videos.components.source}
+              data-credit={videos.components.credit}
+              data-has-audio={videos.components.hasAudio}
+              data-author={`@${videos.components.handle}`}
+            >
+              You write TypeScript directly or through React and Solid.
+            </button>
+          </li>
+          <li>
+            <button
+              type="button"
+              data-video={videos.images.file}
+              data-source={videos.images.source}
+              data-credit={videos.images.credit}
+              data-has-audio={videos.images.hasAudio}
+              data-author={`@${videos.images.handle}`}>You arrange boxes and text with flexbox.</button
+            >
+          </li>
+          <li>
+            <button
+              type="button"
+              data-video={videos.editor.file}
+              data-source={videos.editor.source}
+              data-credit={videos.editor.credit}
+              data-has-audio={videos.editor.hasAudio}
+              data-author={`@${videos.editor.handle}`}
+            >
+              You add selects, inputs, and scroll boxes with keyboard and mouse controls.
+            </button>
+          </li>
+          <li>
+            <button
+              type="button"
+              data-video={videos["3d"].file}
+              data-source={videos["3d"].source}
+              data-credit={videos["3d"].credit}
+              data-has-audio={videos["3d"].hasAudio}
+              data-author={`@${videos["3d"].handle}`}
+            >
+              You can play sounds, show images, and render 3D graphics.
+            </button>
+          </li>
+        </ul>
 
-            <!-- Install Tabs -->
-            <div class="install-section" aria-label="Install options">
-              <div class="install-tabs" role="tablist">
-                {Object.keys(installCommands).map((key, i) => (
-                  <button 
-                    role="tab" 
-                    class="install-tab" 
-                    data-tab={key}
-                    aria-selected={i === 0 ? "true" : "false"}
-                  >
-                    {key}
-                  </button>
-                ))}
-              </div>
-              <div class="install-panels">
-                <button class="install-command" id="install-display" data-command="bun create tui">
-                  <code>
-                    <span class="cmd">bun create </span><span class="highlight">tui</span>
-                  </code>
-                  <span class="copy-btn">
-                    <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                      <path d="M8.75 8.75V2.75H21.25V15.25H15.25M15.25 8.75H2.75V21.25H15.25V8.75Z" stroke-linecap="square"/>
-                    </svg>
-                    <svg class="check-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M2.75 15.0938L9 20.25L21.25 3.75" stroke-linecap="square"/>
-                    </svg>
-                  </span>
-                </button>
-              </div>
-            </div>
-          </div>
+        <p>OpenCode uses it in production for millions of users.</p>
 
-        </section>
-
-        <!-- Code Example -->
-        <section class="code-section">
-          <div class="code-editor">
-            <div class="code-editor-header">
-              <div class="code-editor-dots">
-                <span></span><span></span><span></span>
-              </div>
-              <div class="code-editor-tabs" role="tablist">
-                <button role="tab" class="code-editor-tab" data-tab="core" aria-selected="true">
-                  <svg class="code-editor-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/>
-                    <polyline points="13 2 13 9 20 9"/>
-                  </svg>
-                  hello.ts
-                </button>
-                <button role="tab" class="code-editor-tab" data-tab="solid" aria-selected="false">
-                  <svg class="code-editor-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/>
-                    <polyline points="13 2 13 9 20 9"/>
-                  </svg>
-                  input.ts
-                </button>
-                <button role="tab" class="code-editor-tab" data-tab="layout" aria-selected="false">
-                  <svg class="code-editor-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/>
-                    <polyline points="13 2 13 9 20 9"/>
-                  </svg>
-                  layout.ts
-                </button>
-              </div>
-              <button class="code-editor-copy" id="code-copy-btn" aria-label="Copy code">
-                <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <path d="M8.75 8.75V2.75H21.25V15.25H15.25M15.25 8.75H2.75V21.25H15.25V8.75Z" stroke-linecap="square"/>
-                </svg>
-                <svg class="check-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M2.75 15.0938L9 20.25L21.25 3.75" stroke-linecap="square"/>
-                </svg>
-              </button>
-            </div>
-            
-            <!-- Core API Example -->
-            <div class="code-editor-body" data-panel="core" data-active="true">
-              <div class="code-editor-lines">
-                <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>10</span>
-              </div>
-              <pre><code><span class="keyword">import</span> {"{"} createCliRenderer, Text {"}"} <span class="keyword">from</span> <span class="string">"@opentui/core"</span>
-
-<span class="keyword">const</span> renderer <span class="operator">=</span> <span class="keyword">await</span> <span class="function">createCliRenderer</span>()
-
-renderer.root.<span class="function">add</span>(
-  <span class="function">Text</span>({"{"}
-    <span class="property">content</span><span class="operator">:</span> <span class="string">"Hello, OpenTUI!"</span>,
-    <span class="property">fg</span><span class="operator">:</span> <span class="string">"#00FF00"</span>,
-  {"}"})
-)</code></pre>
-            </div>
-            
-            <!-- Input Example -->
-            <div class="code-editor-body" data-panel="solid" data-active="false">
-              <div class="code-editor-lines">
-                <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>10</span><span>11</span>
-              </div>
-              <pre><code><span class="keyword">import</span> {"{"} createCliRenderer, Input {"}"} <span class="keyword">from</span> <span class="string">"@opentui/core"</span>
-
-<span class="keyword">const</span> renderer <span class="operator">=</span> <span class="keyword">await</span> <span class="function">createCliRenderer</span>()
-
-<span class="keyword">const</span> input <span class="operator">=</span> <span class="function">Input</span>({"{"}
-  <span class="property">placeholder</span><span class="operator">:</span> <span class="string">"Type something..."</span>,
-  <span class="property">width</span><span class="operator">:</span> <span class="number">30</span>,
-{"}"})
-
-input.<span class="function">focus</span>()
-renderer.root.<span class="function">add</span>(input)</code></pre>
-            </div>
-            
-            <!-- Layout Example -->
-            <div class="code-editor-body" data-panel="layout" data-active="false">
-              <div class="code-editor-lines">
-                <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>10</span><span>11</span><span>12</span><span>13</span><span>14</span>
-              </div>
-              <pre><code><span class="keyword">import</span> {"{"} createCliRenderer, Box, Text {"}"} <span class="keyword">from</span> <span class="string">"@opentui/core"</span>
-
-<span class="keyword">const</span> renderer <span class="operator">=</span> <span class="keyword">await</span> <span class="function">createCliRenderer</span>()
-
-renderer.root.<span class="function">add</span>(
-  <span class="function">Box</span>(
-    {"{"} <span class="property">width</span><span class="operator">:</span> <span class="string">"100%"</span>, <span class="property">height</span><span class="operator">:</span> <span class="string">"100%"</span>, <span class="property">flexDirection</span><span class="operator">:</span> <span class="string">"row"</span>, <span class="property">gap</span><span class="operator">:</span> <span class="number">2</span> {"}"},
-    <span class="function">Box</span>(
-      {"{"} <span class="property">flexGrow</span><span class="operator">:</span> <span class="number">1</span>, <span class="property">backgroundColor</span><span class="operator">:</span> <span class="string">"#1a1b26"</span> {"}"},
-      <span class="function">Text</span>({"{"} <span class="property">content</span><span class="operator">:</span> <span class="string">"Sidebar"</span>, <span class="property">fg</span><span class="operator">:</span> <span class="string">"#bb9af7"</span> {"}"})
-    ),
-    <span class="function">Box</span>({"{"} <span class="property">flexGrow</span><span class="operator">:</span> <span class="number">3</span>, <span class="property">backgroundColor</span><span class="operator">:</span> <span class="string">"#24283b"</span> {"}"}, <span class="function">Text</span>({"{"} <span class="property">content</span><span class="operator">:</span> <span class="string">"Main"</span> {"}"}))
-  )
-)</code></pre>
-            </div>
-          </div>
-        </section>
-
-        <!-- What is OpenTUI -->
-        <section class="what-section">
-          <div class="what-section-title">
-            <h3>What is OpenTUI?</h3>
-            <p>OpenTUI is a native terminal UI core written in Zig with TypeScript bindings. The native core exposes a C ABI and can be used from any language. OpenTUI powers OpenCode in production today and will also power terminal.shop. It is an extensible core with a focus on correctness, stability, and high performance. It provides a component-based architecture with flexible layout capabilities, allowing you to create complex terminal applications.</p>
-          </div>
-          
-          <div class="features-split">
-            <div class="features-list">
-              <ul class="what-list">
-                {features.map((feature, i) => (
-                  <li class={`feature-item ${i === 0 ? 'active' : ''}`} data-feature={feature.type} tabindex="0">
-                    <span class="bullet">[{i === 0 ? 'o' : '*'}]</span>
-                    <div><strong>{feature.title}</strong> {feature.description}</div>
-                  </li>
-                ))}
-              </ul>
-              
-              <div class="what-actions">
-                <a href="/docs/getting-started" class="btn-dark">
-                  <span>Read docs</span>
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M6.5 12L17 12M13 16.5L17.5 12L13 7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"/>
-                  </svg>
-                </a>
-              </div>
-            </div>
-            
-            <div class="features-visual">
-              <TuiSurface />
-            </div>
-          </div>
-        </section>
-
-        <!-- Footer -->
-        <footer class="landing-footer">
-          <div class="landing-footer-cell"><a href="https://github.com/anomalyco/opentui" target="_blank" rel="noopener noreferrer">GitHub</a></div>
-          <div class="landing-footer-cell"><a href="/docs/getting-started">Docs</a></div>
-        </footer>
+        <SiteFooter links animation="hopper" />
       </div>
     </div>
-
-    <!-- Legal - outside container, centered -->
-    <div class="landing-legal">
-      <span>&copy; 2026 <a href="https://anoma.ly">Anomaly</a></span>
-    </div>
   </main>
-</Base>
 
-<script>
-  const installCommands: Record<string, { cmd: string; pkg: string }> = {
-    create: { cmd: "bun create", pkg: "tui" },
-    manual: { cmd: "bun add", pkg: "@opentui/core" },
-    skill: { cmd: "npx skills add", pkg: "anomalyco/opentui --skill opentui --global" },
-  }
+  <script>
+    const band = document.querySelector<HTMLElement>(".band")!
+    const screen = band.querySelector<HTMLElement>(".screen")!
+    const video = band.querySelector("video")!
+    const audioToggle = band.querySelector<HTMLButtonElement>(".audio-toggle")!
+    const caption = band.querySelector<HTMLElement>(".caption")!
+    const credit = caption.querySelector("span")!
+    const source = caption.querySelector("a")!
+    const list = band.querySelector("ul")!
+    const points = [...band.querySelectorAll<HTMLButtonElement>("button[data-video]")]
+    let current: HTMLButtonElement | null = null
 
-  // Tab switching
-  const tabs = document.querySelectorAll('.install-tab')
-  const commandBtn = document.getElementById('install-display') as HTMLButtonElement
-  
-  tabs.forEach(tab => {
-    tab.addEventListener('click', () => {
-      const key = tab.getAttribute('data-tab') as keyof typeof installCommands
-      const { cmd, pkg } = installCommands[key]
-      
-      // Update active tab
-      tabs.forEach(t => t.setAttribute('aria-selected', 'false'))
-      tab.setAttribute('aria-selected', 'true')
-      
-      // Update command display
-      if (commandBtn) {
-        const codeEl = commandBtn.querySelector('code')
-        if (codeEl) {
-          codeEl.innerHTML = `<span class="cmd">${cmd} </span><span class="highlight">${pkg}</span>`
-        }
-        commandBtn.setAttribute('data-command', `${cmd} ${pkg}`)
+    for (const point of points) {
+      point.setAttribute("aria-controls", "feature-video")
+      point.setAttribute("aria-expanded", "false")
+    }
+
+    function open(point: HTMLButtonElement) {
+      const src = point.dataset.video!
+      if (video.getAttribute("src") !== src) video.setAttribute("src", src)
+      source.href = point.dataset.source!
+      source.textContent = point.dataset.author!
+      credit.textContent = point.dataset.credit!
+      audioToggle.hidden = point.dataset.hasAudio !== "true"
+      video.play().catch(() => {})
+      band.classList.add("playing")
+      screen.setAttribute("aria-hidden", "false")
+      current = point
+
+      for (const candidate of points) {
+        const active = candidate === point
+        candidate.classList.toggle("active", active)
+        candidate.setAttribute("aria-expanded", String(active))
       }
-    })
-  })
 
-  // Copy functionality - clicking the whole command button copies
-  if (commandBtn) {
-    commandBtn.addEventListener('click', async () => {
-      const command = commandBtn.getAttribute('data-command')
-      if (command) {
-        await navigator.clipboard.writeText(command)
-        const copyBtn = commandBtn.querySelector('.copy-btn')
-        if (copyBtn) {
-          copyBtn.classList.add('copied')
-          setTimeout(() => copyBtn.classList.remove('copied'), 1500)
-        }
-      }
-    })
-  }
+      requestAnimationFrame(() => {
+        requestAnimationFrame(async () => {
+          if (getComputedStyle(screen).position !== "static") return
+          await Promise.allSettled(band.getAnimations().map((animation) => animation.finished))
+          if (current !== point) return
 
-  // Code editor tab switching
-  const editorTabs = document.querySelectorAll('.code-editor-tab')
-  const editorPanels = document.querySelectorAll('.code-editor-body')
-  
-  editorTabs.forEach(tab => {
-    tab.addEventListener('click', () => {
-      const tabId = tab.getAttribute('data-tab')
-      
-      editorTabs.forEach(t => t.setAttribute('aria-selected', 'false'))
-      tab.setAttribute('aria-selected', 'true')
-      
-      editorPanels.forEach(panel => {
-        panel.setAttribute('data-active', panel.getAttribute('data-panel') === tabId ? 'true' : 'false')
+          const mediaBounds = screen.getBoundingClientRect()
+          const pointBounds = point.getBoundingClientRect()
+          const padding = 16
+          const top = Math.min(mediaBounds.top, pointBounds.top)
+          const bottom = Math.max(mediaBounds.bottom, pointBounds.bottom)
+          const availableHeight = innerHeight - 2 * padding
+          let offset = 0
+
+          if (bottom - top <= availableHeight) {
+            if (top < padding) offset = top - padding
+            else if (bottom > innerHeight - padding) offset = bottom - innerHeight + padding
+          } else if (pointBounds.bottom > innerHeight - padding) {
+            offset = pointBounds.bottom - innerHeight + padding
+          } else if (pointBounds.top < padding) {
+            offset = pointBounds.top - padding
+          }
+
+          if (offset) scrollBy({ top: offset, behavior: "smooth" })
+        })
       })
-    })
-  })
-
-  // Feature switching logic
-  const featureItems = document.querySelectorAll('.feature-item');
-  
-  featureItems.forEach(item => {
-    item.addEventListener('click', () => {
-      // Update UI
-      featureItems.forEach(i => {
-        i.classList.remove('active');
-        const bull = i.querySelector('.bullet');
-        if (bull) bull.textContent = '[*]';
-      });
-      item.classList.add('active');
-      const bull = item.querySelector('.bullet');
-      if (bull) bull.textContent = '[o]';
-      
-      // Dispatch event
-      const feature = item.getAttribute('data-feature');
-      window.dispatchEvent(new CustomEvent('feature-change', { detail: feature }));
-    });
-    
-    // Keyboard support
-    item.addEventListener('keydown', (e: any) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        (item as HTMLElement).click();
-      }
-    });
-  });
-
-  const codeCopyBtn = document.getElementById('code-copy-btn')
-  
-  if (codeCopyBtn) {
-    codeCopyBtn.addEventListener('click', async () => {
-      const activePanel = document.querySelector('.code-editor-body[data-active="true"]')
-      if (activePanel) {
-        const codeEl = activePanel.querySelector('pre code')
-        if (codeEl) {
-          const code = codeEl.textContent || ''
-          await navigator.clipboard.writeText(code)
-          
-          codeCopyBtn.classList.add('copied')
-          setTimeout(() => codeCopyBtn.classList.remove('copied'), 1500)
-        }
-      }
-    })
-  }
-
-  // Mobile menu toggle
-  const menuBtn = document.querySelector('.mobile-menu-btn')
-  const mobileNav = document.querySelector('.mobile-nav')
-
-  function openMenu() {
-    document.body.classList.add('mobile-nav-open')
-    menuBtn?.setAttribute('aria-expanded', 'true')
-    menuBtn?.setAttribute('aria-label', 'Close navigation menu')
-  }
-
-  function closeMenu() {
-    document.body.classList.remove('mobile-nav-open')
-    menuBtn?.setAttribute('aria-expanded', 'false')
-    menuBtn?.setAttribute('aria-label', 'Open navigation menu')
-  }
-
-  menuBtn?.addEventListener('click', () => {
-    const isOpen = document.body.classList.contains('mobile-nav-open')
-    if (isOpen) {
-      closeMenu()
-    } else {
-      openMenu()
     }
-  })
 
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && document.body.classList.contains('mobile-nav-open')) {
-      closeMenu()
+    audioToggle.addEventListener("click", () => {
+      video.muted = !video.muted
+      const label = video.muted ? "Enable audio" : "Mute audio"
+      audioToggle.dataset.muted = String(video.muted)
+      audioToggle.ariaLabel = label
+      audioToggle.title = label
+      if (video.paused) video.play().catch(() => {})
+    })
+
+    function close(restoreFocus = false) {
+      const activePoint = current
+      band.classList.remove("playing")
+      screen.setAttribute("aria-hidden", "true")
+      video.pause()
+      current = null
+
+      for (const point of points) {
+        point.classList.remove("active")
+        point.setAttribute("aria-expanded", "false")
+      }
+
+      if (restoreFocus) activePoint?.focus()
     }
-  })
 
-  mobileNav?.querySelectorAll('a').forEach((link) => {
-    link.addEventListener('click', closeMenu)
-  })
-</script>
+    for (const point of points) {
+      point.addEventListener("click", () => {
+        if (current === point) close()
+        else open(point)
+      })
+    }
+
+    const steps: Record<string, number> = { ArrowDown: 1, j: 1, ArrowUp: -1, k: -1 }
+    window.addEventListener("keydown", (event) => {
+      if (event.metaKey || event.ctrlKey || event.altKey) return
+      if (event.key === "Escape") {
+        if (current) close(true)
+        return
+      }
+
+      const step = steps[event.key]
+      if (!step) return
+
+      const scrollable = document.documentElement.scrollHeight > innerHeight
+      if (event.key.startsWith("Arrow") && scrollable && !list.contains(document.activeElement)) return
+
+      event.preventDefault()
+      const index = current ? points.indexOf(current) : step > 0 ? -1 : 0
+      const point = points[(index + step + points.length) % points.length]!
+      point.focus()
+      open(point)
+    })
+  </script>
+</Minimal>
+
+<style>
+  .logo {
+    display: block;
+    width: 250px;
+    height: 60px;
+  }
+
+  /* One blank line (1.5rem) separates the wordmark, tagline, list, claim,
+   * and footer: the same line grid as the article pages. */
+  header h1 {
+    margin-block: 0 1.5rem;
+  }
+
+  header p {
+    margin-block: 0;
+  }
+
+  .band {
+    position: relative;
+    width: 100%;
+    margin-block: 1.5rem;
+    transition: width var(--motion-step) linear var(--motion-step);
+  }
+
+  .band.playing {
+    width: min(54rem, calc(50vw + var(--content-width) / 2 - var(--page-gutter)));
+    min-height: calc(20rem * 4 / 5 + 1.875rem);
+    transition-delay: 0ms;
+  }
+
+  .screen {
+    position: absolute;
+    inset: -2.5em 0 auto auto;
+    width: 20rem;
+    overflow: hidden;
+    clip-path: inset(0 100% 0 0);
+    pointer-events: none;
+    visibility: hidden;
+    transition:
+      clip-path var(--motion-step) linear,
+      visibility 0ms linear var(--motion-step);
+  }
+
+  .band.playing .screen {
+    clip-path: inset(0);
+    visibility: visible;
+    transition-delay: var(--motion-step), var(--motion-step);
+  }
+
+  .copy {
+    width: 100%;
+    transition: width var(--motion-step) linear var(--motion-step);
+  }
+
+  .band.playing .copy {
+    width: calc(100% - 21.5rem);
+    transition-delay: 0ms;
+  }
+
+  .band ul {
+    margin-block: 0;
+  }
+
+  .copy p {
+    margin-block: 1.5rem 0;
+  }
+
+  .screen video {
+    display: block;
+    width: 100%;
+    object-fit: contain;
+    aspect-ratio: 5 / 4;
+    background: #000;
+  }
+
+  .video-frame {
+    position: relative;
+  }
+
+  .audio-toggle {
+    position: absolute;
+    bottom: 0.5rem;
+    right: 0.5rem;
+    display: grid;
+    width: 2rem;
+    height: 2rem;
+    padding: 0.5rem;
+    place-items: center;
+    border: 0;
+    border-radius: 0;
+    background: #000c;
+    color: #fff;
+    cursor: pointer;
+    pointer-events: auto;
+  }
+
+  .audio-toggle:focus-visible {
+    outline: 1px solid #fff;
+    outline-offset: 2px;
+  }
+
+  .audio-toggle[hidden] {
+    display: none;
+  }
+
+  .audio-toggle svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    fill: currentColor;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.75;
+  }
+
+  .audio-toggle .sound-on,
+  .audio-toggle:not([data-muted="false"]) .sound-off {
+    fill: none;
+  }
+
+  .audio-toggle[data-muted="false"] .sound-off,
+  .audio-toggle:not([data-muted="false"]) .sound-on {
+    display: none;
+  }
+
+  .caption {
+    margin-block: 0.375rem 0;
+    font-size: var(--text-caption);
+    color: var(--muted-color);
+    pointer-events: auto;
+  }
+
+  button[data-video] {
+    display: block;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  button[data-video]:hover {
+    text-decoration: underline;
+  }
+
+  @media (max-width: 64rem) {
+    .band,
+    .band.playing {
+      position: static;
+      display: grid;
+      width: 100%;
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: 0fr auto;
+      row-gap: 0;
+      min-height: 0;
+      transition:
+        grid-template-rows calc(2 * var(--motion-step)) linear,
+        row-gap calc(2 * var(--motion-step)) linear;
+    }
+
+    .band.playing {
+      grid-template-rows: 1fr auto;
+      row-gap: 1.5rem;
+    }
+
+    .screen {
+      position: static;
+      inset: auto;
+      width: min(100%, 26rem);
+      min-height: 0;
+      grid-column: 1;
+      grid-row: 1;
+      clip-path: none;
+      transition: visibility 0ms linear calc(2 * var(--motion-step));
+    }
+
+    .band.playing .screen {
+      transition-delay: 0ms;
+    }
+
+    .copy,
+    .band.playing .copy {
+      width: auto;
+      grid-column: 1;
+      grid-row: 2;
+      transition: none;
+    }
+  }
+
+  @media (max-width: 40rem) {
+    .logo {
+      width: 200px;
+      height: 48px;
+    }
+
+    .band ul {
+      padding-inline-start: 1.25rem;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .band,
+    .screen,
+    .band ul {
+      transition: none;
+    }
+  }
+</style>

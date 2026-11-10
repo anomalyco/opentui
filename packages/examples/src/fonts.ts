@@ -223,10 +223,12 @@ export function destroy(rendererInstance: CliRenderer): void {
     renderer.keyInput.off("keypress", handleKeyPress)
   }
 
-  rendererInstance.root.remove("ascii-demo")
+  const asciiDemo = rendererInstance.root.getRenderable("ascii-demo")
+  asciiDemo?.destroyRecursively()
 
   if (parentContainer) {
-    rendererInstance.root.remove("fonts-container")
+    const fontsContainer = rendererInstance.root.getRenderable("fonts-container")
+    fontsContainer?.destroyRecursively()
     parentContainer = null
   }
 

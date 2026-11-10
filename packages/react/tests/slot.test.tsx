@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test"
 import { createTestRenderer, type TestRendererOptions } from "@opentui/core/testing"
 import { createContext, useContext, useEffect, useMemo, useState } from "react"
 import { act, type ReactNode } from "react"
@@ -106,6 +106,36 @@ describe("React Slot System", () => {
     const frame = testSetup.captureCharFrame()
 
     expect(frame).toContain("fallback-only")
+  })
+
+  it("coordinated teardown does not re-remove nodes the renderer already destroyed", async () => {
+    // renderer.destroy() destroys the renderable tree and then triggers
+    // root.unmount() via onDestroy. React's deletion effects run against
+    // already-detached nodes; the host config must treat that as a no-op
+    // instead of asking the container to remove non-children.
+    const { setup } = await setupSlotTest(
+      (registry) => {
+        const AppSlot = Slot<AppSlots, typeof hostContext>
+        return (
+          <AppSlot registry={registry} name="statusbar" user="sam">
+            <text>fallback-only</text>
+          </AppSlot>
+        )
+      },
+      { width: 50, height: 6 },
+    )
+    testSetup = setup
+    await testSetup.renderOnce()
+
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      act(() => {
+        testSetup.renderer.destroy()
+      })
+      expect(warnSpy).not.toHaveBeenCalled()
+    } finally {
+      warnSpy.mockRestore()
+    }
   })
 
   it("appends plugin output after fallback content by default", async () => {

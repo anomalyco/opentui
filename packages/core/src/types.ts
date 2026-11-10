@@ -1,9 +1,11 @@
 import type { RGBA } from "./lib/RGBA.js"
+import type { Clock } from "./lib/clock.js"
 import type { EventEmitter } from "events"
 import type { Selection } from "./lib/selection.js"
 import type { Renderable } from "./Renderable.js"
 import type { InternalKeyHandler, KeyHandler } from "./lib/KeyHandler.js"
 import type { EditBufferRenderable } from "./renderables/EditBufferRenderable.js"
+import type { NativeScene } from "./NativeScene.js"
 
 export const TextAttributes = {
   NONE: 0,
@@ -33,7 +35,54 @@ export type ThemeMode = "dark" | "light"
 
 export type CursorStyle = "block" | "line" | "underline" | "default"
 
-export type MousePointerStyle = "default" | "pointer" | "text" | "crosshair" | "move" | "not-allowed"
+/** How a selection occupies cells between stored anchor and focus offsets.
+ * Independent of `cursorStyle` (CSI `q` is paint). Default `cell` includes
+ * the grapheme under the max endpoint. `boundary` is the half-open insert
+ * range `[min, max)`. */
+export type SelectionOccupancy = "cell" | "boundary"
+
+/** How local cell coordinates expand into a highlight range.
+ * `cell` is the current inclusive press/drag. `word` and `line` expand
+ * each endpoint through native selectWord / selectLine. */
+export type SelectionBehavior = "cell" | "word" | "line"
+
+export type MousePointerStyle =
+  | "auto"
+  | "default"
+  | "none"
+  | "context-menu"
+  | "help"
+  | "pointer"
+  | "progress"
+  | "wait"
+  | "cell"
+  | "crosshair"
+  | "text"
+  | "vertical-text"
+  | "alias"
+  | "copy"
+  | "move"
+  | "no-drop"
+  | "not-allowed"
+  | "grab"
+  | "grabbing"
+  | "all-scroll"
+  | "col-resize"
+  | "row-resize"
+  | "n-resize"
+  | "e-resize"
+  | "s-resize"
+  | "w-resize"
+  | "ne-resize"
+  | "nw-resize"
+  | "se-resize"
+  | "sw-resize"
+  | "ew-resize"
+  | "ns-resize"
+  | "nesw-resize"
+  | "nwse-resize"
+  | "zoom-in"
+  | "zoom-out"
 
 export interface CursorStyleOptions {
   style?: CursorStyle
@@ -55,8 +104,10 @@ export enum TargetChannel {
   Both = 3,
 }
 
-export type WidthMethod = "wcwidth" | "unicode"
+export type WidthMethod = "wcwidth" | "unicode" | "unicode-wide"
 export type TerminalMultiplexer = "none" | "tmux" | "zellij" | "screen" | "unknown"
+export type TerminalCapabilityState = "unknown" | "supported" | "unsupported"
+export type ImageRenderProtocol = "auto" | "kitty" | "sixel" | "blocks"
 
 export interface TerminalInfo {
   name: string
@@ -80,12 +131,40 @@ export interface TerminalCapabilities {
   bracketed_paste: boolean
   hyperlinks: boolean
   osc52: boolean
+  osc52_support: TerminalCapabilityState
   notifications: boolean
   explicit_cursor_positioning: boolean
   remote: boolean
+  /** The terminal answered the OSC 7501 program status query. */
+  program_status: boolean
   multiplexer: TerminalMultiplexer
+  image_protocol?: ImageRenderProtocol
   terminal: TerminalInfo
 }
+
+export type ProgramStatusKind = "permission" | "question" | "auth"
+
+interface ProgramStatusRecord {
+  /** Record path such as `build/test`. Omit it to address the root record. */
+  id?: string
+  /** Stable program identifier such as `cargo` or `terraform`. */
+  app?: string
+  /** Short label for the record. */
+  title?: string
+  /** One line that says what the record is doing, waiting for, or finished. */
+  message?: string
+}
+
+/**
+ * One OSC 7501 Program Status Protocol report. Each report replaces its record:
+ * a field missing from the report is missing from the record afterwards.
+ * `clear` removes the addressed record and every record beneath it.
+ */
+export type ProgramStatus =
+  | (ProgramStatusRecord & { state: "idle" | "done" | "error" })
+  | (ProgramStatusRecord & { state: "working"; progress?: number })
+  | (ProgramStatusRecord & { state: "blocked"; kind?: ProgramStatusKind; progress?: number })
+  | { state: "clear"; id?: string }
 
 export interface RendererEvents {
   resize: (width: number, height: number) => void
@@ -99,16 +178,29 @@ export interface RendererEvents {
   theme_mode: (mode: ThemeMode) => void
 }
 
+/** `deltaTime` is the time since this subscriber's previous tick, `ticks` the due times the frame covers (1 unless
+ * frames stalled), and `time` the frame's clock time. A tick may run up to its tolerance before its due time. */
+export type AnimationTickCallback = (deltaTime: number, ticks: number, time: number) => void
+
+export interface AnimationTickOptions {
+  /** How early a tick may run to share a frame, in ms, below the interval. Default: half the interval. */
+  tolerance?: number
+}
+
 export interface RenderContext extends EventEmitter {
-  addToHitGrid: (x: number, y: number, width: number, height: number, id: number) => void
-  pushHitGridScissorRect: (x: number, y: number, width: number, height: number) => void
-  popHitGridScissorRect: () => void
-  clearHitGridScissorRects: () => void
+  readonly nativeScene: NativeScene
   width: number
   height: number
+  terminalWidth?: number
+  terminalHeight?: number
+  resolution?: { width: number; height: number } | null
   /** Monotonic, bumped once per `loop()` iteration. Lets renderables dedupe per-frame work. */
   frameId: number
+  /** Schedules renderable timers; a test renderer can take a `ManualClock`. */
+  clock: Clock
   requestRender: () => void
+  requestAnimationFrame: (callback: FrameRequestCallback) => number
+  cancelAnimationFrame: (handle: number) => void
   setCursorPosition: (x: number, y: number, visible: boolean) => void
   setCursorStyle: (options: CursorStyleOptions) => void
   setCursorColor: (color: RGBA) => void
@@ -117,6 +209,7 @@ export interface RenderContext extends EventEmitter {
   capabilities: TerminalCapabilities | null
   requestLive: () => void
   dropLive: () => void
+  onAnimationTick: (fps: number, callback: AnimationTickCallback, options?: AnimationTickOptions) => () => void
   hasSelection: boolean
   getSelection: () => Selection | null
   requestSelectionUpdate: () => void
@@ -131,7 +224,7 @@ export interface RenderContext extends EventEmitter {
   keyInput: KeyHandler
   _internalKeyInput: InternalKeyHandler
   clearSelection: () => void
-  startSelection: (renderable: Renderable, x: number, y: number) => void
+  startSelection: (renderable: Renderable, x: number, y: number, behavior?: SelectionBehavior) => void
   updateSelection: (
     currentRenderable: Renderable | undefined,
     x: number,
@@ -172,6 +265,8 @@ export interface LineInfo {
 
 export interface LineInfoProvider {
   get lineInfo(): LineInfo
+  // Optional bounded read in visual-row coordinates, preserving lineInfo source remapping.
+  getLineSources?(startLine: number, lineCount: number): number[]
   get lineCount(): number
   get virtualLineCount(): number
   get scrollY(): number

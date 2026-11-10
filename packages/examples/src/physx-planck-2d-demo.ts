@@ -96,8 +96,10 @@ function cleanupPendingDemoState(renderer: CliRenderer, state: PendingDemoState)
   }
 
   if (!renderer.isDestroyed) {
-    renderer.root.remove("planck-main")
-    renderer.root.remove("planck-container")
+    for (const id of ["planck-main", "planck-container"]) {
+      const child = renderer.root.getRenderable(id)
+      child?.destroyRecursively()
+    }
   }
 
   if (pendingDemoState === state) {
@@ -127,8 +129,10 @@ function cleanupDemoState(renderer: CliRenderer, state: DemoState): void {
   state.engine.destroy()
 
   if (!renderer.isDestroyed) {
-    renderer.root.remove("planck-main")
-    renderer.root.remove("planck-container")
+    for (const id of ["planck-main", "planck-container"]) {
+      const child = renderer.root.getRenderable(id)
+      child?.destroyRecursively()
+    }
   }
 }
 

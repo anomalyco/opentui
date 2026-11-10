@@ -1,0 +1,37 @@
+name: Save native host bottle
+description: Save this runner's library from the installed cross-compiled packages. Host builds must not save this cache.
+inputs:
+  zig-version:
+    description: Zig version that produced the installed libraries
+    required: true
+runs:
+  using: composite
+  steps:
+    - id: hash
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: |
+        set -euo pipefail
+        key="$(bun scripts/native-bottle.ts host-key --zig "${{ inputs.zig-version }}")"
+        echo "key=$key" >> "$GITHUB_OUTPUT"
+        echo "Native host bottle key: $key"
+
+    - id: lookup
+      uses: actions/cache/restore@v5
+      continue-on-error: true
+      with:
+        path: packages/native/lib
+        key: ${{ steps.hash.outputs.key }}
+        lookup-only: true
+
+    - if: steps.lookup.outputs.cache-hit != 'true'
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: bun scripts/native-bottle.ts host-stage --zig "${{ inputs.zig-version }}"
+
+    - if: steps.lookup.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v5
+      continue-on-error: true
+      with:
+        path: packages/native/lib
+        key: ${{ steps.hash.outputs.key }}

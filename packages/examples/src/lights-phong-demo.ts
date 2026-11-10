@@ -239,7 +239,7 @@ export async function run(renderer: CliRenderer): Promise<void> {
     light4.position.y = Math.cos(lightTime * 0.7) * 4
     light4.position.z = Math.sin(lightTime * 0.5) * 3
 
-    engine.drawScene(sceneRoot, framebuffer, deltaTime)
+    await engine.drawScene(sceneRoot, framebuffer, deltaTime)
   }
 
   renderer.on("resize", resizeHandler)
@@ -274,8 +274,10 @@ export async function run(renderer: CliRenderer): Promise<void> {
 export function destroy(renderer: CliRenderer): void {
   if (demoState) {
     demoState.cleanup()
-    renderer.root.remove("phong-main")
-    renderer.root.remove("phong-container")
+    for (const id of ["phong-main", "phong-container"]) {
+      const child = renderer.root.getRenderable(id)
+      child?.destroyRecursively()
+    }
     demoState = null
   }
 }

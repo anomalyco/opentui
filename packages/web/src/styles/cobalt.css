@@ -1,0 +1,39 @@
+:root[data-theme="cobalt"] {
+  color-scheme: light;
+  --page-background: #fffdf8;
+  --page-color: #200f1a;
+  --link-color: #2046e8;
+  --muted-color: #71676c;
+  --accent-color: #ff381d;
+}
+
+:root[data-theme="cobalt"] [data-wordmark] {
+  isolation: isolate;
+}
+
+:root[data-theme="cobalt"] [data-wordmark] :is([data-ink="cyan"], [data-ink="yellow"]) {
+  fill: var(--link-color);
+}
+
+:root[data-theme="cobalt"] [data-wordmark] [data-ink="magenta"] {
+  fill: var(--accent-color);
+}
+
+:root[data-theme="cobalt"] [data-wordmark] :is([data-ink="magenta"], [data-ink="yellow"]) {
+  mix-blend-mode: multiply;
+}
+
+:root[data-theme="cobalt"] ::selection {
+  background: var(--accent-color);
+  color: var(--page-color);
+}
+
+:root[data-theme="cobalt"] :focus-visible {
+  outline: 2px solid var(--link-color);
+  outline-offset: 3px;
+}
+
+:root[data-theme="cobalt"] button[data-video][aria-expanded="true"] {
+  color: var(--link-color);
+  text-decoration: underline;
+}

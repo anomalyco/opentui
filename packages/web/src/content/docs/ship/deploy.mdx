@@ -1,0 +1,104 @@
+---
+title: Deploy an OpenTUI application
+description: Choose and prepare a Bun, Node.js, standalone, or SSH deployment for an OpenTUI application
+skill:
+  entry: true
+  intents: [deploy, bundle, bun-executable, nodejs-esm, node-sea, ssh-deployment]
+---
+
+# Deploy an OpenTUI application
+
+An OpenTUI application can run from source, a JavaScript bundle, or a native executable host.
+
+Choose the deployment form before you build release artifacts. The choice determines which runtime and asset files
+must reach the target machine.
+
+## Choose a deployment form
+
+| Form           | Choose it when                                                         | Ship and verify                                                                                                                         |
+| -------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Bun source     | You can install Bun and dependencies on the target.                    | Ship source, the lockfile, production dependencies, and the matching Core native package.                                               |
+| Bun bundle     | You want built JavaScript but can install Bun on the target.           | Ship the bundle and every emitted asset or external dependency. The build needs the matching native package unless it remains external. |
+| Bun executable | You want one target-specific host executable.                          | Build once per operating system, architecture, and Linux libc. Deploy runtime-loaded plugins as sidecars.                               |
+| Node.js ESM    | You need the accepted Node.js runtime path without SEA packaging.      | Use Node.js 26.4.0 or later, ESM, `--experimental-ffi`, installed runtime assets, and the matching native package.                      |
+| Node.js SEA    | You need one Node.js executable and can extract its assets at startup. | Embed the exact Node asset manifest, extract it, and set `OTUI_ASSET_ROOT` before Core executes.                                        |
+| SSH            | Users connect through an SSH client instead of a local terminal.       | Package the host with one of the preceding forms, then configure listener security and remote-session policy.                           |
+
+SSH is a transport choice, not a code-packaging format. It remains subject to the runtime and asset rules of its host
+process.
+
+Read [Runtime and platform support](/docs/getting-started/runtime-support) before you select a target. Read
+[Environment variables](/docs/reference/env-vars) for stable runtime and build configuration.
+
+## Build Bun executables
+
+Build a separate executable for each release target. Linux glibc and Linux musl are different targets.
+
+The matching optional Core native package must exist on the build machine. Set `process.env.OPENTUI_LIBC` as a Bun
+build-time definition so the compiler retains the correct native-package branch. An unset build-time value can retain
+both Linux branches and require both native packages for that architecture.
+
+Bun can embed the Core native library, parser worker, default grammars, and Tree-sitter WASM. It cannot predict unknown
+runtime-loaded modules. Deploy external plugin files and their unmapped dependencies beside the executable.
+
+Use [Standalone executables](/docs/reference/standalone-executables#bun) for the build commands and libc example. Use
+[Load plugins and modules at runtime](/docs/extend/runtime-plugins#executables-and-sidecars) for sidecar boundaries.
+
+## Build a Node.js SEA
+
+The accepted Node.js SEA workflow has these constraints:
+
+- Use Node.js 26.4.0 or later and an ESM application bundle.
+- Do not use `@opentui/three` or runtime-plugin support. Those entry points are Bun-only.
+- Call `getNodeAssets()` at build time only.
+- Select the target platform, architecture, and Linux libc when you create the manifest.
+- Add every returned `{ key, source }` pair to the SEA assets map without changing the key.
+- Extract each exact key to a filesystem directory at startup.
+- Set an absolute `OTUI_ASSET_ROOT` before any bundled Core module executes.
+- Install the matching native package on the build machine.
+
+The tested SEA configuration uses these values:
+
+```json
+{
+  "mainFormat": "module",
+  "useSnapshot": false,
+  "useCodeCache": false,
+  "execArgv": ["--experimental-ffi", "--no-warnings"],
+  "execArgvExtension": "none"
+}
+```
+
+The application owns extraction locking, cache invalidation, integrity checks, filesystem permissions, cleanup, code
+signing, and distribution. Current SEA acceptance runs on Linux x64. Published native assets cover more targets, but
+the repository does not run SEA acceptance on those targets.
+
+Use [Standalone executables](/docs/reference/standalone-executables#nodejs-sea) for the complete procedure. Do not call
+`getNodeAssets()` inside the finished executable because it resolves installed build-time packages.
+
+## Expose an SSH service
+
+Configure authentication before you bind a public address. `@opentui/ssh` defaults to open authentication and listens
+on `127.0.0.1`. Binding a non-loopback address without authentication only logs a warning. The server still accepts
+connections.
+
+Choose a persistent host key for a stable service. Define session limits, shutdown behavior, and remote clipboard
+policy. If Node.js permissions are active, grant network access and the required host-key file access.
+
+Use [SSH](/docs/reference/ssh) for authentication, host keys, middleware, limits, and cleanup.
+
+## Release checks
+
+Before release, test the artifact on the real target:
+
+1. Start the application from a clean directory.
+2. Exercise the native renderer and Tree-sitter if the application uses it.
+3. Load every deployed plugin sidecar.
+4. Confirm terminal cleanup after normal exit and a handled signal.
+5. Check image, clipboard, and notification behavior through the target terminal or SSH client.
+
+## Next
+
+- [Standalone executables](/docs/reference/standalone-executables) gives the Bun and Node.js SEA procedures.
+- [Runtime and platform support](/docs/getting-started/runtime-support) lists tested lanes and dependency versions.
+- [Troubleshooting](/docs/test-and-debug/troubleshooting) routes startup and target failures.

@@ -314,6 +314,7 @@ describe("MouseParser SGR mode", () => {
     test("scroll release (m) is not classified as scroll", () => {
       // Some terminals send release for scroll too; the parser should not
       // report that as a scroll event.
+      // 044: pins main; the conformance vectors make a wheel release a response with no mouse event.
       const e = parser.parseMouseEvent(encodeSGR(64, 10, 5, false))!
       expect(e.type).not.toBe("scroll")
     })
@@ -380,19 +381,12 @@ describe("MouseParser SGR mode", () => {
       expect(move.type).toBe("move")
     })
 
-    test("multiple buttons pressed — any motion is drag", () => {
+    test("releasing one of multiple pressed buttons keeps motion dragging", () => {
       parser.parseMouseEvent(encodeSGR(0, 5, 5, true)) // left down
       parser.parseMouseEvent(encodeSGR(2, 5, 5, true)) // right down
-      const e = parser.parseMouseEvent(encodeSGR(32, 8, 5, false))!
-      expect(e.type).toBe("drag")
-    })
-
-    test("release clears ALL tracked buttons", () => {
-      parser.parseMouseEvent(encodeSGR(0, 5, 5, true)) // left down
-      parser.parseMouseEvent(encodeSGR(2, 5, 5, true)) // right down
-      parser.parseMouseEvent(encodeSGR(0, 5, 5, false)) // release (clears all)
-      const e = parser.parseMouseEvent(encodeSGR(32, 8, 5, false))!
-      expect(e.type).toBe("move") // no buttons tracked → move, not drag
+      parser.parseMouseEvent(encodeSGR(2, 5, 5, false)) // right up
+      const event = parser.parseMouseEvent(encodeSGR(32, 8, 5, false))!
+      expect(event.type).toBe("drag")
     })
 
     test("reset() clears button tracking state", () => {

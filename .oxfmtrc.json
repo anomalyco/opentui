@@ -3,5 +3,13 @@
   "semi": false,
   "printWidth": 120,
   "sortPackageJson": false,
-  "ignorePatterns": ["**/.zig-cache/**", "packages/core/src/lib/tree-sitter/default-parsers.ts"]
+  "ignorePatterns": [
+    "**/.zig-cache/**",
+    "**/zig-pkg/**",
+    "packages/core/src/lib/tree-sitter/default-parsers.ts",
+    "packages/web/public/recordings/*.json",
+    "packages/core/src/lib/stdin-parser.conformance.json",
+    "packages/native/src/tests/fixtures/text-corpus.json",
+    "packages/rust/crates/*/tests/fixtures/**/*.md"
+  ]
 }

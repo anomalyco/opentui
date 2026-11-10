@@ -1,0 +1,15 @@
+base 0.6.6
++ @opentui/core: interface DiffGutterOptions
++ @opentui/core: interface GutterLayout
++ @opentui/core: method LineNumberRenderable.getGutterLayout(): GutterLayout
++ @opentui/core: method LineNumberRenderable.setGutterLayout(layout: GutterLayout): void
++ @opentui/core: property DiffGutterOptions.minDigits?: number
++ @opentui/core: property DiffGutterOptions.paddingLeft?: number
++ @opentui/core: property DiffGutterOptions.paddingRight?: number
++ @opentui/core: property DiffRenderable.gutter: DiffGutterOptions
++ @opentui/core: property DiffRenderableOptions.gutter?: DiffGutterOptions
++ @opentui/core: property GutterLayout.minAfterWidth: number
++ @opentui/core: property GutterLayout.minDigits: number
++ @opentui/core: property GutterLayout.minWidth: number
++ @opentui/core: property GutterLayout.paddingLeft: number
++ @opentui/core: property GutterLayout.paddingRight: number

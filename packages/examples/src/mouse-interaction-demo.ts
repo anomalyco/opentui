@@ -12,7 +12,7 @@ import {
   OptimizedBuffer,
   BoxRenderable,
   createTimeline,
-  engine,
+  getTimelineEngine,
   Box,
   type ProxiedVNode,
   type BoxOptions,
@@ -35,6 +35,7 @@ let draggableBoxes: ProxiedVNode<typeof BoxRenderable>[] = []
 let nextZIndex = 101
 
 function DraggableBox(
+  renderer: CliRenderer,
   props: BoxOptions & {
     x: number
     y: number
@@ -45,6 +46,7 @@ function DraggableBox(
   },
   children?: VChild,
 ) {
+  const owner = getTimelineEngine(renderer)
   const bgColor = RGBA.fromValues(props.color.r, props.color.g, props.color.b, 0.8)
   const borderColor = RGBA.fromValues(props.color.r * 1.2, props.color.g * 1.2, props.color.b * 1.2, 1.0)
 
@@ -122,6 +124,7 @@ function DraggableBox(
           case "down":
             gotText = ""
             isDragging = true
+            this.ctx.setMousePointer("grabbing")
             dragOffsetX = event.x - this.x
             dragOffsetY = event.y - this.y
             this.zIndex = nextZIndex++
@@ -130,18 +133,21 @@ function DraggableBox(
             event.stopPropagation()
             break
 
+          case "up":
           case "drag-end":
             if (isDragging) {
               isDragging = false
+              this.ctx.setMousePointer(event.type === "up" ? "grab" : "default")
               this.zIndex = 100
               this.backgroundColor = originalBg
               this.borderColor = originalBorderColor
-              event.stopPropagation()
+              if (event.type === "drag-end") event.stopPropagation()
             }
             break
 
           case "drag":
             if (isDragging) {
+              this.ctx.setMousePointer("grabbing")
               const newX = event.x - dragOffsetX
               const newY = event.y - dragOffsetY
 
@@ -156,16 +162,32 @@ function DraggableBox(
             break
 
           case "over":
+            this.ctx.setMousePointer("grab")
             gotText = "over " + (event.source?.id || "")
             break
 
           case "out":
+            if (!isDragging) this.ctx.setMousePointer("default")
             gotText = "out"
             break
 
           case "drop":
+            this.ctx.setMousePointer("grab")
             gotText = event.source?.id || ""
-            const timeline = createTimeline()
+            const timeline = createTimeline(
+              {
+                onComplete: () => {
+                  owner.unregister(timeline)
+                  this.off("destroyed", cleanup)
+                },
+              },
+              renderer,
+            )
+            const cleanup = () => {
+              timeline.pause()
+              owner.unregister(timeline)
+            }
+            this.once("destroyed", cleanup)
 
             timeline.add(bounceScale, {
               value: 1.5,
@@ -277,6 +299,13 @@ class MouseInteractionFrameBuffer extends FrameBufferRenderable {
     const cellKey = `${event.x},${event.y}`
 
     switch (event.type) {
+      case "over":
+      case "drop":
+        this.ctx.setMousePointer("cell")
+        break
+      case "out":
+        this.ctx.setMousePointer("default")
+        break
       case "move":
         this.trailCells.set(cellKey, {
           x: event.x,
@@ -319,8 +348,6 @@ export function run(renderer: CliRenderer): void {
   const backgroundColor = RGBA.fromInts(15, 15, 35, 255)
   renderer.setBackgroundColor(backgroundColor)
 
-  engine.attach(renderer)
-
   const mainGroup = new BoxRenderable(renderer, {
     id: "mouse-demo-main-group",
     zIndex: 10,
@@ -344,12 +371,13 @@ export function run(renderer: CliRenderer): void {
     id: "mouse_demo_instructions",
     content: t`Drag boxes around • Move mouse: turquoise trails
 Hold + move: orange drag trails • Click cells: toggle pink
+Pointer: cell on canvas • grab/grabbing on boxes
 Scroll on boxes: shows direction • Escape: menu`,
     position: "absolute",
     left: 2,
     top: 2,
     width: renderer.width - 4,
-    height: 3,
+    height: 4,
     fg: RGBA.fromInts(176, 196, 222),
     zIndex: 1000,
   })
@@ -359,7 +387,7 @@ Scroll on boxes: shows direction • Escape: menu`,
   mainGroup.add(demoContainer)
 
   draggableBoxes = [
-    DraggableBox({
+    DraggableBox(renderer, {
       id: "drag-box-1",
       x: 10,
       y: 8,
@@ -368,7 +396,7 @@ Scroll on boxes: shows direction • Escape: menu`,
       color: RGBA.fromInts(200, 100, 150),
       label: "Box 1",
     }),
-    DraggableBox({
+    DraggableBox(renderer, {
       id: "drag-box-2",
       x: 30,
       y: 12,
@@ -377,7 +405,7 @@ Scroll on boxes: shows direction • Escape: menu`,
       color: RGBA.fromInts(100, 200, 150),
       label: "Box 2",
     }),
-    DraggableBox({
+    DraggableBox(renderer, {
       id: "drag-box-3",
       x: 50,
       y: 15,
@@ -387,6 +415,7 @@ Scroll on boxes: shows direction • Escape: menu`,
       label: "Box 3",
     }),
     DraggableBox(
+      renderer,
       {
         id: "drag-box-4",
         x: 15,
@@ -415,6 +444,7 @@ Scroll on boxes: shows direction • Escape: menu`,
 }
 
 export function destroy(renderer: CliRenderer): void {
+  renderer.setMousePointer("default")
   renderer.clearFrameCallbacks()
   renderer.root.getRenderable("mouse-demo-main-group")?.destroyRecursively()
 }

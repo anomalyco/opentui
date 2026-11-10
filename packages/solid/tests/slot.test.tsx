@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { Yoga, type BaseRenderable } from "@opentui/core"
+import { BoxRenderable, Renderable } from "@opentui/core"
 import { createTestRenderer, type TestRendererOptions } from "@opentui/core/testing"
 import { createContext, createComponent, createSignal, onCleanup, onMount, useContext, type JSX } from "solid-js"
 import { createSlot, createSolidSlotRegistry, Slot, type SolidPlugin } from "../src/plugins/slot.js"
@@ -68,88 +68,41 @@ describe("Solid Slot System", () => {
     }
   })
 
-  it("creates layout placeholders with the parent Yoga node factory", () => {
-    let display: number | undefined
-    const layoutNode = {
-      setDisplay(value: number) {
-        display = value
-      },
-    }
-    const parentLayoutNode = {
-      constructor: {
-        create() {
-          return layoutNode
-        },
-      },
-    }
-    const parent = {
-      getLayoutNode() {
-        return parentLayoutNode
-      },
-    } as unknown as BaseRenderable
-
+  it("creates hidden layout placeholders owned by the parent context", async () => {
+    testSetup = await createTestRenderer({ width: 20, height: 4 })
+    const parent = testSetup.renderer.root
     const slot = new SlotRenderable("factory-slot")
     const child = slot.getSlotChild(parent)
-
-    expect(child.getLayoutNode()).toBe(layoutNode)
-    expect(display).toBe(Yoga.Display.None)
-
+    expect(child).toBeInstanceOf(Renderable)
+    expect((child as Renderable).ctx).toBe(parent.ctx)
+    expect(child.visible).toBe(false)
+    parent.add(child)
+    await testSetup.renderOnce()
+    expect((child as Renderable).getLayout().height).toBe(0)
     slot.destroy()
+    expect(child.parent).toBeNull()
+    expect((child as Renderable).isDestroyed).toBe(true)
   })
 
-  it("recreates a detached layout placeholder when the parent Yoga factory changes", () => {
-    let displayA: number | undefined
-    let displayB: number | undefined
-    const layoutNodeA = {
-      setDisplay(value: number) {
-        displayA = value
-      },
-      free() {},
-    }
-    const layoutNodeB = {
-      setDisplay(value: number) {
-        displayB = value
-      },
-      free() {},
-    }
-    const parentA = {
-      getLayoutNode() {
-        return {
-          constructor: {
-            create() {
-              return layoutNodeA
-            },
-          },
-        }
-      },
-    } as unknown as BaseRenderable
-    const parentB = {
-      getLayoutNode() {
-        return {
-          constructor: {
-            create() {
-              return layoutNodeB
-            },
-          },
-        }
-      },
-    } as unknown as BaseRenderable
-
+  it("reuses a detached layout placeholder within its scene", async () => {
+    testSetup = await createTestRenderer({ width: 20, height: 4 })
+    const parentA = new BoxRenderable(testSetup.renderer, {})
+    const parentB = new BoxRenderable(testSetup.renderer, {})
+    testSetup.renderer.root.add(parentA)
+    testSetup.renderer.root.add(parentB)
     const slot = new SlotRenderable("moving-slot")
     const firstChild = slot.getSlotChild(parentA)
-
-    expect(firstChild.getLayoutNode()).toBe(layoutNodeA)
-    expect(displayA).toBe(Yoga.Display.None)
-
-    firstChild.parent = null
-
+    parentA.add(firstChild)
+    parentA.remove(firstChild)
     const secondChild = slot.getSlotChild(parentB)
-
-    expect(secondChild).not.toBe(firstChild)
-    expect(secondChild.getLayoutNode()).toBe(layoutNodeB)
-    expect(displayB).toBe(Yoga.Display.None)
-
+    expect(secondChild).toBe(firstChild)
+    parentB.add(secondChild)
+    await testSetup.renderOnce()
+    expect(secondChild.parent).toBe(parentB)
+    expect(secondChild.visible).toBe(false)
     slot.destroy()
+    expect(parentB.getChildren()).toHaveLength(0)
+    expect((secondChild as Renderable).isDestroyed).toBe(true)
   })
 
   it("reuses one registry per renderer and rejects different context", async () => {

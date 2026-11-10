@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 27 6" width="270" height="60" shape-rendering="crispEdges" role="img">
+  <title>OpenTUI logo in spectrum colors</title>
+  <defs>
+    <linearGradient id="spectrum" gradientUnits="userSpaceOnUse" x1="1" y1="0" x2="26" y2="0">
+      <stop offset="0" stop-color="#ff6b6b" />
+      <stop offset="16%" stop-color="#ff6b6b" />
+      <stop offset="16%" stop-color="#ffa94d" />
+      <stop offset="32%" stop-color="#ffa94d" />
+      <stop offset="32%" stop-color="#ffe066" />
+      <stop offset="44%" stop-color="#ffe066" />
+      <stop offset="44%" stop-color="#69db7c" />
+      <stop offset="60%" stop-color="#69db7c" />
+      <stop offset="60%" stop-color="#4dabf7" />
+      <stop offset="72%" stop-color="#4dabf7" />
+      <stop offset="72%" stop-color="#748ffc" />
+      <stop offset="88%" stop-color="#748ffc" />
+      <stop offset="88%" stop-color="#da77f2" />
+      <stop offset="100%" stop-color="#da77f2" />
+    </linearGradient>
+  </defs>
+  <path d="M17 0h1v1h-1zM1 1h3v1h-3zM5 1h3v1h-3zM9 1h3v1h-3zM13 1h2v1h-2zM17 1h3v1h-3zM21 1h1v1h-1zM23 1h1v1h-1zM25 1h1v1h-1zM1 2h1v1h-1zM3 2h1v1h-1zM5 2h1v1h-1zM7 2h1v1h-1zM9 2h1v1h-1zM11 2h1v1h-1zM13 2h1v1h-1zM15 2h1v1h-1zM17 2h1v1h-1zM21 2h1v1h-1zM23 2h1v1h-1zM25 2h1v1h-1zM1 3h1v1h-1zM3 3h1v1h-1zM5 3h1v1h-1zM7 3h1v1h-1zM9 3h1v1h-1zM13 3h1v1h-1zM15 3h1v1h-1zM17 3h1v1h-1zM19 3h1v1h-1zM21 3h1v1h-1zM23 3h1v1h-1zM25 3h1v1h-1zM1 4h3v1h-3zM5 4h3v1h-3zM9 4h3v1h-3zM13 4h1v1h-1zM15 4h1v1h-1zM17 4h3v1h-3zM21 4h3v1h-3zM25 4h1v1h-1zM5 5h1v1h-1z" fill="url(#spectrum)" />
+</svg>

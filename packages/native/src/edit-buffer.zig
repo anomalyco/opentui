@@ -1,0 +1,1028 @@
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const tb = @import("text-buffer.zig");
+const iter_mod = @import("text-buffer-iterators.zig");
+const seg_mod = @import("text-buffer-segment.zig");
+const gp = @import("grapheme.zig");
+const link = @import("link.zig");
+
+const utf8 = @import("utf8.zig");
+const event_emitter = @import("event-emitter.zig");
+const text_work = @import("text-work.zig");
+
+const UnifiedTextBuffer = tb.UnifiedTextBuffer;
+const TextChunk = seg_mod.TextChunk;
+const Segment = seg_mod.Segment;
+const UnifiedRope = seg_mod.UnifiedRope;
+
+pub const EditBufferError = error{
+    OutOfMemory,
+    InvalidCursor,
+};
+
+pub const EditBufferEvent = enum {
+    cursorChanged,
+};
+
+/// Typed notifications for Context. Distinct from EditBufferEvent, which drives
+/// EditorView's synchronous cursor listeners.
+pub const NativeEvent = enum {
+    cursor_changed,
+    content_changed,
+    history_cursor_changed,
+};
+
+pub const NativeEventNotify = struct {
+    userdata: *anyopaque,
+    callback: *const fn (*anyopaque, NativeEvent) void,
+};
+
+/// Cursor position (row, col in display-width coordinates)
+pub const Cursor = struct {
+    row: u32,
+    col: u32,
+    desired_col: u32 = 0,
+    offset: u32 = 0, // Global display-width offset from buffer start
+};
+
+const CursorCoords = struct { row: u32, col: u32 };
+
+const CursorMeta = struct {
+    row: u32,
+    col: u32,
+    desired_col: u32,
+    tab_width: ?u8 = null,
+
+    fn fromCursor(cursor: Cursor, tab_width: u8) CursorMeta {
+        return .{
+            .row = cursor.row,
+            .col = cursor.col,
+            .desired_col = cursor.desired_col,
+            .tab_width = tab_width,
+        };
+    }
+
+    fn encode(self: CursorMeta, out_buffer: []u8) ![]const u8 {
+        if (self.tab_width) |tab_width| {
+            return std.fmt.bufPrint(out_buffer, "cursor:{d}:{d}:{d}:{d}", .{ self.row, self.col, self.desired_col, tab_width });
+        }
+        return std.fmt.bufPrint(out_buffer, "cursor:{d}:{d}:{d}", .{ self.row, self.col, self.desired_col });
+    }
+
+    fn decode(bytes: []const u8) ?CursorMeta {
+        const prefix = "cursor:";
+        if (!std.mem.startsWith(u8, bytes, prefix)) {
+            return null;
+        }
+
+        var parts = std.mem.splitScalar(u8, bytes[prefix.len..], ':');
+
+        const row = std.fmt.parseInt(u32, parts.next() orelse return null, 10) catch return null;
+        const col = std.fmt.parseInt(u32, parts.next() orelse return null, 10) catch return null;
+        const desired_col = std.fmt.parseInt(u32, parts.next() orelse return null, 10) catch return null;
+        const tab_width = if (parts.next()) |part|
+            std.fmt.parseInt(u8, part, 10) catch return null
+        else
+            null;
+
+        if (parts.next() != null) {
+            return null;
+        }
+
+        return .{
+            .row = row,
+            .col = col,
+            .desired_col = desired_col,
+            .tab_width = tab_width,
+        };
+    }
+
+    fn publicBytes(bytes: []const u8) []const u8 {
+        const decoded = decode(bytes) orelse return bytes;
+        if (decoded.tab_width == null) return bytes;
+        const last_separator = std.mem.lastIndexOfScalar(u8, bytes, ':') orelse return bytes;
+        return bytes[0..last_separator];
+    }
+};
+
+const AddBuffer = struct {
+    mem_id: u8,
+    ptr: [*]u8,
+    len: usize,
+    cap: usize,
+    allocator: Allocator,
+    /// Every slot growth registered, so a failed edit releases those after its checkpoint in
+    /// reverse. Each growth at least doubles a capacity below 2^32, so 32 entries suffice.
+    grown: [32]struct { mem_id: u8, buffer_count: usize } = undefined,
+    grown_len: u8 = 0,
+
+    fn init(allocator: Allocator, text_buffer: *UnifiedTextBuffer, initial_cap: usize) !AddBuffer {
+        const mem = try allocator.alloc(u8, initial_cap);
+        errdefer allocator.free(mem);
+        const mem_id = try text_buffer.registerMemBuffer(mem, true);
+
+        return .{
+            .mem_id = mem_id,
+            .ptr = mem.ptr,
+            .len = 0,
+            .cap = mem.len,
+            .allocator = allocator,
+        };
+    }
+
+    fn ensureCapacity(self: *AddBuffer, text_buffer: *UnifiedTextBuffer, need: usize) !void {
+        if (self.len + need <= self.cap) return;
+
+        // Earlier bytes stay in the old slot; the new slot starts empty.
+        const new_cap = @max(self.cap * 2, need);
+        const new_mem = try self.allocator.alloc(u8, new_cap);
+        errdefer self.allocator.free(new_mem);
+        const buffer_count = text_buffer.mem_registry.buffers.items.len;
+        const new_mem_id = try text_buffer.registerMemBuffer(new_mem, true);
+        self.grown[self.grown_len] = .{ .mem_id = new_mem_id, .buffer_count = buffer_count };
+        self.grown_len += 1;
+        self.mem_id = new_mem_id;
+        self.ptr = new_mem.ptr;
+        self.len = 0;
+        self.cap = new_mem.len;
+    }
+
+    fn append(self: *AddBuffer, bytes: []const u8) struct { mem_id: u8, start: u32, end: u32 } {
+        std.debug.assert(self.len + bytes.len <= self.cap);
+        const start: u32 = @intCast(self.len);
+
+        const dest_slice = self.ptr[0..self.cap];
+        @memcpy(dest_slice[self.len .. self.len + bytes.len], bytes);
+
+        self.len += bytes.len;
+        const end: u32 = @intCast(self.len);
+        return .{ .mem_id = self.mem_id, .start = start, .end = end };
+    }
+
+    /// Restores the add buffer after a failed edit and releases the slots that growth registered.
+    const Checkpoint = struct {
+        add_buffer: AddBuffer,
+
+        fn restore(checkpoint: Checkpoint, text_buffer: *UnifiedTextBuffer, add_buffer: *AddBuffer) void {
+            while (add_buffer.grown_len > checkpoint.add_buffer.grown_len) {
+                add_buffer.grown_len -= 1;
+                const grown = add_buffer.grown[add_buffer.grown_len];
+                text_buffer.mem_registry.cancelLastRegistration(grown.mem_id, grown.buffer_count);
+            }
+            add_buffer.* = checkpoint.add_buffer;
+        }
+    };
+};
+
+pub const EditBuffer = struct {
+    tb: *UnifiedTextBuffer,
+    add_buffer: AddBuffer,
+    cursor: Cursor,
+    allocator: Allocator,
+    events: event_emitter.EventEmitter(EditBufferEvent),
+    segment_splitter: UnifiedRope.Node.LeafSplitFn,
+    notify: ?NativeEventNotify,
+
+    pub fn init(
+        allocator: Allocator,
+        pool: *gp.GraphemePool,
+        link_pool: *link.LinkPool,
+        width_method: utf8.WidthMethod,
+        notify: ?NativeEventNotify,
+    ) !*EditBuffer {
+        return initWithOptions(allocator, pool, link_pool, width_method, notify, .{});
+    }
+
+    pub fn initWithOptions(
+        allocator: Allocator,
+        pool: *gp.GraphemePool,
+        link_pool: *link.LinkPool,
+        width_method: utf8.WidthMethod,
+        notify: ?NativeEventNotify,
+        options: UnifiedTextBuffer.InitOptions,
+    ) !*EditBuffer {
+        const self = try allocator.create(EditBuffer);
+        errdefer allocator.destroy(self);
+
+        // A cursor that moves by cell cannot stop on a zero-width control, so editors show notation.
+        var text_options = options;
+        text_options.control_display = .notation;
+        const text_buffer = try UnifiedTextBuffer.initWithOptions(allocator, pool, link_pool, width_method, text_options);
+        errdefer text_buffer.deinit();
+
+        const add_buffer = try AddBuffer.init(allocator, text_buffer, 65536);
+
+        self.* = .{
+            .tb = text_buffer,
+            .add_buffer = add_buffer,
+            .cursor = .{ .row = 0, .col = 0 },
+            .allocator = allocator,
+            .events = event_emitter.EventEmitter(EditBufferEvent).init(allocator),
+            .segment_splitter = .{ .ctx = self, .splitFn = splitSegmentCallback, .joinFn = joinSegmentCallback },
+            .notify = notify,
+        };
+
+        return self;
+    }
+
+    pub fn deinit(self: *EditBuffer) void {
+        const allocator = self.allocator;
+        defer allocator.destroy(self);
+
+        // Registry owns all AddBuffer memory, don't free it manually
+        self.events.deinit();
+        self.tb.deinit();
+        self.* = undefined;
+    }
+
+    fn emitNativeEvent(self: *const EditBuffer, event: NativeEvent) void {
+        if (self.notify) |notify| notify.callback(notify.userdata, event);
+    }
+
+    /// Runs the synchronous cursor listeners (editor views) before notifying the Context.
+    fn publishCursor(self: *EditBuffer, content_changed: bool) void {
+        self.events.emit(.cursorChanged);
+        self.emitNativeEvent(.cursor_changed);
+        if (content_changed) self.emitNativeEvent(.content_changed);
+    }
+
+    pub fn getTextBuffer(self: *EditBuffer) *UnifiedTextBuffer {
+        return self.tb;
+    }
+
+    pub fn getPrimaryCursor(self: *const EditBuffer) Cursor {
+        return self.cursor;
+    }
+
+    pub fn setCursor(self: *EditBuffer, row: u32, col: u32) !void {
+        const line_count = self.tb.lineCount();
+        const clamped_row = @min(row, line_count -| 1);
+
+        const line_width = iter_mod.lineWidthAt(self.tb.rope(), clamped_row);
+        const clamped_col = @min(col, line_width);
+
+        const offset = iter_mod.coordsToOffset(self.tb.rope(), clamped_row, clamped_col) orelse 0;
+
+        self.cursor = .{ .row = clamped_row, .col = clamped_col, .desired_col = clamped_col, .offset = offset };
+
+        self.publishCursor(false);
+    }
+
+    pub fn setCursorByOffset(self: *EditBuffer, offset: u32) !void {
+        const coords = iter_mod.offsetToCoords(self.tb.rope(), offset) orelse iter_mod.Coords{ .row = 0, .col = 0 };
+        try self.setCursor(coords.row, coords.col);
+    }
+
+    fn remapCol(self: *EditBuffer, row: u32, target_col: u32, old_tab_width: u8) ?u32 {
+        var seg_idx = (iter_mod.lineStart(self.tb.rope(), row) orelse return null).leaf_index + 1;
+        var old_col: u32 = 0;
+        var new_col: u32 = 0;
+
+        while (seg_idx < self.tb.rope().count()) : (seg_idx += 1) {
+            const seg = self.tb.rope().get(seg_idx) orelse break;
+            if (seg.isBreak() or seg.isLineStart()) break;
+            const chunk = seg.asText() orelse continue;
+            const bytes = chunk.getBytes(self.tb.memRegistry());
+            // The restored root's cached widths use the current policy, not the checkpoint's.
+            const next_col = old_col +| utf8.calculateTextWidth(bytes, old_tab_width, self.tb.controlDisplay(), chunk.isAsciiOnly(), self.tb.widthMethod());
+            if (target_col <= next_col) {
+                const pos = utf8.findPosByWidth(
+                    bytes,
+                    target_col -| old_col,
+                    old_tab_width,
+                    self.tb.controlDisplay(),
+                    chunk.isAsciiOnly(),
+                    false,
+                    self.tb.widthMethod(),
+                );
+                return new_col +| utf8.calculateTextWidth(
+                    bytes[0..pos.byte_offset],
+                    self.tb.tabWidth(),
+                    self.tb.controlDisplay(),
+                    chunk.isAsciiOnly(),
+                    self.tb.widthMethod(),
+                );
+            }
+            old_col = next_col;
+            new_col +|= chunk.width_cols;
+        }
+
+        return if (target_col == old_col) new_col else null;
+    }
+
+    pub fn setTabWidth(self: *EditBuffer, width: u8) void {
+        const old_width = self.tb.tabWidth();
+        self.tb.setTabWidth(width);
+        if (old_width == self.tb.tabWidth()) return;
+
+        const cursor = &self.cursor;
+        const new_col = self.remapCol(cursor.row, cursor.col, old_width) orelse
+            @min(cursor.col, iter_mod.lineWidthAt(self.tb.rope(), cursor.row));
+        if (cursor.desired_col == cursor.col) cursor.desired_col = new_col;
+        cursor.col = new_col;
+        cursor.offset = iter_mod.coordsToOffset(self.tb.rope(), cursor.row, new_col) orelse 0;
+
+        self.publishCursor(false);
+    }
+
+    fn addCheckpoint(self: *const EditBuffer) AddBuffer.Checkpoint {
+        return .{ .add_buffer = self.add_buffer };
+    }
+
+    /// TODO: This method should live in text-buffer-segment.zig and the Rope should take it as comptime param
+    fn splitChunkAtWeight(
+        self: *EditBuffer,
+        chunk: *const TextChunk,
+        weight: u32,
+    ) error{ OutOfBounds, OutOfMemory }!struct { left: TextChunk, right: TextChunk } {
+        const chunk_weight = chunk.width_cols;
+
+        if (weight == 0) {
+            return .{
+                .left = TextChunk{ .mem_id = 0, .byte_start = 0, .byte_end = 0, .width_cols = 0 },
+                .right = chunk.*,
+            };
+        } else if (weight >= chunk_weight) {
+            return .{
+                .left = chunk.*,
+                .right = TextChunk{ .mem_id = 0, .byte_start = 0, .byte_end = 0, .width_cols = 0 },
+            };
+        }
+
+        const chunk_bytes = chunk.getBytes(self.tb.memRegistry());
+        const is_ascii_only = (chunk.flags & TextChunk.Flags.ASCII_ONLY) != 0;
+
+        const result = utf8.findPosByWidth(chunk_bytes, weight, self.tb.tabWidth(), self.tb.controlDisplay(), is_ascii_only, false, self.tb.widthMethod());
+        const split_byte_offset = result.byte_offset;
+
+        const left_chunk = self.tb.createChunk(
+            chunk.mem_id,
+            chunk.byte_start,
+            chunk.byte_start + split_byte_offset,
+        );
+
+        const right_chunk = self.tb.createChunk(
+            chunk.mem_id,
+            chunk.byte_start + split_byte_offset,
+            chunk.byte_end,
+        );
+
+        return .{ .left = left_chunk, .right = right_chunk };
+    }
+
+    fn splitSegmentCallback(
+        allocator: Allocator,
+        ctx: ?*anyopaque,
+        leaf: *const Segment,
+        weight_in_leaf: u32,
+    ) error{ OutOfBounds, OutOfMemory }!UnifiedRope.Node.LeafSplitResult {
+        _ = allocator;
+        const edit_buf = @as(*EditBuffer, @ptrCast(@alignCast(ctx.?)));
+
+        if (leaf.asText()) |chunk| {
+            const result = try edit_buf.splitChunkAtWeight(chunk, weight_in_leaf);
+            return .{
+                .left = Segment{ .text = result.left },
+                .right = Segment{ .text = result.right },
+            };
+        } else {
+            return .{
+                .left = Segment{ .brk = {} },
+                .right = Segment{ .brk = {} },
+            };
+        }
+    }
+
+    /// Keeps chunk boundaries on grapheme boundaries. Contiguous text merges or splits in place;
+    /// a grapheme split across other memory is copied to the add buffer. Widths are measured
+    /// again, since a grapheme can continue across the join.
+    fn joinSegmentCallback(ctx: ?*anyopaque, left: *const Segment, right: *const Segment) error{OutOfMemory}!?UnifiedRope.Node.LeafJoin {
+        const self = @as(*EditBuffer, @ptrCast(@alignCast(ctx.?)));
+        const l = left.asText() orelse return null;
+        const r = right.asText() orelse return null;
+        const l_bytes = l.getBytes(self.tb.memRegistry());
+        const r_bytes = r.getBytes(self.tb.memRegistry());
+        if (Segment.canMerge(left, right)) {
+            const span: ?[2]u32 = if (Segment.findJunction(l_bytes, r_bytes, self.tb.widthMethod())) |at| span: {
+                const start = l.width_cols - self.tb.measureText(l_bytes[at.tail..]);
+                break :span .{ start, start + self.tb.measureText(l_bytes.ptr[at.tail .. l_bytes.len + at.head]) };
+            } else null;
+            return .{ .joined = .{ .text = self.tb.createChunk(l.mem_id, l.byte_start, r.byte_end) }, .span = span, .more = true };
+        }
+        const at = Segment.findJunction(l_bytes, r_bytes, self.tb.widthMethod()) orelse {
+            // A wcwidth cut inside a regional-indicator pair can re-pair the right piece with the next leaf.
+            const cp = utf8.decodeUtf8Unchecked(r_bytes, 0).cp;
+            return if (cp >= 0x1F1E6 and cp <= 0x1F1FF) .{ .left = left.*, .joined = right.*, .more = true } else null;
+        };
+        text_work.add(.grapheme_joins, 1);
+        const joined = if (l.mem_id == r.mem_id and l.byte_end == r.byte_start)
+            self.tb.createChunk(l.mem_id, l.byte_start + at.tail, r.byte_start + at.head)
+        else copy: {
+            const len = l_bytes.len - at.tail + at.head;
+            self.add_buffer.ensureCapacity(self.tb, len) catch return error.OutOfMemory;
+            const added = self.add_buffer.append(l_bytes[at.tail..]);
+            _ = self.add_buffer.append(r_bytes[0..at.head]);
+            text_work.add(.grapheme_join_bytes, len);
+            break :copy self.tb.createChunk(added.mem_id, added.start, added.start + @as(u32, @intCast(len)));
+        };
+        return .{
+            .left = if (at.tail > 0) .{ .text = self.tb.createChunk(l.mem_id, l.byte_start, l.byte_start + at.tail) } else null,
+            .joined = .{ .text = joined },
+            .span = .{ 0, joined.width_cols },
+            .right = if (at.head < r_bytes.len) .{ .text = self.tb.createChunk(r.mem_id, r.byte_start + at.head, r.byte_end) } else null,
+            .more = true,
+        };
+    }
+
+    pub fn insertText(self: *EditBuffer, bytes: []const u8) !void {
+        if (bytes.len == 0) return;
+
+        const cursor = self.cursor;
+        const insert_offset = iter_mod.coordsToOffset(self.tb.rope(), cursor.row, cursor.col) orelse return EditBufferError.InvalidCursor;
+
+        const checkpoint = self.addCheckpoint();
+        errdefer checkpoint.restore(self.tb, &self.add_buffer);
+        try self.add_buffer.ensureCapacity(self.tb, bytes.len);
+
+        const chunk_ref = self.add_buffer.append(bytes);
+        const base_mem_id = chunk_ref.mem_id;
+        const base_start = chunk_ref.start;
+
+        var result = try self.tb.textToSegments(self.allocator, bytes, base_mem_id, base_start, false);
+        defer result.segments.deinit(result.allocator);
+
+        // Prepare root/end-marker repairs without touching shared history.
+        var candidate = self.tb.rope().*;
+        const span = try candidate.insertSliceByWeight(insert_offset, insertBias(cursor), result.segments.items, &self.segment_splitter);
+        const added_lines = iter_mod.getLineCount(&candidate) - self.tb.lineCount();
+        const end = endCursor(.{ .row = cursor.row, .col = cursor.col, .offset = insert_offset }, added_lines, &candidate, span.end);
+        try self.autoStoreUndo();
+        self.tb.rope().root = candidate.root;
+        self.cursor = end;
+
+        self.tb.markViewsDirty();
+        self.publishCursor(true);
+    }
+
+    pub fn deleteRange(self: *EditBuffer, start_cursor: Cursor, end_cursor: Cursor) !void {
+        var start = start_cursor;
+        var end = end_cursor;
+        if (start.row > end.row or (start.row == end.row and start.col > end.col)) {
+            const temp = start;
+            start = end;
+            end = temp;
+        }
+
+        const rope = self.tb.rope();
+        const empty = start.row == end.row and start.col == end.col;
+        const start_offset = iter_mod.coordsToOffset(rope, start.row, start.col) orelse return if (empty) {} else EditBufferError.InvalidCursor;
+        const end_offset = iter_mod.coordsToOffset(rope, end.row, end.col) orelse return EditBufferError.InvalidCursor;
+        // An empty range holds text only where a line without cells, but with bytes, ends the text.
+        if (empty and (start.col > 0 or end_offset < rope.totalWeight() or
+            rope.count() == (iter_mod.lineStart(rope, start.row) orelse return).leaf_index + 1)) return;
+
+        const checkpoint = self.addCheckpoint();
+        errdefer checkpoint.restore(self.tb, &self.add_buffer);
+        var candidate = rope.*;
+        const span = try self.replaceByWeight(&candidate, start_offset, end_offset, &.{});
+        try self.autoStoreUndo();
+        self.tb.rope().root = candidate.root;
+
+        self.tb.markViewsDirty();
+        self.cursor = endCursor(.{ .row = start.row, .col = start.col, .offset = start_offset }, 0, &candidate, deletedCursorOffset(span));
+
+        self.publishCursor(true);
+    }
+
+    /// Replace an exclusive display-cell range, preserving delete-then-insert history and events.
+    /// All fallible work precedes deletion; after_delete runs between the accepted edits.
+    pub fn replaceRange(
+        self: *EditBuffer,
+        start_offset: u32,
+        end_offset: u32,
+        bytes: []const u8,
+        after_delete: event_emitter.EventEmitter(EditBufferEvent).Listener,
+    ) !void {
+        if (start_offset > end_offset or end_offset > self.tb.rope().totalWeight()) {
+            return EditBufferError.InvalidCursor;
+        }
+        const has_deletion = start_offset != end_offset;
+
+        const checkpoint = self.addCheckpoint();
+        errdefer checkpoint.restore(self.tb, &self.add_buffer);
+        try self.add_buffer.ensureCapacity(self.tb, bytes.len);
+        const chunk_ref = self.add_buffer.append(bytes);
+        var segments = try self.tb.textToSegments(self.allocator, bytes, chunk_ref.mem_id, chunk_ref.start, false);
+        defer segments.segments.deinit(segments.allocator);
+
+        var deleted = self.tb.rope().*;
+        var inserted = deleted;
+        var start = self.getPrimaryCursor();
+        var deleted_span: UnifiedRope.JoinSpan = undefined;
+        var inserted_span: UnifiedRope.JoinSpan = undefined;
+        if (has_deletion) {
+            const coords = iter_mod.offsetToCoords(self.tb.rope(), start_offset).?;
+            start = .{ .row = coords.row, .col = coords.col, .offset = start_offset };
+            deleted_span = try self.replaceByWeight(&deleted, start_offset, end_offset, &.{});
+            if (bytes.len > 0) inserted_span = try self.replaceByWeight(&inserted, start_offset, end_offset, segments.segments.items);
+        } else if (bytes.len > 0) {
+            start.offset = iter_mod.coordsToOffset(self.tb.rope(), start.row, start.col) orelse return EditBufferError.InvalidCursor;
+            inserted_span = try inserted.insertSliceByWeight(start.offset, insertBias(start), segments.segments.items, &self.segment_splitter);
+        }
+        const deleted_cursor = if (has_deletion) endCursor(start, 0, &deleted, deletedCursorOffset(deleted_span)) else start;
+        const inserted_cursor = if (bytes.len > 0) endCursor(start, iter_mod.getLineCount(&inserted) - iter_mod.getLineCount(&deleted), &inserted, inserted_span.end) else start;
+
+        // Each store_undo allocates a node, a cursor-metadata buffer, and
+        // at most one redo branch. Reserve both stores before either can trim
+        // shared history. The backing bytes have the rope arena's lifetime.
+        const history_step_size = @sizeOf(UnifiedRope.UndoNode) + @alignOf(UnifiedRope.UndoNode) - 1 +
+            64 + @sizeOf(UnifiedRope.UndoBranch) + @alignOf(UnifiedRope.UndoBranch) - 1;
+        const step_count = @as(usize, @intFromBool(has_deletion)) + @intFromBool(bytes.len > 0);
+        const history_storage = try self.tb.rope().allocator.alloc(u8, history_step_size * step_count);
+        var history_allocator = std.heap.FixedBufferAllocator.init(history_storage);
+        if (has_deletion) self.publishReplacementStep(&deleted, deleted_cursor, history_allocator.allocator());
+        after_delete.handle(after_delete.ctx);
+        if (bytes.len > 0) self.publishReplacementStep(&inserted, inserted_cursor, history_allocator.allocator());
+    }
+
+    fn publishReplacementStep(self: *EditBuffer, candidate: *const UnifiedRope, cursor: Cursor, history_allocator: Allocator) void {
+        const rope = self.tb.rope();
+        const allocator = rope.allocator;
+        rope.allocator = history_allocator;
+        self.autoStoreUndo() catch unreachable; // Reserved above, including alignment and redo branching.
+        rope.allocator = allocator;
+        rope.root = candidate.root;
+        self.cursor = cursor;
+        self.tb.markViewsDirty();
+        self.publishCursor(true);
+    }
+
+    /// The cursor at `offset` in `after`, an edit at `start` that added `added_lines` lines.
+    fn endCursor(start: Cursor, added_lines: u32, after: *const UnifiedRope, offset: u32) Cursor {
+        const row = start.row + added_lines;
+        const col = if (added_lines == 0) offset - (start.offset - start.col) else offset - iter_mod.lineStart(after, row).?.weight;
+        return .{ .row = row, .col = col, .desired_col = col, .offset = offset };
+    }
+
+    /// A deletion that joins graphemes leaves the cursor after the joined grapheme (`span.start`
+    /// would leave it before). An insert leaves it after the grapheme that holds its end.
+    fn deletedCursorOffset(span: UnifiedRope.JoinSpan) u32 {
+        return span.end;
+    }
+
+    /// An insert goes before zero-width text at a line start and after it elsewhere, as in one chunk.
+    fn insertBias(cursor: Cursor) UnifiedRope.Node.Bias {
+        return if (cursor.col == 0) .right else .left;
+    }
+
+    /// A weight lies on both sides of zero-weight leaves. A range takes those at its start only from a line start,
+    /// and those at its end unless it ends at a line start before the text end. Inside a chunk, its split decides.
+    fn replaceByWeight(self: *EditBuffer, candidate: *UnifiedRope, start_offset: u32, end_offset: u32, segments: []const Segment) !UnifiedRope.JoinSpan {
+        const rope = self.tb.rope();
+        const start = iter_mod.offsetToCoords(rope, start_offset) orelse return EditBufferError.InvalidCursor;
+        const end = iter_mod.offsetToCoords(rope, end_offset) orelse return EditBufferError.InvalidCursor;
+        const end_bias: UnifiedRope.Node.Bias = if (end.col == 0 and end_offset < rope.totalWeight()) .right else .left;
+        return candidate.replaceRangeByWeight(start_offset, end_offset, if (start.col == 0) .right else .left, end_bias, segments, &self.segment_splitter);
+    }
+
+    pub fn backspace(self: *EditBuffer) !void {
+        const cursor = self.cursor;
+
+        if (cursor.col == 0) {
+            var start = cursor;
+            if (cursor.row > 0) start = .{ .row = cursor.row - 1, .col = iter_mod.lineWidthAt(self.tb.rope(), cursor.row - 1) };
+            try self.deleteRange(start, cursor);
+        } else {
+            const prev_grapheme_width = self.tb.getPrevGraphemeWidth(cursor.row, cursor.col);
+            if (prev_grapheme_width == 0) return; // Nothing to delete
+
+            const target_col = cursor.col - prev_grapheme_width;
+            try self.deleteRange(
+                .{ .row = cursor.row, .col = target_col },
+                .{ .row = cursor.row, .col = cursor.col },
+            );
+        }
+
+        // deleteRange already checks for placeholder insertion
+    }
+
+    pub fn deleteForward(self: *EditBuffer) !void {
+        const cursor = self.cursor;
+
+        const line_width = iter_mod.lineWidthAt(self.tb.rope(), cursor.row);
+        const line_count = self.tb.lineCount();
+
+        if (cursor.col >= line_width) {
+            var end: Cursor = .{ .row = cursor.row, .col = line_width };
+            if (cursor.row + 1 < line_count) end = .{ .row = cursor.row + 1, .col = 0 };
+            try self.deleteRange(.{ .row = cursor.row, .col = line_width }, end);
+        } else {
+            const grapheme_width = self.tb.getGraphemeWidthAt(cursor.row, cursor.col);
+            if (grapheme_width > 0) {
+                try self.deleteRange(
+                    .{ .row = cursor.row, .col = cursor.col },
+                    .{ .row = cursor.row, .col = cursor.col + grapheme_width },
+                );
+            }
+        }
+    }
+
+    pub fn moveLeft(self: *EditBuffer) void {
+        self.cursor = self.getPrevCharBoundary();
+        self.publishCursor(false);
+    }
+
+    /// Where moveLeft puts the cursor: the start of the grapheme before it, or the end of the line above.
+    pub fn getPrevCharBoundary(self: *EditBuffer) Cursor {
+        var cursor = self.cursor;
+        if (cursor.col > 0) {
+            cursor.col -= self.tb.getPrevGraphemeWidth(cursor.row, cursor.col);
+        } else if (cursor.row > 0) {
+            cursor.row -= 1;
+            cursor.col = iter_mod.lineWidthAt(self.tb.rope(), cursor.row);
+        }
+        cursor.desired_col = cursor.col;
+        cursor.offset = iter_mod.coordsToOffset(self.tb.rope(), cursor.row, cursor.col) orelse 0;
+        return cursor;
+    }
+
+    pub fn moveRight(self: *EditBuffer) void {
+        const cursor = &self.cursor;
+
+        const line_width = iter_mod.lineWidthAt(self.tb.rope(), cursor.row);
+        const line_count = self.tb.getLineCount();
+
+        if (cursor.col < line_width) {
+            const grapheme_width = self.tb.getGraphemeWidthAt(cursor.row, cursor.col);
+            cursor.col += grapheme_width;
+        } else if (cursor.row + 1 < line_count) {
+            cursor.row += 1;
+            cursor.col = 0;
+        }
+        cursor.desired_col = cursor.col;
+        cursor.offset = iter_mod.coordsToOffset(self.tb.rope(), cursor.row, cursor.col) orelse 0;
+
+        self.publishCursor(false);
+    }
+
+    pub fn moveUp(self: *EditBuffer) void {
+        if (self.cursor.row > 0) self.moveToRow(self.cursor.row - 1);
+        self.publishCursor(false);
+    }
+
+    pub fn moveDown(self: *EditBuffer) void {
+        if (self.cursor.row + 1 < self.tb.getLineCount()) self.moveToRow(self.cursor.row + 1);
+        self.publishCursor(false);
+    }
+
+    /// Keeps the desired column, so a later move can return to it.
+    fn moveToRow(self: *EditBuffer, row: u32) void {
+        const cursor = &self.cursor;
+        if (cursor.desired_col == 0) cursor.desired_col = cursor.col;
+        cursor.row = row;
+        cursor.col = self.snapColumn(row, @min(cursor.desired_col, iter_mod.lineWidthAt(self.tb.rope(), row)));
+        cursor.offset = iter_mod.coordsToOffset(self.tb.rope(), row, cursor.col) orelse 0;
+    }
+
+    /// Returns the start of the cursor unit (grapheme, code point, or tab) that covers `col`, so a
+    /// cursor does not land on the second cell of a wide unit.
+    pub fn snapColumn(self: *EditBuffer, row: u32, col: u32) u32 {
+        const text = self.tb;
+        const bounds = iter_mod.getCursorUnitBoundsAt(text.rope(), text.memRegistry(), row, col, text.tabWidth(), text.controlDisplay(), text.widthMethod());
+        return if (bounds) |unit| unit.start else col;
+    }
+
+    /// Returns the column that the last vertical move asked for: the unsnapped desired column
+    /// when the cursor sits on its snapped start, else the cursor column.
+    pub fn unsnappedColumn(self: *EditBuffer) u32 {
+        const cursor = self.cursor;
+        return if (self.snapColumn(cursor.row, cursor.desired_col) == cursor.col) cursor.desired_col else cursor.col;
+    }
+
+    /// Set text and completely reset the buffer state (clears history, resets add_buffer)
+    pub fn setText(self: *EditBuffer, text: []const u8) !void {
+        _ = try self.setTextOwned(text, null);
+    }
+
+    /// Like setText, but reuses the live slot `preferred_id` for the copy when there is one.
+    pub fn setTextOwned(self: *EditBuffer, text: []const u8, preferred_id: ?u8) !u8 {
+        if (preferred_id) |id| {
+            // The live add buffer must remain owned and writable after replacement.
+            if (id == self.add_buffer.mem_id or id == 255) return error.InvalidMemId;
+        }
+        const owned_text = try self.allocator.dupe(u8, text);
+        errdefer self.allocator.free(owned_text);
+        const mem_id = try self.tb.replaceText(owned_text, preferred_id, true);
+        self.add_buffer.len = 0;
+        self.finishTextReplacement();
+        return mem_id;
+    }
+
+    /// Replace text while preserving undo history (creates an undo point). The bytes go to
+    /// the add buffer, so a replacement takes no registry slot of its own.
+    pub fn replaceText(self: *EditBuffer, text: []const u8) !void {
+        var meta_buffer: [64]u8 = undefined;
+        const meta = try self.encodeCurrentCursorMeta(&meta_buffer);
+        const checkpoint = self.addCheckpoint();
+        errdefer checkpoint.restore(self.tb, &self.add_buffer);
+        try self.add_buffer.ensureCapacity(self.tb, text.len);
+        const added = self.add_buffer.append(text);
+        try self.tb.setTextFromMemRangeWithUndo(added.mem_id, added.start, added.end, meta);
+        self.finishTextReplacement();
+    }
+
+    fn finishTextReplacement(self: *EditBuffer) void {
+        self.cursor = .{ .row = 0, .col = 0 };
+        self.publishCursor(true);
+    }
+
+    pub fn getText(self: *EditBuffer, out_buffer: []u8) usize {
+        return self.tb.getPlainTextIntoBuffer(out_buffer);
+    }
+
+    pub fn deleteLine(self: *EditBuffer) !void {
+        const cursor = self.getPrimaryCursor();
+        const line_count = self.tb.lineCount();
+
+        if (cursor.row >= line_count) return;
+
+        if (cursor.row + 1 < line_count) {
+            try self.deleteRange(
+                .{ .row = cursor.row, .col = 0 },
+                .{ .row = cursor.row + 1, .col = 0 },
+            );
+        } else if (cursor.row > 0) {
+            // deleteRange leaves the cursor at the end of the previous line.
+            const prev_line_width = iter_mod.lineWidthAt(self.tb.rope(), cursor.row - 1);
+            const curr_line_width = iter_mod.lineWidthAt(self.tb.rope(), cursor.row);
+            try self.deleteRange(
+                .{ .row = cursor.row - 1, .col = prev_line_width },
+                .{ .row = cursor.row, .col = curr_line_width },
+            );
+        } else {
+            const line_width = iter_mod.lineWidthAt(self.tb.rope(), cursor.row);
+            try self.deleteRange(
+                .{ .row = cursor.row, .col = 0 },
+                .{ .row = cursor.row, .col = line_width },
+            );
+        }
+    }
+
+    pub fn gotoLine(self: *EditBuffer, line: u32) !void {
+        const line_count = self.tb.lineCount();
+        const target_line = @min(line, line_count -| 1);
+
+        if (line >= line_count) {
+            const last_line_width = iter_mod.lineWidthAt(self.tb.rope(), target_line);
+            try self.setCursor(target_line, last_line_width);
+        } else {
+            try self.setCursor(target_line, 0);
+        }
+    }
+
+    pub fn getCursorPosition(self: *const EditBuffer) struct { line: u32, visual_col: u32, offset: u32 } {
+        const cursor = self.getPrimaryCursor();
+
+        return .{
+            .line = cursor.row,
+            .visual_col = cursor.col,
+            .offset = cursor.offset,
+        };
+    }
+
+    pub fn debugLogRope(self: *const EditBuffer) void {
+        self.tb.debugLogRope();
+    }
+
+    fn encodeCurrentCursorMeta(self: *EditBuffer, out_buffer: []u8) ![]const u8 {
+        const cursor = self.getPrimaryCursor();
+        return CursorMeta.fromCursor(cursor, self.tb.tabWidth()).encode(out_buffer);
+    }
+
+    fn autoStoreUndo(self: *EditBuffer) !void {
+        var meta_buffer: [64]u8 = undefined;
+        const meta = try self.encodeCurrentCursorMeta(meta_buffer[0..]);
+        try self.tb.rope().store_undo(meta);
+    }
+
+    pub fn undo(self: *EditBuffer) ![]const u8 {
+        var meta_buffer: [64]u8 = undefined;
+        const meta = try self.encodeCurrentCursorMeta(&meta_buffer);
+        return self.restoreHistoryStep(try self.tb.undo(meta));
+    }
+
+    pub fn redo(self: *EditBuffer) ![]const u8 {
+        return self.restoreHistoryStep(try self.tb.redo());
+    }
+
+    /// Moves the cursor to a restored step's metadata and returns its public part.
+    fn restoreHistoryStep(self: *EditBuffer, meta: []const u8) ![]const u8 {
+        const current = self.getPrimaryCursor();
+        // Unknown metadata keeps the cursor, clamped to the restored text.
+        const decoded = CursorMeta.decode(meta) orelse
+            CursorMeta{ .row = current.row, .col = current.col, .desired_col = current.col };
+        const width_changed = if (decoded.tab_width) |width| width != self.tb.tabWidth() else false;
+        const col = if (width_changed)
+            self.remapCol(decoded.row, decoded.col, decoded.tab_width.?) orelse decoded.col
+        else
+            decoded.col;
+        try self.setCursor(decoded.row, col);
+        self.cursor.desired_col = if (width_changed and decoded.desired_col == decoded.col)
+            col
+        else
+            decoded.desired_col;
+
+        self.tb.markViewsDirty();
+        self.emitNativeEvent(.content_changed);
+        self.emitNativeEvent(.history_cursor_changed);
+        return CursorMeta.publicBytes(meta);
+    }
+
+    pub fn canUndo(self: *const EditBuffer) bool {
+        return self.tb.rope().can_undo();
+    }
+
+    /// `clear` replaces the root without an undo point, which leaves the redo branch unusable.
+    pub fn canRedo(self: *const EditBuffer) bool {
+        const rope = self.tb.rope();
+        return rope.can_redo() and rope.curr_history.?.root == rope.root;
+    }
+
+    pub fn clearHistory(self: *EditBuffer) void {
+        self.tb.rope().clear_history();
+    }
+
+    pub fn clear(self: *EditBuffer) !void {
+        try self.tb.clear();
+        try self.setCursor(0, 0);
+        self.emitNativeEvent(.content_changed);
+    }
+
+    pub fn getNextWordBoundary(self: *EditBuffer) Cursor {
+        const cursor = self.cursor;
+
+        const line_count = self.tb.lineCount();
+        if (cursor.row >= line_count) return cursor;
+
+        const line_width = iter_mod.lineWidthAt(self.tb.rope(), cursor.row);
+
+        var seg_idx = (iter_mod.lineStart(self.tb.rope(), cursor.row) orelse return cursor).leaf_index + 1;
+        var cols_before: u32 = 0;
+        var passed_cursor = false;
+        var previous_word_class: utf8.WordClass = .other;
+
+        while (seg_idx < self.tb.rope().count()) : (seg_idx += 1) {
+            const seg = self.tb.rope().get(seg_idx) orelse break;
+            if (seg.isBreak() or seg.isLineStart()) break;
+            if (seg.asText()) |chunk| {
+                const next_cols = cols_before + chunk.width_cols;
+                const layout = self.tb.getWordLayoutInfoFor(chunk) catch {
+                    cols_before = next_cols;
+                    passed_cursor = passed_cursor or cursor.col < next_cols;
+                    previous_word_class = .other;
+                    continue;
+                };
+
+                if (utf8.isCjkAsciiTransition(previous_word_class, layout.word_classes.first) and
+                    cols_before > cursor.col and cols_before <= line_width)
+                {
+                    const offset = iter_mod.coordsToOffset(self.tb.rope(), cursor.row, cols_before) orelse cursor.offset;
+                    return .{ .row = cursor.row, .col = cols_before, .desired_col = cols_before, .offset = offset };
+                }
+
+                // Check this chunk if cursor is within it OR if we've already passed the cursor
+                if (cursor.col < next_cols or passed_cursor) {
+                    const wrap_breaks = layout.wrap_breaks;
+
+                    // For chunks containing or after the cursor, find the first break after cursor position
+                    const local_cursor_col = if (cursor.col > cols_before) cursor.col - cols_before else 0;
+
+                    for (wrap_breaks) |wrap_break| {
+                        const break_col = wrap_break.col_start;
+                        const target_col = cols_before + wrap_break.colEnd();
+
+                        // If we've passed the cursor chunk, any break is valid
+                        // If we're in the cursor chunk, break must be after cursor position
+                        if (passed_cursor or break_col > local_cursor_col) {
+                            if (target_col > cursor.col and target_col <= line_width) {
+                                const offset = iter_mod.coordsToOffset(self.tb.rope(), cursor.row, target_col) orelse cursor.offset;
+                                return .{ .row = cursor.row, .col = target_col, .desired_col = target_col, .offset = offset };
+                            }
+                        }
+
+                        // A boundary at the cursor can still be the next word step
+                        // for script-transition cases like "a日", "日a", or "丽abc".
+                        // Only accept it when the boundary starts on a word codepoint.
+                        if (!passed_cursor and break_col == local_cursor_col) {
+                            const break_byte_offset: usize = @intCast(wrap_break.byte_start);
+                            const chunk_bytes = chunk.getBytes(self.tb.memRegistry());
+                            if (break_byte_offset < chunk_bytes.len) {
+                                const break_cp = utf8.decodeUtf8Unchecked(chunk_bytes, break_byte_offset).cp;
+                                if (utf8.isWordCodepoint(break_cp)) {
+                                    if (target_col > cursor.col and target_col <= line_width) {
+                                        const offset = iter_mod.coordsToOffset(self.tb.rope(), cursor.row, target_col) orelse cursor.offset;
+                                        return .{ .row = cursor.row, .col = target_col, .desired_col = target_col, .offset = offset };
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Mark that we've processed/passed the cursor position
+                    passed_cursor = true;
+                }
+                previous_word_class = layout.word_classes.last;
+                cols_before = next_cols;
+            }
+        }
+
+        if (cursor.row + 1 < line_count) {
+            const offset = iter_mod.coordsToOffset(self.tb.rope(), cursor.row + 1, 0) orelse cursor.offset;
+            return .{ .row = cursor.row + 1, .col = 0, .desired_col = 0, .offset = offset };
+        }
+
+        const offset = iter_mod.coordsToOffset(self.tb.rope(), cursor.row, line_width) orelse cursor.offset;
+        return .{ .row = cursor.row, .col = line_width, .desired_col = line_width, .offset = offset };
+    }
+
+    pub fn getPrevWordBoundary(self: *EditBuffer) Cursor {
+        const cursor = self.cursor;
+
+        if (cursor.row == 0 and cursor.col == 0) return cursor;
+
+        var seg_idx = (iter_mod.lineStart(self.tb.rope(), cursor.row) orelse return cursor).leaf_index + 1;
+        var cols_before: u32 = 0;
+        var last_boundary: ?u32 = null;
+        var previous_word_class: utf8.WordClass = .other;
+
+        while (seg_idx < self.tb.rope().count()) : (seg_idx += 1) {
+            const seg = self.tb.rope().get(seg_idx) orelse break;
+            if (seg.isBreak() or seg.isLineStart()) break;
+            if (seg.asText()) |chunk| {
+                const next_cols = cols_before + chunk.width_cols;
+
+                const layout = self.tb.getWordLayoutInfoFor(chunk) catch {
+                    cols_before = next_cols;
+                    previous_word_class = .other;
+                    continue;
+                };
+
+                if (utf8.isCjkAsciiTransition(previous_word_class, layout.word_classes.first) and cols_before < cursor.col) {
+                    last_boundary = cols_before;
+                }
+
+                for (layout.wrap_breaks) |wrap_break| {
+                    const boundary_col = cols_before + wrap_break.colEnd();
+                    if (boundary_col < cursor.col) {
+                        last_boundary = boundary_col;
+                    }
+                }
+
+                previous_word_class = layout.word_classes.last;
+                cols_before = next_cols;
+                if (cursor.col <= cols_before) break;
+            }
+        }
+
+        if (last_boundary) |boundary_col| {
+            const offset = iter_mod.coordsToOffset(self.tb.rope(), cursor.row, boundary_col) orelse cursor.offset;
+            return .{ .row = cursor.row, .col = boundary_col, .desired_col = boundary_col, .offset = offset };
+        }
+
+        if (cursor.row > 0) {
+            const prev_line_width = iter_mod.lineWidthAt(self.tb.rope(), cursor.row - 1);
+            const offset = iter_mod.coordsToOffset(self.tb.rope(), cursor.row - 1, prev_line_width) orelse cursor.offset;
+            return .{ .row = cursor.row - 1, .col = prev_line_width, .desired_col = prev_line_width, .offset = offset };
+        }
+
+        return .{ .row = 0, .col = 0, .desired_col = 0, .offset = 0 };
+    }
+
+    pub fn getEOL(self: *EditBuffer) Cursor {
+        const cursor = self.cursor;
+
+        const line_count = self.tb.lineCount();
+        if (cursor.row >= line_count) return cursor;
+
+        const line_width = iter_mod.lineWidthAt(self.tb.rope(), cursor.row);
+        const offset = iter_mod.coordsToOffset(self.tb.rope(), cursor.row, line_width) orelse cursor.offset;
+
+        return .{ .row = cursor.row, .col = line_width, .desired_col = line_width, .offset = offset };
+    }
+
+    /// Get text within a range of display-width offsets
+    /// Automatically snaps to grapheme boundaries:
+    /// - start_offset excludes graphemes that start before it
+    /// - end_offset includes graphemes that start before it
+    /// Returns number of bytes written to out_buffer
+    pub fn getTextRange(self: *EditBuffer, start_offset: u32, end_offset: u32, out_buffer: []u8) !usize {
+        return self.tb.getTextRange(start_offset, end_offset, out_buffer);
+    }
+
+    /// Get text within a range specified by row/col coordinates
+    /// Automatically snaps to grapheme boundaries:
+    /// Returns number of bytes written to out_buffer
+    pub fn getTextRangeByCoords(self: *EditBuffer, start_row: u32, start_col: u32, end_row: u32, end_col: u32, out_buffer: []u8) usize {
+        return self.tb.getTextRangeByCoords(start_row, start_col, end_row, end_col, out_buffer);
+    }
+};

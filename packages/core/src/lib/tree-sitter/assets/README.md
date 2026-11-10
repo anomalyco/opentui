@@ -108,7 +108,7 @@ for (const parser of getParsers()) {
 }
 ```
 
-For more information about using Tree-Sitter in your application, see the [Tree-Sitter guide](../../../docs/tree-sitter.md).
+For more information about using Tree-Sitter in your application, see the [Tree-Sitter guide](https://opentui.com/docs/reference/tree-sitter).
 
 ### For OpenTUI Core Developers
 

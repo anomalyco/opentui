@@ -3,6 +3,7 @@ import {
   BoxRenderable,
   CodeRenderable,
   DiffRenderable,
+  ImageRenderable,
   InputRenderable,
   LineNumberRenderable,
   MarkdownRenderable,
@@ -13,6 +14,7 @@ import {
   TextAttributes,
   TextNodeRenderable,
   TextRenderable,
+  VideoRenderable,
   type RenderContext,
   type TextNodeOptions,
 } from "@opentui/core"
@@ -101,6 +103,8 @@ export const baseComponents = {
   diff: DiffRenderable,
   line_number: LineNumberRenderable,
   markdown: MarkdownRenderable,
+  image: ImageRenderable,
+  video: VideoRenderable,
 
   span: SpanRenderable,
   strong: BoldSpanRenderable,

@@ -8,6 +8,7 @@ export function createTextAttributes({
   dim = false,
   blink = false,
   inverse = false,
+  reverse = false,
   hidden = false,
   strikethrough = false,
 }: {
@@ -17,6 +18,7 @@ export function createTextAttributes({
   dim?: boolean
   blink?: boolean
   inverse?: boolean
+  reverse?: boolean
   hidden?: boolean
   strikethrough?: boolean
 } = {}): number {
@@ -27,7 +29,7 @@ export function createTextAttributes({
   if (underline) attributes |= TextAttributes.UNDERLINE
   if (dim) attributes |= TextAttributes.DIM
   if (blink) attributes |= TextAttributes.BLINK
-  if (inverse) attributes |= TextAttributes.INVERSE
+  if (inverse || reverse) attributes |= TextAttributes.INVERSE
   if (hidden) attributes |= TextAttributes.HIDDEN
   if (strikethrough) attributes |= TextAttributes.STRIKETHROUGH
 

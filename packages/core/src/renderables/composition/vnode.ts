@@ -151,20 +151,8 @@ export function wrapWithDelegates<T extends InstanceType<RenderableConstructor>>
 ): T {
   if (!delegateMap || Object.keys(delegateMap).length === 0) return instance
 
-  const descendantCache = new Map<string, Renderable | undefined>()
-
   const getDescendant = (id: string): Renderable | undefined => {
-    if (descendantCache.has(id)) {
-      const cached = descendantCache.get(id)
-      if (cached !== undefined) {
-        return cached
-      }
-    }
-    const descendant = (instance as Renderable).findDescendantById(id)
-    if (descendant) {
-      descendantCache.set(id, descendant)
-    }
-    return descendant
+    return (instance as Renderable).findDescendantById(id)
   }
 
   const proxy = new Proxy(instance as any, {

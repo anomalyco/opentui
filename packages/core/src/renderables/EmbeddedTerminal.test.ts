@@ -1,0 +1,509 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { createTestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
+import { KeyEvent } from "../lib/KeyHandler.js"
+import { nonAlphanumericKeys, parseKeypress } from "../lib/parse.keypress.js"
+import { RGBA } from "../lib/RGBA.js"
+import { resolveRenderLib } from "../zig.js"
+import { nativeSymbols, withStubbedSymbols } from "../tests/native-symbol-stubs.js"
+import { EmbeddedTerminalRenderable } from "./EmbeddedTerminal.js"
+
+class MissingFramebufferTerminal extends EmbeddedTerminalRenderable {
+  protected createFrameBuffer(): void {
+    this.frameBuffer = null
+  }
+}
+
+describe("EmbeddedTerminalRenderable", () => {
+  let setup: TestRendererSetup
+
+  beforeEach(async () => {
+    setup = await createTestRenderer({ width: 30, height: 8 })
+  })
+
+  afterEach(() => setup.renderer.destroy())
+
+  test("creates native state from the statically linked runtime", () => {
+    const lib = resolveRenderLib()
+    const context = lib.createContext({ objectCapacity: 1, renderCellsMax: 20 })
+    try {
+      const handle = lib.createContextEmbeddedTerminal(context, { cols: 10, rows: 2 })
+      expect(handle).toBeTruthy()
+      lib.destroyContextEmbeddedTerminal(context, handle)
+    } finally {
+      lib.destroyContext(context)
+    }
+  })
+
+  test("does not compose into the parent buffer when framebuffer allocation fails", async () => {
+    const terminal = new MissingFramebufferTerminal(setup.renderer, { width: 20, height: 4 })
+    setup.renderer.root.add(terminal)
+    terminal.write("must not reach the parent")
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).not.toContain("must not reach the parent")
+  })
+
+  test("renders VT output and preserves it across clean frames", async () => {
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
+    setup.renderer.root.add(terminal)
+    terminal.write("hello \x1b[1;32mworld\x1b[0m\r\nwide: 界")
+
+    await setup.renderOnce()
+    const first = setup.captureCharFrame()
+    expect(first).toContain("hello world")
+    expect(first).toContain("wide: 界")
+
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).toBe(first)
+  })
+
+  test("toggles the pane background between the configured color and the terminal default", async () => {
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
+    setup.renderer.root.add(terminal)
+    await setup.renderOnce()
+    expect(setup.captureSpans().lines[0]?.spans[0]?.bg.intent).toBe("rgb")
+
+    terminal.transparentBackground = true
+    await setup.renderOnce()
+    expect(setup.captureSpans().lines[0]?.spans[0]?.bg.intent).toBe("default")
+
+    terminal.transparentBackground = false
+    await setup.renderOnce()
+    expect(setup.captureSpans().lines[0]?.spans[0]?.bg.intent).toBe("rgb")
+  })
+
+  test("preserves mouse callbacks and their renderable context", async () => {
+    let mouseDowns = 0
+    let callbackThis: EmbeddedTerminalRenderable | undefined
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, {
+      width: 20,
+      height: 4,
+      onMouseDown: function () {
+        mouseDowns++
+        callbackThis = this
+      },
+    })
+    setup.renderer.root.add(terminal)
+    await setup.renderOnce()
+
+    await setup.mockMouse.pressDown(1, 1)
+
+    expect(mouseDowns).toBe(1)
+    expect(callbackThis).toBe(terminal)
+  })
+
+  test("participates in renderer selection and returns terminal text", async () => {
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
+    setup.renderer.root.add(terminal)
+    terminal.write("hello\r\nwide: 界")
+    await setup.renderOnce()
+
+    setup.renderer.startSelection(terminal, terminal.x + 1, terminal.y)
+    setup.renderer.updateSelection(terminal, terminal.x + 3, terminal.y, { finishDragging: true })
+
+    expect(terminal.hasSelection()).toBe(true)
+    expect(terminal.getSelectedText()).toBe("ell")
+    expect(setup.renderer.getSelection()?.getSelectedText()).toBe("ell")
+
+    setup.renderer.clearSelection()
+    expect(terminal.hasSelection()).toBe(false)
+    expect(terminal.getSelectedText()).toBe("")
+  })
+
+  test("waits for a drag to leave its starting cell before selecting", async () => {
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
+    setup.renderer.root.add(terminal)
+    terminal.write("hello")
+    await setup.renderOnce()
+    const original = setup.captureSpans().lines
+
+    await setup.mockMouse.pressDown(1, 0)
+    await setup.renderOnce()
+    expect(terminal.hasSelection()).toBe(false)
+    expect(setup.captureSpans().lines).toEqual(original)
+
+    await setup.mockMouse.moveTo(1, 0)
+    await setup.renderOnce()
+    expect(terminal.hasSelection()).toBe(false)
+    expect(setup.captureSpans().lines).toEqual(original)
+    await setup.mockMouse.release(1, 0)
+    await setup.renderOnce()
+    expect(terminal.hasSelection()).toBe(false)
+    expect(terminal.getSelectedText()).toBe("")
+    expect(setup.renderer.getSelection()?.getSelectedText()).toBe("")
+    expect(setup.captureSpans().lines).toEqual(original)
+
+    setup.renderer.clearSelection()
+    await setup.mockMouse.pressDown(1, 0)
+    await setup.mockMouse.moveTo(2, 0)
+    await setup.renderOnce()
+    expect(terminal.hasSelection()).toBe(true)
+    expect(terminal.getSelectedText()).toBe("el")
+    expect(setup.captureSpans().lines).not.toEqual(original)
+
+    // Crossing the threshold once enables normal selection, even back at the anchor.
+    await setup.mockMouse.moveTo(1, 0)
+    await setup.mockMouse.release(1, 0)
+    await setup.renderOnce()
+    expect(terminal.getSelectedText()).toBe("e")
+    expect(setup.captureSpans().lines).not.toEqual(original)
+
+    await setup.mockMouse.pressDown(4, 0)
+    await setup.renderOnce()
+    expect(terminal.hasSelection()).toBe(false)
+    expect(terminal.getSelectedText()).toBe("")
+    expect(setup.captureSpans().lines).toEqual(original)
+    await setup.mockMouse.release(4, 0)
+  })
+
+  test("starts selection on horizontal or vertical movement even when only one text cell is selected", async () => {
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
+    setup.renderer.root.add(terminal)
+    terminal.write("hello")
+    await setup.renderOnce()
+    const original = setup.captureSpans().lines
+
+    for (const point of [
+      { x: 5, y: 0 },
+      { x: 4, y: 1 },
+    ]) {
+      setup.renderer.clearSelection()
+      await setup.mockMouse.pressDown(4, 0)
+      expect(terminal.hasSelection()).toBe(false)
+      await setup.mockMouse.moveTo(point.x, point.y)
+      await setup.renderOnce()
+      expect(terminal.hasSelection()).toBe(true)
+      expect(terminal.getSelectedText()).toBe("o")
+      expect(setup.captureSpans().lines).not.toEqual(original)
+      await setup.mockMouse.release(point.x, point.y)
+    }
+  })
+
+  test("does not delay word or line selection gestures", async () => {
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
+    setup.renderer.root.add(terminal)
+    terminal.write("hello")
+    await setup.renderOnce()
+
+    for (const behavior of ["word", "line"] as const) {
+      setup.renderer.startSelection(terminal, 0, 0, behavior)
+      expect(terminal.hasSelection()).toBe(true)
+      expect(terminal.getSelectedText()).toBe("h")
+    }
+  })
+
+  test("encodes keys and bracketed paste", () => {
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
+    setup.renderer.root.add(terminal)
+    terminal.write("\x1b[?2004h")
+
+    expect(new TextDecoder().decode(terminal.encodeKey(keyEvent({ name: "enter", sequence: "\r" })))).toBe("\r")
+    expect(new TextDecoder().decode(terminal.encodePaste(new TextEncoder().encode("one\ntwo")))).toBe(
+      "\x1b[200~one\ntwo\x1b[201~",
+    )
+    expect(new TextDecoder().decode(terminal.encodeKey(keyEvent({ name: "😀", sequence: "😀" })))).toBe("😀")
+    expect(new TextDecoder().decode(terminal.encodeKey(keyEvent({ name: "space", sequence: " " })))).toBe(" ")
+    expect(
+      new TextDecoder().decode(terminal.encodeKey(keyEvent({ name: "a", sequence: "A", shift: true, raw: "A" }))),
+    ).toBe("A")
+
+    terminal.write("\x1b[>19u")
+    const longText = "x".repeat(2048)
+    expect(new TextDecoder().decode(terminal.encodeKey(keyEvent({ name: longText, sequence: longText })))).toBe(
+      longText,
+    )
+  })
+
+  test("distinguishes user input from terminal responses", () => {
+    const output: Array<{ data: string; source?: "input" | "response" }> = []
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, {
+      width: 20,
+      height: 4,
+      onData: (data, source) => output.push({ data: new TextDecoder().decode(data), source }),
+    })
+    setup.renderer.root.add(terminal)
+
+    // The 1 MiB native write limit falls inside the status query, as on main this must still answer.
+    terminal.write(" ".repeat(1024 * 1024 - 2) + "\x1b[5n")
+    terminal.handleKeyPress(keyEvent({ name: "enter", sequence: "\r" }))
+
+    expect(output).toEqual([
+      { data: "\x1b[0n", source: "response" },
+      { data: "\r", source: "input" },
+    ])
+  })
+
+  test("drains replies of every write into one reused buffer", () => {
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
+    const drain = nativeSymbols.ot_embedded_terminal_drain_responses!
+    withStubbedSymbols({ ot_embedded_terminal_drain_responses: drain }, (calls) => {
+      terminal.write("a")
+      terminal.write("b")
+      const [first, second] = calls.ot_embedded_terminal_drain_responses!
+      expect(second![2]).toBe(first![2])
+    })
+  })
+
+  test("encodes no-button motion and suppresses unavailable pixel coordinates", () => {
+    const lib = resolveRenderLib()
+    const context = lib.createContext({ objectCapacity: 1, renderCellsMax: 80 })
+    try {
+      const handle = lib.createContextEmbeddedTerminal(context, { cols: 20, rows: 4 })
+      lib.contextEmbeddedTerminalWrite(context, handle, "\x1b[?1003h\x1b[?1006h")
+      const motion = lib.contextEmbeddedTerminalEncodeMouse(context, handle, {
+        action: "motion",
+        x: 1,
+        y: 1,
+      })
+      expect(new TextDecoder().decode(motion)).toBe("\x1b[<35;2;2M")
+
+      lib.contextEmbeddedTerminalWrite(context, handle, "\x1b[?1016h")
+      expect(
+        lib.contextEmbeddedTerminalEncodeMouse(context, handle, {
+          action: "motion",
+          x: 1,
+          y: 1,
+        }),
+      ).toHaveLength(0)
+    } finally {
+      lib.destroyContext(context)
+    }
+  })
+
+  // Only "menu" encodes to nothing: Ghostty has no encoding for ContextMenu or the Kitty MENU key.
+  test.each([...new Set(nonAlphanumericKeys)])("encodes the parser key name %s", (name) => {
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
+    expect(terminal.encodeKey(keyEvent({ name, sequence: "" })).length > 0).toBe(name !== "menu")
+  })
+
+  // Ghostty has no key or no Kitty encoding for 30 of the 111 Kitty functional keys: menu, F26-F35, the 10 media
+  // keys, the 3 volume keys, hyper, Kitty's meta (Ghostty's meta is Kitty's super), and the ISO level shifts.
+  test("round-trips every Kitty functional key that Ghostty can encode", () => {
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
+    terminal.write("\x1b[>31u")
+    const keys = Array.from({ length: 111 }, (_, i) => parseKeypress(`\x1b[${57344 + i}u`, { useKittyKeyboard: true })!)
+    const sent = keys.map((key) => new TextDecoder().decode(terminal.encodeKey(new KeyEvent(key))))
+    const lost = keys.filter((key, i) => parseKeypress(sent[i]!, { useKittyKeyboard: true })?.name !== key.name)
+    expect(lost.map((key) => key.name)).toHaveLength(30)
+  })
+
+  test.each([
+    ["Kitty Ctrl+c", 3, "\x1b[99;5u", "\x1b[99;5u"],
+    ["Kitty Escape", 3, "\x1b[27u", "\x1b[27u"],
+    ["F5", 0, "\x1b[15~", "\x1b[15~"],
+    ["SS3 F1", 0, "\x1bOP", "\x1bOP"],
+    ["xterm Ctrl+F1", 0, "\x1b[1;5P", "\x1b[1;5P"],
+    ["xterm Alt+F1", 0, "\x1b[1;3P", "\x1b[1;3P"],
+    ["xterm Alt+F5", 0, "\x1b[15;3~", "\x1b[15;3~"],
+    ["Kitty F13", 1, "\x1b[57376u", "\x1b[57376u"],
+    ["Kitty F25", 1, "\x1b[57388u", "\x1b[57388u"],
+    ["SS3 Down", 0, "\x1bOB", "\x1b[B"],
+    ["SS3 keypad Begin", 0, "\x1bOE", "\x1b[E"],
+    ["keypad Begin into a DECKPAM child", "\x1b=", "\x1b[E", "\x1b[E"],
+    ["keypad Begin into a DECCKM child", "\x1b[?1h", "\x1b[E", "\x1bOE"],
+    ["xterm Ctrl+keypad Begin", 0, "\x1b[1;5E", "\x1b[1;5E"],
+    ["Kitty keypad Begin", 1, "\x1b[57427u", "\x1b[57427u"],
+    ["Kitty Ctrl+keypad Begin", 1, "\x1b[57427;5u", "\x1b[57427;5u"],
+    ["SS3 Up into a DECCKM child", "\x1b[?1h", "\x1bOA", "\x1bOA"],
+    ["Kitty keypad 9", 31, "\x1b[57408u", "\x1b[57408;;57u"],
+    ["Kitty Ctrl+keypad 0", 1, "\x1b[57399;5u", "\x1b[57399;5u"],
+    ["Kitty Ctrl+keypad 0 in legacy mode", 0, "\x1b[57399;5u", "0"],
+    ["Kitty keypad 0 into a DECKPAM child without mode 1035", "\x1b[?1035l\x1b=", "\x1b[57399u", "\x1bOp"],
+    ["Kitty Ctrl+keypad minus", 1, "\x1b[57412;5u", "\x1b[57412;5u"],
+    ["Kitty keypad plus in legacy mode", 0, "\x1b[57413u", "+"],
+    ["Kitty keypad Enter", 1, "\x1b[57414u", "\x1b[57414u"],
+    ["Kitty keypad Enter in legacy mode", 0, "\x1b[57414u", "\r"],
+    ["Kitty Ctrl+keypad Left", 1, "\x1b[57417;5u", "\x1b[57417;5u"],
+    ["Kitty Ctrl+keypad Left in legacy mode", 0, "\x1b[57417;5u", "\x1b[1;5D"],
+    ["Kitty keypad Page Down in legacy mode", 0, "\x1b[57422u", "\x1b[6~"],
+    ["Kitty Caps Lock in legacy mode", 0, "\x1b[57358u", ""],
+    ["Kitty Shift+Left Shift", 31, "\x1b[57441;2u", "\x1b[57441;2u"],
+    ["Kitty Left Shift in legacy mode", 0, "\x1b[57441u", ""],
+    ["plain Dvorak u", 1, "\x1b[117::102;1u", "u"],
+    ["plain Dvorak d", 1, "\x1b[100::104;1u", "d"],
+    ["Dvorak Ctrl+U", 1, "\x1b[117::102;5u", "\x1b[117;5u"],
+    ["Dvorak Ctrl+D", 1, "\x1b[100::104;5u", "\x1b[100;5u"],
+    ["Dvorak Ctrl+Shift+U", 1, "\x1b[117:85:102;6u", "\x1b[117;6u"],
+    ["Cyrillic Ctrl+ф", 1, "\x1b[1092::97;5u", "\x1b[1092;5u"],
+    ["QWERTY Ctrl+U", 1, "\x1b[117;5u", "\x1b[117;5u"],
+    ["Dvorak Ctrl+U in legacy mode", 0, "\x1b[117::102;5u", "\x15"],
+    ["Dvorak Ctrl+D in legacy mode", 0, "\x1b[100::104;5u", "\x04"],
+    ["Dvorak Ctrl+U with its base-layout alternative", 5, "\x1b[117::102;5u", "\x1b[117::102;5u"],
+    ["Dvorak Ctrl+D with its base-layout alternative", 5, "\x1b[100::104;5u", "\x1b[100::104;5u"],
+    ["legacy Alt+a", 0, "\x1ba", "\x1ba"],
+    ["legacy Alt+b", 0, "\x1bb", "\x1bb"],
+    ["legacy Ctrl+Alt+a into a Kitty child", 1, "\x1b\x01", "\x1b[97;7u"],
+    ["legacy Alt+Backspace", 0, "\x1b\x7f", "\x1b\x7f"],
+    ["xterm Alt+Up in legacy mode", 0, "\x1b[1;3A", "\x1b[1;3A"],
+    ["Kitty Alt+. in legacy mode", 0, "\x1b[46;3u", "\x1b."],
+    ["Kitty Alt+a", 1, "\x1b[97;3u", "\x1b[97;3u"],
+    ["Kitty Super+a", 1, "\x1b[97;9u", "\x1b[97;9u"],
+    ["Kitty Alt+Super+a", 1, "\x1b[97;11u", "\x1b[97;11u"],
+    ["Kitty Meta+a as Alt", 1, "\x1b[97;33u", "\x1b[97;3u"],
+  ])("preserves %s", (_label, flags, raw, expected) => {
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
+    setup.renderer.root.add(terminal)
+    terminal.write(typeof flags === "string" ? flags : `\x1b[>${flags}u`)
+
+    const parsed = parseKeypress(raw, { useKittyKeyboard: true })!
+    expect(new TextDecoder().decode(terminal.encodeKey(new KeyEvent(parsed)))).toBe(expected)
+  })
+
+  test("forwards Dvorak press, repeat, and release with the same active-layout key", () => {
+    const output: string[] = []
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, {
+      width: 20,
+      height: 4,
+      onData: (data) => output.push(new TextDecoder().decode(data)),
+    })
+    setup.renderer.root.add(terminal)
+    terminal.write("\x1b[>3u")
+    terminal.focus()
+
+    for (const raw of ["\x1b[117::102;5u", "\x1b[117::102;5:2u", "\x1b[117::102;5:3u"]) {
+      setup.renderer.keyInput.processParsedKey(parseKeypress(raw, { useKittyKeyboard: true })!)
+    }
+
+    expect(output).toEqual(["\x1b[117;5u", "\x1b[117;5:2u", "\x1b[117;5:3u"])
+  })
+
+  test("drains the preserved response prefix after overflow", () => {
+    const lib = resolveRenderLib()
+    const context = lib.createContext({ objectCapacity: 1, renderCellsMax: 80 })
+    try {
+      const handle = lib.createContextEmbeddedTerminal(context, { cols: 20, rows: 4 })
+      const query = "\x1b[5n"
+      lib.contextEmbeddedTerminalWrite(context, handle, query.repeat((1024 * 1024) / query.length))
+      lib.contextEmbeddedTerminalWrite(context, handle, query)
+      const responses = lib.contextEmbeddedTerminalDrainResponses(context, handle)
+      expect(responses.byteLength).toBe(1024 * 1024)
+      expect(new TextDecoder().decode(responses)).toBe("\x1b[0n".repeat((1024 * 1024) / 4))
+      expect(lib.contextEmbeddedTerminalDrainResponses(context, handle)).toHaveLength(0)
+    } finally {
+      lib.destroyContext(context)
+    }
+  })
+
+  test("resizes and destroys native state idempotently", async () => {
+    const sizes: Array<[number, number]> = []
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, {
+      width: 10,
+      height: 2,
+      onTerminalResize: (cols, rows) => sizes.push([cols, rows]),
+    })
+    setup.renderer.root.add(terminal)
+    terminal.write("abcdefghij\r\n1\r\n2\r\n3\r\n4\r\n5")
+    await setup.renderOnce()
+    // An unencoded wheel step scrolls the viewport 3 rows into the history.
+    setup.renderer.stdin.emit("data", Buffer.from("\x1b[<64;1;1M"))
+    expect(terminal.getScroll()).toEqual({ offset: 3, total: 6, visible: 2 })
+
+    terminal.width = 5
+    terminal.height = 3
+    await setup.renderOnce()
+    expect(terminal.width).toBe(5)
+    expect(terminal.height).toBe(3)
+    expect(sizes.some(([cols, rows]) => cols === 5 && rows === 3)).toBe(true)
+    expect(terminal.getScroll()).toEqual({ offset: 3, total: 8, visible: 3 })
+
+    terminal.destroy()
+    terminal.destroy()
+    expect(terminal.isDestroyed).toBe(true)
+    expect(terminal.getScroll()).toEqual({ offset: 0, total: 0, visible: 0 })
+  })
+
+  test("rejects dimensions that cannot cross the native ABI", () => {
+    expect(() => new EmbeddedTerminalRenderable(setup.renderer, { cols: 0, rows: 24 })).toThrow(
+      "columns must be an integer between 1 and 65535",
+    )
+    expect(
+      () => new EmbeddedTerminalRenderable(setup.renderer, { cols: 80, rows: 24, maxScrollback: 0x1_0000_0000 }),
+    ).toThrow("Embedded terminal maxScrollback exceeds native u32 length limit")
+  })
+
+  test("cleans up focus and native state when the data callback throws", () => {
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, {
+      width: 20,
+      height: 4,
+      onData: () => {
+        throw new Error("write failed")
+      },
+    })
+    setup.renderer.root.add(terminal)
+    terminal.write("\x1b[?1004h")
+
+    expect(() => terminal.focus()).toThrow("write failed")
+    expect(terminal.focused).toBe(false)
+
+    terminal.onData = undefined
+    terminal.focus()
+    terminal.onData = () => {
+      throw new Error("write failed")
+    }
+    terminal.destroy()
+    expect(terminal.isDestroyed).toBe(true)
+  })
+
+  test("restores terminal cells after render hooks change", async () => {
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, {
+      width: 20,
+      height: 4,
+      renderAfter: (buffer) => {
+        buffer.setCell(0, 0, "X", RGBA.fromInts(255, 255, 255, 255), RGBA.fromInts(0, 0, 0, 255))
+      },
+    })
+    setup.renderer.root.add(terminal)
+    terminal.write("A")
+    await setup.renderOnce()
+    expect(setup.captureCharFrame().startsWith("X")).toBe(true)
+
+    terminal.renderAfter = undefined
+    terminal.requestRender()
+    await setup.renderOnce()
+    expect(setup.captureCharFrame().startsWith("A")).toBe(true)
+  })
+
+  test("forwards Kitty key releases while focused", () => {
+    const output: Uint8Array[] = []
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, {
+      width: 20,
+      height: 4,
+      onData: (data) => output.push(data),
+    })
+    setup.renderer.root.add(terminal)
+    terminal.write("\x1b[>3u")
+    terminal.focus()
+
+    setup.renderer.keyInput.processParsedKey({
+      name: "a",
+      ctrl: false,
+      meta: false,
+      shift: false,
+      option: false,
+      sequence: "",
+      raw: "",
+      number: false,
+      eventType: "release",
+      source: "kitty",
+      code: "KeyA",
+    })
+
+    expect(new TextDecoder().decode(output.at(-1))).toBe("\x1b[97;1:3u")
+  })
+})
+
+function keyEvent(
+  options: Pick<ConstructorParameters<typeof KeyEvent>[0], "name" | "sequence"> &
+    Partial<ConstructorParameters<typeof KeyEvent>[0]>,
+): KeyEvent {
+  return new KeyEvent({
+    ctrl: false,
+    meta: false,
+    shift: false,
+    option: false,
+    raw: options.sequence,
+    number: false,
+    eventType: "press",
+    source: "raw",
+    ...options,
+  })
+}

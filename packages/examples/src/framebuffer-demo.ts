@@ -635,20 +635,25 @@ export function destroy(renderer: CliRenderer): void {
   renderer.clearFrameCallbacks()
 
   if (parentContainer) {
-    renderer.root.remove("framebuffer-container")
+    parentContainer.destroyRecursively()
     parentContainer = null
   }
 
-  renderer.root.remove("pattern")
-  renderer.root.remove("moving-box")
-  renderer.root.remove("overlay")
-  renderer.root.remove("ball")
-  renderer.root.remove("resizable-box")
-  renderer.root.remove("large-source")
-  renderer.root.remove("crop-demo-1")
-  renderer.root.remove("crop-demo-2")
-  renderer.root.remove("crop-demo-3")
-  renderer.root.remove("emoji-demo")
+  for (const id of [
+    "pattern",
+    "moving-box",
+    "overlay",
+    "ball",
+    "resizable-box",
+    "large-source",
+    "crop-demo-1",
+    "crop-demo-2",
+    "crop-demo-3",
+    "emoji-demo",
+  ]) {
+    const child = renderer.root.getRenderable(id)
+    child?.destroyRecursively()
+  }
 
   boxX = 10
   boxY = 10

@@ -5,8 +5,8 @@ import {
   type CliRendererExternalOutputEvent,
   type CliRendererFrameEvent,
 } from "../renderer.js"
-import type { NativeSpanFeed } from "../NativeSpanFeed.js"
 import type { NativeRenderStats } from "../zig.js"
+import { nativeConstants } from "../native-abi.generated.js"
 import { createMockKeys } from "./mock-keys.js"
 import { createMockMouse } from "./mock-mouse.js"
 import { createTestStdin, createTestStdout } from "./test-streams.js"
@@ -17,14 +17,14 @@ export interface TestRendererOptions extends CliRendererConfig {
   height?: number
   kittyKeyboard?: boolean
   otherModifiersMode?: boolean
+  /** Every frame rebuilds its native preparation and paint lists instead of reusing the last frame's (`OT_SCENE_DEBUG_FULL_FRAME`). Output is unchanged. */
+  nativeSceneFullFrame?: boolean
+  /** Each frame that retained paint skips or repaints partly is checked against the presented frame and against a full repaint into a scratch buffer (`OT_SCENE_DEBUG_VERIFY`); a mismatch throws. Captures do not disturb retention. On by default. */
+  nativeSceneVerify?: boolean
 }
 export type TestRenderer = CliRenderer
 export type MockInput = ReturnType<typeof createMockKeys>
 export type MockMouse = ReturnType<typeof createMockMouse>
-
-type RendererFeedAccess = {
-  _feed?: NativeSpanFeed | null
-}
 
 export interface TestFlushOptions {
   maxPasses?: number
@@ -72,6 +72,9 @@ export interface TestRendererSetup {
   captureCharFrame: () => string
   captureSpans: () => CapturedFrame
   resize: (width: number, height: number) => void
+  /** Destroys the renderer and waits for `closed`; rejects with a Session failure. */
+  dispose: () => Promise<void>
+  [Symbol.asyncDispose]: () => Promise<void>
 }
 
 const decoder = new TextDecoder()
@@ -94,17 +97,18 @@ function normalizePositiveInteger(value: number | undefined, fallback: number): 
 }
 
 function createWaitError(renderer: TestRenderer, message: string, frame?: string): Error {
-  const stats = renderer.getStats()
   const scheduler = renderer.getSchedulerState()
-  const details = [
-    message,
-    `frameId: ${renderer.frameId}`,
-    `nativeFrameCount: ${stats.nativeFrameCount}`,
-    `cellsUpdated: ${stats.cellsUpdated}`,
+  const details = [message, `frameId: ${renderer.frameId}`, `destroyed: ${renderer.isDestroyed}`]
+  // Native stats are gone after destruction; a Session failure can destroy the renderer during a wait.
+  if (!renderer.isDestroyed) {
+    const stats = renderer.getStats()
+    details.push(`nativeFrameCount: ${stats.nativeFrameCount}`, `cellsUpdated: ${stats.cellsUpdated}`)
+  }
+  details.push(
     `isRunning: ${scheduler.isRunning}`,
     `isRendering: ${scheduler.isRendering}`,
     `hasScheduledRender: ${scheduler.hasScheduledRender}`,
-  ]
+  )
 
   if (frame !== undefined) {
     details.push(`lastFrame:\n${frame}`)
@@ -124,10 +128,10 @@ class TestExternalOutputRecorder implements TestExternalOutput {
   }
 
   private record = (event: CliRendererExternalOutputEvent): void => {
-    const raw = decoder.decode(event.snapshot.getRealCharBytes(false))
-    const rows = Array.from({ length: event.snapshot.height }, (_, index) =>
-      raw.slice(index * event.snapshot.width, (index + 1) * event.snapshot.width).trimEnd(),
-    )
+    const rows = decoder
+      .decode(event.snapshot.getRealCharBytes(true))
+      .split("\n", event.snapshot.height)
+      .map((row) => row.trimEnd())
 
     this.commits.push({
       text: rows.join("\n"),
@@ -163,7 +167,7 @@ function waitForNextFrameOrIdle(renderer: TestRenderer): Promise<CliRendererFram
     return Promise.resolve(null)
   }
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let settled = false
 
     const cleanup = () => {
@@ -171,26 +175,26 @@ function waitForNextFrameOrIdle(renderer: TestRenderer): Promise<CliRendererFram
       renderer.off(CliRenderEvents.DESTROY, onDestroy)
     }
 
-    const finish = (event: CliRendererFrameEvent | null) => {
+    const finish = (settle: () => void) => {
       if (settled) return
       settled = true
       cleanup()
-      resolve(event)
+      settle()
     }
 
     const onFrame = (event: CliRendererFrameEvent) => {
-      finish(event)
+      finish(() => resolve(event))
     }
 
     const onDestroy = () => {
-      finish(null)
+      finish(() => resolve(null))
     }
 
     renderer.on(CliRenderEvents.FRAME, onFrame)
     renderer.once(CliRenderEvents.DESTROY, onDestroy)
 
     if (!scheduler.isRunning) {
-      renderer.idle().then(() => finish(null))
+      renderer.idle().then(onDestroy, (error) => finish(() => reject(error)))
     }
   })
 }
@@ -199,14 +203,22 @@ export async function createTestRenderer(options: TestRendererOptions): Promise<
   // Convert legacy kittyKeyboard boolean to new format
   const useKittyKeyboard = options.kittyKeyboard ? { events: true } : options.useKittyKeyboard
 
+  const { nativeSceneFullFrame, nativeSceneVerify = true, ...rendererOptions } = options
   const renderer = await setupTestRenderer({
-    ...options,
+    ...rendererOptions,
     useKittyKeyboard,
     screenMode: options.screenMode ?? "main-screen",
     footerHeight: options.footerHeight ?? 12,
     consoleMode: options.consoleMode ?? "disabled",
     externalOutputMode: options.externalOutputMode ?? "passthrough",
   })
+  const debugFlags =
+    (nativeSceneFullFrame ? nativeConstants.OT_SCENE_DEBUG_FULL_FRAME : 0) |
+    (nativeSceneVerify ? nativeConstants.OT_SCENE_DEBUG_VERIFY : 0)
+  if (debugFlags !== 0) {
+    const session = renderer["nativeSession"]
+    renderer["lib"].sceneSetDebugFlags(session.context, session.session, debugFlags)
+  }
   const externalOutput = new TestExternalOutputRecorder(renderer)
 
   const mockInput = createMockKeys(renderer, {
@@ -216,12 +228,12 @@ export async function createTestRenderer(options: TestRendererOptions): Promise<
   const mockMouse = createMockMouse(renderer)
 
   const renderOnce = async () => {
-    const feed = (renderer as unknown as RendererFeedAccess)._feed
-    if (feed?.isBackpressured()) {
-      await feed.idle()
+    if (renderer.getSchedulerState().isRendering) {
+      //@ts-expect-error - this is a test renderer
+      await renderer.loop(true)
     }
     //@ts-expect-error - this is a test renderer
-    await renderer.loop()
+    await renderer.loop(true)
   }
 
   const captureCharFrame = () => {
@@ -303,10 +315,15 @@ export async function createTestRenderer(options: TestRendererOptions): Promise<
     waitOptions: TestWaitForOptions = {},
   ): Promise<string> => {
     const maxPasses = normalizePositiveInteger(waitOptions.maxPasses, DEFAULT_MAX_PASSES)
-    let frame = captureCharFrame()
+    let frame = ""
 
-    for (let pass = 0; pass <= maxPasses; pass++) {
+    for (let pass = 0; pass <= maxPasses && !renderer.isDestroyed; pass++) {
       await drainImmediateWork()
+      if (renderer.getSchedulerState().isRendering) {
+        //@ts-expect-error - this is a test renderer
+        await renderer.loop(true)
+        if (renderer.getSchedulerState().isRendering) continue
+      }
       frame = captureCharFrame()
       if (await predicate(frame)) {
         return frame
@@ -324,8 +341,12 @@ export async function createTestRenderer(options: TestRendererOptions): Promise<
       await waitForNextFrameOrIdle(renderer)
     }
 
-    frame = captureCharFrame()
     throw createWaitError(renderer, `Timed out waiting for frame predicate after ${maxPasses} passes`, frame)
+  }
+
+  const dispose = () => {
+    renderer.destroy()
+    return renderer.closed
   }
 
   return {
@@ -351,10 +372,9 @@ export async function createTestRenderer(options: TestRendererOptions): Promise<
         lines,
       }
     },
-    resize: (width: number, height: number) => {
-      //@ts-expect-error - this is a test renderer
-      renderer.processResize(width, height)
-    },
+    resize: (width: number, height: number) => renderer.resize(width, height),
+    dispose,
+    [Symbol.asyncDispose]: dispose,
   }
 }
 
@@ -367,7 +387,7 @@ async function setupTestRenderer(config: TestRendererOptions) {
   // Direct construction skips setupTerminal(); native bytes are routed to an
   // explicit memory destination so tests do not depend on process stdout or feed
   // backpressure behavior. CliRenderer still owns native renderer creation and
-  // applies the same useThread defaults as production construction.
+  // applies the same output policy as production construction.
   return new CliRenderer(stdin, stdout, width, height, {
     ...config,
     bufferedOutput: config.bufferedOutput ?? "memory",

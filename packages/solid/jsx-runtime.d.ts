@@ -3,6 +3,7 @@ import type {
   BoxProps,
   CodeProps,
   ExtendedIntrinsicElements,
+  ImageProps,
   InputProps,
   LinkProps,
   MarkdownProps,
@@ -13,6 +14,7 @@ import type {
   TabSelectProps,
   TextareaProps,
   TextProps,
+  VideoProps,
 } from "./src/types/elements.js"
 import type { JSX as SolidJSX } from "solid-js"
 
@@ -38,6 +40,8 @@ export declare namespace JSX {
     code: CodeProps
     textarea: TextareaProps
     markdown: MarkdownProps
+    image: ImageProps
+    video: VideoProps
 
     b: SpanProps
     strong: SpanProps

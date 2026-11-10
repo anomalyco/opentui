@@ -1,8 +1,8 @@
-import { Renderable, type RenderableOptions } from "../Renderable.js"
-import { OptimizedBuffer } from "../buffer.js"
+import { Renderable, type BaseRenderable, type RenderableOptions } from "../Renderable.js"
+import type { OptimizedBuffer } from "../buffer.js"
 import type { RenderContext, LineInfoProvider } from "../types.js"
 import { RGBA, parseColor } from "../lib/RGBA.js"
-import { stringWidth } from "../platform/runtime.js"
+import type { WidthMethod } from "../types.js"
 import { MeasureMode } from "../yoga.js"
 
 export interface LineSign {
@@ -31,15 +31,34 @@ export interface LineNumberOptions extends RenderableOptions<LineNumberRenderabl
   showLineNumbers?: boolean
 }
 
+export interface GutterLayout {
+  minWidth: number
+  /** Columns before the line numbers, painted in each line's gutter color. Defaults to 1. */
+  paddingLeft: number
+  paddingRight: number
+  /** Reserve room for at least this many line-number digits. */
+  minDigits: number
+  /** Reserve at least this many columns for `after` signs, even when no line has one. */
+  minAfterWidth: number
+}
+
 const DEFAULT_GUTTER_FG = "#888888"
 const DEFAULT_GUTTER_BG = "transparent"
+const transparent = RGBA.fromValues(0, 0, 0, 0)
+
+function cloneLineSign(sign: LineSign): LineSign {
+  return {
+    ...sign,
+    beforeColor: typeof sign.beforeColor === "object" ? RGBA.clone(sign.beforeColor) : sign.beforeColor,
+    afterColor: typeof sign.afterColor === "object" ? RGBA.clone(sign.afterColor) : sign.afterColor,
+  }
+}
 
 class GutterRenderable extends Renderable {
   private target: Renderable & LineInfoProvider
   private _fg: RGBA
   private _bg: RGBA
-  private _minWidth: number
-  private _paddingRight: number
+  private _layout: GutterLayout
   private _lineColorsGutter: Map<number, RGBA>
   private _lineColorsContent: Map<number, RGBA>
   private _lineSigns: Map<number, LineSign>
@@ -49,7 +68,9 @@ class GutterRenderable extends Renderable {
   private _maxBeforeWidth: number = 0
   private _maxAfterWidth: number = 0
   private _lastKnownLineCount: number = 0
-  private _lastKnownScrollY: number = 0
+  // Native widths of the non-ASCII signs, for the width method they were measured with.
+  private _signWidths = new Map<string, number>()
+  private _signWidthMethod?: WidthMethod
 
   constructor(
     ctx: RenderContext,
@@ -57,8 +78,7 @@ class GutterRenderable extends Renderable {
     options: {
       fg: RGBA
       bg: RGBA
-      minWidth: number
-      paddingRight: number
+      layout: GutterLayout
       lineColorsGutter: Map<number, RGBA>
       lineColorsContent: Map<number, RGBA>
       lineSigns: Map<number, LineSign>
@@ -66,7 +86,6 @@ class GutterRenderable extends Renderable {
       hideLineNumbers: Set<number>
       lineNumbers?: Map<number, number>
       id?: string
-      buffered?: boolean
     },
   ) {
     super(ctx, {
@@ -75,32 +94,35 @@ class GutterRenderable extends Renderable {
       height: "auto",
       flexGrow: 0,
       flexShrink: 0,
-      buffered: options.buffered,
     })
-    this.target = target
-    this._fg = options.fg
-    this._bg = options.bg
-    this._minWidth = options.minWidth
-    this._paddingRight = options.paddingRight
-    this._lineColorsGutter = options.lineColorsGutter
-    this._lineColorsContent = options.lineColorsContent
-    this._lineSigns = options.lineSigns
-    this._lineNumberOffset = options.lineNumberOffset
-    this._hideLineNumbers = options.hideLineNumbers
-    this._lineNumbers = options.lineNumbers ?? new Map()
-    this._lastKnownLineCount = this.target.virtualLineCount
-    this._lastKnownScrollY = this.target.scrollY
-    this.calculateSignWidths()
-    this.setupMeasureFunc()
+    try {
+      this.target = target
+      this._fg = options.fg
+      this._bg = options.bg
+      this._layout = options.layout
+      this._lineColorsGutter = options.lineColorsGutter
+      this._lineColorsContent = options.lineColorsContent
+      this._lineSigns = options.lineSigns
+      this._lineNumberOffset = options.lineNumberOffset
+      this._hideLineNumbers = options.hideLineNumbers
+      this._lineNumbers = options.lineNumbers ?? new Map()
+      this._lastKnownLineCount = this.target.virtualLineCount
+      this.calculateSignWidths()
+      this.setupMeasureFunc()
 
-    // Use lifecycle pass to detect line count changes BEFORE layout
-    this.onLifecyclePass = () => {
-      const currentLineCount = this.target.virtualLineCount
-      if (currentLineCount !== this._lastKnownLineCount) {
-        this._lastKnownLineCount = currentLineCount
-        this.yogaNode.markDirty()
-        this.requestRender()
+      // Use lifecycle pass to detect line count changes BEFORE layout
+      this.onLifecyclePass = () => {
+        const currentLineCount = this.target.virtualLineCount
+        const signsStale = this._ctx.widthMethod !== this._signWidthMethod
+        if (signsStale) this.calculateSignWidths()
+        if (currentLineCount !== this._lastKnownLineCount || signsStale) {
+          this._lastKnownLineCount = currentLineCount
+          this.invalidateIntrinsicSize()
+          this.requestRender()
+        }
       }
+    } catch (error) {
+      this.abortConstruction(error)
     }
   }
 
@@ -125,52 +147,72 @@ class GutterRenderable extends Renderable {
       }
     }
 
-    this.yogaNode.setMeasureFunc(measureFunc)
+    this.setMeasureProvider(measureFunc)
   }
 
   public remeasure(): void {
     // Mark the yoga node as dirty to trigger re-measurement
-    this.yogaNode.markDirty()
+    this.invalidateIntrinsicSize()
+    this.requestRender()
   }
 
   public setLineNumberOffset(offset: number): void {
     if (this._lineNumberOffset !== offset) {
       this._lineNumberOffset = offset
-      this.yogaNode.markDirty()
+      this.invalidateIntrinsicSize()
       this.requestRender()
     }
   }
 
   public setHideLineNumbers(hideLineNumbers: Set<number>): void {
     this._hideLineNumbers = hideLineNumbers
-    this.yogaNode.markDirty()
+    this.invalidateIntrinsicSize()
     this.requestRender()
   }
 
   public setLineNumbers(lineNumbers: Map<number, number>): void {
     this._lineNumbers = lineNumbers
-    this.yogaNode.markDirty()
+    this.invalidateIntrinsicSize()
+    this.requestRender()
+  }
+
+  public setLayout(layout: GutterLayout): void {
+    this._layout = layout
+    this.calculateSignWidths()
+    this.invalidateIntrinsicSize()
     this.requestRender()
   }
 
   private calculateSignWidths(): void {
     this._maxBeforeWidth = 0
-    this._maxAfterWidth = 0
+    this._maxAfterWidth = this._layout.minAfterWidth
+    this._signWidths.clear()
+    this._signWidthMethod = this._ctx.widthMethod
 
     for (const sign of this._lineSigns.values()) {
-      if (sign.before) {
-        const width = stringWidth(sign.before)
-        this._maxBeforeWidth = Math.max(this._maxBeforeWidth, width)
-      }
-      if (sign.after) {
-        const width = stringWidth(sign.after)
-        this._maxAfterWidth = Math.max(this._maxAfterWidth, width)
-      }
+      if (sign.before) this._maxBeforeWidth = Math.max(this._maxBeforeWidth, this.signWidth(sign.before))
+      if (sign.after) this._maxAfterWidth = Math.max(this._maxAfterWidth, this.signWidth(sign.after))
     }
   }
 
+  // Printable ASCII is one cell per byte; other signs are measured once with the glyph widths that drawing uses.
+  private signWidth(sign: string): number {
+    if (/^[\x20-\x7e]*$/.test(sign)) return sign.length
+    let width = this._signWidths.get(sign)
+    if (width !== undefined) return width
+    const { context, renderLib } = this._ctx.nativeScene.driver
+    const unicode = renderLib.createContextUnicode(context, sign, this._signWidthMethod!)
+    try {
+      width = renderLib.getContextUnicode(context, unicode).reduce((sum, glyph) => sum + glyph.width, 0)
+    } finally {
+      renderLib.destroyContextUnicode(context, unicode)
+    }
+    this._signWidths.set(sign, width)
+    return width
+  }
+
   private calculateWidth(): number {
-    const totalLines = this.target.virtualLineCount
+    const totalLines = Math.max(this.target.lineCount, this.target.virtualLineCount)
 
     // Find max line number, considering both calculated and custom line numbers
     let maxLineNumber = totalLines + this._lineNumberOffset
@@ -180,8 +222,8 @@ class GutterRenderable extends Renderable {
       }
     }
 
-    const digits = maxLineNumber > 0 ? Math.floor(Math.log10(maxLineNumber)) + 1 : 1
-    const baseWidth = Math.max(this._minWidth, digits + this._paddingRight + 1) // +1 for left padding
+    const digits = Math.max(maxLineNumber > 0 ? Math.floor(Math.log10(maxLineNumber)) + 1 : 1, this._layout.minDigits)
+    const baseWidth = Math.max(this._layout.minWidth, digits + this._layout.paddingLeft + this._layout.paddingRight)
     return baseWidth + this._maxBeforeWidth + this._maxAfterWidth
   }
 
@@ -192,7 +234,7 @@ class GutterRenderable extends Renderable {
   }
 
   public get fg(): RGBA {
-    return this._fg
+    return RGBA.clone(this._fg)
   }
 
   public setFg(fg: RGBA): void {
@@ -203,7 +245,7 @@ class GutterRenderable extends Renderable {
   }
 
   public get bg(): RGBA {
-    return this._bg
+    return RGBA.clone(this._bg)
   }
 
   public setBg(bg: RGBA): void {
@@ -215,8 +257,8 @@ class GutterRenderable extends Renderable {
 
   public getLineColors(): { gutter: Map<number, RGBA>; content: Map<number, RGBA> } {
     return {
-      gutter: this._lineColorsGutter,
-      content: this._lineColorsContent,
+      gutter: new Map(Array.from(this._lineColorsGutter, ([line, color]) => [line, RGBA.clone(color)])),
+      content: new Map(Array.from(this._lineColorsContent, ([line, color]) => [line, RGBA.clone(color)])),
     }
   }
 
@@ -229,7 +271,7 @@ class GutterRenderable extends Renderable {
 
     // Mark dirty if sign widths changed - this will trigger remeasure
     if (this._maxBeforeWidth !== oldMaxBefore || this._maxAfterWidth !== oldMaxAfter) {
-      this.yogaNode.markDirty()
+      this.invalidateIntrinsicSize()
     }
 
     // Always request render since signs themselves may have changed
@@ -240,106 +282,64 @@ class GutterRenderable extends Renderable {
     return this._lineSigns
   }
 
-  protected renderSelf(buffer: OptimizedBuffer): void {
-    // For buffered rendering, only re-render when dirty OR when scroll position changed
-    const currentScrollY = this.target.scrollY
-    const scrollChanged = currentScrollY !== this._lastKnownScrollY
+  // Draws the visible rows at the paint origin every frame. An opaque line color replaces the row's background fill,
+  // and glyphs blend over the fills with a transparent background.
+  protected override renderSelf(buffer: OptimizedBuffer): void {
+    const [x, y] = this._paintOrigin(buffer)
+    const start = Math.max(0, -y)
+    const end = Math.min(this.height, buffer.height - y)
+    if (end <= start || x >= buffer.width || x + this.width <= 0) return
 
-    if (this.buffered && !this.isDirty && !scrollChanged) {
-      return
-    }
+    // The source of the row above the window tells whether the first row continues a wrapped line.
+    const startLine = Math.trunc(this.target.scrollY) + start
+    const sourceStart = Math.max(0, startLine - 1)
+    const sourceOffset = startLine - sourceStart
+    const sources = getLineSources(this.target, sourceStart, end - start + sourceOffset)
+    let lastSource = sourceOffset > 0 ? sources[0] : -1
 
-    this._lastKnownScrollY = currentScrollY
-    this.refreshFrameBuffer(buffer)
-  }
+    for (let i = sourceOffset; i < end - start + sourceOffset; i++) {
+      const row = y + start + i - sourceOffset
+      const logicalLine = sources[i]
+      const lineBg = this._lineColorsGutter.get(logicalLine)
+      if (!lineBg || lineBg.a < 1) buffer.fillRect(x, row, this.width, 1, this._bg)
+      if (lineBg) buffer.fillRect(x, row, this.width, 1, lineBg)
 
-  private refreshFrameBuffer(buffer: OptimizedBuffer): void {
-    const startX = this.buffered ? 0 : this.x
-    const startY = this.buffered ? 0 : this.y
-
-    if (this.buffered) {
-      buffer.clear(this._bg)
-    } else if (this._bg.a > 0) {
-      // Fill background if not buffered and opaque (if buffered, clear handles it)
-      // Note: this.height might be determined by parent (flex stretch)
-      buffer.fillRect(startX, startY, this.width, this.height, this._bg)
-    }
-
-    const lineInfo = this.target.lineInfo
-    if (!lineInfo || !lineInfo.lineSources) return
-
-    const sources = lineInfo.lineSources
-    let lastSource = -1
-
-    // lineSources contains the logical line index for each visual line
-    // We start iterating from the scroll offset (first visible line)
-    const startLine = this.target.scrollY
-
-    // If scrolled past content (shouldn't happen normally but good to be safe)
-    if (startLine >= sources.length) return
-
-    // Get the logical line index of the line *before* the first visible line
-    // This helps determine if the first visible line is a wrapped continuation
-    lastSource = startLine > 0 ? sources[startLine - 1] : -1
-
-    for (let i = 0; i < this.height; i++) {
-      const visualLineIndex = startLine + i
-      if (visualLineIndex >= sources.length) break
-
-      const logicalLine = sources[visualLineIndex]
-      const lineBg = this._lineColorsGutter.get(logicalLine) ?? this._bg
-
-      // Fill background for this line if it has a custom color
-      if (lineBg !== this._bg) {
-        buffer.fillRect(startX, startY + i, this.width, 1, lineBg)
-      }
-
-      // Draw line number only for the first visual line of a logical line (wrapping)
-      if (logicalLine === lastSource) {
-        // Continuation line, maybe draw a dot or nothing
-      } else {
-        let currentX = startX
-
-        // Draw 'before' sign if present
+      // Only the first visual row of a logical line gets its number and signs.
+      if (logicalLine !== undefined && logicalLine !== lastSource) {
         const sign = this._lineSigns.get(logicalLine)
         if (sign?.before) {
-          const beforeWidth = stringWidth(sign.before)
-          // Pad to max before width for alignment
-          const padding = this._maxBeforeWidth - beforeWidth
-          currentX += padding
+          // Padded to the widest before sign, for alignment.
+          const beforeX = x + this._maxBeforeWidth - this.signWidth(sign.before)
           const beforeColor = sign.beforeColor ? parseColor(sign.beforeColor) : this._fg
-          buffer.drawText(sign.before, currentX, startY + i, beforeColor, lineBg)
-          currentX += beforeWidth
-        } else if (this._maxBeforeWidth > 0) {
-          currentX += this._maxBeforeWidth
+          buffer.drawText(sign.before, beforeX, row, beforeColor, transparent)
         }
 
-        // Draw line number (right-aligned in its space with left padding of 1)
+        // The number is right-aligned in its space, after the left padding.
         if (!this._hideLineNumbers.has(logicalLine)) {
-          // Use custom line number if provided, otherwise use calculated line number
           const customLineNum = this._lineNumbers.get(logicalLine)
-          const lineNum = customLineNum !== undefined ? customLineNum : logicalLine + 1 + this._lineNumberOffset
-          const lineNumStr = lineNum.toString()
-          const lineNumWidth = lineNumStr.length
-          const availableSpace = this.width - this._maxBeforeWidth - this._maxAfterWidth - this._paddingRight
-          const lineNumX = startX + this._maxBeforeWidth + 1 + availableSpace - lineNumWidth - 1
-
-          if (lineNumX >= startX + this._maxBeforeWidth + 1) {
-            buffer.drawText(lineNumStr, lineNumX, startY + i, this._fg, lineBg)
+          const lineNumStr = (customLineNum ?? logicalLine + 1 + this._lineNumberOffset).toString()
+          const lineNumX = this.width - this._maxAfterWidth - this._layout.paddingRight - lineNumStr.length
+          if (lineNumX >= this._maxBeforeWidth + this._layout.paddingLeft) {
+            buffer.drawText(lineNumStr, x + lineNumX, row, this._fg, transparent)
           }
         }
 
-        // Draw 'after' sign if present
         if (sign?.after) {
-          const afterX = startX + this.width - this._paddingRight - this._maxAfterWidth
+          const afterX = x + this.width - this._layout.paddingRight - this._maxAfterWidth
           const afterColor = sign.afterColor ? parseColor(sign.afterColor) : this._fg
-          buffer.drawText(sign.after, afterX, startY + i, afterColor, lineBg)
+          buffer.drawText(sign.after, afterX, row, afterColor, transparent)
         }
       }
 
       lastSource = logicalLine
     }
   }
+}
+
+function getLineSources(target: LineInfoProvider, startLine: number, lineCount: number): number[] {
+  return target.getLineSources
+    ? target.getLineSources(startLine, lineCount)
+    : target.lineInfo.lineSources.slice(startLine, startLine + lineCount)
 }
 
 // Helper function to darken an RGBA color by 20%
@@ -355,8 +355,7 @@ export class LineNumberRenderable extends Renderable {
   private _lineSigns: Map<number, LineSign>
   private _fg: RGBA
   private _bg: RGBA
-  private _minWidth: number
-  private _paddingRight: number
+  private _layout: GutterLayout
   private _lineNumberOffset: number
   private _hideLineNumbers: Set<number>
   private _lineNumbers: Map<number, number>
@@ -372,17 +371,17 @@ export class LineNumberRenderable extends Renderable {
       // LineColorConfig format
       const config = color as LineColorConfig
       if (config.gutter) {
-        this._lineColorsGutter.set(line, parseColor(config.gutter))
+        this._lineColorsGutter.set(line, RGBA.clone(parseColor(config.gutter)))
       }
       if (config.content) {
-        this._lineColorsContent.set(line, parseColor(config.content))
+        this._lineColorsContent.set(line, RGBA.clone(parseColor(config.content)))
       } else if (config.gutter) {
         // If only gutter is specified, use a darker version for content
         this._lineColorsContent.set(line, darkenColor(parseColor(config.gutter)))
       }
     } else {
       // Simple format - same color for both, but content is darker
-      const parsedColor = parseColor(color as string | RGBA)
+      const parsedColor = RGBA.clone(parseColor(color as string | RGBA))
       this._lineColorsGutter.set(line, parsedColor)
       this._lineColorsContent.set(line, darkenColor(parsedColor))
     }
@@ -397,75 +396,86 @@ export class LineNumberRenderable extends Renderable {
       height: "auto",
     })
 
-    this._fg = parseColor(options.fg ?? DEFAULT_GUTTER_FG)
-    this._bg = parseColor(options.bg ?? DEFAULT_GUTTER_BG)
-    this._minWidth = options.minWidth ?? 3
-    this._paddingRight = options.paddingRight ?? 1
-    this._lineNumberOffset = options.lineNumberOffset ?? 0
-    this._hideLineNumbers = options.hideLineNumbers ?? new Set()
-    this._lineNumbers = options.lineNumbers ?? new Map()
-
-    this._lineColorsGutter = new Map<number, RGBA>()
-    this._lineColorsContent = new Map<number, RGBA>()
-    if (options.lineColors) {
-      for (const [line, color] of options.lineColors) {
-        this.parseLineColor(line, color)
+    try {
+      this._fg = RGBA.clone(parseColor(options.fg ?? DEFAULT_GUTTER_FG))
+      this._bg = RGBA.clone(parseColor(options.bg ?? DEFAULT_GUTTER_BG))
+      this._layout = {
+        minWidth: options.minWidth ?? 3,
+        paddingLeft: 1,
+        paddingRight: options.paddingRight ?? 1,
+        minDigits: 0,
+        minAfterWidth: 0,
       }
-    }
+      this._lineNumberOffset = options.lineNumberOffset ?? 0
+      this._hideLineNumbers = options.hideLineNumbers ?? new Set()
+      this._lineNumbers = options.lineNumbers ?? new Map()
 
-    this._lineSigns = new Map<number, LineSign>()
-    if (options.lineSigns) {
-      for (const [line, sign] of options.lineSigns) {
-        this._lineSigns.set(line, sign)
+      this._lineColorsGutter = new Map<number, RGBA>()
+      this._lineColorsContent = new Map<number, RGBA>()
+      if (options.lineColors) {
+        for (const [line, color] of options.lineColors) {
+          this.parseLineColor(line, color)
+        }
       }
-    }
 
-    // If target is provided in constructor, set it up immediately
-    if (options.target) {
-      this.setTarget(options.target)
+      this._lineSigns = new Map<number, LineSign>()
+      if (options.lineSigns) {
+        for (const [line, sign] of options.lineSigns) {
+          this._lineSigns.set(line, cloneLineSign(sign))
+        }
+      }
+
+      // If target is provided in constructor, set it up immediately
+      if (options.target && !this.setTarget(options.target)) {
+        throw new Error("LineNumberRenderable: Cannot use a destroyed target.")
+      }
+    } catch (error) {
+      try {
+        this.clearTarget()
+      } catch {
+        // Preserve the construction failure.
+      }
+      this.abortConstruction(error)
     }
   }
 
-  private setTarget(target: Renderable & LineInfoProvider): void {
-    if (this.target === target) return
-
-    if (this.target) {
-      // Remove event listener from old target
-      this.target.off("line-info-change", this.handleLineInfoChange)
-      super.remove(this.target.id)
-    }
-
-    if (this.gutter) {
-      super.remove(this.gutter.id)
-      this.gutter = null
-    }
+  // Callers attach a target only when none is set; clearTarget() and destroySelf() clear target and gutter together.
+  private setTarget(target: Renderable & LineInfoProvider): boolean {
+    if (this.isDestroyed || target.isDestroyed) return false
 
     this.target = target
+    try {
+      target.on("line-info-change", this.handleLineInfoChange)
+      this.gutter = new GutterRenderable(this.ctx, target, {
+        fg: this._fg,
+        bg: this._bg,
+        layout: this._layout,
+        lineColorsGutter: this._lineColorsGutter,
+        lineColorsContent: this._lineColorsContent,
+        lineSigns: this._lineSigns,
+        lineNumberOffset: this._lineNumberOffset,
+        hideLineNumbers: this._hideLineNumbers,
+        lineNumbers: this._lineNumbers,
+        id: this.id ? `${this.id}-gutter` : undefined,
+      })
 
-    // Listen for line info changes from target
-    this.target.on("line-info-change", this.handleLineInfoChange)
-
-    this.gutter = new GutterRenderable(this.ctx, this.target, {
-      fg: this._fg,
-      bg: this._bg,
-      minWidth: this._minWidth,
-      paddingRight: this._paddingRight,
-      lineColorsGutter: this._lineColorsGutter,
-      lineColorsContent: this._lineColorsContent,
-      lineSigns: this._lineSigns,
-      lineNumberOffset: this._lineNumberOffset,
-      hideLineNumbers: this._hideLineNumbers,
-      lineNumbers: this._lineNumbers,
-      id: this.id ? `${this.id}-gutter` : undefined,
-      buffered: true,
-    })
-
-    super.add(this.gutter)
-    super.add(this.target)
+      if (super.add(this.gutter) < 0 || super.add(target) < 0) {
+        throw new Error("LineNumberRenderable: Failed to attach target.")
+      }
+      return true
+    } catch (error) {
+      try {
+        this.clearTarget()
+      } catch {
+        // Preserve the target setup failure.
+      }
+      throw error
+    }
   }
 
   // Override add to intercept and set as target if it's a LineInfoProvider
   public override add(child: Renderable): number {
+    if (this.isDestroyed) return -1
     // If this is a LineInfoProvider and we don't have a target yet, set it
     if (
       !this.target &&
@@ -474,82 +484,104 @@ export class LineNumberRenderable extends Renderable {
       "virtualLineCount" in child &&
       "scrollY" in child
     ) {
-      this.setTarget(child as Renderable & LineInfoProvider)
-      return this.getChildrenCount() - 1
+      return this.setTarget(child as Renderable & LineInfoProvider) ? this.getChildrenCount() - 1 : -1
     }
     // Otherwise ignore - SolidJS may try to add layout slots or other helpers
     return -1
   }
 
   // Override remove to prevent removing gutter/target directly
-  public override remove(id: string): void {
+  public override remove(child: BaseRenderable): void {
     if (this._isDestroying) {
-      super.remove(id)
+      super.remove(child)
       return
     }
 
-    if (this.gutter && id === this.gutter.id) {
+    if (this.gutter && child === this.gutter) {
+      if (this.gutter.isDestroyed) {
+        this.clearTarget()
+        return
+      }
       throw new Error("LineNumberRenderable: Cannot remove gutter directly.")
     }
-    if (this.target && id === this.target.id) {
+    if (this.target && child === this.target) {
+      if (this.target.isDestroyed) {
+        this.clearTarget()
+        return
+      }
       throw new Error("LineNumberRenderable: Cannot remove target directly. Use clearTarget() instead.")
     }
-    super.remove(id)
+    super.remove(child)
   }
 
-  // Override destroyRecursively to properly clean up internal components
-  public override destroyRecursively(): void {
+  public override destroy(): void {
+    if (this.isDestroyed) return
+    this.assertMutable()
     this._isDestroying = true
+    super.destroy()
+  }
 
-    if (this.target) {
-      this.target.off("line-info-change", this.handleLineInfoChange)
-    }
-
+  // Internal children must be removable before recursive teardown starts.
+  public override destroyRecursively(): void {
+    if (this.isDestroyed) return
+    this.assertMutable()
+    this._isDestroying = true
     super.destroyRecursively()
+  }
 
-    this.gutter = null
-    this.target = null
+  protected override destroySelf(): void {
+    const gutter = this.gutter
+    this.runCleanup((run) => {
+      run(() => this.target?.off("line-info-change", this.handleLineInfoChange))
+      this.gutter = null
+      this.target = null
+      if (gutter && !gutter.isDestroyed) run(() => gutter.destroy())
+    })
   }
 
   public clearTarget(): void {
-    if (this.target) {
-      this.target.off("line-info-change", this.handleLineInfoChange)
-      super.remove(this.target.id)
-      this.target = null
-    }
-    if (this.gutter) {
-      super.remove(this.gutter.id)
-      this.gutter = null
-    }
+    const target = this.target
+    const gutter = this.gutter
+    if (!target && !gutter) return
+    this.assertMutable()
+
+    this.runCleanup((run) => {
+      if (target) {
+        run(() => target.off("line-info-change", this.handleLineInfoChange))
+        if (target.parent === this) run(() => super.remove(target))
+        this.target = null
+      }
+      if (gutter) {
+        if (gutter.parent === this) run(() => super.remove(gutter))
+        this.gutter = null
+        run(() => gutter.destroy())
+      }
+    })
   }
 
   protected renderSelf(buffer: OptimizedBuffer): void {
     // Draw full-width line backgrounds before children render
-    if (!this.target || !this.gutter) return
+    if (!this.target || !this.gutter || this._lineColorsContent.size === 0) return
 
-    const lineInfo = this.target.lineInfo
-    if (!lineInfo || !lineInfo.lineSources) return
+    const [x, y] = this._paintOrigin(buffer)
+    const start = Math.max(0, -y)
+    const end = Math.min(this.height, buffer.height - y)
+    if (end <= start || x >= buffer.width || x + this.width <= 0) return
 
-    const sources = lineInfo.lineSources
-    const startLine = this.target.scrollY
-
-    if (startLine >= sources.length) return
+    const sources = getLineSources(this.target, Math.trunc(this.target.scrollY) + start, end - start)
 
     // Calculate the area to fill: from after the gutter (if visible) to the end of our width
     const gutterWidth = this.gutter.visible ? this.gutter.width : 0
     const contentWidth = this.width - gutterWidth
 
     // Draw full-width background colors for lines with custom colors
-    for (let i = 0; i < this.height; i++) {
-      const visualLineIndex = startLine + i
-      if (visualLineIndex >= sources.length) break
-
-      const logicalLine = sources[visualLineIndex]
+    for (let i = 0; i < sources.length; i++) {
+      const logicalLine = sources[i]
       const lineBg = this._lineColorsContent.get(logicalLine)
 
       if (lineBg) {
         // Fill from after gutter to the end of the LineNumberRenderable
-        buffer.fillRect(this.x + gutterWidth, this.y + i, contentWidth, 1, lineBg)
+        buffer.fillRect(x + gutterWidth, y + start + i, contentWidth, 1, lineBg)
       }
     }
   }
@@ -565,27 +597,23 @@ export class LineNumberRenderable extends Renderable {
   }
 
   public get fg(): RGBA {
-    return this._fg
+    return RGBA.clone(this._fg)
   }
 
   public set fg(value: string | RGBA | undefined) {
-    const parsed = parseColor(value ?? DEFAULT_GUTTER_FG)
-    if (this._fg !== parsed) {
-      this._fg = parsed
-      this.gutter?.setFg(parsed)
-    }
+    const parsed = RGBA.clone(parseColor(value ?? DEFAULT_GUTTER_FG))
+    this._fg = parsed
+    this.gutter?.setFg(parsed)
   }
 
   public get bg(): RGBA {
-    return this._bg
+    return RGBA.clone(this._bg)
   }
 
   public set bg(value: string | RGBA | undefined) {
-    const parsed = parseColor(value ?? DEFAULT_GUTTER_BG)
-    if (this._bg !== parsed) {
-      this._bg = parsed
-      this.gutter?.setBg(parsed)
-    }
+    const parsed = RGBA.clone(parseColor(value ?? DEFAULT_GUTTER_BG))
+    this._bg = parsed
+    this.gutter?.setBg(parsed)
   }
 
   public setLineColor(line: number, color: string | RGBA | LineColorConfig): void {
@@ -626,13 +654,13 @@ export class LineNumberRenderable extends Renderable {
 
   public getLineColors(): { gutter: Map<number, RGBA>; content: Map<number, RGBA> } {
     return {
-      gutter: this._lineColorsGutter,
-      content: this._lineColorsContent,
+      gutter: new Map(Array.from(this._lineColorsGutter, ([line, color]) => [line, RGBA.clone(color)])),
+      content: new Map(Array.from(this._lineColorsContent, ([line, color]) => [line, RGBA.clone(color)])),
     }
   }
 
   public setLineSign(line: number, sign: LineSign): void {
-    this._lineSigns.set(line, sign)
+    this._lineSigns.set(line, cloneLineSign(sign))
     if (this.gutter) {
       this.gutter.setLineSigns(this._lineSigns)
     }
@@ -653,8 +681,10 @@ export class LineNumberRenderable extends Renderable {
   }
 
   public setLineSigns(lineSigns: Map<number, LineSign>): void {
+    const signs = Array.from(lineSigns, ([line, sign]) => [line, cloneLineSign(sign)] as const)
+    // The gutter shares this map; publish only after every sign has been captured.
     this._lineSigns.clear()
-    for (const [line, sign] of lineSigns) {
+    for (const [line, sign] of signs) {
       this._lineSigns.set(line, sign)
     }
     if (this.gutter) {
@@ -663,7 +693,24 @@ export class LineNumberRenderable extends Renderable {
   }
 
   public getLineSigns(): Map<number, LineSign> {
-    return this._lineSigns
+    return new Map(Array.from(this._lineSigns, ([line, sign]) => [line, cloneLineSign(sign)]))
+  }
+
+  public getGutterLayout(): GutterLayout {
+    return { ...this._layout }
+  }
+
+  public setGutterLayout(layout: GutterLayout): void {
+    if (
+      layout.minWidth === this._layout.minWidth &&
+      layout.paddingLeft === this._layout.paddingLeft &&
+      layout.paddingRight === this._layout.paddingRight &&
+      layout.minDigits === this._layout.minDigits &&
+      layout.minAfterWidth === this._layout.minAfterWidth
+    )
+      return
+    this._layout = { ...layout }
+    this.gutter?.setLayout(this._layout)
   }
 
   public set lineNumberOffset(value: number) {

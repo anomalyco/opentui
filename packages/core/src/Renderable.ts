@@ -1,5 +1,33 @@
 import { EventEmitter } from "events"
-import Yoga, { Direction, Display, Edge, FlexDirection, type Node as YogaNode } from "./yoga.js"
+import {
+  Align,
+  Dimension,
+  Display,
+  Edge,
+  FlexDirection,
+  Gutter,
+  Justify,
+  PositionType,
+  Wrap,
+  type Layout,
+  type MeasureFunction,
+  type Value,
+} from "./yoga.js"
+import {
+  YogaEnumKind,
+  YogaFloatKind,
+  YogaValueKind,
+  parseYogaValue,
+  sceneGetEnum,
+  sceneGetFloat,
+  sceneGetValue,
+  sceneSetDimension,
+  sceneSetEnum,
+  sceneSetFloat,
+  sceneSetValue,
+  UNDEFINED_VALUE,
+} from "./yoga.internal.js"
+import type { NativeScene } from "./NativeScene.js"
 import { OptimizedBuffer } from "./buffer.js"
 import type { KeyEvent, PasteEvent } from "./lib/KeyHandler.js"
 import type { MouseEventType } from "./lib/parse.mouse.js"
@@ -9,19 +37,36 @@ import {
   parseAlignItems,
   parseFlexDirection,
   parseJustify,
+  parseLayoutMode,
   parseOverflow,
   parsePositionType,
   parseWrap,
   type AlignString,
   type FlexDirectionString,
   type JustifyString,
+  type LayoutModeString,
   type OverflowString,
   type PositionTypeString,
   type WrapString,
 } from "./lib/yoga.options.js"
-import { maybeMakeRenderable, type VNode } from "./renderables/composition/vnode.js"
+import { isVNode, maybeMakeRenderable, type VNode } from "./renderables/composition/vnode.js"
 import type { MouseEvent } from "./renderer.js"
 import type { RenderContext } from "./types.js"
+import { RGBA } from "./lib/RGBA.js"
+import { nativeConstants } from "./native-abi.generated.js"
+import {
+  NATIVE_EDGE_NONE,
+  NativeBorder,
+  NativeSceneFrame,
+  NativeSceneHook,
+  NativeScenePaintPhase,
+  type NativePaintRecorder,
+  type NativeSceneFrameRequest,
+  type NativeSceneLayout,
+  type NativeScenePaint,
+  type NativeScenePaintSlot,
+  type SceneNodeHandle,
+} from "./zig.js"
 import {
   validateOptions,
   isPositionType,
@@ -35,11 +80,32 @@ import {
 } from "./lib/renderable.validations.js"
 
 const BrandedRenderable: unique symbol = Symbol.for("@opentui/core/Renderable")
+const hookNames = [
+  "renderSelf",
+  "onResize",
+  "onLayoutResize",
+  "onUpdate",
+  "renderBefore",
+  "renderAfter",
+  "onLifecyclePass",
+] as const
+type PaintHook = (this: Renderable, buffer: OptimizedBuffer, deltaTime: number) => void
+/** A node's hooks: its class's methods at construction, public assignments, and the last refreshHooks(). */
+type Hooks = Record<(typeof hookNames)[number], any>
+const nativeSceneHookBeforeAfter =
+  nativeConstants.OT_SCENE_HOOK_RENDER_BEFORE | nativeConstants.OT_SCENE_HOOK_RENDER_AFTER
+
+function isRowFlexDirection(direction: FlexDirection): boolean {
+  return direction === FlexDirection.Row || direction === FlexDirection.RowReverse
+}
+
+// `undefined` restores the default; `null` clamps to 0, as on `main`.
+function clampOpacity(value: number | undefined): number {
+  return value === undefined ? 1 : Math.max(0, Math.min(1, value))
+}
 
 export enum LayoutEvents {
   LAYOUT_CHANGED = "layout-changed",
-  ADDED = "added",
-  REMOVED = "removed",
   RESIZED = "resized",
 }
 
@@ -56,6 +122,9 @@ export interface Position {
   left?: number | "auto" | `${number}%`
 }
 
+// Indexed by Yoga edge: Edge.Left is 0 and Edge.Bottom is 3.
+const positionKeys = ["left", "top", "right", "bottom"] as const
+
 export interface BaseRenderableOptions {
   id?: string
 }
@@ -65,6 +134,8 @@ export interface LayoutOptions extends BaseRenderableOptions {
   flexShrink?: number
   flexDirection?: FlexDirectionString
   flexWrap?: WrapString
+  /** `"list"` stacks children as a column with `overflow: "scroll"` does, without a flex pass over them. */
+  layoutMode?: LayoutModeString
   alignItems?: AlignString
   justifyContent?: JustifyString
   alignSelf?: AlignString
@@ -103,10 +174,13 @@ export interface RenderableOptions<T extends BaseRenderable = BaseRenderable> ex
   visible?: boolean
   buffered?: boolean
   live?: boolean
+  /** Ticks `onAnimationTick` at this rate on the renderer's shared animation clock while the node is visible. */
+  animationFps?: number
   opacity?: number
 
-  // Draw-only hooks for custom rendering/decorations. They run after layout
-  // and viewport culling, so do not mutate layout, children, or reactive state here.
+  // Draw-only hooks for custom decorations. They run after layout and viewport
+  // culling and record drawing that native code paints later in the frame, so they
+  // cannot read the frame. Layout changes made here wait for the next frame.
   // Culled children do not run these hooks.
   renderBefore?: (this: T, buffer: OptimizedBuffer, deltaTime: number) => void
   renderAfter?: (this: T, buffer: OptimizedBuffer, deltaTime: number) => void
@@ -131,6 +205,32 @@ export interface RenderableOptions<T extends BaseRenderable = BaseRenderable> ex
   onSizeChange?: (this: T) => void
 }
 
+/** Class-owned native integration, declared as the class's static `nativeIntegration`. Method
+ * identities identify work performed by native; overrides use the ordinary host hook dispatcher. */
+export interface NativeRenderableIntegration {
+  readonly kind: Parameters<NativeScene["driver"]["renderLib"]["sceneCreateNode"]>[2]
+  readonly body:
+    | "host"
+    | { readonly native: (buffer: OptimizedBuffer, deltaTime: number) => void; readonly buffered?: boolean }
+  readonly lifecycle?: {
+    readonly resize?: { readonly native: (width: number, height: number) => void }
+    readonly update?: {
+      readonly idle: (deltaTime: number) => void
+      readonly active: (renderable: Renderable) => boolean
+    }
+    /** A scroll node's SCROLL request, asked for only while `active` holds. */
+    readonly scroll?: {
+      readonly active: (renderable: Renderable) => boolean
+      readonly notify: (renderable: Renderable) => void
+    }
+  }
+  readonly beforeAfter?: boolean
+  readonly paintBuffer?: "destination"
+  readonly bufferComposition?: "native"
+  readonly lineInfo?: boolean
+  readonly measure?: (this: Renderable, ...constraints: Parameters<MeasureFunction>) => ReturnType<MeasureFunction>
+}
+
 export function isRenderable(obj: any): obj is Renderable {
   return !!obj?.[BrandedRenderable]
 }
@@ -152,7 +252,7 @@ export abstract class BaseRenderable extends EventEmitter {
   }
 
   public abstract add(obj: BaseRenderable | unknown, index?: number): number
-  public abstract remove(id: string): void
+  public abstract remove(child: BaseRenderable): void
   public abstract insertBefore(obj: BaseRenderable | unknown, anchor: BaseRenderable | unknown): void
   public abstract getChildren(): BaseRenderable[]
   public abstract getChildrenCount(): number
@@ -199,142 +299,219 @@ export abstract class BaseRenderable extends EventEmitter {
   }
 }
 
-interface LayoutGenerationContext extends RenderContext {
-  __otuiLayoutGeneration?: number
-  __otuiRenderListRevision?: number
-}
-
-function getLayoutGeneration(ctx: RenderContext): number {
-  return (ctx as LayoutGenerationContext).__otuiLayoutGeneration ?? 0
-}
-
-function bumpLayoutGeneration(ctx: RenderContext): number {
-  const next = getLayoutGeneration(ctx) + 1
-  const generationContext = ctx as LayoutGenerationContext
-  generationContext.__otuiLayoutGeneration = next
-  return next
-}
-
-function getRenderListRevision(ctx: RenderContext): number {
-  return (ctx as LayoutGenerationContext).__otuiRenderListRevision ?? 0
-}
-
-function bumpRenderListRevision(ctx: RenderContext): void {
-  const generationContext = ctx as LayoutGenerationContext
-  generationContext.__otuiRenderListRevision = getRenderListRevision(ctx) + 1
-}
-
 export abstract class Renderable extends BaseRenderable {
+  /** Focusable state of new nodes; a nullish `focusable` write restores it. */
+  protected static readonly defaultFocusable: boolean = false
   static renderablesByNumber: Map<number, Renderable> = new Map()
+  static readonly nativeIntegration: NativeRenderableIntegration = {
+    kind: "custom",
+    body: { native: this.prototype.renderSelf },
+  }
+
+  private static readonly baseHooks: Hooks = {
+    renderSelf: this.prototype.renderSelf,
+    onResize: this.prototype.onResize,
+    onLayoutResize: this.prototype.onLayoutResize,
+    onUpdate: this.prototype.onUpdate,
+    renderBefore: undefined,
+    renderAfter: undefined,
+    onLifecyclePass: null,
+  }
+
+  /** @internal Stable class description shared by creation, hook registration, and dispatch. */
+  readonly nativeIntegration: NativeRenderableIntegration
 
   protected _isDestroyed: boolean = false
+  private _cleanupInProgress: boolean = false
+  private _childCleanupInProgress: boolean = false
+  private _deferredCleanup?: (() => void)[]
   protected _ctx: RenderContext
+  /** @internal Scene-backed Yoga handle stored on the wrapper; there is no JS Yoga Node. */
+  _sceneHandle?: SceneNodeHandle
+  private _yogaFreed = false
   protected _translateX: number = 0
   protected _translateY: number = 0
-  protected _x: number = 0
-  protected _y: number = 0
-  // Render hot paths only need absolute terminal coordinates. Cache them during
-  // layout so render-time code does not keep walking parent chains via x/y.
-  protected _screenX: number = 0
-  protected _screenY: number = 0
   protected _width: number | "auto" | `${number}%`
   protected _height: number | "auto" | `${number}%`
-  protected _widthValue: number = 0
-  protected _heightValue: number = 0
-  private _zIndex: number
-  public selectable: boolean = false
+  private _destroyedLayout?: {
+    x: number
+    y: number
+    screenX: number
+    screenY: number
+    width: number
+    height: number
+  }
+  protected _zIndex: number
+  declare public selectable: boolean
   protected buffered: boolean
   protected frameBuffer: OptimizedBuffer | null = null
 
-  protected _focusable: boolean = false
+  protected _focusable: boolean = (this.constructor as typeof Renderable).defaultFocusable
   protected _focused: boolean = false
-  protected _hasFocusedDescendant: boolean = false
   protected keypressHandler: ((key: KeyEvent) => void) | null = null
   protected pasteHandler: ((event: PasteEvent) => void) | null = null
 
   private _live: boolean = false
+  private _animationFps: number | undefined
+  private stopAnimationTick: (() => void) | undefined
+  private animationDrawnFrame = -1
   protected _liveCount: number = 0
 
   private _sizeChangeListener: (() => void) | undefined = undefined
+  private _hooks: Hooks = Renderable.baseHooks
+  protected _nativeSceneHookGeneration = 0n
+  private _nativeSceneHooksRegistered = false
+  private _nativeSceneResize = false
+  // The prepared paint geometry while one of this node's hooks runs.
+  private _paintLayout?: NativeSceneLayout
+  // Layout reads between native layout passes and host writes return the same values.
+  private _observedLayout?: NativeSceneLayout
+  private _observedLayoutRevision = -1
+  private _selectable = false
   private _mouseListener: ((event: MouseEvent) => void) | null = null
   private _mouseListeners: Partial<Record<MouseEventType, (event: MouseEvent) => void>> = {}
   private _pasteListener: ((event: PasteEvent) => void) | undefined = undefined
   private _keyListeners: Partial<Record<"down", (key: KeyEvent) => void>> = {}
 
-  protected yogaNode: YogaNode
   protected _positionType: PositionTypeString = "relative"
   protected _overflow: OverflowString = "visible"
   protected _position: Position = {}
   protected _opacity: number = 1.0
   private _flexShrink: number = 1
 
-  private renderableMapById: Map<string, Renderable> = new Map()
   protected _childrenInLayoutOrder: Renderable[] = []
-  protected _childrenInZIndexOrder: Renderable[] = []
-  private needsZIndexSort: boolean = false
   public parent: Renderable | null = null
 
-  private childrenPrimarySortDirty: boolean = true
-  private childrenSortedByPrimaryAxis: Renderable[] = []
-  private _shouldUpdateBefore: Set<Renderable> = new Set()
-
-  // Frame id of the last updateFromLayout(); -1 ensures the first call runs.
-  private _lastLayoutFrame: number = -1
-
-  public onLifecyclePass: (() => void) | null = null
-
-  public renderBefore?: (this: Renderable, buffer: OptimizedBuffer, deltaTime: number) => void
-  public renderAfter?: (this: Renderable, buffer: OptimizedBuffer, deltaTime: number) => void
+  // Accessors, so a class field that overrides one is a type error (TS2610) instead of a silent shadow.
+  public get onLifecyclePass(): (() => void) | null {
+    return this._hooks.onLifecyclePass
+  }
+  public set onLifecyclePass(value: (() => void) | null | undefined) {
+    this.setHook("onLifecyclePass", value)
+  }
+  public get renderBefore(): PaintHook | undefined {
+    return this._hooks.renderBefore
+  }
+  public set renderBefore(value: PaintHook | null | undefined) {
+    this.setHook("renderBefore", value)
+  }
+  public get renderAfter(): PaintHook | undefined {
+    return this._hooks.renderAfter
+  }
+  public set renderAfter(value: PaintHook | null | undefined) {
+    this.setHook("renderAfter", value)
+  }
 
   constructor(ctx: RenderContext, options: RenderableOptions<any>) {
     super(options)
 
     this._ctx = ctx
+    this.nativeIntegration = (new.target as typeof Renderable).nativeIntegration
     Renderable.renderablesByNumber.set(this.num, this)
 
-    validateOptions(this.id, options)
+    try {
+      validateOptions(this.id, options)
 
-    this.renderBefore = options.renderBefore
-    this.renderAfter = options.renderAfter
+      this._width = options.width ?? "auto"
+      this._height = options.height ?? "auto"
 
-    this._width = options.width ?? "auto"
-    this._height = options.height ?? "auto"
+      this._zIndex = options.zIndex ?? 0
+      this._visible = options.visible !== false
+      this.buffered = options.buffered ?? false
+      this._live = options.live ?? false
+      this._liveCount = this._live && this._visible ? 1 : 0
+      this._opacity = clampOpacity(options.opacity)
 
-    if (typeof this._width === "number") {
-      this._widthValue = this._width
-    }
-    if (typeof this._height === "number") {
-      this._heightValue = this._height
-    }
+      ctx.nativeScene.createNode(this, options)
+      const hooks = {} as Hooks
+      for (const name of hookNames) hooks[name] = this[name]
+      for (const name of ["renderBefore", "renderAfter"] as const) {
+        if (options[name] !== undefined) hooks[name] = Renderable.normalizeHook(name, options[name])
+      }
+      this.publishHooks(hooks)
+      this.setDisplay(this._visible ? Display.Flex : Display.None)
+      this.setupYogaProperties(options)
+      if (this.nativeIntegration.measure) this.setMeasureFunc(this.nativeIntegration.measure.bind(this))
+      // Native create already has default z-index, opacity, and translations.
+      // Subclasses publish their real paint; keep this write for non-default values.
+      if (this._zIndex !== 0 || this._opacity !== 1 || this._focusable) {
+        ctx.nativeScene.setPaint(this, Renderable.prototype.getNativeScenePaint.call(this))
+      }
 
-    this._zIndex = options.zIndex ?? 0
-    this._visible = options.visible !== false
-    this.buffered = options.buffered ?? false
-    this._live = options.live ?? false
-    this._liveCount = this._live && this._visible ? 1 : 0
-    this._opacity = options.opacity !== undefined ? Math.max(0, Math.min(1, options.opacity)) : 1.0
+      this.applyEventOptions(options)
 
-    this.yogaNode = Yoga.Node.createForOpenTUI()
-    this.yogaNode.setDisplay(this._visible ? Display.Flex : Display.None)
-    this.setupYogaProperties(options)
-
-    this.applyEventOptions(options)
-
-    if (this.buffered) {
-      this.createFrameBuffer()
+      if (this.buffered) {
+        this.createFrameBuffer()
+      }
+      this.animationFps = options.animationFps
+    } catch (error) {
+      try {
+        this.destroyLayoutBacking()
+      } catch {
+        // Preserve the first construction failure.
+      }
+      Renderable.renderablesByNumber.delete(this.num)
+      throw error
     }
   }
 
-  public override get id() {
-    return this._id
+  protected abortConstruction(error: unknown, cleanup?: (run: (step: () => void) => void) => void): never {
+    try {
+      this.destroyLayoutBacking((run) => {
+        this._isDestroyed = true
+        this.updateAnimationTick()
+        Renderable.renderablesByNumber.delete(this.num)
+        if (cleanup) run(() => cleanup(run))
+        if (this.frameBuffer) {
+          const frameBuffer = this.frameBuffer
+          this.frameBuffer = null
+          run(() => frameBuffer.destroy())
+        }
+      })
+    } catch {
+      // Preserve the construction failure.
+    }
+    throw error
   }
 
-  public override set id(value: string) {
-    if (this.parent) {
-      this.parent.renderableMapById.delete(this.id)
-      this.parent.renderableMapById.set(value, this)
+  /** Completed base layers need full cleanup even before a subclass destroy override can run. */
+  protected rollbackConstruction(error: unknown): never {
+    try {
+      Renderable.prototype.destroy.call(this)
+    } catch {
+      // Preserve the construction failure.
     }
-    super.id = value
+    throw error
+  }
+
+  protected runCleanup(steps: (run: (step: () => void) => void) => void): void {
+    let failure: { error: unknown } | undefined
+    const run = (step: () => void) => {
+      try {
+        step()
+      } catch (error) {
+        failure ??= { error }
+      }
+    }
+    // A raw worker failure must not replace an earlier cleanup failure.
+    try {
+      steps(run)
+    } catch (error) {
+      if (!failure) throw error
+    }
+    if (failure) throw failure.error
+  }
+
+  protected assignOptions(target: Renderable, options: object | undefined): void {
+    if (options == null || this._isDestroyed || target._isDestroyed) return
+    this.assertMutable()
+    // Preserve Object.assign's getter/setter order, but stop when a callback removes either owner.
+    for (const key of Reflect.ownKeys(options)) {
+      if (!Object.getOwnPropertyDescriptor(options, key)?.enumerable) continue
+      const value = Reflect.get(options, key)
+      if (this._isDestroyed || target._isDestroyed) return
+      ;(target as unknown as Record<PropertyKey, unknown>)[key] = value
+    }
   }
 
   public get focusable(): boolean {
@@ -342,7 +519,14 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public set focusable(value: boolean) {
+    value ??= (this.constructor as typeof Renderable).defaultFocusable
+    if (this._focusable === value) return
+    this.setNativeScenePaint({ focusable: value })
     this._focusable = value
+    this.runCleanup((run) => {
+      if (!value) run(() => this.blur())
+      run(() => this.requestRender())
+    })
   }
 
   public get ctx(): RenderContext {
@@ -354,30 +538,35 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public get primaryAxis(): "row" | "column" {
-    const dir = this.yogaNode.getFlexDirection()
-    return dir === 2 || dir === 3 ? "row" : "column"
+    const list =
+      this.yogaGetEnum(YogaEnumKind.LayoutMode, nativeConstants.OT_LAYOUT_MODE_FLEX) ===
+      nativeConstants.OT_LAYOUT_MODE_LIST
+    return !list && isRowFlexDirection(this.getFlexDirection()) ? "row" : "column"
   }
 
   public set visible(value: boolean) {
+    value ??= true
     if (this._visible === value) return
 
-    const wasVisible = this._visible
-    this._visible = value
-    this.yogaNode.setDisplay(value ? Display.Flex : Display.None)
-    bumpRenderListRevision(this._ctx)
+    this.runMutation(() => {
+      const wasVisible = this._visible
+      this.setDisplay(value ? Display.Flex : Display.None)
+      this._visible = value
 
-    if (this._live) {
-      if (!wasVisible && value) {
-        this.propagateLiveCount(1)
-      } else if (wasVisible && !value) {
-        this.propagateLiveCount(-1)
+      if (this._live) {
+        if (!wasVisible && value) {
+          this.propagateLiveCount(1)
+        } else if (wasVisible && !value) {
+          this.propagateLiveCount(-1)
+        }
       }
-    }
+      this.updateAnimationTick()
 
-    if (this._focused) {
-      this.blur()
-    }
-    this.requestRender()
+      if (this._focused) {
+        this.blur()
+      }
+      this.requestRender()
+    })
   }
 
   public get opacity(): number {
@@ -385,10 +574,10 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public set opacity(value: number) {
-    const clamped = Math.max(0, Math.min(1, value))
+    const clamped = clampOpacity(value)
     if (this._opacity !== clamped) {
+      this.setNativeScenePaint({ opacity: clamped })
       this._opacity = clamped
-      bumpRenderListRevision(this._ctx)
       this.requestRender()
     }
   }
@@ -414,68 +603,65 @@ export abstract class Renderable extends BaseRenderable {
   public focus(): void {
     if (this._isDestroyed || this._focused || !this._focusable) return
 
+    this._ctx.nativeScene.setFocus(this, true)
     this._focused = true
-    this._ctx.focusRenderable(this)
-    this.requestRender()
+    this.runCleanup((run) => {
+      run(() => this._ctx.focusRenderable(this))
+      run(() => this.requestRender())
+      if (this._isDestroyed || !this._focused || this._ctx.currentFocusedRenderable !== this) return
+      // A renderer observer may already have blurred and refocused this node.
+      if (this.keypressHandler) return
 
-    this.keypressHandler = (key: KeyEvent) => {
-      if (this._isDestroyed) return
-      this._keyListeners["down"]?.(key)
-      // Check again after user listener - it might have destroyed the renderable
-      if (this._isDestroyed) return
-      if (!key.defaultPrevented && this.handleKeyPress) {
-        this.handleKeyPress(key)
+      this.keypressHandler = (key: KeyEvent) => {
+        if (this._isDestroyed || !this._focused || this._ctx.currentFocusedRenderable !== this) return
+        this._keyListeners["down"]?.(key)
+        // Check again after user listener - it might have destroyed the renderable
+        if (this._isDestroyed) return
+        if (!key.defaultPrevented && this.handleKeyPress) {
+          this.handleKeyPress(key)
+        }
       }
-    }
 
-    this.pasteHandler = (event: PasteEvent) => {
-      if (this._isDestroyed) return
-      this._pasteListener?.call(this, event)
-      // Check again after user listener - it might have destroyed the renderable
-      if (this._isDestroyed) return
-      if (!event.defaultPrevented && this.handlePaste) {
-        this.handlePaste(event)
+      this.pasteHandler = (event: PasteEvent) => {
+        if (this._isDestroyed || !this._focused || this._ctx.currentFocusedRenderable !== this) return
+        this._pasteListener?.call(this, event)
+        // Check again after user listener - it might have destroyed the renderable
+        if (this._isDestroyed) return
+        if (!event.defaultPrevented && this.handlePaste) {
+          this.handlePaste(event)
+        }
       }
-    }
 
-    this.ctx._internalKeyInput.onInternal("keypress", this.keypressHandler)
-    this.ctx._internalKeyInput.onInternal("paste", this.pasteHandler)
-    this.propagateFocusChange(true)
-    this.emit(RenderableEvents.FOCUSED)
+      this.ctx._internalKeyInput.onInternal("keypress", this.keypressHandler)
+      this.ctx._internalKeyInput.onInternal("paste", this.pasteHandler)
+      run(() => this.propagateFocusChange(true))
+      run(() => this.emit(RenderableEvents.FOCUSED))
+    })
   }
 
-  protected propagateFocusChange(hasFocus: boolean): void {
-    let parent = this.parent
-    while (parent) {
-      if (parent._hasFocusedDescendant !== hasFocus) {
-        parent._hasFocusedDescendant = hasFocus
-        parent.markDirty()
-      }
-      parent = parent.parent
-    }
-
+  /** Ancestors can paint focus within, so a focus change marks them dirty. */
+  protected propagateFocusChange(_hasFocus: boolean): void {
+    for (let parent = this.parent; parent; parent = parent.parent) parent.markDirty()
     this.requestRender()
   }
 
   public blur(): void {
-    if (!this._focused || !this._focusable) return
+    if (!this._focused) return
 
-    this._ctx.blurRenderable(this)
+    // Release JS focus state before native: destroy must not leave focus on a node whose native blur failed.
     this._focused = false
-    this.requestRender()
-
-    if (this.keypressHandler) {
-      this.ctx._internalKeyInput.offInternal("keypress", this.keypressHandler)
-      this.keypressHandler = null
-    }
-
-    if (this.pasteHandler) {
-      this.ctx._internalKeyInput.offInternal("paste", this.pasteHandler)
-      this.pasteHandler = null
-    }
-
-    this.propagateFocusChange(false)
-    this.emit(RenderableEvents.BLURRED)
+    const keypress = this.keypressHandler
+    const paste = this.pasteHandler
+    this.keypressHandler = null
+    this.pasteHandler = null
+    this.runCleanup((run) => {
+      run(() => this._ctx.nativeScene.setFocus(this, false))
+      if (keypress) run(() => this.ctx._internalKeyInput.offInternal("keypress", keypress))
+      if (paste) run(() => this.ctx._internalKeyInput.offInternal("paste", paste))
+      run(() => this.propagateFocusChange(false))
+      if (!this._focused) run(() => this._ctx.blurRenderable(this))
+      if (!this._focused) run(() => this.emit(RenderableEvents.BLURRED))
+    })
   }
 
   public get focused(): boolean {
@@ -483,7 +669,10 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public get hasFocusedDescendant(): boolean {
-    return this._hasFocusedDescendant
+    const focused = this._ctx.currentFocusedRenderable
+    if (!focused?._focused || focused._isDestroyed) return false
+    for (let parent = focused.parent; parent; parent = parent.parent) if (parent === this) return true
+    return false
   }
 
   public get live(): boolean {
@@ -495,6 +684,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public set live(value: boolean) {
+    value ??= false
     if (this._live === value) return
 
     this._live = value
@@ -509,6 +699,43 @@ export abstract class Renderable extends BaseRenderable {
     this._liveCount += delta
     this.parent?.propagateLiveCount(delta)
   }
+
+  protected onLiveCountChanged(previous: number): void {}
+
+  public get animationFps(): number | undefined {
+    return this._animationFps
+  }
+
+  public set animationFps(value: number | undefined) {
+    value ??= undefined // Frameworks clear a prop with null.
+    if (value !== undefined && !(value > 0 && value < Infinity)) {
+      throw new RangeError(`animationFps must be positive and finite, got ${value}`)
+    }
+    if (this._animationFps === value) return
+    const toggled = (this._animationFps === undefined) !== (value === undefined)
+    this._animationFps = value
+    // The update hook marks the frames that draw the node.
+    if (toggled) this.refreshNativeSceneHooks()
+    this.updateAnimationTick()
+  }
+
+  // Ticks only while the node is drawn. A hidden, culled or removed node gets no update, so the first tick after a
+  // frame without one stops the clock, and the node's next update starts it again.
+  private updateAnimationTick(): void {
+    this.stopAnimationTick?.()
+    this.stopAnimationTick = undefined
+    if (this._animationFps === undefined || !this._visible || this._isDestroyed) return
+    this.stopAnimationTick = this._ctx.onAnimationTick(this._animationFps, (deltaTime, ticks, time) => {
+      if (this.animationDrawnFrame < this._ctx.frameId - 1) {
+        this.stopAnimationTick?.()
+        this.stopAnimationTick = undefined
+        return
+      }
+      this.onAnimationTick(deltaTime, ticks, time)
+    })
+  }
+
+  protected onAnimationTick(deltaTime: number, ticks: number, time: number): void {}
 
   public handleKeyPress?(key: KeyEvent): boolean
   public handlePaste?(event: PasteEvent): void
@@ -529,19 +756,21 @@ export abstract class Renderable extends BaseRenderable {
     this._ctx.requestRender()
   }
 
+  /** @internal Native built-ins may suspend lifecycle work without losing their registration position. */
+  _needsLifecyclePass(): boolean {
+    return this.onLifecyclePass !== null
+  }
+
   public get translateX(): number {
     return this._translateX
   }
 
-  // Translate updates bypass layout, so keep the absolute screen cache current
-  // here to make same-frame sort/cull/render reads observe the new position.
+  // A translation in a paint hook moves the node's buffered composition from the next frame on.
   public set translateX(value: number) {
+    value ??= 0
     if (this._translateX === value) return
+    this.setNativeScenePaint({ translateX: value })
     this._translateX = value
-    const parentScreenX = this.parent ? this.parent._screenX : 0
-    this._screenX = parentScreenX + this._x + this._translateX
-    if (this.parent) this.parent.childrenPrimarySortDirty = true
-    bumpRenderListRevision(this._ctx)
     this.requestRender()
   }
 
@@ -550,32 +779,56 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public set translateY(value: number) {
+    value ??= 0
     if (this._translateY === value) return
+    this.setNativeScenePaint({ translateY: value })
     this._translateY = value
-    const parentScreenY = this.parent ? this.parent._screenY : 0
-    this._screenY = parentScreenY + this._y + this._translateY
-    if (this.parent) this.parent.childrenPrimarySortDirty = true
-    bumpRenderListRevision(this._ctx)
     this.requestRender()
   }
 
-  // Use the cached parent screen position plus this node's current local offset.
-  // That keeps culling/sorting in sync even before this node refreshes _screenX/Y.
   public get screenX(): number {
-    const parentScreenX = this.parent ? this.parent._screenX : 0
-    return parentScreenX + this._x + this._translateX
+    return this.isFreed() ? (this._destroyedLayout?.screenX ?? 0) : this.getNativeSceneLayout().screenX
   }
 
   public get screenY(): number {
-    const parentScreenY = this.parent ? this.parent._screenY : 0
-    return parentScreenY + this._y + this._translateY
+    return this.isFreed() ? (this._destroyedLayout?.screenY ?? 0) : this.getNativeSceneLayout().screenY
+  }
+
+  // Host paint uses the prepared snapshot even after same-frame reparenting.
+  protected get _screenX(): number {
+    return this._paintLayout?.screenX ?? this.screenX
+  }
+
+  protected get _screenY(): number {
+    return this._paintLayout?.screenY ?? this.screenY
+  }
+
+  /** @internal Where the body paints: the buffer's origin when the node paints its own buffer. */
+  protected _paintOrigin(buffer: OptimizedBuffer): [number, number] {
+    return buffer === this.frameBuffer ? [0, 0] : [Math.trunc(this._screenX), Math.trunc(this._screenY)]
+  }
+
+  /** @internal Record or draw the native body at its paint origin. */
+  protected _drawNativeBody(buffer: OptimizedBuffer): void {
+    this._ctx.nativeScene.drawBody(this, buffer, ...this._paintOrigin(buffer))
+  }
+
+  // Paint geometry is clamped to the cell range that drawing accepts; public sizes are Yoga's.
+  protected get _paintWidth(): number {
+    return this._paintLayout?.width ?? this.width
+  }
+
+  protected get _paintHeight(): number {
+    return this._paintLayout?.height ?? this.height
   }
 
   public get x(): number {
+    if (!this.isFreed()) return this.getNativeSceneLayout().screenX
+    const left = this._destroyedLayout?.x ?? 0
     if (this.parent) {
-      return this.parent.x + this._x + this._translateX
+      return this.parent.x + left + this._translateX
     }
-    return this._x + this._translateX
+    return left + this._translateX
   }
 
   public set x(value: number) {
@@ -586,9 +839,9 @@ export abstract class Renderable extends BaseRenderable {
     return this._position.top
   }
 
-  public set top(value: number | "auto" | `${number}%` | undefined) {
-    if (isPositionType(value) || value === undefined) {
-      this.setPosition({ top: value })
+  public set top(value: number | "auto" | `${number}%` | null | undefined) {
+    if (isPositionType(value) || value == null) {
+      this.setPosition({ top: value ?? undefined })
     }
   }
 
@@ -596,9 +849,9 @@ export abstract class Renderable extends BaseRenderable {
     return this._position.right
   }
 
-  public set right(value: number | "auto" | `${number}%` | undefined) {
-    if (isPositionType(value) || value === undefined) {
-      this.setPosition({ right: value })
+  public set right(value: number | "auto" | `${number}%` | null | undefined) {
+    if (isPositionType(value) || value == null) {
+      this.setPosition({ right: value ?? undefined })
     }
   }
 
@@ -606,9 +859,9 @@ export abstract class Renderable extends BaseRenderable {
     return this._position.bottom
   }
 
-  public set bottom(value: number | "auto" | `${number}%` | undefined) {
-    if (isPositionType(value) || value === undefined) {
-      this.setPosition({ bottom: value })
+  public set bottom(value: number | "auto" | `${number}%` | null | undefined) {
+    if (isPositionType(value) || value == null) {
+      this.setPosition({ bottom: value ?? undefined })
     }
   }
 
@@ -616,17 +869,19 @@ export abstract class Renderable extends BaseRenderable {
     return this._position.left
   }
 
-  public set left(value: number | "auto" | `${number}%` | undefined) {
-    if (isPositionType(value) || value === undefined) {
-      this.setPosition({ left: value })
+  public set left(value: number | "auto" | `${number}%` | null | undefined) {
+    if (isPositionType(value) || value == null) {
+      this.setPosition({ left: value ?? undefined })
     }
   }
 
   public get y(): number {
+    if (!this.isFreed()) return this.getNativeSceneLayout().screenY
+    const top = this._destroyedLayout?.y ?? 0
     if (this.parent) {
-      return this.parent.y + this._y + this._translateY
+      return this.parent.y + top + this._translateY
     }
-    return this._y + this._translateY
+    return top + this._translateY
   }
 
   public set y(value: number) {
@@ -634,96 +889,330 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public get width(): number {
-    return this._widthValue
+    if (!this.isFreed()) {
+      const layout = this.getNativeSceneLayout()
+      // Native snapshots use zero before layout; completed dimensions are at least one cell.
+      return layout.width === 0 ? this.styledDimension("width") : layout.width
+    }
+    return this._destroyedLayout?.width ?? this.styledDimension("width")
   }
 
-  public set width(value: number | "auto" | `${number}%`) {
-    if (!isDimensionType(value) || this._width === value) {
-      return
-    }
-
-    this._width = value
-    this.yogaNode.setWidth(value)
-
-    if (typeof value === "number" && this._flexShrink === 1) {
-      this._flexShrink = 0
-      this.yogaNode.setFlexShrink(0)
-    }
-
-    this.requestRender()
+  public set width(value: number | "auto" | `${number}%` | null | undefined) {
+    this.setDimension("width", value)
   }
 
   public get height(): number {
-    return this._heightValue
+    if (!this.isFreed()) {
+      const layout = this.getNativeSceneLayout()
+      return layout.height === 0 ? this.styledDimension("height") : layout.height
+    }
+    return this._destroyedLayout?.height ?? this.styledDimension("height")
   }
 
-  public set height(value: number | "auto" | `${number}%`) {
-    if (!isDimensionType(value) || this._height === value) {
-      return
+  /** The `width` or `height` that a nullish write restores. A class that sizes itself overrides it. */
+  protected defaultDimension(_kind: "width" | "height"): number | "auto" | `${number}%` {
+    return "auto"
+  }
+
+  private styledDimension(kind: "width" | "height"): number {
+    const value = kind === "width" ? this._width : this._height
+    return typeof value === "number" ? value : 0
+  }
+
+  private getNativeSceneLayout(): NativeSceneLayout {
+    const revision = this._ctx.nativeScene.observedLayoutRevision
+    if (revision !== undefined && this._observedLayoutRevision === revision) return this._observedLayout!
+    return this.observeLayout(this._ctx.nativeScene.getLayout(this))
+  }
+
+  /** Caches a layout that native returned since the last frame, move, destroy, or translation. */
+  private observeLayout(layout: NativeSceneLayout | undefined): NativeSceneLayout {
+    const revision = this._ctx.nativeScene.observedLayoutRevision
+    if (layout && revision !== undefined) {
+      this._observedLayout = layout
+      this._observedLayoutRevision = revision
     }
+    return layout!
+  }
 
-    this._height = value
-    this.yogaNode.setHeight(value)
+  public set height(value: number | "auto" | `${number}%` | null | undefined) {
+    this.setDimension("height", value)
+  }
 
-    if (typeof value === "number" && this._flexShrink === 1) {
-      this._flexShrink = 0
-      this.yogaNode.setFlexShrink(0)
-    }
-
-    this.requestRender()
+  private setDimension(kind: "width" | "height", input: number | "auto" | `${number}%` | null | undefined): void {
+    // A destroyed node ignores writes; a defaultDimension override may need its native context.
+    if (this.isFreed()) return
+    const value = input ?? this.defaultDimension(kind)
+    const key = kind === "width" ? "_width" : "_height"
+    if (!isDimensionType(value) || this[key] === value) return
+    this.runMutation(() => {
+      const disableShrink = typeof value === "number" && this._flexShrink === 1
+      const dimension = kind === "width" ? Dimension.Width : Dimension.Height
+      sceneSetDimension(this._ctx.nativeScene, this, dimension, value, disableShrink)
+      this[key] = value
+      if (disableShrink) this._flexShrink = 0
+      this.requestRender()
+    })
   }
 
   public get zIndex(): number {
     return this._zIndex
   }
 
-  public set zIndex(value: number) {
+  public set zIndex(value: number | undefined) {
+    value = value ?? 0
     if (this._zIndex !== value) {
+      this.setNativeScenePaint({ zIndex: value })
       this._zIndex = value
-      this.parent?.requestZIndexSort()
-      bumpRenderListRevision(this._ctx)
       this.requestRender()
     }
   }
 
-  private requestZIndexSort(): void {
-    this.needsZIndexSort = true
-  }
-
-  private ensureZIndexSorted(): void {
-    if (this.needsZIndexSort) {
-      this._childrenInZIndexOrder.sort((a, b) => (a.zIndex > b.zIndex ? 1 : a.zIndex < b.zIndex ? -1 : 0))
-      this.needsZIndexSort = false
-    }
-  }
-
   public getChildrenSortedByPrimaryAxis(): Renderable[] {
-    if (
-      !this.childrenPrimarySortDirty &&
-      this.childrenSortedByPrimaryAxis.length === this._childrenInLayoutOrder.length
-    ) {
-      return this.childrenSortedByPrimaryAxis
-    }
+    const axis = this.primaryAxis === "row" ? "screenX" : "screenY"
+    if (this._childrenInLayoutOrder.length < 2) return [...this._childrenInLayoutOrder]
+    // Selection traverses children in screen order, including ancestor translations.
+    const children = this._childrenInLayoutOrder.map((child) => ({ child, coordinate: child[axis] }))
+    children.sort((a, b) => a.coordinate - b.coordinate)
+    return children.map(({ child }) => child)
+  }
 
-    const dir = this.yogaNode.getFlexDirection()
-    const axis: "x" | "y" = dir === 2 || dir === 3 ? "x" : "y"
+  /** @internal Bind the native scene handle. Scene-backed layout has no JS Yoga Node. */
+  _bindSceneHandle(handle: SceneNodeHandle): void {
+    this._sceneHandle = handle
+    this._yogaFreed = false
+  }
 
-    const sorted = [...this._childrenInLayoutOrder]
-    sorted.sort((a, b) => {
-      // Viewport culling compares against screen-space bounds, so primary-axis
-      // ordering has to use absolute positions instead of parent-relative x/y.
-      const va = axis === "y" ? a.screenY : a.screenX
-      const vb = axis === "y" ? b.screenY : b.screenX
-      return va - vb
-    })
+  /** @internal Only the matching scene can use this node's handle. */
+  _getSceneHandle(owner: NativeScene): SceneNodeHandle {
+    if (this._ctx.nativeScene !== owner) throw new Error("Yoga node belongs to a different native scene")
+    owner.assertAlive()
+    if (this._yogaFreed || !this._sceneHandle) throw new Error("Native scene Yoga node is freed")
+    return this._sceneHandle
+  }
 
-    this.childrenSortedByPrimaryAxis = sorted
-    this.childrenPrimarySortDirty = false
-    return this.childrenSortedByPrimaryAxis
+  /** @internal Invalidate the handle after native release. */
+  _releaseSceneHandle(): void {
+    this._yogaFreed = true
+    this._sceneHandle = undefined
+  }
+
+  isFreed(): boolean {
+    return this._yogaFreed || !this._sceneHandle
+  }
+
+  assertMutable(): void {
+    this._ctx.nativeScene.driver.renderLib.getYogaHost().assertMutable()
+    this._getSceneHandle(this._ctx.nativeScene)
+  }
+
+  /** A destroyed renderable skips the operation: writes to it are no-ops, as on `main`. */
+  runMutation<T>(operation: () => T): T {
+    if (this.isFreed()) return undefined as T
+    this.assertMutable()
+    return this._ctx.nativeScene.driver.renderLib.getYogaHost().runMutation(operation)
+  }
+
+  private yogaSetEnum(kind: (typeof YogaEnumKind)[keyof typeof YogaEnumKind], value: number): void {
+    if (this.isFreed()) return
+    sceneSetEnum(this._ctx.nativeScene, this, kind, value)
+  }
+
+  private yogaGetEnum(kind: (typeof YogaEnumKind)[keyof typeof YogaEnumKind], fallback: number): number {
+    return this.isFreed() ? fallback : sceneGetEnum(this._ctx.nativeScene, this, kind)
+  }
+
+  private yogaGetFloat(kind: (typeof YogaFloatKind)[keyof typeof YogaFloatKind]): number {
+    return this.isFreed() ? NaN : sceneGetFloat(this._ctx.nativeScene, this, kind)
+  }
+
+  private yogaSetFloat(kind: (typeof YogaFloatKind)[keyof typeof YogaFloatKind], value: number | undefined): void {
+    if (this.isFreed()) return
+    sceneSetFloat(this._ctx.nativeScene, this, kind, value)
+  }
+
+  private yogaSetValue(
+    kind: (typeof YogaValueKind)[keyof typeof YogaValueKind],
+    edge: number,
+    valueInput: number | "auto" | `${number}%` | Value | undefined,
+  ): void {
+    if (this.isFreed()) return
+    sceneSetValue(this._ctx.nativeScene, this, kind, edge, valueInput)
+  }
+
+  private yogaGetValue(kind: (typeof YogaValueKind)[keyof typeof YogaValueKind], edge: number): Value {
+    return this.isFreed() ? UNDEFINED_VALUE : sceneGetValue(this._ctx.nativeScene, this, kind, edge)
+  }
+
+  private setDisplay(display: Display): void {
+    this.yogaSetEnum(YogaEnumKind.Display, display)
+  }
+
+  getFlexDirection(): FlexDirection {
+    return this.yogaGetEnum(YogaEnumKind.FlexDirection, FlexDirection.Column) as FlexDirection
+  }
+
+  private setFlexDirection(flexDirection: FlexDirection): void {
+    this.yogaSetEnum(YogaEnumKind.FlexDirection, flexDirection)
+  }
+
+  private setFlexWrap(flexWrap: number): void {
+    this.yogaSetEnum(YogaEnumKind.FlexWrap, flexWrap)
+  }
+
+  private setAlignItems(alignItems: number): void {
+    this.yogaSetEnum(YogaEnumKind.AlignItems, alignItems)
+  }
+
+  private setJustifyContent(justifyContent: number): void {
+    this.yogaSetEnum(YogaEnumKind.JustifyContent, justifyContent)
+  }
+
+  private setAlignSelf(alignSelf: number): void {
+    this.yogaSetEnum(YogaEnumKind.AlignSelf, alignSelf)
+  }
+
+  private setPositionType(positionType: number): void {
+    this.yogaSetEnum(YogaEnumKind.PositionType, positionType)
+  }
+
+  private setOverflow(overflow: number): void {
+    this.yogaSetEnum(YogaEnumKind.Overflow, overflow)
+  }
+
+  private setFlexGrow(flexGrow: number | undefined): void {
+    this.yogaSetFloat(YogaFloatKind.FlexGrow, flexGrow)
+  }
+
+  private setFlexShrink(flexShrink: number | undefined): void {
+    this.yogaSetFloat(YogaFloatKind.FlexShrink, flexShrink)
+  }
+
+  private setFlexBasis(flexBasis: number | "auto" | `${number}%` | undefined): void {
+    this.yogaSetValue(YogaValueKind.FlexBasis, NATIVE_EDGE_NONE, flexBasis)
+  }
+
+  private setWidth(width: number | "auto" | `${number}%`): void {
+    this.yogaSetValue(YogaValueKind.Width, NATIVE_EDGE_NONE, width)
+  }
+
+  private setHeight(height: number | "auto" | `${number}%`): void {
+    this.yogaSetValue(YogaValueKind.Height, NATIVE_EDGE_NONE, height)
+  }
+
+  private setMinWidth(minWidth: number | `${number}%` | undefined): void {
+    this.yogaSetValue(YogaValueKind.MinWidth, NATIVE_EDGE_NONE, minWidth)
+  }
+
+  private setMaxWidth(maxWidth: number | `${number}%` | undefined): void {
+    this.yogaSetValue(YogaValueKind.MaxWidth, NATIVE_EDGE_NONE, maxWidth)
+  }
+
+  private setMinHeight(minHeight: number | `${number}%` | undefined): void {
+    this.yogaSetValue(YogaValueKind.MinHeight, NATIVE_EDGE_NONE, minHeight)
+  }
+
+  private setMaxHeight(maxHeight: number | `${number}%` | undefined): void {
+    this.yogaSetValue(YogaValueKind.MaxHeight, NATIVE_EDGE_NONE, maxHeight)
+  }
+
+  private setMargin(edge: Edge, margin: number | "auto" | `${number}%` | undefined): void {
+    this.yogaSetValue(YogaValueKind.Margin, edge, margin)
+  }
+
+  getMargin(edge: Edge): Value {
+    return this.yogaGetValue(YogaValueKind.Margin, edge)
+  }
+
+  private setPadding(edge: Edge, padding: number | `${number}%` | undefined): void {
+    this.yogaSetValue(YogaValueKind.Padding, edge, padding)
+  }
+
+  protected setGap(gutter: Gutter, gap: number | `${number}%` | undefined): void {
+    this.yogaSetValue(YogaValueKind.Gap, gutter, gap)
+  }
+
+  getWidth(): Value {
+    return this.yogaGetValue(YogaValueKind.Width, NATIVE_EDGE_NONE)
+  }
+
+  // Declared style, with the types of the matching standalone Yoga Node getters. Pending writes are visible.
+  getFlexWrap(): Wrap {
+    return this.yogaGetEnum(YogaEnumKind.FlexWrap, Wrap.NoWrap) as Wrap
+  }
+
+  getAlignItems(): Align {
+    return this.yogaGetEnum(YogaEnumKind.AlignItems, Align.Stretch) as Align
+  }
+
+  getJustifyContent(): Justify {
+    return this.yogaGetEnum(YogaEnumKind.JustifyContent, Justify.FlexStart) as Justify
+  }
+
+  getAlignSelf(): Align {
+    return this.yogaGetEnum(YogaEnumKind.AlignSelf, Align.Auto) as Align
+  }
+
+  getPositionType(): PositionType {
+    return this.yogaGetEnum(YogaEnumKind.PositionType, PositionType.Relative) as PositionType
+  }
+
+  getFlexGrow(): number {
+    return this.yogaGetFloat(YogaFloatKind.FlexGrow)
+  }
+
+  getFlexShrink(): number {
+    return this.yogaGetFloat(YogaFloatKind.FlexShrink)
+  }
+
+  getFlexBasis(): Value {
+    return this.yogaGetValue(YogaValueKind.FlexBasis, NATIVE_EDGE_NONE)
+  }
+
+  getHeight(): Value {
+    return this.yogaGetValue(YogaValueKind.Height, NATIVE_EDGE_NONE)
+  }
+
+  getMinWidth(): Value {
+    return this.yogaGetValue(YogaValueKind.MinWidth, NATIVE_EDGE_NONE)
+  }
+
+  getMinHeight(): Value {
+    return this.yogaGetValue(YogaValueKind.MinHeight, NATIVE_EDGE_NONE)
+  }
+
+  getMaxWidth(): Value {
+    return this.yogaGetValue(YogaValueKind.MaxWidth, NATIVE_EDGE_NONE)
+  }
+
+  getMaxHeight(): Value {
+    return this.yogaGetValue(YogaValueKind.MaxHeight, NATIVE_EDGE_NONE)
+  }
+
+  getPadding(edge: Edge): Value {
+    return this.yogaGetValue(YogaValueKind.Padding, edge)
+  }
+
+  getGap(gutter: Gutter): Value {
+    return this.yogaGetValue(YogaValueKind.Gap, gutter)
+  }
+
+  getComputedLayout(): Layout {
+    const { left, top, right, bottom, width, height } = this._ctx.nativeScene.getLayout(this, true)
+    return { left, top, right, bottom, width, height }
+  }
+
+  private setMeasureFunc(measure: MeasureFunction | null): void {
+    this.assertMutable()
+    this._ctx.nativeScene.setMeasureFunc(this, measure)
+  }
+
+  private hasMeasureFunc(): boolean {
+    return this._ctx.nativeScene.hasMeasureFunc(this)
   }
 
   private setupYogaProperties(options: RenderableOptions<Renderable>): void {
-    const node = this.yogaNode
+    const node = this
 
     if (isFlexBasisType(options.flexBasis)) {
       node.setFlexBasis(options.flexBasis)
@@ -756,17 +1245,18 @@ export abstract class Renderable extends BaseRenderable {
 
     node.setFlexDirection(parseFlexDirection(options.flexDirection))
     node.setFlexWrap(parseWrap(options.flexWrap))
+    if (options.layoutMode !== undefined) node.layoutMode = options.layoutMode
     node.setAlignItems(parseAlignItems(options.alignItems))
     node.setJustifyContent(parseJustify(options.justifyContent))
     node.setAlignSelf(parseAlign(options.alignSelf))
 
     if (isDimensionType(options.width)) {
       this._width = options.width
-      this.yogaNode.setWidth(options.width)
+      node.setWidth(options.width)
     }
     if (isDimensionType(options.height)) {
       this._height = options.height
-      this.yogaNode.setHeight(options.height)
+      node.setHeight(options.height)
     }
 
     this._positionType = options.position === "absolute" ? "absolute" : "relative"
@@ -793,6 +1283,7 @@ export abstract class Renderable extends BaseRenderable {
         left: options.left,
       }
       this.updateYogaPosition(this._position)
+      this.requestRender()
     }
 
     if (isSizeType(options.maxWidth)) {
@@ -806,7 +1297,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   private setupMarginAndPadding(options: RenderableOptions<Renderable>): void {
-    const node = this.yogaNode
+    const node = this
 
     if (isMarginType(options.margin)) {
       node.setMargin(Edge.All, options.margin)
@@ -856,11 +1347,14 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   set position(positionType: PositionTypeString | null | undefined) {
+    positionType ??= "relative"
     if (!isPositionTypeType(positionType) || this._positionType === positionType) return
 
-    this._positionType = positionType
-    this.yogaNode.setPositionType(parsePositionType(positionType))
-    this.requestRender()
+    this.runMutation(() => {
+      this.setPositionType(parsePositionType(positionType))
+      this._positionType = positionType
+      this.requestRender()
+    })
   }
 
   get overflow(): OverflowString {
@@ -868,284 +1362,207 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   set overflow(overflow: OverflowString | null | undefined) {
+    overflow ??= "visible"
     if (!isOverflowType(overflow) || this._overflow === overflow) return
 
-    this._overflow = overflow
-    this.yogaNode.setOverflow(parseOverflow(overflow))
-    bumpRenderListRevision(this._ctx)
-    this.requestRender()
+    this.runMutation(() => {
+      this.setOverflow(parseOverflow(overflow))
+      this._overflow = overflow
+      this.requestRender()
+    })
   }
 
   public setPosition(position: Position): void {
-    this._position = { ...this._position, ...position }
-    this.updateYogaPosition(position)
+    this.runMutation(() => {
+      this.updateYogaPosition(position)
+      this._position = { ...this._position, ...position }
+      this.requestRender()
+    })
   }
 
+  // A present nullish key unsets its edge, as when the option is omitted. An absent or invalid key keeps it.
   private updateYogaPosition(position: Position): void {
-    const node = this.yogaNode
-    const { top, right, bottom, left } = position
-
-    if (isPositionType(top)) {
-      if (top === "auto") {
-        node.setPositionAuto(Edge.Top)
-      } else {
-        node.setPosition(Edge.Top, top)
-      }
+    const units = new Uint32Array(positionKeys.length)
+    const values = new Float32Array(positionKeys.length)
+    let mask = 0
+    for (let edge = 0; edge < positionKeys.length; edge++) {
+      const key = positionKeys[edge]
+      const input = position[key] ?? undefined
+      if (!(key in position) || (input !== undefined && !isPositionType(input))) continue
+      const value = parseYogaValue(input)
+      mask |= 1 << edge
+      units[edge] = value.unit
+      values[edge] = value.value
     }
-    if (isPositionType(right)) {
-      if (right === "auto") {
-        node.setPositionAuto(Edge.Right)
-      } else {
-        node.setPosition(Edge.Right, right)
-      }
-    }
-    if (isPositionType(bottom)) {
-      if (bottom === "auto") {
-        node.setPositionAuto(Edge.Bottom)
-      } else {
-        node.setPosition(Edge.Bottom, bottom)
-      }
-    }
-    if (isPositionType(left)) {
-      if (left === "auto") {
-        node.setPositionAuto(Edge.Left)
-      } else {
-        node.setPosition(Edge.Left, left)
-      }
-    }
-    this.requestRender()
+    this._ctx.nativeScene.setPositions(this, mask, units, values)
   }
 
   public set flexGrow(grow: number | null | undefined) {
     if (grow == null) {
-      this.yogaNode.setFlexGrow(0)
+      this.setFlexGrow(0)
     } else {
-      this.yogaNode.setFlexGrow(grow)
+      this.setFlexGrow(grow)
     }
     this.requestRender()
   }
 
   public set flexShrink(shrink: number | null | undefined) {
     const value = shrink == null ? 1 : shrink
-    this._flexShrink = value
-    this.yogaNode.setFlexShrink(value)
-    this.requestRender()
+    this.runMutation(() => {
+      this.setFlexShrink(value)
+      this._flexShrink = value
+      this.requestRender()
+    })
   }
 
   public set flexDirection(direction: FlexDirectionString | null | undefined) {
-    this.yogaNode.setFlexDirection(parseFlexDirection(direction))
+    this.setFlexDirection(parseFlexDirection(direction))
     this.requestRender()
   }
 
   public set flexWrap(wrap: WrapString | null | undefined) {
-    this.yogaNode.setFlexWrap(parseWrap(wrap))
+    this.setFlexWrap(parseWrap(wrap))
+    this.requestRender()
+  }
+
+  public set layoutMode(mode: LayoutModeString | null | undefined) {
+    this.yogaSetEnum(YogaEnumKind.LayoutMode, parseLayoutMode(mode))
     this.requestRender()
   }
 
   public set alignItems(alignItems: AlignString | null | undefined) {
-    this.yogaNode.setAlignItems(parseAlignItems(alignItems))
+    this.setAlignItems(parseAlignItems(alignItems))
     this.requestRender()
   }
 
   public set justifyContent(justifyContent: JustifyString | null | undefined) {
-    this.yogaNode.setJustifyContent(parseJustify(justifyContent))
+    this.setJustifyContent(parseJustify(justifyContent))
     this.requestRender()
   }
 
   public set alignSelf(alignSelf: AlignString | null | undefined) {
-    this.yogaNode.setAlignSelf(parseAlign(alignSelf))
+    this.setAlignSelf(parseAlign(alignSelf))
     this.requestRender()
   }
 
   public set flexBasis(basis: number | "auto" | null | undefined) {
-    if (isFlexBasisType(basis)) {
-      this.yogaNode.setFlexBasis(basis)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.FlexBasis, NATIVE_EDGE_NONE, basis, isFlexBasisType)
   }
 
   public set minWidth(minWidth: number | `${number}%` | null | undefined) {
-    if (isSizeType(minWidth)) {
-      this.yogaNode.setMinWidth(minWidth)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.MinWidth, NATIVE_EDGE_NONE, minWidth, isSizeType)
   }
 
   public set maxWidth(maxWidth: number | `${number}%` | null | undefined) {
-    if (isSizeType(maxWidth)) {
-      this.yogaNode.setMaxWidth(maxWidth)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.MaxWidth, NATIVE_EDGE_NONE, maxWidth, isSizeType)
   }
 
   public set minHeight(minHeight: number | `${number}%` | null | undefined) {
-    if (isSizeType(minHeight)) {
-      this.yogaNode.setMinHeight(minHeight)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.MinHeight, NATIVE_EDGE_NONE, minHeight, isSizeType)
   }
 
   public set maxHeight(maxHeight: number | `${number}%` | null | undefined) {
-    if (isSizeType(maxHeight)) {
-      this.yogaNode.setMaxHeight(maxHeight)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.MaxHeight, NATIVE_EDGE_NONE, maxHeight, isSizeType)
   }
 
   public set margin(margin: number | "auto" | `${number}%` | null | undefined) {
-    if (isMarginType(margin)) {
-      this.yogaNode.setMargin(Edge.All, margin)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Margin, Edge.All, margin, isMarginType)
   }
 
   public set marginX(marginX: number | "auto" | `${number}%` | null | undefined) {
-    if (isMarginType(marginX)) {
-      this.yogaNode.setMargin(Edge.Horizontal, marginX)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Margin, Edge.Horizontal, marginX, isMarginType)
   }
 
   public set marginY(marginY: number | "auto" | `${number}%` | null | undefined) {
-    if (isMarginType(marginY)) {
-      this.yogaNode.setMargin(Edge.Vertical, marginY)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Margin, Edge.Vertical, marginY, isMarginType)
   }
 
   public set marginTop(margin: number | "auto" | `${number}%` | null | undefined) {
-    if (isMarginType(margin)) {
-      this.yogaNode.setMargin(Edge.Top, margin)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Margin, Edge.Top, margin, isMarginType)
   }
 
   public get marginTop(): number | "auto" | `${number}%` {
-    const margin = this.yogaNode.getMargin(Edge.Top) as unknown
-    if (typeof margin === "number") return margin
-    if (typeof margin === "object" && margin && "value" in margin && typeof margin.value === "number")
-      return margin.value
-    return 0
+    return this.getMargin(Edge.Top).value
   }
 
   public set marginRight(margin: number | "auto" | `${number}%` | null | undefined) {
-    if (isMarginType(margin)) {
-      this.yogaNode.setMargin(Edge.Right, margin)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Margin, Edge.Right, margin, isMarginType)
   }
 
   public set marginBottom(margin: number | "auto" | `${number}%` | null | undefined) {
-    if (isMarginType(margin)) {
-      this.yogaNode.setMargin(Edge.Bottom, margin)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Margin, Edge.Bottom, margin, isMarginType)
   }
 
   public set marginLeft(margin: number | "auto" | `${number}%` | null | undefined) {
-    if (isMarginType(margin)) {
-      this.yogaNode.setMargin(Edge.Left, margin)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Margin, Edge.Left, margin, isMarginType)
   }
 
   public set padding(padding: number | `${number}%` | null | undefined) {
-    if (isPaddingType(padding)) {
-      this.yogaNode.setPadding(Edge.All, padding)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Padding, Edge.All, padding, isPaddingType)
   }
 
   public set paddingX(paddingX: number | `${number}%` | null | undefined) {
-    if (isPaddingType(paddingX)) {
-      this.yogaNode.setPadding(Edge.Horizontal, paddingX)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Padding, Edge.Horizontal, paddingX, isPaddingType)
   }
 
   public set paddingY(paddingY: number | `${number}%` | null | undefined) {
-    if (isPaddingType(paddingY)) {
-      this.yogaNode.setPadding(Edge.Vertical, paddingY)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Padding, Edge.Vertical, paddingY, isPaddingType)
   }
 
   public set paddingTop(padding: number | `${number}%` | null | undefined) {
-    if (isPaddingType(padding)) {
-      this.yogaNode.setPadding(Edge.Top, padding)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Padding, Edge.Top, padding, isPaddingType)
   }
 
   public set paddingRight(padding: number | `${number}%` | null | undefined) {
-    if (isPaddingType(padding)) {
-      this.yogaNode.setPadding(Edge.Right, padding)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Padding, Edge.Right, padding, isPaddingType)
   }
 
   public set paddingBottom(padding: number | `${number}%` | null | undefined) {
-    if (isPaddingType(padding)) {
-      this.yogaNode.setPadding(Edge.Bottom, padding)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Padding, Edge.Bottom, padding, isPaddingType)
   }
 
   public set paddingLeft(padding: number | `${number}%` | null | undefined) {
-    if (isPaddingType(padding)) {
-      this.yogaNode.setPadding(Edge.Left, padding)
+    this.setStyleValue(YogaValueKind.Padding, Edge.Left, padding, isPaddingType)
+  }
+
+  // A nullish value unsets the style, as when the option is omitted, so an edge falls back to its shorthand again.
+  private setStyleValue(
+    kind: (typeof YogaValueKind)[keyof typeof YogaValueKind],
+    edge: number,
+    value: number | "auto" | `${number}%` | null | undefined,
+    isValid: (value: unknown) => boolean,
+  ): void {
+    if (value != null && !isValid(value)) return
+    this.yogaSetValue(kind, edge, value ?? undefined)
+    this.requestRender()
+  }
+
+  public setMeasureProvider(provider: MeasureFunction | null): void {
+    if (this.isFreed()) return
+    const node = this
+    node.runMutation(() => {
+      node.setMeasureFunc(provider)
       this.requestRender()
-    }
+    })
   }
 
-  public getLayoutNode(): YogaNode {
-    return this.yogaNode
+  public invalidateIntrinsicSize(): void {
+    if (this.isFreed()) return
+    const node = this
+    node.assertMutable()
+    if (node.hasMeasureFunc()) this._ctx.nativeScene.markDirty(this)
   }
 
-  public updateFromLayout(): void {
-    // Yoga layout is stable within a frame; skip the FFI round-trip on repeat calls.
-    const frameId = this._ctx.frameId
-    if (this._lastLayoutFrame === frameId) return
-    this._lastLayoutFrame = frameId
-
-    const layout = this.yogaNode.getComputedLayout()
-
-    const oldX = this._x
-    const oldY = this._y
-    const oldWidth = this._widthValue
-    const oldHeight = this._heightValue
-
-    this._x = layout.left
-    this._y = layout.top
-    // Layout is updated top-down, so the parent cache is already current here.
-    // Recomputing once per layout pass keeps render-time coordinate reads cheap.
-    const parentScreenX = this.parent ? this.parent._screenX : 0
-    const parentScreenY = this.parent ? this.parent._screenY : 0
-    this._screenX = parentScreenX + this._x + this._translateX
-    this._screenY = parentScreenY + this._y + this._translateY
-
-    const newWidth = Math.max(layout.width, 1)
-    const newHeight = Math.max(layout.height, 1)
-    const sizeChanged = oldWidth !== newWidth || oldHeight !== newHeight
-
-    this._widthValue = newWidth
-    this._heightValue = newHeight
-
-    if (sizeChanged) {
-      this.onLayoutResize(newWidth, newHeight)
-    }
-
-    const positionChanged = oldX !== this._x || oldY !== this._y
-    if (positionChanged) {
-      if (this.parent) this.parent.childrenPrimarySortDirty = true
-    }
+  public getLayout(): Readonly<Layout> {
+    if (this.isFreed()) throw new Error("Renderable is destroyed")
+    return this.getComputedLayout()
   }
 
   protected onLayoutResize(width: number, height: number): void {
     if (this._visible) {
       // TODO: Should probably .markDirty()
       this.handleFrameBufferResize(width, height)
-      this.onResize(width, height)
+      this._hooks.onResize.call(this, width, height)
       this.requestRender()
     }
   }
@@ -1172,16 +1589,11 @@ export abstract class Renderable extends BaseRenderable {
       return
     }
 
-    try {
-      const widthMethod = this._ctx.widthMethod
-      this.frameBuffer = OptimizedBuffer.create(w, h, widthMethod, {
-        respectAlpha: true,
-        id: `framebuffer-${this.id}`,
-      })
-    } catch (error) {
-      console.error(`Failed to create frame buffer for ${this.id}:`, error)
-      this.frameBuffer = null
-    }
+    this.frameBuffer = OptimizedBuffer.create(w, h, this._ctx.widthMethod, {
+      respectAlpha: true,
+      id: `framebuffer-${this.id}`,
+      owner: this._ctx.nativeScene,
+    })
   }
 
   /**
@@ -1195,20 +1607,88 @@ export abstract class Renderable extends BaseRenderable {
     // Override in subclasses for additional resize logic
   }
 
-  private replaceParent(obj: Renderable) {
-    if (obj.parent) {
-      obj.parent.remove(obj.id)
-    }
-    obj.parent = this
+  private placeChild(child: Renderable, anchor?: Renderable): number {
+    return this.runMutation(() => {
+      if (this._ctx.nativeScene !== child._ctx.nativeScene) {
+        throw new Error("Cannot move renderables between native scenes")
+      }
+      let previous = child.parent
+      if (previous && previous !== this && previous.remove !== Renderable.prototype.remove) {
+        // Custom removal owns its policy and cleanup; placement cannot roll back those side effects.
+        previous.remove(child)
+        previous = child.parent
+      }
+      if (this._isDestroyed || child.isDestroyed || anchor?.isDestroyed) return -1
+      const target: Renderable = this
+      const childNode = child
+      const previousIndex = previous?._childrenInLayoutOrder.indexOf(child) ?? -1
+      const anchorIndex = anchor ? target._childrenInLayoutOrder.indexOf(anchor) : target._childrenInLayoutOrder.length
+      if (anchorIndex === -1) return -1
+      const index = anchorIndex - (previous === target && previousIndex !== -1 && previousIndex < anchorIndex ? 1 : 0)
+      let counts: Map<Renderable, { before: number; after: number }> | undefined
+      let lifecycle: Map<Set<Renderable>, boolean> | undefined
+      if (previous !== target) {
+        if (child._liveCount > 0) {
+          counts = new Map()
+          for (const [start, delta] of [
+            [previous, -child._liveCount],
+            [target, child._liveCount],
+          ] as const) {
+            for (let parent = start; parent; parent = parent.parent) {
+              const count = counts.get(parent) ?? { before: parent._liveCount, after: parent._liveCount }
+              count.after += delta
+              counts.set(parent, count)
+            }
+          }
+        }
+        if (previous) {
+          const passes = previous._ctx.getLifecyclePasses()
+          lifecycle = new Map([[passes, false]])
+        }
+        if (typeof child.onLifecyclePass === "function") {
+          const passes = target._ctx.getLifecyclePasses()
+          lifecycle ??= new Map()
+          lifecycle.set(passes, true)
+        }
+      }
+      this._ctx.nativeScene.moveNode(childNode, this, index)
+      if (previous && previousIndex !== -1) previous._childrenInLayoutOrder.splice(previousIndex, 1)
+      target._childrenInLayoutOrder.splice(index, 0, child)
+      child.parent = target
+      if (counts) for (const [parent, count] of counts) parent._liveCount = count.after
+      if (lifecycle)
+        for (const [passes, active] of lifecycle) {
+          if (active) passes.add(child)
+          else passes.delete(child)
+        }
+      this.runCleanup((run) => {
+        if (previous !== target && (child._focused || child.hasFocusedDescendant))
+          for (const start of [previous, target])
+            for (let parent = start; parent; parent = parent.parent) parent.markDirty()
+        if (counts) for (const [parent, count] of counts) run(() => parent.onLiveCountChanged(count.before))
+        if (previous && previous !== target) run(() => child.onRemove())
+        if (previous && previous !== target) run(() => previous.requestRender())
+        run(() => target.requestRender())
+      })
+      return index
+    })
   }
 
   public add(obj: Renderable | VNode<any, any[]> | unknown, index?: number): number {
     if (!obj) {
       return -1
     }
+    if (isVNode(obj)) this.assertMutable()
 
     const renderable = maybeMakeRenderable(this._ctx, obj)
     if (!renderable) {
+      return -1
+    }
+
+    if (this._isDestroyed) {
+      if (process.env.NODE_ENV !== "production") {
+        console.warn(`Renderable with id ${this.id} was already destroyed, skipping add`)
+      }
       return -1
     }
 
@@ -1225,36 +1705,7 @@ export abstract class Renderable extends BaseRenderable {
       return this.insertBefore(renderable, anchorRenderable)
     }
 
-    if (renderable.parent === this) {
-      this.yogaNode.removeChild(renderable.getLayoutNode())
-      this._childrenInLayoutOrder.splice(this._childrenInLayoutOrder.indexOf(renderable), 1)
-    } else {
-      this.replaceParent(renderable)
-      this.needsZIndexSort = true
-      this.renderableMapById.set(renderable.id, renderable)
-      this._childrenInZIndexOrder.push(renderable)
-
-      if (typeof renderable.onLifecyclePass === "function") {
-        this._ctx.registerLifecyclePass(renderable)
-      }
-
-      if (renderable._liveCount > 0) {
-        this.propagateLiveCount(renderable._liveCount)
-      }
-    }
-
-    const childLayoutNode = renderable.getLayoutNode()
-    const insertedIndex = this._childrenInLayoutOrder.length
-    this._childrenInLayoutOrder.push(renderable)
-    this.yogaNode.insertChild(childLayoutNode, insertedIndex)
-
-    this.childrenPrimarySortDirty = true
-    this._shouldUpdateBefore.add(renderable)
-    bumpRenderListRevision(this._ctx)
-
-    this.requestRender()
-
-    return insertedIndex
+    return this.placeChild(renderable)
   }
 
   insertBefore(obj: Renderable | VNode<any, any[]> | unknown, anchor?: Renderable | unknown): number {
@@ -1265,9 +1716,17 @@ export abstract class Renderable extends BaseRenderable {
     if (!obj) {
       return -1
     }
+    if (isVNode(obj)) this.assertMutable()
 
     const renderable = maybeMakeRenderable(this._ctx, obj)
     if (!renderable) {
+      return -1
+    }
+
+    if (this._isDestroyed) {
+      if (process.env.NODE_ENV !== "production") {
+        console.warn(`Renderable with id ${this.id} was already destroyed, skipping insertBefore`)
+      }
       return -1
     }
 
@@ -1289,94 +1748,59 @@ export abstract class Renderable extends BaseRenderable {
       return -1
     }
 
-    if (!this.renderableMapById.has(anchor.id)) {
+    if (this._childrenInLayoutOrder.indexOf(anchor) === -1) {
       if (process.env.NODE_ENV !== "production") {
         console.warn(`Anchor with id ${anchor.id} does not exist within the parent ${this.id}, skipping insertBefore`)
       }
       return -1
     }
 
-    if (renderable === anchor || renderable.id === anchor.id) {
+    if (renderable === anchor) {
       if (process.env.NODE_ENV !== "production") {
         console.warn(`Anchor is the same as the node ${renderable.id} being inserted, skipping insertBefore`)
       }
       return -1
     }
 
-    if (renderable.parent === this) {
-      this.yogaNode.removeChild(renderable.getLayoutNode())
-      this._childrenInLayoutOrder.splice(this._childrenInLayoutOrder.indexOf(renderable), 1)
-    } else {
-      this.replaceParent(renderable)
-      this.needsZIndexSort = true
-      this.renderableMapById.set(renderable.id, renderable)
-      this._childrenInZIndexOrder.push(renderable)
-
-      if (typeof renderable.onLifecyclePass === "function") {
-        this._ctx.registerLifecyclePass(renderable)
-      }
-
-      if (renderable._liveCount > 0) {
-        this.propagateLiveCount(renderable._liveCount)
-      }
-    }
-
-    this.childrenPrimarySortDirty = true
-
-    const anchorIndex = this._childrenInLayoutOrder.indexOf(anchor)
-    const insertedIndex = Math.max(0, Math.min(anchorIndex, this._childrenInLayoutOrder.length))
-
-    this._childrenInLayoutOrder.splice(insertedIndex, 0, renderable)
-    this.yogaNode.insertChild(renderable.getLayoutNode(), insertedIndex)
-
-    this._shouldUpdateBefore.add(renderable)
-    bumpRenderListRevision(this._ctx)
-
-    this.requestRender()
-
-    return insertedIndex
+    return this.placeChild(renderable, anchor)
   }
 
   // TODO: that naming is meh
   public getRenderable(id: string): Renderable | undefined {
-    return this.renderableMapById.get(id)
+    return this._childrenInLayoutOrder.find((child) => child.id === id)
   }
 
-  public remove(id: string): void {
-    if (!id) {
+  public remove(child: BaseRenderable): void {
+    if (!(child instanceof BaseRenderable)) {
+      throw new Error("remove expects a renderable child object")
+    }
+
+    // Membership in _childrenInLayoutOrder proves child is a Renderable with a
+    // layout node; anything else (text nodes, children of other parents,
+    // already-detached renderables) is a caller bug worth surfacing in dev.
+    const index = this.layoutIndexOf(child)
+    if (index === -1) {
+      if (process.env.NODE_ENV !== "production") {
+        console.warn(`Renderable with id ${child.id} is not a child of ${this.id}, skipping remove`)
+      }
       return
     }
 
-    if (this.renderableMapById.has(id)) {
-      const obj = this.renderableMapById.get(id)
-      if (obj) {
-        if (obj._liveCount > 0) {
-          this.propagateLiveCount(-obj._liveCount)
+    const renderable = this._childrenInLayoutOrder[index]
+    this.runMutation(() => {
+      this._ctx.nativeScene.moveNode(renderable, null, 0)
+      this.removeLayoutChildAt(index)
+      this.runCleanup((run) => {
+        if (renderable._focused || renderable.hasFocusedDescendant) {
+          run(() => renderable.propagateFocusChange(false))
         }
-
-        const childLayoutNode = obj.getLayoutNode()
-        this.yogaNode.removeChild(childLayoutNode)
-        this.requestRender()
-
-        obj.onRemove()
-        obj.parent = null
-        this._ctx.unregisterLifecyclePass(obj)
-        this.renderableMapById.delete(id)
-
-        const index = this._childrenInLayoutOrder.findIndex((obj) => obj.id === id)
-        if (index !== -1) {
-          this._childrenInLayoutOrder.splice(index, 1)
-        }
-
-        const zIndexIndex = this._childrenInZIndexOrder.findIndex((obj) => obj.id === id)
-        if (zIndexIndex !== -1) {
-          this._childrenInZIndexOrder.splice(zIndexIndex, 1)
-        }
-
-        this.childrenPrimarySortDirty = true
-        bumpRenderListRevision(this._ctx)
-      }
-    }
+        if (renderable._liveCount > 0) run(() => this.propagateLiveCount(-renderable._liveCount))
+        run(() => this.requestRender())
+        run(() => renderable.onRemove())
+        renderable.parent = null
+        run(() => this._ctx.unregisterLifecyclePass(renderable))
+      })
+    })
   }
 
   protected onRemove(): void {
@@ -1392,157 +1816,9 @@ export abstract class Renderable extends BaseRenderable {
     return this._childrenInLayoutOrder.length
   }
 
-  public updateLayout(deltaTime: number, renderList: RenderCommand[] = []): void {
-    if (!this.visible) return
-
-    this.onUpdate(deltaTime)
-
-    // If destroyed during onUpdate, don't add to render list
-    if (this._isDestroyed) return
-
-    // NOTE: worst case updateFromLayout is called throughout the whole tree,
-    // which currently still has yoga performance issues.
-    // This can be mitigated at some point when the layout tree moved to native,
-    // as in the native yoga tree we can use events during the calculateLayout phase,
-    // and anctually know if a child has changed or not.
-    // That would allow us to to generate optimised render commands,
-    // including the layout updates, in one pass.
-    this.updateFromLayout()
-
-    // Update newly added children before getting visible children
-    // This ensures their positions are current when culling happens
-    if (this._shouldUpdateBefore.size > 0) {
-      for (const child of this._shouldUpdateBefore) {
-        if (!child.isDestroyed) {
-          child.updateFromLayout()
-        }
-      }
-      this._shouldUpdateBefore.clear()
-    }
-
-    // Check again after updateFromLayout, which calls onResize/onSizeChange
-    if (this._isDestroyed) return
-
-    // Push opacity BEFORE rendering this element so it affects this element and all children
-    const shouldPushOpacity = this._opacity < 1.0
-    if (shouldPushOpacity) {
-      renderList.push({ action: "pushOpacity", opacity: this._opacity })
-    }
-
-    renderList.push({ action: "render", renderable: this })
-
-    this.ensureZIndexSorted()
-
-    const shouldPushScissor = this._overflow !== "visible" && this.width > 0 && this.height > 0
-    if (shouldPushScissor) {
-      const scissorRect = this.getScissorRect()
-      renderList.push({
-        action: "pushScissorRect",
-        x: scissorRect.x,
-        y: scissorRect.y,
-        width: scissorRect.width,
-        height: scissorRect.height,
-        screenX: this._screenX,
-        screenY: this._screenY,
-      })
-    }
-    // Most renderables expose all children. Skip building a visible-child list
-    // unless a subclass actually performs viewport/style-based child filtering.
-    if (!this._hasVisibleChildFilter()) {
-      for (const child of this._childrenInZIndexOrder) {
-        child.updateLayout(deltaTime, renderList)
-      }
-    } else {
-      // Refresh every child's layout before culling reads their screen
-      // coordinates; otherwise culling runs against last frame's positions
-      // and drops content that shifted this frame. The per-frame guard in
-      // updateFromLayout keeps this at one FFI call per child per frame.
-      for (const child of this._childrenInZIndexOrder) {
-        if (child.isDestroyed) continue
-        child.updateFromLayout()
-      }
-      const visibleChildren = this._getVisibleChildren()
-      const visibleChildSet = new Set(visibleChildren)
-      for (const child of this._childrenInZIndexOrder) {
-        if (!visibleChildSet.has(child.num)) continue
-        child.updateLayout(deltaTime, renderList)
-      }
-    }
-
-    if (shouldPushScissor) {
-      renderList.push({ action: "popScissorRect" })
-    }
-    if (shouldPushOpacity) {
-      renderList.push({ action: "popOpacity" })
-    }
-  }
-
-  public render(buffer: OptimizedBuffer, deltaTime: number): void {
-    let renderBuffer = buffer
-    if (this.buffered && this.frameBuffer) {
-      renderBuffer = this.frameBuffer
-    }
-
-    // Layout and culling are already finalized for this frame. These hooks are
-    // only safe for drawing into the buffer; avoid renderable/reactive mutations.
-    if (this.renderBefore) {
-      this.renderBefore.call(this, renderBuffer, deltaTime)
-    }
-
-    this.renderSelf(renderBuffer, deltaTime)
-
-    if (this.renderAfter) {
-      this.renderAfter.call(this, renderBuffer, deltaTime)
-    }
-
-    // Hooks may move the renderable mid-frame, so sample the cached absolute
-    // position after they run before hit-grid writes or framebuffer compositing.
-    const screenX = this._screenX
-    const screenY = this._screenY
-
-    this.markClean()
-    this._ctx.addToHitGrid(screenX, screenY, this.width, this.height, this.num)
-
-    if (this.buffered && this.frameBuffer) {
-      buffer.drawFrameBuffer(screenX, screenY, this.frameBuffer)
-    }
-  }
-
-  protected _hasVisibleChildFilter(): boolean {
-    // Presume an override of _getVisibleChildren means this subclass is using
-    // the legacy filtering hook, so existing custom renderables keep working.
-    return this._getVisibleChildren !== Renderable.prototype._getVisibleChildren
-  }
-
-  protected _getVisibleChildren(): number[] {
-    return this._childrenInZIndexOrder.map((child) => child.num)
-  }
-
-  public canReuseRenderCommandList(): boolean {
-    return (
-      this.onUpdate === Renderable.prototype.onUpdate &&
-      (this._overflow === "visible" || this.getScissorRect === Renderable.prototype.getScissorRect) &&
-      !this._hasVisibleChildFilter()
-    )
-  }
-
   protected onUpdate(deltaTime: number): void {
     // Default implementation: do nothing
     // Override this method to provide custom rendering
-  }
-
-  protected getScissorRect(): {
-    x: number
-    y: number
-    width: number
-    height: number
-  } {
-    return {
-      x: this.buffered ? 0 : this._screenX,
-      y: this.buffered ? 0 : this._screenY,
-      width: this.width,
-      height: this.height,
-    }
   }
 
   protected renderSelf(buffer: OptimizedBuffer, deltaTime: number): void {
@@ -1550,70 +1826,534 @@ export abstract class Renderable extends BaseRenderable {
     // Override this method to provide custom rendering
   }
 
+  protected getNativeScenePaint(): NativeScenePaint {
+    return {
+      zIndex: this._zIndex,
+      opacity: this._opacity,
+      translateX: this._translateX,
+      translateY: this._translateY,
+      border: NativeBorder.None,
+      shouldFill: false,
+      backgroundColor: RGBA.fromValues(0, 0, 0, 0),
+      borderColor: RGBA.fromValues(1, 1, 1, 1),
+      focusable: this._focusable,
+      focusedBorderColor: RGBA.fromValues(0, 170 / 255, 1, 1),
+      borderStyle: "single",
+    }
+  }
+
+  protected setNativeScenePaint(paint: Partial<NativeScenePaint> = this.getNativeScenePaint()): void {
+    if (this.isFreed()) return
+    this._ctx.nativeScene.setPaint(this, paint)
+  }
+
+  static {
+    Object.defineProperty(this.prototype, "selectable", {
+      configurable: true,
+      get(this: Renderable) {
+        return this._selectable
+      },
+      set(this: Renderable, value: boolean) {
+        if (this.isFreed()) return
+        this.assertMutable()
+        this._selectable = value
+      },
+    })
+  }
+
+  private static normalizeHook(name: (typeof hookNames)[number], value: unknown): unknown {
+    if (value == null && name !== "renderSelf" && name !== "onResize" && name !== "onLayoutResize") {
+      return name === "onUpdate" ? Renderable.baseHooks.onUpdate : name === "onLifecyclePass" ? null : undefined
+    }
+    if (typeof value !== "function") throw new TypeError(`Invalid ${name} hook`)
+    return value
+  }
+
+  private setHook(name: "renderBefore" | "renderAfter" | "onLifecyclePass", value: unknown): void {
+    value = Renderable.normalizeHook(name, value)
+    if (value === this._hooks[name]) return
+    const hooks = { ...this._hooks, [name]: value }
+    if (name !== "onLifecyclePass") return this.publishHooks(hooks)
+    // A lifecycle pass sets no native hook bit; only its registration changes.
+    this._hooks = hooks
+    this.syncLifecyclePass()
+  }
+
+  private syncLifecyclePass(): void {
+    if (!this.onLifecyclePass) this._ctx.unregisterLifecyclePass(this)
+    else if (this.parent) this._ctx.registerLifecyclePass(this)
+    else this._ctx.nativeScene.lifecyclePasses.refresh(this)
+  }
+
+  /** Adopt hooks that an instance class field, `Object.defineProperty`, or an instance assignment of a
+   * protected hook method supplied. Until this call, the node runs the hooks of its class. */
+  public refreshHooks(): void {
+    if (this._isDestroyed) return
+    this.assertMutable()
+    const hooks = {} as Hooks
+    for (const name of hookNames) hooks[name] = Renderable.normalizeHook(name, this[name])
+    this.publishHooks(hooks)
+    // Later assignments of the public hooks go through their setters again.
+    for (const name of ["renderBefore", "renderAfter", "onLifecyclePass"] as const) {
+      if (!Object.hasOwn(this, name)) continue
+      delete this[name]
+      // A prototype data property shadows the setter; keep the adopted value on the instance.
+      if (this[name] !== hooks[name]) Reflect.set(this, name, hooks[name])
+    }
+    this.syncLifecyclePass()
+    this._refreshNativeSceneSurface()
+    this.requestRender()
+  }
+
+  private usesNativeDrawing(renderSelf: unknown): boolean {
+    const body = this.nativeIntegration.body
+    return (
+      typeof body === "object" &&
+      "native" in body &&
+      (!this.buffered || body.buffered === true) &&
+      renderSelf === body.native
+    )
+  }
+
+  private needsHostResize(onResize: unknown): boolean {
+    const resize = this.nativeIntegration.lifecycle?.resize
+    return onResize !== Renderable.baseHooks.onResize && onResize !== resize?.native
+  }
+
+  private hostUpdateFlags(onUpdate: unknown): number {
+    if (this._animationFps !== undefined) return NativeSceneHook.Update
+    const update = this.nativeIntegration.lifecycle?.update
+    if (update && onUpdate === update.idle) {
+      return update.active(this) ? NativeSceneHook.Update : NativeSceneHook.IdleUpdate
+    }
+    return onUpdate === Renderable.baseHooks.onUpdate ? 0 : NativeSceneHook.Update
+  }
+
+  protected refreshNativeSceneHooks(): void {
+    this.publishHooks(this._hooks)
+  }
+
+  /** @internal Retained surfaces restore their binding accessor when hooks are refreshed. */
+  _refreshNativeSceneSurface(): void {}
+
+  /** Publish the flags for `hooks`, then adopt them. `pending` carries listener changes that are about to apply. */
+  private publishHooks(
+    hooks: Hooks,
+    pending: { resize?: number; layout?: number; lineInfo?: boolean; sizeChange?: unknown } = {},
+  ): void {
+    if (!this.isFreed()) {
+      const integration = this.nativeIntegration
+      const resize =
+        this.buffered ||
+        hooks.onLayoutResize !== Renderable.baseHooks.onLayoutResize ||
+        this.needsHostResize(hooks.onResize)
+      const sizeChange = "sizeChange" in pending ? pending.sizeChange : this._sizeChangeListener
+      const lineInfo = pending.lineInfo ?? (!!integration.lineInfo && this.listenerCount("line-info-change") > 0)
+      const flags =
+        (hooks.renderBefore ? NativeSceneHook.RenderBefore : 0) |
+        (hooks.renderAfter ? NativeSceneHook.RenderAfter : 0) |
+        (this.usesNativeDrawing(hooks.renderSelf) ? 0 : NativeSceneHook.RenderSelf) |
+        this.hostUpdateFlags(hooks.onUpdate) |
+        (integration.lifecycle?.scroll?.active(this) ? NativeSceneHook.Scroll : 0) |
+        (resize || sizeChange || (pending.resize ?? this.listenerCount("resize")) > 0 ? NativeSceneHook.Resize : 0) |
+        ((pending.layout ?? this.listenerCount(LayoutEvents.LAYOUT_CHANGED)) > 0 ? NativeSceneHook.LayoutChanged : 0)
+      const generation = this._nativeSceneHookGeneration + 1n
+      if (flags !== 0 || lineInfo || this._nativeSceneHooksRegistered) {
+        let nativeFlags = flags
+        if (integration.beforeAfter === false) nativeFlags &= ~nativeSceneHookBeforeAfter
+        if (!resize && integration.lifecycle?.resize) {
+          nativeFlags =
+            (nativeFlags & ~NativeSceneHook.Resize) | (lineInfo && integration.lineInfo ? NativeSceneHook.Resize : 0)
+        }
+        if (nativeFlags & NativeSceneHook.RenderSelf) nativeFlags |= NativeSceneHook.RenderAfter
+        const scene = this._ctx.nativeScene
+        scene.setHooks(this, nativeFlags, generation, this.styledDimension("width"), this.styledDimension("height"))
+        this._nativeSceneHooksRegistered = true
+      }
+      this._nativeSceneResize = resize
+      this._nativeSceneHookGeneration = generation
+    }
+    this._hooks = hooks
+  }
+
+  /** @internal Refresh only requested host hooks, never walk wrappers to collect layout. */
+  _runNativeSceneHook(request: NativeSceneFrameRequest, deltaTime: number): void {
+    if (this._isDestroyed || request.hookGeneration !== this._nativeSceneHookGeneration) return
+    this.observeLayout(request.publicLayout)
+    this._paintLayout = request.paintLayout
+    try {
+      switch (request.kind) {
+        case NativeSceneFrame.Update:
+          if (this._animationFps !== undefined) {
+            this.animationDrawnFrame = this._ctx.frameId
+            if (!this.stopAnimationTick) this.updateAnimationTick()
+          }
+          this._hooks.onUpdate.call(this, deltaTime)
+          break
+        case NativeSceneFrame.Resize:
+          if (this._nativeSceneResize) {
+            this._hooks.onLayoutResize.call(this, request.width, request.height)
+          } else {
+            const resize = this.nativeIntegration.lifecycle?.resize
+            if (!resize) {
+              this.onSizeChange?.call(this)
+              if (!this._isDestroyed) this.emit("resize")
+            }
+            if (!this._isDestroyed && this.nativeIntegration.lineInfo) this.emit("line-info-change")
+          }
+          break
+        case NativeSceneFrame.LayoutChanged:
+          this.emit(LayoutEvents.LAYOUT_CHANGED)
+          break
+        case NativeSceneFrame.Scroll:
+          this.nativeIntegration.lifecycle?.scroll?.notify(this)
+          break
+      }
+    } finally {
+      this._paintLayout = undefined
+    }
+  }
+
+  /** @internal Record this node's paint hooks for one slot. Native code paints the
+   * recording at the slot's prepared position after every slot has recorded. */
+  _recordNativeScenePaint(
+    slot: NativeScenePaintSlot,
+    index: number,
+    deltaTime: number,
+    frame: OptimizedBuffer,
+    recorder: NativePaintRecorder,
+    publicLayout: NativeSceneLayout | undefined,
+  ): void {
+    // Native code paints the phases the slot requested even if an earlier hook changed this
+    // node's hooks, so record them with the current methods instead of skipping the slot.
+    if (this._isDestroyed) return
+    this.observeLayout(publicLayout)
+    this._paintLayout = slot.paintLayout
+    // Buffered bodies draw into their own buffer. When native code composes that buffer, it
+    // plays the recording into it after clearing it, so those hooks record like the rest.
+    const buffer =
+      this.nativeIntegration.paintBuffer !== "destination" &&
+      this.nativeIntegration.bufferComposition !== "native" &&
+      this.buffered &&
+      this.frameBuffer
+        ? this.frameBuffer
+        : frame
+    try {
+      if (slot.hooks & NativeSceneHook.RenderBefore) {
+        recorder.slot(index, NativeScenePaintPhase.Before, slot.opacity)
+        this._hooks.renderBefore?.call(this, buffer, deltaTime)
+        // Native code drops a node destroyed by its own hook, with its recording.
+        if (this._isDestroyed) return
+      }
+      if (slot.hooks & NativeSceneHook.RenderSelf) {
+        recorder.slot(index, NativeScenePaintPhase.Self, slot.opacity)
+        if (this.nativeIntegration.beforeAfter === false) this.markClean()
+        this._invokeNativePaint(buffer, deltaTime)
+        if (this._isDestroyed) return
+      }
+      if (slot.hooks & NativeSceneHook.RenderAfter) {
+        recorder.slot(index, NativeScenePaintPhase.After, slot.opacity)
+        if (this.nativeIntegration.beforeAfter !== false) {
+          this._hooks.renderAfter?.call(this, buffer, deltaTime)
+          this.markClean()
+        }
+        if (
+          !this._isDestroyed &&
+          this.nativeIntegration.bufferComposition !== "native" &&
+          this.buffered &&
+          this.frameBuffer
+        )
+          frame.drawFrameBuffer(Math.trunc(this._screenX), Math.trunc(this._screenY), this.frameBuffer)
+      }
+    } finally {
+      this._paintLayout = undefined
+    }
+  }
+
+  protected _invokeNativePaint(buffer: OptimizedBuffer, deltaTime: number): void {
+    this._hooks.renderSelf.call(this, buffer, deltaTime)
+  }
+
   public get isDestroyed(): boolean {
     return this._isDestroyed
   }
 
   public destroy(): void {
-    if (this._isDestroyed) {
+    if (this._isDestroyed || this._cleanupInProgress || this._childCleanupInProgress) {
       return
     }
 
-    this._isDestroyed = true
-    this.emit(RenderableEvents.DESTROYED)
+    this.assertMutable()
+    this.destroyLayoutBacking((run) => {
+      run(() => this.destroyOwnedResources())
+      // Read before listeners run: one may move or clear the focus.
+      const heldFocus = this._focused || this.hasFocusedDescendant
+      this._isDestroyed = true
+      this.updateAnimationTick()
+      run(() => this.emit(RenderableEvents.DESTROYED))
 
-    if (this.parent) {
-      this.parent.remove(this.id)
-    }
+      if (heldFocus) run(() => this.propagateFocusChange(false))
+      if (this.parent) {
+        const parent = this.parent
+        run(() => parent.remove(this))
+        if (this.parent === parent) {
+          run(() => this.detachFromParent())
+        }
+      }
 
-    if (this.frameBuffer) {
-      this.frameBuffer.destroy()
-      this.frameBuffer = null
-    }
+      if (this.frameBuffer) {
+        const frameBuffer = this.frameBuffer
+        this.frameBuffer = null
+        run(() => frameBuffer.destroy())
+      }
 
-    for (const child of this._childrenInLayoutOrder) {
-      this.remove(child.id)
-    }
+      for (const child of [...this._childrenInLayoutOrder]) {
+        run(() => this.remove(child))
+      }
 
-    this._childrenInLayoutOrder = []
-    this.renderableMapById.clear()
-    Renderable.renderablesByNumber.delete(this.num)
+      this._childrenInLayoutOrder = []
+      Renderable.renderablesByNumber.delete(this.num)
 
-    this.blur()
-    this.removeAllListeners()
-
-    this.destroySelf()
-
-    try {
-      this.yogaNode.free()
-    } catch (e) {
-      // Might be already freed and will throw an error if we try to free it again
-    }
+      run(() => this.blur())
+      run(() => this.removeAllListeners())
+      run(() => this.destroySelf())
+    })
   }
 
   public destroyRecursively(): void {
+    if (this._isDestroyed || this._cleanupInProgress || this._childCleanupInProgress) return
+    this.assertMutable()
     // Destroy children first to ensure removal as destroy clears child array
     // Make a copy of the children array to avoid iteration issues when children are destroyed
     const children = [...this._childrenInLayoutOrder]
-    for (const child of children) {
-      child.destroyRecursively()
-    }
-    this.destroy()
+    let index = 0
+    this._childCleanupInProgress = true
+    const cleanupOwners = this._ctx.nativeScene.cleanupOwners
+    const ownsCompletion = !cleanupOwners.has(this)
+    cleanupOwners.add(this)
+    const resume = () =>
+      this.runCleanup((run) => {
+        while (index < children.length) {
+          const child = children[index++]
+          run(() => child.destroyRecursively())
+          if (child._cleanupInProgress || child._childCleanupInProgress) {
+            // Resume this snapshot after the active child's native release.
+            ;(child._deferredCleanup ??= []).push(resume)
+            return
+          }
+        }
+        this._childCleanupInProgress = false
+        // Keep the walk's completion ownership through subclass work after super.destroy().
+        run(() => this.destroy())
+        if (ownsCompletion) this.completeCleanup(run)
+      })
+    resume()
   }
+
+  /** @internal Defer renderer finalization until active cleanup in its context completes. */
+  _deferUntilCleanupComplete(resume: () => void): boolean {
+    const pending: Renderable[] = [this]
+    while (pending.length > 0) {
+      const node = pending.pop()!
+      if (node._cleanupInProgress || node._childCleanupInProgress) {
+        ;(node._deferredCleanup ??= []).push(resume)
+        return true
+      }
+      for (const child of node._childrenInLayoutOrder) pending.push(child)
+    }
+    // Cleanup can continue after its owner leaves the layout tree.
+    for (const node of this._ctx.nativeScene.cleanupOwners) {
+      ;(node._deferredCleanup ??= []).push(resume)
+      return true
+    }
+    return false
+  }
+
+  protected destroyOwnedResources(): void {}
 
   protected destroySelf(): void {
     // Default implementation: do nothing else
     // Override this method to provide custom cleanup
   }
 
+  private destroyLayoutBacking(cleanup?: (run: (step: () => void) => void) => void): void {
+    const scene = this._ctx.nativeScene
+    const hasHandle = !!this._sceneHandle && !this._yogaFreed
+    this._cleanupInProgress = true
+    const cleanupOwners = scene.cleanupOwners
+    const ownsCompletion = !cleanupOwners.has(this)
+    cleanupOwners.add(this)
+    this.runCleanup((run) => {
+      if (hasHandle && this.selectable) {
+        run(() => {
+          // Selection anchors retain local coordinates after detachment and release.
+          const layout = scene.getLayout(this)
+          this._destroyedLayout = {
+            x: layout.left,
+            y: layout.top,
+            screenX: layout.screenX,
+            screenY: layout.screenY,
+            width: layout.width === 0 ? this.styledDimension("width") : layout.width,
+            height: layout.height === 0 ? this.styledDimension("height") : layout.height,
+          }
+        })
+      }
+      if (cleanup) run(() => cleanup(run))
+      this._isDestroyed = true
+      if (hasHandle) run(() => scene.destroyNode(this))
+      this._cleanupInProgress = false
+      if (ownsCompletion) this.completeCleanup(run)
+    })
+  }
+
+  private completeCleanup(run: (step: () => void) => void): void {
+    this._ctx.nativeScene.cleanupOwners.delete(this)
+    const deferred = this._deferredCleanup
+    this._deferredCleanup = undefined
+    if (deferred) for (const resume of deferred) run(resume)
+  }
+
+  // Hosts remove children in order, from the first or from the last, so the last needs no scan.
+  private layoutIndexOf(child: BaseRenderable): number {
+    const children = this._childrenInLayoutOrder
+    return children.at(-1) === child ? children.length - 1 : children.indexOf(child as Renderable)
+  }
+
+  private removeLayoutChildAt(index: number): void {
+    const children = this._childrenInLayoutOrder
+    if (index === children.length - 1) children.pop()
+    else children.splice(index, 1)
+  }
+
+  private detachFromParent(): void {
+    const parent = this.parent
+    if (!parent) return
+
+    const layoutIndex = parent.layoutIndexOf(this)
+    if (layoutIndex !== -1) {
+      this._ctx.nativeScene.moveNode(this, null, 0)
+      parent.removeLayoutChildAt(layoutIndex)
+      if (this._liveCount > 0) {
+        parent.propagateLiveCount(-this._liveCount)
+      }
+    }
+
+    parent._ctx.unregisterLifecyclePass(this)
+    this.parent = null
+  }
+
   public processMouseEvent(event: MouseEvent): void {
+    ;(event as { currentTarget: Renderable | null }).currentTarget = this
     this._mouseListener?.call(this, event)
+    if (this._isDestroyed) return
     this._mouseListeners[event.type]?.call(this, event)
+    if (this._isDestroyed) return
     this.onMouseEvent(event)
 
     if (this.parent && !event.propagationStopped) {
       this.parent.processMouseEvent(event)
     }
+  }
+
+  private assertSupportedEvent(event: string | symbol): void {
+    if (
+      (event === LayoutEvents.RESIZED || event === LayoutEvents.LAYOUT_CHANGED) &&
+      !(this instanceof RootRenderable)
+    ) {
+      throw new Error(`Native scene does not support ${event} hooks`)
+    }
+  }
+
+  public on(event: string | symbol, listener: (...args: any[]) => void): this {
+    return this.changeSceneListeners("add", event, listener)
+  }
+
+  public addListener(event: string | symbol, listener: (...args: any[]) => void): this {
+    return this.changeSceneListeners("add", event, listener)
+  }
+
+  public prependListener(event: string | symbol, listener: (...args: any[]) => void): this {
+    return this.changeSceneListeners("prepend", event, listener)
+  }
+
+  public off(event: string | symbol, listener: (...args: any[]) => void): this {
+    return this.changeSceneListeners("remove", event, listener)
+  }
+
+  public removeListener(event: string | symbol, listener: (...args: any[]) => void): this {
+    return this.changeSceneListeners("remove", event, listener)
+  }
+
+  public removeAllListeners(event?: string | symbol): this {
+    if (arguments.length > 0 && event === undefined) return super.removeAllListeners(event)
+    return this.changeSceneListeners("clear", event)
+  }
+
+  private changeSceneListeners(
+    operation: "add" | "prepend" | "remove" | "clear",
+    event?: string | symbol,
+    listener?: (...args: any[]) => void,
+  ): this {
+    if (operation === "add" || operation === "prepend") this.assertSupportedEvent(event!)
+    const change = () => {
+      switch (operation) {
+        case "add":
+          return super.addListener(event!, listener!)
+        case "prepend":
+          return super.prependListener(event!, listener!)
+        case "remove":
+          return super.removeListener(event!, listener!)
+        case "clear":
+          return event === undefined ? super.removeAllListeners() : super.removeAllListeners(event)
+      }
+    }
+    if (
+      this._isDestroyed ||
+      (event === "line-info-change" && !this.nativeIntegration.lineInfo) ||
+      ((operation !== "clear" || event !== undefined) &&
+        event !== "resize" &&
+        event !== "line-info-change" &&
+        event !== LayoutEvents.LAYOUT_CHANGED) ||
+      (operation !== "clear" && typeof listener !== "function")
+    ) {
+      return change()
+    }
+    let resize = this.listenerCount("resize")
+    const initialLineInfo = this.nativeIntegration.lineInfo ? this.listenerCount("line-info-change") : 0
+    let lineInfo = initialLineInfo
+    let layout = this.listenerCount(LayoutEvents.LAYOUT_CHANGED)
+    if (operation === "clear") {
+      if (event === undefined || event === "resize") resize = 0
+      if (event === undefined || event === "line-info-change") lineInfo = 0
+      if (event === undefined || event === LayoutEvents.LAYOUT_CHANGED) layout = 0
+      const changed =
+        resize !== this.listenerCount("resize") ||
+        lineInfo !== initialLineInfo ||
+        layout !== this.listenerCount(LayoutEvents.LAYOUT_CHANGED)
+      if (!changed) return change()
+    } else {
+      if (
+        operation === "remove" &&
+        !this.rawListeners(event!).some(
+          (entry) => entry === listener || (entry as { listener?: typeof listener }).listener === listener,
+        )
+      ) {
+        return change()
+      }
+      const delta = operation === "remove" ? -1 : 1
+      if (event === "resize") resize += delta
+      else if (event === "line-info-change") lineInfo += delta
+      else layout += delta
+    }
+    this.publishHooks(this._hooks, { resize, layout, lineInfo: lineInfo > 0 })
+    this.runCleanup((run) => {
+      run(change)
+      // Meta-listeners can mutate subscriptions or throw. Keep their accepted changes rather than rolling them back.
+      run(() => {
+        if (!this._isDestroyed) this.publishHooks(this._hooks)
+      })
+    })
+    return this
   }
 
   protected onMouseEvent(event: MouseEvent): void {
@@ -1687,6 +2427,10 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public set onSizeChange(handler: (() => void) | undefined) {
+    if (handler !== this._sizeChangeListener) {
+      if (handler != null && typeof handler !== "function") throw new TypeError("Invalid size change hook")
+      this.publishHooks(this._hooks, { sizeChange: handler })
+    }
     this._sizeChangeListener = handler
   }
   public get onSizeChange(): (() => void) | undefined {
@@ -1710,50 +2454,12 @@ export abstract class Renderable extends BaseRenderable {
   }
 }
 
-interface RenderCommandBase {
-  action: "render" | "pushScissorRect" | "popScissorRect" | "pushOpacity" | "popOpacity"
-}
-
-interface RenderCommandPushScissorRect extends RenderCommandBase {
-  action: "pushScissorRect"
-  x: number
-  y: number
-  width: number
-  height: number
-  screenX: number
-  screenY: number
-}
-
-interface RenderCommandPopScissorRect extends RenderCommandBase {
-  action: "popScissorRect"
-}
-
-interface RenderCommandRender extends RenderCommandBase {
-  action: "render"
-  renderable: Renderable
-}
-
-interface RenderCommandPushOpacity extends RenderCommandBase {
-  action: "pushOpacity"
-  opacity: number
-}
-
-interface RenderCommandPopOpacity extends RenderCommandBase {
-  action: "popOpacity"
-}
-
-export type RenderCommand =
-  | RenderCommandPushScissorRect
-  | RenderCommandPopScissorRect
-  | RenderCommandRender
-  | RenderCommandPushOpacity
-  | RenderCommandPopOpacity
-
 export class RootRenderable extends Renderable {
-  private renderList: RenderCommand[] = []
-  private appliedLayoutGeneration: number = -1
-  private appliedRenderListRevision: number = -1
-  private renderListReusable: boolean = false
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
+    ...Renderable.nativeIntegration,
+    kind: "root",
+  }
+  private _currentRenderable: Renderable | undefined
 
   constructor(ctx: RenderContext) {
     super(ctx, {
@@ -1765,124 +2471,47 @@ export class RootRenderable extends Renderable {
       enableLayout: true,
     })
 
-    if (this.yogaNode) {
-      this.yogaNode.free()
+    try {
+      this.setNativeScenePaint()
+    } catch (error) {
+      this.abortConstruction(error)
     }
-
-    this.yogaNode = Yoga.Node.createForOpenTUI()
-    this.yogaNode.setWidth(ctx.width)
-    this.yogaNode.setHeight(ctx.height)
-    this.yogaNode.setFlexDirection(FlexDirection.Column)
-
-    this.calculateLayout()
   }
 
-  public render(buffer: OptimizedBuffer, deltaTime: number): void {
-    if (!this.visible) return
+  public get currentRenderable(): Renderable | undefined {
+    return this._currentRenderable
+  }
 
-    // 0. Run lifecycle pass
-    for (const renderable of this._ctx.getLifecyclePasses()) {
-      renderable.onLifecyclePass?.call(renderable)
-    }
+  /** @internal Clear after successful dispatch; error handling consumes the failing node. */
+  _setCurrentRenderable(renderable: Renderable | undefined): void {
+    this._currentRenderable = renderable
+  }
 
-    // NOTE: Strictly speaking, this is a 3-pass rendering process:
-    // 1. Calculate layout from root
-    // 2. Update layout throughout the tree and collect render list
-    // 3. Render all collected renderables
-    // Should be 2-pass by hooking into the calculateLayout phase,
-    // but that's only possible if we move the layout tree to native.
-
-    // 1. Calculate layout from root
-    if (this.yogaNode.isDirty()) {
-      this.calculateLayout()
-    } else {
-      this.syncExternalLayoutGeneration()
-    }
-
-    // 2. Update layout throughout the tree and collect render list
-    const layoutGeneration = getLayoutGeneration(this._ctx)
-    const renderListRevision = getRenderListRevision(this._ctx)
-    const canReuseRenderList =
-      this.renderListReusable &&
-      this.appliedLayoutGeneration === layoutGeneration &&
-      this.appliedRenderListRevision === renderListRevision
-
-    if (!canReuseRenderList) {
-      this.renderList.length = 0
-      super.updateLayout(deltaTime, this.renderList)
-      this.appliedLayoutGeneration = layoutGeneration
-      this.appliedRenderListRevision = getRenderListRevision(this._ctx)
-      this.renderListReusable = this.canReuseCurrentRenderList()
-    }
-
-    // 3. Render all collected renderables
-    this._ctx.clearHitGridScissorRects()
-    for (let i = 1; i < this.renderList.length; i++) {
-      const command = this.renderList[i]
-      switch (command.action) {
-        case "render":
-          // Skip if renderable was destroyed during a previous render callback
-          if (!command.renderable.isDestroyed) {
-            command.renderable.render(buffer, deltaTime)
-          }
-          break
-        case "pushScissorRect":
-          buffer.pushScissorRect(command.x, command.y, command.width, command.height)
-          this._ctx.pushHitGridScissorRect(command.screenX, command.screenY, command.width, command.height)
-          break
-        case "popScissorRect":
-          buffer.popScissorRect()
-          this._ctx.popHitGridScissorRect()
-          break
-        case "pushOpacity":
-          buffer.pushOpacity(command.opacity)
-          break
-        case "popOpacity":
-          buffer.popOpacity()
-          break
-      }
-    }
+  public takeCurrentRenderable(): Renderable | undefined {
+    const renderable = this._currentRenderable
+    this._currentRenderable = undefined
+    return renderable
   }
 
   protected propagateLiveCount(delta: number): void {
     const oldCount = this._liveCount
     this._liveCount += delta
+    this.onLiveCountChanged(oldCount)
+  }
 
-    if (oldCount === 0 && this._liveCount > 0) {
+  protected onLiveCountChanged(previous: number): void {
+    if (previous === 0 && this._liveCount > 0) {
       this._ctx.requestLive()
-    } else if (oldCount > 0 && this._liveCount === 0) {
+    } else if (previous > 0 && this._liveCount === 0) {
       this._ctx.dropLive()
     }
-  }
-
-  public calculateLayout(): void {
-    this.yogaNode.calculateLayout(this.width, this.height, Direction.LTR)
-    bumpLayoutGeneration(this._ctx)
-    this.yogaNode.markLayoutSeen()
-    this.emit(LayoutEvents.LAYOUT_CHANGED)
-  }
-
-  private syncExternalLayoutGeneration(): void {
-    if (!this.yogaNode.hasNewLayout()) return
-    bumpLayoutGeneration(this._ctx)
-    this.yogaNode.markLayoutSeen()
-  }
-
-  private canReuseCurrentRenderList(): boolean {
-    if (this._liveCount > 0) return false
-
-    for (const command of this.renderList) {
-      if (command.action !== "render") continue
-      if (!command.renderable.canReuseRenderCommandList()) return false
-    }
-
-    return true
   }
 
   public resize(width: number, height: number): void {
     this.width = width
     this.height = height
 
+    // Accepted-size notification is synchronous, separate from completed Yoga layout.
     this.emit(LayoutEvents.RESIZED, { width, height })
   }
 }

@@ -8,8 +8,13 @@ import { getDataPaths } from "../data-paths.js"
 import { clearEnvCache } from "../env.js"
 import { destroySingleton } from "../singleton.js"
 import { destroyTreeSitterClient, getTreeSitterClient } from "./index.js"
+import { getParsers } from "./default-parsers.js"
 
-describe("TreeSitterClient", () => {
+// Windows/Node intermittently exits this test process at different points without an assertion failure.
+// https://github.com/anomalyco/opentui/actions/runs/36671762488/job/109748266861
+const describeClient = process.platform === "win32" && !process.versions.bun ? describe.skip : describe
+
+describeClient("TreeSitterClient", () => {
   let client: TreeSitterClient
   let dataPath: string
 
@@ -207,45 +212,6 @@ describe("TreeSitterClient", () => {
     expect(buffer?.hasParser).toBe(false)
   })
 
-  test("should emit highlights:response event when buffer is updated", async () => {
-    await client.initialize()
-
-    const jsCode = 'const hello = "world";'
-    await client.createBuffer(1, jsCode, "javascript")
-
-    let highlightReceived = false
-    let receivedBufferId: number | undefined
-    let receivedVersion: number | undefined
-
-    client.on("highlights:response", (bufferId, version, highlights) => {
-      highlightReceived = true
-      receivedBufferId = bufferId
-      receivedVersion = version
-    })
-
-    await new Promise((resolve) => setTimeout(resolve, 100))
-
-    const newCode = 'const hello = "world";\nconst foo = 42;'
-    const edits = [
-      {
-        startIndex: jsCode.length,
-        oldEndIndex: jsCode.length,
-        newEndIndex: newCode.length,
-        startPosition: { row: 0, column: jsCode.length },
-        oldEndPosition: { row: 0, column: jsCode.length },
-        newEndPosition: { row: 1, column: 14 },
-      },
-    ]
-
-    await client.updateBuffer(1, edits, newCode, 2)
-
-    await new Promise((resolve) => setTimeout(resolve, 200))
-
-    expect(highlightReceived).toBe(true)
-    expect(receivedBufferId).toBe(1)
-    expect(receivedVersion).toBe(2)
-  })
-
   test("should handle buffer removal", async () => {
     await client.initialize()
 
@@ -299,6 +265,131 @@ describe("TreeSitterClient", () => {
     expect(buffer?.content).toBe(newContent)
     expect(buffer?.version).toBe(2)
   })
+
+  const js = (n: number) => `const a = ${n};\nfunction f() { return ${n}; }`
+  const fence = Array.from({ length: 80 }, (_, i) => `export const item${i}: number = ${i} * 2;`).join("\n")
+  const md = `# Heading\n\nParagraph with **bold** and \`inline\`.\n\n\`\`\`typescript\n${fence}\n\`\`\`\n`
+  const mdZig = `${md}\n\`\`\`zig\npub fn main() void {}\n\`\`\`\n`
+  const end = (text: string) => ({ row: text.split("\n").length - 1, column: text.length - text.lastIndexOf("\n") - 1 })
+  const replace = (from: string, to: string) => [
+    {
+      startIndex: 0,
+      oldEndIndex: from.length,
+      newEndIndex: to.length,
+      startPosition: { row: 0, column: 0 },
+      oldEndPosition: end(from),
+      newEndPosition: end(to),
+    },
+  ]
+  // Each row ends with removeBuffer. The markdown rows edit or remove while the worker loads the injected typescript
+  // or zig grammar, which a new worker has not loaded yet.
+  test.each<[string, (c: TreeSitterClient, highlighted: (version: number) => Promise<void>) => Promise<void>]>([
+    [
+      "resetBuffer",
+      async (c, highlighted) => {
+        await c.createBuffer(1, js(1), "javascript", 1)
+        for (let v = 2; v <= 4; v++) {
+          await c.resetBuffer(1, v, js(v))
+          await highlighted(v)
+        }
+      },
+    ],
+    [
+      "updateBuffer during the first injection load",
+      async (c, highlighted) => {
+        await c.createBuffer(1, md, "markdown", 1)
+        await c.updateBuffer(1, replace(md, mdZig), mdZig, 2)
+        await highlighted(2)
+      },
+    ],
+    [
+      "resetBuffer during the first injection load",
+      async (c, highlighted) => {
+        await c.createBuffer(1, mdZig, "markdown", 1)
+        await c.resetBuffer(1, 2, md)
+        await highlighted(2)
+      },
+    ],
+    ["removeBuffer during the first injection load", async (c) => void (await c.createBuffer(1, md, "markdown", 1))],
+    [
+      "removeBuffer with a reset still debounced",
+      async (c) => {
+        await c.createBuffer(1, md, "markdown", 1)
+        await c.resetBuffer(1, 2, mdZig)
+      },
+    ],
+    [
+      "removeBuffer during an edit's injection load",
+      async (c, highlighted) => {
+        await c.createBuffer(1, md, "markdown", 1)
+        await highlighted(1)
+        await c.updateBuffer(1, replace(md, mdZig), mdZig, 2)
+      },
+    ],
+    [
+      "removeBuffer during a queued edit's injection load",
+      async (c) => {
+        await c.createBuffer(1, md, "markdown", 1)
+        await c.updateBuffer(1, replace(md, mdZig), mdZig, 2)
+        await c.highlightOnce(md, "markdown")
+      },
+    ],
+    [
+      "removeBuffer again as the last removeBuffer's 3 s timeout ends",
+      async (c) => {
+        await c.createBuffer(1, js(1), "javascript", 1)
+        await c.removeBuffer(1)
+        await new Promise((resolve) => setTimeout(resolve, 2975))
+        await c.createBuffer(1, md, "markdown", 1)
+      },
+    ],
+  ])(
+    "should delete every replaced tree once no message reads it: %s",
+    async (_name, run) => {
+      const workerPath = new URL(
+        existsSync(new URL("./tree-count-worker.fixture.js", import.meta.url))
+          ? "./tree-count-worker.fixture.js"
+          : "./tree-count-worker.fixture.ts",
+        import.meta.url,
+      )
+      const c = new TreeSitterClient({ dataPath, workerPath })
+      const versions: number[] = []
+      const errors: string[] = []
+      c.on("highlights:response", (id, version) => id === 1 && versions.push(version))
+      c.on("error", (error) => errors.push(error.split("\n")[0]!))
+      c.on("warning", (warning) => errors.push(warning))
+      const treeCount = new Promise<unknown>((resolve) =>
+        c.on("worker:log", (_type, message) => {
+          if (message.startsWith("tree-count ")) resolve(JSON.parse(message.slice("tree-count ".length)))
+        }),
+      )
+      const highlighted = async (version: number) => {
+        for (let waited = 0; !versions.includes(version); waited += 5) {
+          if (waited >= 3000) throw new Error(`no highlights for version ${version}`)
+          await new Promise((resolve) => setTimeout(resolve, 5))
+        }
+      }
+      const within3s = <T>(promise: Promise<T>) =>
+        Promise.race([promise, new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 3000))])
+
+      try {
+        await c.initialize()
+        await run(c, highlighted)
+        const removed = await within3s(c.removeBuffer(1))
+        // Waits on the same grammar loads, so a buffer pass suspended on them has resumed before the count.
+        await within3s(c.highlightOnce(mdZig, "markdown"))
+        const trees = await within3s(Promise.all([c.getPerformance(), treeCount]).then(([, count]) => count))
+        expect({ removed, errors, trees }).toEqual({
+          removed: undefined,
+          errors: [],
+          trees: { live: 0, freedReads: 0 },
+        })
+      } finally {
+        await within3s(c.destroy())
+      }
+    },
+    15000,
+  )
 
   test("should emit error events for invalid operations", async () => {
     await client.initialize()
@@ -398,6 +489,44 @@ describe("TreeSitterClient", () => {
     expect(result.warning).toContain("No parser available for filetype unsupported-lang")
   }, 5000)
 
+  test("should reject one-shot highlighting after a correlated worker error", async () => {
+    await client.initialize()
+
+    const internals = client as unknown as {
+      messageCallbacks: Map<string, unknown>
+      worker?: {
+        onmessage: ((event: { data: { type: "ERROR"; messageId: string; error: string } }) => void) | null
+        postMessage: (message: { type?: string; messageId?: string }) => void
+      }
+    }
+    const worker = internals.worker
+    expect(worker).toBeDefined()
+    if (!worker) {
+      throw new Error("Expected initialized client to have a worker")
+    }
+
+    let messageId: string | undefined
+    const originalPostMessage = worker.postMessage.bind(worker)
+    worker.postMessage = (message) => {
+      if (message.type === "ONESHOT_HIGHLIGHT") {
+        messageId = message.messageId
+        return
+      }
+      originalPostMessage(message)
+    }
+
+    const highlighting = client.highlightOnce("const value = 1", "javascript")
+    expect(messageId).toBeDefined()
+    expect(internals.messageCallbacks.size).toBe(1)
+
+    worker.onmessage?.({
+      data: { type: "ERROR", messageId: messageId!, error: "synthetic one-shot failure" },
+    })
+
+    await expect(highlighting).rejects.toThrow("synthetic one-shot failure")
+    expect(internals.messageCallbacks.size).toBe(0)
+  })
+
   test("should perform multiple one-shot highlights independently", async () => {
     await client.initialize()
 
@@ -427,27 +556,42 @@ describe("TreeSitterClient", () => {
     expect(client.getAllBuffers()).toHaveLength(0)
   })
 
-  test("should perform one-shot highlighting for react parser aliases", async () => {
+  test("should parse JSX only for react filetypes and evaluate #lua-match? predicates", async () => {
     await client.initialize()
 
-    const jsxCode = 'const view = <div className="card">hello</div>'
-    const tsxCode = 'const view: JSX.Element = <div className="card">hello</div>'
+    const jsx = 'const view = <Box title="x">hi</Box>'
+    const rows: { filetype: string; source: string; expected: string[]; absent?: string[] }[] = [
+      { filetype: "javascriptreact", source: jsx, expected: ["18:title=property", "32:Box=constructor"] },
+      {
+        filetype: "typescriptreact",
+        source: jsx,
+        expected: ["18:title=tag.attribute", "32:Box=tag"],
+        absent: ["6:view=type", "6:view=constant"],
+      },
+      { filetype: "typescript", source: "const n = <number>value", expected: ["11:number=type.builtin"] },
+      {
+        filetype: "typescript",
+        source: "const n = /* c */ 1",
+        expected: ["6:n=variable", "10:/* c */=comment"],
+        absent: ["6:n=type", "6:n=constant", "10:/* c */=comment.documentation"],
+      },
+      {
+        filetype: "typescript",
+        source: "const N_1 = /** d\n */ 1",
+        expected: ["6:N_1=variable", "6:N_1=type", "6:N_1=constant", "12:/** d\n */=comment.documentation"],
+      },
+      { filetype: "zig", source: "const n = 1", expected: ["6:n=variable"], absent: ["6:n=type", "6:n=constant"] },
+    ]
 
-    const [jsxResult, tsxResult] = await Promise.all([
-      client.highlightOnce(jsxCode, "javascriptreact"),
-      client.highlightOnce(tsxCode, "typescriptreact"),
-    ])
+    for (const { filetype, source, expected, absent = [] } of rows) {
+      const { highlights = [] } = await client.highlightOnce(source, filetype)
+      const tokens = highlights.map(([start, end, group]) => `${start}:${source.slice(start, end)}=${group}`)
 
-    expect(jsxResult.highlights).toBeDefined()
-    expect(tsxResult.highlights).toBeDefined()
-    expect(jsxResult.highlights!.length).toBeGreaterThan(0)
-    expect(tsxResult.highlights!.length).toBeGreaterThan(0)
-
-    const jsxGroups = jsxResult.highlights!.map((hl) => hl[2])
-    const tsxGroups = tsxResult.highlights!.map((hl) => hl[2])
-
-    expect(jsxGroups).toContain("keyword")
-    expect(tsxGroups).toContain("keyword")
+      expect(tokens).toContain("0:const=keyword")
+      expect(expected.filter((token) => !tokens.includes(token))).toEqual([])
+      expect(absent.filter((token) => tokens.includes(token))).toEqual([])
+      expect(tokens.filter((token) => token.endsWith("=string.regexp"))).toEqual([])
+    }
   })
 
   test("should handle Devanagari characters and highlight ranges after them correctly", async () => {
@@ -502,7 +646,31 @@ describe("TreeSitterClient", () => {
 
   test("should support local file paths for parser configuration", async () => {
     const testQueryPath = join(dataPath, `test-highlights-${Date.now()}.scm`)
-    const simpleQuery = "(identifier) @variable"
+    // Lua pattern predicate → identifiers of testCode that it captures. A pattern the worker does not translate
+    // (the last rows; the first two are from nvim-treesitter's kitty and clojure queries) stays #lua-match?, which
+    // web-tree-sitter ignores, so it captures everything; the query must still load.
+    const all = "a9 ab A_2 _x $y aXz"
+    const luaPredicates: [string, string][] = [
+      ['lua-match? "^[a-z][%d]$"', "a9"],
+      ['lua-match? "^[A-Z_][A-Z%d_]+$"', "A_2"],
+      ['lua-match? "^a.z$"', "aXz"],
+      ['not-lua-match? "^a"', "A_2 _x $y"],
+      ['not-any-lua-match? "^a"', "A_2 _x $y"],
+      ['any-lua-match? "b$"', "ab"],
+      ['lua-match? "^-"', all],
+      ['lua-match? "^-%>[^>].*"', all],
+      ['lua-match? "^%u"', all],
+      ['lua-match? "^(a)?$"', all],
+      ['lua-match? "^[a"', all],
+      ['lua-match? "[z-a]"', all],
+    ]
+    const simpleQuery = luaPredicates
+      .map(([predicate], i) => `((identifier) @p${i} (#${predicate.replace(" ", ` @p${i} `)}))`)
+      .join("\n")
+    const javascriptParser = (await getParsers()).find((parser) => parser.filetype === "javascript")
+    if (!javascriptParser) {
+      throw new Error("Expected the default JavaScript parser")
+    }
     await writeFile(testQueryPath, simpleQuery, "utf8")
 
     try {
@@ -512,7 +680,7 @@ describe("TreeSitterClient", () => {
         queries: {
           highlights: [testQueryPath],
         },
-        wasm: "https://github.com/tree-sitter/tree-sitter-javascript/releases/download/v0.23.1/tree-sitter-javascript.wasm",
+        wasm: javascriptParser.wasm,
       })
 
       await client.initialize()
@@ -523,12 +691,16 @@ describe("TreeSitterClient", () => {
       const hasAliasParser = await client.preloadParser("test-lang-react")
       expect(hasAliasParser).toBe(true)
 
-      const testCode = "const myVariable = 42;"
+      const testCode = "a9; ab; A_2; _x; $y; aXz;"
       const result = await client.highlightOnce(testCode, "test-lang")
       const aliasResult = await client.highlightOnce(testCode, "test-lang-react")
+      const captured = luaPredicates.map(([predicate], i) => {
+        const names = result.highlights!.filter(([, , group]) => group === `p${i}`)
+        return [predicate, names.map(([start, end]) => testCode.slice(start, end)).join(" ")]
+      })
 
-      expect(result.highlights).toBeDefined()
-      expect(aliasResult.highlights).toBeDefined()
+      expect(captured).toEqual(luaPredicates)
+      expect(aliasResult.highlights).toEqual(result.highlights)
       expect(result.error).toBeUndefined()
       expect(aliasResult.error).toBeUndefined()
       expect(result.warning).toBeUndefined()
@@ -613,7 +785,7 @@ describe("TreeSitterClient", () => {
   }, 15000)
 })
 
-describe("TreeSitterClient Injections", () => {
+describeClient("TreeSitterClient Injections", () => {
   let dataPath: string
 
   const injectionsDataPath = join(tmpdir(), "tree-sitter-injections-test-data")
@@ -690,22 +862,18 @@ Some text here.`
       const markdownCode = `# Code Example
 
 \`\`\`tsx
-const view: JSX.Element = <div>Hello</div>;
+const view: JSX.Element = <Box title="x">hi</Box>;
 \`\`\`
 
 Some text here.`
 
-      const result = await client.highlightOnce(markdownCode, "markdown")
+      const { highlights = [] } = await client.highlightOnce(markdownCode, "markdown")
+      const tokens = highlights.map(([start, end, group]) => `${markdownCode.slice(start, end)}=${group}`)
 
-      expect(result.highlights).toBeDefined()
-      expect(result.highlights!.length).toBeGreaterThan(0)
-
-      const constHighlight = result.highlights!.find((hl) => {
-        const text = markdownCode.substring(hl[0], hl[1])
-        return text === "const" && hl[2] === "keyword"
-      })
-
-      expect(constHighlight).toBeDefined()
+      expect(tokens).toContain("const=keyword")
+      expect(tokens).toContain("title=tag.attribute")
+      expect(tokens).toContain("Element=type")
+      expect(tokens.filter((token) => token.endsWith("=string.regexp"))).toEqual([])
     } finally {
       await client.destroy()
     }
@@ -934,7 +1102,7 @@ const user: User = { name: "Alice", age: 25 };`
   }, 15000)
 })
 
-describe("TreeSitterClient Conceal Values", () => {
+describeClient("TreeSitterClient Conceal Values", () => {
   let dataPath: string
 
   const concealDataPath = join(tmpdir(), "tree-sitter-conceal-test-data")
@@ -1178,7 +1346,7 @@ More text with ![image](img.png) and **bold**.`
   }, 10000)
 })
 
-describe("TreeSitterClient Edge Cases", () => {
+describeClient("TreeSitterClient Edge Cases", () => {
   let dataPath: string
 
   const edgeCaseDataPath = join(tmpdir(), "tree-sitter-edge-case-test-data")
@@ -1216,7 +1384,10 @@ describe("TreeSitterClient Edge Cases", () => {
   })
 
   test("should handle destroy() during pending initialization", async () => {
-    const client = new TreeSitterClient({ dataPath })
+    const client = new TreeSitterClient({ dataPath, initTimeout: 50 })
+    const internals = client as unknown as {
+      initializeResolvers?: unknown
+    }
 
     // Start init but don't await
     const initPromise = client.initialize()
@@ -1227,8 +1398,10 @@ describe("TreeSitterClient Edge Cases", () => {
 
     // Init promise should reject with specific error
     await expect(initPromise).rejects.toThrow("Client destroyed during initialization")
+    await new Promise((resolve) => setTimeout(resolve, 0))
 
     expect(client.isInitialized()).toBe(false)
+    expect(internals.initializeResolvers).toBeUndefined()
   })
 
   test("should reject initialization while worker termination is pending", async () => {

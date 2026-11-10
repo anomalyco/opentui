@@ -32,7 +32,8 @@ function inferThemeModeFromBackgroundColor(color: string): ThemeMode {
 }
 
 export interface RendererThemeModeHost {
-  queryThemeColors(): void
+  /** Returns true when the query ends with a DA1 sentinel; the host then calls `cancelRefresh` at its reply. */
+  queryThemeColors(): boolean
 }
 
 type ThemeWaiter = {
@@ -44,9 +45,7 @@ export class RendererThemeMode {
   private static readonly QUERY_TIMEOUT_MS = 250
 
   private _themeMode: ThemeMode | null = null
-  private themeQueryPending = true
-  private themeOscForeground: string | null = null
-  private themeOscBackground: string | null = null
+  private refreshPending = false
   private themeRefreshTimeoutId: TimerHandle | null = null
   private waiters = new Set<ThemeWaiter>()
 
@@ -82,19 +81,13 @@ export class RendererThemeMode {
     })
   }
 
-  public cancelRefresh(): void {
-    if (this.themeRefreshTimeoutId === null) {
-      return
-    }
-
-    this.clock.clearTimeout(this.themeRefreshTimeoutId)
-    this.themeRefreshTimeoutId = null
-    this.themeQueryPending = false
-  }
-
   public dispose(): void {
     this.cancelRefresh()
+    this.resolveWaiters()
+  }
 
+  /** Resolves every wait with the current mode, also when no mode is known. */
+  public resolveWaiters(): void {
     for (const waiter of this.waiters) {
       if (waiter.timeoutHandle !== null) {
         this.clock.clearTimeout(waiter.timeoutHandle)
@@ -111,41 +104,28 @@ export class RendererThemeMode {
       return { handled: true, changedMode: null }
     }
 
-    let handledOscThemeResponse = false
+    // A reply is applied whenever it arrives: a late one still reports the terminal's current color. The mode
+    // follows the background; the foreground is consumed but unused.
+    let handled = false
+    let background: string | null = null
     let match: RegExpExecArray | null
 
     OSC_THEME_RESPONSE.lastIndex = 0
     while ((match = OSC_THEME_RESPONSE.exec(sequence))) {
-      handledOscThemeResponse = true
-      const color = oscThemeColorToHex(match[2], match[3], match[4], match[5])
-
-      if (match[1] === "10") {
-        this.themeOscForeground = color
-      } else {
-        this.themeOscBackground = color
-      }
+      handled = true
+      if (match[1] === "11") background = oscThemeColorToHex(match[2], match[3], match[4], match[5])
     }
 
-    if (!handledOscThemeResponse) {
-      return { handled: false, changedMode: null }
+    if (background === null) {
+      return { handled, changedMode: null }
     }
 
-    if (!this.themeQueryPending) {
-      return { handled: true, changedMode: null }
-    }
-
-    if (!this.themeOscForeground || !this.themeOscBackground) {
-      return { handled: true, changedMode: null }
-    }
-
-    const nextMode = inferThemeModeFromBackgroundColor(this.themeOscBackground)
-    const changedMode = this.applyThemeMode(nextMode)
-    this.completeThemeQuery()
-
-    return { handled: true, changedMode }
+    this.cancelRefresh()
+    return { handled, changedMode: this.applyThemeMode(inferThemeModeFromBackgroundColor(background)) }
   }
 
-  private clearThemeRefreshTimeout(): void {
+  public cancelRefresh(): void {
+    this.refreshPending = false
     if (this.themeRefreshTimeoutId === null) {
       return
     }
@@ -154,27 +134,21 @@ export class RendererThemeMode {
     this.themeRefreshTimeoutId = null
   }
 
-  private completeThemeQuery(): void {
-    this.clearThemeRefreshTimeout()
-    this.themeQueryPending = false
-  }
-
   private requestThemeOscColors(): void {
     // Ignore repeated ?997 notifications while the current OSC refresh is
     // still in flight.
-    if (this.themeRefreshTimeoutId !== null) {
+    if (this.refreshPending) {
       return
     }
 
-    this.themeQueryPending = true
-    this.themeOscForeground = null
-    this.themeOscBackground = null
+    const batched = this.host.queryThemeColors()
+    this.refreshPending = true
+    // Without a sentinel, a timer ends the refresh.
+    if (batched) return
 
-    this.host.queryThemeColors()
-
-    this.clearThemeRefreshTimeout()
     this.themeRefreshTimeoutId = this.clock.setTimeout(() => {
-      this.completeThemeQuery()
+      this.themeRefreshTimeoutId = null
+      this.refreshPending = false
     }, RendererThemeMode.QUERY_TIMEOUT_MS)
   }
 
@@ -186,14 +160,7 @@ export class RendererThemeMode {
       return null
     }
 
-    for (const waiter of this.waiters) {
-      if (waiter.timeoutHandle !== null) {
-        this.clock.clearTimeout(waiter.timeoutHandle)
-      }
-      waiter.resolve(mode)
-    }
-
-    this.waiters.clear()
+    this.resolveWaiters()
     return mode
   }
 }
