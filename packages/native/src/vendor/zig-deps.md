@@ -81,16 +81,17 @@ The Yoga source is upstream Yoga `main` at commit `41118bd3a` with ten changes, 
   and then runs flex's STEPs 9 to 11. Children never grow or shrink; the box's flex direction, wrap, and
   justification, a child's flex basis, and vertical auto margins do not apply; children's percent
   heights and vertical insets, and a percent gap without a definite height, resolve against an
-  indefinite height; children get no height cap, as in a flex column with overflow: scroll, so percent
-  heights and percent minimum and maximum heights inside a child resolve against no height, and a box
-  child of a list without height keeps its content's height; and a child whose minimum size exceeds its
-  maximum may take the other bound. Elsewhere the result equals flex's. The mode's setter marks the node dirty. `src/yoga-bridge.cpp` sets the mode only
-  on configs that round from absolute edges, which only the scene's config does. A list keeps each
-  child's sizes for the inputs of up to one layout pass and three measure passes, and a pass reuses
-  them for a child that is not dirty instead of laying it out again: it moves such a child only along
-  the list, and only when an earlier child's size changed. Each input of the kept sizes resets them:
-  a child's layout, measure function, or position among the children, and the list's style and
-  config.
+  indefinite height; and a child whose minimum size exceeds its maximum may take the other bound.
+  Children get no height cap: they lay out as in a flex column with overflow: scroll, so, for example,
+  percent heights and percent minimum and maximum heights inside a child resolve against no height, and
+  a box child of a 0-high list keeps its content's height. Elsewhere the result equals that of a flex
+  column with overflow: scroll. The mode's setter marks the node dirty. `src/yoga-bridge.cpp` sets the
+  mode only on configs that round from absolute edges, which only the scene's config does. A list keeps
+  each child's sizes for the inputs of up to one layout pass and three measure passes, and a pass
+  reuses them for a child that is not dirty instead of laying it out again: it moves such a child only
+  along the list, and only when an earlier child's size changed. A static child is laid out again in
+  each layout pass, as STEP 11 reads its size. A child's layout reset, a forgotten measurement, or a
+  change to the list's style or config resets the kept sizes.
 
 `src/tests/yoga_test.zig` tests each change.
 

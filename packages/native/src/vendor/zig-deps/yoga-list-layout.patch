@@ -32,7 +32,7 @@ index b12ae7f..ad9d830 100644
    }
  
 diff --git a/yoga/algorithm/CalculateLayout.cpp b/yoga/algorithm/CalculateLayout.cpp
-index 3656146..aedc074 100644
+index 3656146..c774da0 100644
 --- a/yoga/algorithm/CalculateLayout.cpp
 +++ b/yoga/algorithm/CalculateLayout.cpp
 @@ -8,10 +8,16 @@
@@ -61,7 +61,7 @@ index 3656146..aedc074 100644
  
  static bool hasAutoHorizontalMargin(const Style& style) {
    for (const auto direction : {Direction::LTR, Direction::RTL}) {
-@@ -1734,6 +1742,673 @@ static void justifyMainAxis(
+@@ -1734,6 +1742,677 @@ static void justifyMainAxis(
    }
  }
  
@@ -391,9 +391,9 @@ index 3656146..aedc074 100644
 +    const uint32_t version = node->getConfig()->getVersion();
 +    const auto matches = [&](const ListSlot& key) {
 +      return key.stamp != 0 && sameBits(key.innerWidth, innerWidth) &&
-+          sameBits(key.ownerWidth, ownerWidth) && sameBits(key.gap, gap) &&
++          sameBits(key.ownerWidth, ownerWidth) &&
 +          key.configVersion == version && key.widthMode == widthSizingMode &&
-+          key.heightMode == heightSizingMode && key.direction == direction;
++          key.direction == direction;
 +    };
 +    if (!performLayout) {
 +      s = 1;
@@ -410,10 +410,8 @@ index 3656146..aedc074 100644
 +      *slot = {
 +          .innerWidth = innerWidth,
 +          .ownerWidth = ownerWidth,
-+          .gap = gap,
 +          .configVersion = version,
 +          .widthMode = widthSizingMode,
-+          .heightMode = heightSizingMode,
 +          .direction = direction,
 +          .stamp = nextListStamp()};
 +    }
@@ -480,14 +478,17 @@ index 3656146..aedc074 100644
 +          sameBits(entry.offset, mainDim);
 +      child->setLayoutPosition(baseTop + mainDim, flexStartEdge(mainAxis));
 +      alignRow(child, lineCross, stretchFit ? innerWidth : lineCross);
-+      // The step writes the cross start edge; STEP 10 writes the other.
-+      for (const auto& item : saved) {
-+        const auto& layout = std::get<1>(item);
-+        const auto& now = std::get<0>(item)->getLayout();
++      // In RTL the step writes the row's right edge, which has no raw slot
++      // and no rounding, and STEP 10 its left.
++      const auto cross = [&](const yoga::Node* n, const LayoutResults& l) {
++        return n == child && crossAxis == FlexDirection::RowReverse
++            ? l.position(PhysicalEdge::Right)
++            : l.rawPosition(PhysicalEdge::Left);
++      };
++      for (const auto& [savedNode, layout, _] : saved) {
++        const auto& now = savedNode->getLayout();
 +        same = same &&
-+            sameBits(
-+                   now.rawPosition(flexStartEdge(crossAxis)),
-+                   layout.rawPosition(flexStartEdge(crossAxis))) &&
++            sameBits(cross(savedNode, now), cross(savedNode, layout)) &&
 +            sameBits(
 +                   now.rawPosition(PhysicalEdge::Top),
 +                   layout.rawPosition(PhysicalEdge::Top)) &&
@@ -526,14 +527,16 @@ index 3656146..aedc074 100644
 +#ifdef OT_YOGA_TEST_ALLOCATOR
 +      // The list skips cloneChildrenIfNeeded.
 +      yoga::assertFatalWithNode(
-+          child, child->getOwner() == node, "A list row has another owner");
++          child,
++          node->hasContentsChildren() || child->getOwner() == node,
++          "A list row has another owner");
 +#endif
 +      ListRowEntry* entry = nullptr;
 +      if (memo != nullptr) {
 +        entry = &memo->entries[index++];
 +        const uint64_t epoch = child->getLayout().listEpoch;
-+        if (entry->row != child || entry->epoch != epoch) {
-+          *entry = {.row = child, .epoch = epoch};
++        if (entry->epoch != epoch) {
++          *entry = {.epoch = epoch};
 +        }
 +        bool baselineRow = false;
 +        if (baselineAncestor &&
@@ -545,11 +548,14 @@ index 3656146..aedc074 100644
 +          firstRow = false;
 +          baselineFound = baselineFound || aligned;
 +        }
++        // STEP 11 reads a static row's measured size, which a measure pass
++        // may have changed, so a layout pass visits static rows.
++        const bool staticLayout = performLayout &&
++            child->style().positionType() == PositionType::Static;
 +        const ListRowResult& result = entry->results[s];
-+        if (!baselineRow && entry->epoch != 0 && result.stamp == slot->stamp &&
-+            !child->isDirty()) {
++        if (!baselineRow && !staticLayout && entry->epoch != 0 &&
++            result.stamp == slot->stamp && !child->isDirty()) {
 +          skipped = true;
-+          hasOutOfFlowRows = hasOutOfFlowRows || entry->staticRow;
 +          sizeConsumed += result.outerMain + leadingGap;
 +          leadingGap = gap;
 +          if (!stretchFit) {
@@ -590,9 +596,8 @@ index 3656146..aedc074 100644
 +            innerWidth,
 +            absolute ? availableInnerHeight : YGUndefined);
 +      }
-+      const bool staticRow =
++      hasOutOfFlowRows = hasOutOfFlowRows || absolute ||
 +          child->style().positionType() == PositionType::Static;
-+      hasOutOfFlowRows = hasOutOfFlowRows || absolute || staticRow;
 +      if (absolute) {
 +        if (entry != nullptr) {
 +          entry->results = {};
@@ -648,7 +653,6 @@ index 3656146..aedc074 100644
 +      if (entry != nullptr) {
 +        result.stamp = slot->stamp;
 +        entry->results[s] = result;
-+        entry->staticRow = staticRow;
 +      }
 +    }
 +  };
@@ -735,7 +739,7 @@ index 3656146..aedc074 100644
  //
  // This is the main routine that implements a subset of the flexbox layout
  // algorithm described in the W3C CSS documentation:
-@@ -1943,8 +2618,11 @@ static void calculateLayoutImpl(
+@@ -1943,8 +2622,11 @@ static void calculateLayoutImpl(
    }
  
    // At this point we know we're going to perform work. Ensure that each child
@@ -749,7 +753,7 @@ index 3656146..aedc074 100644
    if (!fixFlexBasisFitContent || !performLayout) {
      node->setLayoutHadOverflow(false);
    }
-@@ -1953,11 +2631,13 @@ static void calculateLayoutImpl(
+@@ -1953,11 +2635,13 @@ static void calculateLayoutImpl(
    cleanupContentsNodesRecursively(node, performLayout);
  
    // STEP 1: CALCULATE VALUES FOR REMAINDER OF ALGORITHM
@@ -766,7 +770,7 @@ index 3656146..aedc074 100644
  
    const float mainAxisOwnerSize = isMainAxisRow ? ownerWidth : ownerHeight;
    const float crossAxisOwnerSize = isMainAxisRow ? ownerHeight : ownerWidth;
-@@ -2008,7 +2688,7 @@ static void calculateLayoutImpl(
+@@ -2008,7 +2692,7 @@ static void calculateLayoutImpl(
  
    // Computed basis + margins + gap
    float totalMainDim = 0;
@@ -775,7 +779,7 @@ index 3656146..aedc074 100644
        node,
        availableInnerWidth,
        availableInnerHeight,
-@@ -2054,6 +2734,28 @@ static void calculateLayoutImpl(
+@@ -2054,6 +2738,28 @@ static void calculateLayoutImpl(
  
    // Max main dimension of all the lines.
    float maxLineMainDim = 0;
@@ -804,7 +808,7 @@ index 3656146..aedc074 100644
    for (; startOfLineIterator != node->getLayoutChildren().end(); lineCount++) {
      auto flexLine = calculateFlexLine(
          node,
-@@ -2677,7 +3379,8 @@ static void calculateLayoutImpl(
+@@ -2677,7 +3383,8 @@ static void calculateLayoutImpl(
  
    // As we only wrapped in normal direction yet, we need to reverse the
    // positions on wrap-reverse.
@@ -814,7 +818,7 @@ index 3656146..aedc074 100644
      for (auto child : node->getLayoutChildren()) {
        if (child->style().positionType() != PositionType::Absolute) {
          child->setLayoutPosition(
-@@ -2695,7 +3398,15 @@ static void calculateLayoutImpl(
+@@ -2695,7 +3402,15 @@ static void calculateLayoutImpl(
      const bool needsCrossTrailingPos = needsTrailingPosition(crossAxis);
  
      if (needsMainTrailingPos || needsCrossTrailingPos) {
@@ -830,7 +834,7 @@ index 3656146..aedc074 100644
          // Absolute children will be handled by their containing block since we
          // cannot guarantee that their positions are set when their parents are
          // done with layout.
-@@ -2715,8 +3426,9 @@ static void calculateLayoutImpl(
+@@ -2715,8 +3430,9 @@ static void calculateLayoutImpl(
  
      // STEP 11: SIZING AND POSITIONING ABSOLUTE CHILDREN
      // Let the containing block layout its absolute descendants.
@@ -874,23 +878,8 @@ index 9dab727..07a74d5 100644
    Direction direction() const {
      return direction_;
    }
-diff --git a/yoga/node/Node.cpp b/yoga/node/Node.cpp
-index 5159ff8..dff4ee0 100644
---- a/yoga/node/Node.cpp
-+++ b/yoga/node/Node.cpp
-@@ -145,6 +145,10 @@ void Node::setMeasureFunc(YGMeasureFunc measureFunc) {
-     setNodeType(NodeType::Text);
-   }
- 
-+  // OpenTUI: a list's stored results for this row are another function's.
-+  if (measureFunc_ != measureFunc) {
-+    layout_.listEpoch = 0;
-+  }
-   measureFunc_ = measureFunc;
- }
- 
 diff --git a/yoga/node/Node.h b/yoga/node/Node.h
-index e971de2..2092156 100644
+index e971de2..3ef1f8d 100644
 --- a/yoga/node/Node.h
 +++ b/yoga/node/Node.h
 @@ -7,14 +7,17 @@
@@ -911,22 +900,18 @@ index e971de2..2092156 100644
  #include <yoga/node/LayoutableChildren.h>
  
  #include <yoga/config/Config.h>
-@@ -33,6 +36,72 @@ struct YGNode {};
+@@ -33,6 +36,66 @@ struct YGNode {};
  
  namespace facebook::yoga {
  
-+class Node;
-+
 +// OpenTUI: a list box's stored row results (calculateListLayout). A slot is one
 +// pass key: slot 0 is the layout pass, slots 1-3 measure passes.
 +struct ListSlot {
 +  float innerWidth = 0;
 +  float ownerWidth = 0;
-+  float gap = 0;
 +  float lineCross = 0;
 +  uint32_t configVersion = 0;
 +  SizingMode widthMode = SizingMode::MaxContent;
-+  SizingMode heightMode = SizingMode::MaxContent;
 +  Direction direction = Direction::Inherit;
 +  uint64_t stamp = 0;
 +};
@@ -940,9 +925,9 @@ index e971de2..2092156 100644
 +  uint64_t stamp = 0;
 +};
 +
-+// Index-aligned with the list's children. `row` is compared, never followed.
++// Index-aligned with the list's children. Epochs are unique, so another row at
++// this index never matches.
 +struct ListRowEntry {
-+  const Node* row = nullptr;
 +  uint64_t epoch = 0;
 +  uint32_t generation = 0;
 +  uint64_t visited = 0;
@@ -950,8 +935,6 @@ index e971de2..2092156 100644
 +  // The layout slot's main position before placement, and the offset added.
 +  float baseTop = 0;
 +  float offset = 0;
-+  // A static row can hold absolute descendants that STEP 11 lays out.
-+  bool staticRow = false;
 +};
 +
 +struct ListState {
@@ -984,13 +967,7 @@ index e971de2..2092156 100644
  class YG_EXPORT Node : public ::YGNode {
   public:
    using LayoutableChildren = yoga::LayoutableChildren<Node>;
-@@ -77,9 +146,37 @@ class YG_EXPORT Node : public ::YGNode {
-   }
- 
-   void setHeightCapOnlyClamps(bool heightCapOnlyClamps) {
-+    if (heightCapOnlyClamps_ != heightCapOnlyClamps) {
-+      layout_.listEpoch = 0;
-+    }
+@@ -80,6 +143,31 @@ class YG_EXPORT Node : public ::YGNode {
      heightCapOnlyClamps_ = heightCapOnlyClamps;
    }
  
@@ -999,7 +976,7 @@ index e971de2..2092156 100644
 +    return listLayout_;
 +  }
 +
-+  // An allocation failure leaves the node in flex mode.
++  // The bit is set after the allocation, so a failure leaves the node in flex.
 +  void setListLayout(bool listLayout) {
 +    if (listLayout_ != listLayout) {
 +      listState_.state = listLayout ? ot::makeUnique<ListState>() : nullptr;
@@ -1022,7 +999,7 @@ index e971de2..2092156 100644
    YGSize measure(
        float availableWidth,
        MeasureMode widthMode,
-@@ -279,6 +376,7 @@ class YG_EXPORT Node : public ::YGNode {
+@@ -279,6 +367,7 @@ class YG_EXPORT Node : public ::YGNode {
  
    void setStyle(const Style& style) {
      style_ = style;
@@ -1030,7 +1007,7 @@ index e971de2..2092156 100644
    }
  
    template <typename Update>
-@@ -287,6 +385,7 @@ class YG_EXPORT Node : public ::YGNode {
+@@ -287,6 +376,7 @@ class YG_EXPORT Node : public ::YGNode {
      auto next = style_;
      update(next);
      style_ = std::move(next);
@@ -1038,7 +1015,7 @@ index e971de2..2092156 100644
      markDirtyAndPropagate();
    }
  
-@@ -380,6 +479,7 @@ class YG_EXPORT Node : public ::YGNode {
+@@ -380,6 +470,7 @@ class YG_EXPORT Node : public ::YGNode {
    bool isDirty_ : 1 = true;
    bool alwaysFormsContainingBlock_ : 1 = false;
    bool heightCapOnlyClamps_ : 1 = false;
@@ -1046,7 +1023,7 @@ index e971de2..2092156 100644
    NodeType nodeType_ : bitCount<NodeType>() = NodeType::Default;
    void* context_ = nullptr;
    YGMeasureFunc measureFunc_ = nullptr;
-@@ -397,6 +497,7 @@ class YG_EXPORT Node : public ::YGNode {
+@@ -397,6 +488,7 @@ class YG_EXPORT Node : public ::YGNode {
    const Config* config_;
    std::array<Style::SizeLength, 2> processedDimensions_{
        {StyleSizeLength::undefined(), StyleSizeLength::undefined()}};
