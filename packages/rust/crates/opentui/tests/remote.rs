@@ -503,24 +503,30 @@ fn images_switch_to_kitty_graphics_when_the_terminal_reports_support_after_the_f
     client.wait_for("\x1b[?2026l");
     assert!(!client.text().contains("\x1b_Ga="), "{:?}", client.text());
     client.take_until("the pixel size query", |client| client.text().contains("\x1b[14t"));
-    // Cells of 10x20 pixels: the 16x8 box is 160x160.
-    client.send(b"\x1b[4;480;800t\x1bP>|ghostty 1.2.3\x1b\\\x1b_Gi=31337;OK\x1b\\\x1b[?62;22c");
-    client.wait_for("\x1b_Ga=t");
-    client.wait_for("s=160,v=160,");
-    // Cells of 10x30 pixels after two resizes. The second comes while the first's query waits, whose reply then
-    // describes the width before it: the app asks again instead of sizing the image by it (133x240).
+    // The setup query's window has passed, so a resize asks again. Its reply comes after the late one for 80 columns,
+    // and wins as in Core: cells of 10x20 pixels make the 16x8 box 160x160, not 128x128.
     client.link.resize(100, 30);
     client.wait_for("\x1b[14t");
+    client.send(b"\x1bP>|ghostty 1.2.3\x1b\\\x1b_Gi=31337;OK\x1b\\\x1b[?62;22c\x1b[4;480;800t");
+    client.send(b"\x1b[4;600;1000t");
+    client.wait_for("s=160,v=160,");
+    let text = client.text();
+    let last = text.split(",s=").skip(1).filter(|size| !size.starts_with("16,v=16,")).last();
+    assert!(last.is_some_and(|size| size.starts_with("160,v=160,")), "the last copy is not 160x160: {text:?}");
+    // Cells of 10x30 pixels after two more resizes. The second comes while the first's query waits, whose reply then
+    // describes the width before it: the app asks again instead of sizing the image by it (137x240).
     client.link.resize(120, 30);
-    client.wait_for("Hello remote 120x30");
-    client.send(b"\x1b[4;900;1000t");
+    client.wait_for("\x1b[14t");
+    client.link.resize(140, 30);
+    client.wait_for("Hello remote 140x30");
+    client.send(b"\x1b[4;900;1200t");
     client.wait_for("\x1b[14t");
     // A reply cut in two still answers it, not typed as keys.
-    client.send(b"\x1b[4;900;12");
+    client.send(b"\x1b[4;900;14");
     std::thread::sleep(opentui::input::ESCAPE_TIMEOUT * 3);
     client.send(b"00t");
     client.wait_for("s=160,v=240,");
-    assert!(!client.text().contains("s=133,v=240,"), "{:?}", client.text());
+    assert!(!client.text().contains("s=137,v=240,"), "{:?}", client.text());
     client.send(b"q");
     client.finish().expect("the app thread").expect("the app");
 }

@@ -102,6 +102,8 @@ const READ_BYTES_MAX: usize = 64 * 1024;
 const CLOSE_CAP_TIMEOUTS: u32 = 10;
 /// How long a pixel size query waits for its reply before another may go out, as Core's reply backstop.
 const PIXEL_REPLY_WINDOW: Duration = Duration::from_secs(5);
+/// Pixel size queries that may go unanswered before no more go out, as Core's `PIXEL_QUERIES_MAX`.
+const PIXEL_QUERIES_MAX: u8 = 4;
 
 /// How a [`Host`] creates its Context and Session and sets up its terminal.
 #[derive(Clone, Debug)]
@@ -301,9 +303,10 @@ pub struct Host {
     split: Option<SplitFooter>,
     /// Whether a query for the terminal's pixel size waits to be sent, as Core sends one at setup and after a resize.
     pixel_query_wanted: bool,
-    /// Until when the reply to the last pixel size query is expected; a late reply still answers it. As in Core, only
-    /// one query waits at a time.
+    /// Until when the reply to the last pixel size query is expected. As in Core, only one query waits at a time.
     pixel_reply_until: Option<Instant>,
+    /// Pixel size queries not answered yet. Replies apply in arrival order, so a late one still answers its query.
+    pixel_queries: u8,
     /// Whether the parser was last told to expect that reply.
     expecting_pixel_reply: bool,
 }
@@ -445,6 +448,7 @@ impl Host {
             split,
             pixel_query_wanted: true,
             pixel_reply_until: None,
+            pixel_queries: 0,
             expecting_pixel_reply: false,
         };
         host.session.setup_terminal(options.terminal)?;
@@ -456,7 +460,7 @@ impl Host {
             split.setup_done(Instant::now());
         }
         // Its reply is one of setup's: expected within the capability window.
-        host.query_pixels(options.capability_window.min(PIXEL_REPLY_WINDOW));
+        host.query_pixels(options.capability_window.min(PIXEL_REPLY_WINDOW))?;
         Ok(host)
     }
 
@@ -668,22 +672,26 @@ impl Host {
         }
         self.flush()?;
         self.apply_resize(events)?;
-        self.query_pixels(PIXEL_REPLY_WINDOW);
-        Ok(())
+        self.query_pixels(PIXEL_REPLY_WINDOW)
     }
 
-    /// Asks for the terminal's pixel size if a query is wanted and none waits for its reply, and expects the reply for
-    /// `window`. A query the Session refuses, such as one behind a full output queue or while the terminal is
-    /// inactive, is tried again at the end of the next poll.
-    fn query_pixels(&mut self, window: Duration) {
+    /// Asks for the terminal's pixel size, and expects the reply for `window`, if a query is wanted, none waits for its
+    /// reply, and fewer than [`PIXEL_QUERIES_MAX`] went unanswered. A query the Session refuses, such as one behind a
+    /// full output queue or while the terminal is inactive, is tried again at the end of the next poll.
+    fn query_pixels(&mut self, window: Duration) -> Result<()> {
         let now = Instant::now();
         if self.pixel_query_wanted
             && self.pixel_reply_until.is_none_or(|until| now >= until)
+            && self.pixel_queries < PIXEL_QUERIES_MAX
             && self.session.control(Control::QueryPixelResolution).is_ok()
         {
             self.pixel_query_wanted = false;
             self.pixel_reply_until = Some(now + window);
+            self.pixel_queries += 1;
+            // Its window runs from now: send it now.
+            self.flush()?;
         }
+        Ok(())
     }
 
     /// Waits for the terminal, a wakeup, or `timeout`. A remote terminal reports `signals` and `input` on every turn;
@@ -757,15 +765,18 @@ impl Host {
             events.push(Event::Color(color));
             return;
         }
-        if self.pixel_reply_until.is_some()
+        if self.pixel_queries > 0
             && let Some((width, height)) = pixel_resolution(reply)
         {
+            self.pixel_queries -= 1;
             self.pixel_reply_until = None;
             let (columns, rows) = self.size;
-            // After a resize the reply may describe the old size: ask again instead, as Core does.
-            if self.pixel_query_wanted {
-                self.query_pixels(PIXEL_REPLY_WINDOW);
-            } else if self.session.set_image_resolution(columns.into(), rows.into(), width, height).is_ok() {
+            // After a resize the reply may describe the old size: the wanted query goes out at the end of the poll
+            // instead, as Core asks again. A size of zero is no size.
+            if !self.pixel_query_wanted
+                && width > 0
+                && self.session.set_image_resolution(columns.into(), rows.into(), width, height).is_ok()
+            {
                 self.force_next_frame = true;
             }
             return;
@@ -1107,6 +1118,36 @@ mod tests {
         host.poll(Some(Instant::now() + Duration::from_secs(1)), &mut Vec::new()).expect("read the replies");
         let flags = host.session().capabilities().expect("read the capabilities").flags;
         assert!(flags.contains(crate::native::CapabilityFlags::EXPLICIT_WIDTH), "{flags:?}");
+    }
+
+    // Expected, as in Core: a pixel size query is written when it is made, a reply without a size leaves no error, a
+    // partial reply held for the query ends with its reply window, and no query goes out after four went unanswered.
+    #[test]
+    fn pixel_size_queries_end_their_wait_and_stop_when_unanswered() {
+        let (terminal, link) = RemoteTerminal::new(RemoteOptions::default(), || {}).expect("create a terminal");
+        let options = HostOptions { capability_window: Duration::ZERO, ..HostOptions::default() };
+        let mut host = Host::start_remote(terminal, options).expect("start the host");
+        let queried = || String::from_utf8_lossy(&link.take_output(usize::MAX)).contains("\x1b[14t");
+        assert!(queried(), "setup left its query unwritten");
+        link.send_input(b"\x1b[4;0;0t");
+        host.poll(Some(Instant::now()), &mut Vec::new()).expect("read the reply");
+        assert_eq!(host.context().last_error().expect("read the last error"), None);
+        host.pixel_reply_until = Some(Instant::now() + Duration::from_millis(100));
+        link.send_input(b"\x1b\x1b[4;700;");
+        let (mut events, polled) = (Vec::new(), Instant::now());
+        while events.is_empty() && polled.elapsed() < Duration::from_secs(2) {
+            host.poll(Some(polled + Duration::from_secs(2)), &mut events).expect("poll in the window");
+        }
+        assert!(polled.elapsed() < Duration::from_secs(1), "poll waited past the reply window");
+        assert_eq!(events, [Event::Key(KeyEvent::new(KeyCode::Escape, Modifiers::NONE))]);
+        for (unanswered, width, query) in [(1, 100, true), (super::PIXEL_QUERIES_MAX, 120, false)] {
+            host.pixel_queries = unanswered;
+            host.pixel_reply_until = None;
+            queried();
+            link.resize(width, 30);
+            host.poll(Some(Instant::now() + Duration::from_millis(50)), &mut events).expect("poll the resize");
+            assert_eq!(queried(), query, "{unanswered} unanswered");
+        }
     }
 
     // Expected: with `AppOptions::capture_stderr`, a panic on a worker thread leaves the capture in place: the UI

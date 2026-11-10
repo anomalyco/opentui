@@ -112,11 +112,15 @@ pub fn is_device_attributes(reply: &[u8]) -> bool {
         .is_some_and(|(&last, body)| last == b'c' && body.iter().all(|byte| byte.is_ascii_digit() || *byte == b';'))
 }
 
-/// Parses a reply to the pixel size query `CSI 14 t`, `ESC [ 4 ; height ; width t`, into width and height.
+/// Parses a reply to the pixel size query `CSI 14 t`, `ESC [ 4 ; height ; width t`, into width and height. A size of
+/// zero or above `i32::MAX`, which Core rejects too, gives `(0, 0)`: the terminal answered without a usable size.
 pub fn pixel_resolution(reply: &[u8]) -> Option<(u32, u32)> {
-    let body = std::str::from_utf8(reply.strip_prefix(b"\x1b[4;")?.strip_suffix(b"t")?).ok()?;
-    let (height, width) = body.split_once(';')?;
-    Some((width.parse().ok()?, height.parse().ok()?))
+    let rest = reply.strip_prefix(b"\x1b[4;")?.strip_suffix(b"t")?;
+    let height = digits(rest, 0)?;
+    let width = digits(rest, height + 1).filter(|&end| rest[height] == b';' && end == rest.len())?;
+    let size =
+        |field: &[u8]| std::str::from_utf8(field).ok()?.parse().ok().filter(|size| (1..=0x7fff_ffff).contains(size));
+    Some(size(&rest[height + 1..width]).zip(size(&rest[..height])).unwrap_or((0, 0)))
 }
 
 /// Whether a reply is the terminal's notice that its color scheme changed, `ESC [ ? 997 ; 1 n` (dark) or `2 n`
@@ -337,6 +341,27 @@ mod tests {
             b"\x1b]75010;?\x1b\\",
         ] {
             assert!(!is_capability_response(reply), "{}", String::from_utf8_lossy(reply).escape_debug());
+        }
+    }
+
+    #[test]
+    fn pixel_sizes_need_two_positive_numbers_up_to_i32_max() {
+        for (reply, size) in [
+            (b"\x1b[4;480;800t".as_slice(), Some((800, 480))),
+            (b"\x1b[4;2147483647;1t", Some((1, 0x7fff_ffff))),
+            (b"\x1b[4;0;0t", Some((0, 0))),
+            (b"\x1b[4;0;800t", Some((0, 0))),
+            (b"\x1b[4;2240852502;2147483648t", Some((0, 0))),
+            (b"\x1b[4;99999999999;800t", Some((0, 0))),
+            (b"\x1b[4;+480;+800t", None),
+            (b"\x1b[4;480;800", None),
+            (b"\x1b[4;480t", None),
+            (b"\x1b[4;480;800;1t", None),
+            (b"\x1b[4;a;bt", None),
+            (b"\x1b[4;;800t", None),
+            (b"\x1b[3;480;800t", None),
+        ] {
+            assert_eq!(pixel_resolution(reply), size, "{}", String::from_utf8_lossy(reply).escape_debug());
         }
     }
 
