@@ -8,5 +8,6 @@ links = "opentui"
 description = "Raw FFI declarations for OpenTUI's checked C ABI"
 
 [features]
-# Link libopentui.a instead of libopentui.so.
+default = ["static"]
+# Link libopentui.a instead of libopentui.so or libopentui.dylib. Windows links opentui.dll either way.
 static = []

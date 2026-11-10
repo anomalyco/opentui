@@ -568,7 +568,7 @@ jobs:
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
 
-      # Static linking is not supported on Windows.
+      # Windows links opentui.dll with the default features too; test.sh runs one pass with them.
       - name: Test
         working-directory: packages/rust
         run: sh test.sh shared

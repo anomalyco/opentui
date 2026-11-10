@@ -73,8 +73,9 @@ done
 exec $zig cc -target $zig_target "\$@"
 EOF
     chmod +x "$tools/cc-$target"
-    shared=opentui/tokio,opentui/log,opentui/tree-sitter
-    static=opentui/static,$shared
+    # The static feature is a default one.
+    shared='--no-default-features --features opentui/tokio,opentui/log,opentui/tree-sitter'
+    static='--features opentui/tokio,opentui/log,opentui/tree-sitter'
     archiver=ar
     rustflags=
     case $target in
@@ -83,9 +84,9 @@ EOF
         *-musl) rustflags='-C target-feature=-crt-static' ;;
     esac
     case $target in
-        # build.rs refuses the static feature on Windows.
-        *-windows-*) feature_sets="'' $shared" ;;
-        *) feature_sets="'' $shared $static $static" ;;
+        # Windows links opentui.dll with or without the static feature.
+        *-windows-*) feature_sets="--no-default-features '$shared' '$static'" ;;
+        *) feature_sets="--no-default-features '$shared' '$static' '$static'" ;;
     esac
     eval "set -- $feature_sets"
     for features do
@@ -93,7 +94,7 @@ EOF
         touch "$tools/lib/libopentui.a"
         env "CC_$(printf %s "$target" | tr - _)=$tools/cc-$target" "AR_$(printf %s "$target" | tr - _)=$tools/zig-$archiver" \
             ${rustflags:+"RUSTFLAGS=$rustflags"} "$cargo" clippy --locked --target "$target" --manifest-path "$here/Cargo.toml" --workspace \
-            --all-targets ${features:+--features "$features"} -- -D warnings < /dev/null
+            --all-targets $features -- -D warnings < /dev/null
     done
     printf 'PASS: compile checks (%s)\n' "$target"
 done <<EOF
@@ -102,7 +103,7 @@ EOF
 
 # A crt-static executable has no dynamic loader and would crash at start, so build.rs refuses to link it shared.
 if "$cargo" check --locked --target x86_64-unknown-linux-musl --manifest-path "$here/Cargo.toml" -p opentui-sys \
-    < /dev/null 2> "$tools/crt-static"; then
+    --no-default-features < /dev/null 2> "$tools/crt-static"; then
     echo 'FAIL: a crt-static musl build links the shared library' >&2
     exit 1
 fi

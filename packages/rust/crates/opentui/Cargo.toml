@@ -8,7 +8,8 @@ description = "A terminal UI framework for Rust built on OpenTUI's native render
 autoexamples = false
 
 [features]
-# Link libopentui.a instead of libopentui.so.
+default = ["static"]
+# Link libopentui.a instead of libopentui.so or libopentui.dylib. Windows links opentui.dll either way.
 static = ["opentui-sys/static"]
 # App::spawn: run futures on a Tokio runtime and finish them on the UI thread.
 tokio = ["dep:tokio"]
@@ -26,7 +27,7 @@ tree-sitter = [
 ]
 
 [dependencies]
-opentui-sys = { path = "../opentui-sys" }
+opentui-sys = { path = "../opentui-sys", default-features = false }
 libc = "0.2"
 log = { version = "0.4", optional = true, default-features = false, features = ["std"] }
 tokio = { version = "1.53", optional = true, default-features = false, features = ["rt-multi-thread", "time"] }
