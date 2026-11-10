@@ -213,6 +213,18 @@ fn styled_links_present_only_after_completed_output_then_restore() -> Result<()>
         let output = session.pump_until_quiet(&mut now_ns)?;
         assert_eq!((contains(&output, b";1;2;3m"), contains(&output, b"clear.test")), (styled, linked), "{clear:?}");
     }
+    // A link target with a control character keeps its text but gets no hyperlink; UTF-8 targets keep theirs.
+    for (label, url, linked) in [
+        ("esc", "https://x.test/a\x1b]52;c;cHduZWQ=\x07", false),
+        ("csi", "https://x.test/\u{9b}0m", false),
+        ("eur", "https://x.test/\u{20ac}", true),
+    ] {
+        buffer.set_spans(&[label.into_span().link(url)])?;
+        session.present()?;
+        let output = session.pump_until_quiet(&mut now_ns)?;
+        let found = [label.as_bytes(), b"]52;", url.as_bytes()].map(|part| contains(&output, part));
+        assert_eq!(found, [true, false, linked], "{label}");
+    }
 
     session.close()?;
     let restored = session.pump_until_quiet(&mut now_ns)?;

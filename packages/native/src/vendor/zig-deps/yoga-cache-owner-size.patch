@@ -47,4 +47,4 @@ index 64bfd1fd..e15eb688 100644
 +  return true;
  }
  
- // OpenTUI: with absolute-edge rounding, a subtree laid out for one size can
+ bool calculateLayoutInternal(

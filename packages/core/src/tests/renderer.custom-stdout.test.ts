@@ -12,6 +12,7 @@ import { BoxRenderable } from "../renderables/Box.js"
 import { ImageRenderable } from "../renderables/Image.js"
 import { MarkdownRenderable } from "../renderables/Markdown.js"
 import { TextRenderable } from "../renderables/Text.js"
+import { link, t } from "../lib/styled-text.js"
 import { SyntaxStyle } from "../syntax-style.js"
 import { forceRenderStatus, holdOutputIdle, settle, settleUntil } from "../testing/harness.js"
 import { ManualClock } from "../testing/manual-clock.js"
@@ -189,6 +190,47 @@ test("late Ghostty capability detection emits OSC 8 for compact Markdown links",
   expect(output).toContain(";https://example.com/path\x1b\\")
   expect(output).toContain("\x1b]8;;\x1b\\")
 })
+
+// OSC 8 carries a target as is, so a control character in it could end the sequence and run another one, here an
+// OSC 52 clipboard write. Such a target gets no hyperlink and its text still draws (Markdown shows the URL, as for
+// other targets native code rejects); UTF-8 targets keep theirs.
+const injected = "https://example.com/a\x1b]52;c;cHduZWQ=\x07"
+const [euro, city] = ["https://example.com/€", "https://pl.wikipedia.org/wiki/Łódź"]
+for (const [name, markdown, shown, kept] of [
+  ["Markdown link", `[docs](${injected}) [euro](${euro}) [city](${city})`, "docs (https://example.com/a", [euro, city]],
+  ["bare URL", `see ${injected} or ${euro}`, "see https://example.com/a", [euro]],
+  ["link()", null, "docs euro city", [euro, city]],
+] as const) {
+  test(`${name} targets with control characters get no OSC 8`, async () => {
+    const stdin = createTestStdin()
+    const stdout = createCollectingStdout(100, 4)
+    const renderer = await createCliRenderer({ stdin, stdout })
+    const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: "#ffffff" } }, renderer.nativeScene)
+    destroyFns.push(() => syntaxStyle.destroy())
+    renderer.root.add(
+      markdown === null
+        ? new TextRenderable(renderer, {
+            content: t`${link(injected)("docs")} ${link(euro)("euro")} ${link(city)("city")}`,
+          })
+        : new MarkdownRenderable(renderer, { content: markdown, syntaxStyle }),
+    )
+    stdin.emit("data", Buffer.from("\x1bP>|ghostty 1.1.3\x1b\\"))
+    const opening = (url: string) => `;${Buffer.from(url).toString("binary")}\x1b\\`
+    // Markdown links appear once the highlight worker answers.
+    for (let turn = 0; turn < 100 && !stdout.bytes().toString("binary").includes(opening(euro)); turn++) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      renderer.requestRender()
+      await renderer.idle()
+    }
+    await flushWritable(stdout)
+
+    const output = stdout.bytes().toString("binary")
+    expect(renderer.capabilities?.hyperlinks).toBe(true)
+    expect(new TextDecoder().decode(renderer.currentRenderBuffer.getRealCharBytes(true))).toContain(shown)
+    expect(output).not.toContain("\x1b]52;")
+    for (const url of kept) expect(output).toContain(opening(url))
+  })
+}
 
 test("unidentified truecolor terminals preserve the visible Markdown link fallback", async () => {
   const previousTerm = process.env.TERM

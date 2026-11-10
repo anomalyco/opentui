@@ -38,10 +38,52 @@ index b3002012..999abde7 100644
  
  bool isBaselineLayout(const yoga::Node* node) {
 diff --git a/yoga/algorithm/Cache.cpp b/yoga/algorithm/Cache.cpp
-index 130fe0d3..e62f4067 100644
+index 130fe0d3..c11750f0 100644
 --- a/yoga/algorithm/Cache.cpp
 +++ b/yoga/algorithm/Cache.cpp
-@@ -63,7 +63,10 @@ bool canUseCachedMeasurement(
+@@ -14,19 +14,21 @@ namespace facebook::yoga {
+ static inline bool sizeIsExactAndMatchesOldMeasuredSize(
+     SizingMode sizeMode,
+     float size,
+-    float lastComputedSize) {
++    float lastComputedSize,
++    const yoga::Config* config) {
+   return sizeMode == SizingMode::StretchFit &&
+-      yoga::inexactEquals(size, lastComputedSize);
++      sizesMatch(size, lastComputedSize, config);
+ }
+ 
+ static inline bool oldSizeIsMaxContentAndStillFits(
+     SizingMode sizeMode,
+     float size,
+     SizingMode lastSizeMode,
+-    float lastComputedSize) {
++    float lastComputedSize,
++    const yoga::Config* config) {
+   return sizeMode == SizingMode::FitContent &&
+       lastSizeMode == SizingMode::MaxContent &&
+-      (size >= lastComputedSize || yoga::inexactEquals(size, lastComputedSize));
++      (size >= lastComputedSize || sizesMatch(size, lastComputedSize, config));
+ }
+ 
+ static inline bool newSizeIsStricterAndStillValid(
+@@ -34,12 +36,13 @@ static inline bool newSizeIsStricterAndStillValid(
+     float size,
+     SizingMode lastSizeMode,
+     float lastSize,
+-    float lastComputedSize) {
++    float lastComputedSize,
++    const yoga::Config* config) {
+   return lastSizeMode == SizingMode::FitContent &&
+       sizeMode == SizingMode::FitContent && yoga::isDefined(lastSize) &&
+       yoga::isDefined(size) && yoga::isDefined(lastComputedSize) &&
+       lastSize > size &&
+-      (lastComputedSize <= size || yoga::inexactEquals(size, lastComputedSize));
++      (lastComputedSize <= size || sizesMatch(size, lastComputedSize, config));
+ }
+ 
+ bool canUseCachedMeasurement(
+@@ -63,7 +66,10 @@ bool canUseCachedMeasurement(
  
    const float pointScaleFactor = config->getPointScaleFactor();
  
@@ -53,32 +95,98 @@ index 130fe0d3..e62f4067 100644
    bool hasSameWidthSpec = false;
    if (lastWidthMode == widthMode) {
      const float effectiveWidth = useRoundedComparison
-diff --git a/yoga/algorithm/CalculateLayout.cpp b/yoga/algorithm/CalculateLayout.cpp
-index 30ec5db6..9762ca4b 100644
---- a/yoga/algorithm/CalculateLayout.cpp
-+++ b/yoga/algorithm/CalculateLayout.cpp
-@@ -2752,6 +2752,20 @@ static bool isCachedForOwnerSize(
-        yoga::inexactEquals(cachedMeasurement.ownerHeight, ownerHeight));
- }
+@@ -73,24 +79,26 @@ bool canUseCachedMeasurement(
+         ? roundValueToPixelGrid(
+               lastAvailableWidth, pointScaleFactor, false, false)
+         : lastAvailableWidth;
+-    hasSameWidthSpec = yoga::inexactEquals(effectiveLastWidth, effectiveWidth);
++    hasSameWidthSpec = sizesMatch(effectiveLastWidth, effectiveWidth, config);
+   }
  
-+// OpenTUI: with absolute-edge rounding, a subtree laid out for one size can
-+// round differently at a size within 1e-4 of it, so the cache of nodes without
-+// a measure function compares exactly.
-+static bool hasSameAvailableSize(
-+    const yoga::Node* const node,
-+    const float cachedSize,
-+    const float availableSize) {
-+  if (!node->getConfig()->roundsPositionsFromAbsoluteEdges()) {
-+    return yoga::inexactEquals(cachedSize, availableSize);
+   const bool widthIsCompatible =
+       hasSameWidthSpec ||
+       sizeIsExactAndMatchesOldMeasuredSize(
+-          widthMode, availableWidth - marginRow, lastComputedWidth) ||
++          widthMode, availableWidth - marginRow, lastComputedWidth, config) ||
+       oldSizeIsMaxContentAndStillFits(
+           widthMode,
+           availableWidth - marginRow,
+           lastWidthMode,
+-          lastComputedWidth) ||
++          lastComputedWidth,
++          config) ||
+       newSizeIsStricterAndStillValid(
+           widthMode,
+           availableWidth - marginRow,
+           lastWidthMode,
+           lastAvailableWidth,
+-          lastComputedWidth);
++          lastComputedWidth,
++          config);
+ 
+   if (!widthIsCompatible) {
+     return false;
+@@ -105,23 +113,26 @@ bool canUseCachedMeasurement(
+         ? roundValueToPixelGrid(
+               lastAvailableHeight, pointScaleFactor, false, false)
+         : lastAvailableHeight;
+-    hasSameHeightSpec = yoga::inexactEquals(effectiveLastHeight, effectiveHeight);
++    hasSameHeightSpec = sizesMatch(effectiveLastHeight, effectiveHeight, config);
+   }
+ 
+   const bool heightIsCompatible = hasSameHeightSpec ||
+       sizeIsExactAndMatchesOldMeasuredSize(
+                                       heightMode,
+                                       availableHeight - marginColumn,
+-                                      lastComputedHeight) ||
++                                      lastComputedHeight,
++                                      config) ||
+       oldSizeIsMaxContentAndStillFits(heightMode,
+                                       availableHeight - marginColumn,
+                                       lastHeightMode,
+-                                      lastComputedHeight) ||
++                                      lastComputedHeight,
++                                      config) ||
+       newSizeIsStricterAndStillValid(heightMode,
+                                      availableHeight - marginColumn,
+                                      lastHeightMode,
+                                      lastAvailableHeight,
+-                                     lastComputedHeight);
++                                     lastComputedHeight,
++                                     config);
+ 
+   return heightIsCompatible;
+ }
+diff --git a/yoga/algorithm/Cache.h b/yoga/algorithm/Cache.h
+index f8857eaf..f9f257ae 100644
+--- a/yoga/algorithm/Cache.h
++++ b/yoga/algorithm/Cache.h
+@@ -9,9 +9,20 @@
+ 
+ #include <yoga/algorithm/SizingMode.h>
+ #include <yoga/config/Config.h>
++#include <yoga/numeric/Comparison.h>
+ 
+ namespace facebook::yoga {
+ 
++// OpenTUI: with absolute-edge rounding, sizes match only exactly: at a size
++// within 1e-4 of another, a subtree can round differently and a measured text
++// can wrap at another cell.
++inline bool sizesMatch(float a, float b, const yoga::Config* config) {
++  if (!config->roundsPositionsFromAbsoluteEdges()) {
++    return yoga::inexactEquals(a, b);
 +  }
-+  return cachedSize == availableSize ||
-+      (yoga::isUndefined(cachedSize) && yoga::isUndefined(availableSize));
++  return a == b || (yoga::isUndefined(a) && yoga::isUndefined(b));
 +}
 +
- bool calculateLayoutInternal(
-     yoga::Node* const node,
-     const float availableWidth,
-@@ -2847,10 +2861,10 @@ bool calculateLayoutInternal(
+ bool canUseCachedMeasurement(
+     SizingMode widthMode,
+     float availableWidth,
+diff --git a/yoga/algorithm/CalculateLayout.cpp b/yoga/algorithm/CalculateLayout.cpp
+index 30ec5db6..b82aa3ed 100644
+--- a/yoga/algorithm/CalculateLayout.cpp
++++ b/yoga/algorithm/CalculateLayout.cpp
+@@ -2847,10 +2847,10 @@ bool calculateLayoutInternal(
        }
      }
    } else if (performLayout) {
@@ -86,14 +194,14 @@ index 30ec5db6..9762ca4b 100644
 -            layout->cachedLayout.availableWidth, availableWidth) &&
 -        yoga::inexactEquals(
 -            layout->cachedLayout.availableHeight, availableHeight) &&
-+    if (hasSameAvailableSize(
-+            node, layout->cachedLayout.availableWidth, availableWidth) &&
-+        hasSameAvailableSize(
-+            node, layout->cachedLayout.availableHeight, availableHeight) &&
++    if (sizesMatch(
++            layout->cachedLayout.availableWidth, availableWidth, node->getConfig()) &&
++        sizesMatch(
++            layout->cachedLayout.availableHeight, availableHeight, node->getConfig()) &&
          layout->cachedLayout.widthSizingMode == widthSizingMode &&
          layout->cachedLayout.heightSizingMode == heightSizingMode &&
          isCachedForOwnerSize(
-@@ -2859,10 +2873,12 @@ bool calculateLayoutInternal(
+@@ -2859,10 +2859,14 @@ bool calculateLayoutInternal(
      }
    } else {
      for (uint32_t i = 0; i < layout->nextCachedMeasurementsIndex; i++) {
@@ -101,12 +209,14 @@ index 30ec5db6..9762ca4b 100644
 -              layout->cachedMeasurements[i].availableWidth, availableWidth) &&
 -          yoga::inexactEquals(
 -              layout->cachedMeasurements[i].availableHeight, availableHeight) &&
-+      if (hasSameAvailableSize(
-+              node, layout->cachedMeasurements[i].availableWidth, availableWidth) &&
-+          hasSameAvailableSize(
-+              node,
++      if (sizesMatch(
++              layout->cachedMeasurements[i].availableWidth,
++              availableWidth,
++              node->getConfig()) &&
++          sizesMatch(
 +              layout->cachedMeasurements[i].availableHeight,
-+              availableHeight) &&
++              availableHeight,
++              node->getConfig()) &&
            layout->cachedMeasurements[i].widthSizingMode == widthSizingMode &&
            layout->cachedMeasurements[i].heightSizingMode == heightSizingMode &&
            isCachedForOwnerSize(

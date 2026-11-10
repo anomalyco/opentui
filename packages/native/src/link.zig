@@ -5,7 +5,7 @@ pub const LinkPoolError = error{
     OutOfMemory,
     InvalidId,
     WrongGeneration,
-    UrlTooLong,
+    InvalidUrl,
     RefcountOverflow,
 };
 
@@ -19,6 +19,18 @@ const RETIRED_GENERATION = GEN_MASK + 1;
 
 pub const IdPayload = u32;
 
+/// The renderer writes a target into OSC 8 as is, and a C0, DEL, or C1 control
+/// there can end the sequence and start another one. So a pooled target is
+/// non-empty UTF-8 that fits a slot and holds none of them.
+pub fn isWritableUrl(url: []const u8) bool {
+    if (url.len == 0 or url.len > MAX_URL_LENGTH) return false;
+    var code_points = (std.unicode.Utf8View.init(url) catch return false).iterator();
+    while (code_points.nextCodepoint()) |code_point| {
+        if (code_point < 0x20 or (code_point >= 0x7f and code_point < 0xa0)) return false;
+    }
+    return true;
+}
+
 const SlotHeader = extern struct {
     len: u32,
     refcount: u32,
@@ -28,7 +40,6 @@ const SlotHeader = extern struct {
 /// Simple link pool for storing URL strings with reusable IDs
 pub const LinkPool = struct {
     allocator: std.mem.Allocator,
-    slot_capacity: u32,
     slots_per_page: u32,
     slot_size_bytes: usize,
     slots: std.ArrayListUnmanaged(u8),
@@ -38,14 +49,10 @@ pub const LinkPool = struct {
     interned_live_ids: std.StringHashMapUnmanaged(IdPayload),
 
     pub fn init(allocator: std.mem.Allocator) LinkPool {
-        const slot_capacity = MAX_URL_LENGTH;
-        const slots_per_page = 64;
-        const slot_size_bytes = @sizeOf(SlotHeader) + slot_capacity;
         return .{
             .allocator = allocator,
-            .slot_capacity = slot_capacity,
-            .slots_per_page = slots_per_page,
-            .slot_size_bytes = slot_size_bytes,
+            .slots_per_page = 64,
+            .slot_size_bytes = @sizeOf(SlotHeader) + MAX_URL_LENGTH,
             .slots = .empty,
             .free_list = .empty,
             .num_slots = 0,
@@ -132,9 +139,7 @@ pub const LinkPool = struct {
     /// Return one owned live reference. Failed acquisition leaves no stranded
     /// slot or interned identity. Internal pages may remain allocated.
     pub fn acquire(self: *LinkPool, url: []const u8) LinkPoolError!IdPayload {
-        if (url.len > self.slot_capacity) {
-            return LinkPoolError.UrlTooLong;
-        }
+        if (!isWritableUrl(url)) return LinkPoolError.InvalidUrl;
         if (self.lookupLive(url)) |live_id| {
             try self.incref(live_id);
             return live_id;

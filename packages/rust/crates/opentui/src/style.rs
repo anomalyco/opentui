@@ -329,7 +329,8 @@ impl<'a> Span<'a> {
         Self { content: content.into(), style, link: None }
     }
 
-    /// Makes the span an OSC 8 hyperlink. Native code ignores empty URLs and URLs over 512 bytes.
+    /// Makes the span an OSC 8 hyperlink. Native code ignores empty URLs, URLs over 512 bytes, and URLs with control
+    /// characters.
     pub fn link(mut self, url: impl Into<Cow<'a, str>>) -> Self {
         self.link = Some(url.into());
         self
