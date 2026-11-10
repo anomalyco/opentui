@@ -108,9 +108,9 @@ and `pty::shell()` is `%COMSPEC%`.
 Features:
 
 - `static`: link `libopentui.a`. On Linux the archive carries its own libc++,
-  so the program needs only libc. A program that also links GCC's libstdc++
-  must link it before `libopentui.a`, and not statically: both define the C++
-  runtime's exception symbols. On macOS this also links the system
+  so the program needs only libc. That libc++ is private to OpenTUI, so C++
+  code elsewhere in the program keeps its own runtime, libstdc++ or libc++,
+  shared or static. On macOS this also links the system
   frameworks OpenTUI uses for the clipboard, audio, and video. Not supported on
   Windows: OpenTUI's Windows archive is built for MinGW with libc++, which
   neither Rust Windows toolchain links.
