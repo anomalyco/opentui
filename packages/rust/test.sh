@@ -34,6 +34,16 @@ cargo=${CARGO:-cargo}
 manifest=$here/Cargo.toml
 
 "$cargo" fmt --all --check --manifest-path "$manifest"
+# Each crate turns on the static feature by default, and --no-default-features turns it off through every edge.
+for package in opentui-sys opentui opentui-ssh; do
+    for defaults in '' --no-default-features; do
+        tree=$("$cargo" tree --locked --manifest-path "$manifest" -p "$package" $defaults -e features -i opentui-sys)
+        case $tree in *'opentui-sys feature "static"'*) resolved=static ;; *) resolved=shared ;; esac
+        case $defaults in '') expected=static ;; *) expected=shared ;; esac
+        [ "$resolved" = "$expected" ] ||
+            { printf 'FAIL: %s %s resolves to %s linking\n' "$package" "${defaults:-defaults}" "$resolved" >&2; exit 1; }
+    done
+done
 for linkage in $modes; do
     features=opentui/tokio,opentui/log,opentui/tree-sitter
     # The static feature is a default one.
@@ -52,14 +62,13 @@ for linkage in $modes; do
         --features "$features"
     RUSTDOCFLAGS='-D warnings' "$cargo" doc --locked --manifest-path "$manifest" -p opentui -p opentui-ssh --no-deps \
         $defaults --features "$features"
-    # An app on opentui's own default features needs no libopentui.so at run time. Built alone, since opentui-ssh's
-    # defaults would turn on the static feature too.
-    if [ "$linkage" = static ] && [ "$platform" = x86_64-linux ]; then
-        "$cargo" build --locked --manifest-path "$manifest" -p opentui --example hello
-        if readelf -d "$CARGO_TARGET_DIR/debug/examples/hello" | grep -F libopentui; then
-            printf '%s\n' 'FAIL: the default features link libopentui.so' >&2
-            exit 1
-        fi
+    # An app on opentui's features of this pass links as the pass says. Built alone, since opentui-ssh's defaults would
+    # turn on the static feature too.
+    if [ "$platform" = x86_64-linux ]; then
+        "$cargo" build --locked --manifest-path "$manifest" -p opentui --example hello $defaults
+        dynamic=$(readelf -d "$CARGO_TARGET_DIR/debug/examples/hello")
+        case $dynamic in *libopentui.so*) linked=shared ;; *) linked=static ;; esac
+        [ "$linked" = "$linkage" ] || { printf 'FAIL: the %s pass links %s\n' "$linkage" "$linked" >&2; exit 1; }
     fi
     # More lifecycle checks, with signals and job control, under a pseudo-terminal from Python's standard library.
     # Windows has neither, and tests/lifecycle.rs covers the exit paths it has.

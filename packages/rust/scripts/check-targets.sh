@@ -125,3 +125,12 @@ while IFS= read -r output; do
     [ -n "$archive" ] || { echo "FAIL: the static build searches no libopentui.a: $output" >&2; exit 1; }
 done < "$tools/static-outputs"
 echo 'PASS: static macOS builds search libopentui.a and no libopentui.dylib'
+
+# Windows links opentui.dll with the static feature too, though the stubs include a libopentui.a.
+find "$CARGO_TARGET_DIR" -path '*-windows-*/debug/build/opentui-sys-*/output' -newer "$tools/lib/opentui.h" \
+    -print > "$tools/windows-outputs"
+[ -s "$tools/windows-outputs" ] || { echo 'FAIL: no Windows build' >&2; exit 1; }
+while IFS= read -r output; do
+    grep -qx 'cargo:static=0' "$output" || { echo "FAIL: a Windows build links libopentui.a: $output" >&2; exit 1; }
+done < "$tools/windows-outputs"
+echo 'PASS: Windows builds link opentui.dll with and without the static feature'
