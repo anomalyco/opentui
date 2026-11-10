@@ -681,7 +681,7 @@ test "Session late close restores the modes that dropped output changed" {
         var bytes: [32 * 1024]u8 = undefined;
         try f.owner.setupSessionTerminal(f.id, .{ .kitty_keyboard_flags = 5, .use_alternate_screen = case != .alt_dropped });
         var len = (try f.driveOutput(&now_ns, .active, &bytes, 256)).len;
-        const kitty_reply: session.Control = .{ .capability_response = "\x1b[?0u" };
+        const kitty_reply: session.Control = .{ .capability_response = "\x1b[?0u\x1b[?2027;0$y" };
         if (case != .kitty_switch) {
             try f.value.control(kitty_reply);
             len += (try f.drain(bytes[len..])).len;
@@ -745,6 +745,7 @@ test "Session late close restores the modes that dropped output changed" {
         try testing.expectEqual(!ends_main, std.mem.startsWith(u8, shown, "pre"));
         try testing.expectEqual(@as(usize, @intFromBool(ends_main)), std.mem.count(u8, output, "\x1b[H\x1b[J"));
         try testing.expect(!far.modes.get(.synchronized_output));
+        try testing.expect(!far.modes.get(.grapheme_cluster));
         try testing.expectEqual(.primary, far.screens.active_key);
         for ([_]@TypeOf(far.screens.active_key){ .primary, .alternate }) |key| {
             if (far.screens.get(key)) |screen| try testing.expectEqual(@as(u5, 0), screen.kitty_keyboard.current().int());

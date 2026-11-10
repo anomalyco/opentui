@@ -2112,6 +2112,9 @@ test "width method follows the environment, then the DECRPM 2027 reply and XTVER
         .{ tmux38 ++ .{.{ "STY", "1.pts-0.box" }}, .{"\x1bP>|tmux 3.8\x1b\\"}, .unicode },
         .{ tmux38 ++ .{.{ "ZELLIJ", "0" }}, .{"\x1bP>|tmux 3.8\x1b\\"}, .unicode },
         .{ .{ .{ "TERM", "xterm-256color" }, .{ "XTERM_VERSION", "XTerm(411)" }, .{ "KONSOLE_VERSION", "250400" } }, .{}, .unicode },
+        // Explicit widths (the probe moved the cursor to column 2) need no mode 2027.
+        .{ .{}, .{ "\x1b[?2027;2$y", "\x1b[1;1R\x1b[1;2R\x1b[1;3R" }, .unicode },
+        .{ .{}, .{ "\x1b[?2027;1$y", "\x1b[1;1R\x1b[1;2R\x1b[1;3R" }, .unicode },
     };
     inline for (rows, 0..) |row, index| {
         var env = std.process.Environ.Map.init(testing.allocator);
@@ -2121,15 +2124,39 @@ test "width method follows the environment, then the DECRPM 2027 reply and XTVER
         defer term.deinit();
         var writer = TestWriter.init(testing.allocator);
         defer writer.deinit();
+        // Session enables features before the replies arrive, and again after each reply.
         try term.queryTerminalSend(&writer);
-        inline for (row[1]) |reply| term.processCapabilityResponse(reply);
+        try term.enableDetectedFeatures(&writer, false);
+        inline for (row[1]) |reply| {
+            term.processCapabilityResponse(reply);
+            try term.enableDetectedFeatures(&writer, false);
+        }
         errdefer std.debug.print("width row {d}\n", .{index});
         try testing.expectEqual(@as(utf8.WidthMethod, row[2]), term.caps.unicode);
+        const graphemes = (row[2] == .unicode or row[2] == .unicode_wide) and !term.caps.explicit_width;
+        try testing.expectEqual(graphemes, mode2027Change(writer.getWritten()) orelse false);
+        // Another reply that changes nothing writes no mode 2027 change.
+        var start = writer.getWritten().len;
         try term.enableDetectedFeatures(&writer, false);
-        try testing.expectEqual(@as(utf8.WidthMethod, row[2]), term.caps.unicode);
-        const graphemes = row[2] == .unicode or row[2] == .unicode_wide;
-        try testing.expectEqual(graphemes, std.mem.find(u8, writer.getWritten(), ansi.ANSI.unicodeSet) != null);
+        try testing.expect(std.mem.find(u8, writer.getWritten()[start..], "\x1b[?2027") == null);
+        // Teardown puts a mode the terminal can change back as its DECRPM reply found it before setup.
+        const before = term.mode_2027 == 1;
+        const restore: ?bool = if ((term.mode_2027 orelse 0) < 3 and graphemes != before) before else null;
+        start = writer.getWritten().len;
+        try term.resetOutputModes(&writer);
+        try testing.expectEqual(restore, mode2027Change(writer.getWritten()[start..]));
+        // Resume enables it again.
+        start = writer.getWritten().len;
+        try term.enableDetectedFeatures(&writer, false);
+        try testing.expectEqual(if (graphemes) true else null, mode2027Change(writer.getWritten()[start..]));
     }
+}
+
+/// The last mode 2027 change in `output`: true for set, false for reset, null for none.
+fn mode2027Change(output: []const u8) ?bool {
+    const reset = std.mem.lastIndexOf(u8, output, ansi.ANSI.unicodeReset);
+    const set = std.mem.lastIndexOf(u8, output, ansi.ANSI.unicodeSet) orelse return if (reset == null) null else false;
+    return set > (reset orelse return true);
 }
 
 test "tmux XTVERSION selects the width method by version" {

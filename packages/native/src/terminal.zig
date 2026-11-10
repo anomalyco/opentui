@@ -265,6 +265,7 @@ state: struct {
     theme_queries_sent: bool = false,
     focus_tracking: bool = false,
     modify_other_keys: bool = false,
+    unicode: bool = false,
     mouse_pointer: MousePointerStyle = .default,
     cursor: struct {
         row: u16 = 0,
@@ -351,6 +352,14 @@ pub fn resetOutputModes(self: *Terminal, tty: anytype) !void {
     if (self.state.color_scheme_updates) {
         try self.setColorSchemeUpdates(tty, false);
     }
+
+    // The DECRPM reply describes the terminal before setup. Put a mode it can change (not 3 or 4,
+    // permanent) back as it was: set for 1, reset otherwise.
+    const before = self.mode_2027 == 1;
+    if ((self.mode_2027 orelse 0) < 3 and self.state.unicode != before) {
+        try tty.writeAll(if (before) ansi.ANSI.unicodeSet else ansi.ANSI.unicodeReset);
+    }
+    self.state.unicode = false;
 
     try ansi.ANSI.setTerminalTitleOutput(tty, "");
 
@@ -449,8 +458,11 @@ pub fn enableDetectedFeatures(self: *Terminal, tty: anytype, use_kitty_keyboard:
         try self.setKittyKeyboard(tty, true, self.opts.kitty_keyboard_flags);
     }
 
-    if ((self.caps.unicode == .unicode or self.caps.unicode == .unicode_wide) and !self.caps.explicit_width) {
-        try tty.writeAll(ansi.ANSI.unicodeSet);
+    // A reply can arrive after setup enabled mode 2027 and switch the width method away from it.
+    const unicode = (self.caps.unicode == .unicode or self.caps.unicode == .unicode_wide) and !self.caps.explicit_width;
+    if (unicode != self.state.unicode) {
+        try tty.writeAll(if (unicode) ansi.ANSI.unicodeSet else ansi.ANSI.unicodeReset);
+        self.state.unicode = unicode;
     }
 
     if (self.caps.bracketed_paste) {
