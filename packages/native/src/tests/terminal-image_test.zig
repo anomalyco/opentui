@@ -252,7 +252,7 @@ test "kitty transmission chunks RGBA payloads and places without cursor movement
     var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer output.deinit();
     try terminal_image.writeKittyTransmit(&output.writer, &value, 7, false);
-    try terminal_image.writeKittyPlacement(&output.writer, 7, 8, 2, 3, 4, 5, 0, 0, 1, 1, -99, false);
+    try terminal_image.writeKittyPlacement(&output.writer, 7, 8, 2, 3, 4, 5, 0, 0, 1, 1, -99, null);
     try std.testing.expect(std.mem.find(u8, output.written(), "i=7,m=1,q=2;") != null);
     try std.testing.expect(std.mem.find(u8, output.written(), "\x1b_Gm=0,q=2;") != null);
     try std.testing.expect(std.mem.find(u8, output.written(), "a=p,i=7,p=8,c=4,r=5,x=0,y=0,w=1,h=1,C=1,z=-99") != null);
@@ -699,11 +699,8 @@ test "kitty transmits decoded WebP alpha images as raw RGBA pixels" {
 test "kitty tmux passthrough wraps placement and delete frames" {
     var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer output.deinit();
-    try terminal_image.writeKittyPlacement(&output.writer, 5, 6, 1, 2, 3, 4, 0, 0, 3, 4, -7, true);
-    // The cursor move stays outside the passthrough; the graphics frame is wrapped.
-    try std.testing.expect(std.mem.startsWith(u8, output.written(), "\x1b[3;2H\x1bPtmux;\x1b\x1b_G"));
-    try std.testing.expect(std.mem.endsWith(u8, output.written(), "\x1b\x1b\\\x1b\\"));
-    try std.testing.expect(std.mem.find(u8, output.written(), "a=p,i=5,p=6") != null);
+    try terminal_image.writeKittyPlacement(&output.writer, 5, 6, 1, 2, 3, 4, 0, 0, 3, 4, -7, .{ .id = 9, .x = 2, .y = 2 });
+    try std.testing.expectEqualStrings("\x1bPtmux;\x1b\x1b_Ga=p,i=5,p=6,P=9,Q=1,H=-1,V=0,c=3,r=4,x=0,y=0,w=3,h=4,C=1,z=-7,q=2\x1b\x1b\\\x1b\\", output.written());
 
     output.clearRetainingCapacity();
     try terminal_image.writeKittyDelete(&output.writer, 5, 6, true, true);

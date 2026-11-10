@@ -188,7 +188,8 @@ test "renderer shutdown image serialization is checked and does not publish" {
     for ([_]bool{ false, true }) |tmux| {
         cli.terminal.multiplexer = if (tmux) .tmux else .none;
         const expected = if (tmux)
-            "\x1bPtmux;\x1b\x1b_Ga=d,d=I,i=104,q=2\x1b\x1b\\\x1b\\"
+            "\x1bPtmux;\x1b\x1b_Ga=d,d=I,i=104,q=2\x1b\x1b\\\x1b\\" ++
+                "\x1bPtmux;\x1b\x1b_Ga=d,d=I,i=100,q=2\x1b\x1b\\\x1b\\"
         else
             "\x1b_Ga=d,d=I,i=104,q=2\x1b\\";
         for (0..expected.len) |capacity| {

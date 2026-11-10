@@ -88,10 +88,10 @@ fn frameContentHash(frame: *const OptimizedBuffer) u64 {
     hasher.update(std.mem.asBytes(&[2]u32{ frame.width, frame.height }));
     for (frame.image_placements.items) |placement| {
         const fields = [_]u32{
-            placement.image_handle,           @bitCast(placement.x),   @bitCast(placement.y),
-            placement.width,                  placement.height,        placement.pixel_width,
-            placement.pixel_height,           placement.source_x,      placement.source_y,
-            placement.source_width,           placement.source_height, placement.opacity,
+            placement.image_handle,          @bitCast(placement.x),   @bitCast(placement.y),
+            placement.width,                 placement.height,        placement.pixel_width,
+            placement.pixel_height,          placement.source_x,      placement.source_y,
+            placement.source_width,          placement.source_height, placement.opacity,
             @backingInt(placement.protocol),
         };
         hasher.update(std.mem.asBytes(&fields));
@@ -516,7 +516,7 @@ pub const CliRenderer = struct {
         try frameCallbackTimes.ensureTotalCapacity(allocator, STAT_SAMPLE_CAPACITY);
 
         const timestamp: u96 = @bitCast(std.Io.Clock.now(.real, opts.io).nanoseconds);
-        const image_id_salt = 1 + @as(u32, @truncate(@as(u128, timestamp) ^ @as(u128, @intFromPtr(self)))) % (std.math.maxInt(u32) - gp.IMAGE_ID_MASK - 1);
+        const image_id_salt = 0x0100_0000 + @as(u32, @truncate(@as(u128, timestamp) ^ @as(u128, @intFromPtr(self)))) % (std.math.maxInt(u32) - gp.IMAGE_ID_MASK - 0x0100_0000);
         self.* = .{
             .width = width,
             .height = height,
@@ -618,6 +618,10 @@ pub const CliRenderer = struct {
             true,
             self.terminal.isInTmux(),
         );
+        if (self.terminal.isInTmux()) {
+            for (self.currentImages.items[index + 1 ..]) |remaining| if (remaining.protocol == .kitty) return;
+            try terminal_image.writeKittyDelete(writer, terminal_image.kittyAnchorId(self.imageIdSalt), null, true, true);
+        }
     }
 
     fn addStatSample(self: *CliRenderer, comptime T: type, samples: *std.ArrayListUnmanaged(T), value: T) void {
@@ -1423,6 +1427,21 @@ pub const CliRenderer = struct {
             .compression
         else
             .none;
+        if (self.terminal.isInTmux()) return terminal_image.writeKittyPlacement(
+            writer,
+            image_id,
+            placement.placement_id,
+            0,
+            0,
+            placement.width,
+            placement.height,
+            0,
+            0,
+            transmit.image.width(),
+            transmit.image.height(),
+            terminal_image.kittyPlacementZ(placement.placement_id),
+            .{ .id = terminal_image.kittyAnchorId(image_id), .x = 0, .y = 0 },
+        );
         try terminal_image.writeKittyPlacementAtCursor(
             writer,
             image_id,
@@ -1430,7 +1449,6 @@ pub const CliRenderer = struct {
             placement.width,
             placement.height,
             terminal_image.kittyPlacementZ(placement.placement_id),
-            self.terminal.isInTmux(),
         );
     }
 
@@ -1444,6 +1462,10 @@ pub const CliRenderer = struct {
         for (snapshot.image_placements.items) |placement| {
             const last_row = @as(u32, @intCast(placement.y)) + placement.height - 1;
             if (last_row != row) continue;
+            if (image_state.protocol == .kitty and self.terminal.isInTmux()) {
+                try self.writeSnapshotKittyImage(writer, placement, image_state.kitty_base.? + placement.placement_id);
+                continue;
+            }
             try writer.writeAll(ansi.ANSI.saveCursorState);
             if (placement.height > 1) try writer.print("\x1b[{d}A", .{placement.height - 1});
             try writer.writeByte('\r');
@@ -1498,8 +1520,19 @@ pub const CliRenderer = struct {
                 const cell = snapshot.get(x, y) orelse continue;
 
                 if (image_state.protocol == .kitty and gp.isImageChar(cell.char)) {
+                    if (currentLinkId != 0) {
+                        writer.writeAll("\x1b]8;;\x1b\\") catch {};
+                        currentLinkId = 0;
+                    }
                     writer.writeAll(ansi.ANSI.reset) catch {};
-                    writer.writeByte(' ') catch {};
+                    const placement = snapshot.image_placements.items[gp.imageIdFromChar(cell.char) - 1];
+                    if (self.terminal.isInTmux() and x == placement.x and y == placement.y) {
+                        const anchor_id = terminal_image.kittyAnchorId(image_state.kitty_base.? + placement.placement_id);
+                        terminal_image.writeKittyAnchor(writer, anchor_id) catch {};
+                        terminal_image.writeKittyPlaceholder(writer, anchor_id) catch {};
+                    } else {
+                        writer.writeByte(' ') catch {};
+                    }
                     currentFg = null;
                     currentBg = null;
                     currentAttributes = null;
@@ -1997,7 +2030,7 @@ pub const CliRenderer = struct {
                 .reservation_intact = reservation.intact,
                 .reservation_hash = reservation.hash,
                 .kitty_runs = if (protocol == .kitty and !reservation.intact)
-                    self.writeKittyReservationRuns({}, placement, 0, self.kittyCopies(placement), false) catch unreachable
+                    self.writeKittyReservationRuns({}, placement, 0, self.kittyCopies(placement), null) catch unreachable
                 else
                     0,
                 .oversize = protocol == .fallback and if (self.sameUpload(placement)) |committed| committed.oversize else false,
@@ -2020,6 +2053,31 @@ pub const CliRenderer = struct {
 
     fn kittyImageId(self: *CliRenderer, placement_id: u32) u32 {
         return self.imageIdSalt + placement_id;
+    }
+
+    fn kittyAnchor(self: *CliRenderer, buffer: *OptimizedBuffer) ?terminal_image.KittyAnchor {
+        if (!self.terminal.isInTmux()) return null;
+        const committed = buffer == self.currentRenderBuffer;
+        if (committed) {
+            if (!self.hasCommittedProtocol(.kitty)) return null;
+        } else if (!self.hasNextProtocol(.kitty)) return null;
+        for (buffer.buffer.char, 0..) |char, index| {
+            if (!gp.isImageChar(char)) continue;
+            const id = gp.imageIdFromChar(char);
+            const protocol = if (committed)
+                (self.currentImageForPlacement(id) orelse continue).protocol
+            else if (id > 0 and id <= buffer.image_placements.items.len)
+                self.nextPlacementProtocol(buffer.image_placements.items[id - 1])
+            else
+                continue;
+            if (protocol != .kitty) continue;
+            return .{
+                .id = terminal_image.kittyAnchorId(self.imageIdSalt),
+                .x = @intCast(index % buffer.width),
+                .y = @intCast(index / buffer.width + self.renderOffset),
+            };
+        }
+        return null;
     }
 
     fn hasLowerImageAtCell(self: *CliRenderer, placement: OptimizedBuffer.ImagePlacement, protocol: ImageProtocol, x: i32, y: i32) bool {
@@ -2130,7 +2188,7 @@ pub const CliRenderer = struct {
         placement: OptimizedBuffer.ImagePlacement,
         image_id: u32,
         downscaled: bool,
-        tmux: bool,
+        anchor: ?terminal_image.KittyAnchor,
     ) !u32 {
         const src_x0: u32 = if (downscaled) 0 else placement.source_x;
         const src_y0: u32 = if (downscaled) 0 else placement.source_y;
@@ -2168,7 +2226,7 @@ pub const CliRenderer = struct {
                     src_x.len,
                     src_y.len,
                     z,
-                    tmux,
+                    anchor,
                 );
                 run_index += 1;
             }
@@ -2186,8 +2244,9 @@ pub const CliRenderer = struct {
         writer: anytype,
         placement: OptimizedBuffer.ImagePlacement,
         force_place: bool,
-        tmux: bool,
+        anchor: ?terminal_image.KittyAnchor,
     ) !void {
+        const tmux = self.terminal.isInTmux();
         const previous = if (!self.imageScreenInvalidated) (if (self.currentImageForPlacement(placement.placement_id)) |current|
             if (current.protocol == .kitty and current.image_handle == placement.image_handle and !current.oversize) current else null
         else
@@ -2242,7 +2301,7 @@ pub const CliRenderer = struct {
         }
         if (placement.x < 0 or placement.y < 0) return;
         if (!reservation.intact) {
-            _ = try self.writeKittyReservationRuns(writer, placement, image_id, downscaled, tmux);
+            _ = try self.writeKittyReservationRuns(writer, placement, image_id, downscaled, anchor);
             return;
         }
         // A downscaled transmit already contains exactly the placement's
@@ -2262,12 +2321,20 @@ pub const CliRenderer = struct {
             if (downscaled) placement.pixel_width else placement.source_width,
             if (downscaled) placement.pixel_height else placement.source_height,
             terminal_image.kittyPlacementZ(placement.placement_id),
-            tmux,
+            anchor,
         );
     }
 
-    fn writeKittyImages(self: *CliRenderer, writer: anytype, force_place: bool) !void {
+    fn writeKittyImages(self: *CliRenderer, writer: anytype, force_place: bool, anchor: ?terminal_image.KittyAnchor) !void {
         const tmux = self.terminal.isInTmux();
+        if (tmux) {
+            const parent_id = terminal_image.kittyAnchorId(self.imageIdSalt);
+            if (self.hasNextProtocol(.kitty)) {
+                if (!self.hasCommittedProtocol(.kitty) or self.imageScreenInvalidated) try terminal_image.writeKittyAnchor(writer, parent_id);
+            } else if (self.hasCommittedProtocol(.kitty)) {
+                try terminal_image.writeKittyDelete(writer, parent_id, null, true, true);
+            }
+        }
         const next = self.nextRenderBuffer.image_placements.items;
         for (self.currentImages.items) |current| {
             if (current.protocol != .kitty) continue;
@@ -2289,7 +2356,7 @@ pub const CliRenderer = struct {
         for ([_]bool{ true, false }) |waited| {
             for (next) |placement| {
                 if (self.nextPlacementProtocol(placement) != .kitty or self.uploadWaited(placement) != waited) continue;
-                try self.writeKittyPlacementUpdate(writer, placement, force_place, tmux);
+                try self.writeKittyPlacementUpdate(writer, placement, force_place, anchor);
             }
         }
     }
@@ -2570,6 +2637,9 @@ pub const CliRenderer = struct {
             };
         }
         const images_changed = has_image_state and self.imageStateChanged();
+        const anchor = self.kittyAnchor(self.nextRenderBuffer);
+        const old_anchor = self.kittyAnchor(self.currentRenderBuffer);
+        const anchor_changed = !std.meta.eql(anchor, old_anchor);
 
         const current = self.currentRenderBuffer;
         const next = self.nextRenderBuffer;
@@ -2589,13 +2659,13 @@ pub const CliRenderer = struct {
         var frame_started = sync_started;
         self.applyPendingSplitFooterTransition(writer, &frame_started);
 
-        if ((images_changed or should_force) and (self.hasCommittedProtocol(.kitty) or self.hasNextProtocol(.kitty))) {
+        if ((images_changed or should_force or anchor_changed) and (self.hasCommittedProtocol(.kitty) or self.hasNextProtocol(.kitty))) {
             if (!frame_started) {
                 self.beginRenderFrame(writer);
                 frame_started = true;
             }
             // The frame outcome decides the transport: output pressure keeps it enabled.
-            self.writeKittyImages(writer, should_force) catch {
+            self.writeKittyImages(writer, should_force or anchor_changed, anchor) catch {
                 self.force_full_repaint = true;
                 self.imageRenderFailed = true;
             };
@@ -2620,7 +2690,7 @@ pub const CliRenderer = struct {
         }
 
         const hyperlinksEnabled = self.terminal.getCapabilities().hyperlinks;
-        var use_row_equality = !should_force and !clears_pending;
+        var use_row_equality = !should_force and !clears_pending and !anchor_changed;
         // Rows outside a scene draft's damage equal the presented frame (retained paint).
         const damage = if (clears_pending or has_image_state or tainted or current_written) null else self.scene_damage;
         std.debug.assert(damage == null or damage.?.bit_length == self.height);
@@ -2654,13 +2724,16 @@ pub const CliRenderer = struct {
 
                 const cell = nextCell.?;
                 const cell_type = cell.char & gp.CHAR_TYPE_MASK;
+                const anchor_cell = if (anchor) |parent| parent.x == x and parent.y == y + self.renderOffset else false;
+                const was_anchor_cell = if (old_anchor) |parent| parent.x == x and parent.y == y + self.renderOffset else false;
+                const anchor_repaint = anchor_changed and (anchor_cell or was_anchor_cell);
 
                 if (!should_force) {
                     const cellsEqual = currentCell.?.char == cell.char and currentCell.?.attributes == cell.attributes and
                         buf.rgbaEqual(currentCell.?.fg, cell.fg) and buf.rgbaEqual(currentCell.?.bg, cell.bg);
                     // Identical reserved cells still repaint when their
                     // placement's pixels are dirty (e.g. Sixel content change).
-                    if (cellsEqual and !(clears_pending and cell_type == gp.CHAR_FLAG_IMAGE and dirtyImageChar(image_dirty_items, cell.char))) {
+                    if (cellsEqual and !anchor_repaint and !(clears_pending and cell_type == gp.CHAR_FLAG_IMAGE and dirtyImageChar(image_dirty_items, cell.char))) {
                         if (runLength > 0) {
                             writer.writeAll(ansi.ANSI.reset) catch {};
                             runLength = 0;
@@ -2679,7 +2752,7 @@ pub const CliRenderer = struct {
                     if (id == 0 or id > image_dirty_items.len) break :blk;
                     const state = &image_dirty_items[id - 1];
                     if (state.protocol == .fallback) break :blk;
-                    if (!should_force and !state.clear and gp.isImageChar(currentCell.?.char)) {
+                    if (!anchor_repaint and !should_force and !state.clear and gp.isImageChar(currentCell.?.char)) {
                         if (runLength > 0) {
                             writer.writeAll(ansi.ANSI.reset) catch {};
                             runLength = 0;
@@ -2691,11 +2764,21 @@ pub const CliRenderer = struct {
                         self.beginRenderFrame(writer);
                         frame_started = true;
                     }
+                    if (currentLinkId != 0) {
+                        writer.writeAll("\x1b]8;;\x1b\\") catch {};
+                        currentLinkId = 0;
+                    }
                     if (clearRunY != y or clearRunEnd != x) {
                         writer.writeAll(ansi.ANSI.reset) catch {};
                         ansi.ANSI.moveToOutput(writer, x + 1, y + 1 + self.renderOffset) catch {};
                     }
-                    writer.writeByte(' ') catch {};
+                    if (anchor != null and state.protocol == .kitty) self.emitColor(writer, cell.bg, true);
+                    if (anchor_cell) {
+                        terminal_image.writeKittyPlaceholder(writer, anchor.?.id) catch {};
+                    } else {
+                        writer.writeByte(' ') catch {};
+                        imageCellsCleared += 1;
+                    }
                     clearRunY = y;
                     clearRunEnd = x + 1;
                     currentFg = null;
@@ -2704,7 +2787,6 @@ pub const CliRenderer = struct {
                     runLength = 0;
                     self.currentRenderBuffer.syncCell(x, y, cell);
                     cellsUpdated += 1;
-                    imageCellsCleared += 1;
                     continue;
                 }
 
