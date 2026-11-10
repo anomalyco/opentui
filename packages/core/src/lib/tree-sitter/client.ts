@@ -684,7 +684,12 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
     if (this.worker) {
       await new Promise<boolean>((resolve, reject) => {
         const messageId = `dispose_${bufferId}`
-        const callback = { resolve, reject }
+        // An overlapping removeBuffer of this id replaces the stored callback, so it settles the earlier call too.
+        const previous = this.messageCallbacks.get(messageId)
+        const callback = {
+          resolve: (disposed: boolean) => (previous?.resolve(disposed), resolve(disposed)),
+          reject: (error: Error) => (previous?.reject(error), reject(error)),
+        }
         this.messageCallbacks.set(messageId, callback)
         try {
           this.sendWorkerMessage({
@@ -694,7 +699,7 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
         } catch (error) {
           console.error("Error disposing buffer", error)
           this.messageCallbacks.delete(messageId)
-          resolve(false)
+          callback.resolve(false)
         }
 
         // Add a timeout in case the worker doesn't respond; a later removeBuffer of this id reuses messageId
@@ -702,7 +707,7 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
           if (this.messageCallbacks.get(messageId) === callback) {
             this.messageCallbacks.delete(messageId)
             console.warn({ bufferId }, "Timed out waiting for buffer to be disposed")
-            resolve(false)
+            callback.resolve(false)
           }
         }, 3000)
       })

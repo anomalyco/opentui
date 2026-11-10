@@ -281,6 +281,8 @@ describeClient("TreeSitterClient", () => {
       newEndPosition: end(to),
     },
   ]
+  const within3s = <T>(promise: Promise<T>) =>
+    Promise.race([promise, new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 3000))])
   // Each row ends with removeBuffer. The markdown rows edit or remove while the worker loads the injected typescript
   // or zig grammar, which a new worker has not loaded yet. A row returns the errors and warnings it expects.
   test.each<
@@ -346,6 +348,14 @@ describeClient("TreeSitterClient", () => {
       },
     ],
     [
+      "removeBuffer three times at once",
+      async (c) => {
+        await c.createBuffer(1, js(1), "javascript", 1)
+        const removals = Promise.all([c.removeBuffer(1), c.removeBuffer(1), c.removeBuffer(1)])
+        expect(await within3s(removals)).toEqual([undefined, undefined, undefined])
+      },
+    ],
+    [
       "clearCache after highlighting",
       async (c) => {
         await c.highlightOnce(mdZig, "markdown")
@@ -406,9 +416,6 @@ describeClient("TreeSitterClient", () => {
           await new Promise((resolve) => setTimeout(resolve, 5))
         }
       }
-      const within3s = <T>(promise: Promise<T>) =>
-        Promise.race([promise, new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 3000))])
-
       try {
         await c.initialize()
         const expectedErrors = (await run(c, highlighted)) ?? []
