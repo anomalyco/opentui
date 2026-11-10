@@ -3,7 +3,7 @@ import { StyledText } from "../lib/styled-text.js"
 import { SyntaxStyle } from "../syntax-style.js"
 import { getTreeSitterClient, TreeSitterClient } from "../lib/tree-sitter/index.js"
 import { TextBufferRenderable, type TextBufferOptions } from "./TextBufferRenderable.js"
-import type { NativeRenderableIntegration, Renderable } from "../Renderable.js"
+import type { NativeRenderableIntegration } from "../Renderable.js"
 import { ScrollBoxRenderable } from "./ScrollBox.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import type { SimpleHighlight } from "../lib/tree-sitter/types.js"
@@ -148,25 +148,20 @@ export class CodeRenderable extends TextBufferRenderable {
   set content(value: string) {
     if (this._content === value) return
     this.runMutation(() => {
-      // An unshown streaming block holds the plain content, so a delta appends.
-      const previous = this._content
-      const append = !this._shouldRenderTextBuffer && this._streaming && previous && value.startsWith(previous)
       // Streaming keeps the shown highlight until the next one lands (_hadInitialContent implies _streaming).
       if (this._hadInitialContent && this._shouldRenderTextBuffer && this._filetype && !this._drawUnstyledText) {
-        if (this.isShown()) {
+        if (!ScrollBoxRenderable._skips(this)) {
           this._content = value
           this.invalidateHighlights()
           this.requestRender()
           return
         }
-        // No update hook runs out of view to start the highlight, so layout measures the plain text, hidden until it lands.
+        // No update hook runs here to start the highlight, so layout measures the plain text, unpainted until it lands.
         this.setShouldRenderTextBuffer(false)
       }
 
       if (value && this._initialStyledText && this._drawUnstyledText) {
         this.textBuffer.setStyledText(this._initialStyledText)
-      } else if (append) {
-        this.textBuffer.append(value.slice(previous.length))
       } else {
         this.textBuffer.setText(value)
       }
@@ -175,14 +170,6 @@ export class CodeRenderable extends TextBufferRenderable {
       this.setRenderedLineSources(undefined)
       this.updateTextInfo()
     })
-  }
-
-  // Native runs no update hook in a child that a ScrollBox culls out of view.
-  private isShown(): boolean {
-    for (let child: Renderable = this, parent = this.parent; parent; child = parent, parent = parent.parent) {
-      if (parent instanceof ScrollBoxRenderable && parent._hides(child)) return false
-    }
-    return true
   }
 
   public updateStreamingPreview(content: string, initialStyledText: StyledText): void {
