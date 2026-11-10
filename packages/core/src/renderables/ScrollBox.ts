@@ -310,6 +310,12 @@ export class ScrollBoxRenderable extends BoxRenderable {
     return this.state
   }
 
+  /** @internal Whether the child is out of view at its last layout, where native may cull it (16+ children). */
+  _hides(child: Renderable): boolean {
+    const view = this._scrollState().viewport
+    return child.y >= view.y + view.height || child.y + child.height <= view.y
+  }
+
   /** @internal The box's inner rect without the vertical bar's gutter, as today's wrapper box. */
   _wrapperRect(): NativeSceneRect {
     const { viewport, bars } = this._scrollState()
