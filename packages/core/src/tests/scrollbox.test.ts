@@ -1273,7 +1273,9 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
       if (mode === "followed") scrollbox.add(spacer)
       if (mode === "shrunk") scrollbox.height = 2
       await renderOnce()
-      // In view, where the scene runs its hooks, the block shows its last highlight until the next one lands.
+      // In view, where the scene runs its hooks, the block shows its last highlight until the next one lands. Accepted
+      // cost of the moved modes: an afterLayout callback asked after the write that scrolls the block back in the same
+      // frame shows it blank until then, since the block's own check, asked first, saw it culled.
       if (mode === "shown") expect(captureCharFrame()).toBe(before)
       if (mode === "shown") await settle()
       const height = scrollbox.scrollHeight - (spacer.parent ? 6 : 0)
@@ -1307,13 +1309,15 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
     const scrollbox = new ScrollBoxRenderable(testRenderer, { width: 40, height: 10 })
     testRenderer.root.add(scrollbox)
     for (let i = 0; i < 15; i++) scrollbox.add(new BoxRenderable(testRenderer, { height: 2, flexShrink: 0 }))
-    const heights = ["auto", "auto", 1, 1] as const
-    const [group, entry, leaf, after] = heights.map(
+    // An empty entry has no rows, and reads one cell, as public layout does in view.
+    const heights = ["auto", "auto", 1, 1, "auto"] as const
+    const [group, entry, leaf, after, empty] = heights.map(
       (height) => new BoxRenderable(testRenderer, { height, flexShrink: 0 }),
     )
     entry.add(leaf)
     group.add(entry)
     group.add(after)
+    group.add(empty)
     scrollbox.add(group)
     await renderOnce()
     for (const top of when === "grown" ? [Infinity, 0] : []) {
@@ -1321,7 +1325,7 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
       await renderOnce()
     }
     if (when === "grown") leaf.height = 5
-    const read = () => [entry.height, after.y - group.y, scrollbox.scrollHeight]
+    const read = () => [entry.height, after.y - group.y, empty.height, scrollbox.scrollHeight]
     let culled: number[] = []
     scrollbox.afterLayout(() => (culled = read()))
     await renderOnce()

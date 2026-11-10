@@ -3655,8 +3655,7 @@ pub fn getPaintLayout(value: *const native.NativeRenderable) !Layout {
 
 /// Composes a node's local geometry through its ancestors: the observed, prepared, or solved
 /// one. A solved node Yoga has not laid out since it was created or moved has no cells. No pass
-/// observes the nodes below a shown child its parent's latest selection culled, so they read as
-/// solved.
+/// observes the nodes below a child its parent's latest selection culled, so they read as solved.
 fn composedLayout(value: *const native.NativeRenderable, comptime source: enum { observed, prepared, solved }) !Layout {
     var ancestors: [yoga.depth_max]*const native.NativeRenderable = undefined;
     var count: usize = 0;
@@ -3688,7 +3687,7 @@ fn composedLayout(value: *const native.NativeRenderable, comptime source: enum {
         }
         if (source == .observed and !omitted) if (node.parent) |parent| {
             omitted = parent.scene_node.?.filtersChildren() and node.prepared_gen == owner.candidates_gen and
-                node.layout_flags.prepared_visible and node.culling.selected_at != parent.scene_node.?.culling.selected_epoch;
+                node.culling.selected_at != parent.scene_node.?.culling.selected_epoch;
         };
         const origin = childOrigin(node, .{});
         screen[0] += origin[0];
