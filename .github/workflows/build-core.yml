@@ -533,6 +533,21 @@ jobs:
         working-directory: packages/rust
         run: sh test.sh ${{ steps.rust.outputs.linkage }}
 
+      # libopentui.a carries Zig's libc++, for musl as for glibc, so neither needs one on the runner. Without the
+      # tree-sitter feature nothing compiles C for musl.
+      - name: Build the musl library
+        if: steps.rust.outputs.linkage == 'all'
+        working-directory: packages/native
+        run: zig build -Doptimize=ReleaseFast -Dlibrary-target=x86_64-linux-musl
+
+      - name: Test static linking with musl
+        if: steps.rust.outputs.linkage == 'all'
+        working-directory: packages/rust
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          OPENTUI_LIB_DIR="$PWD/../native/lib/x86_64-linux-musl" cargo test --locked -p opentui --features static \
+            --target x86_64-unknown-linux-musl --test headless --test widgets
+
       - name: Check the other targets
         working-directory: packages/rust
         run: sh scripts/check-targets.sh

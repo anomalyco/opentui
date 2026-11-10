@@ -58,7 +58,7 @@ fn main() {
     assert!(
         windows || static_link || !crt_static,
         "{target} links static executables (crt-static), which cannot load {shared_library}: build with \
-         RUSTFLAGS='-C target-feature=-crt-static'. The static feature needs a libc++ built for this target."
+         RUSTFLAGS='-C target-feature=-crt-static', or link libopentui.a with the static feature."
     );
     // Windows links a DLL through its import library.
     let files: &[&str] = if static_link {
@@ -124,8 +124,10 @@ fn main() {
             for name in ["c++", "objc"] {
                 println!("cargo:rustc-link-lib={name}");
             }
-        } else {
-            for name in ["c++", "c++abi", "m", "dl", "pthread"] {
+        } else if target.ends_with("-gnu") {
+            // The Linux archive carries Zig's libc++ and libc++abi. musl's libc includes these three; asking for them
+            // there would find the build machine's glibc archives.
+            for name in ["m", "dl", "pthread"] {
                 println!("cargo:rustc-link-lib={name}");
             }
         }

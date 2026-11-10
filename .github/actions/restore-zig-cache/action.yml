@@ -35,7 +35,7 @@ runs:
       uses: actions/cache/restore@v5
       with:
         path: .zig-cache
-        key: zig-cache-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ inputs.kind }}-${{ hashFiles('packages/native/build.zig.zon', 'packages/native/scripts/prepare-zig-deps.sh', 'packages/native/src/vendor/zig-deps.tar.gz') }}-${{ hashFiles('packages/native/build.zig', 'packages/native/src/**', 'packages/native/include/**', 'packages/native/examples/**', 'packages/core/scripts/native-abi.zig') }}
+        key: zig-cache-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ inputs.kind }}-${{ hashFiles('packages/native/build.zig.zon', 'packages/native/scripts/prepare-zig-deps.sh', 'packages/native/src/vendor/zig-deps.tar.gz') }}-${{ hashFiles('packages/native/build.zig', 'packages/native/scripts/bundle-libcxx.zig', 'packages/native/src/**', 'packages/native/include/**', 'packages/native/examples/**', 'packages/core/scripts/native-abi.zig') }}
         restore-keys: |
           zig-cache-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ inputs.kind }}-${{ hashFiles('packages/native/build.zig.zon', 'packages/native/scripts/prepare-zig-deps.sh', 'packages/native/src/vendor/zig-deps.tar.gz') }}-
           zig-cache-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ inputs.kind }}-

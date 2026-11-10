@@ -949,6 +949,19 @@ fn buildTarget(
     const build_step_name = try std.fmt.allocPrint(b.allocator, "build-{s}", .{output_name});
     const build_step = b.step(build_step_name, try std.fmt.allocPrint(b.allocator, "Build for {s}", .{description}));
     for (createLibraries(b, target, optimize, build_options, macos_sdk_path)) |lib| {
+        if (lib.isStaticLibrary() and target.result.os.tag == .linux) {
+            // Linux has no system libc++ to count on, so the archive carries Zig's. The shared library installs the
+            // header.
+            const run = b.addRunArtifact(bundleLibcxxTool(b));
+            run.addArgs(&.{ b.graph.zig_exe, zig_target, @tagName(optimize) });
+            run.addFileArg(b.addWriteFiles().add("probe.cpp", "int opentui_probe;\n"));
+            run.addArtifactArg(lib);
+            const archive = run.addOutputFileArg("libopentui.a");
+            const install_archive = b.addInstallFileWithDir(archive, .{ .custom = install_path }, "libopentui.a");
+            build_step.dependOn(&install_archive.step);
+            b.getInstallStep().dependOn(&install_archive.step);
+            continue;
+        }
         const install_dir = b.addInstallArtifact(lib, .{
             .dest_dir = .{ .override = .{ .custom = install_path } },
             .h_dir = .{ .override = .{ .custom = install_path } },
@@ -964,6 +977,19 @@ fn buildTarget(
         build_step.dependOn(&install_dir.step);
         b.getInstallStep().dependOn(&install_dir.step);
     }
+}
+
+var bundle_libcxx_tool: ?*std.Build.Step.Compile = null;
+
+fn bundleLibcxxTool(b: *std.Build) *std.Build.Step.Compile {
+    if (bundle_libcxx_tool == null) bundle_libcxx_tool = b.addExecutable(.{
+        .name = "bundle-libcxx",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("scripts/bundle-libcxx.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    return bundle_libcxx_tool.?;
 }
 
 fn createLibraries(

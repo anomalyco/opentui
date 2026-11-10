@@ -41,14 +41,6 @@ runs:
         sh scripts/prepare-zig-deps.sh
         zig build -Doptimize=ReleaseFast
 
-    # libopentui.a links the system's libc++.
-    - name: Install libc++
-      if: steps.bottle.outputs.cache-hit != 'true' && runner.os == 'Linux'
-      shell: bash
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends libc++-dev libc++abi-dev
-
     # rustup reads rust-toolchain.toml from the working directory, so Cargo commands run in packages/rust.
     - name: Install the pinned toolchain
       shell: bash

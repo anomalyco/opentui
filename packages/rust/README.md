@@ -71,10 +71,8 @@ These platforms are supported:
 
 The build picks the directory for the target it builds.
 Rust's musl targets build static executables (`crt-static`), which cannot load
-`libopentui.so`, so the build refuses the shared library there unless you
-build with `RUSTFLAGS='-C target-feature=-crt-static'`. The `static` feature
-does not link on musl yet: the archive needs a libc++ built for musl, and the
-build machine's is usually glibc's.
+`libopentui.so`, so the build refuses the shared library there: use the
+`static` feature, or build with `RUSTFLAGS='-C target-feature=-crt-static'`.
 OpenTUI's macOS build needs the macOS SDK, which comes with the Xcode Command
 Line Tools (`xcode-select --install`). On a Mac, `bun run build` in
 `packages/native` builds the Mac's own architecture; add the other one with
@@ -109,7 +107,10 @@ and `pty::shell()` is `%COMSPEC%`.
 
 Features:
 
-- `static`: link `libopentui.a`. On macOS this also links the system
+- `static`: link `libopentui.a`. On Linux the archive carries its own libc++,
+  so the program needs only libc. That libc++ is private to OpenTUI, so C++
+  code elsewhere in the program keeps its own runtime, libstdc++ or libc++,
+  shared or static. On macOS this also links the system
   frameworks OpenTUI uses for the clipboard, audio, and video. Not supported on
   Windows: OpenTUI's Windows archive is built for MinGW with libc++, which
   neither Rust Windows toolchain links.

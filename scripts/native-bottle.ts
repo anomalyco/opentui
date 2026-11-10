@@ -39,6 +39,7 @@ const INPUTS = [
   "build.zig.zon",
   "include",
   "scripts/build-ffmpeg.ts",
+  "scripts/bundle-libcxx.zig",
   "scripts/prepare-zig-deps.sh",
   "src",
 ] as const

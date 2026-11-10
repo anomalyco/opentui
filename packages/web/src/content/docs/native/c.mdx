@@ -376,7 +376,8 @@ Another target string builds into a `lib/` directory with that name.
 | macOS    | `libopentui.dylib`                            | `libopentui.a`       |
 | Windows  | `opentui.dll`, with `opentui.lib` for imports | `opentui-static.lib` |
 
-Static consumers also need the platform and C++ runtime libraries.
+Static consumers also need the platform libraries, and on macOS and Windows the C++ runtime.
+The Linux archive carries its own, private libc++.
 
 The npm platform packages, such as `@opentui/core-linux-x64`, ship the shared library with the `opentui.h` it was built from, and `opentui.lib` on Windows.
 They do not ship the static libraries, which are four to seven times the size of the shared ones; the native archives of each GitHub release include them.
