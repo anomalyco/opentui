@@ -73,6 +73,30 @@ fn column_and_row_gaps_space_one_axis() {
     assert_eq!(rows(&app), ["ab cd ef", "", "gh"]);
 }
 
+// As in Core, a list lays out its rows as a column with `overflow: scroll` does: a row direction does not apply, and a
+// percent height inside an auto-height row resolves against no height, so the row after it starts right below.
+#[test]
+fn list_mode_stacks_rows_as_a_scrolling_column() {
+    let app = TestApp::new(10, 10);
+    let row = View::new(&app).child(&View::new(&app).width(1).height(Length::percent(100.0)));
+    let after = View::new(&app).width(1).height(1);
+    let list = View::new(&app).row().width(10).height(10).layout_mode(LayoutMode::List);
+    list.add(&View::new(&app).width(2).height(1)).add(&row).add(&after);
+    app.root().add(&list);
+    let read = || {
+        app.render();
+        (row.rect().left, row.rect().top, after.rect().top)
+    };
+    assert_eq!(read(), (0.0, 1.0, 1.0));
+    list.layout_mode(LayoutMode::Flex);
+    assert_eq!(read(), (2.0, 0.0, 0.0));
+    list.detach();
+    let scroll = ScrollBox::new(&app).scrollbars(false).row().layout_mode(LayoutMode::List);
+    scroll.add(&Text::new(&app, "ab")).add(&Text::new(&app, "cd"));
+    app.root().add(&scroll);
+    assert_eq!(rows(&app)[..2], ["ab", "cd"]);
+}
+
 #[test]
 fn styled_text_wraps_and_updates() {
     let app = TestApp::new(10, 3);

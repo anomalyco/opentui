@@ -1,7 +1,7 @@
 use super::{Behavior, Container, Element, Slider, View, Widget, build, keymap_methods};
 use crate::app::{App, Cx, TimerId};
 use crate::input::{KeyEvent, Keymap, Modifiers, MouseButton, MouseEvent, MouseEventKind};
-use crate::layout::{Align, FlexDirection, Justify, LayoutProperty, Length, Overflow, Wrap};
+use crate::layout::{Align, FlexDirection, Justify, LayoutMode, LayoutProperty, Length, Overflow, Wrap};
 use crate::native::{ArrowDirection, ArrowOptions, NodeKind, SliderOptions};
 use crate::style::Color;
 use std::cell::{Cell, RefCell};
@@ -512,8 +512,8 @@ impl Behavior for ScrollInner {
 ///
 /// Children go in an inner content view. The layout methods that arrange children act on that view:
 /// [`Widget::row`], [`Widget::column`], [`Widget::direction`], [`Widget::justify`], [`Widget::align_items`],
-/// [`Widget::align_content`], [`Widget::flex_wrap`], and [`Widget::gap`]. The others size and place the scroll box
-/// itself.
+/// [`Widget::align_content`], [`Widget::flex_wrap`], [`Widget::layout_mode`], and [`Widget::gap`]. The others size and
+/// place the scroll box itself.
 ///
 /// ```no_run
 /// # use opentui::prelude::*;
@@ -555,6 +555,11 @@ impl Widget for ScrollBox {
 
     fn flex_wrap(&self, wrap: Wrap) -> Self {
         self.0.content.flex_wrap(wrap);
+        self.clone()
+    }
+
+    fn layout_mode(&self, mode: LayoutMode) -> Self {
+        self.0.content.layout_mode(mode);
         self.clone()
     }
 

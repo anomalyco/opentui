@@ -73,7 +73,8 @@ use crate::app::{App, AppInner, Cx, HandlerId};
 use crate::error::Result;
 use crate::input::{KeyEvent, MouseEvent};
 use crate::layout::{
-    Align, Display, Edge, FlexDirection, Gutter, Justify, LayoutProperty, Length, Overflow, PositionType, Rect, Wrap,
+    Align, Display, Edge, FlexDirection, Gutter, Justify, LayoutMode, LayoutProperty, Length, Overflow, PositionType,
+    Rect, Wrap,
 };
 use crate::native::{BoxDetails, Hooks, Node, NodeKind, Observation, Paint, SelectionUnit, TextOptions};
 use crate::post::{Filter, FilterCell, FilterId};
@@ -827,6 +828,12 @@ pub trait Widget: Clone + 'static {
 
     fn flex_wrap(&self, wrap: Wrap) -> Self {
         self.element().set_layout(LayoutProperty::FlexWrap(wrap));
+        self.clone()
+    }
+
+    /// [`LayoutMode::List`] stacks children without a flex pass over them, for long scrolling content.
+    fn layout_mode(&self, mode: LayoutMode) -> Self {
+        self.element().set_layout(LayoutProperty::LayoutMode(mode));
         self.clone()
     }
 

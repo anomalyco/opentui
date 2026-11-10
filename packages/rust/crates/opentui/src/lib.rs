@@ -73,7 +73,9 @@ pub mod prelude {
     pub use crate::input::{
         Event, KeyCode, KeyEvent, Keymap, Modifiers, MouseButton, MouseEvent, MouseEventKind, Shortcut,
     };
-    pub use crate::layout::{Align, Edge, FlexDirection, Justify, Length, Overflow, PositionType, Rect, Wrap};
+    pub use crate::layout::{
+        Align, Edge, FlexDirection, Justify, LayoutMode, Length, Overflow, PositionType, Rect, Wrap,
+    };
     pub use crate::native::{MousePointer, SelectionColors, WrapMode};
     pub use crate::post::{Channels, ColorMatrix, Filter, Surface};
     pub use crate::style::{Alignment, Attributes, BorderStyle, Color, Sides, Span, Style, Stylize};

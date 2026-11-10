@@ -105,6 +105,11 @@ native_enum!(Overflow { Visible = OT_OVERFLOW_VISIBLE, Hidden = OT_OVERFLOW_HIDD
 native_enum!(Display { Flex = OT_DISPLAY_FLEX, None = OT_DISPLAY_NONE, });
 native_enum!(BoxSizing { BorderBox = OT_BOX_SIZING_BORDER_BOX, ContentBox = OT_BOX_SIZING_CONTENT_BOX, });
 native_enum!(
+    /// How a node lays out its children. `List` stacks them as a column with `overflow: scroll` does, without a flex
+    /// pass over them: they never grow or shrink, and the node's direction, wrap, and justification do not move them.
+    LayoutMode { Flex = OT_LAYOUT_MODE_FLEX, List = OT_LAYOUT_MODE_LIST, }
+);
+native_enum!(
     /// A side or group of sides for margin, padding, and position.
     Edge {
         All = OT_EDGE_ALL,
@@ -134,6 +139,7 @@ pub enum LayoutProperty {
     Overflow(Overflow),
     Display(Display),
     BoxSizing(BoxSizing),
+    LayoutMode(LayoutMode),
     Flex(f32),
     FlexGrow(f32),
     FlexShrink(f32),
@@ -207,6 +213,7 @@ impl LayoutProperty {
             P::Overflow(v) => enumeration(sys::OT_STYLE_ENUM_OVERFLOW, v.raw()),
             P::Display(v) => enumeration(sys::OT_STYLE_ENUM_DISPLAY, v.raw()),
             P::BoxSizing(v) => enumeration(sys::OT_STYLE_ENUM_BOX_SIZING, v.raw()),
+            P::LayoutMode(v) => enumeration(sys::OT_STYLE_ENUM_LAYOUT_MODE, v.raw()),
             P::Flex(v) => float(sys::OT_STYLE_FLOAT_FLEX, v),
             P::FlexGrow(v) => float(sys::OT_STYLE_FLOAT_FLEX_GROW, v),
             P::FlexShrink(v) => float(sys::OT_STYLE_FLOAT_FLEX_SHRINK, v),
