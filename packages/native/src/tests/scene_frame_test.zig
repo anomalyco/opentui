@@ -2035,14 +2035,16 @@ test "Scene feedback uses an idle update for the frame of the round that prepare
 
 // Every node has UPDATE, so each frame requests it for exactly the nodes its hooks reach.
 // Under the root: V, one row tall, and P inside it, which V filters, with 17 one-row children
-// X0..X16; G under X0, G5 under X5, a hidden H with HC, and a detached D. Each step changes the
-// scene, and after its frame the nodes reached are the ones the frame requested: V grows to 3
-// rows; X0 moves last, which no scan has taken before the frame; 7 children go, so 10 are not
-// culled; V shrinks to none, which culls all.
-test "Scene reaches exactly the nodes whose hooks a frame runs" {
+// X0..X16; G under X0, G5 under X5, a hidden H with HC and N, and a detached D. Each step
+// changes the scene; the query before the frame names the nodes the frame requests, except
+// where the frame lays out what it reads (the first frame, a new view size, the siblings a move
+// shifts), and so does the query after it. Steps: P moves up 2 rows; X2, in view, moves last,
+// with no position until the frame; X15 and X16 go and X3 moves first (15 children: none culled); N moves in last (16: culled again); V stops filtering and P
+// moves up 2 more; V filters again; V shrinks to none, which culls all.
+test "Scene reaches exactly the nodes whose hooks the next frame runs" {
     const f = try Fixture.init(testing.allocator, 8, 4, .{});
     defer f.deinit();
-    var nodes: [24]context.Handle = undefined;
+    var nodes: [25]context.Handle = undefined;
     try feedbackNode(f, &nodes, 0, c.OT_SCENE_BOX, f.root, 0);
     try f.owner.sceneSetStyle(nodes[0], 0, c.OT_STYLE_ENUM_OVERFLOW, 0, 0, c.OT_OVERFLOW_HIDDEN, 0);
     try feedbackNode(f, &nodes, 1, c.OT_SCENE_BOX, nodes[0], 0);
@@ -2055,26 +2057,39 @@ test "Scene reaches exactly the nodes whose hooks a frame runs" {
     try f.owner.sceneSetStyle(nodes[21], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_NONE, 0);
     try feedbackNode(f, &nodes, 22, c.OT_SCENE_BOX, nodes[21], 0);
     nodes[23] = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 33);
+    try feedbackNode(f, &nodes, 24, c.OT_SCENE_BOX, nodes[21], 1);
     for (nodes) |node| try feedbackHook(f, node, c.OT_SCENE_HOOK_UPDATE);
     var log: std.ArrayListUnmanaged(usize) = .empty;
     defer log.deinit(testing.allocator);
-    for (0..5) |step| {
+    var predicted: [nodes.len]bool = undefined;
+    for (0..8) |step| {
         switch (step) {
-            1 => try f.owner.sceneSetStyle(nodes[0], 4, 1, 0, 1, 3, 1),
-            2 => {
-                try f.owner.sceneMoveNode(nodes[2], nodes[1], 16);
-                for ([_]usize{ 2, 19 }) |index| try testing.expect(!try f.owner.sceneReachesHooks(nodes[index]));
+            1 => try f.owner.scenePatchPaint(nodes[1], c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -2 }),
+            2 => try f.owner.sceneMoveNode(nodes[4], nodes[1], 16),
+            3 => {
+                for (17..19) |index| try f.owner.sceneDestroyNode(nodes[index]);
+                try f.owner.sceneMoveNode(nodes[5], nodes[1], 0);
             },
-            3 => for (12..19) |index| try f.owner.sceneDestroyNode(nodes[index]),
-            4 => try f.owner.sceneSetStyle(nodes[0], 4, 1, 0, 1, 0, 1),
+            4 => try f.owner.sceneMoveNode(nodes[24], nodes[1], 15),
+            5 => {
+                try f.owner.sceneSetViewport(nodes[1], null);
+                try f.owner.scenePatchPaint(nodes[1], c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -4 });
+            },
+            6 => try f.owner.sceneSetViewport(nodes[1], nodes[0]),
+            7 => try f.owner.sceneSetStyle(nodes[0], 4, 1, 0, 1, 0, 1),
             else => {},
+        }
+        const gone = [2]usize{ 17, 18 };
+        for (nodes, &predicted, 0..) |node, *value, index| {
+            if (step < 3 or std.mem.indexOfScalar(usize, &gone, index) == null) value.* = try f.owner.sceneReachesHooks(node);
         }
         log.clearRetainingCapacity();
         try feedbackFrame(f, .{ .reply = .later, .expected = &.{} }, &nodes, false, &log);
-        for (nodes, 0..) |node, index| {
-            if (step >= 3 and index >= 12 and index < 19) continue;
+        for (nodes, predicted, 0..) |node, before, index| {
+            if (step >= 3 and std.mem.indexOfScalar(usize, &gone, index) != null) continue;
             errdefer std.debug.print("step {d} node {d}\n", .{ step, index });
             const requested = std.mem.indexOfScalar(usize, log.items, index) != null;
+            if (step != 0 and step != 7 and (step != 2 or index == 4)) try testing.expectEqual(requested, before);
             try testing.expectEqual(requested, try f.owner.sceneReachesHooks(node));
         }
     }

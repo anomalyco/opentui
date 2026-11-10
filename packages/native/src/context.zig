@@ -2298,7 +2298,7 @@ pub const Context = struct {
     pub fn sceneReachesHooks(self: *Context, handle: Handle) !bool {
         try self.checkSceneRead();
         const node = try self.sceneNode(handle);
-        return node.scene_node.?.owner.reaches(node, true);
+        return node.scene_node.?.owner.reaches(&self.objects, node);
     }
 
     pub fn sceneMarkDirty(self: *Context, handle: Handle) !void {

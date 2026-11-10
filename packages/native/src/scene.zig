@@ -1007,8 +1007,6 @@ pub const Scene = struct {
             if (reparented) node.attach_order = self.last_placement;
         } else if (destination == null) node.placement = 0;
         node.layout_flags.needs_layout = true;
-        // No scan of the new parent has taken the node yet (reaches).
-        node.culling.selected_at = std.math.maxInt(u64);
         self.visibility_epoch +%= 1;
         self.selection_epoch +%= 1;
         self.preparation_dirty = true;
@@ -1979,11 +1977,8 @@ pub const Scene = struct {
                     continue;
                 }
                 if (filter) |bounds| {
-                    var layout = state.layout;
-                    layout.screenX = origin[0] + @as(f64, layout.left) + state.paint.translateX;
-                    layout.screenY = origin[1] + @as(f64, layout.top) + state.paint.translateY;
                     self.frame_work.overlap_tests += 1;
-                    if (!overlaps(bounds, publicLayout(layout))) {
+                    if (!takes(bounds, origin, state)) {
                         if (!full and state.skip.attention_index != no_slot and onlySubtreeListed(state)) dropAttention(node, state.skip.attention_index);
                         continue;
                     }
@@ -2203,12 +2198,13 @@ pub const Scene = struct {
         // Preparation enters only visible nodes, so its stamp answers until a display or ancestry change.
         if (node.prepared_gen == self.candidates_gen and active.visibility_epoch == self.visibility_epoch and
             !self.forcesFullFrame()) return node.layout_flags.prepared_visible;
-        return self.reaches(value, false);
+        return self.reaches(null, value);
     }
 
     /// Whether the hook walk reaches the node: it and its ancestors are shown up to the root and,
-    /// with `selected`, each filtering ancestor's latest selection took the branch to it.
-    pub fn reaches(self: *Scene, value: *native.NativeRenderable, selected: bool) !bool {
+    /// with `objects`, each culling parent selects the branch at its current offset and child
+    /// count, as selectChildren does. A child moved since its last layout has no position yet.
+    pub fn reaches(self: *Scene, objects: ?*const handles.Table, value: *native.NativeRenderable) !bool {
         var cursor: ?*native.NativeRenderable = value;
         var depth: u32 = 0;
         while (cursor) |current| : (cursor = current.scene_node.?.parent) {
@@ -2219,8 +2215,10 @@ pub const Scene = struct {
             try yoga.check(yoga.yogaNodeStyleGetEnumChecked(current.yoga_node, api.OT_STYLE_ENUM_DISPLAY, &display));
             if (display == api.OT_DISPLAY_NONE) return false;
             if (current == self.root) return true;
-            const parent = (current.scene_node.?.parent orelse return false).scene_node.?;
-            if (selected and parent.filtersChildren() and current.scene_node.?.culling.selected_at != parent.culling.selected_epoch) return false;
+            const parent = current.scene_node.?.parent orelse return false;
+            const bounds = (try self.childFilter(objects orelse continue, parent)) orelse continue;
+            const origin = childOrigin(parent.scene_node.?, try composedLayout(parent, .prepared));
+            if (current.scene_node.?.layout_flags.needs_layout or !takes(bounds, origin, current.scene_node.?)) return false;
         }
         return false;
     }
@@ -3729,6 +3727,14 @@ fn viewNeedsPrepare(node: *const Node, layout: Layout) bool {
     const view = if (node.kind == api.OT_SCENE_TEXT_VIEW) (node.control.text_view.view orelse return false).view else (node.text orelse return false).view;
     const viewport = view.getViewport() orelse return true;
     return viewport.width != cellSize(layout.width) or viewport.height != cellSize(layout.height) or view.needsPrepare();
+}
+
+/// Whether a culling parent whose children compose from `origin` selects the child.
+fn takes(filter: Filter, origin: [2]f64, state: *const Node) bool {
+    var layout = state.layout;
+    layout.screenX = origin[0] + @as(f64, layout.left) + state.paint.translateX;
+    layout.screenY = origin[1] + @as(f64, layout.top) + state.paint.translateY;
+    return overlaps(filter, publicLayout(layout));
 }
 
 fn overlaps(filter: Filter, layout: Layout) bool {
