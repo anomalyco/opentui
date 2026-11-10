@@ -137,6 +137,8 @@ pub struct KeyContext<T> {
     pub stroke: Stroke,
     prevent_default: Cell<bool>,
     stop_propagation: Cell<bool>,
+    /// The active view built for this key, until a command or handler runs and may change what a new one shows.
+    view: Cell<Option<Rc<ActiveView<T>>>>,
 }
 
 impl<T> KeyContext<T> {
@@ -396,22 +398,30 @@ impl<T> Clone for Entry<T> {
 struct ActiveView<T> {
     layers: Vec<Rc<LayerState<T>>>,
     entries: Vec<Entry<T>>,
-    reachable: Vec<Entry<T>>,
-    by_name: HashMap<String, usize>,
+    /// The index of the first entry of each name, sorted by name, so lookups borrow names instead of copying them.
+    by_name: Vec<usize>,
 }
 
 impl<T> ActiveView<T> {
     fn reachable(&self, name: &str) -> Option<&Entry<T>> {
-        self.by_name.get(name).map(|&index| &self.reachable[index])
+        let found = self.by_name.binary_search_by(|&index| self.entries[index].command.name.as_str().cmp(name));
+        found.ok().map(|found| &self.entries[self.by_name[found]])
     }
 
-    fn chain(&self, name: &str) -> Vec<Entry<T>> {
-        self.entries.iter().filter(|entry| entry.command.name == name).cloned().collect()
+    /// The first entry of each name, in layer order.
+    fn reachable_entries(&self) -> Vec<Entry<T>> {
+        let mut first = self.by_name.clone();
+        first.sort_unstable();
+        first.into_iter().map(|index| self.entries[index].clone()).collect()
+    }
+
+    fn chain<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a Entry<T>> {
+        self.entries.iter().filter(move |entry| entry.command.name == name)
     }
 
     fn visible(&self, binding: &BindingState<T>) -> bool {
         match &binding.command {
-            Some(BindingCommand::Name(name)) => self.by_name.contains_key(name),
+            Some(BindingCommand::Name(name)) => self.reachable(name).is_some(),
             _ => true,
         }
     }
@@ -865,27 +875,28 @@ impl<T: Clone + PartialEq + 'static> Keymap<T> {
         required && layer.source.enabled.check()
     }
 
-    fn active_view(&self) -> ActiveView<T> {
+    fn active_view(&self) -> Rc<ActiveView<T>> {
         let layers = self.active_layers();
-        let mut view =
-            ActiveView { layers: Vec::new(), entries: Vec::new(), reachable: Vec::new(), by_name: HashMap::new() };
+        let mut entries = Vec::with_capacity(layers.iter().map(|layer| layer.commands.len()).sum());
         for layer in &layers {
             if layer.commands.is_empty() || !self.layer_enabled(layer) {
                 continue;
             }
-            for command in &layer.commands {
-                if !command.enabled.check() {
-                    continue;
-                }
-                let entry = Entry { layer: layer.clone(), command: command.clone() };
-                if !view.by_name.contains_key(&command.name) {
-                    view.by_name.insert(command.name.clone(), view.reachable.len());
-                    view.reachable.push(entry.clone());
-                }
-                view.entries.push(entry);
+            for command in layer.commands.iter().filter(|command| command.enabled.check()) {
+                entries.push(Entry { layer: layer.clone(), command: command.clone() });
             }
         }
-        view.layers = layers;
+        // Ties sort by index, so the first entry of each name leads its run and survives `dedup_by`.
+        let mut by_name: Vec<usize> = (0..entries.len()).collect();
+        by_name.sort_unstable_by_key(|&index| (&entries[index].command.name, index));
+        by_name.dedup_by(|later, first| entries[*later].command.name == entries[*first].command.name);
+        Rc::new(ActiveView { layers, entries, by_name })
+    }
+
+    /// The view `context` holds for its key, or a new one that it then holds.
+    fn key_view(&self, context: &KeyContext<T>) -> Rc<ActiveView<T>> {
+        let view = context.view.take().unwrap_or_else(|| self.active_view());
+        context.view.set(Some(view.clone()));
         view
     }
 
@@ -901,6 +912,7 @@ impl<T: Clone + PartialEq + 'static> Keymap<T> {
                 stroke: Stroke::from_event(event),
                 prevent_default: Cell::new(false),
                 stop_propagation: Cell::new(false),
+                view: Cell::new(None),
             };
             let intercepts: Vec<_> = self
                 .state()
@@ -984,7 +996,7 @@ impl<T: Clone + PartialEq + 'static> Keymap<T> {
     }
 
     fn dispatch_from_root(&self, layers: &[Rc<LayerState<T>>], keys: &[Stroke], context: &KeyContext<T>) -> Dispatched {
-        let view = self.active_view();
+        let view = self.key_view(context);
         let mut outcome = NO_MATCH;
         for (index, layer) in layers.iter().enumerate() {
             if !self.layer_enabled(layer) {
@@ -1021,7 +1033,7 @@ impl<T: Clone + PartialEq + 'static> Keymap<T> {
     }
 
     fn dispatch_pending(&self, pending: &[Capture<T>], keys: &[Stroke], context: &KeyContext<T>) -> Dispatched {
-        let view = self.active_view();
+        let view = self.key_view(context);
         let advanced: Vec<Capture<T>> = pending
             .iter()
             .filter_map(|capture| {
@@ -1139,7 +1151,9 @@ impl<T: Clone + PartialEq + 'static> Keymap<T> {
         ran
     }
 
+    /// Takes the key's view: the binding may run code that changes what a new view shows.
     fn run_binding(&self, layer: &LayerState<T>, binding: &BindingState<T>, context: Option<&KeyContext<T>>) -> bool {
+        let view = context.and_then(|context| context.view.take());
         let focused = self.focused();
         let event = context.map(|context| context.event);
         let handled = match &binding.command {
@@ -1155,7 +1169,7 @@ impl<T: Clone + PartialEq + 'static> Keymap<T> {
                 };
                 run(&invocation) == Outcome::Handled
             }
-            Some(BindingCommand::Name(name)) => self.active_view().chain(name).into_iter().any(|entry| {
+            Some(BindingCommand::Name(name)) => view.unwrap_or_else(|| self.active_view()).chain(name).any(|entry| {
                 let invocation = CommandContext {
                     keymap: self.clone(),
                     event,
@@ -1285,7 +1299,7 @@ impl<T: Clone + PartialEq + 'static> Keymap<T> {
                     })
                     .collect()
             } else {
-                self.active_view().chain(name)
+                self.active_view().chain(name).cloned().collect()
             };
             let focused = self.focused();
             let mut rejected = false;
@@ -1345,7 +1359,7 @@ impl<T: Clone + PartialEq + 'static> Keymap<T> {
     }
 
     /// The active view, which `Registered` queries do not read.
-    fn query_view(&self, visibility: Visibility) -> Option<ActiveView<T>> {
+    fn query_view(&self, visibility: Visibility) -> Option<Rc<ActiveView<T>>> {
         (visibility != Visibility::Registered).then(|| self.active_view())
     }
 
@@ -1353,7 +1367,7 @@ impl<T: Clone + PartialEq + 'static> Keymap<T> {
         let entries = match view {
             None => self.registered_entries(),
             Some(view) if query.visibility == Visibility::Active => view.entries.clone(),
-            Some(view) => view.reachable.clone(),
+            Some(view) => view.reachable_entries(),
         };
         if query.limit == Some(0) {
             return Vec::new();
@@ -1399,14 +1413,14 @@ impl<T: Clone + PartialEq + 'static> Keymap<T> {
 
     pub fn commands(&self, query: &CommandQuery<T>) -> Vec<Rc<Command<T>>> {
         let view = self.query_view(query.visibility);
-        self.query_entries(query, view.as_ref()).into_iter().map(|entry| entry.command).collect()
+        self.query_entries(query, view.as_deref()).into_iter().map(|entry| entry.command).collect()
     }
 
     /// Commands with the bindings that run them, as the query sees them.
     pub fn command_entries(&self, query: &CommandQuery<T>) -> Vec<CommandEntry<T>> {
         let view = self.query_view(query.visibility);
-        let entries = self.query_entries(query, view.as_ref());
-        let bindings = self.query_bindings(view.as_ref());
+        let entries = self.query_entries(query, view.as_deref());
+        let bindings = self.query_bindings(view.as_deref());
         entries
             .into_iter()
             .map(|entry| CommandEntry {
@@ -1423,7 +1437,7 @@ impl<T: Clone + PartialEq + 'static> Keymap<T> {
     /// The bindings that run each of `names`.
     pub fn command_bindings(&self, visibility: Visibility, names: &[&str]) -> HashMap<String, Vec<ActiveBinding<T>>> {
         let view = self.query_view(visibility);
-        let bindings = self.query_bindings(view.as_ref());
+        let bindings = self.query_bindings(view.as_deref());
         names
             .iter()
             .map(|&name| {
