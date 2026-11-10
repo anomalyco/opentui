@@ -15,6 +15,7 @@ import { CodeRenderable } from "../renderables/Code.js"
 import { MarkdownRenderable } from "../renderables/Markdown.js"
 import { LinearScrollAccel, MacOSScrollAccel, type ScrollAcceleration } from "../lib/scroll-acceleration.js"
 import { SyntaxStyle } from "../syntax-style.js"
+import { TextBuffer } from "../text-buffer.js"
 
 // Test accelerator that returns a constant multiplier
 class ConstantScrollAccel implements ScrollAcceleration {
@@ -1210,6 +1211,61 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
       trace.push(`${previous.scrollHeight}/${testRenderer.listenerCount("selection")}`)
     }
     expect(trace).toEqual(Array(12).fill("30/0"))
+  })
+
+  // A block first or last of 16 children highlights in view, grows from 1 line to 3 and 5, and scrolls back into view.
+  // Grown above or below the view of the box, which culls it, it runs no update hook and starts no highlight, yet it
+  // measures as the one grown in view does after its highlight lands, appends the second growth, and shows the same.
+  const lines = (count: number, prefix = "") => [1, 2, 3, 4, 5].slice(0, count).map((i) => `${prefix}line ${i}`)
+  const grownOutOfView: [string, boolean, (count: number) => string][] = [
+    ["code", true, (count) => lines(count).join("\n")],
+    ["paragraph", false, (count) => lines(count).join("\n")],
+    ["fence", true, (count) => ["```ts", ...lines(count), "```"].join("\n")],
+    ...[true, false].flatMap((streaming): [string, boolean, (count: number) => string][] => [
+      ["quote", streaming, (count) => lines(count, "> ").join("\n")],
+      ["list", streaming, (count) => `- ${lines(count).join("\n")}`],
+    ]),
+  ]
+  test.each(grownOutOfView)("a %s block (streaming %p) grown out of view", async (kind, streaming, source) => {
+    const run = async (first: boolean, cull: boolean) => {
+      const client = createMockTreeSitterClient()
+      const syntaxStyle = SyntaxStyle.create(testRenderer.nativeScene)
+      const scrollbox = new ScrollBoxRenderable(testRenderer, { width: 40, height: 6 })
+      testRenderer.root.add(scrollbox)
+      for (let i = 0; i < 15; i++) scrollbox.add(new BoxRenderable(testRenderer, { height: 2, flexShrink: 0 }))
+      const options = { content: source(1), syntaxStyle, streaming, treeSitterClient: client, width: "100%" as const }
+      const target =
+        kind === "code"
+          ? new CodeRenderable(testRenderer, { ...options, filetype: "typescript", drawUnstyledText: false })
+          : new MarkdownRenderable(testRenderer, { ...options, internalBlockMode: "top-level" })
+      scrollbox.insertBefore(target, first ? scrollbox.getChildren()[0] : undefined)
+      // Last, the block is culled with its top on the view's bottom edge: 30 rows above it, 6 in view.
+      const [shown, away] = first ? [0, Infinity] : [Infinity, 24]
+      const settle = async () => {
+        for (let pass = 0; pass < 4; pass++) {
+          await renderOnce()
+          client.resolveAllHighlightOnce()
+          await new Promise<void>((resolve) => setImmediate(resolve))
+        }
+      }
+      scrollbox.scrollTo(shown)
+      await settle()
+      if (cull) scrollbox.scrollTo(away)
+      await renderOnce()
+      const append = spyOn(TextBuffer.prototype, "append")
+      target.content = source(3)
+      target.content = source(5)
+      await (cull ? renderOnce() : settle())
+      const height = scrollbox.scrollHeight
+      if (cull) expect([client.isHighlighting(), append.mock.calls]).toEqual([false, [["\nline 4\nline 5"]]])
+      append.mockRestore()
+      scrollbox.scrollTo(shown)
+      await settle()
+      const frame = captureCharFrame()
+      scrollbox.destroyRecursively()
+      return { height, frame }
+    }
+    for (const first of [true, false]) expect(await run(first, true)).toEqual(await run(first, false))
   })
 
   test("maintains visibility when scrolling with many Code elements", async () => {
