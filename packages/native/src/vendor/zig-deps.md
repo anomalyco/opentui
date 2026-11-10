@@ -26,7 +26,7 @@ Both ports change only Zig code, and the update script gives both copies the sam
 generated tables do not change.
 The Yoga archive contains only the `yoga` source directory.
 
-The Yoga source is upstream Yoga `main` at commit `41118bd3a` with nine changes, applied in this order:
+The Yoga source is upstream Yoga `main` at commit `41118bd3a` with ten changes, applied in this order:
 
 - `yoga-error-boundary.patch` routes every Yoga allocation, including the Grid style storage, through
   `yoga/OTAllocator.h`, so a test build can inject allocation failures. It also makes style updates, child
@@ -76,6 +76,14 @@ The Yoga source is upstream Yoga `main` at commit `41118bd3a` with nine changes,
   percent padding. Yoga's flex steps resolve those against the parent's owner size, so the parent's layout
   depends on it. It checks only the axes whose owner size changed, and a hit at another owner size moves
   the entry to that size, so the next frame does not check again.
+- `yoga-list-layout.patch` adds a list mode to a node. A list box stacks its in-flow children top to bottom
+  with the steps flex takes for a child that does not flex in one column, in place of flex's STEPs 3 to 7,
+  and then runs flex's STEPs 9 to 11. Children never grow or shrink; the box's flex direction, wrap, and
+  justification, a child's flex basis, and vertical auto margins do not apply; children's percent
+  heights and vertical insets, and a percent gap without a definite height, resolve against an
+  indefinite height; and a child whose minimum size exceeds its maximum may take the other bound.
+  Elsewhere the result equals flex's. The mode's setter marks the node dirty. `src/yoga-bridge.cpp`
+  sets the mode only on configs that round from absolute edges, which only the scene's config does.
 
 `src/tests/yoga_test.zig` tests each change.
 

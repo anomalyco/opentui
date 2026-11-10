@@ -2539,7 +2539,7 @@ test "Scene frame work counts viewport refresh and culling work" {
 // members (B4). A reply that sends the target's text again costs what the reply's hook costs.
 test "Scene frame bench scenes pin each frame kind's work at small sizes" {
     const bench = @import("../bench/scene-frame_bench.zig");
-    const rows = [_]struct { shape: bench.Shape, size: u32, change: bench.Change, work: [22]u64 }{
+    const rows = [_]struct { shape: bench.Shape, size: u32, change: bench.Change, work: [22]u64, list: bool = false }{
         .{ .shape = .ui, .size = 0, .change = .unchanged, .work = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0 } },
         .{ .shape = .ui, .size = 0, .change = .glyph, .work = .{ 87, 0, 87, 87, 1, 0, 0, 0, 0, 3, 209, 200, 1, 1, 0, 0, 1, 1, 87, 0, 0, 6 } },
         .{ .shape = .ui, .size = 0, .change = .update_hook, .work = .{ 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 4, 0 } },
@@ -2570,10 +2570,14 @@ test "Scene frame bench scenes pin each frame kind's work at small sizes" {
         // that pixel-grid rounding visits: those the solve laid out (here the path, every row,
         // and the changed row's two texts), not the whole tree.
         .{ .shape = .select, .size = 100, .change = .row_text, .work = .{ 203, 154, 4, 203, 1, 26, 0, 0, 216, 5, 200, 200, 1, 1, 0, 0, 1, 1, 203, 0, 59, 105 } },
+        // The same frames with the rows laid out as a list (D6): the same frame work.
+        .{ .shape = .select, .size = 100, .change = .row_text, .work = .{ 203, 154, 4, 203, 1, 26, 0, 0, 216, 5, 200, 200, 1, 1, 0, 0, 1, 1, 203, 0, 59, 105 }, .list = true },
+        .{ .shape = .scroll_node, .size = 100, .change = .append, .work = .{ 105, 54, 4, 107, 1, 18, 0, 0, 216, 52, 9950, 10000, 50, 50, 0, 0, 1, 50, 105, 52, 58, 107 }, .list = true },
     };
     for (rows) |row| {
         var target = try bench.Scene.init(testing.allocator, testing.io, row.shape, row.size);
         defer target.deinit();
+        if (row.list) try target.setList();
         const state = (try target.owner.raw().getRenderable(target.root)).scene_node.?.owner;
         // The second changed frame: the first one also settles hooks registered by the change.
         // A steady change repeats it, so retention outlives a frame's host requests; its first
