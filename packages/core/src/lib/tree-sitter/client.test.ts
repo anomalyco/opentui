@@ -2,6 +2,7 @@ import { test, expect, beforeEach, afterEach, beforeAll, describe } from "bun:te
 import { TreeSitterClient } from "./client.js"
 import { tmpdir } from "os"
 import { join } from "path"
+import { fileURLToPath } from "url"
 import { existsSync } from "fs"
 import { mkdir, readFile, writeFile, unlink } from "fs/promises"
 import { getDataPaths } from "../data-paths.js"
@@ -355,10 +356,10 @@ describeClient("TreeSitterClient", () => {
       async (c, highlighted) => {
         // The edit's reply is empty, so only a reset at version 3 shows the number that version 2 added.
         await writeFile(join(dataPath, "number.scm"), "(number) @number\n")
-        const wasm = new URL("./assets/javascript/tree-sitter-javascript.wasm", import.meta.url).pathname
+        const wasm = fileURLToPath(new URL("./assets/javascript/tree-sitter-javascript.wasm", import.meta.url))
         c.addFiletypeParser({ filetype: "number", wasm, queries: { highlights: [join(dataPath, "number.scm")] } })
         const text = `let a = 1 + 2;\n${"x;\n".repeat(600)}`
-        await c.createBuffer(1, text.replace(" + 2", ""), "number", 1)
+        expect(await c.createBuffer(1, text.replace(" + 2", ""), "number", 1)).toBe(true)
         await c.resetBuffer(1, 2, text)
         await c.updateBuffer(1, append(text, `${text}y;\n`), `${text}y;\n`, 3)
         await highlighted(3)
