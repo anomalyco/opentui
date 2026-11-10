@@ -3654,7 +3654,9 @@ pub fn getPaintLayout(value: *const native.NativeRenderable) !Layout {
 }
 
 /// Composes a node's local geometry through its ancestors: the observed, prepared, or solved
-/// one. A solved node Yoga has not laid out since it was created or moved has no cells.
+/// one. A solved node Yoga has not laid out since it was created or moved has no cells. No pass
+/// observes the nodes below a shown child its parent's latest selection culled, so they read as
+/// solved.
 fn composedLayout(value: *const native.NativeRenderable, comptime source: enum { observed, prepared, solved }) !Layout {
     var ancestors: [yoga.depth_max]*const native.NativeRenderable = undefined;
     var count: usize = 0;
@@ -3664,25 +3666,34 @@ fn composedLayout(value: *const native.NativeRenderable, comptime source: enum {
         ancestors[count] = node;
         count += 1;
     }
-    var result = try localLayout(value, source);
-    if (source == .solved) {
-        if (std.math.isNan(result.width) or std.math.isNan(result.height)) return .{};
-    }
-    result.screenX = 0;
-    result.screenY = 0;
-    while (count != 0) {
+    const owner = value.scene_node.?.owner;
+    var omitted = false;
+    var screen: [2]f64 = .{ 0, 0 };
+    while (true) {
         count -= 1;
         const node = ancestors[count].scene_node.?;
-        const layout = try localLayout(ancestors[count], source);
-        result.screenX = result.screenX + @as(f64, layout.left) + node.paint.translateX;
-        result.screenY = result.screenY + @as(f64, layout.top) + node.paint.translateY;
-        if (count != 0) {
-            const origin = childOrigin(node, .{});
-            result.screenX += origin[0];
-            result.screenY += origin[1];
+        var layout = try localLayout(ancestors[count], source);
+        if (source == .observed and omitted) {
+            // Yoga has not laid out a node created or moved since the solve.
+            const solved = try localLayout(ancestors[count], .solved);
+            if (!std.math.isNan(solved.width) and !std.math.isNan(solved.height)) layout = publicLayout(solved);
         }
+        screen[0] = screen[0] + @as(f64, layout.left) + node.paint.translateX;
+        screen[1] = screen[1] + @as(f64, layout.top) + node.paint.translateY;
+        if (count == 0) {
+            if (source == .solved and (std.math.isNan(layout.width) or std.math.isNan(layout.height))) return .{};
+            layout.screenX = screen[0];
+            layout.screenY = screen[1];
+            return layout;
+        }
+        if (source == .observed and !omitted) if (node.parent) |parent| {
+            omitted = parent.scene_node.?.filtersChildren() and node.prepared_gen == owner.candidates_gen and
+                node.layout_flags.prepared_visible and node.culling.selected_at != parent.scene_node.?.culling.selected_epoch;
+        };
+        const origin = childOrigin(node, .{});
+        screen[0] += origin[0];
+        screen[1] += origin[1];
     }
-    return result;
 }
 
 fn localLayout(value: *const native.NativeRenderable, comptime source: anytype) !Layout {

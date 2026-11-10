@@ -1037,7 +1037,9 @@ ot_status ot_scene_get_text_info(ot_context *, const ot_handle *node, ot_scene_t
 ot_status ot_scene_get_text_lines(ot_context *, const ot_handle *node, uint32_t first_line,
     ot_scene_text_line *lines, uint32_t capacity, uint32_t *out_count);
 /* OT_LAYOUT_PUBLIC copies local cell geometry from the node's latest preparation refresh.
- * During host phases, mounted nodes retain their preceding projection until that
+ * Below a shown child that its filtering parent's latest selection culled, which no refresh
+ * reaches, it copies the latest solved geometry instead, if Yoga has laid the node out since
+ * it was created or moved. During host phases, mounted nodes retain their preceding projection until that
  * refresh; newly placed children refresh before their own update. screen_x/y
  * combine that geometry with current accepted ancestor relationships
  * and translations immediately, without running layout. OT_LAYOUT_YOGA instead

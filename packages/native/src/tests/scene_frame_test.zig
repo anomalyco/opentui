@@ -2729,7 +2729,7 @@ test "Scene scroll node frames ask the host nothing and toggle bars a bounded nu
     try testing.expectEqual(@as(u32, 0), idle.damage_rows);
 }
 
-const Culled = enum { scroll_in_reply, bars_in_reply, row_bars_in_reply, created_in_reply, detached_out, cleared_out, destroyed_parent, body_offscreen, cancelled_solve, read_moved, first_frame_read, solve_read, translated_read, translate_in_reply, held_read, body_after_reply, moved_out, idle_update, shown_then_update, hidden_row, stale_viewport };
+const Culled = enum { scroll_in_reply, bars_in_reply, row_bars_in_reply, created_in_reply, detached_out, cleared_out, destroyed_parent, body_offscreen, cancelled_solve, read_moved, first_frame_read, solve_read, translated_read, translate_in_reply, held_read, body_after_reply, moved_out, idle_update, shown_then_update, hidden_row, stale_viewport, grown_culled };
 const always_bars: scene.ScrollOptions = .{ .bars = @splat(.{ .policy = c.OT_SCENE_SCROLL_BAR_ALWAYS }) };
 
 /// H (root child 0), V (`shown` rows tall, clipping), its content with V as the viewport and 16
@@ -2842,8 +2842,8 @@ test "Scene culled subtrees follow replies and reads as the full walk does" {
         var logs: [2]std.ArrayListUnmanaged([6]u64) = .{ .empty, .empty };
         defer for (&logs) |*log| log.deinit(testing.allocator);
         var results: [2]anyerror!void = undefined;
-        var g_slot: u64 = 0;
-        for (twins, &logs, &results, 0..) |f, *log, *result, twin| {
+        var g: [2]context.Handle = undefined;
+        for (twins, &logs, &results, &g, 0..) |f, *log, *result, *g_handle, twin| {
             try f.owner.sceneSetDebugFlags(f.id, if (twin == 0) c.OT_SCENE_DEBUG_FULL_FRAME else c.OT_SCENE_DEBUG_VERIFY);
             var list: [223]context.Handle = undefined;
             const row: usize = switch (case) {
@@ -2856,7 +2856,7 @@ test "Scene culled subtrees follow replies and reads as the full walk does" {
                 else => 0,
             };
             try culledScene(f, &list, if (case == .solve_read or case == .body_offscreen or case == .cancelled_solve) 4 else 2, row);
-            g_slot = list[19].slot;
+            g_handle.* = list[19];
             try feedbackHook(f, list[0], if (case == .body_after_reply) c.OT_SCENE_HOOK_RENDER_AFTER else c.OT_SCENE_HOOK_UPDATE);
             switch (case) {
                 .first_frame_read => try f.owner.sceneSetStyle(list[19], 4, 0, 0, 1, 6, 1),
@@ -2910,6 +2910,10 @@ test "Scene culled subtrees follow replies and reads as the full walk does" {
             switch (case) {
                 .read_moved, .body_after_reply, .translated_read => try f.owner.scenePatchPaint(list[2], c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -2 }),
                 .held_read => try f.owner.scenePatchPaint(list[2], c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -5 }),
+                .grown_culled => {
+                    try f.owner.scenePatchPaint(list[2], c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -10 });
+                    try f.owner.sceneSetStyle(list[19], 4, 1, 0, 1, 3, 1);
+                },
                 // A solve while the node is hidden lays it out at no size.
                 .shown_then_update => try f.owner.sceneSetStyle(list[0], 4, 0, 0, 1, 5, 1),
                 .solve_read, .body_offscreen, .cancelled_solve => {
@@ -2930,10 +2934,18 @@ test "Scene culled subtrees follow replies and reads as the full walk does" {
         try results[1];
         try testing.expectEqualSlices([6]u64, logs[0].items, logs[1].items);
         try twins[0].expectSameCells(twins[1]);
+        // G's public layout is its solved one, in a row the walk left out too.
+        const public = try twins[1].owner.sceneGetLayout(g[1], false);
+        const solved = try twins[1].owner.sceneGetPaintLayout(g[1]);
+        try testing.expectEqual(.{ @max(solved.height, 1), solved.screenY }, .{ public.height, public.screenY });
+        // A child mounted since the solve has no layout yet.
+        const mounted = try twins[1].owner.sceneCreateNode(twins[1].id, c.OT_SCENE_BOX, 97);
+        try twins[1].owner.sceneMoveNode(mounted, g[1], 0);
+        try testing.expectEqual(0, (try twins[1].owner.sceneGetLayout(mounted, false)).height);
         // The reply's UPDATE reaches the node it shows, in a later round.
         if (case == .shown_then_update or case == .hidden_row) {
             var updates: usize = 0;
-            for (logs[1].items) |entry| updates += @intFromBool(entry[0] == c.OT_SCENE_FRAME_UPDATE and entry[5] == g_slot);
+            for (logs[1].items) |entry| updates += @intFromBool(entry[0] == c.OT_SCENE_FRAME_UPDATE and entry[5] == g[1].slot);
             try testing.expectEqual(@as(usize, 1), updates);
         }
     }

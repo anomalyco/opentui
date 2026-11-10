@@ -1288,6 +1288,34 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
     }
   })
 
+  // OpenCode's grouped entries: an entry in a group box mounted or grown out of view reads its layout as in view, also
+  // in afterLayout, where OpenCode reads its anchors.
+  test.each(["mounted", "grown"])("an entry in a culled group %s out of view reads its layout", async (when) => {
+    const scrollbox = new ScrollBoxRenderable(testRenderer, { width: 40, height: 10 })
+    testRenderer.root.add(scrollbox)
+    for (let i = 0; i < 15; i++) scrollbox.add(new BoxRenderable(testRenderer, { height: 2, flexShrink: 0 }))
+    const heights = ["auto", "auto", 1, 1] as const
+    const [group, entry, leaf, after] = heights.map((height) => new BoxRenderable(testRenderer, { height, flexShrink: 0 }))
+    entry.add(leaf)
+    group.add(entry)
+    group.add(after)
+    scrollbox.add(group)
+    await renderOnce()
+    for (const top of when === "grown" ? [Infinity, 0] : []) {
+      scrollbox.scrollTo(top)
+      await renderOnce()
+    }
+    if (when === "grown") leaf.height = 5
+    const read = () => [entry.height, after.y - group.y, scrollbox.scrollHeight]
+    let culled: number[] = []
+    scrollbox.afterLayout(() => (culled = read()))
+    await renderOnce()
+    scrollbox.scrollTo(Infinity)
+    await renderOnce()
+    expect(culled).toEqual(read())
+    scrollbox.destroyRecursively()
+  })
+
   test("maintains visibility when scrolling with many Code elements", async () => {
     const syntaxStyle = SyntaxStyle.fromTheme([], resourceContext)
 
