@@ -54,7 +54,9 @@ To link other artifacts, such as an npm platform package or a native archive
 of a release, set `OPENTUI_LIB_DIR` to their directory. It wins over the
 checkout's build. Give an absolute path: Cargo reads a relative one from
 `crates/opentui-sys`. A Cargo `git` dependency on this repository has no native
-build, so it needs `OPENTUI_LIB_DIR`.
+build, so it needs `OPENTUI_LIB_DIR`. An npm platform package ships only the
+shared library, so on Linux and macOS it needs the default features off (see
+below).
 
 These platforms are supported:
 
@@ -72,7 +74,7 @@ These platforms are supported:
 The build picks the directory for the target it builds.
 Rust's musl targets build static executables (`crt-static`), which cannot load
 `libopentui.so`, so the build refuses the shared library there: keep the
-default `static` feature, or build with
+default `static` feature, or turn the default features off and build with
 `RUSTFLAGS='-C target-feature=-crt-static'`.
 OpenTUI's macOS build needs the macOS SDK, which comes with the Xcode Command
 Line Tools (`xcode-select --install`). On a Mac, `bun run build` in
@@ -97,8 +99,9 @@ ship `opentui.dll` beside the `.exe`. The build copies it where `cargo run`
 and `cargo test` find it.
 
 To link `libopentui.so` or `libopentui.dylib` instead, turn the default
-features off (`default-features = false`, or `--no-default-features`). The
-workspace's tests and examples find the library through an rpath; other
+features off (`default-features = false`, or `--no-default-features`). Cargo
+merges features across the app's graph, so every crate in it that depends on
+`opentui` must turn them off. The workspace's tests and examples find the library through an rpath; other
 executables need their own rpath, `LD_LIBRARY_PATH` on Linux, or
 `DYLD_LIBRARY_PATH` on macOS.
 

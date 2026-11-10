@@ -72,10 +72,19 @@ fn main() {
         let path = dir.join(file);
         // Watch the path as given: a canonical path follows a symlink and would keep watching its old target.
         println!("cargo:rerun-if-changed={}", path.display());
+        // npm's platform packages ship the shared library only.
+        let shared = if *file == "libopentui.a" && dir.join(shared_library).is_file() {
+            format!(
+                ". This directory has no static archive: to link {shared_library} instead, turn off the default static \
+                 feature (default-features = false, or --no-default-features)"
+            )
+        } else {
+            String::new()
+        };
         assert!(
             path.is_file(),
             "missing native artifact {}: run `bun run build` at the repository root or `bun run build:native` in \
-             packages/core, or set OPENTUI_LIB_DIR to OpenTUI's packages/native/lib/{platform}",
+             packages/core, or set OPENTUI_LIB_DIR to OpenTUI's packages/native/lib/{platform}{shared}",
             path.display()
         );
     }

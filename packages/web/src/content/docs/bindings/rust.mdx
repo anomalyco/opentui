@@ -26,12 +26,15 @@ cargo test --manifest-path packages/rust/Cargo.toml
 `bun run build:native` in the core package also builds the native library.
 To link other artifacts, such as the directory of an npm platform package, set `OPENTUI_LIB_DIR` to that directory.
 It wins over the checkout's build.
+The npm platform packages ship only the shared library, so on Linux and macOS they need the default features off (see below).
 Give an absolute path: Cargo reads a relative one from the `opentui-sys` crate's directory.
 
 The bindings match one exact `opentui.h`.
 The build fails when the library's header differs from the one the bindings were generated from.
 After a header change, run `bun run generate:abi` in the core package.
 
-The crates link the shared library by default.
-The `static` feature links the static library on Linux and macOS.
+On Linux and macOS the crates link the static library by default, through the default `static` feature, so an app needs no OpenTUI file at run time.
+With `default-features = false` (or `--no-default-features`) they link the shared library instead.
+Cargo merges features across the app's graph, so every crate in it that depends on `opentui` must turn the defaults off.
+Windows links `opentui.dll` with or without the feature: ship `opentui.dll` beside the app's `.exe`.
 See [C](/docs/native/c) for the native artifacts and the targets they support.

@@ -329,7 +329,7 @@ export default module.default
           `\`opentui.h\` beside \`${libraryFileName}\` is the C ABI header that this library was built from ` +
           `(FNV-1a 64 \`${headerHash}\`). A C host compiles against it and links the library in this directory` +
           `${platform === "win32" ? " through `opentui.lib`" : ""}. For the Rust crates in packages/rust, set ` +
-          `\`OPENTUI_LIB_DIR\` to this directory; their build fails when the header differs from the one their bindings were generated from. ` +
+          `\`OPENTUI_LIB_DIR\` to this directory${platform === "win32" ? "" : " and turn off their default `static` feature (`default-features = false`), since this package has no static library"}; their build fails when the header differs from the one their bindings were generated from. ` +
           `See [C](https://opentui.com/docs/native/c).`,
       ),
     )
