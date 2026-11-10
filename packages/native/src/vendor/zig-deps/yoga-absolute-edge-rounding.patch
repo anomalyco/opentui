@@ -38,23 +38,10 @@ index b3002012..999abde7 100644
  
  bool isBaselineLayout(const yoga::Node* node) {
 diff --git a/yoga/algorithm/Cache.cpp b/yoga/algorithm/Cache.cpp
-index 130fe0d3..400889f8 100644
+index 130fe0d3..c11750f0 100644
 --- a/yoga/algorithm/Cache.cpp
 +++ b/yoga/algorithm/Cache.cpp
-@@ -11,22 +11,34 @@
- 
- namespace facebook::yoga {
- 
-+// OpenTUI: with absolute-edge rounding, sizes match only exactly: at a size
-+// within 1e-4 of another, a subtree can round differently and a measured text
-+// can wrap at another cell.
-+bool sizesMatch(float a, float b, const yoga::Config* config) {
-+  if (!config->roundsPositionsFromAbsoluteEdges()) {
-+    return yoga::inexactEquals(a, b);
-+  }
-+  return a == b || (yoga::isUndefined(a) && yoga::isUndefined(b));
-+}
-+
+@@ -14,19 +14,21 @@ namespace facebook::yoga {
  static inline bool sizeIsExactAndMatchesOldMeasuredSize(
      SizingMode sizeMode,
      float size,
@@ -80,7 +67,7 @@ index 130fe0d3..400889f8 100644
  }
  
  static inline bool newSizeIsStricterAndStillValid(
-@@ -34,12 +46,13 @@ static inline bool newSizeIsStricterAndStillValid(
+@@ -34,12 +36,13 @@ static inline bool newSizeIsStricterAndStillValid(
      float size,
      SizingMode lastSizeMode,
      float lastSize,
@@ -96,7 +83,7 @@ index 130fe0d3..400889f8 100644
  }
  
  bool canUseCachedMeasurement(
-@@ -63,7 +76,10 @@ bool canUseCachedMeasurement(
+@@ -63,7 +66,10 @@ bool canUseCachedMeasurement(
  
    const float pointScaleFactor = config->getPointScaleFactor();
  
@@ -108,7 +95,7 @@ index 130fe0d3..400889f8 100644
    bool hasSameWidthSpec = false;
    if (lastWidthMode == widthMode) {
      const float effectiveWidth = useRoundedComparison
-@@ -73,24 +89,26 @@ bool canUseCachedMeasurement(
+@@ -73,24 +79,26 @@ bool canUseCachedMeasurement(
          ? roundValueToPixelGrid(
                lastAvailableWidth, pointScaleFactor, false, false)
          : lastAvailableWidth;
@@ -139,7 +126,7 @@ index 130fe0d3..400889f8 100644
  
    if (!widthIsCompatible) {
      return false;
-@@ -105,23 +123,26 @@ bool canUseCachedMeasurement(
+@@ -105,23 +113,26 @@ bool canUseCachedMeasurement(
          ? roundValueToPixelGrid(
                lastAvailableHeight, pointScaleFactor, false, false)
          : lastAvailableHeight;
@@ -171,15 +158,26 @@ index 130fe0d3..400889f8 100644
    return heightIsCompatible;
  }
 diff --git a/yoga/algorithm/Cache.h b/yoga/algorithm/Cache.h
-index f8857eaf..6d10804e 100644
+index f8857eaf..f9f257ae 100644
 --- a/yoga/algorithm/Cache.h
 +++ b/yoga/algorithm/Cache.h
-@@ -12,6 +12,9 @@
+@@ -9,9 +9,20 @@
+ 
+ #include <yoga/algorithm/SizingMode.h>
+ #include <yoga/config/Config.h>
++#include <yoga/numeric/Comparison.h>
  
  namespace facebook::yoga {
  
-+// OpenTUI: inexactEquals, or == with absolute-edge rounding.
-+bool sizesMatch(float a, float b, const yoga::Config* config);
++// OpenTUI: with absolute-edge rounding, sizes match only exactly: at a size
++// within 1e-4 of another, a subtree can round differently and a measured text
++// can wrap at another cell.
++inline bool sizesMatch(float a, float b, const yoga::Config* config) {
++  if (!config->roundsPositionsFromAbsoluteEdges()) {
++    return yoga::inexactEquals(a, b);
++  }
++  return a == b || (yoga::isUndefined(a) && yoga::isUndefined(b));
++}
 +
  bool canUseCachedMeasurement(
      SizingMode widthMode,

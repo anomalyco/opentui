@@ -35,9 +35,9 @@ index f8857eaf..91b6714c 100644
  #include <yoga/algorithm/SizingMode.h>
  #include <yoga/config/Config.h>
 +#include <yoga/node/CachedMeasurement.h>
+ #include <yoga/numeric/Comparison.h>
  
  namespace facebook::yoga {
- 
 @@ -27,4 +28,13 @@ bool canUseCachedMeasurement(
      float marginColumn,
      const yoga::Config* config);
