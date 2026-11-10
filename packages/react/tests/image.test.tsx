@@ -129,7 +129,9 @@ describe("React Renderer | image element", () => {
           ref={(renderable: ImageRenderable | null) => {
             imageRef = renderable
           }}
-          {...(configured ? { fit: "fill" as const, protocol: "kitty" as const } : {})}
+          {...(configured
+            ? { fit: "fill" as const, protocol: "kitty" as const, crop: { left: 1, top: 2, width: 3, height: 4 } }
+            : {})}
         />
       )
     }
@@ -137,11 +139,13 @@ describe("React Renderer | image element", () => {
     testSetup = await testRender(<App />, { width: 4, height: 2 })
     expect(imageRef!.fit).toBe("fill")
     expect(imageRef!.protocol).toBe("kitty")
+    expect(imageRef!.crop).toEqual({ left: 1, top: 2, width: 3, height: 4 })
 
     act(() => setConfigured(false))
 
     expect(imageRef!.fit).toBe("fit")
     expect(imageRef!.protocol).toBe("auto")
+    expect(imageRef!.crop).toBeUndefined()
     expect(imageRef!.effectiveProtocol).toBe("blocks")
   })
 

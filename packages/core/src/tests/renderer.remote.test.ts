@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test"
 type RendererFactory = "test" | "direct-process-memory" | "cli-custom-memory" | "cli-custom-feed"
 
 async function getCapabilitiesFromChild(
-  options: { remote?: boolean; forwardEnvKeys?: string[] },
+  options: { remote?: boolean; forwardEnvKeys?: string[]; environment?: Record<string, string> },
   env: Record<string, string>,
   factory: RendererFactory = "test",
 ): Promise<any> {
@@ -45,8 +45,7 @@ async function getCapabilitiesFromChild(
     }
 
     try {
-      const internals = renderer
-      const caps = internals.lib.getTerminalCapabilities(renderer.rendererPtr)
+      const caps = renderer.capabilities
       process.stdout.write(JSON.stringify(caps) + "\\n")
     } finally {
       renderer.destroy()
@@ -77,9 +76,9 @@ async function getCapabilitiesFromChild(
 }
 
 describe("remote detection", () => {
-  test("auto remote mode detects SSH and skips default terminal env forwarding", async () => {
+  test("auto remote mode detects SSH and ignores terminal identity but not color depth", async () => {
     const caps = await getCapabilitiesFromChild(
-      {},
+      { environment: { COLORTERM: "truecolor", TERM_PROGRAM: "WezTerm" } },
       {
         PATH: process.env.PATH ?? "",
         HOME: process.env.HOME ?? "",
@@ -92,7 +91,7 @@ describe("remote detection", () => {
     )
 
     expect(caps.remote).toBe(true)
-    expect(caps.ansi256).toBe(false)
+    expect([caps.ansi256, caps.rgb]).toEqual([true, true])
     expect(caps.notifications).toBe(false)
     expect(caps.terminal.name).toBe("")
   })
@@ -160,24 +159,56 @@ describe("remote detection", () => {
     expect(caps.terminal.name).toBe("")
   })
 
-  test("explicit remote mode applies explicitly forwarded terminal overrides", async () => {
+  test("explicit remote mode applies forwarded terminal overrides and explicit values over them", async () => {
     const caps = await getCapabilitiesFromChild(
-      { remote: true, forwardEnvKeys: ["TERM", "OPENTUI_FORCE_WCWIDTH"] },
+      {
+        remote: true,
+        forwardEnvKeys: ["TERM", "OPENTUI_FORCE_WCWIDTH", "COLORTERM"],
+        environment: { COLORTERM: "truecolor", TERM: "xterm-kitty" },
+      },
       {
         PATH: process.env.PATH ?? "",
         HOME: process.env.HOME ?? "",
         TMPDIR: process.env.TMPDIR ?? "/tmp",
         TERM: "xterm-256color",
         OPENTUI_FORCE_WCWIDTH: "1",
+        COLORTERM: "",
       },
     )
 
     expect(caps.remote).toBe(true)
-    expect(caps.ansi256).toBe(true)
     expect(caps.unicode).toBe("wcwidth")
+    expect([caps.rgb, caps.hyperlinks]).toEqual([true, true])
   })
 
-  test("process stdout with memory output preserves auto remote detection", async () => {
+  test("explicit local mode forwards hyperlink and width detection keys by default", async () => {
+    const baseEnv = {
+      PATH: process.env.PATH ?? "",
+      HOME: process.env.HOME ?? "",
+      TMPDIR: process.env.TMPDIR ?? "/tmp",
+    }
+
+    const vte = await getCapabilitiesFromChild(
+      { remote: false },
+      { ...baseEnv, TERM: "xterm-256color", VTE_VERSION: "7600" },
+    )
+    const forcedOff = await getCapabilitiesFromChild(
+      { remote: false },
+      { ...baseEnv, TERM: "xterm-kitty", FORCE_HYPERLINK: "0" },
+    )
+    const xterm = await getCapabilitiesFromChild({ remote: false }, { ...baseEnv, XTERM_VERSION: "XTerm(411)" })
+    // Konsole keeps an XTERM_VERSION inherited from the xterm that started it.
+    const konsole = await getCapabilitiesFromChild(
+      { remote: false },
+      { ...baseEnv, XTERM_VERSION: "XTerm(411)", KONSOLE_VERSION: "250400" },
+    )
+
+    expect(vte.hyperlinks).toBe(true)
+    expect(forcedOff.hyperlinks).toBe(false)
+    expect([xterm.unicode, konsole.unicode]).toEqual(["wcwidth", "unicode"])
+  })
+
+  test("process stdout with memory output preserves auto remote detection and forwards the truecolor override", async () => {
     const caps = await getCapabilitiesFromChild(
       {},
       {
@@ -185,15 +216,16 @@ describe("remote detection", () => {
         HOME: process.env.HOME ?? "",
         TMPDIR: process.env.TMPDIR ?? "/tmp",
         SSH_CONNECTION: "192.0.2.1 54231 192.0.2.2 22",
-        TERM: "xterm-256color",
+        TERM: "screen-256color",
         TERM_PROGRAM: "ghostty",
         TERM_PROGRAM_VERSION: "1.3.1",
+        OPENTUI_FORCE_TRUECOLOR: "1",
       },
       "direct-process-memory",
     )
 
     expect(caps.remote).toBe(true)
-    expect(caps.ansi256).toBe(false)
+    expect([caps.ansi256, caps.rgb]).toEqual([true, true])
     expect(caps.notifications).toBe(false)
     expect(caps.terminal.name).toBe("")
   })
@@ -235,15 +267,14 @@ describe("remote detection", () => {
     )
 
     expect(caps.remote).toBe(true)
-    // createCliRenderer runs terminal setup; Windows ConPTY setup enables color
-    // capabilities even when remote mode suppresses env-derived terminal data.
+    expect([caps.ansi256, caps.rgb]).toEqual([false, false])
     expect(caps.notifications).toBe(false)
     expect(caps.terminal.name).toBe("")
   })
 
-  test("custom stdout feed output respects explicit local mode", async () => {
+  test("custom stdout feed output respects explicit local mode and explicit values", async () => {
     const caps = await getCapabilitiesFromChild(
-      { remote: false },
+      { remote: false, environment: { TERM_PROGRAM: "WezTerm" } },
       {
         PATH: process.env.PATH ?? "",
         HOME: process.env.HOME ?? "",
@@ -259,6 +290,6 @@ describe("remote detection", () => {
     expect(caps.remote).toBe(false)
     expect(caps.ansi256).toBe(true)
     expect(caps.notifications).toBe(true)
-    expect(caps.terminal.name).toBe("ghostty")
+    expect(caps.terminal.name).toBe("WezTerm")
   })
 })

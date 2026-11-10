@@ -116,10 +116,16 @@ function readSnapshotFile(snapshotPath: string): Map<string, string> {
 
   if (existsSync(snapshotPath)) {
     const contents = normalizeNewlines(readFileSync(snapshotPath, "utf8"))
-    const snapshotPattern = /exports\[`([\s\S]*?)`\] = `\n([\s\S]*?)\n`;/g
+    const snapshotPattern = /exports\[`((?:\\[\s\S]|[^\\`])*)`\] = `((?:\\[\s\S]|[^\\`])*)`;/g
 
     for (const match of contents.matchAll(snapshotPattern)) {
-      snapshots.set(match[1], match[2])
+      const key = match[1].replace(/\\(\\|`|\$\{)/g, "$1")
+      // Undo template delimiters, but keep doubled backslashes for serializeSnapshotValue().
+      let value = match[2].replace(/\\(\\|`|\$\{)/g, (escape, value) => (value === "\\" ? escape : value))
+      if (value.startsWith("\n") && value.endsWith("\n")) {
+        value = value.slice(1, -1)
+      }
+      snapshots.set(key, value)
     }
   }
 
@@ -228,7 +234,11 @@ function createTestVariant(base: AnyFunction): AnyFunction {
 function formatEachName(name: string, args: readonly unknown[]): string {
   let index = 0
 
-  return name.replace(/%s/g, () => String(args[index++]))
+  return name.replace(/%[sj]/g, (placeholder) => {
+    const value = args[index++]
+    if (placeholder === "%j") return JSON.stringify(value) ?? placeholder
+    return typeof value === "string" ? value : placeholder
+  })
 }
 
 function createEach(base: AnyFunction) {

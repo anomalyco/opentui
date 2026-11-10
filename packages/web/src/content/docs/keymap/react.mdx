@@ -96,7 +96,22 @@ See [Lifecycle and cleanup](/docs/core-concepts/lifecycle).
 The default dependency list is `[]`.
 
 Include every prop or state value that changes the returned layer. If reevaluation returns a different layer object,
-the hook disposes the old layer and registers the new one. An unrelated render keeps the existing layer.
+the hook replaces the registered layer with it. An unrelated render keeps the existing layer.
+
+The hook replaces its layer in one update, so `state` listeners see one change. The layer keeps the position of its
+hook: among layers of the same priority, precedence follows mount order, also while the layer is empty or waits for
+a target. Earlier versions moved a re-registered layer to the top.
+
+If the new layer is plain data (plain objects, arrays, primitives, and functions without own properties; no class
+instances, `Map`s, getters, symbol keys, or frozen or sealed objects) and differs only in its functions, the hook
+keeps the registered layer: nothing the keymap handed out changes, and commands, binding commands and `enabled`
+checks call the new functions. A store proxy that reports getters is not plain data; spread it. Object values of
+command fields, and any `attr` or `require` value from a field compiler (a function too), are handed back or matched
+by identity, so they must be the same as before; a new one, even an equal one, registers the layer anew. Function
+command fields are forwarded like other functions. `state` is emitted only if an `enabled` result differs from the
+old functions' result or from one read since the last `state` event, and a pending key sequence through a layer that
+turned off is cleared. Commands of a kept layer are keymap-owned objects. Any other layer, and any layer with a
+reactive matcher, is replaced as a new registration in the same position.
 
 The layer can include Core fields such as `priority`, `bindings`, and `commands`.
 It can also include fields from installed addons, such as `enabled`.
@@ -110,7 +125,7 @@ React replaces the Core `target` field with `targetRef`:
 | Local exact focus | `targetRef`, `targetMode: "focus"` | Match only the exact focused renderable. |
 
 If `targetRef.current` is `null`, the hook waits. It checks the ref after each render and registers when the target
-appears. It also disposes and registers again if the same ref points to another renderable.
+appears. It also replaces the layer if the same ref points to another renderable.
 
 Passing `targetMode` without `targetRef` throws:
 

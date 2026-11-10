@@ -2,11 +2,11 @@
 
 ## Purpose
 
-This suite evaluates OpenTUI FFI wrapper overhead across Bun and Node without changing native behavior. It exists because an optimization may help one runtime while regressing the other.
+This suite measures OpenTUI FFI wrapper overhead in Bun and Node without changing native behavior. It exists because an optimization can help one runtime and regress the other.
 
 ## Constraints
 
-- Bun and Node are evaluated together; optimizing one must not materially regress the other.
+- The suite measures Bun and Node together. An optimization for one runtime must not materially regress the other.
 - Public result objects stay fresh, and returned byte ranges stay independently owned.
 - Experimental native signature or layout changes are not retained.
 
@@ -20,11 +20,16 @@ This suite evaluates OpenTUI FFI wrapper overhead across Bun and Node without ch
 
 Scenarios use production wrappers and live native objects. Setup, calibration, verification, and teardown are outside the retained sample. Output probes reject incorrect work.
 
-`ffi-fast-path-paired-benchmark.ts` is the preferred comparison: it balances revision order, runs retained batches sequentially, records provenance and diagnostics, and reports paired nominal and multiplicity-adjusted bootstrap intervals. Negative deltas are faster; safety requires the adjusted upper bound to stay at or below a 3% regression.
+The retired RendererHandle split-transition and split-snapshot calls are no longer benchmark scenarios.
+The remaining scenarios cover standalone buffers, text, editors, images, audio, and span decoding.
+Use the render workload preflights and packed-distribution fixtures for retained Context/Session frame and split-output checks.
+Historical comparisons must select matching retained scenarios from recorded reports or frozen revisions.
 
-Calibration failures retry a complete pair. Retained timing and pair-gap drift are reported without censoring; lifecycle failures abort the run.
+`ffi-fast-path-paired-benchmark.ts` is the preferred comparison. It balances revision order, runs retained batches sequentially, records provenance and diagnostics, and reports paired nominal and multiplicity-adjusted bootstrap intervals. Negative deltas are faster. Safety requires at least 10 pairs and an adjusted upper bound at or below a 3% regression.
 
-`ffi-fast-path-benchmark.ts` creates independent reports, `ffi-fast-path-compare.ts` applies the stricter ABI-admission gate to them, and `ffi-fast-path-stress.ts` diagnoses x64 Node process lifecycle failures. Results are intentionally not stored here; regenerate them for the revisions and environment being evaluated.
+Calibration failures retry a complete pair. The report includes all retained timing and pair-gap drift without censoring. Lifecycle failures abort the run.
+
+`ffi-fast-path-benchmark.ts` creates independent reports, `ffi-fast-path-compare.ts` applies the stricter ABI-admission gate to them, and `ffi-fast-path-stress.ts` diagnoses x64 Node process lifecycle failures. The repository intentionally stores no results for this suite. Regenerate them for the revisions and environment that you evaluate.
 
 ## Run
 
@@ -43,6 +48,6 @@ bun run bench:ffi-fast-path-compare /tmp/base.json /tmp/candidate.json
 
 Default runs omit the separately listed reusable-storage scenarios. Pass their comma-separated names with `--scenario=<names>` to either runner.
 
-Run paired comparisons from the candidate worktree. Roots must be absolute and use matching scenario/calibration sources and native libraries; pair counts must be even. Worktrees must be clean unless `--allow-dirty` is passed.
+Run paired comparisons from the candidate worktree. Roots must be absolute and use matching scenario/calibration sources. Their native libraries must match unless you pass `--allow-native-drift`. Pair counts must be even. Worktrees must be clean unless you pass `--allow-dirty`.
 
 If the baseline predates this suite, copy `ffi-fast-path-scenarios.ts` and `ffi-fast-path-calibration.ts` from the candidate into the same baseline paths, then pass `--allow-dirty`. The report records the copied files.

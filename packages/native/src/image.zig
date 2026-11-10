@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const io = if (builtin.is_test) std.testing.io else @import("root").io;
 
 const Allocator = std.mem.Allocator;
+const api = @import("context_abi_c");
 var icc_cache_mutex: std.Io.Mutex = .init;
 var icc_cache_clients: u32 = 0;
 
@@ -90,21 +91,21 @@ pub const Status = enum(u32) {
 };
 
 pub const Format = enum(u32) {
-    unknown = 0,
-    png = 1,
-    raw_rgba = 2,
-    jpeg = 3,
-    webp = 4,
-    gif = 5,
+    unknown = api.OT_IMAGE_FORMAT_UNKNOWN,
+    png = api.OT_IMAGE_FORMAT_PNG,
+    raw_rgba = api.OT_IMAGE_FORMAT_RGBA,
+    jpeg = api.OT_IMAGE_FORMAT_JPEG,
+    webp = api.OT_IMAGE_FORMAT_WEBP,
+    gif = api.OT_IMAGE_FORMAT_GIF,
 };
 
 pub const ColorStatus = enum(u32) {
-    assumed_srgb = 0,
-    explicit_srgb = 1,
+    assumed_srgb = api.OT_IMAGE_ASSUMED_SRGB,
+    explicit_srgb = api.OT_IMAGE_EXPLICIT_SRGB,
 };
 
-pub const PixelFormat = enum(u32) { rgba8 = 0, bgra8 = 1 };
-pub const PixelAlpha = enum(u32) { straight = 0, @"opaque" = 1 };
+pub const PixelFormat = enum(u32) { rgba8 = api.OT_IMAGE_RGBA8, bgra8 = api.OT_IMAGE_BGRA8 };
+pub const PixelAlpha = enum(u32) { straight = api.OT_IMAGE_ALPHA_STRAIGHT, @"opaque" = api.OT_IMAGE_ALPHA_OPAQUE };
 pub const PixelImportOptions = struct {
     stride: u32,
     format: PixelFormat = .rgba8,
@@ -116,8 +117,8 @@ pub const Info = extern struct {
     height: u32 = 0,
     source_width: u32 = 0,
     source_height: u32 = 0,
-    format: u32 = @intFromEnum(Format.unknown),
-    color_status: u32 = @intFromEnum(ColorStatus.assumed_srgb),
+    format: u32 = @backingInt(Format.unknown),
+    color_status: u32 = @backingInt(ColorStatus.assumed_srgb),
     orientation: u32 = 1,
     has_alpha: u32 = 0,
 };
@@ -131,38 +132,58 @@ pub const Limits = struct {
 };
 
 pub const ResizeFilter = enum(u32) {
-    default = 0,
-    area = 1,
-    triangle = 2,
-    cubic_bspline = 3,
-    catmull_rom = 4,
-    mitchell = 5,
-    nearest = 6,
+    default = api.OT_IMAGE_FILTER_DEFAULT,
+    area = api.OT_IMAGE_FILTER_AREA,
+    triangle = api.OT_IMAGE_FILTER_TRIANGLE,
+    cubic_bspline = api.OT_IMAGE_FILTER_CUBIC_BSPLINE,
+    catmull_rom = api.OT_IMAGE_FILTER_CATMULL_ROM,
+    mitchell = api.OT_IMAGE_FILTER_MITCHELL,
+    nearest = api.OT_IMAGE_FILTER_NEAREST,
 };
 
 pub const Transform = enum(u32) {
-    rotate_90 = 0,
-    rotate_180 = 1,
-    rotate_270 = 2,
-    flip = 3,
-    flop = 4,
+    rotate_90 = api.OT_IMAGE_ROTATE_90,
+    rotate_180 = api.OT_IMAGE_ROTATE_180,
+    rotate_270 = api.OT_IMAGE_ROTATE_270,
+    flip = api.OT_IMAGE_FLIP,
+    flop = api.OT_IMAGE_FLOP,
 };
 
 pub const Blend = enum(u32) {
-    source_over = 0,
-    source = 1,
-    destination_over = 2,
+    source_over = api.OT_IMAGE_BLEND_SOURCE_OVER,
+    source = api.OT_IMAGE_BLEND_SOURCE,
+    destination_over = api.OT_IMAGE_BLEND_DESTINATION_OVER,
 };
 
 pub const RenderProtocol = enum(u32) {
-    auto,
-    kitty,
-    sixel,
-    blocks,
+    auto = api.OT_IMAGE_PROTOCOL_AUTO,
+    kitty = api.OT_IMAGE_PROTOCOL_KITTY,
+    sixel = api.OT_IMAGE_PROTOCOL_SIXEL,
+    blocks = api.OT_IMAGE_PROTOCOL_BLOCKS,
+};
+
+pub const Fit = enum(u32) { fit = api.OT_IMAGE_FIT, cover = api.OT_IMAGE_COVER, fill = api.OT_IMAGE_FILL };
+
+/// A region of a source in pixels, as extract takes it; the video shim takes it by value.
+pub const Region = extern struct {
+    left: u32 = 0,
+    top: u32 = 0,
+    width: u32,
+    height: u32,
+
+    /// The crop if it lies inside a width x height source. A crop outside it shows the whole source.
+    pub fn inside(crop: ?Region, width: u32, height: u32) ?Region {
+        const value = crop orelse return null;
+        if (value.left > width or value.width > width - value.left) return null;
+        if (value.top > height or value.height > height - value.top) return null;
+        return value;
+    }
 };
 
 pub const Image = struct {
     allocator: Allocator,
+    owner_context_id: u64 = 0,
+    render_id: u32 = 0,
     pixels: []u8,
     metadata: Info,
     encoded_png: ?[]u8 = null,
@@ -204,9 +225,13 @@ pub const Image = struct {
     }
 
     pub fn clone(self: *const Image) !*Image {
-        const cloned = try self.allocator.create(Image);
+        return self.cloneOwned(self.allocator);
+    }
+
+    pub fn cloneOwned(self: *const Image, allocator: Allocator) !*Image {
+        const cloned = try allocator.create(Image);
         cloned.* = .{
-            .allocator = self.allocator,
+            .allocator = allocator,
             .pixels = &.{},
             .metadata = self.metadata,
             .png_color_type = self.png_color_type,
@@ -215,8 +240,8 @@ pub const Image = struct {
             .lazy_pixel_len = self.lazy_pixel_len,
         };
         errdefer cloned.deinit();
-        if (self.pixels.len > 0) cloned.pixels = try self.allocator.dupe(u8, self.pixels);
-        if (self.encoded_png) |bytes| cloned.encoded_png = try self.allocator.dupe(u8, bytes);
+        if (self.pixels.len > 0) cloned.pixels = try allocator.dupe(u8, self.pixels);
+        if (self.encoded_png) |bytes| cloned.encoded_png = try allocator.dupe(u8, bytes);
         return cloned;
     }
 
@@ -226,7 +251,7 @@ pub const Image = struct {
         else
             try checkedPixelBytes(self.width(), self.height(), .{});
         if (self.pixels.len == expected_len) return self.pixels;
-        if (self.pixels.len != 0 or self.metadata.format != @intFromEnum(Format.png) or self.metadata.orientation != 1) {
+        if (self.pixels.len != 0 or self.metadata.format != @backingInt(Format.png) or self.metadata.orientation != 1) {
             return error.MalformedInput;
         }
         const png = self.encoded_png orelse return error.MalformedInput;
@@ -311,6 +336,24 @@ pub fn statusFromError(err: anyerror) Status {
         error.InvalidArgument => .invalid_argument,
         error.Busy => .busy,
         else => .malformed_input,
+    };
+}
+
+pub fn errorFromStatus(status: Status) !void {
+    return switch (status) {
+        .ok => {},
+        .invalid_handle => error.StaleHandle,
+        .unsupported_format => error.UnsupportedFormat,
+        .unsupported_color_space => error.UnsupportedColorSpace,
+        .malformed_input => error.MalformedInput,
+        .dimension_limit => error.DimensionLimit,
+        .memory_limit => error.MemoryLimit,
+        .invalid_argument => error.InvalidArgument,
+        .out_of_memory => error.OutOfMemory,
+        .output_too_small => error.OutputTooSmall,
+        .internal_error => error.InternalError,
+        .unsupported_feature => error.UnsupportedFeature,
+        .busy => error.Busy,
     };
 }
 
@@ -641,8 +684,8 @@ fn probeInternal(
             .height = if (swaps_jpeg_dimensions) width else height,
             .source_width = width,
             .source_height = height,
-            .format = @intFromEnum(Format.jpeg),
-            .color_status = @intFromEnum(ColorStatus.assumed_srgb),
+            .format = @backingInt(Format.jpeg),
+            .color_status = @backingInt(ColorStatus.assumed_srgb),
             .orientation = orientation,
             .has_alpha = 0,
         };
@@ -662,8 +705,8 @@ fn probeInternal(
             .height = height,
             .source_width = width,
             .source_height = height,
-            .format = @intFromEnum(Format.webp),
-            .color_status = @intFromEnum(ColorStatus.assumed_srgb),
+            .format = @backingInt(Format.webp),
+            .color_status = @backingInt(ColorStatus.assumed_srgb),
             .orientation = 1,
             .has_alpha = has_alpha,
         };
@@ -682,8 +725,8 @@ fn probeInternal(
             .height = height,
             .source_width = width,
             .source_height = height,
-            .format = @intFromEnum(Format.gif),
-            .color_status = @intFromEnum(ColorStatus.assumed_srgb),
+            .format = @backingInt(Format.gif),
+            .color_status = @backingInt(ColorStatus.assumed_srgb),
             .orientation = 1,
             .has_alpha = has_alpha,
         };
@@ -721,8 +764,8 @@ fn probeInternal(
         .height = if (swaps_dimensions) metadata.width else metadata.height,
         .source_width = metadata.width,
         .source_height = metadata.height,
-        .format = @intFromEnum(Format.png),
-        .color_status = @intFromEnum(metadata.color_status),
+        .format = @backingInt(Format.png),
+        .color_status = @backingInt(metadata.color_status),
         .orientation = metadata.orientation,
         .has_alpha = @intFromBool(metadata.has_alpha),
     };
@@ -734,19 +777,22 @@ pub fn probe(data: []const u8, limits: Limits, out: *Info) Status {
 }
 
 pub fn inspect(allocator: Allocator, data: []const u8, limits: Limits, out: *Info) Status {
+    out.* = inspectOwned(allocator, data, limits) catch |err| return statusFromError(err);
+    return .ok;
+}
+
+pub fn inspectOwned(allocator: Allocator, data: []const u8, limits: Limits) !Info {
     var encoded_info: Info = .{};
     const probe_status = probeInternal(data, limits, &encoded_info, null, null, false);
-    if (probe_status != .ok) return probe_status;
-    if (encoded_info.format == @intFromEnum(Format.png) and encoded_info.has_alpha == 0 and encoded_info.orientation == 1) {
-        out.* = encoded_info;
-        return .ok;
+    try errorFromStatus(probe_status);
+    if (encoded_info.format == @backingInt(Format.png) and encoded_info.has_alpha == 0 and encoded_info.orientation == 1) {
+        return encoded_info;
     }
 
-    const decoded = decodeInternal(allocator, data, limits, false) catch |err| return statusFromError(err);
+    const decoded = try decodeInternal(allocator, data, limits, false);
     defer decoded.deinit();
     encoded_info.has_alpha = decoded.metadata.has_alpha;
-    out.* = encoded_info;
-    return .ok;
+    return encoded_info;
 }
 
 fn allocateImage(allocator: Allocator, metadata: Info) !*Image {
@@ -769,7 +815,14 @@ fn copyImage(allocator: Allocator, pixels: []const u8, metadata: Info) !*Image {
 }
 
 fn pixelsHaveTransparency(pixels: []const u8) bool {
-    var offset: usize = 3;
+    const vector_len = 64;
+    const color_mask = std.simd.repeat(vector_len, @Vector(4, u8){ 255, 255, 255, 0 });
+    var offset: usize = 0;
+    while (offset + vector_len <= pixels.len) : (offset += vector_len) {
+        const chunk: @Vector(vector_len, u8) = pixels[offset..][0..vector_len].*;
+        if (@reduce(.And, chunk | color_mask) != 255) return true;
+    }
+    offset += 3;
     while (offset < pixels.len) : (offset += 4) {
         if (pixels[offset] != 255) return true;
     }
@@ -802,8 +855,8 @@ pub fn createFromPixels(
         .height = height,
         .source_width = width,
         .source_height = height,
-        .format = @intFromEnum(Format.raw_rgba),
-        .color_status = @intFromEnum(ColorStatus.explicit_srgb),
+        .format = @backingInt(Format.raw_rgba),
+        .color_status = @backingInt(ColorStatus.explicit_srgb),
         .orientation = 1,
         .has_alpha = 0,
     });
@@ -815,7 +868,7 @@ pub fn createFromPixels(
 // Pool owners must stay private: every publication needs a fresh retained handle
 // because renderer caches key content by handle, not by the pixel allocation.
 pub fn updatePixels(image: *Image, pixels: []const u8, options: PixelImportOptions) !void {
-    if (image.metadata.format != @intFromEnum(Format.raw_rgba)) return error.InvalidArgument;
+    if (image.metadata.format != @backingInt(Format.raw_rgba)) return error.InvalidArgument;
     const row_bytes = try validateRgba(pixels, image.width(), image.height(), options.stride);
     if (image.ref_count != 1) return error.Busy;
     std.debug.assert(image.pixels.len == @as(usize, row_bytes) * image.height());
@@ -871,7 +924,7 @@ fn decodeInternal(allocator: Allocator, data: []const u8, limits: Limits, retain
         else => error.MalformedInput,
     };
 
-    const format: Format = @enumFromInt(image_info.format);
+    const format: Format = @fromBackingInt(@intCast(image_info.format));
     const decode_data = if (format == .png) data[0..effective_len] else data;
     const source_len = try checkedPixelBytes(image_info.source_width, image_info.source_height, limits);
     if (format == .png and retain_encoded_png and image_info.orientation == 1 and image_info.has_alpha == 0) {
@@ -939,7 +992,7 @@ fn decodeInternal(allocator: Allocator, data: []const u8, limits: Limits, retain
     }
     image_info.has_alpha = @intFromBool(pixelsHaveTransparency(source));
 
-    const color_status: ColorStatus = @enumFromInt(image_info.color_status);
+    const color_status: ColorStatus = @fromBackingInt(@intCast(image_info.color_status));
     if (image_info.orientation == 1) {
         const image = try allocator.create(Image);
         errdefer allocator.destroy(image);
@@ -958,7 +1011,7 @@ fn decodeInternal(allocator: Allocator, data: []const u8, limits: Limits, retain
                 .source_width = image_info.source_width,
                 .source_height = image_info.source_height,
                 .format = image_info.format,
-                .color_status = @intFromEnum(color_status),
+                .color_status = @backingInt(color_status),
                 .orientation = 1,
                 .has_alpha = image_info.has_alpha,
             },
@@ -976,7 +1029,7 @@ fn decodeInternal(allocator: Allocator, data: []const u8, limits: Limits, retain
             .source_width = image_info.source_width,
             .source_height = image_info.source_height,
             .format = image_info.format,
-            .color_status = @intFromEnum(color_status),
+            .color_status = @backingInt(color_status),
             .orientation = 1,
             .has_alpha = image_info.has_alpha,
         },
@@ -1187,7 +1240,7 @@ pub fn resize(allocator: Allocator, source: *Image, width: u32, height: u32, fil
         width,
         height,
         width * 4,
-        @intFromEnum(filter),
+        @backingInt(filter),
     ) != 0) return error.OutOfMemory;
     output.metadata.has_alpha = @intFromBool(pixelsHaveTransparency(output.pixels));
     return output;
@@ -1253,8 +1306,8 @@ pub fn composite(
     const output = try copyImage(allocator, base_pixels, base.metadata);
     errdefer output.deinit();
 
-    const start_x: u32 = if (left < 0) @intCast(-@as(i64, left)) else 0;
-    const start_y: u32 = if (top < 0) @intCast(-@as(i64, top)) else 0;
+    const start_x: u32 = if (left < 0) @abs(left) else 0;
+    const start_y: u32 = if (top < 0) @abs(top) else 0;
     const dest_x: u32 = if (left < 0) 0 else @intCast(left);
     const dest_y: u32 = if (top < 0) 0 else @intCast(top);
     if (start_x >= overlay.width() or start_y >= overlay.height() or dest_x >= base.width() or dest_y >= base.height()) return output;
@@ -1297,6 +1350,33 @@ pub fn copyPixels(image: *Image, destination: []u8, stride: u32, bgra: bool) Sta
         }
     }
     return .ok;
+}
+
+test "pixelsHaveTransparency matches a scalar alpha scan for every start, length, and alpha" {
+    var prng = std.Random.DefaultPrng.init(1858);
+    const random = prng.random();
+    var buffer: [2 * 64 + 9]u8 = undefined;
+    const alphas = [_]u8{ 0, 127, 191, 223, 239, 247, 251, 253, 254 };
+    for (0..5) |start| {
+        // One planted byte (0, or 255 with one bit cleared) on an opaque grid with random color
+        // channels: each value on vector and tail lanes, every position, and none, for each length.
+        for (start..buffer.len + 1) |planted| {
+            random.bytes(&buffer);
+            for (start..buffer.len) |index| {
+                if ((index - start) % 4 == 3) buffer[index] = 255;
+            }
+            if (planted < buffer.len) buffer[planted] = alphas[planted % alphas.len];
+            for (start..buffer.len + 1) |end| try expectScalarTransparency(buffer[start..end]);
+        }
+    }
+    // Two equal alphas in one block must not cancel.
+    try expectScalarTransparency(&(@as([56]u8, @splat(255)) ++ @as([8]u8, @splat(0))));
+}
+
+fn expectScalarTransparency(pixels: []const u8) !void {
+    var expected = false;
+    for (pixels, 0..) |byte, index| expected = expected or (index % 4 == 3 and byte != 255);
+    try std.testing.expectEqual(expected, pixelsHaveTransparency(pixels));
 }
 
 test "Exif orientation parser handles little and big endian" {

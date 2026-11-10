@@ -1,6 +1,7 @@
 const std = @import("std");
 const sync = @import("sync.zig");
 const posix_io = @import("posix-io.zig");
+const logger = @import("../logger.zig");
 
 pub const Environment = struct {
     is_wsl: bool,
@@ -208,9 +209,9 @@ pub const XcbSelectionNotifyEvent = extern struct {
     property: u32,
 };
 
-const LibraryKind = enum { wayland, x11 };
 pub const WaylandSymbols = struct {
     wl_display_connect: *const fn (?[*:0]const u8) callconv(.c) ?*WlDisplay,
+    wl_display_connect_to_fd: *const fn (c_int) callconv(.c) ?*WlDisplay,
     wl_display_disconnect: *const fn (*WlDisplay) callconv(.c) void,
     wl_display_get_fd: *const fn (*WlDisplay) callconv(.c) c_int,
     wl_display_dispatch_pending: *const fn (*WlDisplay) callconv(.c) c_int,
@@ -225,7 +226,8 @@ pub const WaylandSymbols = struct {
     wl_display_prepare_read: *const fn (*WlDisplay) callconv(.c) c_int,
     wl_display_read_events: *const fn (*WlDisplay) callconv(.c) c_int,
     wl_display_cancel_read: *const fn (*WlDisplay) callconv(.c) void,
-    wl_proxy_marshal_array_flags: *const fn (*WlProxy, u32, ?*const WlInterface, u32, u32, [*]WlArgument) callconv(.c) ?*WlProxy,
+    // Exported since libwayland 1.10; 1.20 added the flags variant, which Ubuntu 20.04 lacks.
+    wl_proxy_marshal_array_constructor_versioned: *const fn (*WlProxy, u32, [*]WlArgument, ?*const WlInterface, u32) callconv(.c) ?*WlProxy,
     wl_proxy_add_listener: *const fn (*WlProxy, [*]const *const anyopaque, ?*anyopaque) callconv(.c) c_int,
     wl_proxy_destroy: *const fn (*WlProxy) callconv(.c) void,
     wl_proxy_get_version: *const fn (*WlProxy) callconv(.c) u32,
@@ -287,6 +289,52 @@ pub fn initialize(env: Environment) Libraries {
     return selectLibraries(env, ProductionLoader{});
 }
 
+/// Why a backend is unavailable. Services and connections retry, so the process says each once.
+pub const Report = enum(u3) { wayland_library, x11_library, wayland_connect, wayland_protocol, x11_connect };
+// The last failure of each backend, recorded where it happens and cleared on a new attempt. A
+// library failure and a connection failure of one backend exclude each other, so one slot holds it.
+const Cause = struct { report: Report = .wayland_library, length: u16 = 0, text: [1024]u8 = undefined };
+var causes_mutex: sync.Mutex = .{};
+var causes: std.EnumArray(Mechanism, Cause) = .initFill(.{});
+var reports_sent: std.atomic.Value(u8) = .init(0);
+
+/// Bounds environment text so a line fits the logger's 4096-byte buffer.
+pub fn bounded(text: []const u8) []const u8 {
+    return text[0..@min(text.len, 256)];
+}
+
+pub fn clearCause(kind: Mechanism) void {
+    causes_mutex.lock();
+    defer causes_mutex.unlock();
+    causes.getPtr(kind).length = 0;
+}
+
+pub fn recordCause(kind: Mechanism, report: Report, comptime format: []const u8, args: anytype) void {
+    causes_mutex.lock();
+    defer causes_mutex.unlock();
+    const cause = causes.getPtr(kind);
+    var writer: std.Io.Writer = .fixed(&cause.text);
+    writer.print(format, args) catch {};
+    cause.report = report;
+    cause.length = @intCast(writer.end);
+}
+
+/// Reports the recorded causes. The host calls it only when no backend serves an operation, so a
+/// desktop where some backend works stays silent. A cause counts as sent only when this thread's
+/// line reaches the process callback, which leaves a Worker's cause to a thread that can deliver it.
+pub fn reportUnavailable() void {
+    if (!logger.processLogReady()) return;
+    for ([_]Mechanism{ .wayland, .x11 }) |kind| {
+        causes_mutex.lock();
+        const cause = causes.get(kind);
+        causes_mutex.unlock();
+        if (cause.length == 0) continue;
+        const bit = @as(u8, 1) << @backingInt(cause.report);
+        if (reports_sent.fetchOr(bit, .monotonic) & bit != 0) continue;
+        logger.warn("Clipboard: {s}", .{cause.text[0..cause.length]});
+    }
+}
+
 pub fn waylandSymbols() ?*const WaylandSymbols {
     cache_mutex.lock();
     defer cache_mutex.unlock();
@@ -302,33 +350,45 @@ pub fn xcbSymbols() ?*const XcbSymbols {
 }
 
 fn selectLibraries(env: Environment, loader: anytype) Libraries {
-    var libraries: Libraries = .{ .is_wsl = env.is_wsl };
-    if (env.has_wayland_display) libraries.wayland = loader.load(.wayland);
-    if (env.has_x11_display) libraries.x11 = loader.load(.x11);
-    return libraries;
+    if (!env.has_wayland_display) clearCause(.wayland);
+    if (!env.has_x11_display) clearCause(.x11);
+    return .{
+        .wayland = env.has_wayland_display and loader.load(.wayland),
+        .x11 = env.has_x11_display and loader.load(.x11),
+        .is_wsl = env.is_wsl,
+    };
+}
+
+// Called while the loader's message is valid: until this thread's next dl* call.
+fn recordLoad(kind: Mechanism, missing_symbol: bool, detail: []const u8) bool {
+    const name = if (kind == .wayland) "libwayland-client.so.0" else "libxcb.so.1";
+    const report: Report = if (kind == .wayland) .wayland_library else .x11_library;
+    if (missing_symbol) {
+        recordCause(kind, report, "{s} has no symbol {s}", .{ name, detail });
+    } else {
+        recordCause(kind, report, "cannot load {s}: {s}", .{ name, detail });
+    }
+    return false;
 }
 
 const ProductionLoader = struct {
-    fn load(_: ProductionLoader, kind: LibraryKind) bool {
+    fn load(_: ProductionLoader, kind: Mechanism) bool {
         cache_mutex.lock();
         defer cache_mutex.unlock();
-
         return switch (kind) {
-            .wayland => loadCachedLibrary(WaylandSymbols, &wayland_cache, "libwayland-client.so.0"),
-            .x11 => loadCachedLibrary(XcbSymbols, &xcb_cache, "libxcb.so.1"),
+            .wayland => loadCachedLibrary(WaylandSymbols, &wayland_cache, .wayland),
+            .x11 => loadCachedLibrary(XcbSymbols, &xcb_cache, .x11),
         };
     }
 };
 
-fn loadCachedLibrary(
-    comptime Symbols: type,
-    cache: *CachedLibrary(Symbols),
-    name: []const u8,
-) bool {
+fn loadCachedLibrary(comptime Symbols: type, cache: *CachedLibrary(Symbols), kind: Mechanism) bool {
     if (cache.symbols != null) return true;
-
-    var library = std.DynLib.open(name) catch return false;
-    const symbols = loadSymbols(Symbols, &library) orelse {
+    const name = if (kind == .wayland) "libwayland-client.so.0" else "libxcb.so.1";
+    var library = std.DynLib.open(name) catch {
+        return recordLoad(kind, false, std.mem.span(std.c.dlerror() orelse "no loader message"));
+    };
+    const symbols = loadSymbols(Symbols, &library, kind) orelse {
         library.close();
         return false;
     };
@@ -337,13 +397,17 @@ fn loadCachedLibrary(
     return true;
 }
 
-fn loadSymbols(comptime Symbols: type, library: *std.DynLib) ?Symbols {
+fn loadSymbols(comptime Symbols: type, library: *std.DynLib, kind: Mechanism) ?Symbols {
     var symbols: Symbols = undefined;
-    inline for (@typeInfo(Symbols).@"struct".fields) |field| {
-        switch (@typeInfo(field.type)) {
+    const info = @typeInfo(Symbols).@"struct";
+    inline for (info.field_names, info.field_types) |name, Field| {
+        switch (@typeInfo(Field)) {
             // Optional fields name symbols missing from older library versions.
-            .optional => |optional| @field(symbols, field.name) = library.lookup(optional.child, field.name),
-            else => @field(symbols, field.name) = library.lookup(field.type, field.name) orelse return null,
+            .optional => |optional| @field(symbols, name) = library.lookup(optional.child, name),
+            else => @field(symbols, name) = library.lookup(Field, name) orelse {
+                _ = recordLoad(kind, true, name);
+                return null;
+            },
         }
     }
     return symbols;
@@ -360,61 +424,114 @@ fn hasNonEmptyProcessValue(name: [*:0]const u8) bool {
 }
 
 fn isWslKernelRelease(release: []const u8) bool {
-    return std.ascii.indexOfIgnoreCase(release, "microsoft") != null or
-        std.ascii.indexOfIgnoreCase(release, "wsl") != null;
+    return std.ascii.findIgnoreCase(release, "microsoft") != null or
+        std.ascii.findIgnoreCase(release, "wsl") != null;
 }
 
 const FakeLoader = struct {
-    wayland_available: bool = false,
-    x11_available: bool = false,
-    wayland_attempts: u32 = 0,
-    x11_attempts: u32 = 0,
+    const Outcome = union(enum) { loaded, open_failed: []const u8, symbol_missing: []const u8 };
+    loads: std.EnumArray(Mechanism, Outcome),
+    attempts: std.EnumArray(Mechanism, u32) = .initFill(0),
 
-    fn load(self: *FakeLoader, kind: LibraryKind) bool {
-        return switch (kind) {
-            .wayland => blk: {
-                self.wayland_attempts += 1;
-                break :blk self.wayland_available;
-            },
-            .x11 => blk: {
-                self.x11_attempts += 1;
-                break :blk self.x11_available;
-            },
+    fn load(self: *FakeLoader, kind: Mechanism) bool {
+        self.attempts.getPtr(kind).* += 1;
+        return switch (self.loads.get(kind)) {
+            .loaded => true,
+            .open_failed => |reason| recordLoad(kind, false, reason),
+            .symbol_missing => |symbol| recordLoad(kind, true, symbol),
         };
     }
 };
 
-fn expectLibraries(libraries: Libraries, wayland: bool, x11: bool) !void {
-    try std.testing.expectEqual(wayland, libraries.wayland);
-    try std.testing.expectEqual(x11, libraries.x11);
+pub fn testCauseReport(kind: Mechanism) ?Report {
+    const cause = causes.get(kind);
+    return if (cause.length == 0) null else cause.report;
 }
 
+// Captures the process log for a test: warn lines as they are, other levels marked.
+pub const test_log = struct {
+    pub var buffer: [4096]u8 = undefined;
+    pub var length: usize = 0;
+
+    pub fn callback(level: u8, message: [*]const u8, message_length: u32) callconv(.c) void {
+        var writer: std.Io.Writer = .fixed(buffer[length..]);
+        if (level != @backingInt(logger.LogLevel.warn)) writer.print("level {d}: ", .{level}) catch {};
+        writer.print("{s}\n", .{message[0..message_length]}) catch {};
+        length += writer.end;
+    }
+
+    pub fn begin() void {
+        length = 0;
+        causes = .initFill(.{});
+        reports_sent.store(0, .monotonic);
+        logger.setLogCallback(callback);
+    }
+
+    pub fn end() []const u8 {
+        logger.setLogCallback(null);
+        return buffer[0..length];
+    }
+};
+
 test "clipboard linux routing loads only applicable and available libraries" {
+    const missing: FakeLoader.Outcome = .{ .open_failed = "missing.so: cannot open shared object file" };
     const TestCase = struct {
         environment: Environment,
-        available: Libraries,
+        wayland: FakeLoader.Outcome = missing,
+        x11: FakeLoader.Outcome = missing,
         expected: Libraries,
         attempts: [2]u32,
+        reports: []const u8 = "",
     };
     const cases = [_]TestCase{
-        .{ .environment = .{ .is_wsl = true, .has_wayland_display = false, .has_x11_display = false }, .available = .{ .wayland = true, .x11 = true }, .expected = .{ .is_wsl = true }, .attempts = .{ 0, 0 } },
-        .{ .environment = .{ .is_wsl = false, .has_wayland_display = true, .has_x11_display = false }, .available = .{ .wayland = true }, .expected = .{ .wayland = true }, .attempts = .{ 1, 0 } },
-        .{ .environment = .{ .is_wsl = false, .has_wayland_display = false, .has_x11_display = true }, .available = .{ .x11 = true }, .expected = .{ .x11 = true }, .attempts = .{ 0, 1 } },
-        .{ .environment = .{ .is_wsl = true, .has_wayland_display = true, .has_x11_display = true }, .available = .{ .wayland = true, .x11 = true }, .expected = .{ .wayland = true, .x11 = true, .is_wsl = true }, .attempts = .{ 1, 1 } },
-        .{ .environment = .{ .is_wsl = false, .has_wayland_display = true, .has_x11_display = true }, .available = .{ .x11 = true }, .expected = .{ .x11 = true }, .attempts = .{ 1, 1 } },
-        .{ .environment = .{ .is_wsl = false, .has_wayland_display = true, .has_x11_display = true }, .available = .{ .wayland = true }, .expected = .{ .wayland = true }, .attempts = .{ 1, 1 } },
+        .{ .environment = .{ .is_wsl = true, .has_wayland_display = false, .has_x11_display = false }, .wayland = .loaded, .x11 = .loaded, .expected = .{ .is_wsl = true }, .attempts = .{ 0, 0 } },
+        .{ .environment = .{ .is_wsl = false, .has_wayland_display = true, .has_x11_display = false }, .wayland = .loaded, .expected = .{ .wayland = true }, .attempts = .{ 1, 0 } },
+        .{ .environment = .{ .is_wsl = false, .has_wayland_display = false, .has_x11_display = true }, .x11 = .loaded, .expected = .{ .x11 = true }, .attempts = .{ 0, 1 } },
+        .{ .environment = .{ .is_wsl = true, .has_wayland_display = true, .has_x11_display = true }, .wayland = .loaded, .x11 = .loaded, .expected = .{ .wayland = true, .x11 = true, .is_wsl = true }, .attempts = .{ 1, 1 } },
+        .{ .environment = .{ .is_wsl = false, .has_wayland_display = true, .has_x11_display = true }, .x11 = .loaded, .expected = .{ .x11 = true }, .attempts = .{ 1, 1 }, .reports = "Clipboard: cannot load libwayland-client.so.0: missing.so: cannot open shared object file\n" },
+        // Hyprland under a Nix wrapper: libxcb is missing but never needed.
+        .{ .environment = .{ .is_wsl = false, .has_wayland_display = true, .has_x11_display = true }, .wayland = .loaded, .expected = .{ .wayland = true }, .attempts = .{ 1, 1 }, .reports = "Clipboard: cannot load libxcb.so.1: missing.so: cannot open shared object file\n" },
+        .{ .environment = .{ .is_wsl = false, .has_wayland_display = true, .has_x11_display = true }, .wayland = .{ .symbol_missing = "wl_proxy_destroy" }, .expected = .{}, .attempts = .{ 1, 1 }, .reports = "Clipboard: libwayland-client.so.0 has no symbol wl_proxy_destroy\nClipboard: cannot load libxcb.so.1: missing.so: cannot open shared object file\n" },
     };
     for (cases) |case| {
-        var loader: FakeLoader = .{
-            .wayland_available = case.available.wayland,
-            .x11_available = case.available.x11,
-        };
+        var loader: FakeLoader = .{ .loads = .init(.{ .wayland = case.wayland, .x11 = case.x11 }) };
+        test_log.begin();
+        defer _ = test_log.end();
+        // A service in an environment without a display leaves no cause for that backend.
+        if (!case.environment.has_wayland_display) recordCause(.wayland, .wayland_connect, "stale", .{});
+        if (!case.environment.has_x11_display) recordCause(.x11, .x11_connect, "stale", .{});
         const libraries = selectLibraries(case.environment, &loader);
-        try expectLibraries(libraries, case.expected.wayland, case.expected.x11);
-        try std.testing.expectEqual(case.expected.is_wsl, libraries.is_wsl);
-        try std.testing.expectEqual(case.attempts[0], loader.wayland_attempts);
-        try std.testing.expectEqual(case.attempts[1], loader.x11_attempts);
+        try std.testing.expectEqual(case.expected, libraries);
+        try std.testing.expectEqual(case.attempts[0], loader.attempts.get(.wayland));
+        try std.testing.expectEqual(case.attempts[1], loader.attempts.get(.x11));
+        const wayland_failed = case.environment.has_wayland_display and !libraries.wayland;
+        try std.testing.expectEqual(if (wayland_failed) Report.wayland_library else null, testCauseReport(.wayland));
+        try std.testing.expectEqual(if (case.environment.has_x11_display and !libraries.x11) Report.x11_library else null, testCauseReport(.x11));
+        _ = selectLibraries(case.environment, &loader);
+        try std.testing.expectEqualStrings("", test_log.buffer[0..test_log.length]);
+        reportUnavailable();
+        reportUnavailable();
+        try std.testing.expectEqualStrings(case.reports, test_log.end());
     }
+}
+
+test "clipboard reports count as sent only once a thread can deliver them" {
+    const Worker = struct {
+        fn report() void {
+            reportUnavailable();
+        }
+    };
+    test_log.begin();
+    defer _ = test_log.end();
+    recordCause(.x11, .x11_connect, "delivered", .{});
+    const thread = try std.Thread.spawn(.{}, Worker.report, .{});
+    thread.join();
+    logger.setLogCallback(null);
+    reportUnavailable();
+    logger.setLogCallback(test_log.callback);
+    reportUnavailable();
+    reportUnavailable();
+    try std.testing.expectEqualStrings("Clipboard: delivered\n", test_log.end());
 }
 
 test "clipboard linux environment treats display variables as nonempty and WSL as presence based" {
@@ -450,4 +567,13 @@ test "clipboard XCB ABI types match the core protocol layouts" {
     try std.testing.expectEqual(@as(usize, 40), @sizeOf(XcbScreen));
     try std.testing.expectEqual(@as(usize, 28), @sizeOf(XcbSelectionRequestEvent));
     try std.testing.expectEqual(@as(usize, 24), @sizeOf(XcbSelectionNotifyEvent));
+}
+
+// Replaces the loaded libwayland symbols so host tests can create a connection; returns the previous ones.
+pub fn testSwapWaylandSymbols(symbols: ?WaylandSymbols) ?WaylandSymbols {
+    cache_mutex.lock();
+    defer cache_mutex.unlock();
+    const previous = wayland_cache.symbols;
+    wayland_cache.symbols = symbols;
+    return previous;
 }

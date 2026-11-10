@@ -65,7 +65,7 @@ export function createRenderer({
           if (current.length === 0) {
             appendNodes(parent, array, marker)
           } else reconcileArrays(parent, current, array)
-        } else if (current == null || current === "") {
+        } else if (current == null || !getFirstChild(parent)) {
           appendNodes(parent, array)
         } else {
           reconcileArrays(parent, (multi && current) || [getFirstChild(parent)], array)
@@ -76,7 +76,7 @@ export function createRenderer({
       if (Array.isArray(current)) {
         if (multi) return (current = cleanChildren(parent, current, marker, value))
         cleanChildren(parent, current, null, value)
-      } else if (current == null || current === "" || !getFirstChild(parent)) {
+      } else if (current == null || !getFirstChild(parent)) {
         insertNode(parent, value)
       } else replaceNode(parent, value, getFirstChild(parent))
       current = value

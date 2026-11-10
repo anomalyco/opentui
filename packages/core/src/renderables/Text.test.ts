@@ -5,6 +5,11 @@ import { RGBA } from "../lib/RGBA.js"
 import { stringToStyledText, StyledText } from "../lib/styled-text.js"
 import { createTestRenderer, type MockMouse, type TestRenderer } from "../testing/test-renderer.js"
 import { BoxRenderable } from "./Box.js"
+import { Renderable } from "../Renderable.js"
+import type { OptimizedBuffer } from "../buffer.js"
+import { CodeRenderable } from "./Code.js"
+import { SyntaxStyle } from "../syntax-style.js"
+import { MockTreeSitterClient } from "../testing/mock-tree-sitter-client.js"
 
 let currentRenderer: TestRenderer
 let renderOnce: () => Promise<void>
@@ -690,483 +695,90 @@ describe("TextRenderable Selection", () => {
     })
   })
 
-  describe("TextNode Integration with getPlainText", () => {
-    it("should render correct plain text after adding TextNodes", async () => {
-      const { text, root } = await createTextRenderable(currentRenderer, {
-        content: "",
-        selectable: true,
-      })
-
-      const node1 = new TextNodeRenderable({
-        fg: RGBA.fromValues(1, 0, 0, 1),
-        bg: RGBA.fromValues(0, 0, 0, 1),
-      })
-      node1.add("Hello")
-
-      const node2 = new TextNodeRenderable({
-        fg: RGBA.fromValues(0, 1, 0, 1),
-        bg: RGBA.fromValues(0, 0, 0, 1),
-      })
-      node2.add(" World")
-
-      text.add(node1)
-      text.add(node2)
-
+  // Random TextNode edits, often several per render, checked against a model of the tree after each render.
+  it.each([1, 2, 3])("composes TextNode trees like a reference model (seed %j)", async (seed) => {
+    let state = seed
+    const random = (count: number) => {
+      state ^= state << 13
+      state ^= state >>> 17
+      state ^= state << 5
+      return (state >>> 0) % count
+    }
+    const colors = [undefined, RGBA.fromValues(1, 0, 0, 1), RGBA.fromValues(0, 1, 0, 1), RGBA.fromValues(0, 0, 1, 1)]
+    type Style = { fg: RGBA | undefined; bg: RGBA | undefined; attributes: number }
+    type Model = Style & { node: TextNodeRenderable; children: (string | Model)[] }
+    const { text } = await createTextRenderable(currentRenderer, { content: "", fg: colors[1], bg: colors[2] })
+    const root: Model = { node: text.textNode, fg: colors[1], bg: colors[2], attributes: 0, children: [] }
+    const models = [root]
+    const gather = (model: Model, parent: Style): (Style & { text: string })[] => {
+      const style = {
+        fg: model.fg ?? parent.fg,
+        bg: model.bg ?? parent.bg,
+        attributes: model.attributes | parent.attributes,
+      }
+      return model.children.flatMap((child) =>
+        typeof child === "string" ? [{ text: child, ...style }] : gather(child, style),
+      )
+    }
+    const detach = (model: Model): void => {
+      models.splice(models.indexOf(model), 1)
+      for (const child of model.children) if (typeof child !== "string") detach(child)
+    }
+    const check = async () => {
       await renderOnce()
-
-      expect(text.plainText).toBe("Hello World")
-    })
-
-    it("should render correct plain text after inserting TextNodes", async () => {
-      const { text, root } = await createTextRenderable(currentRenderer, {
-        content: "",
-        selectable: true,
-      })
-
-      const node1 = new TextNodeRenderable({})
-      node1.add("Hello")
-
-      const node2 = new TextNodeRenderable({})
-      node2.add(" World")
-
-      const node3 = new TextNodeRenderable({})
-      node3.add("!")
-
-      text.add(node1)
-      text.add(node2)
-
-      text.insertBefore(node3, node2)
-
-      await renderOnce()
-
-      expect(text.plainText).toBe("Hello! World")
-    })
-
-    it("should render correct plain text after removing TextNodes", async () => {
-      const { text, root } = await createTextRenderable(currentRenderer, {
-        content: "",
-        selectable: true,
-      })
-
-      const node1 = new TextNodeRenderable({})
-      node1.add("Hello")
-
-      const node2 = new TextNodeRenderable({})
-      node2.add(" Cruel")
-
-      const node3 = new TextNodeRenderable({})
-      node3.add(" World")
-
-      text.add(node1)
-      text.add(node2)
-      text.add(node3)
-
-      await renderOnce()
-      expect(text.plainText).toBe("Hello Cruel World")
-
-      text.remove(node2)
-
-      await renderOnce()
-
-      expect(text.plainText).toBe("Hello World")
-    })
-
-    it("should handle simple add and remove operations", async () => {
-      const { text, root } = await createTextRenderable(currentRenderer, {
-        content: "",
-        selectable: true,
-      })
-
-      const node = new TextNodeRenderable({})
-      node.add("Test")
-
-      text.add(node)
-
-      await renderOnce()
-      expect(text.plainText).toBe("Test")
-
-      text.remove(node)
-
-      await renderOnce()
-      expect(text.plainText).toBe("")
-    })
-
-    it("should render correct plain text after clearing all TextNodes", async () => {
-      const { text, root } = await createTextRenderable(currentRenderer, {
-        content: "",
-        selectable: true,
-      })
-
-      const node1 = new TextNodeRenderable({})
-      node1.add("Hello")
-
-      const node2 = new TextNodeRenderable({})
-      node2.add(" World")
-
-      text.add(node1)
-      text.add(node2)
-
-      await renderOnce()
-      expect(text.plainText).toBe("Hello World")
-
-      text.clear()
-
-      await renderOnce()
-
-      expect(text.plainText).toBe("")
-    })
-
-    it("should handle nested TextNode structures correctly", async () => {
-      const { text, root } = await createTextRenderable(currentRenderer, {
-        content: "",
-        selectable: true,
-      })
-
-      // Create nested structure: Parent -> [Child1, Child2]
-      const parent = new TextNodeRenderable({
-        fg: RGBA.fromValues(1, 1, 0, 1),
-      })
-
-      const child1 = new TextNodeRenderable({
-        fg: RGBA.fromValues(1, 0, 0, 1),
-      })
-      child1.add("Red")
-
-      const child2 = new TextNodeRenderable({
-        fg: RGBA.fromValues(0, 1, 0, 1),
-      })
-      child2.add(" Green")
-
-      parent.add(child1)
-      parent.add(child2)
-
-      const standalone = new TextNodeRenderable({
-        fg: RGBA.fromValues(0, 0, 1, 1),
-      })
-      standalone.add(" Blue")
-
-      text.add(parent)
-      text.add(standalone)
-
-      await renderOnce()
-
-      expect(text.plainText).toBe("Red Green Blue")
-    })
-
-    it("should handle mixed string and TextNode content", async () => {
-      const { text, root } = await createTextRenderable(currentRenderer, {
-        content: "",
-        selectable: true,
-      })
-
-      const startNode = new TextNodeRenderable({})
-      startNode.add("Start ")
-
-      const node1 = new TextNodeRenderable({})
-      node1.add("middle")
-
-      const node2 = new TextNodeRenderable({})
-      node2.add(" end")
-
-      text.add(startNode)
-      text.add(node1)
-      text.add(node2)
-
-      await renderOnce()
-
-      expect(text.plainText).toBe("Start middle end")
-    })
-
-    it("should handle TextNode operations with inherited styles", async () => {
-      const { text, root } = await createTextRenderable(currentRenderer, {
-        content: "",
-        selectable: true,
-        fg: RGBA.fromValues(1, 1, 1, 1), // White default
-      })
-
-      const redParent = new TextNodeRenderable({
-        fg: RGBA.fromValues(1, 0, 0, 1), // Red
-      })
-
-      const redChild = new TextNodeRenderable({})
-
-      const greenGrandchild = new TextNodeRenderable({
-        fg: RGBA.fromValues(0, 1, 0, 1), // Green
-      })
-      greenGrandchild.add("Green")
-
-      redChild.add(greenGrandchild)
-      redParent.add(redChild)
-
-      const blueNode = new TextNodeRenderable({
-        fg: RGBA.fromValues(0, 0, 1, 1), // Blue
-      })
-      blueNode.add(" Blue")
-
-      text.add(redParent)
-      text.add(blueNode)
-
-      await renderOnce()
-
-      expect(text.plainText).toBe("Green Blue")
-    })
-
-    it("should handle empty TextNodes correctly", async () => {
-      const { text, root } = await createTextRenderable(currentRenderer, {
-        content: "",
-        selectable: true,
-      })
-
-      const emptyNode1 = new TextNodeRenderable({})
-      const nodeWithText = new TextNodeRenderable({})
-      nodeWithText.add("Text")
-      const emptyNode2 = new TextNodeRenderable({})
-
-      text.add(emptyNode1)
-      text.add(nodeWithText)
-      text.add(emptyNode2)
-
-      await renderOnce()
-
-      expect(text.plainText).toBe("Text")
-    })
-
-    it("should handle complex TextNode operations sequence", async () => {
-      const { text, root } = await createTextRenderable(currentRenderer, {
-        content: "",
-        selectable: true,
-      })
-
-      const initialNode = new TextNodeRenderable({})
-      initialNode.add("Initial")
-
-      const nodeA = new TextNodeRenderable({})
-      nodeA.add(" A")
-
-      const nodeB = new TextNodeRenderable({})
-      nodeB.add(" B")
-
-      const nodeC = new TextNodeRenderable({})
-      nodeC.add(" C")
-
-      const nodeD = new TextNodeRenderable({})
-      nodeD.add(" D")
-
-      text.add(initialNode)
-      text.add(nodeA)
-      text.add(nodeB)
-      text.add(nodeC)
-      text.add(nodeD)
-
-      await renderOnce()
-      expect(text.plainText).toBe("Initial A B C D")
-
-      text.remove(nodeB)
-
-      await renderOnce()
-      expect(text.plainText).toBe("Initial A C D")
-
-      const nodeX = new TextNodeRenderable({})
-      nodeX.add(" X")
-      text.insertBefore(nodeX, nodeC)
-
-      await renderOnce()
-      expect(text.plainText).toBe("Initial A X C D")
-
-      nodeX.add(" Y")
-
-      await renderOnce()
-      expect(text.plainText).toBe("Initial A X Y C D")
-    })
-
-    it("should inherit fg/bg colors from TextRenderable to TextNode children", async () => {
-      const { text, root } = await createTextRenderable(currentRenderer, {
-        content: "",
-        selectable: true,
-        fg: RGBA.fromValues(1, 0, 0, 1),
-        bg: RGBA.fromValues(0, 0, 1, 1),
-      })
-
-      const child1 = new TextNodeRenderable({})
-      child1.add("Child1")
-
-      const child2 = new TextNodeRenderable({})
-      child2.add(" Child2")
-
-      text.add(child1)
-      text.add(child2)
-
-      await renderOnce()
-
-      expect(text.plainText).toBe("Child1 Child2")
-
+      const expected = gather(root, { fg: undefined, bg: undefined, attributes: 0 })
+      expect(text.plainText).toBe(expected.map((chunk) => chunk.text).join(""))
       const chunks = text.textNode.gatherWithInheritedStyle()
+      expect(chunks.map(({ text, fg, bg, attributes }) => ({ text, fg, bg, attributes: attributes ?? 0 }))).toEqual(
+        expected,
+      )
+    }
 
-      expect(chunks).toHaveLength(2)
-
-      chunks.forEach((chunk) => {
-        expect(chunk.fg).toEqual(RGBA.fromValues(1, 0, 0, 1))
-        expect(chunk.bg).toEqual(RGBA.fromValues(0, 0, 1, 1))
-        expect(chunk.attributes).toBe(0)
-      })
-
-      expect(chunks[0].text).toBe("Child1")
-      expect(chunks[1].text).toBe(" Child2")
-    })
-
-    it("should allow TextNode children to override parent TextRenderable colors", async () => {
-      const { text, root } = await createTextRenderable(currentRenderer, {
-        content: "",
-        selectable: true,
-        fg: RGBA.fromValues(1, 0, 0, 1),
-        bg: RGBA.fromValues(0, 0, 1, 1),
-      })
-
-      const inheritingChild = new TextNodeRenderable({})
-      inheritingChild.add("Inherit")
-
-      const overridingChild = new TextNodeRenderable({
-        fg: RGBA.fromValues(0, 1, 0, 1),
-        bg: RGBA.fromValues(1, 1, 0, 1),
-      })
-      overridingChild.add(" Override")
-
-      const partialOverrideChild = new TextNodeRenderable({
-        fg: RGBA.fromValues(0, 0, 1, 1),
-      })
-      partialOverrideChild.add(" Partial")
-
-      text.add(inheritingChild)
-      text.add(overridingChild)
-      text.add(partialOverrideChild)
-
-      await renderOnce()
-
-      expect(text.plainText).toBe("Inherit Override Partial")
-
-      const chunks = text.textNode.gatherWithInheritedStyle()
-
-      expect(chunks).toHaveLength(3)
-
-      // First child: inherits both fg and bg from parent
-      expect(chunks[0].text).toBe("Inherit")
-      expect(chunks[0].fg).toEqual(RGBA.fromValues(1, 0, 0, 1))
-      expect(chunks[0].bg).toEqual(RGBA.fromValues(0, 0, 1, 1))
-
-      // Second child: overrides both fg and bg
-      expect(chunks[1].text).toBe(" Override")
-      expect(chunks[1].fg).toEqual(RGBA.fromValues(0, 1, 0, 1))
-      expect(chunks[1].bg).toEqual(RGBA.fromValues(1, 1, 0, 1))
-
-      // Third child: overrides fg, inherits bg
-      expect(chunks[2].text).toBe(" Partial")
-      expect(chunks[2].fg).toEqual(RGBA.fromValues(0, 0, 1, 1))
-      expect(chunks[2].bg).toEqual(RGBA.fromValues(0, 0, 1, 1))
-    })
-
-    it("should inherit TextRenderable colors through nested TextNode hierarchies", async () => {
-      const { text, root } = await createTextRenderable(currentRenderer, {
-        content: "",
-        selectable: true,
-        fg: RGBA.fromValues(0, 1, 0, 1),
-        bg: RGBA.fromValues(0, 0, 0, 1),
-      })
-
-      const grandparent = new TextNodeRenderable({})
-      const parent = new TextNodeRenderable({})
-      const child = new TextNodeRenderable({})
-
-      child.add("Deep")
-      parent.add("Nested ")
-      parent.add(child)
-      grandparent.add("Very ")
-      grandparent.add(parent)
-
-      text.add(grandparent)
-
-      await renderOnce()
-
-      expect(text.plainText).toBe("Very Nested Deep")
-
-      const chunks = text.textNode.gatherWithInheritedStyle()
-
-      expect(chunks).toHaveLength(3)
-
-      // All chunks should inherit the TextRenderable's green fg and black bg
-      chunks.forEach((chunk) => {
-        expect(chunk.fg).toEqual(RGBA.fromValues(0, 1, 0, 1))
-        expect(chunk.bg).toEqual(RGBA.fromValues(0, 0, 0, 1))
-        expect(chunk.attributes).toBe(0)
-      })
-
-      expect(chunks[0].text).toBe("Very ")
-      expect(chunks[1].text).toBe("Nested ")
-      expect(chunks[2].text).toBe("Deep")
-    })
-
-    it("should handle TextRenderable color changes affecting existing TextNode children", async () => {
-      const { text, root } = await createTextRenderable(currentRenderer, {
-        content: "",
-        selectable: true,
-        fg: RGBA.fromValues(1, 0, 0, 1),
-        bg: RGBA.fromValues(0, 0, 0, 1),
-      })
-
-      const child1 = new TextNodeRenderable({})
-      child1.add("Before")
-
-      const child2 = new TextNodeRenderable({})
-      child2.add(" Change")
-
-      text.add(child1)
-      text.add(child2)
-
-      await renderOnce()
-      expect(text.plainText).toBe("Before Change")
-
-      text.fg = RGBA.fromValues(0, 0, 1, 1)
-      text.bg = RGBA.fromValues(1, 1, 1, 1)
-
-      await renderOnce()
-
-      const chunks = text.textNode.gatherWithInheritedStyle()
-
-      expect(chunks).toHaveLength(2)
-
-      chunks.forEach((chunk) => {
-        expect(chunk.fg).toEqual(RGBA.fromValues(0, 0, 1, 1))
-        expect(chunk.bg).toEqual(RGBA.fromValues(1, 1, 1, 1))
-      })
-
-      expect(chunks[0].text).toBe("Before")
-      expect(chunks[1].text).toBe(" Change")
-    })
-
-    it("should handle TextNode commands with multiple operations per render", async () => {
-      const { text, root } = await createTextRenderable(currentRenderer, {
-        content: "",
-        selectable: true,
-      })
-
-      const node1 = new TextNodeRenderable({})
-      node1.add("First")
-
-      const node2 = new TextNodeRenderable({})
-      node2.add("Second")
-
-      const node3 = new TextNodeRenderable({})
-      node3.add("Third")
-
-      text.add(node1)
-      text.add(node2)
-      text.insertBefore(node3, node1)
-
-      node2.add(" Modified")
-
-      await renderOnce()
-
-      expect(text.plainText).toBe("ThirdFirstSecond Modified")
-    })
+    for (let step = 0; step < 80; step++) {
+      const parent = models[random(models.length)]
+      const target = parent === root ? text : parent.node
+      const nodes = parent.children.filter((child): child is Model => typeof child !== "string")
+      const operation = random(7)
+      if (operation <= 1) {
+        const [fg, bg, attributes] = [colors[random(4)], colors[random(4)], random(2)]
+        const model: Model = { node: new TextNodeRenderable({ fg, bg, attributes }), fg, bg, attributes, children: [] }
+        if (operation === 1 && nodes.length > 0) {
+          const anchor = nodes[random(nodes.length)]
+          target.insertBefore(model.node, anchor.node)
+          parent.children.splice(parent.children.indexOf(anchor), 0, model)
+        } else {
+          target.add(model.node)
+          parent.children.push(model)
+        }
+        models.push(model)
+      } else if (operation === 2) {
+        const value = "abc\n"[random(4)].repeat(1 + random(2))
+        target.add(value)
+        parent.children.push(value)
+      } else if (operation === 3 && nodes.length > 0) {
+        const child = nodes[random(nodes.length)]
+        target.remove(child.node)
+        parent.children.splice(parent.children.indexOf(child), 1)
+        detach(child)
+      } else if (operation === 4) {
+        const fg = colors[1 + random(3)]
+        if (parent === root) text.fg = fg
+        else parent.node.fg = fg
+        parent.fg = fg
+      } else if (operation === 5) {
+        // The Text's own bg must reach children without one; the root always has a bg.
+        const bg = colors[random(4)] ?? (parent === root ? colors[3] : undefined)
+        if (parent === root) text.bg = bg
+        else parent.node.bg = bg
+        parent.bg = bg
+      } else if (operation === 6 && random(4) === 0) {
+        text.clear()
+        for (const child of [...root.children]) if (typeof child !== "string") detach(child)
+        root.children = []
+      }
+      if (random(2) === 0) await check()
+    }
+    await check()
   })
 
   describe("StyledText Integration", () => {
@@ -1313,7 +925,7 @@ describe("TextRenderable Selection", () => {
 
       expect(text.hasSelection()).toBe(true)
 
-      const { bg } = buffer.buffers
+      const bg = buffer.withBuffers(({ bg }) => bg.slice())
       const bufferWidth = buffer.width
 
       const ellipsisIdx = text.y * bufferWidth + text.x + 3
@@ -1343,7 +955,7 @@ describe("TextRenderable Selection", () => {
 
       expect(text.hasSelection()).toBe(true)
 
-      const { bg } = buffer.buffers
+      const bg = buffer.withBuffers(({ bg }) => bg.slice())
       const bufferWidth = buffer.width
 
       const ellipsisIdx = (text.y + 1) * bufferWidth + text.x + 3
@@ -1443,8 +1055,15 @@ describe("TextRenderable Selection", () => {
       expect(frame).toMatchSnapshot()
     })
 
+    it("draws the visible cell of a wide glyph cut at x = -1 as a blank on the glyph's background", async () => {
+      await createTextRenderable(currentRenderer, { content: "0123", bg: "#c04010", position: "absolute" })
+      await createTextRenderable(currentRenderer, { content: "界界", bg: "#2040c0", position: "absolute", left: -1 })
+      const bg = currentRenderer.currentRenderBuffer.withBuffers(({ bg }) => [...bg.slice(0, 3)].map((v) => v & 0xff))
+      expect([captureFrame().slice(0, 3), bg]).toEqual([" 界3", [32, 64, 192]])
+    })
+
     it("should render empty buffer correctly", async () => {
-      currentRenderer.currentRenderBuffer.clear()
+      await renderOnce()
       const frame = captureFrame()
       expect(frame).toMatchSnapshot()
     })
@@ -1499,6 +1118,26 @@ describe("TextRenderable Selection", () => {
 
       const frame = captureFrame()
       expect(frame).toMatchSnapshot()
+    })
+
+    it("should align each line and update alignment at runtime", async () => {
+      const { text } = await createTextRenderable(currentRenderer, {
+        content: "hi\nworld",
+        width: 10,
+        height: 2,
+        textAlign: "center",
+      })
+
+      const rows = () =>
+        captureFrame()
+          .split("\n", 2)
+          .map((row) => row.slice(0, 10))
+      expect(rows()).toEqual(["    hi    ", "  world   "])
+
+      text.textAlign = "right"
+      await renderOnce()
+
+      expect(rows()).toEqual(["        hi", "     world"])
     })
 
     it("should render text with tab indicator correctly", async () => {
@@ -1774,6 +1413,31 @@ describe("TextRenderable Selection", () => {
       await renderOnce()
 
       expect(text.height).toBe(1)
+    })
+
+    // GitHub #435: Yoga shrinks the middle text of a too-short column to zero rows. It paints
+    // nothing instead of overlapping the next text, and its height getter still reports one row.
+    // An empty renderable with its own renderSelf is zero rows tall too, so its hooks draw nothing.
+    it("hides a text that a short column shrinks to zero rows", async () => {
+      const column = new BoxRenderable(currentRenderer, { flexDirection: "column", height: 2 })
+      currentRenderer.root.add(column)
+      const texts = ["Line 1: short", "Line 2: Another line", "Line 3: end"].map(
+        (content) => new TextRenderable(currentRenderer, { content }),
+      )
+      for (const text of texts) column.add(text)
+      class Mark extends Renderable {
+        protected override renderSelf(buffer: OptimizedBuffer): void {
+          buffer.drawText("X".repeat(this.width), this.x, this.y, RGBA.fromInts(255, 255, 255))
+        }
+      }
+      column.add(new Mark(currentRenderer, { width: 6 }))
+      await renderOnce()
+
+      const rows = captureFrame()
+        .split("\n", 3)
+        .map((line) => line.trimEnd())
+      expect(rows).toEqual(["Line 1: short", "Line 3: end", ""])
+      expect(texts.map((text) => `${text.y} ${text.height}`)).toEqual(["0 1", "1 1", "1 1"])
     })
 
     it("should shrink width when replacing long line with shorter (wrapMode: none, position: absolute)", async () => {
@@ -2550,37 +2214,34 @@ describe("TextRenderable Selection", () => {
       expect(text.scrollY).toBe(2)
     })
 
-    it("should handle mouse scroll events for horizontal scrolling with unwrapped text", async () => {
-      resize(80, 5)
-
-      const wideText =
-        "This is a very long line that extends way beyond the visible area and should definitely need scrolling"
-      const { text } = await createTextRenderable(currentRenderer, {
-        content: wideText,
-        wrapMode: "none",
-        width: 20,
-        maxWidth: 20,
-      })
-
+    // Text paints through the native scene and Code through its own view. Truncated or wrapped text has nothing to
+    // the side: wheel steps leave it, and turning truncate on or leaving wrapMode "none" scrolls back to column 0.
+    it.each([
+      ["Text", false],
+      ["Text", true],
+      ["Code", false],
+      ["Code", true],
+    ] as const)("sideways wheel steps over unwrapped %s with truncate %j", async (kind, truncate) => {
+      const content = "abcdefghijklmnopqrstuvwxyz\nABCDEFGHIJKLMNOPQRSTUVWXYZ"
+      const syntaxStyle = SyntaxStyle.create(currentRenderer.nativeScene)
+      const options = { content, wrapMode: "none" as const, width: 10, height: 1, syntaxStyle }
+      const code = () =>
+        new CodeRenderable(currentRenderer, { ...options, treeSitterClient: new MockTreeSitterClient() })
+      const text = kind === "Text" ? new TextRenderable(currentRenderer, options) : code()
+      const state = async () => (await renderOnce(), [text.scrollY, text.scrollX, captureFrame().slice(0, 10)])
+      currentRenderer.root.add(text)
       await renderOnce()
-
-      expect(text.scrollX).toBe(0)
-      expect(text.scrollY).toBe(0)
-
-      // Scroll right
-      for (let i = 0; i < 5; i++) {
-        await currentMouse.scroll(text.x + 1, text.y, "right")
-      }
-      await renderOnce()
-
-      expect(text.scrollX).toBe(5)
-
-      // Scroll left
-      await currentMouse.scroll(text.x + 1, text.y, "left")
-      await currentMouse.scroll(text.x + 1, text.y, "left")
-      await renderOnce()
-
-      expect(text.scrollX).toBe(3)
+      await currentMouse.scroll(1, 0, "right")
+      text.truncate = truncate
+      expect(await state()).toEqual(truncate ? [0, 0, "abc...wxyz"] : [0, 1, "bcdefghijk"])
+      for (const step of ["down", "right", "right", "right", "right", "left"] as const)
+        await currentMouse.scroll(1, 0, step)
+      expect(await state()).toEqual(truncate ? [1, 0, "ABC...WXYZ"] : [1, 4, "EFGHIJKLMN"])
+      text.scrollX = 2
+      await currentMouse.scroll(1, 0, "left")
+      expect(text.scrollX).toBe(truncate ? 2 : 1)
+      text.wrapMode = "word"
+      expect(await state()).toEqual([1, 0, "klmnopqrst"])
     })
 
     it("should not allow horizontal scrolling when text is wrapped", async () => {
@@ -2706,6 +2367,28 @@ describe("TextRenderable Selection", () => {
         await renderOnce()
         expect(text.scrollX).toBe(2)
       }
+    })
+
+    it("truncates a fractional scroll offset when a shared text view resizes", async () => {
+      const syntaxStyle = SyntaxStyle.create(currentRenderer.nativeScene)
+      const treeSitterClient = new MockTreeSitterClient()
+      const code = new CodeRenderable(currentRenderer, {
+        content: "a\nb\nc\nd",
+        syntaxStyle,
+        treeSitterClient,
+        height: 2,
+      })
+      currentRenderer.root.add(code)
+      await renderOnce()
+      code.scrollY = 1.5
+      code.height = 3
+      await renderOnce()
+      expect(
+        captureFrame()
+          .split("\n")
+          .slice(0, 4)
+          .map((line) => line.trim()),
+      ).toEqual(["b", "c", "d", ""])
     })
   })
 })

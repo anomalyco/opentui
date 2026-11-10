@@ -104,7 +104,7 @@ export const textCellVisuals: DocVisualFixture[] = [
         column.add(new TextRenderable(renderer, { content: label, fg: foreground, bg: background }))
         column.add(new TextRenderable(renderer, { content: "012", fg: muted, bg: background }))
 
-        const text = TextBuffer.create(renderer.widthMethod)
+        const text = TextBuffer.create(renderer.widthMethod, renderer.nativeScene)
         registerCleanup(() => text.destroy())
         const view = TextBufferView.create(text)
         registerCleanup(() => view.destroy())

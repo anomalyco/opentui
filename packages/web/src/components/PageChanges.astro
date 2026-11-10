@@ -1,0 +1,100 @@
+---
+// The recent changes of a documentation page, newest first, in a closed disclosure above the page's previous and
+// next links. The summary names the releases. Each release links to its release page; release-note entries come
+// first, then the API changes of the symbols the page documents.
+import { UNRELEASED } from "../lib/api-docs"
+import { channelLinks, channelUrl, pageChannel } from "../lib/docs-channel"
+import type { PageChanges } from "../lib/page-changes"
+
+interface Props {
+  changes: PageChanges[]
+}
+
+// A long list stops after MAX_NAMES names, unless only a few more remain; the release page lists them all.
+const MAX_NAMES = 6
+const shown = (names: string[]) => (names.length > MAX_NAMES + 2 ? MAX_NAMES : names.length)
+const labels = { added: "Added", changed: "Changed", deprecated: "Deprecated", removed: "Removed" }
+const channel = pageChannel(Astro.url.pathname)
+const releaseUrl = (version: string) =>
+  channelUrl(version === UNRELEASED ? "/docs/releases/unreleased" : `/docs/releases/${version}`, channel)
+---
+
+<details class="page-changes prose" id="changes">
+  <summary>
+    Changes<span class="versions">{Astro.props.changes.map((release) => release.version).join(", ")}</span>
+  </summary>
+  <dl>
+    {
+      Astro.props.changes.map((release) => (
+        <>
+          <dt>
+            <a href={releaseUrl(release.version)}>{release.version}</a>
+          </dt>
+          {release.notes.map((html) => (
+            <dd set:html={channelLinks(html, channel)} />
+          ))}
+          {release.api.map(({ type, names }) => (
+            <dd>
+              {labels[type]}{" "}
+              {names.slice(0, shown(names)).map((name, index) => (
+                <>
+                  {index > 0 && ", "}
+                  <code>{name}</code>
+                </>
+              ))}
+              {names.length > shown(names) && (
+                <>
+                  {" "}
+                  and <a href={releaseUrl(release.version)}>{names.length - shown(names)} more</a>
+                </>
+              )}
+              .
+            </dd>
+          ))}
+        </>
+      ))
+    }
+  </dl>
+</details>
+
+<style>
+  .page-changes {
+    margin-block-end: 1.5rem;
+  }
+
+  /* Plain text control, like the "On this page" bar: the label in the text
+   * color, the releases muted, one line. */
+  summary {
+    cursor: pointer;
+    list-style: none;
+    width: fit-content;
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .versions {
+    color: var(--muted-color);
+    margin-inline-start: 0.75rem;
+  }
+
+  /* Each release's version stands above its entries, on the page's one left edge. A blank line separates
+   * releases. */
+  dl {
+    margin-block: 0.75rem 0;
+  }
+
+  dt:not(:first-child) {
+    margin-block-start: 1.5rem;
+  }
+
+  dd {
+    margin-inline-start: 0;
+    margin-block-start: 0.375rem;
+  }
+</style>

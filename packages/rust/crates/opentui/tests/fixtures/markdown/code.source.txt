@@ -1,0 +1,10 @@
+Some text before.
+
+const a = 1
+function f() {
+  return a
+}
+
+Inline `code` here.
+
+plain block

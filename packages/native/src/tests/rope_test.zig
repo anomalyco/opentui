@@ -375,13 +375,11 @@ const Line = struct {
 
     pub fn empty() Line {
         // Use static empty chunk rope - safe because it's immutable
-        const ChunkRope = rope_mod.Rope(Chunk);
         return .{
             .chunks = .{
                 .root = &empty_chunk_leaf_node,
                 .allocator = undefined, // Never used for empty
                 .empty_leaf = &empty_chunk_leaf_node,
-                .marker_cache = ChunkRope.MarkerCache.init(undefined),
             },
             .line_id = 0,
         };
@@ -1528,7 +1526,7 @@ test "Rope - split_at_weight at boundary" {
 
     // Split at weight 30 (boundary between second and third item)
     const splitter = makeWeightedSplitter();
-    const result = try WeightedRope.Node.split_at_weight(rope.root, 30, arena.allocator(), rope.empty_leaf, &splitter);
+    const result = try WeightedRope.Node.split_at_weight(rope.root, 30, null, arena.allocator(), rope.empty_leaf, &splitter);
 
     // Left should have weight 30 (first two items)
     try std.testing.expectEqual(@as(u32, 30), result.left.metrics().weight());
@@ -1544,7 +1542,7 @@ test "Rope - split_at_weight inside leaf" {
 
     // Split at weight 40 (inside the single leaf)
     const splitter = makeWeightedSplitter();
-    const result = try WeightedRope.Node.split_at_weight(rope.root, 40, arena.allocator(), rope.empty_leaf, &splitter);
+    const result = try WeightedRope.Node.split_at_weight(rope.root, 40, null, arena.allocator(), rope.empty_leaf, &splitter);
 
     // Left should have weight 40
     try std.testing.expectEqual(@as(u32, 40), result.left.metrics().weight());
@@ -1591,7 +1589,7 @@ test "Rope - deleteRangeByWeight" {
 
     // Delete weight range [10, 30) - removes the second item (weight 20)
     const splitter = makeWeightedSplitter();
-    try rope.deleteRangeByWeight(10, 30, &splitter);
+    _ = try rope.replaceRangeByWeight(10, 30, .left, .left, &.{}, &splitter);
 
     // Should have removed weight 20
     try std.testing.expectEqual(@as(u32, 80), rope.totalWeight());
@@ -1613,7 +1611,7 @@ test "Rope - insertSliceByWeight" {
         .{ .value = 2, .weight = 20 },
     };
     const splitter = makeWeightedSplitter();
-    try rope.insertSliceByWeight(10, &insert_items, &splitter);
+    _ = try rope.insertSliceByWeight(10, .left, &insert_items, &splitter);
 
     // Should have added weight 20
     try std.testing.expectEqual(@as(u32, 60), rope.totalWeight());
@@ -1635,166 +1633,26 @@ test "Rope - findByWeight" {
     try std.testing.expect(result0 != null);
     try std.testing.expectEqual(@as(u32, 1), result0.?.leaf.value);
     try std.testing.expectEqual(@as(u32, 0), result0.?.start_weight);
+    try std.testing.expectEqual(@as(u32, 0), result0.?.leaf_index);
 
     // Find leaf containing weight 15 (second item)
     const result15 = rope.findByWeight(15);
     try std.testing.expect(result15 != null);
     try std.testing.expectEqual(@as(u32, 2), result15.?.leaf.value);
     try std.testing.expectEqual(@as(u32, 10), result15.?.start_weight);
+    try std.testing.expectEqual(@as(u32, 1), result15.?.leaf_index);
 
     // Find leaf containing weight 35 (third item)
     const result35 = rope.findByWeight(35);
     try std.testing.expect(result35 != null);
     try std.testing.expectEqual(@as(u32, 3), result35.?.leaf.value);
     try std.testing.expectEqual(@as(u32, 30), result35.?.start_weight);
+    try std.testing.expectEqual(@as(u32, 2), result35.?.leaf_index);
 
     // Out of bounds
     const result100 = rope.findByWeight(100);
     try std.testing.expect(result100 == null);
 }
-
-//===== Integrated Marker Tracking Tests (Union Types) =====
-
-// Simple union type for testing automatic marker tracking
-const TokenType = union(enum) {
-    word: u32,
-    space: u32,
-    newline: void, // Marker type
-
-    // Define which tags are markers (only track these!)
-    pub const MarkerTypes = &[_]std.meta.Tag(TokenType){.newline};
-
-    pub const Metrics = struct {
-        width: u32 = 0,
-
-        pub fn add(self: *Metrics, other: Metrics) void {
-            self.width += other.width;
-        }
-
-        pub fn weight(self: *const Metrics) u32 {
-            return self.width;
-        }
-    };
-
-    pub fn measure(self: *const TokenType) Metrics {
-        return switch (self.*) {
-            .word => |w| .{ .width = w },
-            .space => |s| .{ .width = s },
-            .newline => .{ .width = 0 },
-        };
-    }
-
-    pub fn empty() TokenType {
-        return .{ .space = 0 };
-    }
-
-    pub fn is_empty(self: *const TokenType) bool {
-        return switch (self.*) {
-            .space => |s| s == 0,
-            else => false,
-        };
-    }
-};
-
-test "Rope - automatic marker tracking with union type" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const RopeType = rope_mod.Rope(TokenType);
-
-    // Create rope with marker tracking enabled
-    const tokens = [_]TokenType{
-        .{ .word = 5 }, // "Hello"
-        .{ .space = 1 }, // " "
-        .{ .word = 5 }, // "World"
-        .{ .newline = {} }, // Line break marker
-        .{ .word = 6 }, // "Second"
-        .{ .space = 1 }, // " "
-        .{ .word = 4 }, // "Line"
-        .{ .newline = {} }, // Line break marker
-        .{ .word = 5 }, // "Third"
-    };
-
-    var rope = try RopeType.from_slice(arena.allocator(), &tokens);
-
-    // O(1) lookup: find newline markers (only .newline is tracked, not .word or .space)
-    try std.testing.expectEqual(@as(u32, 2), rope.markerCount(.newline));
-
-    // Get first newline (end of line 0)
-    const nl0 = rope.getMarker(.newline, 0);
-    try std.testing.expect(nl0 != null);
-    try std.testing.expectEqual(@as(u32, 3), nl0.?.leaf_index); // After word, space, word
-    try std.testing.expectEqual(@as(u32, 11), nl0.?.global_weight); // 5 + 1 + 5
-
-    // Get second newline (end of line 1)
-    const nl1 = rope.getMarker(.newline, 1);
-    try std.testing.expect(nl1 != null);
-    try std.testing.expectEqual(@as(u32, 7), nl1.?.leaf_index);
-    try std.testing.expectEqual(@as(u32, 22), nl1.?.global_weight); // 11 + 6 + 1 + 4
-
-    // Word and space are NOT markers - should return 0
-    try std.testing.expectEqual(@as(u32, 0), rope.markerCount(.word));
-    try std.testing.expectEqual(@as(u32, 0), rope.markerCount(.space));
-}
-
-test "Rope - marker tracking with empty rope" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const RopeType = rope_mod.Rope(TokenType);
-    var rope = try RopeType.init(arena.allocator());
-
-    try std.testing.expectEqual(@as(u32, 0), rope.markerCount(.newline));
-    try std.testing.expectEqual(@as(u32, 0), rope.markerCount(.word)); // Not a marker type
-    try std.testing.expect(rope.getMarker(.newline, 0) == null);
-}
-
-test "Rope - marker tracking requires rebuild" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const RopeType = rope_mod.Rope(TokenType);
-    const tokens = [_]TokenType{
-        .{ .word = 5 },
-        .{ .newline = {} },
-    };
-
-    var rope = try RopeType.from_slice(arena.allocator(), &tokens);
-
-    // Markers are automatically tracked in the tree
-    try std.testing.expectEqual(@as(u32, 1), rope.markerCount(.newline));
-    try std.testing.expect(rope.getMarker(.newline, 0) != null);
-}
-
-test "Rope - marker tracking with many markers" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const RopeType = rope_mod.Rope(TokenType);
-
-    // Create 100 lines
-    var tokens_array: [199]TokenType = undefined; // 100 words + 99 newlines
-    for (0..100) |i| {
-        if (i > 0) {
-            tokens_array[i * 2 - 1] = .{ .newline = {} };
-        }
-        tokens_array[i * 2] = .{ .word = 5 };
-    }
-
-    var rope = try RopeType.from_slice(arena.allocator(), &tokens_array);
-
-    // Should have 99 newlines (only newlines are tracked as markers)
-    try std.testing.expectEqual(@as(u32, 99), rope.markerCount(.newline));
-
-    // Test O(1) random access to specific lines
-    const nl50 = rope.getMarker(.newline, 50).?;
-    try std.testing.expectEqual(@as(u32, 101), nl50.leaf_index); // word, nl, word, nl, ... (50th newline is at index 101)
-    try std.testing.expectEqual(@as(u32, 255), nl50.global_weight); // 51 words * 5 width
-
-    const nl98 = rope.getMarker(.newline, 98).?;
-    try std.testing.expectEqual(@as(u32, 197), nl98.leaf_index);
-}
-//===== Debug toText Tests =====
 
 test "Rope - toText shows basic structure" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -1832,8 +1690,6 @@ test "Rope - toText with union type shows tags" {
         text: struct { width: u32 },
         brk: void,
         linestart: void,
-
-        pub const MarkerTypes = &[_]std.meta.Tag(@This()){ .brk, .linestart };
 
         pub const Metrics = struct {
             width: u32 = 0,
@@ -1954,160 +1810,6 @@ test "Rope - toText shows single leaf" {
     try std.testing.expect(std.mem.find(u8, debug_text, "[root") != null);
     try std.testing.expect(std.mem.find(u8, debug_text, "[leaf") != null);
     try std.testing.expect(std.mem.find(u8, debug_text, "]") != null);
-}
-
-test "Rope - marker cache MUST update after delete operations" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const RopeType = rope_mod.Rope(TokenType);
-
-    // Create: word(5) newline word(5) newline word(5)
-    // 3 lines total, 2 newlines
-    const tokens = [_]TokenType{
-        .{ .word = 5 },
-        .{ .newline = {} },
-        .{ .word = 5 },
-        .{ .newline = {} },
-        .{ .word = 5 },
-    };
-
-    var rope = try RopeType.from_slice(arena.allocator(), &tokens);
-
-    try std.testing.expectEqual(@as(u32, 2), rope.markerCount(.newline));
-
-    try rope.delete(4);
-
-    try std.testing.expectEqual(@as(u32, 2), rope.markerCount(.newline));
-
-    // The critical test: marker positions MUST be correct after delete!
-    const nl1_after = rope.getMarker(.newline, 1);
-    try std.testing.expect(nl1_after != null);
-
-    // After deleting the last word at index 4, the second newline should be at index 3
-    // (was at index 3 before, stays at 3 after deleting index 4)
-    try std.testing.expectEqual(@as(u32, 3), nl1_after.?.leaf_index);
-}
-
-test "Rope - marker cache MUST update after undo" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const RopeType = rope_mod.Rope(TokenType);
-
-    // Create: word(10) newline word(5)
-    const tokens = [_]TokenType{
-        .{ .word = 10 },
-        .{ .newline = {} },
-        .{ .word = 5 },
-    };
-
-    var rope = try RopeType.from_slice(arena.allocator(), &tokens);
-
-    // Initial state: 1 newline at weight 10
-    const nl_before = rope.getMarker(.newline, 0);
-    try std.testing.expect(nl_before != null);
-    try std.testing.expectEqual(@as(u32, 10), nl_before.?.global_weight);
-
-    // Store undo point
-    try rope.store_undo("before delete");
-
-    // Delete part of first word: delete range [0, 1) removes first word
-    try rope.delete_range(0, 1);
-
-    // After delete: newline should be at weight 0 (no word before it)
-    const nl_after_delete = rope.getMarker(.newline, 0);
-    try std.testing.expect(nl_after_delete != null);
-    try std.testing.expectEqual(@as(u32, 0), nl_after_delete.?.global_weight);
-
-    // Undo the delete
-    _ = try rope.undo("after delete");
-
-    // CRITICAL: After undo, marker cache MUST be recalculated!
-    // Newline should be back at weight 10
-    const nl_after_undo = rope.getMarker(.newline, 0);
-    try std.testing.expect(nl_after_undo != null);
-    try std.testing.expectEqual(@as(u32, 10), nl_after_undo.?.global_weight);
-}
-
-test "Rope - marker cache MUST update after redo" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const RopeType = rope_mod.Rope(TokenType);
-
-    const tokens = [_]TokenType{
-        .{ .word = 10 },
-        .{ .newline = {} },
-        .{ .word = 5 },
-    };
-
-    var rope = try RopeType.from_slice(arena.allocator(), &tokens);
-
-    try rope.store_undo("initial");
-    try rope.delete_range(0, 1);
-
-    const nl_after_delete = rope.getMarker(.newline, 0);
-    try std.testing.expectEqual(@as(u32, 0), nl_after_delete.?.global_weight);
-
-    // Undo
-    _ = try rope.undo("after delete");
-    const nl_after_undo = rope.getMarker(.newline, 0);
-    try std.testing.expectEqual(@as(u32, 10), nl_after_undo.?.global_weight);
-
-    // Redo
-    _ = try rope.redo();
-
-    // CRITICAL: After redo, marker cache MUST be recalculated!
-    const nl_after_redo = rope.getMarker(.newline, 0);
-    try std.testing.expect(nl_after_redo != null);
-    try std.testing.expectEqual(@as(u32, 0), nl_after_redo.?.global_weight);
-}
-
-test "Rope - marker cache survives multiple undo/redo cycles" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const RopeType = rope_mod.Rope(TokenType);
-
-    var rope = try RopeType.from_slice(arena.allocator(), &[_]TokenType{
-        .{ .word = 5 },
-        .{ .newline = {} },
-        .{ .word = 5 },
-    });
-
-    try rope.store_undo("state1");
-    try rope.append(.{ .newline = {} });
-    try rope.append(.{ .word = 5 });
-
-    // Should have 2 newlines now
-    try std.testing.expectEqual(@as(u32, 2), rope.markerCount(.newline));
-    const nl1_orig = rope.getMarker(.newline, 1);
-    try std.testing.expectEqual(@as(u32, 10), nl1_orig.?.global_weight);
-
-    try rope.store_undo("state2");
-    try rope.delete(0); // Delete first word
-
-    // Markers should update: first newline now at weight 0
-    const nl0_after_delete = rope.getMarker(.newline, 0);
-    try std.testing.expectEqual(@as(u32, 0), nl0_after_delete.?.global_weight);
-
-    // Undo twice
-    _ = try rope.undo("current");
-    _ = try rope.undo("current");
-
-    // Back to original: 1 newline at weight 5
-    try std.testing.expectEqual(@as(u32, 1), rope.markerCount(.newline));
-    const nl_final = rope.getMarker(.newline, 0);
-    try std.testing.expectEqual(@as(u32, 5), nl_final.?.global_weight);
-
-    // Redo twice
-    _ = try rope.redo();
-    _ = try rope.redo();
-
-    // Should match the post-delete state
-    const nl0_redo = rope.getMarker(.newline, 0);
-    try std.testing.expectEqual(@as(u32, 0), nl0_redo.?.global_weight);
 }
 
 //===== Configurable Undo Depth Tests =====
@@ -2260,7 +1962,7 @@ test "Rope - clear removes all items" {
 
     try std.testing.expectEqual(@as(u32, 3), rope.count());
 
-    rope.clear();
+    try rope.clear();
 
     try std.testing.expectEqual(@as(u32, 0), rope.count());
 }
@@ -2274,9 +1976,144 @@ test "Rope - clear on empty rope" {
 
     try std.testing.expectEqual(@as(u32, 0), rope.count());
 
-    rope.clear();
+    try rope.clear();
 
     try std.testing.expectEqual(@as(u32, 0), rope.count());
+}
+
+test "Rope - clear allocation failure preserves root and history" {
+    const segment = @import("../text-buffer-segment.zig");
+    for ([_]bool{ false, true }) |set_empty| {
+        var fail_offset: usize = 0;
+        while (true) : (fail_offset += 1) {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            var failing = std.testing.FailingAllocator.init(arena.allocator(), .{});
+            var rope = try segment.UnifiedRope.init(failing.allocator());
+            try rope.store_undo("empty");
+            try rope.append(.{ .brk = {} });
+            try rope.store_undo("one break");
+            try rope.append(.{ .brk = {} });
+            _ = try rope.undo("two breaks");
+            const before = rope;
+            failing.fail_index = failing.alloc_index + fail_offset;
+
+            const result = if (set_empty) rope.setSegments(&.{}) else rope.clear();
+            if (result) {
+                try std.testing.expect(!failing.has_induced_failure);
+                try std.testing.expectEqual(@as(usize, 1), fail_offset);
+                try std.testing.expectEqual(@as(u32, 1), rope.count());
+                try std.testing.expect(rope.get(0).?.* == .linestart);
+                try std.testing.expect(rope.root != before.root);
+                break;
+            } else |err| {
+                try std.testing.expect(failing.has_induced_failure);
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                try std.testing.expectEqual(before.root, rope.root);
+                try std.testing.expectEqual(before.undo_history, rope.undo_history);
+                try std.testing.expectEqual(before.redo_history, rope.redo_history);
+                try std.testing.expectEqual(before.curr_history, rope.curr_history);
+                try std.testing.expectEqual(before.undo_depth, rope.undo_depth);
+                try std.testing.expectEqual(@as(u32, 3), rope.count());
+                try std.testing.expect(rope.get(0).?.* == .linestart);
+                try std.testing.expect(rope.get(2).?.* == .linestart);
+                failing.fail_index = std.math.maxInt(usize);
+                try std.testing.expectEqualStrings("two breaks", try rope.redo());
+                try std.testing.expectEqualStrings("one break", try rope.undo("unused"));
+            }
+        }
+    }
+}
+
+test "Rope - clear preserves boundary history without reviving redo" {
+    const segment = @import("../text-buffer-segment.zig");
+    for ([_]bool{ false, true }) |set_empty| {
+        for ([_]bool{ false, true }) |edit_after_undo| {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            var rope = try segment.UnifiedRope.init(arena.allocator());
+
+            try rope.store_undo("initial empty");
+            try rope.append(.{ .brk = {} });
+            try rope.store_undo("one break");
+            try rope.clear();
+            try rope.store_undo("cleared");
+            try rope.append(.{ .brk = {} });
+            _ = try rope.undo("after cleared");
+            if (edit_after_undo) try rope.append(.{ .brk = {} });
+
+            if (set_empty) {
+                try rope.setSegments(&.{});
+            } else {
+                try rope.clear();
+            }
+            try std.testing.expectError(error.Stop, rope.redo());
+            try std.testing.expectEqual(@as(u32, 1), rope.count());
+            try std.testing.expect(rope.get(0).?.* == .linestart);
+
+            try std.testing.expectEqualStrings("one break", try rope.undo("unrecorded clear"));
+            try std.testing.expectEqual(@as(u32, 3), rope.count());
+            try std.testing.expect(rope.get(1).?.* == .brk);
+            try std.testing.expect(rope.get(2).?.* == .linestart);
+            try std.testing.expectEqualStrings("cleared", try rope.redo());
+            try std.testing.expectEqual(@as(u32, 1), rope.count());
+            try std.testing.expectEqualStrings("after cleared", try rope.redo());
+            try std.testing.expectEqual(@as(u32, 3), rope.count());
+        }
+    }
+}
+
+test "Rope - clear retains canonical non-boundary redo" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rope = try rope_mod.Rope(SimpleItem).init(arena.allocator());
+
+    try rope.store_undo("empty");
+    try rope.append(.{ .value = 1 });
+    _ = try rope.undo("one");
+    try rope.append(.{ .value = 2 });
+    try std.testing.expectError(error.Stop, rope.redo());
+    try rope.clear();
+
+    try std.testing.expectEqualStrings("one", try rope.redo());
+    try std.testing.expectEqual(@as(u32, 1), rope.count());
+    try std.testing.expectEqual(@as(u32, 1), rope.get(0).?.value);
+}
+
+test "Rope - clear preserves persistent snapshot identities" {
+    const segment = @import("../text-buffer-segment.zig");
+    inline for (.{ .item, .initialized, .nonempty, .imported }) |origin| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var rope = if (origin == .item)
+            try segment.UnifiedRope.from_item(arena.allocator(), .{ .linestart = {} })
+        else
+            try segment.UnifiedRope.init(arena.allocator());
+        if (origin == .nonempty) try rope.append(.{ .brk = {} });
+        if (origin == .imported) {
+            const other = try segment.UnifiedRope.init(arena.allocator());
+            _ = try rope.split(0);
+            try rope.concat(&other);
+        }
+
+        try rope.store_undo("saved");
+        try rope.clear();
+        try rope.store_undo("cleared");
+        try rope.append(.{ .brk = {} });
+        _ = try rope.undo("after cleared");
+        _ = try rope.undo("unused");
+        const saved = rope;
+
+        try rope.clear();
+        try std.testing.expect(rope.root != saved.root);
+        _ = try rope.split(0);
+        try rope.concat(&saved);
+        try std.testing.expect(rope.root == saved.root);
+        try std.testing.expectEqualStrings("cleared", try rope.redo());
+        try std.testing.expectEqual(@as(u32, 1), rope.count());
+        try std.testing.expectEqualStrings("after cleared", try rope.redo());
+        try std.testing.expectEqual(@as(u32, 3), rope.count());
+    }
 }
 
 test "Rope - clear then insert works" {
@@ -2286,33 +2123,12 @@ test "Rope - clear then insert works" {
     const RopeType = rope_mod.Rope(SimpleItem);
     var rope = try RopeType.from_item(arena.allocator(), .{ .value = 1 });
 
-    rope.clear();
+    try rope.clear();
     try std.testing.expectEqual(@as(u32, 0), rope.count());
 
     try rope.append(.{ .value = 42 });
     try std.testing.expectEqual(@as(u32, 1), rope.count());
     try std.testing.expectEqual(@as(u32, 42), rope.get(0).?.value);
-}
-
-test "Rope - clear with markers resets marker cache" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const RopeType = rope_mod.Rope(TokenType);
-    const tokens = [_]TokenType{
-        .{ .word = 5 },
-        .{ .newline = {} },
-        .{ .word = 5 },
-        .{ .newline = {} },
-    };
-
-    var rope = try RopeType.from_slice(arena.allocator(), &tokens);
-    try std.testing.expectEqual(@as(u32, 2), rope.markerCount(.newline));
-
-    rope.clear();
-
-    try std.testing.expectEqual(@as(u32, 0), rope.count());
-    try std.testing.expectEqual(@as(u32, 0), rope.markerCount(.newline));
 }
 
 test "Rope - integration all features working together" {
@@ -2359,4 +2175,54 @@ test "Rope - integration all features working together" {
     var ctx: Context = .{};
     try rope.walk(&ctx, Context.walker);
     try std.testing.expectEqual(@as(u32, 3), ctx.count);
+}
+
+test "Rope - from_slice lays out nodes in contiguous pre-order and boundary splits do not allocate" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const RopeType = rope_mod.Rope(SimpleItem);
+    var items: [16]SimpleItem = undefined;
+    for (&items, 0..) |*item, index| item.* = .{ .value = @intCast(index) };
+
+    var counting = std.testing.FailingAllocator.init(arena.allocator(), .{});
+    const rope = try RopeType.from_slice(counting.allocator(), &items);
+    // One contiguous slice for the 2N - 1 tree nodes plus one sentinel node.
+    try std.testing.expectEqual(@as(usize, 2), counting.alloc_index);
+
+    const Check = struct {
+        fn verifyPreOrder(node: *const RopeType.Node, cursor: *[*]const RopeType.Node) !void {
+            try std.testing.expectEqual(@as(*const RopeType.Node, &cursor.*[0]), node);
+            cursor.* += 1;
+            switch (node.*) {
+                .branch => |*b| {
+                    try verifyPreOrder(b.left, cursor);
+                    try verifyPreOrder(b.right, cursor);
+                },
+                .leaf => {},
+            }
+        }
+    };
+    var cursor: [*]const RopeType.Node = @ptrCast(rope.root);
+    try Check.verifyPreOrder(rope.root, &cursor);
+
+    const allocs_before = counting.alloc_index;
+    const split_start = try RopeType.Node.split_at(rope.root, 0, counting.allocator(), rope.empty_leaf);
+    try std.testing.expectEqual(rope.empty_leaf, split_start.left);
+    try std.testing.expectEqual(rope.root, split_start.right);
+    const split_end = try RopeType.Node.split_at(rope.root, rope.count(), counting.allocator(), rope.empty_leaf);
+    try std.testing.expectEqual(rope.root, split_end.left);
+    try std.testing.expectEqual(rope.empty_leaf, split_end.right);
+    try std.testing.expectEqual(allocs_before, counting.alloc_index);
+
+    var appended = try WeightedRope.init(arena.allocator());
+    var prepended = try WeightedRope.init(arena.allocator());
+    for (0..64) |i| {
+        try appended.append(.{ .value = @intCast(i), .weight = 6 });
+        try prepended.prepend(.{ .value = @intCast(i), .weight = 6 });
+        try std.testing.expect(appended.root.is_balanced());
+        try std.testing.expect(prepended.root.is_balanced());
+    }
+    try std.testing.expect(appended.root.depth() <= 10);
+    try std.testing.expect(prepended.root.depth() <= 10);
 }

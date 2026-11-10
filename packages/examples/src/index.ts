@@ -42,6 +42,7 @@ import * as splitFooterStreamingDemo from "./split-footer-streaming-demo.js"
 import * as splitFooterImageDemo from "./split-footer-image-demo.js"
 import * as consoleExample from "./console-demo.js"
 import * as notificationDemo from "./notification-demo.js"
+import * as programStatusDemo from "./program-status-demo.js"
 import * as vnodeCompositionDemo from "./vnode-composition-demo.js"
 import * as hastSyntaxHighlightingExample from "./hast-syntax-highlighting-demo.js"
 import * as codeDemo from "./code-demo.js"
@@ -75,6 +76,8 @@ import * as audioCaptureDemo from "./audio-capture-demo.js"
 import * as audioStreamingDemo from "./audio-streaming-demo.js"
 import * as clipboardPasteDemo from "./clipboard-paste-demo.js"
 import * as nativeImageDemo from "./native-image-demo.js"
+import * as videoDemo from "./video-demo.js"
+import * as videoPuzzleDemo from "./video-puzzle-demo.js"
 import * as embeddedTerminalDemo from "./embedded-terminal-demo.js"
 
 type ExampleCategory =
@@ -384,7 +387,7 @@ const EXAMPLE_SECTIONS: ExampleSection[] = [
     },
     {
       name: "Mouse Interaction Demo",
-      description: "Interactive mouse trails and clickable cells demonstration",
+      description: "Interactive mouse trails, draggable boxes, clickable cells, and pointer styles",
       run: mouseInteractionExample.run,
       destroy: mouseInteractionExample.destroy,
     },
@@ -552,6 +555,18 @@ const EXAMPLE_SECTIONS: ExampleSection[] = [
       destroy: nativeImageDemo.destroy,
     },
     {
+      name: "Native Video",
+      description: "MP4 playback with audio, seeking, looping, and fit modes in a native scene node",
+      run: videoDemo.run,
+      destroy: videoDemo.destroy,
+    },
+    {
+      name: "Native Video Puzzle",
+      description: "Sliding puzzle of live video tiles, one player each, locked to a shared clock when home",
+      run: videoPuzzleDemo.run,
+      destroy: videoPuzzleDemo.destroy,
+    },
+    {
       name: "Opacity Demo",
       description: "Box opacity and transparency effects with animated opacity transitions",
       run: opacityExample.run,
@@ -639,6 +654,12 @@ const EXAMPLE_SECTIONS: ExampleSection[] = [
       description: "Standalone OSC terminal notification demo with capability detection and interactive triggers",
       run: notificationDemo.run,
       destroy: notificationDemo.destroy,
+    },
+    {
+      name: "Program Status Demo",
+      description: "Report idle, working, blocked, done, and error states with OSC 7501 program status",
+      run: programStatusDemo.run,
+      destroy: programStatusDemo.destroy,
     },
     {
       name: "Terminal Palette Demo",
@@ -811,7 +832,7 @@ function findNearestExampleOptionIndex(
   return -1
 }
 
-class ExampleSelector {
+export class ExampleSelector {
   private renderer: CliRenderer
   private currentExample: Example | null = null
   private inMenu = true
@@ -1092,6 +1113,7 @@ class ExampleSelector {
     this.filterText = ""
     this.filterInput.setText("")
     this.filterInput.cursorOffset = 0
+    this.filterExamples()
   }
 
   private syncFilterInputText(): void {
@@ -1456,7 +1478,7 @@ class ExampleSelector {
       await this.destroyCurrentExample()
       this.filterInput?.blur()
       this.selectElement?.blur()
-      this.menuContainer?.destroy()
+      this.menuContainer?.destroyRecursively()
     } catch (error) {
       console.error("Failed to clean up the examples menu:", error)
     } finally {
@@ -1504,12 +1526,14 @@ class ExampleSelector {
   }
 }
 
-const renderer = await createCliRenderer({
-  exitOnCtrlC: false,
-  targetFps: 60,
-  useKittyKeyboard: { events: true, allKeysAsEscapes: true },
-  // useAlternateScreen: false,
-})
+if (import.meta.main) {
+  const renderer = await createCliRenderer({
+    exitOnCtrlC: false,
+    targetFps: 60,
+    useKittyKeyboard: { events: true, allKeysAsEscapes: true },
+    // useAlternateScreen: false,
+  })
 
-renderer.setBackgroundColor("transparent")
-new ExampleSelector(renderer)
+  renderer.setBackgroundColor("transparent")
+  new ExampleSelector(renderer)
+}

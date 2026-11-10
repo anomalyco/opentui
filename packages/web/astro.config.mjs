@@ -1,6 +1,6 @@
 import { defineConfig } from "astro/config"
 import mdx from "@astrojs/mdx"
-import sitemap from "@astrojs/sitemap"
+import { buildChannels, docsRedirects } from "./src/lib/docs-channel.ts"
 
 const copyButtonTransformer = {
   name: "copy-button",
@@ -75,33 +75,72 @@ const codeBlue = grayscaleTheme({
   comment: "#7783c5",
 })
 
-export default defineConfig({
-  integrations: [
-    mdx(),
-    sitemap({
-      filter: (page) => {
-        const path = new URL(page).pathname
-        return path !== "/404/" && !path.startsWith("/lab/")
-      },
-    }),
+const codeCobalt = {
+  name: "opentui-cobalt",
+  type: "light",
+  colors: {
+    "editor.foreground": "#200f1a",
+    "editor.background": "#fffdf8",
+  },
+  settings: [
+    { settings: { foreground: "#200f1a", background: "#fffdf8" } },
+    {
+      scope: ["comment", "punctuation.definition.comment"],
+      settings: { foreground: "#71676c", fontStyle: "italic" },
+    },
+    {
+      scope: ["keyword", "storage"],
+      settings: { foreground: "#c32f18", fontStyle: "bold" },
+    },
+    {
+      scope: ["keyword.operator"],
+      settings: { foreground: "#200f1a", fontStyle: "" },
+    },
+    {
+      scope: ["string", "constant", "support.constant", "markup.inline.raw"],
+      settings: { foreground: "#2046e8" },
+    },
+    {
+      scope: [
+        "entity.name.function",
+        "entity.name.type",
+        "entity.name.class",
+        "entity.name.tag",
+        "support.function",
+        "support.type",
+        "support.class",
+        "variable.function",
+      ],
+      settings: { foreground: "#202b81" },
+    },
+    {
+      scope: ["constant.numeric", "constant.language"],
+      settings: { foreground: "#946400" },
+    },
   ],
+}
+
+// scripts/build-site.ts writes the sitemap after it merges the channels.
+export default defineConfig({
+  integrations: [mdx()],
   site: "https://opentui.com",
+  build: {
+    // The release channel's build keeps its assets under /docs so its tree can be merged into the main build.
+    assets: process.env.OPENTUI_ASTRO_ASSETS || "_astro",
+  },
   vite: {
     server: {
       allowedHosts: true,
     },
   },
-  redirects: {
-    "/docs/getting-started": "/docs",
-    "/docs/core-concepts/constructs": "/docs/core-concepts/renderables",
-    "/docs/core-concepts/renderables-vs-constructs": "/docs/core-concepts/renderables",
-  },
+  redirects: Object.assign({}, ...buildChannels().map((channel) => docsRedirects(channel))),
   markdown: {
     shikiConfig: {
       themes: {
         light: codeLight,
         dark: codeDark,
         blue: codeBlue,
+        cobalt: codeCobalt,
       },
       transformers: [copyButtonTransformer],
     },

@@ -2,6 +2,7 @@
 
 import {
   CliRenderer,
+  CliRenderEvents,
   createCliRenderer,
   TextRenderable,
   BoxRenderable,
@@ -12,6 +13,8 @@ import {
   yellow,
   cyan,
   magenta,
+  type KeyEvent,
+  type Selection,
 } from "@opentui/core"
 import { setupCommonDemoKeys } from "./lib/standalone-keys.js"
 
@@ -291,7 +294,7 @@ ${green("✓")} Styled text support`,
   statusBox.add(debugText)
 
   // Listen for selection events
-  renderer.on("selection", (selection) => {
+  const selectionHandler = (selection: Selection | null) => {
     if (selection && statusText && debugText && selectionStartText && selectionMiddleText && selectionEndText) {
       const selectedText = selection.getSelectedText()
 
@@ -328,9 +331,11 @@ ${green("✓")} Styled text support`,
         selectionEndText.content = ""
       }
     }
-  })
+  }
+  renderer.on("selection", selectionHandler)
+  mainContainer.once("destroyed", () => renderer.off("selection", selectionHandler))
 
-  renderer.keyInput.on("keypress", (event) => {
+  const keyHandler = (event: KeyEvent) => {
     const key = event.sequence
     if (key === "c" || key === "C") {
       renderer.clearSelection()
@@ -342,7 +347,9 @@ ${green("✓")} Styled text support`,
         debugText.content = ""
       }
     }
-  })
+  }
+  renderer.keyInput.on("keypress", keyHandler)
+  mainContainer.once("destroyed", () => renderer.keyInput.off("keypress", keyHandler))
 }
 
 export function destroy(renderer: CliRenderer): void {
@@ -371,6 +378,7 @@ if (import.meta.main) {
     enableMouseMovement: true,
     exitOnCtrlC: true,
   })
+  renderer.once(CliRenderEvents.DESTROY, () => destroy(renderer))
   run(renderer)
   setupCommonDemoKeys(renderer)
   renderer.start()

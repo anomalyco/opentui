@@ -15,7 +15,7 @@ OpenTUI is a library to build terminal user interfaces.
 - You write TypeScript directly or through React and Solid.
 - You arrange boxes and text with flexbox.
 - You add selects, inputs, and scroll boxes with keyboard and mouse controls.
-- You can play sounds, show images, and render 3D graphics.
+- You can play sounds, show images, play videos, and render 3D graphics.
 
 OpenCode uses OpenTUI in production for millions of users.
 
@@ -36,20 +36,23 @@ OpenCode uses OpenTUI in production for millions of users.
 - [`@opentui/native`](packages/native) - Private workspace with the Zig implementation, native tests, and benchmarks.
 - [`@opentui/examples`](packages/examples) - Private workspace with example applications and a standalone examples executable.
 - [`@opentui/web`](packages/web) - Private workspace with the documentation website and the AI agent skill.
+- [`packages/rust`](packages/rust) - Unpublished Rust bindings for the native C ABI and a framework built on them.
 
 ## AI agent skill
 
 Install the OpenTUI documentation as a skill for your AI coding assistant with [`npx skills`](https://skills.sh):
 
 ```bash
-npx skills add anomalyco/opentui --skill opentui
+npx skills add https://opentui.com --skill opentui
 ```
 
-Add `-g` to install the skill globally.
+Add `-g` to install the skill globally. The skill matches the latest release, and `npx skills update` moves it to each
+new release. Install from `https://opentui.com/docs/next` to follow the main branch. A skill installed with
+`npx skills add anomalyco/opentui` follows the main branch; run the command above to switch it to releases.
 
 ## Development
 
-Development requires Bun 1.3.0 or later and Zig 0.16.0.
+Development requires Bun 1.4.1 or later and Zig 0.17.0.
 
 See [AGENTS.md](AGENTS.md) for engineering, tooling, and verification conventions.
 

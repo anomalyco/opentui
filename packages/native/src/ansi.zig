@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
 /// Packed color with embedded metadata.
@@ -62,7 +63,33 @@ pub fn rgbaComponentToU8(component: f32) u8 {
     if (!std.math.isFinite(component)) return 0;
 
     const clamped = std.math.clamp(component, 0.0, 1.0);
-    return @intFromFloat(@round(clamped * 255.0));
+    return roundByte(clamped * 255.0);
+}
+
+/// Rounds half away from zero like @round for values in [0, 255]. Baseline x86-64 has no
+/// rounding instruction, so @round becomes a libm call on every color channel. Truncation
+/// is one instruction, and the fraction is exact because both operands share an exponent range.
+/// Other targets keep @round, which aarch64 lowers to a single fcvtas.
+inline fn roundByte(value: f32) u8 {
+    std.debug.assert(value >= 0.0 and value <= 255.0);
+    if (comptime !builtin.cpu.arch.isX86()) return @intFromFloat(@round(value));
+    const whole: u8 = @intFromFloat(value);
+    return whole + @intFromBool(value - @as(f32, @floatFromInt(whole)) >= 0.5);
+}
+
+test "roundByte matches @round across the byte range" {
+    var steps: u32 = 0;
+    while (steps <= 1 << 20) : (steps += 1) {
+        const component = @as(f32, @floatFromInt(steps)) / (1 << 20);
+        try std.testing.expectEqual(@as(u8, @intFromFloat(@round(component * 255.0))), roundByte(component * 255.0));
+    }
+    for (0..256) |byte| {
+        const half = @as(f32, @floatFromInt(byte)) + 0.5;
+        for ([_]f32{ half, std.math.nextAfter(f32, half, 0), std.math.nextAfter(f32, half, 256) }) |value| {
+            if (value > 255.0) continue;
+            try std.testing.expectEqual(@as(u8, @intFromFloat(@round(value))), roundByte(value));
+        }
+    }
 }
 
 /// Convert a 0-255 byte back to a 0.0-1.0 float.
@@ -73,7 +100,7 @@ pub inline fn u8ToComponent(component: u8) f32 {
 /// Pack a ColorIntent and palette slot into a 32-bit metadata word.
 /// Layout: bits 0-7 = slot, bits 8-9 = intent.
 pub fn packMeta(intent_value: ColorIntent, slot_value: u8) u32 {
-    return @as(u32, slot_value) | (@as(u32, @intFromEnum(intent_value)) << 8);
+    return @as(u32, slot_value) | (@as(u32, @backingInt(intent_value)) << 8);
 }
 
 /// Build an RGBA value from 8-bit channels and a metadata word.
@@ -214,7 +241,6 @@ pub const ANSI = struct {
     pub const reset = "\x1b[0m";
     pub const clear = "\x1b[2J";
     pub const home = "\x1b[H";
-    pub const clearAndHome = "\x1b[H\x1b[2J";
     pub const eraseToEndOfLine = "\x1b[K";
     pub const hideCursor = "\x1b[?25l";
     pub const showCursor = "\x1b[?25h";
@@ -273,13 +299,15 @@ pub const ANSI = struct {
         writer.print("\x1b]12;#{x:0>2}{x:0>2}{x:0>2}\x07", .{ r, g, b }) catch return AnsiError.WriteFailed;
     }
 
+    /// OSC 66 takes w up to 7 (kitty clamps larger values, foot ignores them); spaces fill the rest of the glyph.
     pub fn explicitWidthOutput(writer: anytype, width: u32, text: []const u8) AnsiError!void {
-        writer.print("\x1b]66;w={d};{s}\x1b\\", .{ width, text }) catch return AnsiError.WriteFailed;
+        writer.print("\x1b]66;w={d};{s}\x1b\\", .{ @min(width, 7), text }) catch return AnsiError.WriteFailed;
+        for (7..@max(width, 7)) |_| writer.writeByte(' ') catch return AnsiError.WriteFailed;
     }
 
     pub const resetCursorColor = "\x1b]112\x07";
     pub const resetCursorColorFallback = "\x1b]12;default\x07";
-    pub const resetMousePointer = "\x1b]22;\x07";
+    pub const resetMousePointer = "\x1b]22;\x1b\\";
 
     // OSC 11 - Set terminal background color
     pub fn setTerminalBgColorOutput(writer: anytype, r: u8, g: u8, b: u8) AnsiError!void {
@@ -292,7 +320,7 @@ pub const ANSI = struct {
     pub const restoreCursorState = "\x1b[u";
 
     pub fn setMousePointerOutput(writer: anytype, shape: []const u8) AnsiError!void {
-        writer.print("\x1b]22;{s}\x07", .{shape}) catch return AnsiError.WriteFailed;
+        writer.print("\x1b]22;{s}\x1b\\", .{shape}) catch return AnsiError.WriteFailed;
     }
 
     pub const switchToAlternateScreen = "\x1b[?1049h";
@@ -321,18 +349,20 @@ pub const ANSI = struct {
     pub const decrqmColorScheme = "\x1b[?2031$p";
     pub const csiUQuery = "\x1b[?u";
     pub const xtgettcapMs = "\x1bP+q4d73\x1b\\";
+    // Two requests: xterm answers a combined one with a single 0+r when it lacks one name.
+    pub const xtgettcapTruecolor = "\x1bP+q524742\x1b\\\x1bP+q5463\x1b\\";
     pub const kittyGraphicsQuery = "\x1b_Gi=31337,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\";
     pub const notificationQueries = "\x1b]99;i=opentui-notifications:p=?;\x1b\\\x1b]1337;Capabilities\x1b\\";
+    pub const programStatusQuery = "\x1b]7501;?\x1b\\";
 
-    pub const capabilityQueriesBase = xtgettcapMs ++
-        decrqmSgrPixels ++
+    pub const capabilityQueriesBase = decrqmSgrPixels ++
         decrqmUnicode ++
         decrqmColorScheme ++
         decrqmFocus ++
         decrqmBracketedPaste ++
         decrqmSync;
 
-    pub const capabilityQueries = capabilityQueriesBase ++ csiUQuery ++ notificationQueries;
+    pub const capabilityQueries = capabilityQueriesBase ++ csiUQuery ++ notificationQueries ++ programStatusQuery;
     pub const capabilityQueriesFootIsBroken = capabilityQueriesBase ++ csiUQuery;
 
     // tmux DCS passthrough wrapper (ESC chars doubled)
@@ -343,24 +373,6 @@ pub const ANSI = struct {
     pub const screenDcsStart = "\x1bP";
     pub const screenDcsEnd = "\x1b\\";
 
-    pub fn wrapForTmux(comptime seq: []const u8) []const u8 {
-        comptime {
-            var result: []const u8 = tmuxDcsStart;
-            for (seq) |c| {
-                if (c == '\x1b') {
-                    result = result ++ "\x1b\x1b";
-                } else {
-                    result = result ++ &[_]u8{c};
-                }
-            }
-            return result ++ tmuxDcsEnd;
-        }
-    }
-
-    pub const kittyGraphicsQueryTmux = wrapForTmux(kittyGraphicsQuery);
-    pub const primaryDeviceAttrsTmux = wrapForTmux(primaryDeviceAttrs);
-    pub const capabilityQueriesTmux = wrapForTmux(capabilityQueriesBase) ++ csiUQuery ++ notificationQueries;
-    pub const capabilityQueriesFootIsBrokenTmux = wrapForTmux(capabilityQueriesBase) ++ csiUQuery;
     pub const sixelGeometryQuery = "\x1b[?2;1;0S";
     pub const cursorPositionRequest = "\x1b[6n";
     pub const explicitWidthQuery = "\x1b]66;w=1; \x1b\\";
@@ -404,15 +416,6 @@ pub const ANSI = struct {
 
     pub fn setTerminalTitleOutput(writer: anytype, title: []const u8) AnsiError!void {
         writer.print(setTerminalTitle, .{title}) catch return AnsiError.WriteFailed;
-    }
-
-    pub fn makeRoomForRendererOutput(writer: anytype, height: u32) AnsiError!void {
-        if (height > 1) {
-            var i: u32 = 0;
-            while (i < height - 1) : (i += 1) {
-                writer.writeByte('\n') catch return AnsiError.WriteFailed;
-            }
-        }
     }
 };
 

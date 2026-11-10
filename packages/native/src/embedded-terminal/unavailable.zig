@@ -13,6 +13,8 @@ pub const Cursor = struct {
     color: ?struct { r: u8, g: u8, b: u8 } = null,
 };
 
+pub const Scrollbar = struct { offset: u32 = 0, total: u32 = 0, visible: u32 = 0 };
+
 pub const EmbeddedTerminal = struct {
     pub fn init(_: anytype, _: anytype, _: anytype) Error!*EmbeddedTerminal {
         return error.Unsupported;
@@ -35,10 +37,17 @@ pub const EmbeddedTerminal = struct {
     }
     pub fn freeSelectedText(_: *EmbeddedTerminal, _: [:0]const u8) void {}
     pub fn invalidate(_: *EmbeddedTerminal) void {}
+    pub fn setTransparentBackground(_: *EmbeddedTerminal, _: bool) void {}
     pub fn compose(_: *EmbeddedTerminal, _: *buffer.OptimizedBuffer, _: i32, _: i32) Error!void {
         return error.Unsupported;
     }
+    pub fn composeChecked(_: *EmbeddedTerminal, _: *buffer.OptimizedBuffer, _: i32, _: i32, _: u32) Error!void {
+        return error.Unsupported;
+    }
     pub fn cursor(_: *EmbeddedTerminal) Cursor {
+        return .{};
+    }
+    pub fn scrollbar(_: *EmbeddedTerminal) Scrollbar {
         return .{};
     }
     pub fn encodePaste(_: *EmbeddedTerminal, _: []const u8) Error![]u8 {

@@ -68,6 +68,7 @@ console.log(
 for (const workspacePackage of lockstepPackages) {
   updateWorkspacePackage(workspacePackage, version, dryRun)
 }
+updateRustCrates(version, dryRun)
 
 if (dryRun) {
   console.log("\nDry run: skipped writing package.json files and bun install")
@@ -98,11 +99,11 @@ ${lockstepPackages.map((pkg) => `- ${pkg.name}`).join("\n")}
 
 Next steps:
 1. Review the changes: git diff
-2. Build the packages: bun run build
-3. Commit the changes: git add -A && git commit -m "Release v${version}"
-4. Push the commit: git push
-5. Tag the release after the commit: git tag v${version} -m "Release v${version}"
-6. Push the tag to trigger the release workflow: git push origin v${version}
+2. Commit the changes: git add -A && git commit -m "Release v${version}"
+3. Get the commit onto main, pushed or through a pull request. release.yml releases each commit on
+   main that raises the version, and creates the v${version} tag.
+
+\`bun run release\` does all of this and follows the release.
   `)
 
 function getRequestedReleaseType(args: string[], explicitVersion?: string): ReleaseType | null {
@@ -279,6 +280,25 @@ function updateWorkspacePackage(workspacePackage: WorkspacePackage, version: str
   if (!dryRun) {
     writeJson(workspacePackage.packageJsonPath, workspacePackage.packageJson)
   }
+}
+
+// The unpublished crates in packages/rust carry core's version: the workspace version and the members' entries in
+// Cargo.lock, which `cargo --locked` checks. Rewritten as text because snapshot builds run without Rust.
+function updateRustCrates(version: string, dryRun: boolean): void {
+  for (const [file, pattern, count] of [
+    ["Cargo.toml", /^(\[workspace\.package\]\nversion = )"[^"\n]*"/gm, 1],
+    ["Cargo.lock", /^(name = "opentui(?:-ssh|-sys)?"\nversion = )"[^"\n]*"/gm, 3],
+  ] as const) {
+    const path = join(rootDir, "packages/rust", file)
+    const text = readFileSync(path, "utf8")
+    const found = text.match(pattern)?.length ?? 0
+    if (found !== count) {
+      console.error(`Error: packages/rust/${file} has ${found} versions matching ${pattern}, expected ${count}`)
+      process.exit(1)
+    }
+    if (!dryRun) writeFileSync(path, text.replace(pattern, `$1"${version}"`))
+  }
+  console.log(`Updating the Rust crates (opentui, opentui-ssh, opentui-sys) to ${version}`)
 }
 
 function updateCoreOptionalDependencies(packageJson: PackageJson, version: string): string[] {

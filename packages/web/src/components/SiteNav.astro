@@ -1,8 +1,14 @@
 ---
 import OpenTUILogo from "./OpenTUILogo.astro"
 
+interface Props {
+  /** Target of the Docs link: documentation pages keep readers in their channel. */
+  docs?: string
+}
+
+const { docs = "/docs" } = Astro.props
 const links = [
-  { href: "/docs", section: "/docs", label: "Docs" },
+  { href: docs, section: "/docs", label: "Docs" },
   { href: "/packages", section: "/packages", label: "Packages" },
   { href: "/scrollback", section: "/scrollback", label: "Scrollback" },
 ]
@@ -23,7 +29,11 @@ const currentValue = (href: string, section: string) => {
 // through the "subnav" slot. It renders inside the header so both rows share
 // one sticky translucent surface: content passing under the chrome ghosts
 // through one continuous band instead of two separately edged bars.
+//
+// The "end" slot holds page state for the frame's right edge, such as the
+// docs version. The links keep their place on every route.
 const hasMenu = Astro.slots.has("menu")
+const hasEnd = Astro.slots.has("end")
 ---
 
 <header>
@@ -59,6 +69,13 @@ const hasMenu = Astro.slots.has("menu")
         </div>
       </details>
     </nav>
+    {
+      hasEnd && (
+        <div class="end">
+          <slot name="end" />
+        </div>
+      )
+    }
   </div>
   <slot name="subnav" />
 </header>
@@ -134,9 +151,14 @@ const hasMenu = Astro.slots.has("menu")
   }
 
   nav > a,
-  .menu > summary {
+  .menu > summary,
+  .end {
     position: relative;
     inset-block-start: calc(1.875rem / -6);
+  }
+
+  .end {
+    margin-inline-start: auto;
   }
 
   .menu > summary,

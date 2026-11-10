@@ -242,11 +242,25 @@ describe("documentation search ranking against the published index", () => {
     expect(lookup(entries, "renderer")[0]?.entry.url).toBe("/docs/core-concepts/renderer")
     expect(lookup(entries, "keymap")[0]?.entry.url).toBe("/docs/keymap/overview")
     expect(lookup(entries, "solid")[0]?.entry.url).toBe("/docs/bindings/solid")
+    expect(lookup(entries, "releases")[0]?.entry.url).toBe("/docs/releases")
+    expect(lookup(entries, "changelog")[0]?.entry.url).toBe("/docs/releases")
   })
 
   test("symbol queries prefer the page that owns the symbol", () => {
     expect(lookup(entries, "createCliRenderer")[0]?.entry.url).toBe("/docs/core-concepts/renderer")
     expect(lookup(entries, "InputRenderable")[0]?.entry.url).toBe("/docs/components/input")
+  })
+
+  test("distinguishes Core wrappers from native ownership and frame APIs", () => {
+    expect(lookup(entries, "ResourceContext")[0]?.entry.url).toBe("/docs/native/core")
+    expect(lookup(entries, "NativeScene")[0]?.entry.url).toBe("/docs/native/core")
+    expect(lookup(entries, "ot_handle")[0]?.entry.url).toBe("/docs/native/resources")
+    expect(lookup(entries, "ot_scene_frame_step_with_geometry")[0]?.entry.url).toBe("/docs/native/frames")
+    expect(lookup(entries, "ot_scene_flush")[0]?.entry.url).toBe("/docs/native/frames")
+    expect(lookup(entries, "ot_session_poll_kitty_image_transport")[0]?.entry.url).toBe("/docs/native/host-io-time")
+    expect(lookup(entries, "refreshHooks")[0]?.entry.url).toBe("/docs/extend/custom-renderables")
+    expect(lookup(entries, "ot_context_create")[0]?.entry.url).toBe("/docs/native/c")
+    expect(lookup(entries, "Context.init")[0]?.entry.url).toBe("/docs/native/zig")
   })
 
   test("multi-word queries prefer the heading that names the phrase", () => {

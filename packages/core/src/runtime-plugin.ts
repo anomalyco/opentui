@@ -26,9 +26,15 @@
  *   untouched.
  * - optional bare-specifier rewriting is preserved for sibling files in
  *   packages already marked for runtime rewriting.
+ * - bare specifiers matched by `preserve` are never rewritten, so host
+ *   `build.module` registrations resolve them directly.
+ * - prescanning does not follow runtime-module or preserved specifiers into
+ *   their on-disk copies, because those copies are never loaded.
  *
  * Notes:
- * - import scanning is regex-based, not a full parser.
+ * - import scanning is regex-based, not a full parser. A match that starts
+ *   immediately inside quotes is left unchanged so string literals such as
+ *   `'from "@opentui/core"'` are not rewritten.
  * - CJS helper libraries that themselves import runtime modules are still not
  *   supported.
  * - `package.json#type` caching is per plugin setup, not module-global, so a
@@ -43,6 +49,7 @@ import * as coreRuntime from "@opentui/core"
 export type RuntimeModuleExports = Record<string, unknown>
 export type RuntimeModuleLoader = () => RuntimeModuleExports | Promise<RuntimeModuleExports>
 export type RuntimeModuleEntry = RuntimeModuleExports | RuntimeModuleLoader
+export type RuntimeSpecifierPreserve = readonly string[] | ReadonlySet<string> | ((specifier: string) => boolean)
 
 interface SourceAnalysis {
   importSpecifiers: string[]
@@ -57,6 +64,7 @@ export interface RuntimePluginRewriteOptions {
 export interface CreateRuntimePluginOptions {
   core?: RuntimeModuleEntry
   additional?: Record<string, RuntimeModuleEntry>
+  preserve?: RuntimeSpecifierPreserve
   rewrite?: RuntimePluginRewriteOptions
 }
 
@@ -264,6 +272,11 @@ const resolveImportSpecifierPatterns = [
   /(require\s*\(\s*["'])([^"']+)(["']\s*\))/g,
 ] as const
 
+const isImportLikeMatchInsideQuotes = (code: string, offset: number): boolean => {
+  const previous = code[offset - 1]
+  return previous === '"' || previous === "'" || previous === "`"
+}
+
 const isBareSpecifier = (specifier: string): boolean => {
   if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("\\")) {
     return false
@@ -304,14 +317,21 @@ const rewriteImportSpecifiers = (code: string, resolveReplacement: (specifier: s
   let transformedCode = code
 
   for (const pattern of resolveImportSpecifierPatterns) {
-    transformedCode = transformedCode.replace(pattern, (fullMatch, prefix, specifier, suffix) => {
-      const replacement = resolveReplacement(specifier)
-      if (!replacement || replacement === specifier) {
-        return fullMatch
-      }
+    transformedCode = transformedCode.replace(
+      pattern,
+      (fullMatch: string, prefix: string, specifier: string, suffix: string, offset: number) => {
+        if (isImportLikeMatchInsideQuotes(transformedCode, offset)) {
+          return fullMatch
+        }
 
-      return `${prefix}${replacement}${suffix}`
-    })
+        const replacement = resolveReplacement(specifier)
+        if (!replacement || replacement === specifier) {
+          return fullMatch
+        }
+
+        return `${prefix}${replacement}${suffix}`
+      },
+    )
   }
 
   return transformedCode
@@ -321,8 +341,11 @@ const collectImportSpecifiers = (code: string): string[] => {
   const specifiers = new Set<string>()
 
   for (const pattern of resolveImportSpecifierPatterns) {
-    code.replace(pattern, (_fullMatch, _prefix, specifier) => {
-      specifiers.add(specifier)
+    code.replace(pattern, (_fullMatch: string, _prefix: string, specifier: string, _suffix: string, offset: number) => {
+      if (!isImportLikeMatchInsideQuotes(code, offset)) {
+        specifiers.add(specifier)
+      }
+
       return _fullMatch
     })
   }
@@ -383,13 +406,26 @@ const resolveSourcePathFromSpecifier = (specifier: string, importer: string): st
   return null
 }
 
-const rewriteImportsFromResolveParents = (code: string, resolveParentsByRecency: string[]): string => {
+const createPreservePredicate = (preserve: RuntimeSpecifierPreserve | undefined): ((specifier: string) => boolean) => {
+  if (typeof preserve === "function") {
+    return (specifier) => isBareSpecifier(specifier) && preserve(specifier)
+  }
+
+  const specifiers = new Set(preserve)
+  return (specifier) => isBareSpecifier(specifier) && specifiers.has(specifier)
+}
+
+const rewriteImportsFromResolveParents = (
+  code: string,
+  resolveParentsByRecency: string[],
+  isPreservedSpecifier: (specifier: string) => boolean,
+): string => {
   if (resolveParentsByRecency.length === 0) {
     return code
   }
 
   const resolveFromParents = (specifier: string): string | null => {
-    if (!isBareSpecifier(specifier)) {
+    if (!isBareSpecifier(specifier) || isPreservedSpecifier(specifier)) {
       return null
     }
 
@@ -428,6 +464,8 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
   for (const specifier of runtimeModules.keys()) {
     runtimeModuleIdsBySpecifier.set(specifier, runtimeModuleIdForSpecifier(specifier))
   }
+
+  const isPreservedSpecifier = createPreservePredicate(input.preserve)
 
   return {
     name: "bun-plugin-opentui-runtime-modules",
@@ -476,7 +514,7 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
           }
 
           const transformedContents = shouldRewriteBareSpecifiers
-            ? rewriteImportsFromResolveParents(runtimeRewrittenContents, resolveParentsByRecency)
+            ? rewriteImportsFromResolveParents(runtimeRewrittenContents, resolveParentsByRecency, isPreservedSpecifier)
             : runtimeRewrittenContents
 
           return {
@@ -543,6 +581,10 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
         }
 
         for (const specifier of analysis.importSpecifiers) {
+          if (runtimeModuleIdsBySpecifier.has(specifier) || isPreservedSpecifier(specifier)) {
+            continue
+          }
+
           const resolvedPath = resolveSourcePathFromSpecifier(specifier, normalizedPath)
           if (!resolvedPath || !isNodeModulesEsmPath(resolvedPath, packageTypeByPackageJsonPath)) {
             continue

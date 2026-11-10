@@ -1,0 +1,134 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`native stdin parser: replay typing 1`] = `
+"{"key":"h","raw":"H","ctrl":false,"meta":false,"shift":true}
+{"key":"e","raw":"e","ctrl":false,"meta":false,"shift":false}
+{"key":"l","raw":"l","ctrl":false,"meta":false,"shift":false}
+{"key":"l","raw":"l","ctrl":false,"meta":false,"shift":false}
+{"key":"o","raw":"o","ctrl":false,"meta":false,"shift":false}
+{"key":",","raw":",","ctrl":false,"meta":false,"shift":false}
+{"key":"space","raw":" ","ctrl":false,"meta":false,"shift":false}
+{"key":"w","raw":"w","ctrl":false,"meta":false,"shift":false}
+{"key":"\\u00f6","raw":"\\u00f6","ctrl":false,"meta":false,"shift":false}
+{"key":"r","raw":"r","ctrl":false,"meta":false,"shift":false}
+{"key":"l","raw":"l","ctrl":false,"meta":false,"shift":false}
+{"key":"d","raw":"d","ctrl":false,"meta":false,"shift":false}
+{"key":"!","raw":"!","ctrl":false,"meta":false,"shift":false}
+{"key":"space","raw":" ","ctrl":false,"meta":false,"shift":false}
+{"key":"\\u65e5","raw":"\\u65e5","ctrl":false,"meta":false,"shift":false}
+{"key":"\\u672c","raw":"\\u672c","ctrl":false,"meta":false,"shift":false}
+{"key":"\\u8a9e","raw":"\\u8a9e","ctrl":false,"meta":false,"shift":false}
+{"key":"space","raw":" ","ctrl":false,"meta":false,"shift":false}
+{"key":"\\ud83d\\udc4d","raw":"\\ud83d\\udc4d","ctrl":false,"meta":false,"shift":false}
+{"key":"\\ue000","raw":"\\ue000","ctrl":false,"meta":false,"shift":false}
+{"key":"\\ue001","raw":"\\ue001","ctrl":false,"meta":false,"shift":false}
+{"key":"\\ue003","raw":"\\ue003","ctrl":false,"meta":false,"shift":false}
+{"key":"\\ue06e","raw":"\\ue06e","ctrl":false,"meta":false,"shift":false}
+{"key":"return","raw":"\\r","ctrl":false,"meta":false,"shift":false}
+{"key":"backspace","raw":"\\u007f","ctrl":false,"meta":false,"shift":false}
+{"key":"backspace","raw":"\\u007f","ctrl":false,"meta":false,"shift":false}
+{"key":"tab","raw":"\\t","ctrl":false,"meta":false,"shift":false}"
+`;
+
+exports[`native stdin parser: replay editing keys 1`] = `
+"{"key":"up","raw":"\\u001b[A","ctrl":false,"meta":false,"shift":false}
+{"key":"down","raw":"\\u001b[B","ctrl":false,"meta":false,"shift":false}
+{"key":"right","raw":"\\u001b[1;5C","ctrl":true,"meta":false,"shift":false}
+{"key":"left","raw":"\\u001b[1;2D","ctrl":false,"meta":false,"shift":true}
+{"key":"home","raw":"\\u001b[H","ctrl":false,"meta":false,"shift":false}
+{"key":"end","raw":"\\u001b[F","ctrl":false,"meta":false,"shift":false}
+{"key":"delete","raw":"\\u001b[3~","ctrl":false,"meta":false,"shift":false}
+{"key":"pageup","raw":"\\u001b[5~","ctrl":false,"meta":false,"shift":false}
+{"key":"pagedown","raw":"\\u001b[6;5~","ctrl":true,"meta":false,"shift":false}
+{"key":"f1","raw":"\\u001bOP","ctrl":false,"meta":false,"shift":false}
+{"key":"f5","raw":"\\u001b[15~","ctrl":false,"meta":false,"shift":false}
+{"key":"tab","raw":"\\u001b[Z","ctrl":false,"meta":false,"shift":true}"
+`;
+
+exports[`native stdin parser: replay control and Alt keys 1`] = `
+"{"key":"a","raw":"\\u0001","ctrl":true,"meta":false,"shift":false}
+{"key":"c","raw":"\\u0003","ctrl":true,"meta":false,"shift":false}
+{"key":"z","raw":"\\u001a","ctrl":true,"meta":false,"shift":false}
+{"key":"a","raw":"\\u001ba","ctrl":false,"meta":true,"shift":false}
+{"key":"A","raw":"\\u001bA","ctrl":false,"meta":true,"shift":true}
+{"key":"a","raw":"\\u001b\\u0001","ctrl":true,"meta":true,"shift":false}
+{"key":"return","raw":"\\u001b\\r","ctrl":false,"meta":true,"shift":false}
+{"key":"space","raw":"\\u001b ","ctrl":false,"meta":true,"shift":false}
+{"key":"left","raw":"\\u001bB","ctrl":false,"meta":true,"shift":false}
+{"key":"right","raw":"\\u001bF","ctrl":false,"meta":true,"shift":false}
+{"key":"\\ue000","raw":"\\u001b[27;5;57344~","ctrl":true,"meta":false,"shift":false}"
+`;
+
+exports[`native stdin parser: replay startup replies 1`] = `
+"{"response":"csi","sequence":"\\u001b[?62;22;52c"}
+{"response":"csi","sequence":"\\u001b[?2026;2$y"}
+{"response":"csi","sequence":"\\u001b[?1u"}
+{"response":"dcs","sequence":"\\u001bP>|kitty(0.40.1)\\u001b\\\\"}
+{"response":"osc","sequence":"\\u001b]11;rgb:1e1e/1e1e/2e2e\\u001b\\\\"}
+{"response":"apc","sequence":"\\u001b_Gi=31337;OK\\u001b\\\\"}
+{"response":"csi","sequence":"\\u001b[4;800;1200t"}"
+`;
+
+exports[`native stdin parser: replay selection drag 1`] = `
+"{"mouse":"down","button":0,"x":9,"y":4}
+{"mouse":"drag","button":0,"x":10,"y":4}
+{"mouse":"drag","button":0,"x":13,"y":5}
+{"mouse":"up","button":0,"x":13,"y":5}
+{"mouse":"move","button":0,"x":19,"y":6}"
+`;
+
+exports[`native stdin parser: replay URxvt drag across a wheel tick 1`] = `
+"{"mouse":"down","button":0,"x":0,"y":0}
+{"mouse":"drag","button":0,"x":2,"y":0}
+{"mouse":"scroll","button":0,"x":2,"y":0}
+{"mouse":"drag","button":0,"x":5,"y":0}
+{"mouse":"up","button":0,"x":5,"y":0}
+{"mouse":"move","button":0,"x":7,"y":0}"
+`;
+
+exports[`native stdin parser: replay scrolling 1`] = `
+"{"mouse":"scroll","button":0,"x":9,"y":4}
+{"mouse":"scroll","button":0,"x":9,"y":4}
+{"mouse":"scroll","button":1,"x":9,"y":4}
+{"mouse":"scroll","button":2,"x":9,"y":4}
+{"mouse":"scroll","button":0,"x":9,"y":4}"
+`;
+
+exports[`native stdin parser: replay X10 mouse 1`] = `
+"{"mouse":"down","button":0,"x":0,"y":0}
+{"mouse":"up","button":0,"x":0,"y":0}
+{"mouse":"scroll","button":0,"x":3,"y":4}"
+`;
+
+exports[`native stdin parser: replay focus 1`] = `
+"{"response":"csi","sequence":"\\u001b[O"}
+{"response":"csi","sequence":"\\u001b[I"}"
+`;
+
+exports[`native stdin parser: replay pastes 1`] = `
+"{"paste":"line 1\\nline 2\\u001b[A"}
+{"key":"x","raw":"x","ctrl":false,"meta":false,"shift":false}
+{"paste":""}"
+`;
+
+exports[`native stdin parser: replay Kitty keys 1`] = `
+"{"key":"a","raw":"\\u001b[97u","ctrl":false,"meta":false,"shift":false}
+{"key":"a","raw":"\\u001b[97;5u","ctrl":true,"meta":false,"shift":false}
+{"key":"a","raw":"\\u001b[97;1:3u","ctrl":false,"meta":false,"shift":false}
+{"key":"return","raw":"\\u001b[13;2u","ctrl":false,"meta":false,"shift":true}
+{"key":"f1","raw":"\\u001b[57364u","ctrl":false,"meta":false,"shift":false}
+{"key":"up","raw":"\\u001b[1;1:1A","ctrl":false,"meta":false,"shift":false}
+{"key":"pageup","raw":"\\u001b[5;1:3~","ctrl":false,"meta":false,"shift":false}
+{"key":"kp0","raw":"\\u001b[57399u","ctrl":false,"meta":false,"shift":false}
+{"key":"\\ufeff","raw":"\\u001b[65279u","ctrl":false,"meta":false,"shift":false}"
+`;
+
+exports[`native stdin parser: replay modifyOtherKeys 1`] = `
+"{"key":"return","raw":"\\u001b[27;2;13~","ctrl":false,"meta":false,"shift":true}
+{"key":"escape","raw":"\\u001b[27;5;27~","ctrl":true,"meta":false,"shift":false}
+{"key":"space","raw":"\\u001b[27;5;32~","ctrl":true,"meta":false,"shift":false}
+{"key":"5","raw":"\\u001b[27;2;53~","ctrl":false,"meta":false,"shift":true}
+{"key":"A","raw":"\\u001b[27;2;65~","ctrl":false,"meta":false,"shift":true}
+{"key":"A","raw":"\\u001b[27;5;65~","ctrl":true,"meta":false,"shift":false}
+{"key":"A","raw":"\\u001b[27;3;65~","ctrl":false,"meta":true,"shift":false}"
+`;

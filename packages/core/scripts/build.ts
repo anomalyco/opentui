@@ -6,6 +6,7 @@ import { fileURLToPath } from "url"
 import process from "process"
 import path from "path"
 import { variants, type Variant } from "./variants"
+import { fnv1a64 } from "./native-abi-rust"
 import { separateNativeSymbols } from "./native-symbols"
 
 interface PackageJson {
@@ -54,6 +55,7 @@ const isDev = args.includes("--dev")
 const buildAll = args.includes("--all") // Build for all platforms
 const gpaSafeStats = args.includes("--gpa-safe-stats")
 const skipZig = args.includes("--skip-zig")
+const skipSymbols = args.includes("--skip-symbols")
 
 const getHostVariant = (): Variant => {
   const hostVariant = variants.find((variant) => variant.platform === process.platform && variant.arch === process.arch)
@@ -179,18 +181,37 @@ const transpileEntryPoint = (entryPoint: string, outputPath: string): void => {
   }
 }
 
+// Zig stores archive inputs of a static library as nested members, which other linkers cannot read.
+function checkStaticArchive(path: string): void {
+  if (!existsSync(path)) return
+  const members = execFileSync("zig", ["ar", "t", path], { cwd: nativeRoot, encoding: "utf8" }).split(/\r?\n/)
+  const nested = members.filter((member) => /\.(a|lib)$/.test(member))
+  if (nested.length > 0) throw new Error(`${path} contains nested archives: ${nested.join(", ")}`)
+}
+
 if (buildNative) {
+  runCommand(
+    "bun",
+    ["scripts/native-abi.ts", "--check", ...(buildAll ? ["--all-targets"] : [])],
+    rootDir,
+    "Error: Native ABI metadata is stale",
+  )
   console.log(`Building native ${isDev ? "dev" : "prod"} binaries${buildAll ? " for all platforms" : ""}...`)
 
   const zigArgs = ["build", `-Doptimize=${isDev ? "Debug" : "ReleaseFast"}`]
   if (buildAll) {
-    zigArgs.push("-Dall")
+    // Release builds must never fall back to building without video.
+    zigArgs.push("-Dall", "-Drequire-video")
   }
   if (gpaSafeStats) {
     zigArgs.push("-Dgpa-safe-stats=true")
   }
 
-  if (!skipZig) runCommand("zig", zigArgs, nativeRoot, "Error: Zig build failed")
+  if (!skipZig) {
+    // Native video statically links FFmpeg; prepare:zig builds only the host prefixes.
+    if (buildAll) runCommand("bun", ["scripts/build-ffmpeg.ts", "--all"], nativeRoot, "Error: FFmpeg build failed")
+    runCommand("zig", zigArgs, nativeRoot, "Error: Zig build failed")
+  }
 
   const variantsToPackage = buildAll ? variants : [getHostVariant()]
 
@@ -225,7 +246,21 @@ if (buildNative) {
       continue
     }
 
-    if (!isDev && libraryFileName) {
+    checkStaticArchive(join(libDir, platform === "win32" ? "opentui-static.lib" : "libopentui.a"))
+
+    // The Zig build installs the header it compiled beside the libraries. A different header means the libraries
+    // are stale, and a C or Rust host would bind declarations they do not implement.
+    const header = readFileSync(join(libDir, "opentui.h"))
+    const headerHash = fnv1a64(header)
+    const sourceHash = fnv1a64(readFileSync(join(nativeRoot, "include", "opentui.h")))
+    if (headerHash !== sourceHash) {
+      throw new Error(`${libDir}/opentui.h (${headerHash}) is not include/opentui.h (${sourceHash}); rebuild native`)
+    }
+    writeFileSync(join(nativeDir, "opentui.h"), header)
+    // A Windows host links the DLL through its import library.
+    if (platform === "win32") copyFileSync(join(libDir, "opentui.lib"), join(nativeDir, "opentui.lib"))
+
+    if (!isDev && !skipSymbols && libraryFileName) {
       separateNativeSymbols({
         binary: join(nativeDir, libraryFileName),
         symbolsDir: join(nativeRoot, "symbols", `${platform}-${arch}${abi ? `-${abi}` : ""}`),
@@ -264,7 +299,8 @@ export default module.default
           main: "index.js",
           module: "index.js",
           types: "index.d.ts",
-          license: packageJson.license,
+          // The binaries statically link LGPL FFmpeg.
+          license: `${packageJson.license} AND LGPL-2.1-or-later`,
           author: packageJson.author,
           homepage: packageJson.homepage,
           repository: packageJson.repository,
@@ -289,7 +325,12 @@ export default module.default
     writeFileSync(
       join(nativeDir, "README.md"),
       replaceLinks(
-        `## ${nativeName}\n\n> Prebuilt ${platform}-${arch}${abi ? `-${abi}` : ""} binaries for \`${packageJson.name}\`.`,
+        `## ${nativeName}\n\n> Prebuilt ${platform}-${arch}${abi ? `-${abi}` : ""} binaries for \`${packageJson.name}\`.\n\n` +
+          `\`opentui.h\` beside \`${libraryFileName}\` is the C ABI header that this library was built from ` +
+          `(FNV-1a 64 \`${headerHash}\`). A C host compiles against it and links the library in this directory` +
+          `${platform === "win32" ? " through `opentui.lib`" : ""}. For the Rust crates in packages/rust, set ` +
+          `\`OPENTUI_LIB_DIR\` to this directory${platform === "win32" ? "" : " and turn off their default `static` feature (`default-features = false`), since this package has no static library"}; their build fails when the header differs from the one their bindings were generated from. ` +
+          `See [C](https://opentui.com/docs/native/c).`,
       ),
     )
 
@@ -302,15 +343,20 @@ export default module.default
       [join(nativeRoot, "src", "vendor", "libwebp", "PATENTS"), "PATENTS-LIBWEBP"],
       [join(nativeRoot, "src", "vendor", "libwebp", "AUTHORS"), "AUTHORS-LIBWEBP"],
       [join(nativeRoot, "src", "vendor", "lcms2", "LICENSE"), "LICENSE-LCMS2"],
+      [join(nativeRoot, "src", "vendor", "ffmpeg", "COPYING.LGPLv2.1"), "LICENSE-FFMPEG"],
+      [join(nativeRoot, "src", "vendor", "ffmpeg", "README.md"), "FFMPEG-SOURCE.md"],
+      [join(nativeRoot, "src", "vendor", "ffmpeg", "LICENSE-ZLIB"), "LICENSE-ZLIB"],
     ] as const) {
       if (!existsSync(source)) throw new Error(`Required native license file is missing: ${source}`)
       copyFileSync(source, join(nativeDir, destination))
     }
-    console.log("Built:", nativeName)
+    console.log("Built:", nativeName, `opentui.h FNV-1a 64 ${headerHash}`)
   }
 }
 
 if (buildLib) {
+  if (!buildNative)
+    runCommand("bun", ["scripts/native-abi.ts", "--check"], rootDir, "Error: Native ABI metadata is stale")
   console.log("Building library...")
 
   const distDir = join(rootDir, "dist")
@@ -584,6 +630,7 @@ if (buildLib) {
         homepage: packageJson.homepage,
         repository: packageJson.repository,
         bugs: packageJson.bugs,
+        engines: packageJson.engines,
         exports,
         dependencies: packageJson.dependencies,
         peerDependencies: packageJson.peerDependencies,

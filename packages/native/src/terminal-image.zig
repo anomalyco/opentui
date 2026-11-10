@@ -1,5 +1,7 @@
 const std = @import("std");
+const gp = @import("grapheme.zig");
 const native_image = @import("image.zig");
+const base64Encode = @import("utils.zig").base64Encode;
 
 pub const KittyPixelFormat = enum { auto, rgb, rgba };
 pub const KittyEncoding = enum(u32) { raw, zlib, png, file };
@@ -75,7 +77,7 @@ pub fn writeKittyTransmitEncoded(
                 try writer.print("m={d},q=2;", .{@intFromBool(end < payload.len)});
             }
             var encoded: [4096]u8 = undefined;
-            try writer.writeAll(std.base64.standard.Encoder.encode(&encoded, payload[offset..end]));
+            try writer.writeAll(base64Encode(&encoded, payload[offset..end]));
             if (tmux) try writer.writeAll("\x1b\x1b\\\x1b\\") else try writer.writeAll("\x1b\\");
             offset = end;
         }
@@ -107,7 +109,7 @@ pub fn writeKittyTransmitFormat(writer: anytype, image: *native_image.Image, id:
                     try writer.print("m={d},q=2;", .{@intFromBool(more)});
                 }
                 var encoded: [4096]u8 = undefined;
-                const payload = std.base64.standard.Encoder.encode(encoded[0..std.base64.standard.Encoder.calcSize(end - offset)], png[offset..end]);
+                const payload = base64Encode(encoded[0..std.base64.standard.Encoder.calcSize(end - offset)], png[offset..end]);
                 try writer.writeAll(payload);
                 if (tmux) try writer.writeAll("\x1b\x1b\\\x1b\\") else try writer.writeAll("\x1b\\");
                 offset = end;
@@ -144,7 +146,7 @@ pub fn writeKittyTransmitFormat(writer: anytype, image: *native_image.Image, id:
             }
             var encoded: [4096]u8 = undefined;
             const encoded_len = std.base64.standard.Encoder.calcSize(chunk_len);
-            const payload = std.base64.standard.Encoder.encode(encoded[0..encoded_len], raw[0..chunk_len]);
+            const payload = base64Encode(encoded[0..encoded_len], raw[0..chunk_len]);
             try writer.writeAll(payload);
             if (tmux) try writer.writeAll("\x1b\x1b\\\x1b\\") else try writer.writeAll("\x1b\\");
             rgb_offset += chunk_len;
@@ -164,12 +166,31 @@ pub fn writeKittyTransmitFormat(writer: anytype, image: *native_image.Image, id:
             try writer.print("m={d},q=2;", .{@intFromBool(more)});
         }
         var encoded: [4096]u8 = undefined;
-        const payload = std.base64.standard.Encoder.encode(encoded[0..std.base64.standard.Encoder.calcSize(end - offset)], pixels[offset..end]);
+        const payload = base64Encode(encoded[0..std.base64.standard.Encoder.calcSize(end - offset)], pixels[offset..end]);
         try writer.writeAll(payload);
         if (tmux) try writer.writeAll("\x1b\x1b\\\x1b\\") else try writer.writeAll("\x1b\\");
         offset = end;
         first = false;
     }
+}
+
+// Kitty draws z < INT32_MIN/2 under cells with a non-default background.
+// Themed terminals paint those backgrounds, which hides an image in that
+// band. Stay in [INT32_MIN/2, 0): above cell backgrounds, under glyphs.
+// Overwritten reservation cells are excluded by the renderer; z only
+// orders a placement against text and cell backgrounds.
+pub fn kittyPlacementZ(placement_id: u32) i32 {
+    // Every legal placement id keeps the sum inside that band.
+    comptime {
+        const below_bg: i32 = std.math.minInt(i32) / 2;
+        const max_z = below_bg + @as(i32, gp.IMAGE_ID_MASK);
+        std.debug.assert(max_z < 0);
+        std.debug.assert(max_z >= below_bg);
+    }
+    std.debug.assert(placement_id <= gp.IMAGE_ID_MASK);
+    const z = @as(i32, std.math.minInt(i32) / 2) + @as(i32, @intCast(placement_id));
+    std.debug.assert(z < 0);
+    return z;
 }
 
 pub fn writeKittyPlacement(
@@ -359,7 +380,7 @@ pub fn quantizeSixel(allocator: std.mem.Allocator, image: *native_image.Image, m
         bin.square += (2 * @as(u64, r) * r + 4 * @as(u64, g) * g + 3 * @as(u64, b) * b + 4) >> 3;
     }
     for (1..SIXEL_HISTOGRAM_SIDE) |r| {
-        var area = [_]SixelMoment{.{}} ** SIXEL_HISTOGRAM_SIDE;
+        var area: [SIXEL_HISTOGRAM_SIDE]SixelMoment = @splat(.{});
         for (1..SIXEL_HISTOGRAM_SIDE) |g| {
             var line: SixelMoment = .{};
             for (1..SIXEL_HISTOGRAM_SIDE) |b| {
@@ -378,7 +399,7 @@ pub fn quantizeSixel(allocator: std.mem.Allocator, image: *native_image.Image, m
         return result;
     }
     var boxes: [255]SixelBox = undefined;
-    var variances = [_]f64{0} ** 255;
+    var variances: [255]f64 = @splat(0);
     boxes[0] = .{};
     variances[0] = boxVariance(moments, boxes[0]);
     var box_count: usize = 1;
@@ -429,7 +450,7 @@ pub fn quantizeSixel(allocator: std.mem.Allocator, image: *native_image.Image, m
         boxes[destination] = box;
         box_counts[destination] = count;
     }
-    var tags = [_]u8{0} ** (32 * 32 * 32);
+    var tags: [32 * 32 * 32]u8 = @splat(0);
     for (boxes[0..box_count], 0..) |box, palette_index| {
         const stats = volumeStats(moments, box);
         result.palette[palette_index] = .{
@@ -531,8 +552,8 @@ pub fn writeSixelIndexedPayload(
     defer allocator.free(masks);
     var buffered = BufferedWriter(@TypeOf(writer)){ .writer = writer };
     const output = &buffered;
-    var generations = [_]u32{0} ** 256;
-    var last_nonzero = [_]usize{0} ** 256;
+    var generations: [256]u32 = @splat(0);
+    var last_nonzero: [256]usize = @splat(0);
     try output.writeAll("0;1;0q\"1;1;");
     try writeUnsigned(output, width);
     try output.writeByte(';');

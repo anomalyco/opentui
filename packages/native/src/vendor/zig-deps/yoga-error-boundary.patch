@@ -1,0 +1,418 @@
+diff --git a/yoga/OTAllocator.h b/yoga/OTAllocator.h
+new file mode 100644
+index 00000000..13d7ed82
+--- /dev/null
++++ b/yoga/OTAllocator.h
+@@ -0,0 +1,44 @@
++#pragma once
++
++#include <cstdint>
++#include <memory>
++#include <new>
++#include <vector>
++
++namespace facebook::yoga::ot {
++#ifdef OT_YOGA_TEST_ALLOCATOR
++inline thread_local int64_t failAfter = -1;
++inline thread_local uint64_t allocationCount = 0;
++
++inline void beforeAllocation() {
++  if (failAfter == 0) {
++    throw std::bad_alloc{};
++  }
++  if (failAfter > 0) {
++    --failAfter;
++  }
++  ++allocationCount;
++}
++
++template <typename T> struct Allocator : std::allocator<T> {
++  using value_type = T;
++  Allocator() = default;
++  template <typename U> Allocator(const Allocator<U>&) noexcept {}
++  T* allocate(size_t count) {
++    beforeAllocation();
++    return std::allocator<T>::allocate(count);
++  }
++  template <typename U> struct rebind { using other = Allocator<U>; };
++};
++template <typename T> using Vector = std::vector<T, Allocator<T>>;
++#else
++inline void beforeAllocation() {}
++template <typename T> using Vector = std::vector<T>;
++#endif
++
++template <typename T, typename... Args>
++std::unique_ptr<T> makeUnique(Args&&... args) {
++  beforeAllocation();
++  return std::make_unique<T>(std::forward<Args>(args)...);
++}
++} // namespace facebook::yoga::ot
+diff --git a/yoga/YGConfig.cpp b/yoga/YGConfig.cpp
+index b3a82e1a..bd74c3c9 100644
+--- a/yoga/YGConfig.cpp
++++ b/yoga/YGConfig.cpp
+@@ -8,12 +8,13 @@
+ #include <yoga/Yoga.h>
+ #include <yoga/debug/AssertFatal.h>
+ #include <yoga/debug/Log.h>
++#include <yoga/OTAllocator.h>
+ 
+ using namespace facebook;
+ using namespace facebook::yoga;
+ 
+ YGConfigRef YGConfigNew(void) {
+-  return new yoga::Config(getDefaultLogger());
++  return ot::makeUnique<yoga::Config>(getDefaultLogger()).release();
+ }
+ 
+ void YGConfigFree(const YGConfigRef config) {
+diff --git a/yoga/YGNode.cpp b/yoga/YGNode.cpp
+index 7e66845f..1cd88a95 100644
+--- a/yoga/YGNode.cpp
++++ b/yoga/YGNode.cpp
+@@ -22,20 +22,22 @@ YGNodeRef YGNodeNew(void) {
+ }
+ 
+ YGNodeRef YGNodeNewWithConfig(const YGConfigConstRef config) {
+-  auto* node = new yoga::Node{resolveRef(config)};
++  auto allocation = ot::makeUnique<yoga::Node>(resolveRef(config));
++  auto* node = allocation.get();
+   yoga::assertFatal(
+       config != nullptr, "Tried to construct YGNode with null config");
+   Event::publish<Event::NodeAllocation>(node, {config});
+ 
+-  return node;
++  return allocation.release();
+ }
+ 
+ YGNodeRef YGNodeClone(YGNodeConstRef oldNodeRef) {
+   auto oldNode = resolveRef(oldNodeRef);
+-  const auto node = new yoga::Node(*oldNode);
++  auto allocation = ot::makeUnique<yoga::Node>(*oldNode);
++  const auto node = allocation.get();
+   Event::publish<Event::NodeAllocation>(node, {node->getConfig()});
+   node->setOwner(nullptr);
+-  return node;
++  return allocation.release();
+ }
+ 
+ void YGNodeFree(const YGNodeRef nodeRef) {
+@@ -235,7 +237,7 @@ void YGNodeSetChildren(
+     return;
+   }
+ 
+-  const std::vector<yoga::Node*> childrenVector = {children, children + count};
++  const ot::Vector<yoga::Node*> childrenVector = {children, children + count};
+   if (childrenVector.empty()) {
+     if (owner->getChildCount() > 0) {
+       for (auto* child : owner->getChildren()) {
+diff --git a/yoga/YGNodeStyle.cpp b/yoga/YGNodeStyle.cpp
+index 86da8ddf..0d830fa2 100644
+--- a/yoga/YGNodeStyle.cpp
++++ b/yoga/YGNodeStyle.cpp
+@@ -9,18 +9,28 @@
+ #include <yoga/debug/AssertFatal.h>
+ #include <yoga/node/Node.h>
+ #include <yoga/style/GridTrack.h>
++#include <type_traits>
++#include <utility>
+ 
+ using namespace facebook;
+ using namespace facebook::yoga;
+ 
+ namespace {
+ 
++static_assert(std::is_nothrow_move_assignable_v<Style>);
++
+ template <auto GetterT, auto SetterT, typename ValueT>
+ void updateStyle(YGNodeRef node, ValueT value) {
+   auto& style = resolveRef(node)->style();
+   if ((style.*GetterT)() != value) {
+-    (style.*SetterT)(value);
+-    resolveRef(node)->markDirtyAndPropagate();
++    if constexpr (std::is_enum_v<ValueT>) {
++      (style.*SetterT)(value);
++      resolveRef(node)->markDirtyAndPropagate();
++    } else {
++      resolveRef(node)->updateStyle([&](Style& next) {
++        (next.*SetterT)(value);
++      });
++    }
+   }
+ }
+ 
+@@ -28,8 +38,9 @@ template <auto GetterT, auto SetterT, typename IdxT, typename ValueT>
+ void updateStyle(YGNodeRef node, IdxT idx, ValueT value) {
+   auto& style = resolveRef(node)->style();
+   if ((style.*GetterT)(idx) != value) {
+-    (style.*SetterT)(idx, value);
+-    resolveRef(node)->markDirtyAndPropagate();
++    resolveRef(node)->updateStyle([&](Style& next) {
++      (next.*SetterT)(idx, value);
++    });
+   }
+ }
+ 
+@@ -40,7 +51,8 @@ void YGNodeCopyStyle(YGNodeRef dstNode, YGNodeConstRef srcNode) {
+   auto src = resolveRef(srcNode);
+ 
+   if (dst->style() != src->style()) {
+-    dst->setStyle(src->style());
++    auto next = src->style();
++    dst->style() = std::move(next);
+     dst->markDirtyAndPropagate();
+   }
+ }
+diff --git a/yoga/algorithm/FlexLine.cpp b/yoga/algorithm/FlexLine.cpp
+index ab92b8ef..1c2ea0a8 100644
+--- a/yoga/algorithm/FlexLine.cpp
++++ b/yoga/algorithm/FlexLine.cpp
+@@ -23,7 +23,7 @@ FlexLine calculateFlexLine(
+     const float availableInnerMainDim,
+     Node::LayoutableChildren::Iterator& iterator,
+     const size_t lineCount) {
+-  std::vector<yoga::Node*> itemsInFlow;
++  ot::Vector<yoga::Node*> itemsInFlow;
+   itemsInFlow.reserve(node->getChildCount());
+ 
+   float sizeConsumed = 0.0f;
+diff --git a/yoga/algorithm/FlexLine.h b/yoga/algorithm/FlexLine.h
+index 89983ab9..fd2a7a53 100644
+--- a/yoga/algorithm/FlexLine.h
++++ b/yoga/algorithm/FlexLine.h
+@@ -41,7 +41,7 @@ struct FlexLine {
+   // List of children which are part of the line flow. This means they are not
+   // positioned absolutely, or with `display: "none"`, and do not overflow the
+   // available dimensions.
+-  const std::vector<yoga::Node*> itemsInFlow{};
++  const ot::Vector<yoga::Node*> itemsInFlow{};
+ 
+   // Accumulation of the dimensions and margin of all the children on the
+   // current line. This will be used in order to either set the dimensions of
+diff --git a/yoga/node/Node.cpp b/yoga/node/Node.cpp
+index 2cbe8416..dc6c664a 100644
+--- a/yoga/node/Node.cpp
++++ b/yoga/node/Node.cpp
+@@ -176,11 +176,10 @@ void Node::replaceChild(Node* oldChild, Node* newChild) {
+ }
+ 
+ void Node::insertChild(Node* child, size_t index) {
++  children_.insert(children_.begin() + static_cast<ptrdiff_t>(index), child);
+   if (child->style().display() == Display::Contents) {
+     contentsChildrenCount_++;
+   }
+-
+-  children_.insert(children_.begin() + static_cast<ptrdiff_t>(index), child);
+ }
+ 
+ void Node::setConfig(yoga::Config* config) {
+@@ -213,7 +212,7 @@ void Node::setDirty(bool isDirty) {
+   }
+ }
+ 
+-void Node::setChildren(const std::vector<Node*>& children) {
++void Node::setChildren(const ot::Vector<Node*>& children) {
+   children_ = children;
+ 
+   contentsChildrenCount_ = 0;
+diff --git a/yoga/node/Node.h b/yoga/node/Node.h
+index 72b3d496..7c4e7b43 100644
+--- a/yoga/node/Node.h
++++ b/yoga/node/Node.h
+@@ -9,9 +9,12 @@
+ 
+ #include <cstdint>
+ #include <cstdio>
++#include <type_traits>
++#include <utility>
+ #include <vector>
+ 
+ #include <yoga/Yoga.h>
++#include <yoga/OTAllocator.h>
+ #include <yoga/node/LayoutableChildren.h>
+ 
+ #include <yoga/config/Config.h>
+@@ -156,7 +159,7 @@ class YG_EXPORT Node : public ::YGNode {
+     return owner_;
+   }
+ 
+-  const std::vector<Node*>& getChildren() const {
++  const ot::Vector<Node*>& getChildren() const {
+     return children_;
+   }
+ 
+@@ -168,6 +171,12 @@ class YG_EXPORT Node : public ::YGNode {
+     return children_.size();
+   }
+ 
++#ifdef OT_YOGA_TEST_ALLOCATOR
++  size_t contentsChildCountForTest() const {
++    return contentsChildrenCount_;
++  }
++#endif
++
+   LayoutableChildren getLayoutChildren() const {
+     return LayoutableChildren(this);
+   }
+@@ -262,6 +271,15 @@ class YG_EXPORT Node : public ::YGNode {
+     style_ = style;
+   }
+ 
++  template <typename Update>
++  void updateStyle(Update&& update) {
++    static_assert(std::is_nothrow_move_assignable_v<Style>);
++    auto next = style_;
++    update(next);
++    style_ = std::move(next);
++    markDirtyAndPropagate();
++  }
++
+   void setLayout(const LayoutResults& layout) {
+     layout_ = layout;
+   }
+@@ -283,7 +301,7 @@ class YG_EXPORT Node : public ::YGNode {
+   void setConfig(Config* config);
+ 
+   void setDirty(bool isDirty);
+-  void setChildren(const std::vector<Node*>& children);
++  void setChildren(const ot::Vector<Node*>& children);
+   void setLayoutLastOwnerDirection(Direction direction);
+   void setLayoutComputedFlexBasis(FloatOptional computedFlexBasis);
+   void setLayoutComputedFlexBasisGeneration(
+@@ -312,6 +330,10 @@ class YG_EXPORT Node : public ::YGNode {
+   void replaceChild(Node* oldChild, Node* newChild);
+   void replaceChild(Node* child, size_t index);
+   void insertChild(Node* child, size_t index);
++  void prepareChildInsertion() {
++    children_.push_back(nullptr);
++    children_.pop_back();
++  }
+   /// Removes the first occurrence of child
+   bool removeChild(Node* child);
+   void removeChild(size_t index);
+@@ -320,6 +342,10 @@ class YG_EXPORT Node : public ::YGNode {
+   void cloneChildIfNeeded(size_t index);
+   void cloneContentsChildrenIfNeeded();
+   void markDirtyAndPropagate();
++  void markDirtyWithoutCallback() noexcept {
++    isDirty_ = true;
++    layout_.computedFlexBasis = FloatOptional{};
++  }
+   float resolveFlexGrow() const;
+   float resolveFlexShrink() const;
+   bool isNodeFlexible();
+@@ -356,7 +382,7 @@ class YG_EXPORT Node : public ::YGNode {
+   size_t lineIndex_ = 0;
+   size_t contentsChildrenCount_ = 0;
+   Node* owner_ = nullptr;
+-  std::vector<Node*> children_;
++  ot::Vector<Node*> children_;
+   const Config* config_;
+   std::array<Style::SizeLength, 2> processedDimensions_{
+       {StyleSizeLength::undefined(), StyleSizeLength::undefined()}};
+diff --git a/yoga/style/GridStyle.h b/yoga/style/GridStyle.h
+index f1cf9d7b..300b8919 100644
+--- a/yoga/style/GridStyle.h
++++ b/yoga/style/GridStyle.h
+@@ -9,6 +9,7 @@
+ 
+ #include <memory>
+ 
++#include <yoga/OTAllocator.h>
+ #include <yoga/style/GridLine.h>
+ #include <yoga/style/GridTrack.h>
+ 
+@@ -49,7 +50,7 @@ class GridStyleStorage {
+ 
+   GridStyleStorage& operator=(const GridStyleStorage& other) {
+     grid_ = other.grid_ == nullptr ? nullptr
+-                                   : std::make_unique<GridStyle>(*other.grid_);
++                                   : ot::makeUnique<GridStyle>(*other.grid_);
+     return *this;
+   }
+ 
+@@ -59,7 +60,7 @@ class GridStyleStorage {
+ 
+   GridStyle& ensure() {
+     if (grid_ == nullptr) {
+-      grid_ = std::make_unique<GridStyle>();
++      grid_ = ot::makeUnique<GridStyle>();
+     }
+     return *grid_;
+   }
+diff --git a/yoga/style/GridTrack.h b/yoga/style/GridTrack.h
+index 2a2bafb5..adb23cd1 100644
+--- a/yoga/style/GridTrack.h
++++ b/yoga/style/GridTrack.h
+@@ -9,6 +9,7 @@
+ 
+ #include <yoga/style/StyleSizeLength.h>
+ #include <vector>
++#include <yoga/OTAllocator.h>
+ 
+ namespace facebook::yoga {
+ // https://www.w3.org/TR/css-grid-1/#typedef-track-size
+@@ -58,6 +59,6 @@ struct GridTrackSize {
+ };
+ 
+ // Grid track list for grid-template-rows/columns properties
+-using GridTrackList = std::vector<GridTrackSize>;
++using GridTrackList = ot::Vector<GridTrackSize>;
+ 
+ } // namespace facebook::yoga
+diff --git a/yoga/style/SmallValueBuffer.h b/yoga/style/SmallValueBuffer.h
+index 8d78a54d..dd873dc3 100644
+--- a/yoga/style/SmallValueBuffer.h
++++ b/yoga/style/SmallValueBuffer.h
+@@ -13,6 +13,7 @@
+ #include <cstdint>
+ #include <memory>
+ #include <vector>
++#include <yoga/OTAllocator.h>
+ 
+ namespace facebook::yoga {
+ 
+@@ -38,7 +39,7 @@ class SmallValueBuffer {
+     }
+ 
+     if (overflow_ == nullptr) {
+-      overflow_ = std::make_unique<SmallValueBuffer::Overflow>();
++      overflow_ = ot::makeUnique<SmallValueBuffer::Overflow>();
+     }
+ 
+     overflow_->buffer_.push_back(value);
+@@ -111,7 +112,7 @@ class SmallValueBuffer {
+     count_ = other.count_;
+     buffer_ = other.buffer_;
+     wideElements_ = other.wideElements_;
+-    overflow_ = other.overflow_ ? std::make_unique<Overflow>(*other.overflow_)
++    overflow_ = other.overflow_ ? ot::makeUnique<Overflow>(*other.overflow_)
+                                 : nullptr;
+     return *this;
+   }
+@@ -120,8 +121,8 @@ class SmallValueBuffer {
+ 
+  private:
+   struct Overflow {
+-    std::vector<uint32_t> buffer_;
+-    std::vector<bool> wideElements_;
++    ot::Vector<uint32_t> buffer_;
++    ot::Vector<bool> wideElements_;
+   };
+ 
+   uint16_t count_{0};
+diff --git a/yoga/style/StyleValuePool.h b/yoga/style/StyleValuePool.h
+index c5846658..731a95ee 100644
+--- a/yoga/style/StyleValuePool.h
++++ b/yoga/style/StyleValuePool.h
+@@ -178,6 +178,9 @@ class StyleValuePool {
+ 
+   static constexpr bool isIntegerPackable(float f) {
+     constexpr uint16_t kMaxInlineAbsValue = (1 << 11) - 1;
++    if (f < -kMaxInlineAbsValue || f > kMaxInlineAbsValue) {
++      return false;
++    }
+ 
+     auto i = static_cast<int32_t>(f);
+     return static_cast<float>(i) == f && i >= -kMaxInlineAbsValue &&

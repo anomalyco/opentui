@@ -1,0 +1,194 @@
+diff --git a/yoga/algorithm/Cache.cpp b/yoga/algorithm/Cache.cpp
+index e62f4067..f1a5f4ea 100644
+--- a/yoga/algorithm/Cache.cpp
++++ b/yoga/algorithm/Cache.cpp
+@@ -129,4 +129,23 @@ bool canUseCachedMeasurement(
+   return heightIsCompatible;
+ }
+ 
++bool canUseMeasurementForLargerHeightCap(
++    const SizingMode widthMode,
++    const float availableWidth,
++    const SizingMode heightMode,
++    const float availableHeight,
++    const CachedMeasurement& cached,
++    const float marginColumn) {
++  // The cached size is below the old cap, so the cap did not clamp it. NaN
++  // fails every comparison.
++  const float lastSize = cached.availableHeight - marginColumn;
++  return cached.widthSizingMode == widthMode &&
++      cached.availableWidth == availableWidth &&
++      cached.heightSizingMode == SizingMode::FitContent &&
++      heightMode == SizingMode::FitContent &&
++      availableHeight - marginColumn > lastSize &&
++      cached.computedHeight < lastSize &&
++      !yoga::inexactEquals(cached.computedHeight, lastSize);
++}
++
+ } // namespace facebook::yoga
+diff --git a/yoga/algorithm/Cache.h b/yoga/algorithm/Cache.h
+index f8857eaf..91b6714c 100644
+--- a/yoga/algorithm/Cache.h
++++ b/yoga/algorithm/Cache.h
+@@ -9,6 +9,7 @@
+ 
+ #include <yoga/algorithm/SizingMode.h>
+ #include <yoga/config/Config.h>
++#include <yoga/node/CachedMeasurement.h>
+ #include <yoga/numeric/Comparison.h>
+ 
+ namespace facebook::yoga {
+@@ -27,4 +28,13 @@ bool canUseCachedMeasurement(
+     float marginColumn,
+     const yoga::Config* config);
+ 
++// OpenTUI: see Node::heightCapOnlyClamps().
++bool canUseMeasurementForLargerHeightCap(
++    SizingMode widthMode,
++    float availableWidth,
++    SizingMode heightMode,
++    float availableHeight,
++    const CachedMeasurement& cached,
++    float marginColumn);
++
+ } // namespace facebook::yoga
+diff --git a/yoga/algorithm/CalculateLayout.cpp b/yoga/algorithm/CalculateLayout.cpp
+index 9762ca4b..dd20a9d0 100644
+--- a/yoga/algorithm/CalculateLayout.cpp
++++ b/yoga/algorithm/CalculateLayout.cpp
+@@ -458,6 +458,23 @@ static void computeFlexBasisForChild(
+   child->setLayoutComputedFlexBasisGeneration(generationCount);
+ }
+ 
++// OpenTUI: a percent resolves against the owner size, which
++// canUseMeasurementForLargerHeightCap does not compare.
++static bool hasPercentBoxLength(const Style& style) {
++  for (auto dimension : ordinals<Dimension>()) {
++    if (style.minDimension(dimension).isPercent() ||
++        style.maxDimension(dimension).isPercent()) {
++      return true;
++    }
++  }
++  for (auto edge : ordinals<Edge>()) {
++    if (style.margin(edge).isPercent() || style.padding(edge).isPercent()) {
++      return true;
++    }
++  }
++  return false;
++}
++
+ static void measureNodeWithMeasureFunc(
+     yoga::Node* const node,
+     const Direction direction,
+@@ -2803,6 +2820,7 @@ bool calculateLayoutInternal(
+   }
+ 
+   CachedMeasurement* cachedResults = nullptr;
++  CachedMeasurement* largerHeightCap = nullptr;
+ 
+   // Determine whether the results are already cached. We maintain a separate
+   // cache for layouts and measurements. A layout operation modifies the
+@@ -2860,6 +2878,32 @@ bool calculateLayoutInternal(
+         }
+       }
+     }
++
++    // OpenTUI: where Yoga would call the measure function, take a size that
++    // the larger height cap cannot change.
++    if (cachedResults == nullptr && node->heightCapOnlyClamps() &&
++        !hasPercentBoxLength(node->style())) {
++      for (size_t i = 0;
++           largerHeightCap == nullptr && i < layout->nextCachedMeasurementsIndex;
++           i++) {
++        if (canUseMeasurementForLargerHeightCap(
++                widthSizingMode,
++                availableWidth,
++                heightSizingMode,
++                availableHeight,
++                layout->cachedMeasurements[i],
++                marginAxisColumn)) {
++          largerHeightCap = &layout->cachedMeasurements[i];
++        }
++      }
++      // With exact comparisons, a cache hit gives what a call would. Take the
++      // entry as one rather than add an entry per larger cap, which would
++      // fill the cache and drop the node's other sizes. Other configs store
++      // the size as a call's result.
++      if (node->getConfig()->roundsPositionsFromAbsoluteEdges()) {
++        cachedResults = largerHeightCap;
++      }
++    }
+   } else if (performLayout) {
+     if (sizesMatch(
+             layout->cachedLayout.availableWidth, availableWidth, node->getConfig()) &&
+@@ -2898,20 +2942,27 @@ bool calculateLayoutInternal(
+     (performLayout ? layoutMarkerData.cachedLayouts
+                    : layoutMarkerData.cachedMeasures) += 1;
+   } else {
+-    calculateLayoutImpl(
+-        node,
+-        availableWidth,
+-        availableHeight,
+-        ownerDirection,
+-        widthSizingMode,
+-        heightSizingMode,
+-        ownerWidth,
+-        ownerHeight,
+-        performLayout,
+-        reason,
+-        layoutMarkerData,
+-        depth,
+-        generationCount);
++    if (largerHeightCap != nullptr) {
++      layout->setMeasuredDimension(
++          Dimension::Width, largerHeightCap->computedWidth);
++      layout->setMeasuredDimension(
++          Dimension::Height, largerHeightCap->computedHeight);
++    } else {
++      calculateLayoutImpl(
++          node,
++          availableWidth,
++          availableHeight,
++          ownerDirection,
++          widthSizingMode,
++          heightSizingMode,
++          ownerWidth,
++          ownerHeight,
++          performLayout,
++          reason,
++          layoutMarkerData,
++          depth,
++          generationCount);
++    }
+ 
+     layout->lastOwnerDirection = ownerDirection;
+     layout->configVersion = node->getConfig()->getVersion();
+diff --git a/yoga/node/Node.h b/yoga/node/Node.h
+index 7c4e7b43..e971de2a 100644
+--- a/yoga/node/Node.h
++++ b/yoga/node/Node.h
+@@ -70,6 +70,16 @@ class YG_EXPORT Node : public ::YGNode {
+     return measureFunc_ != nullptr;
+   }
+ 
++  // OpenTUI: the measure function uses an "at most" height only to clamp its
++  // result, so a larger cap cannot change a result below the old cap.
++  bool heightCapOnlyClamps() const {
++    return heightCapOnlyClamps_;
++  }
++
++  void setHeightCapOnlyClamps(bool heightCapOnlyClamps) {
++    heightCapOnlyClamps_ = heightCapOnlyClamps;
++  }
++
+   YGSize measure(
+       float availableWidth,
+       MeasureMode widthMode,
+@@ -369,6 +379,7 @@ class YG_EXPORT Node : public ::YGNode {
+   bool isReferenceBaseline_ : 1 = false;
+   bool isDirty_ : 1 = true;
+   bool alwaysFormsContainingBlock_ : 1 = false;
++  bool heightCapOnlyClamps_ : 1 = false;
+   NodeType nodeType_ : bitCount<NodeType>() = NodeType::Default;
+   void* context_ = nullptr;
+   YGMeasureFunc measureFunc_ = nullptr;

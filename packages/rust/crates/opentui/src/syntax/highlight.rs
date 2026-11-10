@@ -1,0 +1,743 @@
+//! Tree-sitter highlighting: the grammar registry, captures, and their conversion to styled spans.
+//!
+//! Like Core's parser worker, this runs each grammar's highlight query over its tree and collects every capture as
+//! a range with a name. Injections, such as code in Markdown fences, parse their part of the text with another
+//! grammar, recursively, and add that grammar's captures.
+
+use super::{SyntaxTheme, filetype_for_info_string};
+use crate::style::{Span, Style};
+use std::borrow::Cow;
+use std::cmp::Reverse;
+use std::collections::hash_map::Entry as Slot;
+use std::collections::{BTreeSet, HashMap};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock, PoisonError};
+use tree_sitter::{Language, Node, Parser, Query, QueryCursor, Range, StreamingIterator};
+
+/// The tree-sitter crate this build uses, for grammars that need its types.
+pub use tree_sitter;
+
+/// A range of the source's bytes; [`Range`] is tree-sitter's, with points.
+type ByteRange = std::ops::Range<usize>;
+
+/// Injections nested deeper than this keep their host's captures only. Rust macros inject Rust into themselves.
+const MAX_DEPTH: usize = 8;
+/// Layers per highlight beyond this are skipped. A Markdown document has one per paragraph.
+const MAX_LAYERS: usize = 4096;
+
+/// The Markdown grammar's injections with their content kept whole. The crate's own query leaves a content node's
+/// children out of the injected text, but the block grammar makes punctuation such as `*` and `;` anonymous
+/// children of inline text and fenced code, so emphasis and code would not parse. Named children, such as the `> `
+/// of a quote, stay out. Table cells are inline content too, as in Core.
+const MARKDOWN_INJECTIONS: &str = r#"
+(fenced_code_block
+  (info_string (language) @injection.language)
+  (code_fence_content) @injection.content
+  (#set! injection.include-unnamed-children))
+((html_block) @injection.content (#set! injection.language "html"))
+((minus_metadata) @injection.content (#set! injection.language "yaml"))
+((plus_metadata) @injection.content (#set! injection.language "toml"))
+([(inline) (pipe_table_cell)] @injection.content
+  (#set! injection.language "markdown_inline")
+  (#set! injection.include-unnamed-children))
+"#;
+
+/// A tree-sitter grammar with its queries, for [`register`].
+///
+/// Highlight queries follow tree-sitter's conventions: when several patterns capture one node, the last one wins.
+/// Injection queries mark content with `@injection.content` and name its language with an `@injection.language`
+/// capture or an `injection.language` property; `injection.include-children`,
+/// `injection.include-unnamed-children`, and `injection.combined` work as in tree-sitter and Helix.
+#[derive(Clone)]
+pub struct Grammar {
+    language: Language,
+    highlights: Cow<'static, str>,
+    injections: Cow<'static, str>,
+    core: bool,
+}
+
+impl Grammar {
+    /// A grammar and its highlight query, such as a grammar crate's `LANGUAGE` and `HIGHLIGHTS_QUERY`.
+    pub fn new(language: impl Into<Language>, highlights: impl Into<Cow<'static, str>>) -> Self {
+        Self { language: language.into(), highlights: highlights.into(), injections: Cow::Borrowed(""), core: false }
+    }
+
+    /// The injection query, which hands parts of the text to other grammars by filetype.
+    pub fn injections(mut self, query: impl Into<Cow<'static, str>>) -> Self {
+        self.injections = query.into();
+        self
+    }
+
+    /// Highlights as Core does, for Core's nvim-treesitter queries. A node keeps every capture instead of the last
+    /// pattern's, so `(comment) @comment @spell` styles with both. When this grammar is the one highlighted,
+    /// [`highlights`] orders all captures, injected ones included, as Core cascades their styles: fewer dotted parts
+    /// first, then by start. A `markup.raw.block` capture around injected text is dropped, as Core suppresses it.
+    pub fn core_captures(mut self) -> Self {
+        self.core = true;
+        self
+    }
+
+    /// Compiles the queries, as [`register`] does, for [`register_lazy`].
+    pub fn compile(&self) -> Result<CompiledGrammar, GrammarError> {
+        compile(self).map(CompiledGrammar)
+    }
+}
+
+impl std::fmt::Debug for Grammar {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("Grammar").field("language", &self.language.name()).finish_non_exhaustive()
+    }
+}
+
+/// Why [`register`] rejected a grammar.
+#[derive(Debug)]
+pub enum GrammarError {
+    /// The grammar was generated for a tree-sitter version this build cannot load.
+    Language(tree_sitter::LanguageError),
+    /// A query does not compile against the grammar.
+    Query(tree_sitter::QueryError),
+}
+
+impl std::fmt::Display for GrammarError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Language(error) => write!(formatter, "unsupported grammar: {error}"),
+            Self::Query(error) => write!(formatter, "invalid query: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for GrammarError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Language(error) => Some(error),
+            Self::Query(error) => Some(error),
+        }
+    }
+}
+
+/// A capture: a byte range of the source and the query's name for it, Core's `SimpleHighlight`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Capture {
+    pub start: usize,
+    pub end: usize,
+    /// The capture name, such as `keyword` or `function.method`.
+    pub name: &'static str,
+}
+
+/// A grammar with its queries compiled, from [`Grammar::compile`], for [`register_lazy`].
+pub struct CompiledGrammar(Compiled);
+
+impl std::fmt::Debug for CompiledGrammar {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("CompiledGrammar").field("language", &self.0.language.name()).finish_non_exhaustive()
+    }
+}
+
+/// A grammar with its queries compiled.
+struct Compiled {
+    language: Language,
+    highlights: Query,
+    /// Interned names of the highlight query's captures; `None` for private ones, which start with `_`.
+    names: Vec<Option<&'static str>>,
+    injections: Option<Injections>,
+    core: bool,
+}
+
+struct Injections {
+    query: Query,
+    content: Option<u32>,
+    language: Option<u32>,
+}
+
+/// Loads a grammar the first time it is highlighted.
+type Load = Box<dyn Fn() -> Option<Compiled> + Send + Sync>;
+
+/// A registered grammar. Bundled and lazily registered grammars compile on first use; others when registered.
+struct Entry {
+    load: Load,
+    compiled: OnceLock<Option<Compiled>>,
+}
+
+impl Entry {
+    fn lazy(load: Load) -> Self {
+        Self { load, compiled: OnceLock::new() }
+    }
+
+    fn compiled(&self) -> Option<&Compiled> {
+        self.compiled.get_or_init(&self.load).as_ref()
+    }
+}
+
+#[derive(Clone, Default)]
+struct Registry {
+    grammars: HashMap<String, Arc<Entry>>,
+    aliases: HashMap<String, String>,
+}
+
+impl Registry {
+    fn bundled() -> Self {
+        let mut registry = Self::default();
+        for (name, grammar) in bundled() {
+            let load = Box::new(move || compile(&grammar).ok());
+            registry.grammars.insert(name.to_owned(), Arc::new(Entry::lazy(load)));
+        }
+        registry.aliases.insert("javascriptreact".to_owned(), "javascript".to_owned());
+        registry
+    }
+
+    /// The grammar for a filetype, an alias, or anything [`filetype_for_info_string`] resolves.
+    fn resolve(&self, name: &str) -> Option<&Arc<Entry>> {
+        let find = |name: &str| {
+            let name = self.aliases.get(name).map_or(name, String::as_str);
+            self.grammars.get(name)
+        };
+        find(name).or_else(|| find(&filetype_for_info_string(name)?))
+    }
+}
+
+/// The grammars the `tree-sitter` feature bundles, by filetype.
+fn bundled() -> [(&'static str, Grammar); 7] {
+    use tree_sitter_javascript as js;
+    use tree_sitter_md as md;
+    use tree_sitter_rust as rust;
+    use tree_sitter_typescript as ts;
+    use tree_sitter_zig as zig;
+    // Later patterns win, so TypeScript's own patterns go after the JavaScript ones they refine.
+    let ecma = |language, queries: &[&str]| Grammar::new(language, queries.concat()).injections(js::INJECTIONS_QUERY);
+    let (jsx, ts_only) = (js::JSX_HIGHLIGHT_QUERY, ts::HIGHLIGHTS_QUERY);
+    [
+        ("javascript", ecma(js::LANGUAGE, &[js::HIGHLIGHT_QUERY, jsx])),
+        ("typescript", ecma(ts::LANGUAGE_TYPESCRIPT, &[js::HIGHLIGHT_QUERY, ts_only])),
+        ("typescriptreact", ecma(ts::LANGUAGE_TSX, &[js::HIGHLIGHT_QUERY, jsx, ts_only])),
+        ("markdown", Grammar::new(md::LANGUAGE, md::HIGHLIGHT_QUERY_BLOCK).injections(MARKDOWN_INJECTIONS)),
+        (
+            "markdown_inline",
+            Grammar::new(md::INLINE_LANGUAGE, md::HIGHLIGHT_QUERY_INLINE).injections(md::INJECTION_QUERY_INLINE),
+        ),
+        ("rust", Grammar::new(rust::LANGUAGE, rust::HIGHLIGHTS_QUERY).injections(rust::INJECTIONS_QUERY)),
+        ("zig", Grammar::new(zig::LANGUAGE, zig::HIGHLIGHTS_QUERY).injections(zig::INJECTIONS_QUERY)),
+    ]
+}
+
+/// Shared, so a highlight takes a snapshot without copying it; a change copies it once if a highlight holds one.
+static REGISTRY: LazyLock<Mutex<Arc<Registry>>> = LazyLock::new(|| Mutex::new(Arc::new(Registry::bundled())));
+
+/// Every capture name compiled so far. Each distinct name is leaked once; grammars have a few dozen.
+static NAMES: Mutex<BTreeSet<&'static str>> = Mutex::new(BTreeSet::new());
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn intern(name: &str) -> &'static str {
+    let mut names = lock(&NAMES);
+    if let Some(name) = names.get(name) {
+        return name;
+    }
+    let name: &'static str = Box::leak(Box::from(name));
+    names.insert(name);
+    name
+}
+
+fn compile(grammar: &Grammar) -> Result<Compiled, GrammarError> {
+    Parser::new().set_language(&grammar.language).map_err(GrammarError::Language)?;
+    let highlights = Query::new(&grammar.language, &grammar.highlights).map_err(GrammarError::Query)?;
+    let names = highlights.capture_names().iter().map(|name| (!name.starts_with('_')).then(|| intern(name))).collect();
+    let injections = match grammar.injections.trim() {
+        "" => None,
+        source => {
+            let query = Query::new(&grammar.language, source).map_err(GrammarError::Query)?;
+            let content = query.capture_index_for_name("injection.content");
+            let language = query.capture_index_for_name("injection.language");
+            Some(Injections { query, content, language })
+        }
+    };
+    Ok(Compiled { language: grammar.language.clone(), highlights, names, injections, core: grammar.core })
+}
+
+/// Registers or replaces the grammar for a filetype, compiling its queries now. Widgets use it the next time they
+/// highlight.
+pub fn register(filetype: &str, grammar: Grammar) -> Result<(), GrammarError> {
+    let compiled = compile(&grammar)?;
+    insert(filetype, Entry { load: Box::new(|| None), compiled: OnceLock::from(Some(compiled)) });
+    Ok(())
+}
+
+/// Registers or replaces the grammar for a filetype without compiling anything. `load` runs, once, the first time a
+/// highlight needs the filetype, on the thread that highlights; `None` leaves it plain. Registering many grammars this
+/// way costs nothing until each is shown, as the bundled ones do.
+///
+/// ```ignore
+/// use opentui::syntax::{Grammar, register_lazy};
+/// register_lazy("python", || {
+///     Grammar::new(tree_sitter_python::LANGUAGE, tree_sitter_python::HIGHLIGHTS_QUERY).compile().ok()
+/// });
+/// ```
+pub fn register_lazy(filetype: &str, load: impl Fn() -> Option<CompiledGrammar> + Send + Sync + 'static) {
+    insert(filetype, Entry::lazy(Box::new(move || load().map(|grammar| grammar.0))));
+}
+
+fn insert(filetype: &str, entry: Entry) {
+    let mut registry = lock(&REGISTRY);
+    let registry = Arc::make_mut(&mut registry);
+    registry.aliases.remove(filetype);
+    registry.grammars.insert(filetype.to_owned(), Arc::new(entry));
+}
+
+/// Makes `alias` another name for the grammar of `filetype`.
+pub fn register_alias(alias: &str, filetype: &str) {
+    Arc::make_mut(&mut lock(&REGISTRY)).aliases.insert(alias.to_owned(), filetype.to_owned());
+}
+
+/// The filetypes with a grammar, bundled or registered, sorted.
+pub fn filetypes() -> Vec<String> {
+    let mut names: Vec<String> = lock(&REGISTRY).grammars.keys().cloned().collect();
+    names.sort();
+    names
+}
+
+/// Whether a filetype has a grammar. It accepts what widgets accept: a filetype, an alias, or anything
+/// [`filetype_for_info_string`] resolves, such as `"rs"` or `"main.rs"`.
+pub fn has_grammar(filetype: &str) -> bool {
+    lock(&REGISTRY).resolve(filetype).is_some()
+}
+
+/// How an injection treats its content node's children.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Children {
+    Exclude,
+    ExcludeNamed,
+    Include,
+}
+
+/// Text an injection hands to another grammar.
+struct Target {
+    language: String,
+    ranges: Vec<Range>,
+    /// The injection pattern, for combined injections, whose matches in one language parse as one text.
+    combined: Option<usize>,
+}
+
+/// One highlight call: the parser and query cursor its layers share, and the captures they found.
+struct Run<'a> {
+    source: &'a str,
+    registry: &'a Registry,
+    parser: Parser,
+    cursor: QueryCursor,
+    captures: Vec<(Capture, usize, usize)>,
+    layers: usize,
+}
+
+impl<'a> Run<'a> {
+    /// Highlights the text in `ranges`, all of it when empty, then its injections.
+    fn layer(&mut self, compiled: &'a Compiled, ranges: &[Range], depth: usize) -> Option<()> {
+        self.layers += 1;
+        self.parser.set_language(&compiled.language).ok()?;
+        self.parser.set_included_ranges(ranges).ok()?;
+        let tree = self.parser.parse(self.source, None)?;
+        let bytes = self.source.as_bytes();
+        let first = self.captures.len();
+        // The last pattern that captures a node wins, unless the grammar keeps every capture as Core does.
+        let mut by_node: HashMap<usize, usize> = HashMap::new();
+        let mut captures = self.cursor.captures(&compiled.highlights, tree.root_node(), bytes);
+        while let Some((found, index)) = captures.next() {
+            let capture = found.captures()[*index];
+            let Some(name) = compiled.names[capture.index as usize] else { continue };
+            let named = Capture { start: capture.node.start_byte(), end: capture.node.end_byte(), name };
+            let entry = (named, depth, found.pattern_index);
+            if compiled.core {
+                self.captures.push(entry);
+                continue;
+            }
+            match by_node.entry(capture.node.id()) {
+                Slot::Occupied(slot) => {
+                    let kept = &mut self.captures[*slot.get()];
+                    if entry.2 >= kept.2 {
+                        *kept = entry;
+                    }
+                }
+                Slot::Vacant(slot) => {
+                    slot.insert(self.captures.len());
+                    self.captures.push(entry);
+                }
+            }
+        }
+        let Some(injections) = compiled.injections.as_ref().filter(|_| depth < MAX_DEPTH) else { return Some(()) };
+        let mut targets: Vec<Target> = Vec::new();
+        let mut matches = self.cursor.matches(&injections.query, tree.root_node(), bytes);
+        while let Some(found) = matches.next() {
+            let properties = injections.query.property_settings(found.pattern_index);
+            let property = |key: &str| properties.iter().find(|property| &*property.key == key);
+            let mut language = property("injection.language").and_then(|property| property.value.as_deref());
+            let mut nodes = Vec::new();
+            for capture in found.captures() {
+                if Some(capture.index) == injections.language {
+                    language = capture.node.utf8_text(bytes).ok();
+                } else if Some(capture.index) == injections.content {
+                    nodes.push(capture.node);
+                }
+            }
+            let Some(language) = language.filter(|_| !nodes.is_empty()) else { continue };
+            let children = if property("injection.include-children").is_some() {
+                Children::Include
+            } else if property("injection.include-unnamed-children").is_some() {
+                Children::ExcludeNamed
+            } else {
+                Children::Exclude
+            };
+            let content: Vec<Range> = nodes.into_iter().flat_map(|node| content_ranges(node, children)).collect();
+            let combined = property("injection.combined").map(|_| found.pattern_index);
+            let joins =
+                |target: &&mut Target| combined.is_some() && target.combined == combined && target.language == language;
+            match targets.iter_mut().find(joins) {
+                Some(target) => target.ranges.extend(content),
+                None => targets.push(Target { language: language.to_owned(), ranges: content, combined }),
+            }
+        }
+        let registry = self.registry;
+        let mut layered = Vec::new();
+        for mut target in targets {
+            let Some(injected) = registry.resolve(&target.language).and_then(|entry| entry.compiled()) else {
+                continue;
+            };
+            target.ranges.sort_by_key(|range| range.start_byte);
+            let target_ranges = intersect(&target.ranges, ranges);
+            if !target_ranges.is_empty() {
+                layered.push((injected, target_ranges));
+            }
+        }
+        if compiled.core {
+            // Core's treeSitterToTextChunks drops `markup.raw.block` inside any capture that contains injected text,
+            // such as a fenced block and its fences, unless the capture is itself inside injected text.
+            let injected: Vec<ByteRange> =
+                layered.iter().flat_map(|(_, ranges)| ranges).map(|range| range.start_byte..range.end_byte).collect();
+            let within =
+                |capture: &Capture, outer: &ByteRange| outer.start <= capture.start && capture.end <= outer.end;
+            let containers: Vec<ByteRange> = self.captures[first..]
+                .iter()
+                .map(|(capture, ..)| capture.start..capture.end)
+                .filter(|range| injected.iter().any(|inner| range.start <= inner.start && inner.end <= range.end))
+                .collect();
+            let mut index = 0;
+            self.captures.retain(|(capture, ..)| {
+                index += 1;
+                index <= first
+                    || capture.name != "markup.raw.block"
+                    || injected.iter().any(|range| within(capture, range))
+                    || !containers.iter().any(|range| within(capture, range))
+            });
+        }
+        for (injected, target_ranges) in layered {
+            if self.layers >= MAX_LAYERS {
+                break;
+            }
+            // A layer that fails to parse leaves its host's captures.
+            let _ = self.layer(injected, &target_ranges, depth + 1);
+        }
+        Some(())
+    }
+}
+
+/// A node's ranges, without the children an injection leaves out.
+fn content_ranges(node: Node<'_>, children: Children) -> Vec<Range> {
+    let mut ranges = Vec::new();
+    let (mut start_byte, mut start_point) = (node.start_byte(), node.start_position());
+    if children != Children::Include {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if children == Children::ExcludeNamed && !child.is_named() {
+                continue;
+            }
+            if child.start_byte() > start_byte {
+                let (end_byte, end_point) = (child.start_byte(), child.start_position());
+                ranges.push(Range { start_byte, start_point, end_byte, end_point });
+            }
+            if child.end_byte() > start_byte {
+                (start_byte, start_point) = (child.end_byte(), child.end_position());
+            }
+        }
+    }
+    if node.end_byte() > start_byte {
+        ranges.push(Range { start_byte, start_point, end_byte: node.end_byte(), end_point: node.end_position() });
+    }
+    ranges
+}
+
+/// The parts of sorted `ranges` inside sorted `parents`, or `ranges` when there are no parents.
+fn intersect(ranges: &[Range], parents: &[Range]) -> Vec<Range> {
+    if parents.is_empty() {
+        return ranges.to_vec();
+    }
+    let mut result = Vec::new();
+    for range in ranges {
+        for parent in parents.iter().filter(|parent| parent.start_byte < range.end_byte) {
+            if parent.end_byte <= range.start_byte {
+                continue;
+            }
+            let start = if parent.start_byte > range.start_byte { parent } else { range };
+            let end = if parent.end_byte < range.end_byte { parent } else { range };
+            result.push(Range {
+                start_byte: start.start_byte,
+                start_point: start.start_point,
+                end_byte: end.end_byte,
+                end_point: end.end_point,
+            });
+        }
+    }
+    result
+}
+
+/// The captures in `source`, sorted by start with enclosing captures first, or `None` without a grammar for
+/// `filetype` or when parsing fails. Injected grammars' captures follow the captures of the text around them. For a
+/// grammar with [`Grammar::core_captures`], the order is Core's cascade instead: fewer dotted parts first, then start.
+pub fn highlights(source: &str, filetype: &str) -> Option<Vec<Capture>> {
+    // A snapshot, so injected grammars resolve without holding the lock.
+    let registry = Arc::clone(&lock(&REGISTRY));
+    let compiled = registry.resolve(filetype)?.compiled()?;
+    // tree-sitter-md parses a heading that opens the text and ends it without a line ending as an error, where Core's
+    // build recovers the heading, as in a diff of a new Markdown file. With the line ending added, it is a heading.
+    let padded = (compiled.language.name() == Some("markdown") && !source.is_empty() && !source.ends_with('\n'))
+        .then(|| format!("{source}\n"));
+    let mut run = Run {
+        source: padded.as_deref().unwrap_or(source),
+        registry: &registry,
+        parser: Parser::new(),
+        cursor: QueryCursor::new(),
+        captures: Vec::new(),
+        layers: 0,
+    };
+    run.layer(compiled, &[], 0)?;
+    let mut captures = run.captures;
+    captures.retain_mut(|(capture, ..)| {
+        capture.end = capture.end.min(source.len());
+        let (start, end) = (capture.start, capture.end);
+        start < end && source.is_char_boundary(start) && source.is_char_boundary(end)
+    });
+    if compiled.core {
+        // Core sorts by start and then merges the styles over a piece by dotted parts, then that order. The sorts
+        // are stable, so captures of one node keep the query's order.
+        captures.sort_by_key(|(capture, ..)| capture.start);
+        captures.sort_by_key(|(capture, ..)| capture.name.split('.').count());
+    } else {
+        captures.sort_by_key(|(capture, depth, pattern)| (capture.start, Reverse(capture.end), *depth, *pattern));
+    }
+    Some(captures.into_iter().map(|(capture, ..)| capture).collect())
+}
+
+/// Styles `source` from its captures, as Core's `treeSitterToTextChunks`: text no capture covers gets the theme's
+/// `default` style, and covered text gets `default` with each covering capture's style on top, later captures over
+/// earlier ones. Unlike Core, which orders them by name length, the order is the list's: [`highlights`] puts inner
+/// captures after the ones enclosing them. A capture named `none` clears the styles under it, as in Neovim.
+pub fn spans(source: &str, captures: &[Capture], theme: &SyntaxTheme) -> Vec<Span<'static>> {
+    let pieces = styled_ranges(source, captures, theme);
+    pieces.into_iter().map(|(range, style)| Span::styled(source[range].to_owned(), style)).collect()
+}
+
+/// The pieces of `source` as [`spans`] styles them: byte ranges in order that cover the source, each with its style,
+/// and neighbors of one style joined.
+pub(crate) fn styled_ranges(source: &str, captures: &[Capture], theme: &SyntaxTheme) -> Vec<(ByteRange, Style)> {
+    let default = theme.get("default").unwrap_or_default();
+    // Ends sort before starts at one offset, so a range closes before the next one opens.
+    let mut boundaries: Vec<(usize, bool, usize)> = Vec::with_capacity(captures.len() * 2);
+    for (index, capture) in captures.iter().enumerate() {
+        let (start, end) = (capture.start, capture.end);
+        if start < end && source.get(start..end).is_some() {
+            boundaries.extend([(start, true, index), (end, false, index)]);
+        }
+    }
+    boundaries.sort_unstable();
+    let mut pieces: Vec<(ByteRange, Style)> = Vec::new();
+    let mut push = |range: ByteRange, style: Style| match pieces.last_mut() {
+        Some((last, last_style)) if *last_style == style => last.end = range.end,
+        _ => pieces.push((range, style)),
+    };
+    let style_of = |active: &[usize]| {
+        active.iter().fold(default, |style, &index| match captures[index].name {
+            "none" => default,
+            name => theme.get(name).map_or(style, |own| style.patch(own)),
+        })
+    };
+    let (mut active, mut offset): (Vec<usize>, usize) = (Vec::new(), 0);
+    for (at, start, index) in boundaries {
+        if offset < at {
+            push(offset..at, style_of(&active));
+            offset = at;
+        }
+        match (active.binary_search(&index), start) {
+            (Err(slot), true) => active.insert(slot, index),
+            (Ok(slot), false) => _ = active.remove(slot),
+            _ => {}
+        }
+    }
+    if offset < source.len() {
+        push(offset..source.len(), default);
+    }
+    pieces
+}
+
+/// Highlights `source` as `filetype` with `theme`: [`highlights`], then [`spans`].
+pub fn highlight(source: &str, filetype: &str, theme: &SyntaxTheme) -> Option<Vec<Span<'static>>> {
+    Some(spans(source, &highlights(source, filetype)?, theme))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::style::Color;
+
+    /// The captured text and names, for readable assertions.
+    fn captured(source: &str, filetype: &str) -> Vec<(String, &'static str)> {
+        let captures = highlights(source, filetype).expect("a bundled grammar");
+        captures.iter().map(|capture| (source[capture.start..capture.end].to_owned(), capture.name)).collect()
+    }
+
+    fn has(captures: &[(String, &str)], text: &str, name: &str) -> bool {
+        captures.iter().any(|(captured, captured_name)| captured == text && *captured_name == name)
+    }
+
+    #[test]
+    fn every_bundled_grammar_compiles() {
+        for (name, grammar) in bundled() {
+            if let Err(error) = grammar.compile() {
+                panic!("{name}: {error}");
+            }
+        }
+    }
+
+    #[test]
+    fn lazy_grammars_compile_on_first_highlight_only() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static LOADS: AtomicUsize = AtomicUsize::new(0);
+        register_lazy("lazy-rust", || {
+            LOADS.fetch_add(1, Ordering::SeqCst);
+            Grammar::new(tree_sitter_rust::LANGUAGE, "(identifier) @variable").compile().ok()
+        });
+        register_alias("lr", "lazy-rust");
+        assert!(has_grammar("lr"));
+        assert_eq!(LOADS.load(Ordering::SeqCst), 0);
+        assert_eq!(captured("x", "lr"), [("x".to_owned(), "variable")]);
+        assert_eq!(captured("y", "lazy-rust"), [("y".to_owned(), "variable")]);
+        assert_eq!(LOADS.load(Ordering::SeqCst), 1);
+        // A load that fails leaves the filetype plain, and is not retried.
+        static FAILS: AtomicUsize = AtomicUsize::new(0);
+        register_lazy("lazy-broken", || {
+            FAILS.fetch_add(1, Ordering::SeqCst);
+            Grammar::new(tree_sitter_rust::LANGUAGE, "(no_such_node) @x").compile().ok()
+        });
+        assert!(highlights("x", "lazy-broken").is_none() && highlights("x", "lazy-broken").is_none());
+        assert_eq!(FAILS.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn rust_code_gets_tree_sitter_captures() {
+        let captures = captured("fn main() {\n    let s = \"hi\"; // note\n    println!(\"{s}\");\n}\n", "rust");
+        assert!(has(&captures, "fn", "keyword"), "{captures:?}");
+        assert!(has(&captures, "main", "function"), "{captures:?}");
+        assert!(has(&captures, "\"hi\"", "string"), "{captures:?}");
+        assert!(has(&captures, "// note", "comment"), "{captures:?}");
+        assert!(has(&captures, "println", "function.macro"), "{captures:?}");
+        // The macro's arguments are Rust too, injected into themselves.
+        assert!(has(&captures, "\"{s}\"", "string"), "{captures:?}");
+    }
+
+    #[test]
+    fn typescript_refines_javascript() {
+        let captures = captured("function f(n: number): string { return `${n}` }\n", "ts");
+        assert!(has(&captures, "function", "keyword"), "{captures:?}");
+        assert!(has(&captures, "f", "function"), "{captures:?}");
+        assert!(has(&captures, "number", "type.builtin"), "{captures:?}");
+        assert!(has(&captures, "n", "variable.parameter"), "{captures:?}");
+        let tsx = captured("const view = <Box title=\"x\" />;\n", "tsx");
+        assert!(has(&tsx, "title", "attribute"), "{tsx:?}");
+    }
+
+    #[test]
+    fn markdown_injects_inline_markup_and_fenced_code() {
+        let source = "# Title\n\nSome **bold** text.\n\n```rust\nlet x = a::B;\n```\n\n> ```rust\n> x;\n> ```\n";
+        let captures = captured(source, "markdown");
+        assert!(has(&captures, "Title", "text.title"), "{captures:?}");
+        assert!(has(&captures, "**bold**", "text.strong"), "{captures:?}");
+        // A heading that is the whole text, without a line ending, is a heading too.
+        assert!(has(&captured("# Title", "markdown"), "Title", "text.title"));
+        assert!(has(&captures, "let", "keyword"), "{captures:?}");
+        // Punctuation is part of the code, but a quote's markers are not.
+        assert!(has(&captures, "::", "punctuation.delimiter"), "{captures:?}");
+        assert!(has(&captures, "B", "type") || has(&captures, "B", "constructor"), "{captures:?}");
+        assert!(has(&captures, ";", "punctuation.delimiter"), "{captures:?}");
+        // The fence's content clears the code block's style, so unhighlighted code keeps the default.
+        let theme = SyntaxTheme::new().style("text.literal", Style::new().fg(Color::GREEN));
+        let spans = spans(source, &highlights(source, "markdown").unwrap(), &theme);
+        let x = spans.iter().find(|span| span.content.contains(" x = ")).unwrap();
+        assert_eq!(x.style, Style::new(), "{spans:?}");
+    }
+
+    #[test]
+    fn core_captures_keep_every_capture_in_cores_cascade() {
+        let query = "(line_comment) @comment @spell\n(identifier) @variable\n\
+                     (call_expression function: (identifier) @function.call)\n";
+        register("core-rust", Grammar::new(tree_sitter_rust::LANGUAGE, query).core_captures()).unwrap();
+        let captures = captured("f(x); // note\n", "core-rust");
+        let on = |text: &str| -> Vec<&str> {
+            captures.iter().filter(|(captured, _)| captured == text).map(|(_, name)| *name).collect()
+        };
+        assert_eq!(on("// note"), ["comment", "spell"]);
+        // The more specific name comes later, so its style goes on top.
+        assert_eq!(on("f"), ["variable", "function.call"]);
+        let theme = SyntaxTheme::new()
+            .style("comment", Style::new().fg(Color::GREEN).italic())
+            .style("spell", Style::new().fg(Color::WHITE));
+        let note = spans("// note", &highlights("// note", "core-rust").unwrap(), &theme);
+        assert_eq!(note[0].style, Style::new().fg(Color::WHITE).italic());
+
+        let query = "(fenced_code_block) @markup.raw.block\n(fenced_code_block_delimiter) @markup.raw.block\n";
+        let markdown = Grammar::new(tree_sitter_md::LANGUAGE, query).injections(MARKDOWN_INJECTIONS).core_captures();
+        register("core-markdown", markdown).unwrap();
+        let fenced = |info: &str| {
+            let source = format!("```{info}\nlet x = 1;\n```\n");
+            let captures = captured(&source, "core-markdown");
+            (has(&captures, &source, "markup.raw.block"), has(&captures, "```", "markup.raw.block"))
+        };
+        // Core drops the block's style and its fences' around injected code, and keeps both when no grammar takes
+        // the fence.
+        assert_eq!(fenced("rust"), (false, false));
+        assert_eq!(fenced("cobol"), (true, true));
+    }
+
+    #[test]
+    fn unknown_filetypes_have_no_grammar() {
+        assert!(highlights("x", "cobol").is_none());
+        assert!(has_grammar("rs") && has_grammar("main.zig") && has_grammar("JSX"));
+        assert!(!has_grammar("cobol"));
+    }
+
+    #[test]
+    fn spans_cover_the_source_and_nest_styles() {
+        let source = "ab cd ef";
+        let captures = [
+            Capture { start: 0, end: 5, name: "outer" },
+            Capture { start: 3, end: 5, name: "inner.part" },
+            Capture { start: 7, end: 99, name: "out_of_range" },
+        ];
+        let red = Style::new().fg(Color::RED);
+        let theme = SyntaxTheme::new()
+            .style("default", Style::new().fg(Color::WHITE))
+            .style("outer", red)
+            .style("inner", Style::new().bold());
+        let spans = spans(source, &captures, &theme);
+        let text: Vec<(&str, Style)> = spans.iter().map(|span| (&*span.content, span.style)).collect();
+        let white = Style::new().fg(Color::WHITE);
+        assert_eq!(text, [("ab ", red), ("cd", red.bold()), (" ef", white)]);
+    }
+
+    #[test]
+    fn registered_grammars_and_aliases_resolve() {
+        let rust = Grammar::new(tree_sitter_rust::LANGUAGE, "(identifier) @variable");
+        register("rust-variables", rust).unwrap();
+        register_alias("rv", "rust-variables");
+        assert!(filetypes().contains(&"rust-variables".to_owned()));
+        assert_eq!(captured("x", "rv"), [("x".to_owned(), "variable")]);
+        let error = register("broken", Grammar::new(tree_sitter_rust::LANGUAGE, "(no_such_node) @x")).unwrap_err();
+        assert!(matches!(error, GrammarError::Query(_)), "{error}");
+        assert!(!has_grammar("broken"));
+    }
+}

@@ -1,9 +1,11 @@
 const std = @import("std");
+const TestPools = @import("../tests/test-pools.zig").TestPools;
 const bench_utils = @import("../bench-utils.zig");
 const edit_buffer = @import("../edit-buffer.zig");
 const editor_view = @import("../editor-view.zig");
 const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
+const OptimizedBuffer = @import("../buffer.zig").OptimizedBuffer;
 
 const BenchResult = bench_utils.BenchResult;
 const BenchStats = bench_utils.BenchStats;
@@ -27,7 +29,7 @@ fn appendResult(allocator: std.mem.Allocator, results: *std.ArrayList(BenchResul
 }
 
 fn resetPrimaryCursor(eb: *EditBuffer, row: u32, col: u32, offset: u32) void {
-    eb.cursors.items[0] = .{
+    eb.cursor = .{
         .row = row,
         .col = col,
         .desired_col = col,
@@ -152,22 +154,59 @@ fn benchVisualEOLBoundary(
     try appendResult(allocator, results, name, stats);
 }
 
+fn benchDrawScrolledLongLine(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
+    iterations: usize,
+    bench_filter: ?[]const u8,
+    results: *std.ArrayList(BenchResult),
+) !void {
+    const name = "drawEditorView 256 KiB unwrapped line, cursor at its end: 100 draws";
+    if (!bench_utils.matchesBenchFilter(name, bench_filter)) return;
+
+    const text = try allocator.alloc(u8, 256 * 1024);
+    defer allocator.free(text);
+    for (text, 0..) |*byte, i| byte.* = "lorem ipsum dolor sit amet, "[i % 28];
+    var eb = try EditBuffer.init(allocator, pool, link_pool, .unicode, null);
+    defer eb.deinit();
+    var ev = try EditorView.init(allocator, eb, 80, 24);
+    defer ev.deinit();
+    ev.setWrapMode(.none);
+    try eb.setText(text);
+    try eb.setCursor(0, @intCast(text.len));
+    const screen = try OptimizedBuffer.init(allocator, 80, 24, .{ .pool = pool, .link_pool = link_pool });
+    defer screen.deinit();
+    try screen.drawEditorViewChecked(ev, 0, 0);
+    if (ev.getViewport().?.x == 0) return error.ViewportNotScrolled;
+
+    var stats: BenchStats = .{};
+    for (0..iterations) |_| {
+        const timer = bench_utils.BenchTimer.start(io);
+        for (0..100) |_| try screen.drawEditorViewChecked(ev, 0, 0);
+        stats.record(timer.read());
+    }
+    try appendResult(allocator, results, name, stats);
+}
+
 pub fn run(
     io: std.Io,
     allocator: std.mem.Allocator,
     _: bool,
     bench_filter: ?[]const u8,
 ) ![]BenchResult {
-    const pool = gp.initGlobalPool(allocator);
-    const link_pool = link.initGlobalLinkPool(allocator);
+    var pools = TestPools.init(allocator);
+    defer pools.deinit();
 
     var results: std.ArrayList(BenchResult) = .empty;
     errdefer results.deinit(allocator);
 
     const iterations: usize = 20;
-    try benchMoveDownBoundary(io, allocator, pool, link_pool, iterations, bench_filter, &results);
-    try benchMoveUpBoundary(io, allocator, pool, link_pool, iterations, bench_filter, &results);
-    try benchVisualEOLBoundary(io, allocator, pool, link_pool, iterations, bench_filter, &results);
+    try benchMoveDownBoundary(io, allocator, &pools.graphemes, &pools.links, iterations, bench_filter, &results);
+    try benchMoveUpBoundary(io, allocator, &pools.graphemes, &pools.links, iterations, bench_filter, &results);
+    try benchVisualEOLBoundary(io, allocator, &pools.graphemes, &pools.links, iterations, bench_filter, &results);
+    try benchDrawScrolledLongLine(io, allocator, &pools.graphemes, &pools.links, iterations, bench_filter, &results);
 
     return results.toOwnedSlice(allocator);
 }

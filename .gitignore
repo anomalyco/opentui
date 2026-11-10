@@ -11,6 +11,9 @@ packed
 *.tgz
 *.log
 *.txt
+# The API history of each release (api/README.md).
+!/api/*.txt
+!/packages/rust/**/*.txt
 
 # code coverage
 coverage

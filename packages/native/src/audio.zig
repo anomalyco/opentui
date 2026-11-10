@@ -20,6 +20,8 @@ const stream_input_capacity: u32 = 256 * 1024;
 // Bounds endless invalid input during decoder setup; StreamOptions can raise it for valid metadata.
 pub const default_stream_probe_bytes: u32 = 1024 * 1024;
 const stream_decoder_chunk_frames: u32 = 2_048;
+pub const min_pcm_sample_rate: u32 = 8_000;
+pub const max_pcm_sample_rate: u32 = 192_000;
 // Coalesce tiny transport fragments without waiting for miniaudio's full decoder read request.
 const stream_decoder_read_granularity: usize = 2 * 1024;
 const max_stream_generation: u32 = 0x00ffffff;
@@ -69,11 +71,14 @@ pub const StreamOptions = extern struct {
     // Append fields so newer bindings preserve the previous native prefix during local rebuilds.
     max_probe_bytes: u32 = default_stream_probe_bytes,
     format: u32 = StreamFormat.mp3,
+    sample_rate: u32 = 0,
+    channels: u32 = 0,
 };
 
 pub const StreamFormat = struct {
     pub const mp3: u32 = 1;
     pub const flac: u32 = 2;
+    pub const pcm: u32 = 3;
 };
 
 pub const StreamState = struct {
@@ -268,6 +273,8 @@ const Voice = struct {
     buffer_ready: bool = false,
     sound: c.ma_sound = undefined,
     sound_ready: bool = false,
+    // Bumped by each play and kept by clearVoice, so an ended voice's ID cannot name the next one.
+    generation: u32 = 0,
 };
 
 const StreamDataSource = extern struct {
@@ -291,7 +298,6 @@ const Stream = struct {
     input_ended: u32 = 0,
     cancel_requested: u32 = 0,
     decoder_stop_requested: u32 = 0,
-    decoder_abort: bool = false,
     probe_active: bool = true,
     probe_bytes: usize = 0,
     max_probe_bytes: usize,
@@ -317,6 +323,8 @@ const Stream = struct {
     error_code: i32 = 0,
     ready_generation: u32 = 0,
     has_started_playback: bool = false,
+    input_sample_rate: u32 = 0,
+    input_channels: u32 = 0,
 };
 
 const SoundGroup = struct {
@@ -379,9 +387,9 @@ pub const Engine = struct {
             .selected_capture_index = null,
             .selected_capture_device_id = undefined,
             .has_selected_capture_device = false,
-            .voices = [_]Voice{.{}} ** max_voices,
-            .streams = [_]?*Stream{null} ** max_voices,
-            .stream_generations = [_]u32{1} ** max_voices,
+            .voices = @splat(.{}),
+            .streams = @splat(null),
+            .stream_generations = @splat(1),
             .master_volume = 1,
             .sample_rate = normalized_sample_rate,
             .stats = .{
@@ -762,6 +770,11 @@ fn streamDecoderRead(
 ) callconv(.c) c.ma_result {
     if (bytes_read_out != null) bytes_read_out[0] = 0;
     const stream = streamFromDecoder(decoder) orelse return c.MA_INVALID_ARGS;
+    return readStreamInput(stream, buffer_out, bytes_to_read, bytes_read_out);
+}
+
+fn readStreamInput(stream: *Stream, buffer_out: ?*anyopaque, bytes_to_read: usize, bytes_read_out: [*c]usize) c.ma_result {
+    if (bytes_read_out != null) bytes_read_out[0] = 0;
     if (bytes_to_read == 0) return c.MA_SUCCESS;
     const output_ptr = buffer_out orelse return c.MA_INVALID_ARGS;
 
@@ -769,23 +782,20 @@ fn streamDecoderRead(
     defer stream.input_lock.unlock(io);
 
     const output = @as([*]u8, @ptrCast(output_ptr))[0..bytes_to_read];
-    const target_read = @min(bytes_to_read, stream_decoder_read_granularity);
+    // Raw PCM must not wait for an encoded decoder's minimum read size.
+    const target_read = if (stream.format == StreamFormat.pcm) 1 else @min(bytes_to_read, stream_decoder_read_granularity);
     var total_read: usize = 0;
     while (total_read < target_read) {
         while (stream.input_count == 0 and
             @atomicLoad(u32, &stream.input_ended, .acquire) == 0 and
             @atomicLoad(u32, &stream.cancel_requested, .acquire) == 0 and
             @atomicLoad(u32, &stream.decoder_stop_requested, .acquire) == 0 and
-            !stream.decoder_abort)
+            (!stream.probe_active or stream.probe_bytes < stream.max_probe_bytes))
         {
-            if (stream.probe_active and stream.probe_bytes >= stream.max_probe_bytes) {
-                stream.decoder_abort = true;
-                break;
-            }
             stream.input_condition.waitUncancelable(io, &stream.input_lock);
         }
 
-        if (decoderExitRequested(stream) or stream.decoder_abort) break;
+        if (decoderExitRequested(stream)) break;
         if (stream.input_count == 0 and @atomicLoad(u32, &stream.input_ended, .acquire) != 0) break;
 
         var copy_count = @min(bytes_to_read - total_read, stream.input_count);
@@ -793,7 +803,9 @@ fn streamDecoderRead(
             const probe_remaining = stream.max_probe_bytes - stream.probe_bytes;
             copy_count = @min(copy_count, probe_remaining);
             if (copy_count == 0) {
-                stream.decoder_abort = true;
+                // Fail only when a read asks past the budget, not after returning the last budgeted bytes.
+                // The input lock orders the failure with writeStream and restartStream.
+                if (total_read == 0) failStream(stream);
                 break;
             }
         }
@@ -813,7 +825,7 @@ fn streamDecoderRead(
 
     if (bytes_read_out != null) bytes_read_out[0] = total_read;
     if (total_read > 0) return c.MA_SUCCESS;
-    if (decoderExitRequested(stream) or stream.decoder_abort) return c.MA_CANCELLED;
+    if (decoderExitRequested(stream)) return c.MA_CANCELLED;
     return c.MA_AT_END;
 }
 
@@ -834,25 +846,39 @@ fn streamDecoderSeek(decoder: ?*c.ma_decoder, byte_offset: c.ma_int64, origin: c
 }
 
 fn streamDecoderWorker(stream: *Stream) void {
-    var config = c.ma_decoder_config_init(c.ma_format_f32, 2, stream.sample_rate);
-    config.encodingFormat = switch (stream.format) {
-        StreamFormat.mp3 => c.ma_encoding_format_mp3,
-        StreamFormat.flac => c.ma_encoding_format_flac,
-        else => unreachable,
-    };
-    config.seekPointCount = 0;
-
+    const is_pcm = stream.format == StreamFormat.pcm;
     var decoder: c.ma_decoder = undefined;
-    const init_result = c.ma_decoder_init(streamDecoderRead, streamDecoderSeek, stream, &config, &decoder);
+    var converter: c.ma_data_converter = undefined;
+    const init_result = if (is_pcm) blk: {
+        const config = c.ma_data_converter_config_init(c.ma_format_f32, c.ma_format_f32, stream.input_channels, stream_channels, stream.input_sample_rate, stream.sample_rate);
+        break :blk c.ma_data_converter_init(&config, null, &converter);
+    } else blk: {
+        var config = c.ma_decoder_config_init(c.ma_format_f32, 2, stream.sample_rate);
+        config.encodingFormat = switch (stream.format) {
+            StreamFormat.mp3 => c.ma_encoding_format_mp3,
+            StreamFormat.flac => c.ma_encoding_format_flac,
+            else => unreachable,
+        };
+        config.seekPointCount = 0;
+        break :blk c.ma_decoder_init(streamDecoderRead, streamDecoderSeek, stream, &config, &decoder);
+    };
     if (init_result != c.MA_SUCCESS) {
         failDecoderWorker(stream);
         return;
     }
-    defer _ = c.ma_decoder_uninit(&decoder);
+    defer if (is_pcm) c.ma_data_converter_uninit(&converter, null) else {
+        _ = c.ma_decoder_uninit(&decoder);
+    };
+
+    // PCM conversion history and partial input belong only to this producer.
+    var samples: [stream_decoder_chunk_frames * stream_channels]f32 = undefined;
+    var input_offset: usize = 0;
+    var input_len: usize = 0;
 
     stream.input_lock.lockUncancelable(io);
     stream.probe_active = false;
-    if (decoderExitRequested(stream)) {
+    // A decoder can start after a read past the probe budget failed the stream; it must not publish readiness.
+    if (decoderExitRequested(stream) or loadStreamState(stream) == StreamState.failed) {
         stream.input_lock.unlock(io);
         return;
     }
@@ -882,7 +908,47 @@ fn streamDecoderWorker(stream: *Stream) void {
         }
 
         var frames_read: c.ma_uint64 = 0;
-        const result = c.ma_decoder_read_pcm_frames(&decoder, pcm_ptr, contiguous_frames, &frames_read);
+        const result = if (is_pcm) blk: {
+            const frame_bytes = stream.input_channels * @sizeOf(f32);
+            if (input_len - input_offset < frame_bytes) {
+                const bytes = std.mem.sliceAsBytes(samples[0 .. stream_decoder_chunk_frames * stream.input_channels]);
+                const pending = input_len - input_offset;
+                std.mem.copyForwards(u8, bytes[0..pending], bytes[input_offset..input_len]);
+                var read: usize = 0;
+                const status = readStreamInput(stream, bytes[pending..].ptr, bytes.len - pending, &read);
+                if (status != c.MA_SUCCESS and status != c.MA_AT_END) break :blk status;
+                input_offset = 0;
+                input_len = pending + read;
+                if (input_len < frame_bytes and input_len != 0) {
+                    if (status == c.MA_AT_END) break :blk c.MA_INVALID_ARGS;
+                    continue;
+                }
+                for (samples[0 .. input_len / frame_bytes * stream.input_channels], 0..) |*sample, index| {
+                    sample.* = @bitCast(std.mem.readInt(u32, bytes[index * 4 ..][0..4], .little));
+                    if (!std.math.isFinite(sample.*)) break :blk c.MA_INVALID_ARGS;
+                }
+            }
+
+            frames_read = contiguous_frames;
+            var input_frames: u64 = (input_len - input_offset) / frame_bytes;
+            const input = if (input_frames != 0) samples[input_offset / @sizeOf(f32) ..].ptr else null;
+            if (input == null) {
+                const input_rate = stream.input_sample_rate;
+                const received_frames = @atomicLoad(u64, &stream.bytes_received, .monotonic) / frame_bytes;
+                // Round input latency separately to preserve sub-frame downsampling tails.
+                const tail = (@as(u128, c.ma_data_converter_get_input_latency(&converter)) * stream.sample_rate + input_rate - 1) / input_rate;
+                const target: u64 = if (received_frames == 0) 0 else @intCast((@as(u128, received_frames) * stream.sample_rate + input_rate - 1) / input_rate + tail);
+                const produced = @atomicLoad(u64, &stream.frames_decoded, .monotonic);
+                frames_read = @min(frames_read, target -| produced);
+                if (frames_read == 0) break :blk c.MA_AT_END;
+                input_frames = stream_decoder_chunk_frames;
+            }
+            const status = c.ma_data_converter_process_pcm_frames(&converter, input, &input_frames, pcm_ptr, &frames_read);
+            if (input != null) input_offset += @intCast(input_frames * frame_bytes);
+            // Downsampling may consume a batch before it can produce the next frame.
+            if (status == c.MA_SUCCESS and frames_read == 0 and input != null and input_frames != 0) continue;
+            break :blk status;
+        } else c.ma_decoder_read_pcm_frames(&decoder, pcm_ptr, contiguous_frames, &frames_read);
         const decoded_frames = std.math.cast(u32, frames_read) orelse {
             failDecoderWorker(stream);
             return;
@@ -909,6 +975,7 @@ fn streamDecoderWorker(stream: *Stream) void {
             }
             if (@atomicLoad(u32, &stream.input_ended, .acquire) != 0) {
                 @atomicStore(u32, &stream.decoder_finished, 1, .release);
+                if (is_pcm and @atomicLoad(u64, &stream.frames_decoded, .monotonic) == 0) endStreamPlayback(stream);
                 stream.input_lock.unlock(io);
                 return;
             }
@@ -1622,6 +1689,14 @@ pub fn startMixer(engine: *Engine) i32 {
     return Status.ok;
 }
 
+/// Silences the mixer without releasing the device; startMixer resumes. Streams keep their
+/// buffered audio because a stopped mixer does not read them.
+pub fn suspendMixer(engine: *Engine) void {
+    engine.lock.lockUncancelable(io);
+    engine.started = false;
+    engine.lock.unlock(io);
+}
+
 pub fn stop(engine: *Engine) i32 {
     const e = engine;
     e.lock.lockUncancelable(io);
@@ -1673,6 +1748,20 @@ fn streamSlotIndex(engine: *const Engine, stream_id: u32) ?usize {
     return slot_index;
 }
 
+// A voice ID is (generation << 6) | slot, with slot 1..max_voices.
+const voice_slot_bits = 6;
+const max_voice_generation: u32 = std.math.maxInt(u32) >> voice_slot_bits;
+comptime {
+    std.debug.assert(max_voices < 1 << voice_slot_bits);
+}
+
+pub fn voiceSlotIndex(engine: *const Engine, voice_id: u32) ?usize {
+    const slot = voice_id & ((1 << voice_slot_bits) - 1);
+    if (slot == 0 or slot > max_voices) return null;
+    if (engine.voices[slot - 1].generation != voice_id >> voice_slot_bits) return null;
+    return slot - 1;
+}
+
 fn getStream(engine: *Engine, stream_id: u32) ?*Stream {
     const slot_index = streamSlotIndex(engine, stream_id) orelse return null;
     return engine.streams[slot_index];
@@ -1687,8 +1776,15 @@ fn retireStreamSlotLocked(engine: *Engine, slot_index: usize) void {
 pub fn createStream(engine: *Engine, options_ptr: ?*const StreamOptions, out_stream_id: ?*u32) i32 {
     if (options_ptr == null or out_stream_id == null) return Status.err_invalid;
     const options = options_ptr.?.*;
-    if (options.max_probe_bytes == 0 or
-        (options.format != StreamFormat.mp3 and options.format != StreamFormat.flac)) return Status.err_invalid;
+    switch (options.format) {
+        StreamFormat.mp3, StreamFormat.flac => if (options.max_probe_bytes == 0) return Status.err_invalid,
+        StreamFormat.pcm => {
+            if (options.channels < 1 or options.channels > 2 or
+                options.sample_rate < min_pcm_sample_rate or options.sample_rate > max_pcm_sample_rate or
+                engine.sample_rate < min_pcm_sample_rate or engine.sample_rate > max_pcm_sample_rate) return Status.err_invalid;
+        },
+        else => return Status.err_invalid,
+    }
     const frame_options = resolveStreamFrameOptions(options, engine.sample_rate) orelse return Status.err_invalid;
 
     const e = engine;
@@ -1733,6 +1829,8 @@ pub fn createStream(engine: *Engine, options_ptr: ?*const StreamOptions, out_str
         .resume_frames = frame_options.resume_frames,
         .max_probe_bytes = options.max_probe_bytes,
         .format = options.format,
+        .input_sample_rate = options.sample_rate,
+        .input_channels = options.channels,
         .sample_rate = e.sample_rate,
         .capacity_frames = frame_options.capacity_frames,
     };
@@ -1814,7 +1912,7 @@ pub fn writeStream(
     defer stream.input_lock.unlock(io);
     if (@atomicLoad(u32, &stream.input_ended, .acquire) != 0 or
         @atomicLoad(u32, &stream.cancel_requested, .acquire) != 0 or
-        stream.decoder_abort or isTerminalStreamState(loadStreamState(stream)))
+        isTerminalStreamState(loadStreamState(stream)))
     {
         return Status.err_invalid;
     }
@@ -1870,6 +1968,7 @@ pub fn restartStream(engine: *Engine, stream_id: u32) i32 {
     const state = loadStreamState(stream);
     if (state == StreamState.failed or
         state == StreamState.cancelled or
+        stream.format == StreamFormat.pcm or
         @atomicLoad(u32, &stream.cancel_requested, .acquire) != 0 or
         stream.worker == null)
     {
@@ -1898,7 +1997,6 @@ pub fn restartStream(engine: *Engine, stream_id: u32) i32 {
     stream.input_count = 0;
     @atomicStore(u32, &stream.input_ended, 0, .release);
     @atomicStore(u32, &stream.decoder_finished, 0, .release);
-    stream.decoder_abort = false;
     stream.probe_active = true;
     stream.probe_bytes = 0;
     @atomicStore(i32, &stream.error_code, 0, .release);
@@ -2181,20 +2279,20 @@ pub fn play(engine: *Engine, sound_id: u32, options_ptr: ?*const VoiceOptions, o
         return Status.err_device;
     }
 
-    out_voice_id.?.* = @intCast(free_index.? + 1);
+    // Generation 0 is never issued, so an all-zero voice ID stays invalid.
+    slot.generation = if (slot.generation == max_voice_generation) 1 else slot.generation + 1;
+    out_voice_id.?.* = (slot.generation << voice_slot_bits) | @as(u32, @intCast(free_index.? + 1));
     e.updateActiveVoiceCount();
     return Status.ok;
 }
 
 pub fn stopVoice(engine: *Engine, voice_id: u32) i32 {
-    if (voice_id == 0) return Status.err_invalid;
     const e = engine;
 
     e.lock.lockUncancelable(io);
     defer e.lock.unlock(io);
 
-    const idx: usize = @intCast(voice_id - 1);
-    if (idx >= e.voices.len) return Status.err_not_found;
+    const idx = voiceSlotIndex(e, voice_id) orelse return Status.err_not_found;
     if (!e.voices[idx].active) return Status.err_not_found;
 
     _ = c.ma_sound_stop(&e.voices[idx].sound);
@@ -2204,15 +2302,14 @@ pub fn stopVoice(engine: *Engine, voice_id: u32) i32 {
 }
 
 pub fn setVoiceGroup(engine: *Engine, voice_id: u32, group_id: u32) i32 {
-    if (voice_id == 0) return Status.err_invalid;
     const e = engine;
 
     e.lock.lockUncancelable(io);
     defer e.lock.unlock(io);
 
-    const voice_index: usize = @intCast(voice_id - 1);
     const group_index: usize = @intCast(group_id);
-    if (voice_index >= e.voices.len or group_index >= e.groups.items.len) return Status.err_invalid;
+    if (group_index >= e.groups.items.len) return Status.err_invalid;
+    const voice_index = voiceSlotIndex(e, voice_id) orelse return Status.err_not_found;
 
     const voice = &e.voices[voice_index];
     if (!voice.active or !voice.sound_ready or !voice.buffer_ready) return Status.err_not_found;

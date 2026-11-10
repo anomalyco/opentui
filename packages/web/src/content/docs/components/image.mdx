@@ -42,7 +42,7 @@ renderer.root.add(image)
 await image.loadPromise
 ```
 
-`source` accepts every `ImageSource` form: a path, `file:`/HTTP(S)/`blob:`/`data:` URL, `URL`, `Blob`, `Response`, `Uint8Array`, or `ArrayBuffer`. It also accepts `NativeImage`. Format detection uses encoded bytes when the source needs decoding. `ImageRenderable` retains an existing `NativeImage`. You still own and must dispose the source reference.
+`source` accepts every `ImageSource` form: a path, `file:`/HTTP(S)/`blob:`/`data:` URL, `URL`, `Blob`, `Response`, `Uint8Array`, or `ArrayBuffer`. It also accepts `NativeImage`. Format detection uses encoded bytes when the source needs decoding. Encoded sources decode into the renderer's Context, so displaying them needs no copy between Contexts. `ImageRenderable` retains an existing `NativeImage`. You still own and must dispose the source reference.
 
 ## React
 
@@ -69,7 +69,7 @@ await render(
 )
 ```
 
-You can update `source`, callbacks, fit, and protocol after construction. Replacing `source` keeps the current image visible until the replacement succeeds. It cancels obsolete loading and disposes stale native images. Setting `source` to `undefined` clears it. Clearing `fit` or `protocol` restores `"fit"` or `"auto"`.
+You can update `source`, callbacks, fit, crop, and protocol after construction. Replacing `source` keeps the current image visible until the replacement succeeds. It cancels obsolete loading and disposes stale native images. Setting `source` to `undefined` clears it. Clearing `fit` or `protocol` restores `"fit"` or `"auto"`.
 
 ## Sizing
 
@@ -78,6 +78,13 @@ You can update `source`, callbacks, fit, and protocol after construction. Replac
 | `fit`   | Contain and center the full image. Preserve aspect (default) |
 | `cover` | Fill the renderable, preserve aspect ratio, and center-crop  |
 | `fill`  | Fill the renderable and allow stretching                     |
+
+`crop: { left, top, width, height }` selects a region of the source in source pixels, with the fields of `NativeImage.extract()`. `fit` then applies to the region: `cover` center-crops the region again. A crop that is not whole pixels with a positive size, or lies outside the loaded image, calls `onError` and keeps the previous crop. Each loaded image checks the crop; until one fits, the renderable shows the whole image.
+
+```typescript
+// The top-right quarter of a 1920x1080 image, fitted into the renderable.
+image.crop = { left: 960, top: 0, width: 960, height: 540 }
+```
 
 Sizing uses terminal pixel resolution when available and a 2:1 cell-height fallback otherwise. During startup and resize, Sixel images temporarily use blocks until current pixel geometry arrives.
 
@@ -109,9 +116,11 @@ Overlapping images must use the same effective protocol. OpenTUI does not suppor
 
 Kitty preserves image alpha, Sixel treats alpha below 128 as transparent, and blocks blend sampled alpha. Placement opacity scales Kitty and block alpha. Sixel dims toward cell backgrounds. Direct, unbuffered fills, text, and box borders cover images at whole-cell granularity without blending.
 
+A frame writes at most one Session frame of output, about 8 MiB by default. When the Kitty or Sixel images of a frame don't fit, the frame draws its cells and sends the images that fit. The other images keep their cells blank and arrive in the next frames, the ones that waited first. Sixel images arrive in paint order. An image whose data alone is larger than a frame draws as blocks until its pixel size or source size changes.
+
 Use `OPENTUI_IMAGE_PROTOCOL=auto|kitty|sixel|blocks` to set the global default. `OPENTUI_GRAPHICS=false` disables Kitty and Sixel detection. See [Environment variables](/docs/reference/env-vars).
 
-Split-footer scrollback snapshots use the same protocol resolution as live images. They use Kitty placement, Sixel with detected pixel geometry, or Unicode quadrant blocks. Snapshots with mixed effective protocols, overlapping images, or covered Sixel cells use blocks. Native scrollback images can render before the footer is pinned. Each image must fit within the output width and the height available above the pinned footer, and its snapshot must start at the beginning of a line. Await `loadPromise` before rendering an image into a `ScrollbackSurface`. See [Writing to scrollback](/docs/core-concepts/renderer#writing-to-scrollback).
+Split-footer scrollback snapshots use the same protocol resolution as live images. They use Kitty placement, Sixel with detected pixel geometry, or Unicode quadrant blocks. Snapshots with mixed effective protocols, overlapping images, or covered Sixel or Kitty cells use blocks. Native scrollback images can render before the footer is pinned. Each image must fit within the output width and the height available above the pinned footer. Its snapshot must start at the beginning of a line. Await `loadPromise` before rendering an image into a `ScrollbackSurface`. See [Writing to scrollback](/docs/core-concepts/renderer#writing-to-scrollback).
 
 `resolveImageRenderProtocol(requested, capabilities, hasResolution)` exposes the same protocol-resolution policy for code that needs it without constructing a renderable.
 
@@ -130,10 +139,7 @@ const status = renderer.kittyImageTransportStatus
 - `"zlib"` tries native level-1 compression. It uses raw if compression expands the stream, exceeds the 64 MiB preparation limit, or cannot allocate buffers. Encoded PNG data stays unchanged.
 - `"file"` writes a temporary file and sends its path for the local terminal to read. It still copies pixels, without shared memory or GPU sharing.
 
-Changing transport retransmits visible Kitty images without replacing their sources. File
-negotiation remains asynchronous. Selecting an inline mode keeps outstanding files alive
-until their acknowledgments or deadlines, so queued output can still use them. Switching
-back to file reuses the session's probe result; it does not reset a failed or cancelled session.
+A transport change retransmits visible Kitty images without replacing their sources. File negotiation remains asynchronous. When you select an inline mode, outstanding files stay alive until their acknowledgments or deadlines, so queued output can still use them. When you switch back to file, the renderer reuses the session's probe result. It does not reset a failed or cancelled session.
 
 Scrollback snapshots never use file transport because the renderer does not retain their sources for retries. They use self-contained raw or PNG output, or zlib when requested.
 
@@ -145,7 +151,7 @@ File transport requires both a successful `t=f` query with a real file and an up
 
 Each file has a unique name, permissions `0600`, and contents that do not change. The renderer uses the `TMPDIR` value forwarded at creation, or `/tmp` when absent. If you override `forwardEnvKeys`, include `TMPDIR`.
 
-Each renderer allows at most eight pending files and 64 MiB of pending data. If an image ID is busy or either limit is reached, the renderer uses raw/PNG without replacing pending files.
+Each renderer allows at most eight pending files and 64 MiB of pending data. If an image ID is busy or the renderer reaches either limit, it uses raw/PNG without replacing pending files.
 
 A matching Kitty reply lets the renderer remove the file. Frame events, stdout drain, and cursor reports do not confirm that the terminal read or displayed an image.
 
@@ -163,6 +169,7 @@ Timeouts, terminal or output errors, `cancelKittyImageTransport()`, suspend, and
 | -------------------- | ----------------------------------------------------------- | --------------------------------------------------------------- |
 | `source`             | `ImageRenderableSource`                                     | Encoded image source or `NativeImage`. Optional                 |
 | `fit`                | `"fit" \| "cover" \| "fill"`                                | Destination sizing                                              |
+| `crop`               | `ExtractOptions \| undefined`                               | Source region in source pixels. `fit` applies to it             |
 | `protocol`           | `"auto" \| "kitty" \| "sixel" \| "blocks"`                  | Requested rendering protocol                                    |
 | `onLoad`             | `(image: NativeImage) => void`                              | Called after the current source loads                           |
 | `onError`            | `(error: unknown) => void`                                  | Called when the current source fails                            |
@@ -174,7 +181,7 @@ Timeouts, terminal or output errors, `cancelKittyImageTransport()`, suspend, and
 | `cellAspectRatio`    | `number`                                                    | Physical or fallback cell aspect ratio                          |
 | `getFittedSize(...)` | `(width, height, cellAspect?, sourceWidth?, sourceHeight?)` | Resolve destination cells. Omitted overrides use current values |
 
-The renderable owns `image` and the `NativeImage` passed to `onLoad`. Do not dispose or transfer them. Current-source failures set `loadError`, call `onError`, and resolve `loadPromise`. Superseded, cleared, or destroyed loads resolve without callbacks. Exceptions from either callback reject after state settles. Successful replacement, clearing, and destruction release owned images. A failed replacement keeps the current image.
+The renderable owns `image` and the `NativeImage` passed to `onLoad`. Do not dispose or transfer them. Images loaded from an encoded source, and images retained or derived from them, belong to the renderer's Context and stop working when the renderer is destroyed. To keep an image beyond the renderer, create it yourself (for example with `NativeImage.load()`) and pass it as `source`. Current-source failures set `loadError`, call `onError`, and resolve `loadPromise`. Superseded, cleared, or destroyed loads resolve without callbacks. Exceptions from either callback reject after state settles. Successful replacement, clearing, and destruction release owned images. A failed replacement keeps the current image.
 
 ## Related components
 

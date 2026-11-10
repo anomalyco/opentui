@@ -48,6 +48,10 @@ await clipboard.dispose()
 connects the terminal path to a `CliRenderer` and its OSC 52 support. `createClipboard()` combines both into one
 service.
 
+OpenTUI no longer has the old `Clipboard(RenderLib, RendererHandle)` adapter. For terminal-only copying, use
+`renderer.copyToClipboardOSC52()` and `renderer.clearClipboardOSC52()`. For destination policies or host access,
+use `createClipboard()` with the services above.
+
 ## Public service API
 
 ```typescript
@@ -142,6 +146,9 @@ Linux selects Wayland when `WAYLAND_DISPLAY` or `WAYLAND_SOCKET` is nonempty and
 `libwayland-client.so.0` supplies the required symbols. It selects X11 when `DISPLAY` is nonempty and `libxcb.so.1`
 supplies the required symbols. Wayland has priority. It can fall back to X11 when Wayland reports unsupported and both
 are available. OpenTUI talks to these protocols directly. It does not invoke `wl-copy`, `wl-paste`, `xclip`, or `xsel`.
+Wayland needs a data-control protocol; only WSLg reads work without one. GNOME has none, so there the clipboard uses X11
+through Xwayland. When no backend can serve an operation, the process logs once why each backend it tried failed: a
+library that does not load, a display that does not connect, or a compositor without data-control.
 
 Windows uses the Win32 clipboard API and does not invoke PowerShell. macOS uses native pasteboard and image APIs and
 does not invoke `pbcopy` or `pbpaste`.
@@ -200,8 +207,8 @@ write.
 
 ## Cancellation
 
-Every operation accepts an `AbortSignal`. Cancellation is cooperative. A synchronous platform call that is already
-in progress finishes before the service observes the abort.
+Every operation accepts an `AbortSignal`. Cancellation is cooperative. On Windows and macOS, a cancelled or timed-out
+operation settles at once. A platform call already in progress keeps running, and later operations wait for it.
 
 ```typescript
 import { createHostClipboard } from "@opentui/core"
@@ -252,8 +259,12 @@ if (renderer.isOsc52Supported()) {
 
 Both methods accept an optional `ClipboardTarget` (`Clipboard`, `Primary`, `Select`, or `Secondary`) and return
 `true` only when OpenTUI generates and queues the sequence. They return `false` when policy blocks the operation or a
-local generation or output step fails. `isOsc52Supported()` returns `false` only when the terminal reported OSC 52 as
-unsupported. An `unknown` capability therefore returns `true` from this check.
+local generation or output step fails. They throw when the terminal is not active, for example in a
+`createTestRenderer()` renderer, which skips terminal setup. The renderer adapter does not catch that error, so a
+composed write or clear that tries the terminal rejects. `isOsc52Supported()` returns `false` only when the terminal
+reported OSC 52 as unsupported. An `unknown` capability therefore returns `true` from this check. Copy and clear throw
+after `renderer.destroy()`. `isOsc52Supported()` throws once the Session closes, which happens in a microtask after
+`destroy()`.
 
 ## Disposal
 
@@ -265,8 +276,8 @@ Dispose the service when your application exits:
 
 Keep the service alive while your application runs. On Linux, the OpenTUI process can own the clipboard after
 `writeText()` resolves. Other applications request the data from your process when they paste. `dispose()` is
-asynchronous. Await it before exit, so that the service releases the native resources. `renderer.destroy()` does
-not dispose a clipboard service that you created.
+asynchronous. Await it before exit, so that the service releases the native resources. Each host service owns a
+separate native Context, so `renderer.destroy()` does not dispose a clipboard service that you created.
 
 `dispose()` returns the same promise on repeated calls. If native cleanup rejects, later calls return that same rejected
 promise rather than starting a new cleanup attempt. Put renderer destruction in a `finally` block so a clipboard cleanup

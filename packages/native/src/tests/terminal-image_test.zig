@@ -1,6 +1,20 @@
 const std = @import("std");
+const gp = @import("../grapheme.zig");
 const terminal_image = @import("../terminal-image.zig");
 const image = @import("../image.zig");
+
+test "kitty placement z stays above cell backgrounds" {
+    const z = terminal_image.kittyPlacementZ(1);
+    const below_bg = @as(i32, std.math.minInt(i32) / 2);
+    const max_z = terminal_image.kittyPlacementZ(gp.IMAGE_ID_MASK);
+    try std.testing.expectEqual(below_bg + 1, z);
+    try std.testing.expect(z < 0);
+    try std.testing.expect(z >= below_bg);
+    try std.testing.expect(terminal_image.kittyPlacementZ(2) > z);
+    try std.testing.expect(max_z < 0);
+    try std.testing.expect(max_z >= below_bg);
+    try std.testing.expect(max_z > z);
+}
 
 const DecodedSixel = struct {
     indices: []u8,
@@ -189,7 +203,7 @@ test "kitty zlib expansion falls back to unchanged raw output" {
 }
 
 test "kitty zlib allocation failures fall back even when the input compresses" {
-    const pixels = [_]u8{42} ** (64 * 64 * 4);
+    const pixels: [64 * 64 * 4]u8 = @splat(42);
     const value = try image.createFromRgba(std.testing.allocator, &pixels, 64, 64, 256);
     defer value.deinit();
     var raw: std.Io.Writer.Allocating = .init(std.testing.allocator);
@@ -477,7 +491,7 @@ test "sixel indexed encoding preserves the supplied palette" {
 }
 
 test "sixel indexed encoding reserves index 255 for transparency" {
-    const palette = [_][3]u8{.{ 0, 0, 0 }} ** 256;
+    const palette: [256][3]u8 = @splat(.{ 0, 0, 0 });
     var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer output.deinit();
     try std.testing.expectError(
