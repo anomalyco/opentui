@@ -3,7 +3,7 @@ import { TreeSitterClient } from "./client.js"
 import { tmpdir } from "os"
 import { join } from "path"
 import { existsSync } from "fs"
-import { mkdir, writeFile, unlink } from "fs/promises"
+import { mkdir, readFile, writeFile, unlink } from "fs/promises"
 import { getDataPaths } from "../data-paths.js"
 import { clearEnvCache } from "../env.js"
 import { destroySingleton } from "../singleton.js"
@@ -282,8 +282,10 @@ describeClient("TreeSitterClient", () => {
     },
   ]
   // Each row ends with removeBuffer. The markdown rows edit or remove while the worker loads the injected typescript
-  // or zig grammar, which a new worker has not loaded yet.
-  test.each<[string, (c: TreeSitterClient, highlighted: (version: number) => Promise<void>) => Promise<void>]>([
+  // or zig grammar, which a new worker has not loaded yet. A row returns the errors and warnings it expects.
+  test.each<
+    [string, (c: TreeSitterClient, highlighted: (version: number) => Promise<void>) => Promise<string[] | void>]
+  >([
     [
       "resetBuffer",
       async (c, highlighted) => {
@@ -350,6 +352,34 @@ describeClient("TreeSitterClient", () => {
         await c.clearCache()
       },
     ],
+    [
+      "a grammar with an unsupported ABI version",
+      async (c) => {
+        // The zig language struct starts with its ABI version, 14, then its symbol and alias counts.
+        const wasm = await readFile(new URL("./assets/zig/tree-sitter-zig.wasm", import.meta.url))
+        const at = wasm.findIndex((_, i) => {
+          if (i + 12 > wasm.length || wasm.readUInt32LE(i) !== 14) return false
+          const symbols = wasm.readUInt32LE(i + 4)
+          return symbols > 50 && symbols < 2000 && wasm.readUInt32LE(i + 8) < 500
+        })
+        wasm[at] = 16
+        await writeFile(join(dataPath, "abi16.wasm"), wasm)
+        await writeFile(join(dataPath, "abi16.scm"), "(identifier) @variable\n")
+        const queries = { highlights: [join(dataPath, "abi16.scm")] }
+        c.addFiletypeParser({ filetype: "abi16", wasm: join(dataPath, "abi16.wasm"), queries })
+        const abi = "Error: Incompatible language version 16. Compatibility range 13 through 15."
+        await expect(c.createBuffer(1, "const a = 1;", "abi16", 1)).rejects.toThrow(abi)
+        await expect(c.highlightOnce("const a = 1;", "abi16")).rejects.toThrow(abi)
+        return [abi, abi]
+      },
+    ],
+    [
+      "createBuffer whose first parse returns null",
+      async (c) => {
+        expect(await c.createBuffer(1, "null-parse", "javascript", 1)).toBe(false)
+        return ["Failed to parse buffer"]
+      },
+    ],
   ])(
     "should delete every replaced tree and parser once no message reads it: %s",
     async (_name, run) => {
@@ -381,7 +411,7 @@ describeClient("TreeSitterClient", () => {
 
       try {
         await c.initialize()
-        await run(c, highlighted)
+        const expectedErrors = (await run(c, highlighted)) ?? []
         const removed = await within3s(c.removeBuffer(1))
         // Waits on the same grammar loads, so a buffer pass suspended on them has resumed before the count. It also
         // leaves the four cached parsers: markdown, markdown_inline, typescript and zig.
@@ -389,7 +419,7 @@ describeClient("TreeSitterClient", () => {
         const trees = await within3s(Promise.all([c.getPerformance(), treeCount]).then(([, count]) => count))
         expect({ removed, errors, trees }).toEqual({
           removed: undefined,
-          errors: [],
+          errors: expectedErrors,
           trees: { live: 0, freedReads: 0, parsers: 4 },
         })
       } finally {

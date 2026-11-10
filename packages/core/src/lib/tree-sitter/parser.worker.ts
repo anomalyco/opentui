@@ -331,7 +331,12 @@ class ParserWorker {
     }
 
     const parser = new Parser()
-    parser.setLanguage(filetypeParser.language)
+    try {
+      parser.setLanguage(filetypeParser.language)
+    } catch (error) {
+      parser.delete()
+      throw error
+    }
 
     const reusableState: ReusableParserState = {
       parser,
@@ -363,8 +368,13 @@ class ParserWorker {
     }
 
     const parser = new Parser()
-    parser.setLanguage(filetypeParser.language)
-    const tree = parser.parse(content)
+    let tree: Tree | null = null
+    try {
+      parser.setLanguage(filetypeParser.language)
+      tree = parser.parse(content)
+    } finally {
+      if (!tree) parser.delete()
+    }
     if (!tree) {
       postWorkerMessage({
         type: "PARSER_INIT_RESPONSE",

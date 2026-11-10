@@ -19,8 +19,9 @@ Parser.prototype.delete = function () {
   deleteParser.call(this)
 }
 const { delete: deleteTree, getChangedRanges } = Tree.prototype
+// A cancelled parse returns null; the worker sets no timeout, so the text "null-parse" stands in for one.
 Parser.prototype.parse = function (...args: Parameters<Parser["parse"]>) {
-  const tree = parse.apply(this, args)
+  const tree = args[0] === "null-parse" ? null : parse.apply(this, args)
   if (tree) live.add(tree)
   return tree
 }
