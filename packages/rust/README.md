@@ -70,6 +70,11 @@ These platforms are supported:
 | Windows 10 1809 or later, Arm  | `aarch64-pc-windows-msvc`, `aarch64-pc-windows-gnullvm` | `aarch64-windows`    |
 
 The build picks the directory for the target it builds.
+Rust's musl targets build static executables (`crt-static`), which cannot load
+`libopentui.so`, so the build refuses the shared library there unless you
+build with `RUSTFLAGS='-C target-feature=-crt-static'`. The `static` feature
+does not link on musl yet: the archive needs a libc++ built for musl, and the
+build machine's is usually glibc's.
 OpenTUI's macOS build needs the macOS SDK, which comes with the Xcode Command
 Line Tools (`xcode-select --install`). On a Mac, `bun run build` in
 `packages/native` builds the Mac's own architecture; add the other one with
@@ -635,9 +640,11 @@ After a change to `opentui.h`, run `bun run generate:abi` in `packages/core`,
 then `sh test.sh shared`, and fix the crates in the same change.
 
 `scripts/check-targets.sh` keeps the code of the other targets compiling
-while you work on one. It needs Zig and the targets' standard libraries, or
-`rust-src` without rustup; its header says how it uses them. It does not link
-or run anything, so `sh test.sh` on the platform is still the real check.
+while you work on one. It needs Zig and the targets' standard libraries, which
+it adds with rustup, or `rust-src` without rustup; its header says how it uses
+them. It does not link or run anything. `sh test.sh` runs on x86_64 Linux,
+macOS, and x86_64 Windows; arm64 Linux, Linux with musl, and Windows on Arm
+are only compile-checked.
 
 CI runs `test.sh` on Linux, Windows and macOS for each pull request that
 changes the crates, native code or the ABI generator, and `check-targets.sh` on

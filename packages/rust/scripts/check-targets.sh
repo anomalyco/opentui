@@ -1,11 +1,11 @@
 #!/bin/sh
 # Compile-checks the workspace for every target build.rs maps except the x86_64 Linux and Windows ones, which test.sh
 # checks on their own runners: clippy with the feature sets test.sh uses, against stub artifacts. Nothing is linked or
-# run; test.sh on the platform does that.
+# run. test.sh runs on macOS too; nothing tests arm64 Linux, Linux with musl, or Windows on Arm beyond this check.
 #
 # Needs Zig, whose C compiler builds tree-sitter's and ring's C code for each target against its bundled headers, and
-# each target's standard library: rustup installs them from rust-toolchain.toml. Without rustup, build them from
-# rust-src: RUSTC_BOOTSTRAP=1 CARGO_UNSTABLE_BUILD_STD=std sh scripts/check-targets.sh
+# each target's standard library, which the script adds with rustup. Without rustup, build them from rust-src:
+# RUSTC_BOOTSTRAP=1 CARGO_UNSTABLE_BUILD_STD=std sh scripts/check-targets.sh
 #
 # Usage: sh scripts/check-targets.sh
 # Set ZIG to the Zig command if `zig` is not the version packages/native/build.zig.zon names, such as ZIG='zig 0.17.0'
@@ -19,15 +19,18 @@ zig=${ZIG:-zig}
 # The bindings match this checkout's header, or OPENTUI_LIB_DIR's, which every platform's build shares.
 header=${OPENTUI_LIB_DIR:-$here/../native/include}/opentui.h
 
-# Each Rust target and the Zig target its C code compiles for. Zig has no MSVC headers, so both Windows targets use
-# MinGW's; the objects are never linked.
-targets='aarch64-apple-darwin aarch64-macos.13.0
-x86_64-apple-darwin x86_64-macos.13.0
-aarch64-unknown-linux-gnu aarch64-linux-gnu.2.17
-x86_64-unknown-linux-musl x86_64-linux-musl
-aarch64-unknown-linux-musl aarch64-linux-musl
-aarch64-pc-windows-msvc aarch64-windows-gnu
-aarch64-pc-windows-gnullvm aarch64-windows-gnu'
+# Each Rust target, the Zig target its C code compiles for, and its row in build.rs: artifact directory and shared
+# library. Zig has no MSVC headers, so both Windows targets use MinGW's; the objects are never linked.
+targets='aarch64-apple-darwin aarch64-macos.13.0 aarch64-macos libopentui.dylib
+x86_64-apple-darwin x86_64-macos.13.0 x86_64-macos libopentui.dylib
+aarch64-unknown-linux-gnu aarch64-linux-gnu.2.17 aarch64-linux libopentui.so
+x86_64-unknown-linux-musl x86_64-linux-musl x86_64-linux-musl libopentui.so
+aarch64-unknown-linux-musl aarch64-linux-musl aarch64-linux-musl libopentui.so
+aarch64-pc-windows-msvc aarch64-windows-gnu aarch64-windows opentui.dll
+aarch64-pc-windows-gnullvm aarch64-windows-gnu aarch64-windows opentui.dll'
+if [ -z "${CARGO_UNSTABLE_BUILD_STD:-}" ] && command -v rustup > /dev/null; then
+    rustup target add $(printf '%s\n' "$targets" | cut -d' ' -f1)
+fi
 
 export CARGO_TARGET_DIR="$here/target/check-targets"
 tools=$CARGO_TARGET_DIR/tools
@@ -48,7 +51,12 @@ done
 
 export OPENTUI_LIB_DIR="$tools/lib"
 cargo=${CARGO:-cargo}
-while read -r target zig_target; do
+while read -r target zig_target platform library; do
+    # The stubs share one OPENTUI_LIB_DIR, so check build.rs's row and the native build's directory by name.
+    grep -Fq "(\"$target\", \"$platform\", \"$library\")," crates/opentui-sys/build.rs ||
+        { echo "FAIL: build.rs does not map $target to $platform and $library" >&2; exit 1; }
+    grep -Fq ".output_name = \"$platform\"" ../native/build.zig ||
+        { echo "FAIL: packages/native/build.zig builds no $platform" >&2; exit 1; }
     cat > "$tools/cc-$target" <<EOF
 #!/bin/sh
 # Drops the driver flags that zig cc takes from -target instead.
@@ -68,8 +76,11 @@ EOF
     shared=opentui/tokio,opentui/log,opentui/tree-sitter
     static=opentui/static,$shared
     archiver=ar
+    rustflags=
     case $target in
         *-msvc) archiver=lib ;;
+        # build.rs refuses shared linking under crt-static, the musl targets' default.
+        *-musl) rustflags='-C target-feature=-crt-static' ;;
     esac
     case $target in
         # build.rs refuses the static feature on Windows.
@@ -81,13 +92,22 @@ EOF
         # A newer archive reruns build.rs, so the second static pass replaces the first one's copy.
         touch "$tools/lib/libopentui.a"
         env "CC_$(printf %s "$target" | tr - _)=$tools/cc-$target" "AR_$(printf %s "$target" | tr - _)=$tools/zig-$archiver" \
-            "$cargo" clippy --locked --target "$target" --manifest-path "$here/Cargo.toml" --workspace \
+            ${rustflags:+"RUSTFLAGS=$rustflags"} "$cargo" clippy --locked --target "$target" --manifest-path "$here/Cargo.toml" --workspace \
             --all-targets ${features:+--features "$features"} -- -D warnings < /dev/null
     done
     printf 'PASS: compile checks (%s)\n' "$target"
 done <<EOF
 $targets
 EOF
+
+# A crt-static executable has no dynamic loader and would crash at start, so build.rs refuses to link it shared.
+if "$cargo" check --locked --target x86_64-unknown-linux-musl --manifest-path "$here/Cargo.toml" -p opentui-sys \
+    < /dev/null 2> "$tools/crt-static"; then
+    echo 'FAIL: a crt-static musl build links the shared library' >&2
+    exit 1
+fi
+grep -Fq "RUSTFLAGS='-C target-feature=-crt-static'" "$tools/crt-static" || { cat "$tools/crt-static" >&2; exit 1; }
+echo 'PASS: build.rs refuses shared linking under crt-static'
 
 # Apple's linker takes libopentui.dylib over libopentui.a from one directory, so a static build must not search one
 # that holds both. Rewriting the stubs reran each build script after the header copy, so -newer skips stale outputs.

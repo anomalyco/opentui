@@ -42,12 +42,24 @@ fn main() {
     };
     let windows = target.contains("-windows-");
     println!("cargo:rerun-if-env-changed=OPENTUI_LIB_DIR");
+    // Cargo keeps a build script's output when only RUSTFLAGS change, which would leave the crt-static check stale.
+    println!("cargo:rerun-if-env-changed=RUSTFLAGS");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/generated.rs");
     let dir = native_lib_dir(platform);
     let static_link = env::var_os("CARGO_FEATURE_STATIC").is_some();
     // OpenTUI's Windows archive is built for MinGW with libc++, which neither Rust Windows toolchain links.
     assert!(!(windows && static_link), "the static feature is not supported on Windows; link opentui.dll instead");
+    // A crt-static Unix executable has no dynamic loader, so nothing loads the shared library and it crashes at start.
+    // Rust's musl targets default to crt-static, which CARGO_CFG_TARGET_FEATURE does not list.
+    let features = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
+    let crt_static = !env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default().contains("-crt-static")
+        && (target.ends_with("-musl") || features.split(',').any(|feature| feature == "crt-static"));
+    assert!(
+        windows || static_link || !crt_static,
+        "{target} links static executables (crt-static), which cannot load {shared_library}: build with \
+         RUSTFLAGS='-C target-feature=-crt-static'. The static feature needs a libc++ built for this target."
+    );
     // Windows links a DLL through its import library.
     let files: &[&str] = if static_link {
         &["opentui.h", "libopentui.a"]
