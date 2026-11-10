@@ -1,0 +1,90 @@
+name: Test Azure Signing
+
+on:
+  workflow_dispatch:
+    inputs:
+      use_release_environment:
+        description: Use the "release" environment (as anomalyco/opencode does)
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  test-sign:
+    name: Test Azure Signing
+    runs-on: blacksmith-8vcpu-windows-2025
+    environment: ${{ inputs.use_release_environment && 'release' || '' }}
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ vars.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+      AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE: ${{ vars.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE }}
+      AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+
+    steps:
+      - name: Build an unsigned test DLL
+        shell: pwsh
+        run: |
+          $testDir = Join-Path $env:RUNNER_TEMP "sign-test"
+          New-Item -ItemType Directory -Force -Path $testDir | Out-Null
+          Set-Content -Path (Join-Path $testDir "Test.cs") -Value @"
+          public class TestClass
+          {
+              public static int Add(int a, int b) { return a + b; }
+          }
+          "@
+          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:library /out:"$testDir\test.dll" "$testDir\Test.cs"
+          if (-not (Test-Path "$testDir\test.dll")) { throw "Failed to build test dll" }
+          $before = Get-AuthenticodeSignature "$testDir\test.dll"
+          Write-Host "Before signing: $($before.Status)"
+
+      - name: Azure login
+        uses: azure/login@v3
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign test file
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ env.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ env.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ env.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE }}
+          files: ${{ runner.temp }}\sign-test\test.dll
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+
+      - name: Verify signature
+        shell: pwsh
+        run: |
+          $file = Join-Path $env:RUNNER_TEMP "sign-test\test.dll"
+          $sig = Get-AuthenticodeSignature $file
+          Write-Host "Status: $($sig.Status)"
+          Write-Host "StatusMessage: $($sig.StatusMessage)"
+          Write-Host "SignerCertificate Subject: $($sig.SignerCertificate.Subject)"
+          Write-Host "SignerCertificate Issuer: $($sig.SignerCertificate.Issuer)"
+          Write-Host "SignerCertificate Thumbprint: $($sig.SignerCertificate.Thumbprint)"
+          Write-Host "TimeStamperCertificate Subject: $($sig.TimeStamperCertificate.Subject)"
+          Write-Host "Path: $($sig.Path)"
+          if ($sig.Status -ne "Valid") {
+            throw "Invalid signature for ${file}: $($sig.Status) - $($sig.StatusMessage)"
+          }
