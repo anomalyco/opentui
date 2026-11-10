@@ -253,7 +253,7 @@ export abstract class BaseRenderable extends EventEmitter {
 
   public abstract add(obj: unknown, index?: number): number
   public abstract remove(child: BaseRenderable): void
-  public abstract insertBefore(obj: unknown, anchor: unknown): unknown
+  public abstract insertBefore(obj: unknown, anchor: unknown): void
   public abstract getChildren(): BaseRenderable[]
   public abstract getChildrenCount(): number
   public abstract getRenderable(id: string): BaseRenderable | undefined
@@ -1693,11 +1693,9 @@ export abstract class Renderable extends BaseRenderable {
       return -1
     }
 
-    const renderable = obj
-
-    if (renderable.isDestroyed) {
+    if (obj.isDestroyed) {
       if (process.env.NODE_ENV !== "production") {
-        console.warn(`Renderable with id ${renderable.id} was already destroyed, skipping add`)
+        console.warn(`Renderable with id ${obj.id} was already destroyed, skipping add`)
       }
       return -1
     }
@@ -1705,10 +1703,10 @@ export abstract class Renderable extends BaseRenderable {
     const anchorRenderable = index !== undefined ? this._childrenInLayoutOrder[index] : undefined
 
     if (anchorRenderable) {
-      return this.insertBefore(renderable, anchorRenderable)
+      return this.insertBefore(obj, anchorRenderable)
     }
 
-    return this.placeChild(renderable)
+    return this.placeChild(obj)
   }
 
   insertBefore(obj: Renderable, anchor?: Renderable): number {
@@ -1734,11 +1732,9 @@ export abstract class Renderable extends BaseRenderable {
       return -1
     }
 
-    const renderable = obj
-
-    if (renderable.isDestroyed) {
+    if (obj.isDestroyed) {
       if (process.env.NODE_ENV !== "production") {
-        console.warn(`Renderable with id ${renderable.id} was already destroyed, skipping insertBefore`)
+        console.warn(`Renderable with id ${obj.id} was already destroyed, skipping insertBefore`)
       }
       return -1
     }
@@ -1761,14 +1757,14 @@ export abstract class Renderable extends BaseRenderable {
       return -1
     }
 
-    if (renderable === anchor) {
+    if (obj === anchor) {
       if (process.env.NODE_ENV !== "production") {
-        console.warn(`Anchor is the same as the node ${renderable.id} being inserted, skipping insertBefore`)
+        console.warn(`Anchor is the same as the node ${obj.id} being inserted, skipping insertBefore`)
       }
       return -1
     }
 
-    return this.placeChild(renderable, anchor)
+    return this.placeChild(obj, anchor)
   }
 
   // TODO: that naming is meh
