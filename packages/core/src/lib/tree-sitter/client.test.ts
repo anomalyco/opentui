@@ -367,12 +367,21 @@ describeClient("TreeSitterClient", () => {
     [
       "updateBuffer streaming list items",
       async (c, highlighted) => {
+        // Stale replies reset once per round trip, not once per reply: without the check this posts over 100.
+        const internals = c as unknown as { sendWorkerMessage(message: { type: string }): void }
+        const send = internals.sendWorkerMessage.bind(c)
+        let resets = 0
+        internals.sendWorkerMessage = (message) => {
+          if (message.type === "RESET_BUFFER") resets++
+          send(message)
+        }
         await c.createBuffer(1, streamed(1), "markdown", 1)
         for (let n = 2; n <= stream.length; n++) {
           await c.updateBuffer(1, append(streamed(n - 1), streamed(n)), streamed(n), n)
           if (n % 7 === 0) await new Promise((resolve) => setTimeout(resolve, 5))
         }
         await highlighted(stream.length)
+        expect(resets).toBeLessThanOrEqual(3)
       },
     ],
     [
@@ -576,7 +585,11 @@ describeClient("TreeSitterClient", () => {
 
     expect(client.getAllBuffers()).toHaveLength(1)
 
+    // Overlapping removals still waiting for the worker settle too.
+    const removals = Promise.allSettled([client.removeBuffer(1), client.removeBuffer(1)])
     await client.destroy()
+    const settled = await within3s(removals)
+    expect(settled === "timeout" ? settled : settled.map((result) => result.status)).toEqual(["rejected", "rejected"])
 
     expect(client.isInitialized()).toBe(false)
     expect(client.getAllBuffers()).toHaveLength(0)
