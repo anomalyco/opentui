@@ -37,12 +37,14 @@ import {
   parseAlignItems,
   parseFlexDirection,
   parseJustify,
+  parseLayoutMode,
   parseOverflow,
   parsePositionType,
   parseWrap,
   type AlignString,
   type FlexDirectionString,
   type JustifyString,
+  type LayoutModeString,
   type OverflowString,
   type PositionTypeString,
   type WrapString,
@@ -132,6 +134,8 @@ export interface LayoutOptions extends BaseRenderableOptions {
   flexShrink?: number
   flexDirection?: FlexDirectionString
   flexWrap?: WrapString
+  /** `"list"` stacks children as a column with `overflow: "scroll"` does, without a flex pass over them. */
+  layoutMode?: LayoutModeString
   alignItems?: AlignString
   justifyContent?: JustifyString
   alignSelf?: AlignString
@@ -534,7 +538,10 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public get primaryAxis(): "row" | "column" {
-    return isRowFlexDirection(this.getFlexDirection()) ? "row" : "column"
+    const list =
+      this.yogaGetEnum(YogaEnumKind.LayoutMode, nativeConstants.OT_LAYOUT_MODE_FLEX) ===
+      nativeConstants.OT_LAYOUT_MODE_LIST
+    return !list && isRowFlexDirection(this.getFlexDirection()) ? "row" : "column"
   }
 
   public set visible(value: boolean) {
@@ -1238,6 +1245,7 @@ export abstract class Renderable extends BaseRenderable {
 
     node.setFlexDirection(parseFlexDirection(options.flexDirection))
     node.setFlexWrap(parseWrap(options.flexWrap))
+    if (options.layoutMode !== undefined) node.layoutMode = options.layoutMode
     node.setAlignItems(parseAlignItems(options.alignItems))
     node.setJustifyContent(parseJustify(options.justifyContent))
     node.setAlignSelf(parseAlign(options.alignSelf))
@@ -1414,6 +1422,11 @@ export abstract class Renderable extends BaseRenderable {
 
   public set flexWrap(wrap: WrapString | null | undefined) {
     this.setFlexWrap(parseWrap(wrap))
+    this.requestRender()
+  }
+
+  public set layoutMode(mode: LayoutModeString | null | undefined) {
+    this.yogaSetEnum(YogaEnumKind.LayoutMode, parseLayoutMode(mode))
     this.requestRender()
   }
 

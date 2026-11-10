@@ -176,6 +176,8 @@ const scrollbox = new ScrollBoxRenderable(renderer, {
 })
 ```
 
+For long content, such as a log or a transcript, `contentOptions: { layoutMode: "list" }` lays out only the rows that change instead of every row. It has the rules in [List layout](/docs/core-concepts/layout#list-layout).
+
 ## Scroll methods
 
 ### scrollBy

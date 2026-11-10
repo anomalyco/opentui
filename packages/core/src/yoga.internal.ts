@@ -21,6 +21,7 @@ export const YogaEnumKind = {
   Overflow: nativeConstants.OT_STYLE_ENUM_OVERFLOW,
   Display: nativeConstants.OT_STYLE_ENUM_DISPLAY,
   BoxSizing: nativeConstants.OT_STYLE_ENUM_BOX_SIZING,
+  LayoutMode: nativeConstants.OT_STYLE_ENUM_LAYOUT_MODE,
 } as const
 
 export const YogaFloatKind = {

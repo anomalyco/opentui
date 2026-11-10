@@ -15,6 +15,7 @@ import {
   Unit,
   Wrap,
 } from "../yoga.js"
+import { nativeConstants } from "../native-abi.generated.js"
 
 export type AlignString =
   | "auto"
@@ -34,6 +35,7 @@ export type EdgeString = "left" | "top" | "right" | "bottom" | "start" | "end" |
 export type FlexDirectionString = "column" | "column-reverse" | "row" | "row-reverse"
 export type GutterString = "column" | "row" | "all"
 export type JustifyString = "flex-start" | "center" | "flex-end" | "space-between" | "space-around" | "space-evenly"
+export type LayoutModeString = "flex" | "list"
 export type LogLevelString = "error" | "warn" | "info" | "debug" | "verbose" | "fatal"
 export type MeasureModeString = "undefined" | "exactly" | "at-most"
 export type OverflowString = "visible" | "hidden" | "scroll"
@@ -239,6 +241,10 @@ export function parseJustify(value: string | null | undefined): Justify {
     default:
       return Justify.FlexStart
   }
+}
+
+export function parseLayoutMode(value: string | null | undefined): number {
+  return value?.toLowerCase() === "list" ? nativeConstants.OT_LAYOUT_MODE_LIST : nativeConstants.OT_LAYOUT_MODE_FLEX
 }
 
 export function parseLogLevel(value: string): LogLevel {

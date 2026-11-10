@@ -72,6 +72,7 @@ const enumSamples: Record<string, unknown> = {
 const layoutSamples: Record<string, unknown> = {
   flexDirection: "row",
   flexWrap: "wrap",
+  layoutMode: "list",
   alignItems: "center",
   alignSelf: "center",
   justifyContent: "center",

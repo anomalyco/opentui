@@ -556,6 +556,16 @@ const facadeRows: FacadeRow[] = [
     "row,true",
   ],
   [
+    "a list content stacks its rows whatever the direction, and a drag selects them in order",
+    { contentOptions: { flexDirection: "row", layoutMode: "list" } },
+    async (box) => {
+      const [a, b] = box.getChildren()
+      await mockMouse.drag(0, 0, 2, 2)
+      return [box.primaryAxis, a.y === b.y, JSON.stringify(testRenderer.getSelection()?.getSelectedText())]
+    },
+    'column,false,"row 0\\nrow 1\\nrow"',
+  ],
+  [
     "a rejected content direction keeps the accepted one",
     { contentOptions: { flexDirection: "row" } },
     async (box) => [

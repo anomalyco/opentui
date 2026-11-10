@@ -6,9 +6,11 @@ import {
   parseAlignItems,
   parseFlexDirection,
   parseJustify,
+  parseLayoutMode,
   parseWrap,
   type FlexDirectionString,
 } from "../lib/yoga.options.js"
+import { nativeConstants } from "../native-abi.generated.js"
 import type { BaseRenderable, Renderable } from "../Renderable.js"
 import { Edge, FlexDirection, Gutter } from "../yoga.js"
 import {
@@ -232,6 +234,7 @@ const contentStyles: Record<string, StyleWrite> = {}
   const enums: [string, (typeof YogaEnumKind)[keyof typeof YogaEnumKind], (value: any) => number][] = [
     ["flexDirection", YogaEnumKind.FlexDirection, parseFlexDirection],
     ["flexWrap", YogaEnumKind.FlexWrap, parseWrap],
+    ["layoutMode", YogaEnumKind.LayoutMode, parseLayoutMode],
     ["alignItems", YogaEnumKind.AlignItems, parseAlignItems],
     ["justifyContent", YogaEnumKind.JustifyContent, parseJustify],
     ["alignSelf", YogaEnumKind.AlignSelf, parseAlign],
@@ -307,10 +310,12 @@ export class ScrollBoxContent extends ScrollBoxSizedPart {
     else this.styles.set(key, input)
   }
 
-  /** @internal Whether children lay out in a row, by the direction native was given. */
+  /** @internal Whether children lay out in a row, by the direction and mode native was given. */
   get _row(): boolean {
+    const list =
+      parseLayoutMode(this.styles.get("layoutMode") as string | undefined) === nativeConstants.OT_LAYOUT_MODE_LIST
     const direction = parseFlexDirection(this.styles.get("flexDirection") as FlexDirectionString | undefined)
-    return direction === FlexDirection.Row || direction === FlexDirection.RowReverse
+    return !list && (direction === FlexDirection.Row || direction === FlexDirection.RowReverse)
   }
 
   get viewportCulling(): boolean {
@@ -562,6 +567,7 @@ type Edges = "" | "X" | "Y" | "Top" | "Right" | "Bottom" | "Left"
 type ContentLayoutKey =
   | "flexDirection"
   | "flexWrap"
+  | "layoutMode"
   | "alignItems"
   | "justifyContent"
   | "alignSelf"
