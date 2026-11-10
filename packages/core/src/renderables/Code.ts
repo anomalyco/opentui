@@ -149,10 +149,14 @@ export class CodeRenderable extends TextBufferRenderable {
     this.runMutation(() => {
       // Streaming keeps the shown highlight until the next one lands (_hadInitialContent implies _streaming).
       if (this._hadInitialContent && this._shouldRenderTextBuffer && this._filetype && !this._drawUnstyledText) {
-        this._content = value
-        this.invalidateHighlights()
-        this.requestRender()
-        return
+        if (this._ctx.nativeScene.reachesHooks(this)) {
+          this._content = value
+          this.invalidateHighlights()
+          this.requestRender()
+          return
+        }
+        // No update hook runs here to start the highlight, so layout measures the plain text, unpainted until it lands.
+        this.setShouldRenderTextBuffer(false)
       }
 
       if (value && this._initialStyledText && this._drawUnstyledText) {
