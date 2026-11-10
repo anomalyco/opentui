@@ -4,5 +4,3 @@
 channel = "1.99.1"
 profile = "minimal"
 components = ["rustfmt", "clippy"]
-# For scripts/check-targets.sh.
-targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]

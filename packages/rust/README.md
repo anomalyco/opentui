@@ -58,14 +58,23 @@ build, so it needs `OPENTUI_LIB_DIR`.
 
 These platforms are supported:
 
-| Platform                       | Rust target                                       | Artifact directory |
-| ------------------------------ | ------------------------------------------------- | ------------------ |
-| Linux x86_64 with glibc        | `x86_64-unknown-linux-gnu`                        | `x86_64-linux`     |
-| macOS 13 or later, Apple chips | `aarch64-apple-darwin`                            | `aarch64-macos`    |
-| macOS 13 or later, Intel chips | `x86_64-apple-darwin`                             | `x86_64-macos`     |
-| Windows 10 1809 or later       | `x86_64-pc-windows-msvc`, `x86_64-pc-windows-gnu` | `x86_64-windows`   |
+| Platform                       | Rust target                                             | Artifact directory   |
+| ------------------------------ | ------------------------------------------------------- | -------------------- |
+| Linux x86_64 with glibc        | `x86_64-unknown-linux-gnu`                              | `x86_64-linux`       |
+| Linux arm64 with glibc         | `aarch64-unknown-linux-gnu`                             | `aarch64-linux`      |
+| Linux x86_64 with musl         | `x86_64-unknown-linux-musl`                             | `x86_64-linux-musl`  |
+| Linux arm64 with musl          | `aarch64-unknown-linux-musl`                            | `aarch64-linux-musl` |
+| macOS 13 or later, Apple chips | `aarch64-apple-darwin`                                  | `aarch64-macos`      |
+| macOS 13 or later, Intel chips | `x86_64-apple-darwin`                                   | `x86_64-macos`       |
+| Windows 10 1809 or later       | `x86_64-pc-windows-msvc`, `x86_64-pc-windows-gnu`       | `x86_64-windows`     |
+| Windows 10 1809 or later, Arm  | `aarch64-pc-windows-msvc`, `aarch64-pc-windows-gnullvm` | `aarch64-windows`    |
 
 The build picks the directory for the target it builds.
+Rust's musl targets build static executables (`crt-static`), which cannot load
+`libopentui.so`, so the build refuses the shared library there unless you
+build with `RUSTFLAGS='-C target-feature=-crt-static'`. The `static` feature
+does not link on musl yet: the archive needs a libc++ built for musl, and the
+build machine's is usually glibc's.
 OpenTUI's macOS build needs the macOS SDK, which comes with the Xcode Command
 Line Tools (`xcode-select --install`). On a Mac, `bun run build` in
 `packages/native` builds the Mac's own architecture; add the other one with
@@ -621,7 +630,7 @@ and delivering the output to memory.
 sh test.sh           # format, clippy, tests, and lifecycle checks, with shared and static linking
 sh test.sh shared
 cargo test --locked --workspace --features opentui/tokio,opentui/tree-sitter
-sh scripts/check-targets.sh   # from another system: clippy for both macOS targets
+sh scripts/check-targets.sh   # clippy for the macOS, arm64 and musl Linux, and Arm Windows targets
 ```
 
 On Windows, run `sh test.sh` from Git Bash; it checks the shared linkage only.
@@ -630,10 +639,12 @@ On Windows, run `sh test.sh` from Git Bash; it checks the shared linkage only.
 After a change to `opentui.h`, run `bun run generate:abi` in `packages/core`,
 then `sh test.sh shared`, and fix the crates in the same change.
 
-`scripts/check-targets.sh` keeps the macOS code compiling while you work
-elsewhere. It needs Zig and the targets' standard libraries, or `rust-src`
-without rustup; its header says how it uses them. It does not link or run
-anything, so `sh test.sh` on the platform is still the real check.
+`scripts/check-targets.sh` keeps the code of the other targets compiling
+while you work on one. It needs Zig and the targets' standard libraries, which
+it adds with rustup, or `rust-src` without rustup; its header says how it uses
+them. It does not link or run anything. `sh test.sh` runs on x86_64 Linux,
+macOS, and x86_64 Windows; arm64 Linux, Linux with musl, and Windows on Arm
+are only compile-checked.
 
 CI runs `test.sh` on Linux, Windows and macOS for each pull request that
 changes the crates, native code or the ABI generator, and `check-targets.sh` on

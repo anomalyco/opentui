@@ -1,15 +1,18 @@
 use std::{env, fs, path::PathBuf};
 
-/// The directory OpenTUI's build puts a target's artifacts in, under `packages/native/lib`, and its shared library.
-fn platform(target: &str) -> Option<(&'static str, &'static str)> {
-    match target {
-        "x86_64-unknown-linux-gnu" => Some(("x86_64-linux", "libopentui.so")),
-        "aarch64-apple-darwin" => Some(("aarch64-macos", "libopentui.dylib")),
-        "x86_64-apple-darwin" => Some(("x86_64-macos", "libopentui.dylib")),
-        "x86_64-pc-windows-msvc" | "x86_64-pc-windows-gnu" => Some(("x86_64-windows", "opentui.dll")),
-        _ => None,
-    }
-}
+/// Each Rust target, its artifact directory under `packages/native/lib`, and its shared library.
+const TARGETS: &[(&str, &str, &str)] = &[
+    ("x86_64-unknown-linux-gnu", "x86_64-linux", "libopentui.so"),
+    ("aarch64-unknown-linux-gnu", "aarch64-linux", "libopentui.so"),
+    ("x86_64-unknown-linux-musl", "x86_64-linux-musl", "libopentui.so"),
+    ("aarch64-unknown-linux-musl", "aarch64-linux-musl", "libopentui.so"),
+    ("aarch64-apple-darwin", "aarch64-macos", "libopentui.dylib"),
+    ("x86_64-apple-darwin", "x86_64-macos", "libopentui.dylib"),
+    ("x86_64-pc-windows-msvc", "x86_64-windows", "opentui.dll"),
+    ("x86_64-pc-windows-gnu", "x86_64-windows", "opentui.dll"),
+    ("aarch64-pc-windows-msvc", "aarch64-windows", "opentui.dll"),
+    ("aarch64-pc-windows-gnullvm", "aarch64-windows", "opentui.dll"),
+];
 
 /// `OPENTUI_LIB_DIR`, else the native build of this checkout, `packages/native/lib/<platform>`.
 fn native_lib_dir(platform: &str) -> PathBuf {
@@ -33,20 +36,30 @@ fn generated_header_hash() -> u64 {
 
 fn main() {
     let target = env::var("TARGET").unwrap();
-    let Some((platform, shared_library)) = platform(&target) else {
-        panic!(
-            "opentui-sys supports x86_64-unknown-linux-gnu, aarch64-apple-darwin, x86_64-apple-darwin, \
-             x86_64-pc-windows-msvc, and x86_64-pc-windows-gnu, not {target}"
-        );
+    let Some(&(_, platform, shared_library)) = TARGETS.iter().find(|(name, ..)| *name == target) else {
+        let names: Vec<_> = TARGETS.iter().map(|(name, ..)| *name).collect();
+        panic!("opentui-sys supports {}, not {target}", names.join(", "));
     };
     let windows = target.contains("-windows-");
     println!("cargo:rerun-if-env-changed=OPENTUI_LIB_DIR");
+    // Cargo keeps a build script's output when only RUSTFLAGS change, which would leave the crt-static check stale.
+    println!("cargo:rerun-if-env-changed=RUSTFLAGS");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/generated.rs");
     let dir = native_lib_dir(platform);
     let static_link = env::var_os("CARGO_FEATURE_STATIC").is_some();
     // OpenTUI's Windows archive is built for MinGW with libc++, which neither Rust Windows toolchain links.
     assert!(!(windows && static_link), "the static feature is not supported on Windows; link opentui.dll instead");
+    // A crt-static Unix executable has no dynamic loader, so nothing loads the shared library and it crashes at start.
+    // Rust's musl targets default to crt-static, which CARGO_CFG_TARGET_FEATURE does not list.
+    let features = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
+    let crt_static = !env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default().contains("-crt-static")
+        && (target.ends_with("-musl") || features.split(',').any(|feature| feature == "crt-static"));
+    assert!(
+        windows || static_link || !crt_static,
+        "{target} links static executables (crt-static), which cannot load {shared_library}: build with \
+         RUSTFLAGS='-C target-feature=-crt-static'. The static feature needs a libc++ built for this target."
+    );
     // Windows links a DLL through its import library.
     let files: &[&str] = if static_link {
         &["opentui.h", "libopentui.a"]
