@@ -107,6 +107,7 @@ test "LinkTracker - checked URL membership is idempotent and rejects reference s
     try std.testing.expectEqual(@as(u32, 0), other.getLinkCount());
     try std.testing.expectEqual(id, try tracker.trackUrl(url));
     try std.testing.expectEqual(std.math.maxInt(u32), try pool.getRefcount(id));
+    try std.testing.expectError(error.InvalidUrl, tracker.trackUrl(utils.repeat(u8, "x", link.MAX_URL_LENGTH + 1)));
 }
 
 test "LinkPool - acquire takes only targets that OSC 8 can carry as is" {
@@ -118,7 +119,7 @@ test "LinkPool - acquire takes only targets that OSC 8 can carry as is" {
         // U+20AC is E2 82 AC and U+0141 is C5 81: continuation bytes in 0x80-0x9F.
         .{ "https://example.com/\u{20ac}", true },
         .{ "https://pl.wikipedia.org/wiki/\u{141}\u{f3}d\u{17a}", true },
-        .{ "a\u{a0}", true },
+        .{ " ~a\u{a0}", true },
         .{ longest, true },
         .{ longest ++ "x", false },
         .{ "", false },

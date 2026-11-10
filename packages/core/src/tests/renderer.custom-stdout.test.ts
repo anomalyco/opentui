@@ -192,11 +192,12 @@ test("late Ghostty capability detection emits OSC 8 for compact Markdown links",
 })
 
 // OSC 8 carries a target as is, so a control character in it could end the sequence and run another one, here an
-// OSC 52 clipboard write. Such a target gets no hyperlink and its text still draws; UTF-8 targets keep theirs.
+// OSC 52 clipboard write. Such a target gets no hyperlink and its text still draws (Markdown shows the URL, as for
+// other targets native code rejects); UTF-8 targets keep theirs.
 const injected = "https://example.com/a\x1b]52;c;cHduZWQ=\x07"
 const [euro, city] = ["https://example.com/€", "https://pl.wikipedia.org/wiki/Łódź"]
 for (const [name, markdown, shown, kept] of [
-  ["Markdown link", `[docs](${injected}) [euro](${euro}) [city](${city})`, "docs euro city", [euro, city]],
+  ["Markdown link", `[docs](${injected}) [euro](${euro}) [city](${city})`, "docs (https://example.com/a", [euro, city]],
   ["bare URL", `see ${injected} or ${euro}`, "see https://example.com/a", [euro]],
   ["link()", null, "docs euro city", [euro, city]],
 ] as const) {
