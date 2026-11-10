@@ -302,6 +302,17 @@ pub fn has_grammar(filetype: &str) -> bool {
     lock(&REGISTRY).resolve(filetype).is_some()
 }
 
+/// Compiles the grammar for a filetype now, if nothing has yet, so the first highlight that needs it does not pay for
+/// it. Call it from a worker thread before the text is shown: a highlight that needs the grammar while this compiles
+/// waits for it, and nothing compiles twice. Returns whether the filetype, resolved as [`has_grammar`] does, has a
+/// grammar that compiles; calls after the first cost a lookup. Grammars it injects, such as the languages of
+/// Markdown fences, compile when first needed unless they are prewarmed too.
+pub fn prewarm(filetype: &str) -> bool {
+    // The lock is held only to look up the entry, so other highlights go on while this compiles.
+    let entry = lock(&REGISTRY).resolve(filetype).cloned();
+    entry.is_some_and(|entry| entry.compiled().is_some())
+}
+
 /// How an injection treats its content node's children.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Children {
@@ -617,6 +628,7 @@ mod tests {
         assert_eq!(LOADS.load(Ordering::SeqCst), 0);
         assert_eq!(captured("x", "lr"), [("x".to_owned(), "variable")]);
         assert_eq!(captured("y", "lazy-rust"), [("y".to_owned(), "variable")]);
+        assert!(prewarm("lr") && prewarm("lazy-rust"));
         assert_eq!(LOADS.load(Ordering::SeqCst), 1);
         // A load that fails leaves the filetype plain, and is not retried.
         static FAILS: AtomicUsize = AtomicUsize::new(0);
@@ -624,8 +636,30 @@ mod tests {
             FAILS.fetch_add(1, Ordering::SeqCst);
             Grammar::new(tree_sitter_rust::LANGUAGE, "(no_such_node) @x").compile().ok()
         });
-        assert!(highlights("x", "lazy-broken").is_none() && highlights("x", "lazy-broken").is_none());
+        assert!(!prewarm("lazy-broken") && highlights("x", "lazy-broken").is_none());
+        assert!(highlights("x", "lazy-broken").is_none() && !prewarm("lazy-broken"));
         assert_eq!(FAILS.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_highlight_waits_for_a_prewarm_on_a_worker() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::mpsc;
+        static LOADS: AtomicUsize = AtomicUsize::new(0);
+        let (started, compiling) = mpsc::channel();
+        register_lazy("prewarm-rust", move || {
+            LOADS.fetch_add(1, Ordering::SeqCst);
+            started.send(()).unwrap();
+            let rust = Grammar::new(tree_sitter_rust::LANGUAGE, tree_sitter_rust::HIGHLIGHTS_QUERY);
+            rust.injections(tree_sitter_rust::INJECTIONS_QUERY).compile().ok()
+        });
+        let worker = std::thread::spawn(|| prewarm("prewarm-rust"));
+        compiling.recv_timeout(std::time::Duration::from_secs(30)).expect("the worker compiles");
+        // The worker is compiling, so this waits for its grammar instead of compiling another or staying plain.
+        let source = "fn main() { println!(\"{}\", 1); }\n";
+        assert_eq!(highlights(source, "prewarm-rust"), highlights(source, "rust"));
+        assert!(worker.join().unwrap() && prewarm("prewarm-rust"));
+        assert_eq!(LOADS.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -707,7 +741,8 @@ mod tests {
     fn unknown_filetypes_have_no_grammar() {
         assert!(highlights("x", "cobol").is_none());
         assert!(has_grammar("rs") && has_grammar("main.zig") && has_grammar("JSX"));
-        assert!(!has_grammar("cobol"));
+        assert!(!has_grammar("cobol") && !prewarm("cobol"));
+        assert!(prewarm("rs") && prewarm("main.zig"));
     }
 
     #[test]

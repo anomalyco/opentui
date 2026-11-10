@@ -311,6 +311,13 @@ none. A highlight costs time in proportion to the text, so highlighting large
 Without the feature, or without a grammar for the filetype,
 the text is plain.
 
+A grammar compiles the first time a widget shows its filetype, on the UI
+thread, which delays that frame (about 15 ms for Rust or TypeScript).
+`syntax::prewarm("rust")` compiles it ahead, from any thread, such as a worker
+started when the app learns which languages it will show. A highlight that
+needs the grammar meanwhile waits for that compile instead of starting another,
+so frames do not change. It returns `false` for a filetype without a grammar.
+
 ### Your own widgets
 
 Implement `Component` and wrap it in `Custom`. Painting uses local coordinates
