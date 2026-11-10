@@ -319,25 +319,24 @@ describe("InputRenderable", () => {
       expect(enterValue).toBe("test input")
     })
 
-    it("should respect maxLength", () => {
-      const { input } = createInputRenderable({
-        maxLength: 3,
-      })
-
+    // The insert replaces the `select` characters left of the cursor, so maxLength does not count them.
+    it.each([
+      ["key", "abc", 3, 0, "d", "abc"],
+      ["key", "hello", 5, 5, "x", "x"],
+      ["paste", "hello", 5, 5, "xyz", "xyz"],
+      ["insertText", "hello", 5, 2, "xy", "helxy"],
+      ["paste", "hello", 5, 1, "xyz", "hellx"],
+      ["key", "hello", 6, 2, "😀", "hel😀"],
+      ["paste", "hel日😀", 6, 2, "abcd", "helabc"],
+    ] as const)("%s %j, maxLength %d, select %d: %j gives %j", (how, value, maxLength, select, text, expected) => {
+      const { input } = createInputRenderable({ width: 20, value, maxLength })
       input.focus()
-
-      mockInput.pressKey("a")
-      expect(input.value).toBe("a")
-
-      mockInput.pressKey("b")
-      expect(input.value).toBe("ab")
-
-      mockInput.pressKey("c")
-      expect(input.value).toBe("abc")
-
-      // This should be ignored
-      mockInput.pressKey("d")
-      expect(input.value).toBe("abc")
+      for (let i = 0; i < select; i++) mockInput.pressArrow("left", { shift: true })
+      if (how === "key") mockInput.pressKey(text)
+      else if (how === "paste") mockInput.pasteBracketedText(text)
+      else input.insertText(text)
+      expect(input.value).toBe(expected)
+      input.destroy()
     })
 
     it("should respect minLength when submitting", () => {
