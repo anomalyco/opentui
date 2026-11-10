@@ -13,6 +13,7 @@
 #include <new>
 #ifdef OT_YOGA_TEST_ALLOCATOR
 #include <yoga/algorithm/Cache.h>
+#include <yoga/algorithm/CalculateLayout.h>
 #include <yoga/algorithm/PixelGrid.h>
 #include <yoga/debug/Log.h>
 #include <yoga/numeric/Comparison.h>
@@ -229,10 +230,14 @@ void otYogaNodeInvalidateMeasure(YGNodeRef node) noexcept {
 }
 
 void otYogaNodeForgetMeasurements(YGNodeRef node) noexcept {
-  // The reset Yoga applies when it visits a dirty node.
-  auto& layout = facebook::yoga::resolveRef(node)->getLayout();
-  layout.nextCachedMeasurementsIndex = 0;
-  layout.cachedLayout = {};
+  // The reset Yoga applies when it visits a dirty node, up to the root: a list keeps a row's sizes
+  // until the row's epoch resets, and a cached box row would not reach the node.
+  for (auto target = facebook::yoga::resolveRef(node); target; target = target->getOwner()) {
+    auto& layout = target->getLayout();
+    layout.nextCachedMeasurementsIndex = 0;
+    layout.cachedLayout = {};
+    layout.listEpoch = 0;
+  }
 }
 
 uint32_t otYogaNodeGetComputedLayout(YGNodeConstRef node, OTYogaLayout* out) noexcept {
@@ -538,6 +543,10 @@ void otYogaTestLogMessage(YGConfigConstRef config, const char* message) noexcept
 uint32_t otYogaTestTakeRoundedNodes() noexcept {
   return std::exchange(facebook::yoga::testPixelGridNodeCount, 0);
 }
+uint32_t otYogaTestTakeListVisits() noexcept {
+  return std::exchange(facebook::yoga::testListVisitCount, 0);
+}
+void otYogaTestSetListMemo(uint32_t mode) noexcept { facebook::yoga::testListMemo = mode; }
 
 // Independent eager reference for Yoga 3.2.1 Cache.cpp's per-axis predicate, with the margin
 // patch.

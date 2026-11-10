@@ -1480,6 +1480,8 @@ const ListTwins = struct {
     direction: u32 = @backingInt(yoga.YogaDirection.ltr),
     // 1 builds the list tree alone.
     twins: usize = 2,
+    // Every list box gets overflow: scroll.
+    scroll: bool = false,
 
     fn pick(t: *ListTwins, n: u32) u32 {
         return t.random.uintLessThan(u32, n);
@@ -1596,6 +1598,7 @@ const ListTwins = struct {
             for (t.nodes[0..t.twins]) |twin| yoga.check(yoga.yogaNodeStyleSetBorderChecked(twin[list], edge, width)) catch unreachable;
         }
         if (t.chance(40)) t.enumValue(list, .align_items, 1 + t.pick(4));
+        if (t.scroll) t.enumValue(list, .overflow, 2);
         for (0..1 + t.pick(7)) |_| t.row(list, depth);
         if (t.chance(15)) {
             const text = t.chance(50);
@@ -1624,7 +1627,9 @@ const ListTwins = struct {
             },
             2 => {
                 t.enumValue(root, .flex_direction, @backingInt(yoga.YogaFlexDirection.row));
-                list = t.add(root, false);
+                // A baseline reads the list's first row, also through a column wrapper.
+                if (t.chance(30)) t.enumValue(root, .align_items, 5);
+                list = t.add(if (t.chance(20)) t.add(root, false) else root, false);
                 if (t.chance(50)) t.float(list, .flex_grow, 1);
             },
             else => {
@@ -1683,6 +1688,8 @@ const ListTwins = struct {
 
 // D6, invariants 2-5: on the styles a list keeps, list layout equals flex bit for bit; a mode
 // change dirties the box; and random mutations of list trees, solved again, equal fresh copies.
+// A list gives its rows no height cap, as flex does in a column with overflow: scroll, so both
+// twins' list boxes scroll.
 test "Yoga list layout equals flex where its rules keep flex's result, and incremental list solves equal fresh ones" {
     const exact = yoga.yogaConfigCreate();
     defer std.debug.assert(yoga.yogaConfigFree(exact));
@@ -1690,55 +1697,91 @@ test "Yoga list layout equals flex where its rules keep flex's result, and incre
     try yoga.check(yoga.yogaConfigSetPointScaleFactorChecked(exact, 0));
     for (0..20_000) |seed| {
         var prng = std.Random.DefaultPrng.init(0xd6_0000 + seed);
-        var t: ListTwins = .{ .random = prng.random(), .config = exact };
+        var t: ListTwins = .{ .random = prng.random(), .config = exact, .scroll = true };
         t.build();
         defer for (t.nodes) |twin| yoga.yogaNodeFreeRecursive(twin[0]);
         for (0..2) |twin| t.solve(twin);
         for (t.nodes[0][0..t.count], t.nodes[1][0..t.count]) |list, flex| try expectSameLayout(list, flex, true);
     }
     // Mutations of list trees with rounding on, so the test build's fixed-point check runs on each
-    // solve: a text, display: none, a move to another box, a position type, a mode toggle, and the
-    // root's width by a scrollbar or a fraction.
+    // solve: a text, display: none, a move to another box or index, a position type, a mode toggle,
+    // the root's width by a scrollbar or a fraction and its height, an appended text, a list's
+    // style, a node's max width, a measure function set or unset, and the config's errata. A quarter of the solves follow two mutations. With the row memo on, and again
+    // checking each reuse (invariants 6 and 7), each solve equals a fresh solve with the memo off.
     const rounded = yoga.yogaConfigCreate();
     defer std.debug.assert(yoga.yogaConfigFree(rounded));
     yoga.configSetRoundsPositionsFromAbsoluteEdges(rounded, 1);
-    for (0..1_000) |seed| {
+    defer yoga.testSetListMemo(1);
+    for ([_]u32{ 1, 2 }) |memo| for (0..1_000) |seed| {
         var prng = std.Random.DefaultPrng.init(0xd6_8000 + seed);
         var t: ListTwins = .{ .random = prng.random(), .config = rounded, .twins = 1 };
         t.build();
         defer yoga.yogaNodeFreeRecursive(t.nodes[0][0]);
+        defer yoga.check(yoga.yogaConfigSetErrataChecked(rounded, 0)) catch unreachable;
+        yoga.testSetListMemo(memo);
         t.solve(0);
         var root: yoga.ExternalYogaLayout = undefined;
         yoga.yogaNodeGetComputedLayout(t.nodes[0][0], &root);
+        var margin: f32 = 0;
         for (0..8) |_| {
-            const i = 1 + t.pick(@intCast(t.count - 1));
-            const node = t.nodes[0][i];
-            switch (t.pick(6)) {
-                0 => if (t.texts[i]) {
-                    t.leaves[0][i].len = 1 + t.pick(300);
-                    yoga.yogaNodeInvalidateMeasure(node);
-                },
-                1 => yoga.yogaNodeStyleSetEnum(node, @backingInt(yoga.YogaEnumKind.display), t.pick(2)),
-                2 => {
-                    const parent: usize = t.pick(@intCast(t.count));
-                    var ancestor = parent;
-                    while (ancestor != 0 and ancestor != i) ancestor = t.parents[ancestor];
-                    if (t.texts[parent] or ancestor == i or parent == i) continue;
-                    const same = t.parents[i] == parent;
-                    try yoga.check(yoga.yogaNodeMoveChildChecked(t.nodes[0][parent], node, t.pick(t.kids[parent] + @intFromBool(!same))));
-                    t.kids[t.parents[i]] -= 1;
-                    t.kids[parent] += 1;
-                    t.parents[i] = parent;
-                },
-                3 => yoga.yogaNodeStyleSetEnum(node, @backingInt(yoga.YogaEnumKind.position_type), t.pick(3)),
-                4 => if (!t.texts[i]) {
-                    t.lists[i] = !t.lists[i];
-                    t.setList(i, t.lists[i]);
-                },
-                else => {
-                    root.width = @max(10, root.width + ([_]f32{ -1, 1, 0.005, -0.005 })[t.pick(4)]);
-                    yoga.yogaNodeStyleSetValue(t.nodes[0][0], @backingInt(yoga.YogaValueKind.width), 0, @backingInt(yoga.YogaUnit.point), root.width);
-                },
+            // A config change dirties nothing; another change, here the root's bottom margin, makes
+            // the next frame solve.
+            var force = false;
+            for (0..@as(u32, if (t.chance(25)) 2 else 1)) |_| {
+                const i = 1 + t.pick(@intCast(t.count - 1));
+                const node = t.nodes[0][i];
+                switch (t.pick(13)) {
+                    0 => if (t.texts[i]) {
+                        t.leaves[0][i].len = 1 + t.pick(300);
+                        yoga.yogaNodeInvalidateMeasure(node);
+                    },
+                    1 => yoga.yogaNodeStyleSetEnum(node, @backingInt(yoga.YogaEnumKind.display), t.pick(2)),
+                    2 => {
+                        const parent: usize = t.pick(@intCast(t.count));
+                        var ancestor = parent;
+                        while (ancestor != 0 and ancestor != i) ancestor = t.parents[ancestor];
+                        if (t.texts[parent] or ancestor == i or parent == i) continue;
+                        const same = t.parents[i] == parent;
+                        try yoga.check(yoga.yogaNodeMoveChildChecked(t.nodes[0][parent], node, t.pick(t.kids[parent] + @intFromBool(!same))));
+                        t.kids[t.parents[i]] -= 1;
+                        t.kids[parent] += 1;
+                        t.parents[i] = parent;
+                    },
+                    3 => yoga.yogaNodeStyleSetEnum(node, @backingInt(yoga.YogaEnumKind.position_type), t.pick(3)),
+                    4 => if (!t.texts[i]) {
+                        t.lists[i] = !t.lists[i];
+                        t.setList(i, t.lists[i]);
+                    },
+                    5 => if (t.count < ListTwins.max and !t.texts[i]) {
+                        _ = t.add(i, true);
+                    },
+                    6 => if (t.lists[i]) switch (t.pick(4)) {
+                        0 => yoga.yogaNodeStyleSetEnum(node, @backingInt(yoga.YogaEnumKind.align_items), t.pick(5)),
+                        1 => yoga.yogaNodeStyleSetValue(node, @backingInt(yoga.YogaValueKind.gap), 1, @backingInt(yoga.YogaUnit.percent), @floatFromInt(t.pick(20))),
+                        2 => try yoga.check(yoga.yogaNodeCopyStyleChecked(node, t.nodes[0][1 + t.pick(@intCast(t.count - 1))])),
+                        else => yoga.yogaNodeStyleSetValue(node, @backingInt(yoga.YogaValueKind.padding), 1, @backingInt(yoga.YogaUnit.point), @floatFromInt(t.pick(3))),
+                    },
+                    7 => yoga.yogaNodeStyleSetValue(node, @backingInt(yoga.YogaValueKind.max_width), 0, @backingInt(yoga.YogaUnit.point), t.point(5, 120)),
+                    // Classic errata change how flex boxes inside rows lay out.
+                    8 => {
+                        try yoga.check(yoga.yogaConfigSetErrataChecked(rounded, if (t.chance(50)) 0 else 2147483646));
+                        force = true;
+                    },
+                    9 => if (t.texts[i] or (t.kids[i] == 0 and !t.lists[i])) {
+                        t.texts[i] = !t.texts[i];
+                        try yoga.check(yoga.yogaNodeSetNativeMeasureFunc(node, if (t.texts[i]) &t.leaves[0][i] else null, if (t.texts[i]) &Leaf.measure else null, true));
+                        yoga.yogaNodeInvalidateMeasure(node);
+                    },
+                    10 => yoga.yogaNodeStyleSetValue(t.nodes[0][0], @backingInt(yoga.YogaValueKind.height), 0, @backingInt(yoga.YogaUnit.point), t.point(10, 80)),
+                    else => {
+                        root.width = @max(10, root.width + ([_]f32{ -1, 1, 0.005, -0.005 })[t.pick(4)]);
+                        yoga.yogaNodeStyleSetValue(t.nodes[0][0], @backingInt(yoga.YogaValueKind.width), 0, @backingInt(yoga.YogaUnit.point), root.width);
+                    },
+                }
+            }
+            if (force) {
+                margin = 1 - margin;
+                yoga.yogaNodeStyleSetValue(t.nodes[0][0], @backingInt(yoga.YogaValueKind.margin), 3, @backingInt(yoga.YogaUnit.point), margin);
             }
             // As the scene does: a clean root's cache hit writes its unrounded size.
             var dirty: u32 = 0;
@@ -1748,10 +1791,12 @@ test "Yoga list layout equals flex where its rules keep flex's result, and incre
             var fresh_leaves: [ListTwins.max]Leaf = @splat(.{});
             const fresh_root = try t.copy(t.nodes[0][0], &fresh_leaves, &fresh);
             defer yoga.yogaNodeFreeRecursive(fresh_root);
+            yoga.testSetListMemo(0);
             yoga.yogaNodeCalculateLayout(fresh_root, std.math.nan(f32), std.math.nan(f32), t.direction);
+            yoga.testSetListMemo(memo);
             try expectSameLaidOut(t.nodes[0][0], fresh_root);
         }
-    }
+    };
     const point = @backingInt(yoga.YogaUnit.point);
     // A row that flex wrapped to line 1 leads a list after a move and a mode change; the baseline
     // of a row parent reads it as a fresh tree does.
@@ -1827,10 +1872,11 @@ fn expectSameLaidOut(live: yoga.YGNodeRef, fresh: yoga.YGNodeRef) !void {
 
 // The documented differences: rows never grow or shrink, ignore their flex basis, the box's
 // justification, flex direction, and wrap, and main-axis auto margins, and resolve percent heights,
-// vertical insets, and a percent gap against an indefinite height.
+// vertical insets, and a percent gap against an indefinite height; and rows get no height cap, as
+// in a flex column with overflow: scroll.
 test "Yoga list layout differs from flex as documented" {
     const Set = struct { kind: enum { value, enumeration, float }, id: u32, edge: u32 = 0, unit: u32 = 1, v: f32 };
-    const Row = struct { height: f32 = 20, width: f32 = 80, rows: u32 = 1, len: u32 = 10, step: u32 = 0, box: bool = false, list: ?Set = null, list2: ?Set = null, row: ?Set = null, node: usize, field: usize, flex: f32, list_value: f32 };
+    const Row = struct { height: f32 = 20, width: f32 = 80, rows: u32 = 1, len: u32 = 10, step: u32 = 0, box: bool = false, list: ?Set = null, list2: ?Set = null, row: ?Set = null, inner: ?Set = null, node: usize, field: usize, flex: f32, list_value: f32 };
     const left = 0;
     const top = 1;
     const width_10: Set = .{ .kind = .value, .id = @backingInt(yoga.YogaValueKind.width), .v = 10 };
@@ -1852,6 +1898,11 @@ test "Yoga list layout differs from flex as documented" {
         .{ .row = .{ .kind = .value, .id = @backingInt(yoga.YogaValueKind.margin), .edge = 1, .unit = 3, .v = 0 }, .node = 2, .field = top, .flex = 19, .list_value = 0 },
         .{ .box = true, .row = .{ .kind = .value, .id = @backingInt(yoga.YogaValueKind.height), .unit = 2, .v = 50 }, .node = 2, .field = height, .flex = 10, .list_value = 0 },
         .{ .row = .{ .kind = .value, .id = @backingInt(yoga.YogaValueKind.min_height), .unit = 2, .v = 50 }, .node = 2, .field = height, .flex = 25, .list_value = 1 },
+        // A box row holding a box with a percent height or min height in a 10-high list, and one
+        // holding a 3-high box in a 0-high list, which flex measures at a height of 0.
+        .{ .height = 10, .box = true, .inner = .{ .kind = .value, .id = @backingInt(yoga.YogaValueKind.height), .unit = 2, .v = 100 }, .node = 2, .field = height, .flex = 10, .list_value = 0 },
+        .{ .height = 10, .box = true, .inner = .{ .kind = .value, .id = @backingInt(yoga.YogaValueKind.min_height), .unit = 2, .v = 50 }, .node = 2, .field = height, .flex = 5, .list_value = 0 },
+        .{ .height = 0, .box = true, .inner = .{ .kind = .value, .id = @backingInt(yoga.YogaValueKind.height), .v = 3 }, .node = 2, .field = height, .flex = 0, .list_value = 3 },
         .{ .height = std.math.nan(f32), .rows = 4, .len = 30, .step = 50, .list = .{ .kind = .value, .id = @backingInt(yoga.YogaValueKind.gap), .edge = 1, .unit = 2, .v = 10 }, .node = 1, .field = height, .flex = 13.6, .list_value = 7 },
     }) |case| {
         var values: [2]f32 = undefined;
@@ -1870,7 +1921,11 @@ test "Yoga list layout differs from flex as documented" {
                 leaf.len = case.len + case.step * @as(u32, @intCast(i));
                 if (!case.box) try yoga.check(yoga.yogaNodeSetNativeMeasureFunc(row.*, leaf, &Leaf.measure, true));
             }
-            for ([_]?Set{ case.list, case.list2, case.row }, [_][]const yoga.YGNodeRef{ nodes[1..2], nodes[1..2], nodes[2..][0..case.rows] }) |maybe, targets| {
+            if (case.inner != null) {
+                nodes[5] = yoga.yogaNodeCreateWithConfig(config);
+                yoga.yogaNodeInsertChild(nodes[2], nodes[5], 0);
+            }
+            for ([_]?Set{ case.list, case.list2, case.row, case.inner }, [_][]const yoga.YGNodeRef{ nodes[1..2], nodes[1..2], nodes[2..][0..case.rows], nodes[5..6] }) |maybe, targets| {
                 const set = maybe orelse continue;
                 for (targets) |target| switch (set.kind) {
                     .value => yoga.yogaNodeStyleSetValue(target, set.id, set.edge, set.unit, set.v),
@@ -1886,6 +1941,223 @@ test "Yoga list layout differs from flex as documented" {
         try std.testing.expectApproxEqAbs(case.flex, values[0], 1e-4);
         try std.testing.expectEqual(case.list_value, values[1]);
     }
+}
+
+// D6 PR 1b, invariant 8: a same-height title change, an appended text row, and a box row appended
+// to growing ScrollBox content each visit one row per pass. A twin with the row memo off visits
+// every row in each pass and lays out the same.
+test "Yoga list layout visits only the rows that change" {
+    const Select = struct {
+        config: yoga.YGConfigRef,
+        root: yoga.YGNodeRef = null,
+        list: yoga.YGNodeRef = null,
+        rows: u32 = 0,
+        leaves: [2003]Leaf = @splat(.{ .len = 12 }),
+        texts: [2003]yoga.YGNodeRef = undefined,
+        count: usize = 0,
+
+        fn node(s: *@This(), parent: yoga.YGNodeRef, index: u32) yoga.YGNodeRef {
+            const child = yoga.yogaNodeCreateWithConfig(s.config);
+            yoga.yogaNodeInsertChild(parent, child, index);
+            return child;
+        }
+
+        fn text(s: *@This(), parent: yoga.YGNodeRef, index: u32) !void {
+            s.texts[s.count] = s.node(parent, index);
+            try yoga.check(yoga.yogaNodeSetNativeMeasureFunc(s.texts[s.count], &s.leaves[s.count], &Leaf.measure, true));
+            yoga.yogaNodeStyleSetFloat(s.texts[s.count], @backingInt(yoga.YogaFloatKind.flex_grow), 1);
+            s.count += 1;
+        }
+
+        fn row(s: *@This(), box: bool) !void {
+            s.rows += 1;
+            if (!box) return s.text(s.list, s.rows - 1);
+            const r = s.node(s.list, s.rows - 1);
+            yoga.yogaNodeStyleSetFloat(r, @backingInt(yoga.YogaFloatKind.flex_shrink), 0);
+            yoga.yogaNodeStyleSetEnum(r, @backingInt(yoga.YogaEnumKind.flex_direction), @backingInt(yoga.YogaFlexDirection.row));
+            try s.text(r, 0);
+            try s.text(r, 1);
+        }
+    };
+    const config = yoga.yogaConfigCreate();
+    defer std.debug.assert(yoga.yogaConfigFree(config));
+    yoga.configSetRoundsPositionsFromAbsoluteEdges(config, 1);
+    defer yoga.testSetListMemo(1);
+    for ([_]u32{ 100, 1000 }) |size| {
+        var selects: [2]Select = @splat(.{ .config = config });
+        for (&selects) |*s| {
+            s.root = yoga.yogaNodeCreateWithConfig(config);
+            yoga.yogaNodeStyleSetEnum(s.root, @backingInt(yoga.YogaEnumKind.overflow), 2);
+            s.list = s.node(s.root, 0);
+            yoga.yogaNodeStyleSetFloat(s.list, @backingInt(yoga.YogaFloatKind.flex_shrink), 0);
+            yoga.yogaNodeStyleSetValue(s.list, @backingInt(yoga.YogaValueKind.min_height), 0, @backingInt(yoga.YogaUnit.percent), 100);
+            try yoga.check(yoga.yogaNodeStyleSetEnumChecked(s.list, @backingInt(yoga.YogaEnumKind.layout_mode), 1));
+            for (0..size) |_| try s.row(true);
+        }
+        defer for (selects) |s| yoga.yogaNodeFreeRecursive(s.root);
+        for (0..4) |change| {
+            var visits: [2]u32 = undefined;
+            for (&selects, &visits, [_]u32{ 1, 0 }) |*s, *out, memo| {
+                switch (change) {
+                    0 => {},
+                    1 => {
+                        s.leaves[0].len = 13;
+                        yoga.yogaNodeInvalidateMeasure(s.texts[0]);
+                    },
+                    2 => try s.row(false),
+                    else => try s.row(true),
+                }
+                yoga.testSetListMemo(memo);
+                _ = yoga.testTakeListVisits();
+                yoga.yogaNodeCalculateLayout(s.root, 80, 30, @backingInt(yoga.YogaDirection.ltr));
+                out.* = yoga.testTakeListVisits();
+            }
+            try expectSameLaidOut(selects[0].root, selects[1].root);
+            if (change == 0) continue;
+            try std.testing.expectEqual(0, visits[1] % selects[1].rows);
+            try std.testing.expectEqual(visits[1] / selects[1].rows, visits[0]);
+        }
+    }
+}
+
+// D6 PR 1b, carbon's review trees: a baseline parent reads a list row that a measure pass at
+// another width measured (probe5, and R5-E through a column wrapper), and a row moves back to the
+// index of a removed entry (R5-C); a copied list style, a clean static row's absolute child, and
+// a forgotten measurement. Each lays out as a fresh tree with the memo off.
+test "Yoga list layout keeps the review trees of its row memo" {
+    const config = yoga.yogaConfigCreate();
+    defer std.debug.assert(yoga.yogaConfigFree(config));
+    yoga.configSetRoundsPositionsFromAbsoluteEdges(config, 1);
+    defer yoga.testSetListMemo(1);
+    const point = @backingInt(yoga.YogaUnit.point);
+    const Probe = struct {
+        outer: yoga.YGNodeRef = null,
+        texts: [2]yoga.YGNodeRef = undefined,
+        leaves: [2]Leaf = .{ .{ .len = 240 }, .{ .len = 10 } },
+
+        fn node(config_: yoga.YGConfigRef, parent: yoga.YGNodeRef, index: u32) yoga.YGNodeRef {
+            const child = yoga.yogaNodeCreateWithConfig(config_);
+            if (parent != null) yoga.yogaNodeInsertChild(parent, child, index);
+            return child;
+        }
+
+        fn build(p: *@This(), config_: yoga.YGConfigRef, wrap: bool) !void {
+            p.outer = node(config_, null, 0);
+            const row = node(config_, p.outer, 0);
+            const tall = node(config_, p.outer, 1);
+            const sib = node(config_, row, 0);
+            const half = node(config_, row, 1);
+            const list = if (wrap) node(config_, half, 0) else half;
+            yoga.yogaNodeStyleSetEnum(row, @backingInt(yoga.YogaEnumKind.flex_direction), @backingInt(yoga.YogaFlexDirection.row));
+            yoga.yogaNodeStyleSetEnum(row, @backingInt(yoga.YogaEnumKind.align_items), 5);
+            for ([_]yoga.YGNodeRef{ row, tall }) |n| yoga.yogaNodeStyleSetFloat(n, @backingInt(yoga.YogaFloatKind.flex_shrink), 1);
+            yoga.yogaNodeStyleSetValue(tall, @backingInt(yoga.YogaValueKind.height), 0, point, 9);
+            yoga.yogaNodeStyleSetValue(sib, @backingInt(yoga.YogaValueKind.width), 0, point, 80);
+            yoga.yogaNodeStyleSetValue(sib, @backingInt(yoga.YogaValueKind.height), 0, point, 1);
+            yoga.yogaNodeStyleSetValue(sib, @backingInt(yoga.YogaValueKind.margin), 1, point, 2);
+            yoga.yogaNodeStyleSetValue(half, @backingInt(yoga.YogaValueKind.width), 0, @backingInt(yoga.YogaUnit.percent), 50);
+            try yoga.check(yoga.yogaNodeStyleSetEnumChecked(list, @backingInt(yoga.YogaEnumKind.layout_mode), 1));
+            for (&p.texts, &p.leaves, 0..) |*text, *leaf, i| {
+                text.* = node(config_, list, @intCast(i));
+                try yoga.check(yoga.yogaNodeSetNativeMeasureFunc(text.*, leaf, &Leaf.measure, true));
+            }
+        }
+
+        fn solve(p: *@This(), width: f32, height: f32) void {
+            yoga.yogaNodeStyleSetValue(p.outer, @backingInt(yoga.YogaValueKind.width), 0, @backingInt(yoga.YogaUnit.point), width);
+            yoga.yogaNodeStyleSetValue(p.outer, @backingInt(yoga.YogaValueKind.height), 0, @backingInt(yoga.YogaUnit.point), height);
+            yoga.yogaNodeCalculateLayout(p.outer, std.math.nan(f32), std.math.nan(f32), @backingInt(yoga.YogaDirection.ltr));
+        }
+    };
+    for ([_]bool{ false, true }) |wrap| {
+        var live: Probe = .{};
+        try live.build(config, wrap);
+        defer yoga.yogaNodeFreeRecursive(live.outer);
+        live.solve(120, 10);
+        live.solve(40, 100);
+        live.leaves[1].len = 12;
+        yoga.yogaNodeInvalidateMeasure(live.texts[1]);
+        live.solve(120, 10);
+        var fresh: Probe = .{};
+        fresh.leaves[1].len = 12;
+        try fresh.build(config, wrap);
+        defer yoga.yogaNodeFreeRecursive(fresh.outer);
+        yoga.testSetListMemo(0);
+        fresh.solve(120, 10);
+        yoga.testSetListMemo(1);
+        try expectSameLaidOut(live.outer, fresh.outer);
+    }
+    // R5-C: [r0, r1] solved, r0 moved out and solved, then moved back to index 0.
+    const root = yoga.yogaNodeCreateWithConfig(config);
+    defer yoga.yogaNodeFreeRecursive(root);
+    const list = Probe.node(config, root, 0);
+    try yoga.check(yoga.yogaNodeStyleSetEnumChecked(list, @backingInt(yoga.YogaEnumKind.layout_mode), 1));
+    var rows: [2]yoga.YGNodeRef = undefined;
+    for (&rows, 0..) |*row, i| {
+        row.* = Probe.node(config, list, @intCast(i));
+        yoga.yogaNodeStyleSetValue(row.*, @backingInt(yoga.YogaValueKind.height), 0, point, 10);
+    }
+    yoga.yogaNodeCalculateLayout(root, 20, std.math.nan(f32), @backingInt(yoga.YogaDirection.ltr));
+    for ([_]yoga.YGNodeRef{ root, list }, [_]u32{ 1, 0 }) |parent, index| {
+        try yoga.check(yoga.yogaNodeMoveChildChecked(parent, rows[0], index));
+        yoga.yogaNodeCalculateLayout(root, 20, std.math.nan(f32), @backingInt(yoga.YogaDirection.ltr));
+    }
+    var layout: yoga.ExternalYogaLayout = undefined;
+    yoga.yogaNodeGetComputedLayout(rows[1], &layout);
+    try std.testing.expectEqual(10, layout.top);
+    // A copied style centers the clean rows.
+    const centered = yoga.yogaNodeCreateWithConfig(config);
+    defer yoga.yogaNodeFree(centered);
+    yoga.yogaNodeStyleSetEnum(centered, @backingInt(yoga.YogaEnumKind.align_items), 2);
+    try yoga.check(yoga.yogaNodeCopyStyleChecked(list, centered));
+    yoga.yogaNodeCalculateLayout(root, 20, std.math.nan(f32), @backingInt(yoga.YogaDirection.ltr));
+    yoga.yogaNodeGetComputedLayout(rows[1], &layout);
+    try std.testing.expectEqual(10, layout.left);
+    // STEP 11 places a clean static row's absolute child against the list, which a text grows.
+    var roots: [2]yoga.YGNodeRef = undefined;
+    var texts: [2]Leaf = .{ .{ .len = 10 }, .{ .len = 30 } };
+    for (&roots, &texts, [_]u32{ 1, 0 }) |*out, *text, memo| {
+        out.* = yoga.yogaNodeCreateWithConfig(config);
+        const static_list = Probe.node(config, out.*, 0);
+        try yoga.check(yoga.yogaNodeStyleSetEnumChecked(static_list, @backingInt(yoga.YogaEnumKind.layout_mode), 1));
+        const leaf = Probe.node(config, static_list, 0);
+        try yoga.check(yoga.yogaNodeSetNativeMeasureFunc(leaf, text, &Leaf.measure, true));
+        const static = Probe.node(config, static_list, 1);
+        yoga.yogaNodeStyleSetEnum(static, @backingInt(yoga.YogaEnumKind.position_type), @backingInt(yoga.YogaPositionType.static));
+        const absolute = Probe.node(config, static, 0);
+        yoga.yogaNodeStyleSetEnum(absolute, @backingInt(yoga.YogaEnumKind.position_type), @backingInt(yoga.YogaPositionType.absolute));
+        yoga.yogaNodeStyleSetValue(absolute, @backingInt(yoga.YogaValueKind.position), 1, @backingInt(yoga.YogaUnit.percent), 50);
+        yoga.testSetListMemo(memo);
+        yoga.yogaNodeCalculateLayout(out.*, 20, std.math.nan(f32), @backingInt(yoga.YogaDirection.ltr));
+        if (memo == 0) continue;
+        text.len = 30;
+        yoga.yogaNodeInvalidateMeasure(leaf);
+        yoga.yogaNodeCalculateLayout(out.*, 20, std.math.nan(f32), @backingInt(yoga.YogaDirection.ltr));
+    }
+    defer for (roots) |r| yoga.yogaNodeFreeRecursive(r);
+    try expectSameLaidOut(roots[0], roots[1]);
+    // A forgotten measurement of a leaf in a box row dirties nothing; the next frame's solve,
+    // here for the root's margin, measures the leaf again.
+    var forget_roots: [2]yoga.YGNodeRef = undefined;
+    var forget_texts: [2]Leaf = .{ .{ .len = 10 }, .{ .len = 30 } };
+    for (&forget_roots, &forget_texts, [_]u32{ 1, 0 }) |*out, *text, memo| {
+        out.* = yoga.yogaNodeCreateWithConfig(config);
+        const forget_list = Probe.node(config, out.*, 0);
+        try yoga.check(yoga.yogaNodeStyleSetEnumChecked(forget_list, @backingInt(yoga.YogaEnumKind.layout_mode), 1));
+        const leaf = Probe.node(config, Probe.node(config, forget_list, 0), 0);
+        try yoga.check(yoga.yogaNodeSetNativeMeasureFunc(leaf, text, &Leaf.measure, true));
+        _ = Probe.node(config, forget_list, 1);
+        if (memo == 0) yoga.yogaNodeStyleSetValue(out.*, @backingInt(yoga.YogaValueKind.margin), 3, point, 1);
+        yoga.testSetListMemo(memo);
+        yoga.yogaNodeCalculateLayout(out.*, 20, std.math.nan(f32), @backingInt(yoga.YogaDirection.ltr));
+        if (memo == 0) continue;
+        text.len = 30;
+        yoga.yogaNodeForgetMeasurements(leaf);
+        yoga.yogaNodeStyleSetValue(out.*, @backingInt(yoga.YogaValueKind.margin), 3, point, 1);
+        yoga.yogaNodeCalculateLayout(out.*, 20, std.math.nan(f32), @backingInt(yoga.YogaDirection.ltr));
+    }
+    defer for (forget_roots) |r| yoga.yogaNodeFreeRecursive(r);
+    try expectSameLaidOut(forget_roots[0], forget_roots[1]);
 }
 
 // Equal layouts; `all` adds right, bottom, and the edges, which flex itself keeps from an earlier
