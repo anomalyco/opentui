@@ -1119,8 +1119,18 @@ impl Markdown {
         self.clone()
     }
 
+    /// A copy of the content. [`Self::with_markdown`] reads it without one.
     pub fn markdown(&self) -> String {
         self.0.source.borrow().clone()
+    }
+
+    /// Reads the content without copying it, for example to check whether streamed text extends what is shown.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `read` changes the content of this widget through [`Self::set_markdown`] or [`Self::append`].
+    pub fn with_markdown<R>(&self, read: impl FnOnce(&str) -> R) -> R {
+        read(&self.0.source.borrow())
     }
 
     pub fn colors(&self, colors: MarkdownColors) -> Self {
