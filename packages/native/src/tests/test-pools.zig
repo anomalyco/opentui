@@ -58,7 +58,7 @@ pub const LinkSpec = struct {
     pub const Pool = link.LinkPool;
     pub const Tracker = link.LinkTracker;
     pub const bytes_max = link.MAX_URL_LENGTH;
-    pub const too_long = error.UrlTooLong;
+    pub const too_long = error.InvalidUrl;
     pub const lengths = [_]usize{ 1, 20, 100, 511, 512 };
     pub const invalid_ids = [_]u32{link.SLOT_MASK};
     // LinkPool.get still resolves a released ID; Context.getLinkUrl rejects it.

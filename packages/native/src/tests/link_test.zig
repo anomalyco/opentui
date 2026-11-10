@@ -107,7 +107,45 @@ test "LinkTracker - checked URL membership is idempotent and rejects reference s
     try std.testing.expectEqual(@as(u32, 0), other.getLinkCount());
     try std.testing.expectEqual(id, try tracker.trackUrl(url));
     try std.testing.expectEqual(std.math.maxInt(u32), try pool.getRefcount(id));
-    try std.testing.expectError(error.UrlTooLong, tracker.trackUrl(utils.repeat(u8, "x", link.MAX_URL_LENGTH + 1)));
+}
+
+test "LinkPool - acquire takes only targets that OSC 8 can carry as is" {
+    var pool = LinkPool.init(std.testing.allocator);
+    defer pool.deinit();
+    const longest = utils.repeat(u8, "x", link.MAX_URL_LENGTH);
+    const rows = [_]struct { []const u8, bool }{
+        .{ "https://example.com/caf\u{e9}", true },
+        // U+20AC is E2 82 AC and U+0141 is C5 81: continuation bytes in 0x80-0x9F.
+        .{ "https://example.com/\u{20ac}", true },
+        .{ "https://pl.wikipedia.org/wiki/\u{141}\u{f3}d\u{17a}", true },
+        .{ "a\u{a0}", true },
+        .{ longest, true },
+        .{ longest ++ "x", false },
+        .{ "", false },
+        .{ "https://example.com/a\x1b]52;c;cHduZWQ=\x07", false },
+        .{ "a\x00", false },
+        .{ "a\x1f", false },
+        .{ "a\x7f", false },
+        .{ "a\u{80}", false },
+        .{ "a\u{9b}", false },
+        .{ "a\u{9f}", false },
+        // Not UTF-8: a lone C1 byte, which some terminals read as CSI, and a cut sequence.
+        .{ "a\x9b", false },
+        .{ "a\xc2", false },
+    };
+    for (rows) |row| {
+        const url, const writable = row;
+        errdefer std.debug.print("target {any}\n", .{url[0..@min(url.len, 48)]});
+        if (pool.acquire(url)) |id| {
+            try std.testing.expect(writable);
+            try std.testing.expectEqualStrings(url, try pool.get(id));
+            try pool.decref(id);
+        } else |err| {
+            try std.testing.expect(!writable);
+            try std.testing.expectEqual(error.InvalidUrl, err);
+        }
+    }
+    try std.testing.expectEqual(@as(u64, 0), pool.getLiveSlotCount());
 }
 
 test "LinkTracker - checked URL membership rolls back insertion failures" {

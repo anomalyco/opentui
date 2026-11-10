@@ -4369,7 +4369,7 @@ test "Scene styled text ABI validates optional links and preserves rejected repl
     linked.flags = c.OT_SCENE_TEXT_LINK;
     linked.link_offset = 1;
     linked.link_byte_count = 3;
-    var urls = [_]u8{ '_', 0xff, 0, 0x1b };
+    var urls = [_]u8{ '_', 'a', 0xc3, 0xa9 };
     const text = (try owner.raw().getRenderable(node)).scene_node.?.text.?;
     const kept = text.buffer.run_styles.keys()[0];
     const epoch = text.buffer.getContentEpoch();
@@ -4421,15 +4421,18 @@ test "Scene styled text ABI validates optional links and preserves rejected repl
     const frame = try owner.scenePaint(session, .{ 0, 0, 0, 255 }, false, 0);
     const target = (try owner.raw().getSessionRenderer(session)).getNextBuffer();
     const link_id = @import("ansi.zig").TextAttributes.getLinkId(target.get(0, 0).?.attributes);
-    try std.testing.expectEqualStrings("\xff\x00\x1b", try owner.links.get(link_id));
+    try std.testing.expectEqualStrings("a\xc3\xa9", try owner.links.get(link_id));
     try std.testing.expectEqual(link_id, @import("ansi.zig").TextAttributes.getLinkId(target.get(3, 0).?.attributes));
     try std.testing.expectEqual(@as(u32, 2), try owner.links.getRefcount(link_id));
-    unlinked.flags = c.OT_SCENE_TEXT_FOREGROUND;
+    // A URL with a control character keeps the chunk's text and style but makes no link.
+    unlinked.flags = c.OT_SCENE_TEXT_FOREGROUND | c.OT_SCENE_TEXT_LINK;
     unlinked.foreground = .{ 255, 0, 0, 255 };
-    try std.testing.expectEqual(c.OT_OK, ot_scene_set_styled_text(handle, &id, "bare", 4, &.{unlinked}, 1, null, 0));
+    unlinked.link_byte_count = 4;
+    try std.testing.expectEqual(c.OT_OK, ot_scene_set_styled_text(handle, &id, "bare", 4, &.{unlinked}, 1, "a\x1b]8", 4));
     try owner.sceneFrameCancel(session, frame.frame_id);
     const unlinked_frame = try owner.scenePaint(session, .{ 0, 0, 0, 255 }, false, 0);
     try std.testing.expectEqual(@as(u32, 0), @import("ansi.zig").TextAttributes.getLinkId(target.get(0, 0).?.attributes));
+    try std.testing.expectEqual(@as(u32, 'b'), target.get(0, 0).?.char);
     try std.testing.expectEqualDeep(unlinked.foreground, target.get(0, 0).?.fg);
     try std.testing.expectEqual(@as(u64, 0), owner.links.getLiveSlotCount());
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_styled_text(handle, &id, null, 0, null, 0, null, 0));

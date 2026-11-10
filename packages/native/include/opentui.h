@@ -991,7 +991,8 @@ ot_status ot_scene_set_text(ot_context *, const ot_handle *node, const uint8_t *
  * Each array may be NULL only when its count is zero. link_offset and
  * link_byte_count select bytes in urls; without LINK both must be zero. URLs are
  * copied raw metadata, not parsed or normalized. Empty URLs, URLs over 512 bytes,
- * and chunks with zero independently measured width produce no link. Oversized
+ * URLs that are not UTF-8 or hold a C0, DEL or C1 control, and chunks with zero
+ * independently measured width produce no link; their text stays. Oversized
  * URLs are not truncated. URLs and their references are prepared before publication;
  * rejection preserves accepted text, styles, and links. urls may be NULL only
  * when url_byte_count is zero. Link IDs stay local to the owning Context. */
