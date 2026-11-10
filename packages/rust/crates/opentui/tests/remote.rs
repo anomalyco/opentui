@@ -385,18 +385,18 @@ fn widgets_measure_text_with_the_width_method_a_reply_switches_to() {
     use opentui::split::{Scrollback, SnapshotOptions};
     use opentui::widget::{LineNumbers, LineSign, WrapMode};
     let zwj = "👩\u{200d}💻";
-    // An environment variable, the replies and keys, the text, whether the emulator clusters graphemes, the method
-    // native draws with, the text's cells under it, the link snapshot, and the screen rows to check. Native draws NoZwj
-    // as Unicode but the emulator splits the emoji, so only the method's row and the cursor show the app's measurement.
+    // An environment variable, the replies and keys, the text, the method native draws with, the text's cells under it,
+    // the link snapshot, and the screen rows to check. Native draws NoZwj as Unicode but the emulator splits the emoji,
+    // so only the method's row and the cursor show the app's measurement.
     // Only Ghostty's reply turns hyperlinks on; "l" updates the link before anything else reads the terminal state.
     let ghostty = &b"\x1b[?2027;2$y\x1bP>|ghostty 1.3.0\x1b\\lw"[..];
     let cases = [
-        (("TERM", "xterm-256color"), &b"\x1b[?2027;0$yw"[..], zwj, false, "Wcwidth", 4, "go (https://a.b)", 0..5),
-        (("TERM_PROGRAM", "vscode"), b"\x1b[?2027;2$yw", zwj, true, "Unicode", 2, "go", 0..5),
-        (("TERM", "xterm-256color"), ghostty, "বাংলা", true, "UnicodeWide", 4, "go!", 0..5),
-        (("OPENTUI_FORCE_NOZWJ", "1"), b"w", zwj, true, "Unicode", 2, "go (https://a.b)", 2..3),
+        (("TERM", "xterm-256color"), &b"\x1b[?2027;0$yw"[..], zwj, "Wcwidth", 4, "go (https://a.b)", 0..5),
+        (("TERM_PROGRAM", "vscode"), b"\x1b[?2027;2$yw", zwj, "Unicode", 2, "go", 0..5),
+        (("TERM", "xterm-256color"), ghostty, "বাংলা", "UnicodeWide", 4, "go!", 0..5),
+        (("OPENTUI_FORCE_NOZWJ", "1"), b"w", zwj, "Unicode", 2, "go (https://a.b)", 2..3),
     ];
-    for (variable, input, text, clusters, method, cells, link, checked) in cases {
+    for (variable, input, text, method, cells, link, checked) in cases {
         let environment = vec![("TERM".into(), "xterm-256color".into()), (variable.0.into(), variable.1.into())];
         let options = RemoteOptions { width: 48, height: 5, environment };
         let mut client = Client::start(options, quiet(), move |app| {
@@ -450,8 +450,7 @@ fn widgets_measure_text_with_the_width_method_a_reply_switches_to() {
         client.send(b"i");
         client.wait_for("yz");
         let host = opentui::testing::TestApp::new(48, 5);
-        let output = if clusters { client.text() } else { client.text().replace("\x1b[?2027h", "") };
-        let screen = TerminalView::new(&host).size(48, 5).write(output).screen();
+        let screen = TerminalView::new(&host).size(48, 5).write(client.text()).screen();
         // A 6-cell snapshot wraps "cd" after a 4-cell text.
         let (pad, shot) = (" ".repeat(6 - cells as usize), if cells == 4 { "ab/cd" } else { "abcd" });
         let shots = vec![format!("{text}{shot}"); 3].join(" ");

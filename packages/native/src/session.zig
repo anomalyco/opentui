@@ -1588,6 +1588,7 @@ pub const Session = struct {
                 state.modify_other_keys = true;
                 state.bracketed_paste = true;
                 state.focus_tracking = true;
+                state.unicode = true;
             }
         }
         if (self.output.closed and self.isDrained()) self.state = .closed;

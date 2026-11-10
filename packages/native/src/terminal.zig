@@ -353,8 +353,12 @@ pub fn resetOutputModes(self: *Terminal, tty: anytype) !void {
         try self.setColorSchemeUpdates(tty, false);
     }
 
-    // The DECRPM reply describes the terminal before setup: one that had mode 2027 set keeps it.
-    if (self.state.unicode and self.mode_2027 != 1) try tty.writeAll(ansi.ANSI.unicodeReset);
+    // The DECRPM reply describes the terminal before setup. Put a mode it can change (not 3 or 4,
+    // permanent) back as it was: set for 1, reset otherwise.
+    const before = self.mode_2027 == 1;
+    if ((self.mode_2027 orelse 0) < 3 and self.state.unicode != before) {
+        try tty.writeAll(if (before) ansi.ANSI.unicodeSet else ansi.ANSI.unicodeReset);
+    }
     self.state.unicode = false;
 
     try ansi.ANSI.setTerminalTitleOutput(tty, "");

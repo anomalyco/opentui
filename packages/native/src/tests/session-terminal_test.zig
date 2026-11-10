@@ -681,7 +681,7 @@ test "Session late close restores the modes that dropped output changed" {
         var bytes: [32 * 1024]u8 = undefined;
         try f.owner.setupSessionTerminal(f.id, .{ .kitty_keyboard_flags = 5, .use_alternate_screen = case != .alt_dropped });
         var len = (try f.driveOutput(&now_ns, .active, &bytes, 256)).len;
-        const kitty_reply: session.Control = .{ .capability_response = "\x1b[?0u" };
+        const kitty_reply: session.Control = .{ .capability_response = "\x1b[?0u\x1b[?2027;0$y" };
         if (case != .kitty_switch) {
             try f.value.control(kitty_reply);
             len += (try f.drain(bytes[len..])).len;
