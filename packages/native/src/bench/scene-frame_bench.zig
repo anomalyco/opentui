@@ -22,7 +22,7 @@ const options: scene.FrameOptions = .{
 pub const Shape = enum { ui, boxes, scroll, wrapped_scroll, scroll_node, select, select_node };
 
 /// A frame kind: what changes before the frame.
-pub const Change = enum { unchanged, glyph, background, scroll, append, update_hook, paint_hook, reply_text, row_text };
+pub const Change = enum { unchanged, glyph, background, scroll, append, update_hook, paint_hook, reply_text, row_text, append_box, grow_last };
 
 /// One Session with a built scene and the nodes its frame kinds change.
 pub const Scene = struct {
@@ -34,6 +34,8 @@ pub const Scene = struct {
     /// The scroll content, the scroll node, or the root.
     content: context.Handle,
     scroll_node: bool = false,
+    /// The last select row's title.
+    last: context.Handle,
     next_num: u32,
     frames: u32 = 0,
 
@@ -45,7 +47,7 @@ pub const Scene = struct {
         const id = try owner.createSession(.{ .chunk_size = 64 * 1024, .chunk_count = 16, .span_capacity = 16 });
         try owner.attachSessionRenderer(id, width, height, .{ .remote_mode = .remote });
         const root = try owner.sceneCreateNode(id, c.OT_SCENE_ROOT, 1);
-        var self: Scene = .{ .owner = owner, .id = id, .root = root, .target = root, .content = root, .next_num = 2 };
+        var self: Scene = .{ .owner = owner, .id = id, .root = root, .target = root, .content = root, .last = root, .next_num = 2 };
         switch (shape) {
             .ui => try self.buildUi(),
             .boxes => try self.buildBoxes(size),
@@ -171,14 +173,18 @@ pub const Scene = struct {
             try self.owner.sceneSetViewport(self.content, viewport);
         }
         for (0..size) |index| {
-            const row = try self.node(c.OT_SCENE_BOX, self.content);
-            try self.float(row, c.OT_STYLE_FLOAT_FLEX_SHRINK, 0);
-            try self.owner.sceneSetStyle(row, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_FLEX_DIRECTION, 0, 0, c.OT_FLEX_DIRECTION_ROW, 0);
-            const title = try self.text(row, "session title");
-            try self.float(title, c.OT_STYLE_FLOAT_FLEX_GROW, 1);
-            _ = try self.text(row, "2 days ago");
-            if (index == 10) self.target = title;
+            try self.addSelectRow();
+            if (index == 10) self.target = self.last;
         }
+    }
+
+    fn addSelectRow(self: *Scene) !void {
+        const row = try self.node(c.OT_SCENE_BOX, self.content);
+        try self.float(row, c.OT_STYLE_FLOAT_FLEX_SHRINK, 0);
+        try self.owner.sceneSetStyle(row, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_FLEX_DIRECTION, 0, 0, c.OT_FLEX_DIRECTION_ROW, 0);
+        self.last = try self.text(row, "session title");
+        try self.float(self.last, c.OT_STYLE_FLOAT_FLEX_GROW, 1);
+        _ = try self.text(row, "2 days ago");
     }
 
     /// Lays out the scroll content's rows as a list.
@@ -208,6 +214,14 @@ pub const Scene = struct {
             } else try self.owner.scenePatchPaint(self.content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = if (odd) -1 else 0 }),
             .append => try self.addRow(0),
             .row_text => try self.owner.sceneSetText(self.target, if (odd) "session title A" else "session title B"),
+            .append_box => try self.addSelectRow(),
+            // The last title gets one more line each frame, as a streaming message does.
+            .grow_last => {
+                var bytes: [16 * 1024]u8 = undefined;
+                const lines = @min(self.frames, bytes.len / 3);
+                for (0..lines) |line| @memcpy(bytes[3 * line ..][0..3], "ab\n");
+                try self.owner.sceneSetText(self.last, bytes[0 .. 3 * lines - 1]);
+            },
             .update_hook, .paint_hook, .reply_text => if (self.frames == 2) {
                 const flags: u32 = if (change == .paint_hook) c.OT_SCENE_HOOK_RENDER_AFTER else c.OT_SCENE_HOOK_UPDATE;
                 try self.owner.sceneSetHooks(self.target, flags, 1, 1, 1);
@@ -260,6 +274,8 @@ const scenarios = [_]Scenario{
     .{ .name = "scroll-1000 append list", .shape = .scroll, .size = 1000, .change = .append, .list = true },
     .{ .name = "scroll-node-1000 append list", .shape = .scroll_node, .size = 1000, .change = .append, .list = true },
     .{ .name = "scroll-10000 append list", .shape = .scroll, .size = 10_000, .change = .append, .list = true },
+    .{ .name = "select-1000 append row list", .shape = .select, .size = 1000, .change = .append_box, .list = true },
+    .{ .name = "select-1000 grow last list", .shape = .select, .size = 1000, .change = .grow_last, .list = true },
 };
 
 const SAMPLES: usize = 40;

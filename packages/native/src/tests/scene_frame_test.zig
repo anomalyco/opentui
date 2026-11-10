@@ -2570,9 +2570,10 @@ test "Scene frame bench scenes pin each frame kind's work at small sizes" {
         // that pixel-grid rounding visits: those the solve laid out (here the path, every row,
         // and the changed row's two texts), not the whole tree.
         .{ .shape = .select, .size = 100, .change = .row_text, .work = .{ 203, 154, 4, 203, 1, 26, 0, 0, 216, 5, 200, 200, 1, 1, 0, 0, 1, 1, 203, 0, 59, 105 } },
-        // The same frames with the rows laid out as a list (D6): the same frame work.
-        .{ .shape = .select, .size = 100, .change = .row_text, .work = .{ 203, 154, 4, 203, 1, 26, 0, 0, 216, 5, 200, 200, 1, 1, 0, 0, 1, 1, 203, 0, 59, 105 }, .list = true },
-        .{ .shape = .scroll_node, .size = 100, .change = .append, .work = .{ 105, 54, 4, 107, 1, 18, 0, 0, 216, 52, 9950, 10000, 50, 50, 0, 0, 1, 50, 105, 52, 58, 107 }, .list = true },
+        // The same frames with the rows laid out as a list (D6): the same frame work, but
+        // rounding visits only the changed row's subtree and the path to it.
+        .{ .shape = .select, .size = 100, .change = .row_text, .work = .{ 203, 154, 4, 203, 1, 26, 0, 0, 216, 5, 200, 200, 1, 1, 0, 0, 1, 1, 203, 0, 59, 6 }, .list = true },
+        .{ .shape = .scroll_node, .size = 100, .change = .append, .work = .{ 105, 54, 4, 107, 1, 18, 0, 0, 216, 52, 9950, 10000, 50, 50, 0, 0, 1, 50, 105, 52, 58, 6 }, .list = true },
     };
     for (rows) |row| {
         var target = try bench.Scene.init(testing.allocator, testing.io, row.shape, row.size);

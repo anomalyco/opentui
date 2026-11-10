@@ -75,6 +75,10 @@ uint32_t otYogaTestContentsChildCount(YGNodeConstRef node) OT_YOGA_NOEXCEPT;
 void otYogaTestLogMessage(YGConfigConstRef config, const char* message) OT_YOGA_NOEXCEPT;
 // Returns the nodes that absolute-edge rounding visited since the last call.
 uint32_t otYogaTestTakeRoundedNodes(void) OT_YOGA_NOEXCEPT;
+// Returns the rows that list layouts visited since the last call.
+uint32_t otYogaTestTakeListVisits(void) OT_YOGA_NOEXCEPT;
+// The list row memo: 0 off, 1 on, 2 on and aborting on a reuse that differs from a visit.
+void otYogaTestSetListMemo(uint32_t mode) OT_YOGA_NOEXCEPT;
 typedef struct {
   uint32_t mode, last_mode;
   float available, last_available, computed, margin;
