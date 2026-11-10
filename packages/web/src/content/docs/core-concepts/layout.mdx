@@ -170,7 +170,7 @@ Use absolute positioning for overlays and fixed geometry. Use flex flow for ordi
 
 `layoutMode: "list"` lays out a long column of rows, such as a log or a transcript, without a flex pass over every row. When one row changes, or a row is appended at the end, the other rows are not laid out again. Set it on [ScrollBox](/docs/components/scrollbox) content with `contentOptions: { layoutMode: "list" }`.
 
-A list lays out its rows as a flex column with `overflow: "scroll"` does: the list's height does not cap its rows, so a percent height inside an auto-height row resolves against no height. A list also differs from that column in these rules:
+Apart from the rules below, a list lays out like a flex column with `overflow: "scroll"`. So the list's height does not cap its rows, and a percent height inside an auto-height row resolves against no height.
 
 | Property                                                                          | In a list                                                       |
 | --------------------------------------------------------------------------------- | --------------------------------------------------------------- |
