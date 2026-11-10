@@ -83,6 +83,7 @@ OpenTUI bundles parsers for JavaScript and JSX, TypeScript and TSX, Markdown and
 - [ASCIIFont](/docs/components/ascii-font) draws short text with bundled ASCII art fonts. Choose Text for labels and prose.
 - [FrameBuffer](/docs/components/frame-buffer) exposes direct cell drawing. Choose Image when you only need to display an image source.
 - [Image](/docs/components/image) displays encoded images or a `NativeImage`. Use the [`NativeImage` API](/docs/reference/native-image) to decode or transform pixels.
+- [Video](/docs/components/video) plays an MP4 file. Decoding, timing, and audio stay native.
 - [QR code](/docs/components/qr-code) displays text as a scannable symbol. Use the [QR encoder](/docs/reference/qr-encoder) for matrices and serialized output.
 - [Embedded terminal](/docs/components/embedded-terminal) parses VT output and draws a child terminal. It does not start a process.
 
@@ -91,6 +92,7 @@ OpenTUI bundles parsers for JavaScript and JSX, TypeScript and TSX, Markdown and
 | ASCIIFont         | `@opentui/core`   | `ASCIIFontRenderable`        | `<ascii-font>` (automatic)                             | `<ascii_font>` (automatic)                             | Built in                 |
 | FrameBuffer       | `@opentui/core`   | `FrameBufferRenderable`      | Unavailable                                            | Unavailable                                            | Advanced                 |
 | Image             | `@opentui/core`   | `ImageRenderable`            | `<image>` (automatic)                                  | `<image>` (automatic)                                  | Built in                 |
+| Video             | `@opentui/core`   | `VideoRenderable`            | `<video>` (automatic)                                  | `<video>` (automatic)                                  | Built in                 |
 | QR code           | `@opentui/qrcode` | `QRCodeRenderable`           | Register `@opentui/qrcode/react`, then use `<qr-code>` | Register `@opentui/qrcode/solid`, then use `<qr_code>` | Separately registered    |
 | Embedded terminal | `@opentui/core`   | `EmbeddedTerminalRenderable` | Unavailable                                            | Unavailable                                            | Built-in Core renderable |
 

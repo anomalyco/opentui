@@ -1,0 +1,172 @@
+base 0.8.0
++ @opentui/core: class VideoRenderable extends Renderable
++ @opentui/core: constructor VideoRenderable(ctx: RenderContext, options: VideoRenderableOptions)
++ @opentui/core: enum-member CliRenderEvents.FRAME_DROPPED = "frame:dropped"
++ @opentui/core: enum-member NativeStatus.VideoFailed = -60
++ @opentui/core: function checkCrop(crop: ExtractOptions, width?: number, height?: number): ExtractOptions
++ @opentui/core: function sameCrop(a: ExtractOptions | undefined, b: ExtractOptions | undefined): boolean
++ @opentui/core: interface CliRendererFrameDroppedEvent
++ @opentui/core: interface NativeVideoInfo
++ @opentui/core: interface NativeVideoState
++ @opentui/core: interface VideoMetadata
++ @opentui/core: interface VideoRenderableOptions extends RenderableOptions<VideoRenderable>
++ @opentui/core: method FFIRenderLib.sceneSetCrop(context: NativeContextHandle, node: SceneNodeHandle, crop: ExtractOptions | undefined): void
++ @opentui/core: method FFIRenderLib.sceneSetVideo(context: NativeContextHandle, node: SceneNodeHandle, fit: "fit" | "cover" | "fill", buffer: ContextBufferHandle | null): void
++ @opentui/core: method FFIRenderLib.sessionDropOutput(context: NativeContextHandle, session: SessionHandle): void
++ @opentui/core: method FFIRenderLib.sessionPostStdout(context: NativeContextHandle, session: SessionHandle, maxBytes: number, wait: boolean): { written: number; inFlight: boolean; }
++ @opentui/core: method FFIRenderLib.videoCall(context: NativeContextHandle, node: SceneNodeHandle, operation: "ot_video_play" | "ot_video_pause"): void
++ @opentui/core: method FFIRenderLib.videoGetError(context: NativeContextHandle, node: SceneNodeHandle): string
++ @opentui/core: method FFIRenderLib.videoGetState(context: NativeContextHandle, node: SceneNodeHandle): NativeVideoState
++ @opentui/core: method FFIRenderLib.videoOpen(context: NativeContextHandle, node: SceneNodeHandle, path: string, audio: boolean): NativeVideoInfo
++ @opentui/core: method FFIRenderLib.videoSeek(context: NativeContextHandle, node: SceneNodeHandle, timeUs: bigint): void
++ @opentui/core: method FFIRenderLib.videoSetAvSyncOffset(context: NativeContextHandle, node: SceneNodeHandle, offsetUs: bigint): void
++ @opentui/core: method FFIRenderLib.videoSetLoop(context: NativeContextHandle, node: SceneNodeHandle, loop: boolean): void
++ @opentui/core: method FFIRenderLib.videoSetMaxFps(context: NativeContextHandle, node: SceneNodeHandle, fps: number): void
++ @opentui/core: method FFIRenderLib.videoSetMuted(context: NativeContextHandle, node: SceneNodeHandle, muted: boolean): void
++ @opentui/core: method FFIRenderLib.videoSetVolume(context: NativeContextHandle, node: SceneNodeHandle, volume: number): void
++ @opentui/core: protected method VideoRenderable.createFrameBuffer(): void
++ @opentui/core: protected method VideoRenderable.destroySelf(): void
++ @opentui/core: method VideoRenderable.pause(): void
++ @opentui/core: method VideoRenderable.play(): void
++ @opentui/core: protected method VideoRenderable.renderSelf(_buffer: OptimizedBuffer): void
++ @opentui/core: method VideoRenderable.resume(): void
++ @opentui/core: method VideoRenderable.seek(time: number): void
++ @opentui/core: method VideoRenderable.seekBy(delta: number): void
++ @opentui/core: method VideoRenderable.seekToMs(milliseconds: number): void
++ @opentui/core: method VideoRenderable.toggle(): void
++ @opentui/core: property CliRendererFrameDroppedEvent.bytes: number
++ @opentui/core: property CliRendererFrameDroppedEvent.limit: number
++ @opentui/core: property ImageRenderable.crop: ExtractOptions | undefined
++ @opentui/core: property ImageRenderableOptions.crop?: ExtractOptions
++ @opentui/core: readonly property NativeSession.open: boolean
++ @opentui/core: property NativeSessionRendererState.droppedFrameBytes: number
++ @opentui/core: property NativeSessionRendererState.droppedFrames: number
++ @opentui/core: property NativeSessionRendererState.imageUploadsPending: number
++ @opentui/core: property NativeVideoInfo.durationUs: bigint
++ @opentui/core: property NativeVideoInfo.fpsDen: number
++ @opentui/core: property NativeVideoInfo.fpsNum: number
++ @opentui/core: property NativeVideoInfo.hasAudio: boolean
++ @opentui/core: property NativeVideoInfo.height: number
++ @opentui/core: property NativeVideoInfo.width: number
++ @opentui/core: property NativeVideoState.audio: boolean
++ @opentui/core: property NativeVideoState.buffering: boolean
++ @opentui/core: property NativeVideoState.currentTimeUs: bigint
++ @opentui/core: property NativeVideoState.ended: boolean
++ @opentui/core: property NativeVideoState.failed: boolean
++ @opentui/core: property NativeVideoState.framePtsUs: bigint
++ @opentui/core: property NativeVideoState.hasFrame: boolean
++ @opentui/core: property NativeVideoState.playing: boolean
++ @opentui/core: property NativeVideoState.qualityTier: number
++ @opentui/core: property VideoMetadata.duration: number
++ @opentui/core: property VideoMetadata.fps: number
++ @opentui/core: property VideoMetadata.hasAudio: boolean
++ @opentui/core: property VideoMetadata.height: number
++ @opentui/core: property VideoMetadata.width: number
++ @opentui/core: property VideoRenderable.audio: boolean
++ @opentui/core: property VideoRenderable.autoplay: boolean
++ @opentui/core: property VideoRenderable.avSyncOffsetMs: number
++ @opentui/core: property VideoRenderable.crop: ExtractOptions | undefined
++ @opentui/core: property VideoRenderable.currentTime: number
++ @opentui/core: readonly property VideoRenderable.currentTimeMs: number
++ @opentui/core: readonly property VideoRenderable.duration: number
++ @opentui/core: readonly property VideoRenderable.durationMs: number
++ @opentui/core: readonly property VideoRenderable.ended: boolean
++ @opentui/core: property VideoRenderable.fit: ImageFit
++ @opentui/core: property VideoRenderable.loop: boolean
++ @opentui/core: property VideoRenderable.maxFps: number
++ @opentui/core: property VideoRenderable.muted: boolean
++ @opentui/core: static readonly property VideoRenderable.nativeIntegration: NativeRenderableIntegration
++ @opentui/core: property VideoRenderable.onEnd?: () => void
++ @opentui/core: property VideoRenderable.onError?: (error: Error) => void
++ @opentui/core: property VideoRenderable.onPause?: () => void
++ @opentui/core: property VideoRenderable.onPlay?: () => void
++ @opentui/core: property VideoRenderable.onReady?: (metadata: VideoMetadata) => void
++ @opentui/core: property VideoRenderable.onSeek?: (time: number) => void
++ @opentui/core: property VideoRenderable.onTimeUpdate?: (time: number) => void
++ @opentui/core: readonly property VideoRenderable.paused: boolean
++ @opentui/core: readonly property VideoRenderable.playing: boolean
++ @opentui/core: readonly property VideoRenderable.qualityTier: number
++ @opentui/core: readonly property VideoRenderable.ready: boolean
++ @opentui/core: property VideoRenderable.source: string | undefined
++ @opentui/core: readonly property VideoRenderable.videoMetadata: Readonly<VideoMetadata> | null
++ @opentui/core: property VideoRenderable.volume: number
++ @opentui/core: property VideoRenderableOptions.audio?: boolean
++ @opentui/core: property VideoRenderableOptions.autoplay?: boolean
++ @opentui/core: property VideoRenderableOptions.avSyncOffsetMs?: number
++ @opentui/core: property VideoRenderableOptions.crop?: ExtractOptions
++ @opentui/core: property VideoRenderableOptions.fit?: ImageFit
++ @opentui/core: property VideoRenderableOptions.loop?: boolean
++ @opentui/core: property VideoRenderableOptions.maxFps?: number
++ @opentui/core: property VideoRenderableOptions.muted?: boolean
++ @opentui/core: property VideoRenderableOptions.onEnd?: () => void
++ @opentui/core: property VideoRenderableOptions.onError?: (error: Error) => void
++ @opentui/core: property VideoRenderableOptions.onPause?: () => void
++ @opentui/core: property VideoRenderableOptions.onPlay?: () => void
++ @opentui/core: property VideoRenderableOptions.onReady?: (metadata: VideoMetadata) => void
++ @opentui/core: property VideoRenderableOptions.onSeek?: (time: number) => void
++ @opentui/core: property VideoRenderableOptions.onTimeUpdate?: (time: number) => void
++ @opentui/core: property VideoRenderableOptions.source?: string
++ @opentui/core: property VideoRenderableOptions.volume?: number
+- @opentui/core: type NativeBufferDraw = { operation: "clear"; background?: RGBA; } | (BufferDrawPosition & { operation: "fill"; width?: number; height?: number; background?: RGBA; }) | (BufferDrawPosition & BufferDrawColors & { operation: "text"; text?: string; attributes?: number; }) | (BufferDrawPosition & BufferDrawColors & { operation: "cell" | "cellBlend" | "char"; char?: number; attributes?: number; }) | (BufferDrawPosition & BufferDrawColors & { operation: "box"; width?: number; height?: number; titleColor?: RGBA; packedOptions?: number; borderChars?: Uint32Array; text?: string; bottomTitle?: string; }) | (BufferDrawPosition & { operation: "compose"; source: ContextBufferHandle; sourceX?: number; sourceY?: number; sourceWidth?: number; sourceHeight?: number; }) | { operation: "respectAlpha"; enabled: boolean; }
++ @opentui/core: type NativeBufferDraw = { operation: "clear"; background?: RGBA; } | (BufferDrawPosition & { operation: "fill"; width?: number; height?: number; background?: RGBA; }) | (BufferDrawPosition & BufferDrawColors & { operation: "text"; text?: string; attributes?: number; maxWidth?: number; ellipsis?: boolean; }) | (BufferDrawPosition & BufferDrawColors & { operation: "cell" | "cellBlend" | "char"; char?: number; attributes?: number; }) | (BufferDrawPosition & BufferDrawColors & { operation: "box"; width?: number; height?: number; titleColor?: RGBA; packedOptions?: number; borderChars?: Uint32Array; text?: string; bottomTitle?: string; }) | (BufferDrawPosition & { operation: "compose"; source: ContextBufferHandle; sourceX?: number; sourceY?: number; sourceWidth?: number; sourceHeight?: number; }) | { operation: "respectAlpha"; enabled: boolean; }
++ @opentui/keymap: property KeymapExtensionContext.layers: Pick<LayerService<TTarget, TEvent>, "createSlot" | "replaceLayer">
++ @opentui/react/jsx-dev-runtime: property JSX.IntrinsicElements.video: VideoProps
++ @opentui/react/jsx-runtime: property JSX.IntrinsicElements.video: VideoProps
+- @opentui/react: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; code: typeof CodeRenderable; diff: typeof DiffRenderable; markdown: typeof MarkdownRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; textarea: typeof TextareaRenderable; scrollbox: typeof ScrollBoxRenderable; "ascii-font": typeof ASCIIFontRenderable; "tab-select": typeof TabSelectRenderable; "line-number": typeof LineNumberRenderable; image: typeof ImageRenderable; span: typeof SpanRenderable; br: typeof LineBreakRenderable; b: typeof BoldSpanRenderable; strong: typeof BoldSpanRenderable; i: typeof ItalicSpanRenderable; em: typeof ItalicSpanRenderable; u: typeof UnderlineSpanRenderable; a: typeof LinkRenderable; }
++ @opentui/react: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; code: typeof CodeRenderable; diff: typeof DiffRenderable; markdown: typeof MarkdownRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; textarea: typeof TextareaRenderable; scrollbox: typeof ScrollBoxRenderable; "ascii-font": typeof ASCIIFontRenderable; "tab-select": typeof TabSelectRenderable; "line-number": typeof LineNumberRenderable; image: typeof ImageRenderable; video: typeof VideoRenderable; span: typeof SpanRenderable; br: typeof LineBreakRenderable; b: typeof BoldSpanRenderable; strong: typeof BoldSpanRenderable; i: typeof ItalicSpanRenderable; em: typeof ItalicSpanRenderable; u: typeof UnderlineSpanRenderable; a: typeof LinkRenderable; }
+- @opentui/react: type GetNonStyledProperties<TConstructor> = TConstructor extends RenderableConstructor<TextRenderable> ? NonStyledProps | "content" : TConstructor extends RenderableConstructor<BoxRenderable> ? NonStyledProps | "title" | "bottomTitle" : TConstructor extends RenderableConstructor<ASCIIFontRenderable> ? NonStyledProps | "text" | "selectable" : TConstructor extends RenderableConstructor<InputRenderable> ? NonStyledProps | "placeholder" | "value" : TConstructor extends RenderableConstructor<TextareaRenderable> ? NonStyledProps | "placeholder" | "initialValue" : TConstructor extends RenderableConstructor<CodeRenderable> ? NonStyledProps | "content" | "filetype" | "syntaxStyle" | "treeSitterClient" | "conceal" | "drawUnstyledText" : TConstructor extends RenderableConstructor<MarkdownRenderable> ? NonStyledProps | "content" | "syntaxStyle" | "treeSitterClient" | "conceal" | "renderNode" : TConstructor extends RenderableConstructor<ImageRenderable> ? NonStyledProps | "source" : NonStyledProps
++ @opentui/react: type GetNonStyledProperties<TConstructor> = TConstructor extends RenderableConstructor<TextRenderable> ? NonStyledProps | "content" : TConstructor extends RenderableConstructor<BoxRenderable> ? NonStyledProps | "title" | "bottomTitle" : TConstructor extends RenderableConstructor<ASCIIFontRenderable> ? NonStyledProps | "text" | "selectable" : TConstructor extends RenderableConstructor<InputRenderable> ? NonStyledProps | "placeholder" | "value" : TConstructor extends RenderableConstructor<TextareaRenderable> ? NonStyledProps | "placeholder" | "initialValue" : TConstructor extends RenderableConstructor<CodeRenderable> ? NonStyledProps | "content" | "filetype" | "syntaxStyle" | "treeSitterClient" | "conceal" | "drawUnstyledText" : TConstructor extends RenderableConstructor<MarkdownRenderable> ? NonStyledProps | "content" | "syntaxStyle" | "treeSitterClient" | "conceal" | "renderNode" : TConstructor extends RenderableConstructor<ImageRenderable> ? NonStyledProps | "source" : TConstructor extends RenderableConstructor<VideoRenderable> ? NonStyledProps | "source" | "autoplay" | "loop" | "audio" | "muted" | "volume" | "avSyncOffsetMs" | "maxFps" : NonStyledProps
++ @opentui/react: type VideoProps = ComponentProps<VideoRenderableOptions, VideoRenderable>
++ @opentui/solid/jsx-dev-runtime: property JSX.IntrinsicElements.video: VideoProps
++ @opentui/solid/jsx-runtime: property JSX.IntrinsicElements.video: VideoProps
+- @opentui/solid: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; textarea: typeof TextareaRenderable; ascii_font: typeof ASCIIFontRenderable; tab_select: typeof TabSelectRenderable; scrollbox: typeof ScrollBoxRenderable; code: typeof CodeRenderable; diff: typeof DiffRenderable; line_number: typeof LineNumberRenderable; markdown: typeof MarkdownRenderable; image: typeof ImageRenderable; span: typeof SpanRenderable; strong: typeof BoldSpanRenderable; b: typeof BoldSpanRenderable; em: typeof ItalicSpanRenderable; i: typeof ItalicSpanRenderable; u: typeof UnderlineSpanRenderable; br: typeof LineBreakRenderable; a: typeof LinkRenderable; }
++ @opentui/solid: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; textarea: typeof TextareaRenderable; ascii_font: typeof ASCIIFontRenderable; tab_select: typeof TabSelectRenderable; scrollbox: typeof ScrollBoxRenderable; code: typeof CodeRenderable; diff: typeof DiffRenderable; line_number: typeof LineNumberRenderable; markdown: typeof MarkdownRenderable; image: typeof ImageRenderable; video: typeof VideoRenderable; span: typeof SpanRenderable; strong: typeof BoldSpanRenderable; b: typeof BoldSpanRenderable; em: typeof ItalicSpanRenderable; i: typeof ItalicSpanRenderable; u: typeof UnderlineSpanRenderable; br: typeof LineBreakRenderable; a: typeof LinkRenderable; }
++ @opentui/solid: property JSX.IntrinsicElements.video: VideoProps
+- @opentui/solid: type GetNonStyledProperties<TConstructor> = TConstructor extends RenderableConstructor<TextRenderable> ? NonStyledProps | "content" : TConstructor extends RenderableConstructor<BoxRenderable> ? NonStyledProps | "title" | "bottomTitle" : TConstructor extends RenderableConstructor<ASCIIFontRenderable> ? NonStyledProps | "text" | "selectable" : TConstructor extends RenderableConstructor<InputRenderable> ? NonStyledProps | "minLength" | "maxLength" | "placeholder" | "value" : TConstructor extends RenderableConstructor<CodeRenderable> ? NonStyledProps | "content" | "filetype" | "syntaxStyle" | "treeSitterClient" : TConstructor extends RenderableConstructor<MarkdownRenderable> ? NonStyledProps | "content" | "syntaxStyle" | "treeSitterClient" | "conceal" | "renderNode" : TConstructor extends RenderableConstructor<ImageRenderable> ? NonStyledProps | "source" : NonStyledProps
++ @opentui/solid: type GetNonStyledProperties<TConstructor> = TConstructor extends RenderableConstructor<TextRenderable> ? NonStyledProps | "content" : TConstructor extends RenderableConstructor<BoxRenderable> ? NonStyledProps | "title" | "bottomTitle" : TConstructor extends RenderableConstructor<ASCIIFontRenderable> ? NonStyledProps | "text" | "selectable" : TConstructor extends RenderableConstructor<InputRenderable> ? NonStyledProps | "minLength" | "maxLength" | "placeholder" | "value" : TConstructor extends RenderableConstructor<CodeRenderable> ? NonStyledProps | "content" | "filetype" | "syntaxStyle" | "treeSitterClient" : TConstructor extends RenderableConstructor<MarkdownRenderable> ? NonStyledProps | "content" | "syntaxStyle" | "treeSitterClient" | "conceal" | "renderNode" : TConstructor extends RenderableConstructor<ImageRenderable> ? NonStyledProps | "source" : TConstructor extends RenderableConstructor<VideoRenderable> ? NonStyledProps | "source" | "autoplay" | "loop" | "audio" | "muted" | "volume" | "avSyncOffsetMs" | "maxFps" : NonStyledProps
++ @opentui/solid: type VideoProps = ComponentProps<VideoRenderableOptions, VideoRenderable>
++ opentui.h: const OT_BUFFER_DRAW_FIT_ELLIPSIS = 16
++ opentui.h: const OT_SCENE_VIDEO = 9
++ opentui.h: const OT_STDOUT_IDLE = 0
++ opentui.h: const OT_STDOUT_IN_FLIGHT = 1
++ opentui.h: const OT_VIDEO_AUDIO = 8
++ opentui.h: const OT_VIDEO_BUFFERING = 4
++ opentui.h: const OT_VIDEO_ENDED = 2
++ opentui.h: const OT_VIDEO_ERROR = 32
++ opentui.h: const OT_VIDEO_FAILED = -60
++ opentui.h: const OT_VIDEO_HAS_FRAME = 16
++ opentui.h: const OT_VIDEO_OPEN_NO_AUDIO = 1
++ opentui.h: const OT_VIDEO_PLAYING = 1
++ opentui.h: field ot_buffer_draw_text_record.max_width: uint32_t, offset 44
++ opentui.h: field ot_session_renderer_state.dropped_frame_bytes: uint32_t, offset 36
++ opentui.h: field ot_session_renderer_state.dropped_frames: uint32_t, offset 32
++ opentui.h: field ot_session_renderer_state.image_uploads_pending: uint32_t, offset 28
+- opentui.h: field ot_session_renderer_state.reserved: uint32_t, offset 28
++ opentui.h: field ot_video_info.duration_us: int64_t, offset 0
++ opentui.h: field ot_video_info.fps_den: uint32_t, offset 20
++ opentui.h: field ot_video_info.fps_num: uint32_t, offset 16
++ opentui.h: field ot_video_info.has_audio: uint32_t, offset 24
++ opentui.h: field ot_video_info.height: uint32_t, offset 12
++ opentui.h: field ot_video_info.reserved: uint32_t, offset 28
++ opentui.h: field ot_video_info.width: uint32_t, offset 8
++ opentui.h: field ot_video_state.current_time_us: int64_t, offset 0
++ opentui.h: field ot_video_state.flags: uint32_t, offset 16
++ opentui.h: field ot_video_state.frame_pts_us: int64_t, offset 8
++ opentui.h: field ot_video_state.quality_tier: uint32_t, offset 20
++ opentui.h: function ot_scene_set_crop(ot_context *, const ot_handle *node, uint32_t left, uint32_t top, uint32_t width, uint32_t height): ot_status
++ opentui.h: function ot_scene_set_video(ot_context *, const ot_handle *node, uint32_t fit, const ot_handle *buffer): ot_status
++ opentui.h: function ot_session_drop_output(ot_context *context, const ot_handle *session): ot_status
++ opentui.h: function ot_session_post_stdout(ot_context *context, const ot_handle *session, uint32_t max_bytes, uint32_t wait, uint32_t *out_state, uint32_t *out_written): ot_status
++ opentui.h: function ot_video_get_error(ot_context *, const ot_handle *node, uint8_t *bytes, uint32_t capacity, uint32_t *out_count): ot_status
++ opentui.h: function ot_video_get_state(ot_context *, const ot_handle *node, ot_video_state *out_state): ot_status
++ opentui.h: function ot_video_open(ot_context *, const ot_handle *node, const uint8_t *path, uint32_t path_length, uint32_t flags, ot_video_info *out_info): ot_status
++ opentui.h: function ot_video_pause(ot_context *, const ot_handle *node): ot_status
++ opentui.h: function ot_video_play(ot_context *, const ot_handle *node): ot_status
++ opentui.h: function ot_video_seek(ot_context *, const ot_handle *node, int64_t time_us): ot_status
++ opentui.h: function ot_video_set_av_sync_offset(ot_context *, const ot_handle *node, int64_t offset_us): ot_status
++ opentui.h: function ot_video_set_loop(ot_context *, const ot_handle *node, uint32_t loop): ot_status
++ opentui.h: function ot_video_set_max_fps(ot_context *, const ot_handle *node, uint32_t fps): ot_status
++ opentui.h: function ot_video_set_muted(ot_context *, const ot_handle *node, uint32_t muted): ot_status
++ opentui.h: function ot_video_set_volume(ot_context *, const ot_handle *node, float volume): ot_status
++ opentui.h: struct ot_video_info
++ opentui.h: struct ot_video_state

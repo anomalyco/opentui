@@ -54,6 +54,25 @@ interface ReusableParserState {
   }
 }
 
+// web-tree-sitter ignores the #lua-match? predicates of nvim-treesitter queries, so they would match every node.
+// Rewrites one to #match? when its Lua pattern uses only what the bundled queries use: literals, an anchor at
+// either end, sets of literals and %d, "." (which also matches a newline in Lua), "*", and "+". Any other
+// pattern, or one RegExp rejects, keeps #lua-match? so the query still loads.
+function translateLuaMatch(query: string): string {
+  return query.replace(
+    /#(not-)?(any-)?lua-match\?(\s+@[\w.-]+\s+)"(\^?(?:(?:[\w/!:#.]|\[\^?(?:[\w*-]|%d)+\])[*+]?)*\$?)"/g,
+    (predicate, not = "", any = "", capture: string, pattern: string) => {
+      const source = pattern.replaceAll("%d", "0-9").replaceAll(".", "[^]")
+      try {
+        new RegExp(source)
+      } catch {
+        return predicate
+      }
+      return `#${any}${not}match?${capture}"${source}"`
+    },
+  )
+}
+
 class ParserWorker {
   private bufferParsers: Map<number, ParserState> = new Map()
   private filetypeParserOptions: Map<string, FiletypeParserOptions> = new Map()
@@ -81,7 +100,7 @@ class ParserWorker {
     if (!this.tsDataPath) {
       return ""
     }
-    return DownloadUtils.fetchHighlightQueries(sources, this.tsDataPath, filetype)
+    return translateLuaMatch(await DownloadUtils.fetchHighlightQueries(sources, this.tsDataPath, filetype))
   }
 
   async initialize({ dataPath, treeSitterWasmPath }: { dataPath: string; treeSitterWasmPath?: string }) {
@@ -579,6 +598,7 @@ class ParserWorker {
     }
 
     const changedRanges = parserState.tree.getChangedRanges(newTree)
+    parserState.tree.delete()
     parserState.tree = newTree
 
     const startQuery = performance.now()
@@ -792,6 +812,7 @@ class ParserWorker {
       return { error: "Failed to parse buffer during reset" }
     }
 
+    parserState.tree.delete()
     parserState.tree = newTree
     const matches = parserState.queries.highlights.captures(parserState.tree.rootNode)
 
@@ -939,7 +960,7 @@ if (isWorkerRuntime) {
   console.error = (...args) => logMessage("error", ...args)
   console.warn = (...args) => logMessage("warn", ...args)
 
-  setWorkerMessageHandler<TreeSitterWorkerRequest>(async (event: WorkerMessageEvent<TreeSitterWorkerRequest>) => {
+  const handleMessage = async (event: WorkerMessageEvent<TreeSitterWorkerRequest>) => {
     const message = event.data
     const messageType = String((event.data as { type?: unknown }).type ?? "unknown")
 
@@ -1097,5 +1118,16 @@ if (isWorkerRuntime) {
         postWorkerError(undefined, messageId, error)
       }
     }
+  }
+
+  // A buffer's messages run one at a time: a pass that awaits an injected grammar still reads the buffer's tree, so a
+  // later edit, reset or dispose must not delete it first. Other buffers and one-shot highlights do not wait.
+  const bufferQueues = new Map<number, Promise<void>>()
+  setWorkerMessageHandler<TreeSitterWorkerRequest>((event) => {
+    if (!("bufferId" in event.data)) return handleMessage(event)
+    const { bufferId } = event.data
+    const queued = (bufferQueues.get(bufferId) ?? Promise.resolve()).then(() => handleMessage(event))
+    bufferQueues.set(bufferId, queued)
+    void queued.then(() => bufferQueues.get(bufferId) === queued && bufferQueues.delete(bufferId))
   })
 }

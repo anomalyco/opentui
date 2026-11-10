@@ -2,7 +2,9 @@ name: Native Benchmark Smoke
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, "[0-9]+.[0-9]+.x"]
+    # Not a required check, so a Rust-only pull request can skip it.
+    paths-ignore: ["packages/rust/**"]
 
 permissions:
   contents: read
@@ -14,7 +16,6 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   BUN_VERSION: 1.4.1
-  ZIG_VERSION: 0.16.0
 
 jobs:
   bench-native-smoke:
@@ -26,23 +27,22 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      - name: Setup Zig
+        uses: ./.github/actions/setup-zig
+
+      - name: Restore Zig cache
+        uses: ./.github/actions/restore-zig-cache
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
+          kind: lib
+
+      - name: Restore Bun install cache
+        uses: ./.github/actions/restore-bun-cache
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
-          use-cache: false
-
-      - name: Restore Zig cache
-        uses: actions/cache@v5
-        with:
-          path: packages/native/.zig-cache
-          key: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-${{ github.run_id }}-${{ github.job }}
-          restore-keys: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-
 
       - name: Install dependencies
         run: bun install

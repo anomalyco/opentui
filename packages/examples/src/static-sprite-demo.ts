@@ -160,11 +160,11 @@ export function destroy(renderer: CliRenderer): void {
   }
 
   const main = renderer.root.getRenderable("main")
-  if (main) renderer.root.remove(main)
+  main?.destroyRecursively()
 
   if (parentContainer) {
     const staticSpriteContainer = renderer.root.getRenderable("static-sprite-container")
-    if (staticSpriteContainer) renderer.root.remove(staticSpriteContainer)
+    staticSpriteContainer?.destroyRecursively()
     parentContainer = null
   }
 

@@ -8,11 +8,8 @@ import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.
 const originalStdinLog = process.env.OTUI_STDIN_LOG
 
 afterEach(() => {
-  if (originalStdinLog === undefined) {
-    delete process.env.OTUI_STDIN_LOG
-  } else {
-    process.env.OTUI_STDIN_LOG = originalStdinLog
-  }
+  if (originalStdinLog === undefined) delete process.env.OTUI_STDIN_LOG
+  else process.env.OTUI_STDIN_LOG = originalStdinLog
   clearEnvCache()
 })
 

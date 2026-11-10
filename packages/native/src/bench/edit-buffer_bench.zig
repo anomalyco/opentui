@@ -1,4 +1,5 @@
 const std = @import("std");
+const TestPools = @import("../tests/test-pools.zig").TestPools;
 const bench_utils = @import("../bench-utils.zig");
 const edit_buffer = @import("../edit-buffer.zig");
 const gp = @import("../grapheme.zig");
@@ -15,13 +16,13 @@ fn benchInsertOperations(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     iterations: usize,
     show_mem: bool,
     bench_filter: ?[]const u8,
 ) ![]BenchResult {
     var results: std.ArrayList(BenchResult) = .empty;
     errdefer results.deinit(allocator);
-    const link_pool = link.initGlobalLinkPool(allocator);
 
     // Single-line insert at start
     {
@@ -113,13 +114,13 @@ fn benchDeleteOperations(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     iterations: usize,
     show_mem: bool,
     bench_filter: ?[]const u8,
 ) ![]BenchResult {
     var results: std.ArrayList(BenchResult) = .empty;
     errdefer results.deinit(allocator);
-    const link_pool = link.initGlobalLinkPool(allocator);
 
     // Single-line delete with backspace
     {
@@ -219,13 +220,13 @@ fn benchMixedOperations(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     iterations: usize,
     show_mem: bool,
     bench_filter: ?[]const u8,
 ) ![]BenchResult {
     var results: std.ArrayList(BenchResult) = .empty;
     errdefer results.deinit(allocator);
-    const link_pool = link.initGlobalLinkPool(allocator);
 
     // Simulated typing session
     {
@@ -286,13 +287,13 @@ fn benchWordBoundaryOperations(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     iterations: usize,
     show_mem: bool,
     bench_filter: ?[]const u8,
 ) ![]BenchResult {
     var results: std.ArrayList(BenchResult) = .empty;
     errdefer results.deinit(allocator);
-    const link_pool = link.initGlobalLinkPool(allocator);
 
     // Next word boundary navigation
     {
@@ -456,8 +457,8 @@ pub fn run(
     show_mem: bool,
     bench_filter: ?[]const u8,
 ) ![]BenchResult {
-    // Global pool and unicode data are initialized once in bench.zig
-    const pool = gp.initGlobalPool(allocator);
+    var pools = TestPools.init(allocator);
+    defer pools.deinit();
 
     var all_results: std.ArrayList(BenchResult) = .empty;
     errdefer all_results.deinit(allocator);
@@ -465,16 +466,16 @@ pub fn run(
     const iterations: usize = 5;
 
     // Run all benchmark categories and filter results
-    const insert_results = try benchInsertOperations(io, allocator, pool, iterations, show_mem, bench_filter);
+    const insert_results = try benchInsertOperations(io, allocator, &pools.graphemes, &pools.links, iterations, show_mem, bench_filter);
     try all_results.appendSlice(allocator, insert_results);
 
-    const delete_results = try benchDeleteOperations(io, allocator, pool, iterations, show_mem, bench_filter);
+    const delete_results = try benchDeleteOperations(io, allocator, &pools.graphemes, &pools.links, iterations, show_mem, bench_filter);
     try all_results.appendSlice(allocator, delete_results);
 
-    const mixed_results = try benchMixedOperations(io, allocator, pool, iterations, show_mem, bench_filter);
+    const mixed_results = try benchMixedOperations(io, allocator, &pools.graphemes, &pools.links, iterations, show_mem, bench_filter);
     try all_results.appendSlice(allocator, mixed_results);
 
-    const word_boundary_results = try benchWordBoundaryOperations(io, allocator, pool, iterations, show_mem, bench_filter);
+    const word_boundary_results = try benchWordBoundaryOperations(io, allocator, &pools.graphemes, &pools.links, iterations, show_mem, bench_filter);
     try all_results.appendSlice(allocator, word_boundary_results);
 
     return all_results.toOwnedSlice(allocator);

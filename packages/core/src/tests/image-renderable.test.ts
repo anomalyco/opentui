@@ -1,12 +1,13 @@
 import { createServer, type Server } from "node:http"
-import { readFile, rm } from "node:fs/promises"
-import { resolve } from "node:path"
+import { readFile } from "node:fs/promises"
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
-import { ImageLoadError, NativeImage, NativeImagePool } from "../image.js"
+import type { OptimizedBuffer } from "../buffer.js"
+import { ImageLoadError, NativeImage, NativeImagePool, type ExtractOptions } from "../image.js"
 import { createCliRenderer } from "../renderer.js"
-import { ImageRenderable, resolveImageRenderProtocol } from "../renderables/Image.js"
+import { ImageRenderable, resolveImageRenderProtocol, type ImageFit } from "../renderables/Image.js"
 import { TextRenderable } from "../renderables/Text.js"
+import { RGBA } from "../lib/RGBA.js"
 import { createTestRenderer, type TestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
 import { createTestStdin, TestWriteStream } from "../testing/test-streams.js"
 import { createTerminalCapabilities } from "../testing/terminal-capabilities.js"
@@ -110,6 +111,9 @@ describe("ImageRenderable image loading", () => {
     await renderable.loadPromise
     const image = renderable.image!
     try {
+      // The scene binds the decoded handle itself: no second native copy in the renderer's Context.
+      const { renderLib, context } = renderer.nativeScene.resourceContext
+      expect(image._getContextHandle(renderLib, context)).toBe(image.ptr)
       expect(renderable.loading).toBe(false)
       expect(renderable.loadError).toBeNull()
       expect(image.info().format).toBe("png")
@@ -174,12 +178,7 @@ describe("ImageRenderable image loading", () => {
     }
   })
 
-  test("dumps image cells with their fallback glyphs", async () => {
-    const timestamp = Date.now()
-    const dumpDirectory = resolve("buffer_dump")
-    const currentDump = resolve(dumpDirectory, `current_buffer_${timestamp}.txt`)
-    const nextDump = resolve(dumpDirectory, `next_buffer_${timestamp}.txt`)
-    const outputDump = resolve(dumpDirectory, `output_buffer_${timestamp}.txt`)
+  test("captures image cells with their fallback glyphs", async () => {
     const renderable = new ImageRenderable(renderer, {
       source: await readFile(new URL("rgba.png", FIXTURES)),
       protocol: "blocks",
@@ -192,15 +191,9 @@ describe("ImageRenderable image loading", () => {
     await setup.renderOnce()
 
     try {
-      const fallback = setup.captureCharFrame().match(/[^\s]/)?.[0]
-      expect(fallback).toBeDefined()
-
-      renderer.dumpBuffers(timestamp)
-
-      expect(await readFile(currentDump, "utf8")).toContain(fallback!)
-      expect(await readFile(outputDump, "utf8")).toContain(fallback!)
+      expect(setup.captureCharFrame().trim()).toBe("█")
+      expect(setup.captureSpans().lines[0].spans[0].text).toBe("█")
     } finally {
-      await Promise.all([currentDump, nextDump, outputDump].map((path) => rm(path, { force: true })))
       renderable.destroy()
     }
   })
@@ -254,6 +247,87 @@ describe("ImageRenderable image loading", () => {
     expect(reds[0]).toBeLessThan(reds[1])
   })
 
+  // A crop paints like the extracted region, with fit applied to it, in native and host paint. A crop
+  // that is not valid for the image reports through onError and the node paints the whole image.
+  class HostImage extends ImageRenderable {
+    protected renderSelf(buffer: OptimizedBuffer): void {
+      super.renderSelf(buffer)
+    }
+  }
+  test.each<[string, ExtractOptions, ImageFit, string]>([
+    ["full", { left: 0, top: 0, width: 4, height: 3 }, "fill", ""],
+    ["corner", { left: 3, top: 1, width: 1, height: 2 }, "fill", ""],
+    ["1x1", { left: 2, top: 0, width: 1, height: 1 }, "fill", ""],
+    ["odd sizes", { left: 1, top: 1, width: 3, height: 2 }, "fill", ""],
+    ["fit over", { left: 0, top: 0, width: 1, height: 3 }, "fit", ""],
+    ["cover over wide", { left: 1, top: 1, width: 3, height: 2 }, "cover", ""],
+    ["cover over tall", { left: 2, top: 1, width: 1, height: 2 }, "cover", ""],
+    ["out of bounds", { left: 2, top: 0, width: 3, height: 1 }, "fit", "outside the 4x3 source"],
+    ["zero size", { left: 0, top: 0, width: 0, height: 1 }, "fill", "positive u32 width"],
+    ["zero height", { left: 0, top: 0, width: 1, height: 0 }, "fill", "positive u32 width"],
+  ])("crop %s paints like the extracted region", async (_, crop, fit, error) => {
+    const red = Uint8Array.from({ length: 48 }, (_, index) => (index % 4 === 0 ? 20 + 5 * index : 255))
+    const image = NativeImage.fromRgba(red, 4, 3)
+    const paint = async (Image: typeof ImageRenderable, source: NativeImage, crop?: ExtractOptions) => {
+      const errors: unknown[] = []
+      const node = new Image(renderer, { source, crop, fit, protocol: "blocks", width: 4, height: 2 })
+      node.onError = (error) => errors.push(error)
+      const failed = (event: { error: Error }) => errors.push(event.error)
+      renderer.on("render:error", failed)
+      renderer.root.add(node)
+      await node.loadPromise
+      await setup.renderOnce()
+      const spans = setup.captureSpans()
+      renderer.off("render:error", failed)
+      node.destroy()
+      return { spans, errors: errors.map((reported) => (reported as Error).message.includes(error)), crop: node.crop }
+    }
+    try {
+      const region = error ? image : image.extract(crop)
+      const expected = await paint(ImageRenderable, region)
+      for (const Image of [ImageRenderable, HostImage]) {
+        expect(await paint(Image, image, crop)).toEqual({
+          spans: expected.spans,
+          errors: error ? [true] : [],
+          crop: error.includes("u32") ? undefined : crop,
+        })
+      }
+      if (region !== image) region.dispose()
+    } finally {
+      image.dispose()
+    }
+  })
+
+  test("a crop change applies to the loaded image and a rejected one keeps the previous crop", async () => {
+    const errors: unknown[] = []
+    const source = NativeImage.fromRgba(new Uint8Array(4 * 4 * 4), 4, 4)
+    const renderable = new ImageRenderable(renderer, { source, onError: (error) => errors.push(error) })
+    // The renderable retains the source; this reference must still be disposed.
+    source.dispose()
+    await renderable.loadPromise
+    renderable.crop = { left: 2, top: 0, width: 2, height: 1 }
+    expect(renderable.getFittedSize(4, 4, 1)).toEqual({ width: 4, height: 2 })
+    renderable.crop = { left: 3, top: 0, width: 2, height: 1 }
+    await Promise.resolve()
+    expect(errors).toHaveLength(1)
+    expect(renderable.crop).toEqual({ left: 2, top: 0, width: 2, height: 1 })
+    // A change of top or height alone is a change.
+    renderable.crop = { left: 2, top: 1, width: 2, height: 1 }
+    renderable.crop = { left: 2, top: 1, width: 2, height: 2 }
+    expect(renderable.crop).toEqual({ left: 2, top: 1, width: 2, height: 2 })
+    renderable.crop = null
+    expect(renderable.getFittedSize(4, 4, 1)).toEqual({ width: 4, height: 4 })
+    // A crop set while a larger source loads is checked against that source.
+    const larger = NativeImage.fromRgba(new Uint8Array(8 * 6 * 4), 8, 6)
+    renderable.source = larger
+    larger.dispose()
+    renderable.crop = { left: 4, top: 3, width: 4, height: 3 }
+    await renderable.loadPromise
+    expect(renderable.crop).toEqual({ left: 4, top: 3, width: 4, height: 3 })
+    expect(errors).toHaveLength(1)
+    renderable.destroy()
+  })
+
   test("clears a buffered image from rendered output when its source is cleared", async () => {
     const renderable = new ImageRenderable(renderer, {
       source: await readFile(new URL("rgba.png", FIXTURES)),
@@ -296,6 +370,33 @@ describe("ImageRenderable image loading", () => {
     expect(lines[0].slice(0, 4)).toBe("    ")
     expect(lines[1].slice(0, 4)).toBe("████")
     expect(lines[3].slice(0, 4)).toBe("    ")
+  })
+
+  test("draws buffered image hooks around the image in its own buffer", async () => {
+    const white = RGBA.fromInts(255, 255, 255)
+    const renderable = new ImageRenderable(renderer, {
+      source: await readFile(new URL("rgba.png", FIXTURES)),
+      buffered: true,
+      protocol: "blocks",
+      fit: "fill",
+      position: "absolute",
+      left: 1,
+      width: 4,
+      height: 2,
+      renderBefore(buffer) {
+        buffer.drawText("B", 0, 1, white)
+      },
+      renderAfter(buffer) {
+        buffer.drawText("XY", 0, 0, white)
+      },
+    })
+    renderer.root.add(renderable)
+    await renderable.loadPromise
+    await setup.renderOnce()
+
+    const lines = setup.captureCharFrame().split("\n")
+    expect(lines[0].slice(0, 5)).toBe(" XY██")
+    expect(lines[1].slice(0, 5)).toBe(" ████")
   })
 
   test("preserves lower content beneath a zero-opacity image", async () => {

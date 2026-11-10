@@ -41,7 +41,6 @@
     // "exclude" is applied after "include"
     // See: https://www.typescriptlang.org/tsconfig#exclude
     "scripts/build.ts",
-    "scripts/publish.ts",
     "scripts/preload.ts"
   ]
 }

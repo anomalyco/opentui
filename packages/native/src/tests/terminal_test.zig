@@ -28,6 +28,18 @@ test "parseXtversion - ghostty format" {
     try testing.expect(term.caps.hyperlinks);
 }
 
+test "parseXtversion - terminology format enables hyperlinks and osc777 notifications" {
+    var term = Terminal.init(.{});
+    const response = "\x1bP>|terminology 1.14.0\x1b\\";
+    term.processCapabilityResponse(response);
+
+    try testing.expectEqualStrings("terminology", term.getTerminalName());
+    try testing.expectEqualStrings("1.14.0", term.getTerminalVersion());
+    try testing.expect(term.term_info.from_xtversion);
+    try testing.expect(term.caps.hyperlinks);
+    try testing.expectEqual(Terminal.NotificationProtocol.osc777, term.notification_protocol);
+}
+
 test "parseXtversion - tmux format" {
     var term = Terminal.init(.{});
     const response = "\x1bP>|tmux 3.5a\x1b\\";
@@ -416,6 +428,36 @@ test "notifications - OSC99 query response enables OSC99 protocol" {
     try testing.expectEqual(Terminal.NotificationProtocol.osc99, term.notification_protocol);
 }
 
+test "program status - only an OSC 7501 query reply enables the capability" {
+    for ([_]struct { []const u8, bool }{
+        .{ "\x1b]7501;?\x1b\\", true },
+        .{ "\x1b]7501;?\x07", true },
+        .{ "\x1b]7501; ? : states=idle,working,done,blocked,error : kinds=permission,question,auth\x1b\\", true },
+        .{ "\x1b]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth\x1b\\", true },
+        .{ "\x1b]7501;state=idle\x1b\\", false },
+        .{ "\x1b]7501;??\x1b\\", false },
+        .{ "\x1b]7501;\x1b\\", false },
+        .{ "\x1b]75010;?\x1b\\", false },
+        .{ "\x1b]99;?\x1b\\", false },
+    }) |case| {
+        var term = Terminal.init(.{});
+        term.processCapabilityResponse(case[0]);
+        try testing.expectEqual(case[1], term.caps.program_status);
+    }
+}
+
+test "queryTerminalSend - foot skips OSC capability queries" {
+    var env = std.process.Environ.Map.init(testing.allocator);
+    defer env.deinit();
+    try env.put("TERM", "foot");
+    var term = Terminal.init(.{ .env_map = &env });
+    var writer = TestWriter.init(testing.allocator);
+    defer writer.deinit();
+    try term.queryTerminalSend(&writer);
+    try testing.expect(std.mem.find(u8, writer.getWritten(), ansi.ANSI.notificationQueries) == null);
+    try testing.expect(std.mem.find(u8, writer.getWritten(), ansi.ANSI.programStatusQuery) == null);
+}
+
 test "notifications - OSC99 query response ignores mismatched identifier" {
     var term = Terminal.init(.{ .remote_mode = .remote });
 
@@ -571,7 +613,7 @@ test "remote detection - auto mode detects mosh environment" {
     try testing.expect(term.caps.remote);
 }
 
-test "remote detection - auto mode ignores local capabilities after forwarded SSH marker" {
+test "remote detection - auto mode ignores forwarded terminal identity after SSH marker" {
     var term = Terminal.init(.{ .remote_mode = .auto });
     defer term.deinit();
 
@@ -582,9 +624,48 @@ test "remote detection - auto mode ignores local capabilities after forwarded SS
 
     try testing.expect(term.caps.remote);
     try testing.expectEqual(utf8.WidthMethod.unicode, term.caps.unicode);
-    try testing.expect(!term.caps.ansi256);
     try testing.expect(!term.caps.notifications);
     try testing.expectEqualStrings("", term.getTerminalName());
+}
+
+test "remote detection - TERM and COLORTERM set color depth in every remote mode" {
+    const cases = [_]struct { term: []const u8, colorterm: ?[]const u8 = null, force: ?[]const u8 = null, tmux: bool = false, ansi256: bool, rgb: bool }{
+        // GNU screen drops 24-bit colors by default, and an inherited COLORTERM describes the terminal outside it.
+        .{ .term = "screen-256color", .ansi256 = true, .rgb = false },
+        .{ .term = "screen", .ansi256 = true, .rgb = false },
+        .{ .term = "screen", .colorterm = "truecolor", .ansi256 = true, .rgb = false },
+        .{ .term = "screen", .colorterm = "24bit", .ansi256 = true, .rgb = false },
+        .{ .term = "screen", .colorterm = "truecolor", .force = "1", .ansi256 = true, .rgb = true },
+        .{ .term = "screen-256color", .colorterm = "truecolor", .tmux = true, .ansi256 = true, .rgb = true },
+        .{ .term = "xterm", .force = "true", .ansi256 = true, .rgb = true },
+        .{ .term = "xterm", .force = "yes", .ansi256 = false, .rgb = false },
+        .{ .term = "xterm-256color-italic", .colorterm = "yes", .ansi256 = true, .rgb = false },
+        .{ .term = "dumb", .colorterm = "256", .ansi256 = false, .rgb = false },
+        .{ .term = "", .colorterm = "", .ansi256 = false, .rgb = false },
+    };
+    // The authoritative env_map takes the full path in every mode; setHostEnvVar forwards one key at a time.
+    for ([_]Terminal.RemoteMode{ .local, .auto, .remote }) |mode| for ([_]bool{ false, true }) |forwarded| {
+        for (cases) |case| {
+            var env = std.process.Environ.Map.init(testing.allocator);
+            defer env.deinit();
+            try env.put("SSH_CONNECTION", "192.0.2.1 54231 192.0.2.2 22");
+            try env.put("TERM", case.term);
+            if (case.colorterm) |colorterm| try env.put("COLORTERM", colorterm);
+            if (case.force) |force| try env.put("OPENTUI_FORCE_TRUECOLOR", force);
+            if (case.tmux) try env.put("TMUX", "/tmp/tmux-1000/default,1,0");
+
+            var term = Terminal.init(.{ .remote_mode = mode, .env_map = if (forwarded) null else &env });
+            defer term.deinit();
+            if (forwarded) {
+                var entries = env.iterator();
+                while (entries.next()) |entry| try term.setHostEnvVar(testing.allocator, entry.key_ptr.*, entry.value_ptr.*);
+            }
+
+            try testing.expectEqual(mode != .local, term.caps.remote);
+            try testing.expectEqual(case.ansi256, term.caps.ansi256);
+            try testing.expectEqual(case.rgb, term.caps.rgb);
+        }
+    };
 }
 
 test "remote detection - explicit local mode ignores SSH environment" {
@@ -613,6 +694,31 @@ test "processCapabilityResponse captures startup cursor report before home probe
     try testing.expect(!term.startup_cursor_query_pending);
     try testing.expect(term.caps.explicit_width);
     try testing.expect(term.caps.scaled_text);
+}
+
+test "a DA1 reply ends startup cursor reports in sentinel mode and reports Sixel only for a graphics query" {
+    // Rows: sentinel, multiplexer variable, replies (one capability response each), explicit width, Sixel.
+    const rows = .{
+        .{ false, "", .{ "\x1b[?62;4c", "\x1b[7;11R", "\x1b[1;2R", "\x1b[1;3R" }, true, true },
+        .{ true, "", .{ "\x1b[7;11R", "\x1b[1;2R", "\x1b[1;3R", "\x1b[?62;4c" }, true, true },
+        .{ true, "", .{ "\x1b[7;11R\x1b[1;2R\x1b[1;3R\x1b[?62;4c", "", "", "" }, true, true },
+        .{ true, "", .{ "\x1b[7;11R", "\x1b[?62;4c", "\x1b[1;2R", "\x1b[1;3R" }, false, true },
+        .{ true, "TMUX", .{ "\x1b[7;11R", "\x1b[1;2R", "\x1b[1;3R", "\x1b[?62;4c" }, true, false },
+        .{ true, "STY", .{ "\x1b[7;11R", "\x1b[1;2R", "\x1b[1;3R", "\x1b[?62;4c" }, true, false },
+    };
+    inline for (rows) |row| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        if (row[1].len != 0) try env.put(row[1], "fixture");
+        var term = Terminal.init(.{ .env_map = &env });
+        term.reply_sentinel = row[0];
+        var writer = TestWriter.init(testing.allocator);
+        defer writer.deinit();
+        try term.queryTerminalSend(&writer);
+        inline for (row[2]) |reply| term.processCapabilityResponse(reply);
+        try testing.expectEqual(row[3], term.caps.explicit_width);
+        try testing.expectEqual(row[4], term.caps.sixel);
+    }
 }
 
 test "processCapabilityResponse only accepts exact ordered explicit width probe reports" {
@@ -734,50 +840,39 @@ test "setHostEnvVar applies env overrides in shared library mode" {
     try testing.expect(term.skip_graphics_query);
 }
 
-test "environment overrides - direct Windows Terminal hyperlinks do not require TERM" {
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("WT_SESSION", "test-session");
-
-    const term = Terminal.init(.{ .env_map = &env });
-
-    try testing.expect(term.caps.rgb);
-    try testing.expectEqual(builtin.os.tag == .windows, term.caps.hyperlinks);
-}
-
-test "environment overrides - enables hyperlinks for WSL Windows Terminal xterm" {
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("WSL_DISTRO_NAME", "Ubuntu");
-    try env.put("WT_SESSION", "test-session");
-    try env.put("TERM", "xterm-256color");
-
-    const term = Terminal.init(.{ .env_map = &env });
-
-    try testing.expect(term.caps.hyperlinks);
-}
-
-test "environment overrides - does not enable hyperlinks for WSL without WT_SESSION" {
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("WSL_DISTRO_NAME", "Ubuntu");
-    try env.put("TERM", "xterm-256color");
-
-    const term = Terminal.init(.{ .env_map = &env });
-
-    try testing.expect(!term.caps.hyperlinks);
-}
-
-test "environment overrides - does not enable hyperlinks for WSL non-xterm terms" {
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("WSL_INTEROP", "/run/WSL/123_interop");
-    try env.put("WT_SESSION", "test-session");
-    try env.put("TERM", "screen-256color");
-
-    const term = Terminal.init(.{ .env_map = &env });
-
-    try testing.expect(!term.caps.hyperlinks);
+// WT_SESSION names Windows Terminal at the endpoint on every host OS: locally, in WSL, or forwarded to an
+// explicit remote session. A multiplexer, a non-xterm TERM, or an old VTE sits between, and auto mode ignores a
+// forwarded one. Its 24-bit color holds outside GNU screen, which drops 24-bit colors unless forced.
+test "environment overrides - WT_SESSION enables hyperlinks and rgb for Windows Terminal" {
+    const Row = struct { env: []const u8, mode: Terminal.RemoteMode = .local, hyperlinks: bool, rgb: bool };
+    const rows = [_]Row{
+        .{ .env = "WT_SESSION=1", .hyperlinks = true, .rgb = true },
+        .{ .env = "WT_SESSION=1 TERM=", .hyperlinks = true, .rgb = true },
+        .{ .env = "WT_SESSION=1 TERM=xterm-256color WSL_DISTRO_NAME=Ubuntu", .hyperlinks = true, .rgb = true },
+        .{ .env = "TERM=xterm-256color WSL_DISTRO_NAME=Ubuntu", .hyperlinks = false, .rgb = false },
+        .{ .env = "WT_SESSION=1 TERM=screen-256color WSL_INTEROP=/run/WSL/1_interop", .hyperlinks = false, .rgb = false },
+        .{ .env = "WT_SESSION=1 TERM=screen", .mode = .remote, .hyperlinks = false, .rgb = false },
+        .{ .env = "WT_SESSION=1 TERM=xterm-256color STY=1.pts-0.host", .hyperlinks = false, .rgb = false },
+        .{ .env = "WT_SESSION=1 TERM=xterm-256color STY=1.pts-0.host TMUX=/tmp/tmux-1000/default,1,0", .hyperlinks = false, .rgb = false },
+        .{ .env = "WT_SESSION=1 TERM=screen-256color STY=1.pts-0.host OPENTUI_FORCE_TRUECOLOR=1", .hyperlinks = false, .rgb = true },
+        .{ .env = "WT_SESSION=1 TERM=xterm-256color WSL_DISTRO_NAME=Ubuntu ZELLIJ=0", .hyperlinks = false, .rgb = true },
+        .{ .env = "WT_SESSION=1 TERM=xterm-256color VTE_VERSION=5000", .hyperlinks = false, .rgb = true },
+        .{ .env = "WT_SESSION=1 TERM=xterm-256color SSH_CONNECTION=1", .mode = .auto, .hyperlinks = false, .rgb = false },
+        .{ .env = "WT_SESSION=1 TERM=xterm-256color", .mode = .remote, .hyperlinks = true, .rgb = true },
+        .{ .env = "WT_SESSION=1", .mode = .remote, .hyperlinks = true, .rgb = true },
+        .{ .env = "WT_SESSION=1 TERM=rxvt-unicode-256color", .mode = .remote, .hyperlinks = false, .rgb = true },
+        .{ .env = "WT_SESSION=1 TERM=xterm-256color TMUX=/tmp/tmux-1000/default,1,0", .mode = .remote, .hyperlinks = false, .rgb = true },
+    };
+    for (rows, 0..) |row, index| {
+        errdefer std.debug.print("WT_SESSION row {d}\n", .{index});
+        var env = std.process.Environ.Map.init(testing.allocator);
+        try putEnv(&env, row.env);
+        var term = Terminal.init(.{ .remote_mode = row.mode });
+        term.adoptHostEnvironment(env);
+        defer term.deinit();
+        try testing.expectEqual(row.hyperlinks, term.caps.hyperlinks);
+        try testing.expectEqual(row.rgb, term.caps.rgb);
+    }
 }
 
 test "environment overrides - foot hyperlinks require a direct terminal" {
@@ -833,51 +928,111 @@ test "environment overrides - rgb does not imply hyperlinks after recheck for un
     try testing.expect(!term.caps.hyperlinks);
 }
 
-test "environment overrides - rgb does not imply hyperlinks after recheck for inherited Windows Terminal screen" {
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("WSL_INTEROP", "/run/WSL/123_interop");
-    try env.put("WT_SESSION", "test-session");
-    try env.put("TERM", "screen");
-
-    var term = Terminal.init(.{ .env_map = &env });
+test "environment overrides - STY forwarded after WT_SESSION revokes rgb and hyperlinks" {
+    var term = Terminal.init(.{});
     defer term.deinit();
 
-    try testing.expect(term.caps.rgb);
-    try testing.expect(!term.caps.hyperlinks);
-
-    try term.setHostEnvVar(testing.allocator, "TERM", "screen");
+    try term.setHostEnvVar(testing.allocator, "TERM", "xterm-256color");
+    try term.setHostEnvVar(testing.allocator, "WT_SESSION", "test-session");
 
     try testing.expect(term.caps.rgb);
-    try testing.expect(!term.caps.hyperlinks);
-}
+    try testing.expect(term.caps.hyperlinks);
 
-test "setHostEnvVar detects ansi256 separately from rgb" {
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("TERM", "screen-256color");
+    try term.setHostEnvVar(testing.allocator, "STY", "1234.pts-0.host");
 
-    var term = Terminal.init(.{ .env_map = &env });
-    defer term.deinit();
-
-    try testing.expect(term.caps.ansi256);
     try testing.expect(!term.caps.rgb);
-
-    try term.setHostEnvVar(testing.allocator, "COLORTERM", "truecolor");
-    try testing.expect(term.caps.rgb);
-    try testing.expect(term.caps.ansi256);
+    try testing.expect(!term.caps.hyperlinks);
 }
 
-test "environment overrides - WT_SESSION enables rgb and ansi256" {
+test "environment overrides - TERM_PROGRAM and VTE_VERSION enable hyperlinks for OSC 8 terminals" {
+    const cases = [_]struct { key: []const u8, value: []const u8, hyperlinks: bool }{
+        .{ .key = "TERM_PROGRAM", .value = "vscode", .hyperlinks = true },
+        .{ .key = "TERM_PROGRAM", .value = "zed", .hyperlinks = true },
+        .{ .key = "TERM_PROGRAM", .value = "mintty", .hyperlinks = true },
+        .{ .key = "TERM_PROGRAM", .value = "Apple_Terminal", .hyperlinks = false },
+        .{ .key = "VTE_VERSION", .value = "5202", .hyperlinks = true },
+        .{ .key = "VTE_VERSION", .value = "5201", .hyperlinks = false },
+        .{ .key = "VTE_VERSION", .value = "invalid", .hyperlinks = false },
+    };
+    for (cases) |case| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        try env.put("TERM", "xterm-256color");
+        try env.put(case.key, case.value);
+
+        const term = Terminal.init(.{ .env_map = &env });
+        try testing.expectEqual(case.hyperlinks, term.caps.hyperlinks);
+    }
+}
+
+test "environment overrides - TERM_PROGRAM and WT_SESSION hyperlinks require a direct terminal" {
+    const multiplexers = [_]struct {
+        key: []const u8,
+        value: []const u8,
+        kind: Terminal.Multiplexer,
+    }{
+        .{ .key = "STY", .value = "1234.session", .kind = .screen },
+        .{ .key = "TMUX", .value = "/tmp/tmux-1000/default,1,0", .kind = .tmux },
+        .{ .key = "ZELLIJ", .value = "0", .kind = .zellij },
+    };
+
+    for ([_][2][]const u8{ .{ "TERM_PROGRAM", "vscode" }, .{ "WT_SESSION", "1" } }) |host| for (multiplexers) |multiplexer| {
+        var term = Terminal.init(.{});
+        defer term.deinit();
+
+        try term.setHostEnvVar(testing.allocator, host[0], host[1]);
+        try testing.expect(term.caps.hyperlinks);
+
+        try term.setHostEnvVar(testing.allocator, multiplexer.key, multiplexer.value);
+        try testing.expectEqual(multiplexer.kind, term.multiplexer);
+        try testing.expect(!term.caps.hyperlinks);
+    };
+}
+
+test "environment overrides - Rex hyperlinks match exact TERM and XTVersion names" {
+    const cases = [_]struct { term: []const u8, reply: ?[]const u8 = null, hyperlinks: bool }{
+        .{ .term = "xterm-256color", .reply = "\x1bP>|rex 0.0.1793047680-g2db882\x1b\\", .hyperlinks = true },
+        .{ .term = "xterm-rex", .hyperlinks = true },
+        .{ .term = "ReX", .hyperlinks = true },
+        .{ .term = "xterm-rex-extra", .hyperlinks = false },
+    };
+    for (cases) |case| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        try env.put("TERM", case.term);
+
+        var term = Terminal.init(.{ .env_map = &env });
+        if (case.reply) |reply| {
+            term.processCapabilityResponse(reply);
+            term.checkEnvironmentOverrides();
+        }
+        try testing.expectEqual(case.hyperlinks, term.caps.hyperlinks);
+    }
+}
+
+test "environment overrides - FORCE_HYPERLINK forces hyperlink support" {
+    const enabled_values = [_][]const u8{ "1", "" };
+    for (enabled_values) |value| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        try env.put("TERM", "xterm-256color");
+        try env.put("ZELLIJ", "0");
+        try env.put("FORCE_HYPERLINK", value);
+
+        const term = Terminal.init(.{ .env_map = &env });
+        try testing.expect(term.caps.hyperlinks);
+    }
+
     var env = std.process.Environ.Map.init(testing.allocator);
     defer env.deinit();
-    try env.put("TERM", "xterm-256color");
-    try env.put("WT_SESSION", "test-session");
+    try env.put("TERM", "xterm-kitty");
+    try env.put("FORCE_HYPERLINK", "0");
 
-    const term = Terminal.init(.{ .env_map = &env });
+    var term = Terminal.init(.{ .env_map = &env });
+    try testing.expect(!term.caps.hyperlinks);
 
-    try testing.expect(term.caps.rgb);
-    try testing.expect(term.caps.ansi256);
+    term.processCapabilityResponse("\x1bP>|kitty(0.40.1)\x1b\\");
+    try testing.expect(!term.caps.hyperlinks);
 }
 
 test "parseXtversion - terminal name only" {
@@ -951,8 +1106,6 @@ test "queryTerminalSend - sends unwrapped queries when not in tmux" {
     const idx_osc_theme_queries = std.mem.find(u8, output, ansi.ANSI.oscThemeQueries).?;
     const idx_xtversion = std.mem.find(u8, output, "\x1b[>0q").?;
 
-    // Should contain xtversion
-    try testing.expect(std.mem.find(u8, output, "\x1b[>0q") != null);
     try testing.expect(idx_osc_theme_queries < idx_xtversion);
     try testing.expect(std.mem.find(u8, output, "\x1b[?996n") == null);
 
@@ -963,6 +1116,7 @@ test "queryTerminalSend - sends unwrapped queries when not in tmux" {
     try testing.expect(std.mem.find(u8, output, "\x1bP+q4d73\x1b\\") != null);
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.kittyGraphicsQuery) != null);
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.primaryDeviceAttrs) != null);
+    try testing.expect(std.mem.find(u8, output, ansi.ANSI.programStatusQuery) != null);
 
     // Should NOT contain tmux DCS wrapper
     try testing.expect(std.mem.find(u8, output, "\x1bPtmux;") == null);
@@ -984,14 +1138,11 @@ test "queryTerminalSend - keeps response-generating queries inside tmux" {
     const idx_osc_theme_queries = std.mem.find(u8, output, ansi.ANSI.oscThemeQueries).?;
     const idx_xtversion = std.mem.find(u8, output, "\x1b[>0q").?;
 
-    // Should contain xtversion (unwrapped - used for detection)
-    try testing.expect(std.mem.find(u8, output, "\x1b[>0q") != null);
     try testing.expect(idx_osc_theme_queries < idx_xtversion);
     try testing.expect(std.mem.find(u8, output, "\x1b[?996n") == null);
     try testing.expect(std.mem.find(u8, output, "\x1bPtmux;\x1b\x1b]10;?") == null);
 
     // tmux answers the queries it implements through the originating pane's PTY.
-    try testing.expect(std.mem.find(u8, output, "\x1bP+q4d73\x1b\\") != null);
     try testing.expect(std.mem.find(u8, output, "\x1b[?1016$p") != null);
 
     // Passthrough replies have no pane ownership and may reach another pane.
@@ -1000,6 +1151,108 @@ test "queryTerminalSend - keeps response-generating queries inside tmux" {
     // tmux's graphics replies describe tmux, not the passthrough endpoint.
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.kittyGraphicsQuery) == null);
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.primaryDeviceAttrs) == null);
+}
+
+test "queryTerminalSend - sentinel mode moves its one DA1 to the end of the packet" {
+    for ([_]bool{ false, true }) |tmux| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        if (tmux) try env.put("TMUX", "/tmp/tmux-1000/default,12345,0");
+        var clock = TestWriter.init(testing.allocator);
+        defer clock.deinit();
+        var sentinel = TestWriter.init(testing.allocator);
+        defer sentinel.deinit();
+        var clock_term = Terminal.init(.{ .env_map = &env });
+        try clock_term.queryTerminalSend(&clock);
+        var sentinel_term = Terminal.init(.{ .env_map = &env });
+        sentinel_term.reply_sentinel = true;
+        try sentinel_term.queryTerminalSend(&sentinel);
+
+        const da1 = ansi.ANSI.primaryDeviceAttrs;
+        try testing.expectEqual(@as(usize, @intFromBool(!tmux)), std.mem.count(u8, clock.getWritten(), da1));
+        try testing.expectEqual(@as(usize, 1), std.mem.count(u8, sentinel.getWritten(), da1));
+        const moved = try std.mem.replaceOwned(u8, testing.allocator, clock.getWritten(), da1, "");
+        defer testing.allocator.free(moved);
+        const expected = try std.mem.concat(testing.allocator, u8, &.{ moved, da1 });
+        defer testing.allocator.free(expected);
+        try testing.expectEqualStrings(expected, sentinel.getWritten());
+    }
+}
+
+/// Counts `CSI > flags u`; modifyOtherKeys (`CSI > 4 ; 1 m`) shares the introducer.
+fn kittyPushes(bytes: []const u8) usize {
+    var count: usize = 0;
+    var rest = bytes;
+    while (std.mem.find(u8, rest, "\x1b[>")) |start| {
+        rest = rest[start + 3 ..];
+        const digits = std.mem.indexOfNone(u8, rest, "0123456789") orelse rest.len;
+        if (digits != 0 and digits < rest.len and rest[digits] == 'u') count += 1;
+    }
+    return count;
+}
+
+test "Kitty keyboard is confirmed only by the reply to the current push's query" {
+    // Ops: a capability reply (then features are enabled, as Session does), a push with flags, a pop, a mode restore.
+    const Op = union(enum) { reply: []const u8, push: u8, pop, restore };
+    const xtversion: Op = .{ .reply = "\x1bP>|kitty(0.40.1)\x1b\\" };
+    const da1: Op = .{ .reply = "\x1b[?62;22c" };
+    const rows = .{
+        // XTVERSION pushes before the startup `?0u` arrives; that stale reply must not confirm.
+        .{ true, .{ xtversion, Op{ .reply = "\x1b[?0u" } }, false },
+        .{ true, .{ xtversion, Op{ .reply = "\x1b[?0u" }, Op{ .reply = "\x1b[?5u" } }, true },
+        .{ true, .{Op{ .reply = "\x1b[?0u" }}, false },
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op{ .reply = "\x1b[?1u" } }, true },
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op{ .reply = "\x1b[?4u" } }, false },
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op.pop, Op{ .push = 8 }, Op{ .reply = "\x1b[?5u" }, Op{ .reply = "\x1b[?8u" } }, true },
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op.pop, Op{ .push = 2 }, Op{ .reply = "\x1b[?5u" }, Op{ .reply = "\x1b[?3u" } }, false },
+        // Two-digit flags: 21 has disambiguate, 16 (report text) has neither bit.
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op.pop, Op{ .push = 21 }, Op{ .reply = "\x1b[?5u" }, Op{ .reply = "\x1b[?21u" } }, true },
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op.pop, Op{ .push = 17 }, Op{ .reply = "\x1b[?5u" }, Op{ .reply = "\x1b[?16u" } }, false },
+        // Two pushes: the reply to the first answers the first query only.
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op.pop, Op{ .push = 7 }, Op{ .reply = "\x1b[?5u" } }, false },
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op{ .reply = "\x1b[?5u" }, Op.pop }, false },
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op{ .reply = "\x1b[?5u" }, Op.pop, Op{ .reply = "\x1b[?5u" } }, false },
+        // Focus restore and resume push again, and only their own reply confirms.
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op{ .reply = "\x1b[?5u" }, Op.restore }, false },
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op{ .reply = "\x1b[?5u" }, Op.restore, Op{ .reply = "\x1b[?5u" } }, true },
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op{ .reply = "\x1b[?5u" }, Op.pop, Op{ .push = 5 }, Op{ .reply = "\x1b[?5u" } }, true },
+        // The confirmation does not wait for DA1: OpenSSH ConPTY forwards `?5u` after its own DA1 (argon-1).
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, da1, Op{ .reply = "\x1b[?5u" } }, true },
+        // Four unanswered queries fill the queue; a fifth push sends none, so no reply can confirm it.
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op.restore, Op.restore, Op.restore, Op.restore, Op{ .reply = "\x1b[?5u" }, Op{ .reply = "\x1b[?5u" }, Op{ .reply = "\x1b[?5u" }, Op{ .reply = "\x1b[?5u" }, Op{ .reply = "\x1b[?5u" } }, false },
+        // Clock mode sends no new query, so the host's parser sees no new reply and nothing confirms.
+        .{ false, .{ Op{ .reply = "\x1b[?0u" }, Op{ .reply = "\x1b[?5u" } }, false },
+    };
+    inline for (rows) |row| {
+        var term = Terminal.init(.{});
+        term.reply_sentinel = row[0];
+        var writer = TestWriter.init(testing.allocator);
+        defer writer.deinit();
+        try term.queryTerminalSend(&writer);
+        try testing.expectEqual(@as(usize, 1), std.mem.count(u8, writer.getWritten(), ansi.ANSI.csiUQuery));
+        // Unanswered queries: a `?Nu` reply answers one, and a query follows a push only while fewer than four wait.
+        var unanswered: usize = 1;
+        inline for (row[1]) |op| {
+            const before = writer.getWritten().len;
+            switch (op) {
+                .reply => |reply| {
+                    if (reply[reply.len - 1] == 'u') unanswered -|= 1;
+                    term.processCapabilityResponse(reply);
+                    try term.enableDetectedFeatures(&writer, true);
+                },
+                .push => |flags| try term.setKittyKeyboard(&writer, true, flags),
+                .pop => try term.setKittyKeyboard(&writer, false, 0),
+                .restore => try term.restoreTerminalModes(&writer),
+            }
+            // In sentinel mode the query follows the push in the same packet.
+            const written = writer.getWritten()[before..];
+            const queried = row[0] and kittyPushes(written) != 0 and unanswered < 4;
+            unanswered += @intFromBool(queried);
+            try testing.expectEqual(@as(usize, @intFromBool(queried)), std.mem.count(u8, written, ansi.ANSI.csiUQuery));
+            if (queried) try testing.expectEqual(@as(usize, 1), std.mem.count(u8, written, "u" ++ ansi.ANSI.csiUQuery));
+        }
+        try testing.expectEqual(row[2], term.state.kitty_confirmed);
+    }
 }
 
 test "queryTerminalSend - sends plain theme queries when TMUX is set" {
@@ -1049,19 +1302,6 @@ test "isXtversionTmux - detects tmux from xtversion" {
 // GRAPHEME CURSOR POSITIONING CAPABILITY TESTS
 // ============================================================================
 
-test "processCapabilityResponse - tmux sets explicit_cursor_positioning" {
-    var term: Terminal = .{};
-
-    term.caps.explicit_cursor_positioning = false;
-    term.caps.unicode = .unicode;
-
-    const response = "\x1bP>|tmux 3.5a\x1b\\";
-    term.processCapabilityResponse(response);
-
-    try testing.expect(term.caps.explicit_cursor_positioning);
-    try testing.expectEqual(utf8.WidthMethod.wcwidth, term.caps.unicode);
-}
-
 test "processCapabilityResponse - alacritty sets explicit_cursor_positioning" {
     var term: Terminal = .{};
 
@@ -1101,9 +1341,15 @@ test "processCapabilityResponse - wezterm applies osc52 and hyperlink heuristics
     const response = "\x1bP>|wezterm\x1b\\";
     term.processCapabilityResponse(response);
 
-    try testing.expect(!term.caps.rgb);
-    try testing.expect(!term.caps.ansi256);
     try testing.expect(term.caps.osc52);
+    try testing.expect(term.caps.hyperlinks);
+}
+
+test "processCapabilityResponse - xterm.js enables hyperlinks" {
+    var term: Terminal = .{};
+
+    term.processCapabilityResponse("\x1bP>|xterm.js(6.0.0)\x1b\\");
+
     try testing.expect(term.caps.hyperlinks);
 }
 
@@ -1113,42 +1359,105 @@ test "processCapabilityResponse - foot applies osc52 heuristic without explicit 
     const response = "\x1bP>|foot 1.17.2\x1b\\";
     term.processCapabilityResponse(response);
 
-    try testing.expect(!term.caps.rgb);
-    try testing.expect(!term.caps.ansi256);
     try testing.expect(term.caps.osc52);
     try testing.expect(term.caps.hyperlinks);
     try testing.expect(!term.caps.explicit_cursor_positioning);
 }
 
-test "processCapabilityResponse - XTGETTCAP Ms only establishes positive support" {
-    var supported: Terminal = .{};
-    supported.processCapabilityResponse("\x1bP1+r4d73=2570312573\x1b\\");
-    try testing.expectEqual(Terminal.Osc52Support.supported, supported.osc52_support);
-    try testing.expect(supported.caps.osc52);
+/// Puts space-separated `KEY=VALUE` pairs.
+fn putEnv(env: *std.process.Environ.Map, pairs: []const u8) !void {
+    var it = std.mem.tokenizeScalar(u8, pairs, ' ');
+    while (it.next()) |pair| {
+        const eq = std.mem.findScalar(u8, pair, '=').?;
+        try env.put(pair[0..eq], pair[eq + 1 ..]);
+    }
+}
 
-    var bare_negative: Terminal = .{};
-    bare_negative.processCapabilityResponse("\x1bP>|iTerm2 3.5.0\x1b\\");
-    bare_negative.processCapabilityResponse("\x1bP0+r\x1b\\");
-    try testing.expectEqual(Terminal.Osc52Support.unknown, bare_negative.osc52_support);
-    try testing.expect(bare_negative.caps.osc52);
+test "processCapabilityResponse - XTGETTCAP and XTVERSION replies set clipboard and color only when positive" {
+    // No COLORTERM, as over SSH. Replies are recorded from real terminals where named.
+    const Row = struct { env: []const u8 = "", replies: []const []const u8, rgb: bool, osc52: ?bool = null, ms: bool = false };
+    const rows = [_]Row{
+        .{ .replies = &.{"\x1bP1+r4d73=2570312573\x1b\\"}, .rgb = false, .osc52 = true, .ms = true },
+        // A negative reply keeps the name heuristic.
+        .{ .replies = &.{ "\x1bP>|iTerm2 3.5.0\x1b\\", "\x1bP0+r\x1b\\" }, .rgb = true, .osc52 = true },
+        .{ .replies = &.{ "\x1bP>|kitty(0.40.1)\x1b\\", "\x1bP0+r4D73\x1b\\" }, .rgb = true, .osc52 = true },
+        .{ .replies = &.{ "\x1bP1+r4d73\x1b\\", "\x1bP1+r4d73=\x1b\\", "\x1bP1+r4d73=abc\x1b\\", "\x1bP1+r4d73=zz\x1b\\", "\x1bP1+r544e=787465726d\x1b\\" }, .rgb = false },
+        .{ .replies = &.{"\x1bP1+r524742=38\x1b\\"}, .rgb = true }, // ghostty, foot, xterm
+        .{ .replies = &.{"\x1bP1+r5463\x1b\\"}, .rgb = true }, // ghostty, kitty, foot
+        .{ .replies = &.{ "\x1bP1+r4D73=1B5D35323B25703125733B257032257307\x1b\\", "\x1bP1+r524742=382F382F38\x1b\\" }, .rgb = true, .ms = true }, // WezTerm
+        .{ .replies = &.{"\x1bP1+r5463=31\x1b\\"}, .rgb = true }, // WezTerm
+        .{ .replies = &.{ "\x1bP0+r524742\x1b\\", "\x1bP0+r5463\x1b\\", "\x1bP0+r\x1b\\" }, .rgb = false },
+        .{ .replies = &.{ "\x1bP1+r524742=zz\x1b\\", "\x1bP1+r524742=3\x1b\\", "\x1bP1+r52474\x1b\\", "\x1bP1+r5463524742\x1b\\", "\x1bP2+r5463\x1b\\", "\x1bP1+r524742=\x1b\\", "\x1bP1+r5463=\x1b\\" }, .rgb = false },
+        .{ .replies = &.{"\x1bP1+r524742\x1b\\"}, .rgb = true }, // boolean form
+        .{ .replies = &.{"\x1bP>|alacritty 0.13.0\x1b\\\x1bP1+r5463\x1b\\\x1b[?6c"}, .rgb = true },
+        .{ .replies = &.{"\x1bP>|ghostty 1.3.1\x1b\\"}, .rgb = true },
+        .{ .replies = &.{"\x1bP>|WezTerm 20260716-195552-76b606ec\x1b\\"}, .rgb = true },
+        .{ .replies = &.{"\x1bP>|wezterm\x1b\\"}, .rgb = true },
+        .{ .replies = &.{"\x1bP>|foot(1.28.0)\x1b\\"}, .rgb = true },
+        .{ .replies = &.{"\x1bP>|XTerm(411)\x1b\\"}, .rgb = true },
+        .{ .replies = &.{"\x1bP>|tmux 3.8\x1b\\"}, .rgb = true },
+        .{ .replies = &.{"\x1bP>|notkitty(1.0)\x1b\\"}, .rgb = false },
+        .{ .replies = &.{"\x1bP>|libghostty\x1b\\"}, .rgb = false },
+        .{ .replies = &.{"\x1bP>|Zellij(0.44.1)\x1b\\"}, .rgb = false },
+        // Only an XTVERSION reply names the terminal; an inherited TERM_PROGRAM does not.
+        .{ .env = "TERM_PROGRAM=tmux", .replies = &.{"\x1b[?62;22c"}, .rgb = false },
+        // Inside GNU screen no reply counts, also when ssh forwarded screen's TERM without STY.
+        .{ .env = "STY=1234.session", .replies = &.{ "\x1bP1+r524742=38\x1b\\", "\x1bP>|kitty(0.40.1)\x1b\\" }, .rgb = false },
+        .{ .env = "TERM=screen.xterm-256color", .replies = &.{ "\x1bP1+r5463\x1b\\", "\x1bP>|ghostty 1.3.1\x1b\\" }, .rgb = false },
+        // A screen TERM in tmux, or behind ssh from tmux once tmux answers XTVERSION (screen swallows the query).
+        .{ .env = "TERM=screen-256color TMUX=/tmp/tmux-1000/default,1,0", .replies = &.{"\x1bP1+r5463\x1b\\"}, .rgb = true },
+        .{ .env = "TERM=screen-256color", .replies = &.{"\x1bP>|tmux 3.4\x1b\\"}, .rgb = true },
+    };
+    for (rows) |row| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        try putEnv(&env, row.env);
+        var term = Terminal.init(.{ .env_map = &env });
+        for (row.replies) |reply| term.processCapabilityResponse(reply);
+        try testing.expectEqual(row.rgb, term.caps.rgb);
+        if (row.rgb) try testing.expect(term.caps.ansi256);
+        if (row.osc52) |osc52| try testing.expectEqual(osc52, term.caps.osc52);
+        try testing.expectEqual(if (row.ms) Terminal.Osc52Support.supported else .unknown, term.osc52_support);
+    }
+}
 
-    var named_negative: Terminal = .{};
-    named_negative.processCapabilityResponse("\x1bP>|kitty(0.40.1)\x1b\\");
-    named_negative.processCapabilityResponse("\x1bP0+r4D73\x1b\\");
-    try testing.expectEqual(Terminal.Osc52Support.unknown, named_negative.osc52_support);
-    try testing.expect(named_negative.caps.osc52);
-
-    var unknown: Terminal = .{};
-    unknown.processCapabilityResponse("\x1bP1+r4d73\x1b\\");
-    try testing.expectEqual(Terminal.Osc52Support.unknown, unknown.osc52_support);
-    unknown.processCapabilityResponse("\x1bP1+r4d73=\x1b\\");
-    try testing.expectEqual(Terminal.Osc52Support.unknown, unknown.osc52_support);
-    unknown.processCapabilityResponse("\x1bP1+r4d73=abc\x1b\\");
-    try testing.expectEqual(Terminal.Osc52Support.unknown, unknown.osc52_support);
-    unknown.processCapabilityResponse("\x1bP1+r4d73=zz\x1b\\");
-    try testing.expectEqual(Terminal.Osc52Support.unknown, unknown.osc52_support);
-    unknown.processCapabilityResponse("\x1bP1+r544e=787465726d\x1b\\");
-    try testing.expectEqual(Terminal.Osc52Support.unknown, unknown.osc52_support);
+test "queryTerminalSend - asks for 24-bit color only when the environment does not settle it, and never screen" {
+    // `ms`: the XTGETTCAP Ms query, which screen prints as text (ssh from screen forwards only its TERM).
+    // `rgb`: after setup, without replies. ConPTY draws 24-bit color, also for Windows sshd's sessions, but not inside screen.
+    const Row = struct { env: []const u8 = "", asks: bool, ms: bool = true, mode: Terminal.RemoteMode = .auto, rgb: bool = builtin.os.tag == .windows };
+    const rows = [_]Row{
+        .{ .asks = builtin.os.tag != .windows },
+        .{ .env = "TERM=xterm-256color", .asks = builtin.os.tag != .windows },
+        .{ .env = "TERM=xterm-256color SSH_CONNECTION=1", .asks = builtin.os.tag != .windows },
+        .{ .env = "TERM=xterm-256color", .asks = true, .mode = .remote, .rgb = false },
+        .{ .env = "TMUX=/tmp/tmux-1000/default,1,0", .asks = builtin.os.tag != .windows },
+        .{ .env = "TERM=screen-256color TMUX=/tmp/tmux-1000/default,1,0", .asks = builtin.os.tag != .windows },
+        .{ .env = "COLORTERM=truecolor", .asks = false, .rgb = true },
+        .{ .env = "STY=1234.session", .asks = false, .ms = false, .rgb = false },
+        .{ .env = "STY=1234.session TMUX=/tmp/tmux-1000/default,1,0", .asks = false, .ms = false, .rgb = false },
+        .{ .env = "TERM=screen.xterm-256color SSH_CONNECTION=1", .asks = false, .ms = false, .rgb = false },
+        .{ .env = "TERM=foot", .asks = false },
+    };
+    for (rows) |row| for ([_]bool{ false, true }) |sentinel| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        try putEnv(&env, row.env);
+        var term = Terminal.init(.{ .remote_mode = row.mode });
+        term.adoptHostEnvironment(env);
+        defer term.deinit();
+        term.reply_sentinel = sentinel;
+        var writer = TestWriter.init(testing.allocator);
+        defer writer.deinit();
+        try term.queryTerminalSend(&writer);
+        const output = writer.getWritten();
+        try testing.expectEqual(row.ms, std.mem.find(u8, output, "\x1bP+q4d73\x1b\\") != null);
+        try testing.expect(std.mem.find(u8, output, ansi.ANSI.xtversion) != null and std.mem.find(u8, output, ansi.ANSI.capabilityQueriesBase) != null);
+        try testing.expectEqual(row.asks, std.mem.find(u8, output, "\x1bP+q524742\x1b\\") != null);
+        try testing.expectEqual(row.asks, std.mem.find(u8, output, "\x1bP+q5463\x1b\\") != null);
+        if (sentinel) try testing.expect(std.mem.endsWith(u8, output, ansi.ANSI.primaryDeviceAttrs));
+        try term.enableDetectedFeatures(&writer, false);
+        try testing.expectEqual(row.rgb, term.caps.rgb);
+        try testing.expectEqual(row.rgb or !row.ms or std.mem.find(u8, row.env, "256color") != null, term.caps.ansi256);
+    };
 }
 
 // ============================================================================
@@ -1476,7 +1785,7 @@ test "writeClipboard - handles base64 padding and encoding chunk boundaries" {
         try testing.expect(std.mem.endsWith(u8, writer.getWritten(), "\x1b\\"));
     }
 
-    const payload = [_]u8{'A'} ** (3 * 1024 + 1);
+    const payload: [3 * 1024 + 1]u8 = @splat('A');
     const encoded_len = std.base64.standard.Encoder.calcSize(payload.len);
     const expected = try testing.allocator.alloc(u8, encoded_len);
     defer testing.allocator.free(expected);
@@ -1529,7 +1838,7 @@ test "writeClipboard - Screen framing crosses the 252-byte boundary" {
     try env.put("STY", "12345.pts-0.hostname");
     var term = Terminal.init(.{ .env_map = &env });
 
-    const payload_one_chunk = [_]u8{'A'} ** 183;
+    const payload_one_chunk: [183]u8 = @splat('A');
     var writer = TestWriter.init(testing.allocator);
     defer writer.deinit();
     try term.writeClipboard(&writer, .clipboard, &payload_one_chunk);
@@ -1537,85 +1846,52 @@ test "writeClipboard - Screen framing crosses the 252-byte boundary" {
     try testing.expectEqual(try term.clipboardSequenceSize(payload_one_chunk.len), writer.getWritten().len);
 
     writer.reset();
-    const payload_two_chunks = [_]u8{'A'} ** 184;
+    const payload_two_chunks: [184]u8 = @splat('A');
     try term.writeClipboard(&writer, .clipboard, &payload_two_chunks);
     try testing.expectEqual(@as(usize, 2), countSubstring(writer.getWritten(), ansi.ANSI.screenDcsStart));
     try testing.expectEqual(try term.clipboardSequenceSize(payload_two_chunks.len), writer.getWritten().len);
 }
 
-test "writeClipboard - wraps in DCS passthrough for tmux" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("TMUX", "/tmp/tmux-1000/default,12345,0");
-
-    var term = Terminal.init(.{ .env_map = &env });
-    term.caps.osc52 = true;
-
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-
-    try term.writeClipboard(&writer, .clipboard, "test");
-
-    const output = writer.getWritten();
-    // Should start with tmux DCS wrapper
-    try testing.expect(std.mem.startsWith(u8, output, "\x1bPtmux;"));
-    // Should end with DCS terminator
-    try testing.expect(std.mem.endsWith(u8, output, "\x1b\\"));
-    // Should have doubled ESC characters inside
-    try testing.expect(std.mem.find(u8, output, "\x1b\x1b") != null);
-}
-
-test "writeClipboard - wraps in DCS passthrough for GNU Screen" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("STY", "12345.pts-0.hostname");
-
-    var term = Terminal.init(.{ .env_map = &env });
-
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-
-    try term.writeClipboard(&writer, .clipboard, "test");
-
-    try testing.expectEqualStrings("\x1bP\x1b]52;c;dGVzdA==\x07\x1b\\", writer.getWritten());
-}
-
-test "writeClipboard - handles tmux sessions" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("TMUX", "/tmp/tmux-1000/default,12345,0");
-
-    var term = Terminal.init(.{ .env_map = &env });
-    term.caps.osc52 = true;
-
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-
-    try term.writeClipboard(&writer, .clipboard, "test");
-
-    const output = writer.getWritten();
-    // Should have tmux DCS wrapper
-    try testing.expect(std.mem.startsWith(u8, output, "\x1bPtmux;"));
-    // Should end with DCS terminator
-    try testing.expect(std.mem.endsWith(u8, output, "\x1b\\"));
-    // Should have doubled ESC characters
-    try testing.expect(std.mem.find(u8, output, "\x1b\x1b") != null);
-}
-
-test "caps.osc52 - clipboard capability flag" {
-    var term = Terminal.init(.{});
-
-    term.caps.osc52 = false;
-    try testing.expect(!term.caps.osc52);
-
-    term.caps.osc52 = true;
-    try testing.expect(term.caps.osc52);
+// The environment is adopted as an app forwards it, so SSH_CONNECTION makes it a remote client's. GNU screen
+// answers no query, so its TERM (forwarded by ssh) or STY names it there too; a tmux XTVERSION reply wins.
+// With STY and TMUX both set, a local session checks TMUX first; a remote one counts it as screen (D71a).
+test "multiplexer sets clipboard framing, OSC 52, widths and the graphics query, also behind ssh" {
+    const screen = "\x1bP\x1b]52;c;dGVzdA==\x07\x1b\\";
+    const tmux = "\x1bPtmux;\x1b\x1b]52;c;dGVzdA==\x1b\x1b\\\x1b\\";
+    const plain = "\x1b]52;c;dGVzdA==\x1b\\";
+    const Row = struct { env: []const u8, reply: []const u8 = "", mux: Terminal.Multiplexer, osc52: bool, width: utf8.WidthMethod, graphics: bool, clipboard: []const u8 };
+    const rows = [_]Row{
+        .{ .env = "STY=1.pts-0.box", .mux = .screen, .osc52 = true, .width = .wcwidth, .graphics = false, .clipboard = screen },
+        .{ .env = "TERM=screen", .mux = .screen, .osc52 = true, .width = .wcwidth, .graphics = false, .clipboard = screen },
+        .{ .env = "TMUX=/tmp/tmux-1000/default,1,0", .mux = .tmux, .osc52 = true, .width = .wcwidth, .graphics = false, .clipboard = tmux },
+        .{ .env = "TERM=screen.xterm-256color SSH_CONNECTION=1", .mux = .screen, .osc52 = true, .width = .wcwidth, .graphics = false, .clipboard = screen },
+        .{ .env = "STY=1.pts-0.box TMUX=/tmp/tmux-1000/default,1,0", .mux = .tmux, .osc52 = true, .width = .wcwidth, .graphics = false, .clipboard = tmux },
+        .{ .env = "STY=1.pts-0.box TMUX=/tmp/tmux-1000/default,1,0 SSH_CONNECTION=1", .mux = .screen, .osc52 = true, .width = .wcwidth, .graphics = false, .clipboard = screen },
+        .{ .env = "TERM=screen-256color TMUX=/tmp/tmux-1000/default,1,0 SSH_CONNECTION=1", .mux = .none, .osc52 = false, .width = .unicode, .graphics = true, .clipboard = plain },
+        .{ .env = "TERM=screen-256color SSH_CONNECTION=1", .reply = "\x1bP>|tmux 3.8\x1b\\", .mux = .tmux, .osc52 = true, .width = .unicode, .graphics = false, .clipboard = tmux },
+        .{ .env = "ZELLIJ=0 SSH_CONNECTION=1", .mux = .none, .osc52 = false, .width = .unicode, .graphics = true, .clipboard = plain },
+        .{ .env = "TERM=tmux-256color SSH_CONNECTION=1", .mux = .none, .osc52 = false, .width = .unicode, .graphics = true, .clipboard = plain },
+    };
+    for (rows, 0..) |row, index| {
+        errdefer std.debug.print("multiplexer row {d}\n", .{index});
+        var env = std.process.Environ.Map.init(testing.allocator);
+        try putEnv(&env, row.env);
+        var term = Terminal.init(.{ .remote_mode = .auto });
+        term.adoptHostEnvironment(env);
+        defer term.deinit();
+        var writer = TestWriter.init(testing.allocator);
+        defer writer.deinit();
+        try term.queryTerminalSend(&writer);
+        try testing.expectEqual(row.graphics, std.mem.find(u8, writer.getWritten(), ansi.ANSI.kittyGraphicsQuery) != null);
+        if (row.reply.len > 0) term.processCapabilityResponse(row.reply);
+        try testing.expectEqual(row.mux, term.multiplexer);
+        try testing.expectEqual(row.osc52, term.caps.osc52);
+        try testing.expectEqual(row.mux != .none, term.caps.explicit_cursor_positioning);
+        try testing.expectEqual(row.width, term.caps.unicode);
+        writer.reset();
+        try term.writeClipboard(&writer, .clipboard, "test");
+        try testing.expectEqualStrings(row.clipboard, writer.getWritten());
+    }
 }
 
 fn countSubstring(haystack: []const u8, needle: []const u8) usize {
@@ -1753,69 +2029,150 @@ test "enableDetectedFeatures - sends initial theme queries" {
     try testing.expect(term.state.theme_queries_sent);
 }
 
-const WidthEnv = struct { key: []const u8, value: []const u8 };
-
-fn expectWidthMethodForEnv(entries: []const WidthEnv, expected: utf8.WidthMethod) !void {
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    for (entries) |entry| try env.put(entry.key, entry.value);
-    const term = Terminal.init(.{ .env_map = &env });
-    try testing.expectEqual(expected, term.caps.unicode);
+// Rows: environment, replies (one capability response each), width method. Terminal rows carry
+// the DECRPM 2027 and XTVERSION replies measured in that terminal. The environment is adopted as an app
+// forwards it, so SSH_CONNECTION makes it a remote client's environment.
+test "width method follows the environment, then the DECRPM 2027 reply and XTVERSION" {
+    const ghostty = .{ .{ "TERM_PROGRAM", "ghostty" }, .{ "TERM_PROGRAM_VERSION", "1.3.1" } };
+    const tmux = .{ "TMUX", "/tmp/tmux-1000/default,12345,0" };
+    const ssh = .{ "SSH_CONNECTION", "192.0.2.1 54231 192.0.2.2 22" };
+    const tmux38 = .{ tmux, .{ "TERM_PROGRAM", "tmux" }, .{ "TERM_PROGRAM_VERSION", "3.8" } };
+    const rows = .{
+        .{ .{}, .{}, .unicode },
+        .{ .{.{ "TERM_PROGRAM", "WezTerm" }}, .{}, .unicode },
+        .{ .{ .{ "TERM_PROGRAM", "WezTerm" }, .{ "VTE_VERSION", "7800" } }, .{}, .unicode },
+        .{ ghostty, .{}, .unicode_wide },
+        .{ ghostty ++ .{.{ "TERM", "xterm-ghostty" }}, .{}, .unicode_wide },
+        .{ .{ .{ "TERM_PROGRAM", "ghostty" }, .{ "TERM_PROGRAM_VERSION", "1.2.3" } }, .{}, .unicode },
+        .{ .{ .{ "TERM_PROGRAM", "ghostty" }, .{ "TERM_PROGRAM_VERSION", "0.0.0-20260223.r14707.gc61f184" } }, .{}, .unicode },
+        .{ .{ .{ "TERM_PROGRAM", "ghostty" }, .{ "TERM_PROGRAM_VERSION", "0.0.0-20260224.r14762.gc51f0d7" } }, .{}, .unicode_wide },
+        .{ ghostty ++ .{.{ "SSH_CONNECTION", "192.0.2.1 54231 192.0.2.2 22" }}, .{}, .unicode },
+        .{ ghostty ++ .{.{ "TERM", "xterm-kitty" }}, .{}, .unicode },
+        .{ ghostty ++ .{.{ "TERM", "foot" }}, .{}, .unicode },
+        .{ ghostty ++ .{.{ "TERM", "alacritty" }}, .{}, .wcwidth },
+        .{ .{.{ "TERM", "rxvt-unicode-256color" }}, .{}, .wcwidth },
+        .{ .{.{ "TERM_PROGRAM", "vscode" }}, .{}, .wcwidth },
+        .{ .{.{ "TERM_PROGRAM", "Apple_Terminal" }}, .{}, .wcwidth },
+        .{ .{ .{ "TERM", "xterm-256color" }, .{ "VTE_VERSION", "7800" } }, .{}, .wcwidth },
+        .{ .{.{ "XTERM_VERSION", "XTerm(411)" }}, .{}, .wcwidth },
+        .{ .{.{ "ALACRITTY_LOG", "/tmp/Alacritty-1.log" }}, .{}, .wcwidth },
+        .{ .{.{ "ALACRITTY_SOCKET", "/run/user/1000/Alacritty-wayland-1-1.sock" }}, .{}, .wcwidth },
+        .{ .{.{ "TERMUX_VERSION", "0.118" }}, .{}, .wcwidth },
+        .{ .{.{ "VHS_RECORD", "1" }}, .{}, .wcwidth },
+        .{ .{.{ "ZELLIJ", "0" }}, .{}, .wcwidth },
+        .{ .{.{ "TERM", "screen" }}, .{}, .wcwidth },
+        .{ .{.{ "TERM", "tmux-256color" }}, .{}, .wcwidth },
+        .{ .{tmux} ++ ghostty, .{}, .wcwidth },
+        .{ .{ tmux, .{ "TERM_PROGRAM", "iTerm.app" }, .{ "TERM_PROGRAM_VERSION", "3.7.6" } }, .{}, .wcwidth },
+        .{ .{ tmux, .{ "TERM_PROGRAM", "tmux" }, .{ "TERM_PROGRAM_VERSION", "3.6a" } }, .{}, .unicode },
+        .{ .{ tmux, .{ "TERM_PROGRAM", "tmux" }, .{ "TERM_PROGRAM_VERSION", "3.5a" } }, .{}, .wcwidth },
+        .{ .{ tmux, .{ "TERM_PROGRAM", "tmux" }, .{ "TERM_PROGRAM_VERSION", "3.5a" } }, .{"\x1bP>|tmux 3.7c\x1b\\"}, .unicode },
+        .{ .{ tmux, .{ "TERM_PROGRAM", "tmux" }, .{ "TERM_PROGRAM_VERSION", "3.7c" } }, .{"\x1bP>|tmux 3.5a\x1b\\"}, .wcwidth },
+        .{ .{}, .{"\x1b[?2027;0$y\x1bP>|tmux 3.7c\x1b\\"}, .unicode },
+        .{ .{}, .{"\x1b]0;tmux\x07\x1bP>|kitty(0.40.1)\x1b\\"}, .unicode },
+        // Alacritty, urxvt and conhost answer 2027;0$y and no XTVERSION.
+        .{ .{.{ "TERM", "alacritty" }}, .{"\x1b[?2027;0$y"}, .wcwidth },
+        .{ .{}, .{"\x1b[?2027;0$y"}, .wcwidth },
+        .{ .{.{ "TERM", "xterm-256color" }}, .{"\x1b[?2027;0$y\x1bP>|XTerm(411)\x1b\\"}, .wcwidth },
+        .{ .{}, .{"\x1bP>|XTerm(411)\x1b\\"}, .wcwidth },
+        .{ .{.{ "VTE_VERSION", "7800" }}, .{"\x1bP>|VTE(7800)\x1b\\"}, .wcwidth },
+        .{ .{.{ "TERM_PROGRAM", "vscode" }}, .{"\x1bP>|xterm.js(5.5.0)\x1b\\"}, .wcwidth },
+        .{ .{.{ "TERM_PROGRAM", "vscode" }}, .{"\x1b[?2027;2$y\x1bP>|xterm.js(7.0.0)\x1b\\"}, .unicode },
+        .{ .{}, .{"\x1bP>|Zellij(4501)\x1b\\"}, .wcwidth },
+        .{ .{.{ "TERM", "foot" }}, .{"\x1b[?2027;4$y\x1bP>|foot(1.28.0)\x1b\\"}, .wcwidth },
+        .{ .{.{ "TERM", "foot" }}, .{"\x1b[?2027;1$y\x1bP>|foot(1.28.0)\x1b\\"}, .unicode },
+        .{ ghostty ++ .{.{ "TERM", "xterm-kitty" }}, .{"\x1b[?2027;0$y"}, .unicode },
+        .{ ghostty, .{"\x1b[?2027;0$y"}, .wcwidth },
+        .{ ghostty, .{ "\x1b[?2027;0$y", "\x1bP>|kitty(0.48.2)\x1b\\" }, .unicode },
+        .{ ghostty, .{"\x1b[?2027;2$y\x1bP>|WezTerm 20240203-110809-5046fc22\x1b\\"}, .unicode },
+        .{ ghostty, .{"\x1b[?2027;2$y\x1bP>|ghostty 1.3.1\x1b\\"}, .unicode_wide },
+        .{ ghostty ++ .{.{ "OPENTUI_FORCE_WCWIDTH", "1" }}, .{"\x1b[?2027;2$y\x1bP>|ghostty 1.3.1\x1b\\"}, .wcwidth },
+        .{ .{.{ "SSH_CONNECTION", "192.0.2.1 54231 192.0.2.2 22" }}, .{"\x1b[?2027;1$y\x1bP>|ghostty 1.3.1\x1b\\"}, .unicode_wide },
+        .{ .{}, .{"\x1b[?2027;1$y\x1bP>|ghostty 1.1.3\x1b\\"}, .unicode },
+        .{ .{}, .{"\x1b[?2027;2$y\x1bP>|libghostty\x1b\\"}, .unicode_wide },
+        .{ .{.{ "TERM_PROGRAM", "iTerm.app" }}, .{"\x1b[?2027;4$y\x1bP>|iTerm2 3.7.6\x1b\\"}, .unicode },
+        .{ .{.{ "TERM_PROGRAM", "WezTerm" }}, .{"\x1b[?2027;3$y\x1bP>|WezTerm 20260716-195552-76b606ec\x1b\\"}, .unicode },
+        .{ .{.{ "WT_SESSION", "fixture" }}, .{"\x1b[?2027;3$y"}, .unicode },
+        .{ .{.{ "OPENTUI_FORCE_WCWIDTH", "1" }}, .{"\x1bP>|kitty(0.48.2)\x1b\\"}, .wcwidth },
+        .{ .{.{ "OPENTUI_FORCE_UNICODE", "1" }}, .{"\x1b[?2027;0$y"}, .unicode },
+        .{ .{ .{ "OPENTUI_FORCE_UNICODE", "1" }, .{ "OPENTUI_FORCE_WCWIDTH", "1" } }, .{}, .unicode },
+        .{ .{ tmux, .{ "OPENTUI_FORCE_NOZWJ", "1" } }, .{"\x1bP>|tmux 3.7c\x1b\\"}, .no_zwj },
+        .{ tmux38 ++ .{ ssh, .{ "OPENTUI_FORCE_WCWIDTH", "1" } }, .{ "\x1bP>|tmux 3.8\x1b\\", "\x1b[?2027;0$y" }, .wcwidth },
+        .{ ghostty ++ .{ ssh, .{ "OPENTUI_FORCE_WCWIDTH", "1" } }, .{"\x1b[?2027;1$y\x1bP>|ghostty 1.3.1\x1b\\"}, .wcwidth },
+        .{ .{ ssh, .{ "TERM", "alacritty" }, .{ "OPENTUI_FORCE_UNICODE", "1" } }, .{"\x1b[?2027;0$y"}, .unicode },
+        .{ .{ ssh, .{ "OPENTUI_FORCE_NOZWJ", "1" } }, .{"\x1b[?2027;0$y"}, .no_zwj },
+        // Inside tmux 3.8 (inherited TMUX and TERM_PROGRAM=tmux): tmux itself, screen (answers only DA1),
+        // Zellij, Alacritty and urxvt (2027;0$y, no XTVERSION); and tmux inside screen or Zellij.
+        .{ tmux38, .{ "\x1bP>|tmux 3.8\x1b\\", "\x1b[?2027;0$y" }, .unicode },
+        .{ tmux38 ++ .{ .{ "STY", "1.pts-0.box" }, .{ "TERM", "screen" } }, .{"\x1b[?1;2c"}, .wcwidth },
+        .{ tmux38 ++ .{.{ "ZELLIJ", "0" }}, .{}, .wcwidth },
+        .{ tmux38 ++ .{.{ "ZELLIJ", "0" }}, .{"\x1bP>|Zellij(4501)\x1b\\"}, .wcwidth },
+        .{ tmux38 ++ .{.{ "TERM", "alacritty" }}, .{"\x1b[?2027;0$y\x1b[?6c"}, .wcwidth },
+        .{ tmux38 ++ .{.{ "TERM", "rxvt-unicode-256color" }}, .{"\x1b[?2027;0$y\x1b[?1;2c"}, .wcwidth },
+        .{ tmux38 ++ .{.{ "STY", "1.pts-0.box" }}, .{"\x1bP>|tmux 3.8\x1b\\"}, .unicode },
+        .{ tmux38 ++ .{.{ "ZELLIJ", "0" }}, .{"\x1bP>|tmux 3.8\x1b\\"}, .unicode },
+        .{ .{ .{ "TERM", "xterm-256color" }, .{ "XTERM_VERSION", "XTerm(411)" }, .{ "KONSOLE_VERSION", "250400" } }, .{}, .unicode },
+        // Explicit widths (the probe moved the cursor to column 2) need no mode 2027.
+        .{ .{}, .{ "\x1b[?2027;2$y", "\x1b[1;1R\x1b[1;2R\x1b[1;3R" }, .unicode },
+        .{ .{}, .{ "\x1b[?2027;1$y", "\x1b[1;1R\x1b[1;2R\x1b[1;3R" }, .unicode },
+    };
+    inline for (rows, 0..) |row, index| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        inline for (row[0]) |entry| try env.put(entry[0], entry[1]);
+        var term = Terminal.init(.{ .remote_mode = .auto });
+        term.adoptHostEnvironment(env);
+        defer term.deinit();
+        var writer = TestWriter.init(testing.allocator);
+        defer writer.deinit();
+        // Session enables features before the replies arrive, and again after each reply.
+        try term.queryTerminalSend(&writer);
+        try term.enableDetectedFeatures(&writer, false);
+        inline for (row[1]) |reply| {
+            term.processCapabilityResponse(reply);
+            try term.enableDetectedFeatures(&writer, false);
+        }
+        errdefer std.debug.print("width row {d}\n", .{index});
+        try testing.expectEqual(@as(utf8.WidthMethod, row[2]), term.caps.unicode);
+        const graphemes = (row[2] == .unicode or row[2] == .unicode_wide) and !term.caps.explicit_width;
+        try testing.expectEqual(graphemes, mode2027Change(writer.getWritten()) orelse false);
+        // Another reply that changes nothing writes no mode 2027 change.
+        var start = writer.getWritten().len;
+        try term.enableDetectedFeatures(&writer, false);
+        try testing.expect(std.mem.find(u8, writer.getWritten()[start..], "\x1b[?2027") == null);
+        // Teardown puts a mode the terminal can change back as its DECRPM reply found it before setup.
+        const before = term.mode_2027 == 1;
+        const restore: ?bool = if ((term.mode_2027 orelse 0) < 3 and graphemes != before) before else null;
+        start = writer.getWritten().len;
+        try term.resetOutputModes(&writer);
+        try testing.expectEqual(restore, mode2027Change(writer.getWritten()[start..]));
+        // Resume enables it again.
+        start = writer.getWritten().len;
+        try term.enableDetectedFeatures(&writer, false);
+        try testing.expectEqual(if (graphemes) true else null, mode2027Change(writer.getWritten()[start..]));
+    }
 }
 
-test "Ghostty width profile requires a direct terminal" {
-    try expectWidthMethodForEnv(&.{.{ .key = "TERM_PROGRAM", .value = "WezTerm" }}, .unicode);
-    try expectWidthMethodForEnv(&.{
-        .{ .key = "TMUX", .value = "/tmp/tmux-1000/default,12345,0" },
-        .{ .key = "TERM_PROGRAM", .value = "ghostty" },
-        .{ .key = "TERM_PROGRAM_VERSION", .value = "1.3.1" },
-    }, .wcwidth);
-    try expectWidthMethodForEnv(&.{
-        .{ .key = "TERM_PROGRAM", .value = "ghostty" },
-        .{ .key = "TERM_PROGRAM_VERSION", .value = "1.2.3" },
-    }, .unicode);
-    try expectWidthMethodForEnv(&.{
-        .{ .key = "TERM_PROGRAM", .value = "ghostty" },
-        .{ .key = "TERM_PROGRAM_VERSION", .value = "0.0.0-20260223.r14707.gc61f184" },
-    }, .unicode);
-    try expectWidthMethodForEnv(&.{
-        .{ .key = "TERM_PROGRAM", .value = "ghostty" },
-        .{ .key = "TERM_PROGRAM_VERSION", .value = "0.0.0-20260224.r14762.gc51f0d7" },
-    }, .unicode_wide);
+/// The last mode 2027 change in `output`: true for set, false for reset, null for none.
+fn mode2027Change(output: []const u8) ?bool {
+    const reset = std.mem.lastIndexOf(u8, output, ansi.ANSI.unicodeReset);
+    const set = std.mem.lastIndexOf(u8, output, ansi.ANSI.unicodeSet) orelse return if (reset == null) null else false;
+    return set > (reset orelse return true);
 }
 
-test "Ghostty width profile preserves explicit wcwidth override" {
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("TERM_PROGRAM", "ghostty");
-    try env.put("TERM_PROGRAM_VERSION", "1.3.1");
-    try env.put("OPENTUI_FORCE_WCWIDTH", "1");
-
-    var term = Terminal.init(.{ .env_map = &env });
-    try testing.expectEqual(utf8.WidthMethod.wcwidth, term.caps.unicode);
-    term.processCapabilityResponse("\x1b[?2027;2$y\x1bP>|ghostty 1.3.1\x1b\\");
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-    try term.enableDetectedFeatures(&writer, false);
-    try testing.expectEqual(utf8.WidthMethod.wcwidth, term.caps.unicode);
-}
-
-test "Ghostty width profile enables mode 2027 and remains stable after setup starts" {
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("TERM_PROGRAM", "ghostty");
-    try env.put("TERM_PROGRAM_VERSION", "1.3.1");
-
-    var term = Terminal.init(.{ .env_map = &env });
-    try testing.expectEqual(utf8.WidthMethod.unicode_wide, term.caps.unicode);
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-    try term.queryTerminalSend(&writer);
-
-    term.processCapabilityResponse("\x1b[?2027;2$y\x1bP>|WezTerm 20240203-110809-5046fc22\x1b\\");
-    try term.enableDetectedFeatures(&writer, false);
-    try testing.expectEqual(utf8.WidthMethod.unicode_wide, term.caps.unicode);
-    try testing.expect(std.mem.find(u8, writer.getWritten(), ansi.ANSI.unicodeSet) != null);
+test "tmux XTVERSION selects the width method by version" {
+    const versions = .{
+        .{ "3.5a", .wcwidth }, .{ "3.6", .unicode }, .{ "3.6a", .unicode },          .{ "3.6-rc", .unicode },
+        .{ "3.10", .unicode }, .{ "4.0", .unicode }, .{ "next-3.8", .unicode },      .{ "next-3.5", .wcwidth },
+        .{ "2.9", .wcwidth },  .{ "", .wcwidth },    .{ "openbsd-7.8", .wcwidth },   .{ "3", .wcwidth },
+        .{ "3.x", .wcwidth },  .{ "x.6", .wcwidth }, .{ "99999999999.1", .wcwidth },
+    };
+    inline for (versions) |case| {
+        var term = Terminal.init(.{});
+        term.processCapabilityResponse("\x1bP>|tmux " ++ case[0] ++ "\x1b\\");
+        errdefer std.debug.print("tmux version '{s}'\n", .{case[0]});
+        try testing.expect(term.caps.explicit_cursor_positioning);
+        try testing.expectEqual(@as(utf8.WidthMethod, case[1]), term.caps.unicode);
+    }
 }
 
 test "setMouseMode - enable without movement keeps click/drag only" {
@@ -1881,7 +2238,7 @@ test "restoreTerminalModes - respects mouse movement setting" {
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.enableAnyEventTracking) == null);
 }
 
-test "resetState - force-disables mouse when cleanup is pending and state drifted false" {
+test "resetInputModes - force-disables mouse when cleanup is pending and state drifted false" {
     var term = Terminal.init(.{});
     term.state.mouse = false;
     term.state.mouse_movement = false;
@@ -1890,7 +2247,7 @@ test "resetState - force-disables mouse when cleanup is pending and state drifte
     var writer = TestWriter.init(testing.allocator);
     defer writer.deinit();
 
-    try term.resetState(&writer);
+    try term.resetInputModes(&writer);
 
     const output = writer.getWritten();
     const idx_disable_any = std.mem.find(u8, output, ansi.ANSI.disableAnyEventTracking).?;
@@ -1903,13 +2260,13 @@ test "resetState - force-disables mouse when cleanup is pending and state drifte
     try testing.expect(!term.state.mouse);
 }
 
-test "resetState - skips mouse disable when mouse was never enabled" {
+test "resetInputModes - skips mouse disable when mouse was never enabled" {
     var term = Terminal.init(.{});
 
     var writer = TestWriter.init(testing.allocator);
     defer writer.deinit();
 
-    try term.resetState(&writer);
+    try term.resetInputModes(&writer);
 
     const output = writer.getWritten();
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.disableAnyEventTracking) == null);

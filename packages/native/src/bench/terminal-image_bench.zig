@@ -585,8 +585,13 @@ fn appendImageSwitchBenchmarks(
         try appendResult(allocator, results, scenario.name, stats, mem_stats);
     }
 
+    var pool = gp.GraphemePool.init(work_allocator);
+    defer pool.deinit();
+    var links = @import("../link.zig").LinkPool.init(work_allocator);
+    defer links.deinit();
     const draw_buffer = try buffer.OptimizedBuffer.init(work_allocator, 40, 32, .{
-        .pool = gp.initGlobalPool(work_allocator),
+        .pool = &pool,
+        .link_pool = &links,
         .id = "image-switch-bench",
     });
     defer draw_buffer.deinit();

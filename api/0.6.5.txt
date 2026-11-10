@@ -1,0 +1,17 @@
+base 0.6.4
++ @opentui/core: method Renderable.getAlignItems(): Align
++ @opentui/core: method Renderable.getAlignSelf(): Align
++ @opentui/core: method Renderable.getFlexBasis(): Value
++ @opentui/core: method Renderable.getFlexDirection(): FlexDirection
++ @opentui/core: method Renderable.getFlexGrow(): number
++ @opentui/core: method Renderable.getFlexShrink(): number
++ @opentui/core: method Renderable.getFlexWrap(): Wrap
++ @opentui/core: method Renderable.getGap(gutter: Gutter): Value
++ @opentui/core: method Renderable.getHeight(): Value
++ @opentui/core: method Renderable.getJustifyContent(): Justify
++ @opentui/core: method Renderable.getMaxHeight(): Value
++ @opentui/core: method Renderable.getMaxWidth(): Value
++ @opentui/core: method Renderable.getMinHeight(): Value
++ @opentui/core: method Renderable.getMinWidth(): Value
++ @opentui/core: method Renderable.getPadding(edge: Edge): Value
++ @opentui/core: method Renderable.getPositionType(): PositionType

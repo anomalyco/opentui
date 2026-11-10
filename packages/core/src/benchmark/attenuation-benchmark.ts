@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { performance } from "node:perf_hooks"
-import { OptimizedBuffer } from "../buffer.js"
+import { OptimizedBuffer, ResourceContext } from "../buffer.js"
 import { VignetteEffect } from "../post/effects.js"
 
 type Scenario = { width: number; height: number }
@@ -46,33 +46,42 @@ function formatNs(value: number): number {
 }
 
 function runScenario({ width, height }: Scenario): ScenarioResult {
-  const buffer = OptimizedBuffer.create(width, height, "unicode", { id: `vignette-bench-${width}x${height}` })
-  const vignetteEffect = new VignetteEffect(STRENGTH)
-  const { fg, bg } = buffer.buffers
-  fg.fill(1)
-  bg.fill(1)
+  const owner = new ResourceContext({ objectCapacity: 4, renderCellsMax: width * height })
+  try {
+    const buffer = OptimizedBuffer.create(width, height, "unicode", {
+      owner,
+      id: `vignette-bench-${width}x${height}`,
+    })
+    const vignetteEffect = new VignetteEffect(STRENGTH)
+    buffer.withBuffers(({ fg, bg }) => {
+      fg.fill(1)
+      bg.fill(1)
+    })
 
-  for (let i = 0; i < WARMUP_ITERATIONS; i++) {
-    vignetteEffect.apply(buffer)
-  }
+    for (let i = 0; i < WARMUP_ITERATIONS; i++) {
+      vignetteEffect.apply(buffer)
+    }
 
-  const samples = new Array<number>(ITERATIONS)
-  for (let i = 0; i < ITERATIONS; i++) {
-    const start = performance.now()
-    vignetteEffect.apply(buffer)
-    samples[i] = performance.now() - start
-  }
+    const samples = new Array<number>(ITERATIONS)
+    for (let i = 0; i < ITERATIONS; i++) {
+      const start = performance.now()
+      vignetteEffect.apply(buffer)
+      samples[i] = performance.now() - start
+    }
 
-  buffer.destroy()
+    buffer.destroy()
 
-  const stats = calculateStats(samples)
-  return {
-    size: `${width}x${height}`,
-    cells: width * height,
-    avgMs: formatMs(stats.avgMs),
-    avgNsPerCell: formatNs((stats.avgMs * 1_000_000) / (width * height)),
-    medianMs: formatMs(stats.medianMs),
-    p95Ms: formatMs(stats.p95Ms),
+    const stats = calculateStats(samples)
+    return {
+      size: `${width}x${height}`,
+      cells: width * height,
+      avgMs: formatMs(stats.avgMs),
+      avgNsPerCell: formatNs((stats.avgMs * 1_000_000) / (width * height)),
+      medianMs: formatMs(stats.medianMs),
+      p95Ms: formatMs(stats.p95Ms),
+    }
+  } finally {
+    owner.destroy()
   }
 }
 

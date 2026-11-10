@@ -19,14 +19,30 @@ import { fileURLToPath } from "node:url"
 // and the ReleaseFast target set. Darwin symbol separation needs the original Zig object
 // files, so a hit installs the symbols saved with the bottle instead of running dsymutil.
 // Only the cross-compile job saves the bottle. A host build must not.
+//
+// A host bottle holds only this runner's library from that cross-compile, under a per-OS key:
+// Linux and Windows runners have not restored the bottle saved on macOS. Only a job that installed
+// the cross-compiled packages saves it. A host build must not, because its library is not the
+// stripped release build that the packaged-distribution tests check.
 
-const BOTTLE_VERSION = 2
-const KEY_PREFIX = "native-bottle-v2"
+const BOTTLE_VERSION = 3
+const KEY_PREFIX = "native-bottle-v3"
 const OPTIMIZE = "ReleaseFast"
 const MANIFEST_NAME = "bottle-manifest.json"
+const HOST_BOTTLE_VERSION = 2
+const HOST_KEY_PREFIX = "native-host-bottle-v2"
+const HOST_MANIFEST_NAME = "host-bottle-manifest.json"
 
 // These paths are the inputs of `zig build -Doptimize=ReleaseFast`. Generated output is not an input.
-const INPUTS = ["build.zig", "build.zig.zon", "scripts/prepare-zig-deps.sh", "src"] as const
+const INPUTS = [
+  "build.zig",
+  "build.zig.zon",
+  "include",
+  "scripts/build-ffmpeg.ts",
+  "scripts/bundle-libcxx.zig",
+  "scripts/prepare-zig-deps.sh",
+  "src",
+] as const
 
 // Output names match packages/native/build.zig. Package and symbol directories match build.ts.
 const BOTTLE_LIBRARIES: ReadonlyArray<{
@@ -35,21 +51,36 @@ const BOTTLE_LIBRARIES: ReadonlyArray<{
   package: string
   symbols: string
 }> = [
-  { dir: "x86_64-linux", files: ["libopentui.so"], package: "core-linux-x64", symbols: "linux-x64" },
-  { dir: "aarch64-linux", files: ["libopentui.so"], package: "core-linux-arm64", symbols: "linux-arm64" },
-  { dir: "x86_64-linux-musl", files: ["libopentui.so"], package: "core-linux-x64-musl", symbols: "linux-x64-musl" },
+  { dir: "x86_64-linux", files: ["libopentui.so", "opentui.h"], package: "core-linux-x64", symbols: "linux-x64" },
+  { dir: "aarch64-linux", files: ["libopentui.so", "opentui.h"], package: "core-linux-arm64", symbols: "linux-arm64" },
+  {
+    dir: "x86_64-linux-musl",
+    files: ["libopentui.so", "opentui.h"],
+    package: "core-linux-x64-musl",
+    symbols: "linux-x64-musl",
+  },
   {
     dir: "aarch64-linux-musl",
-    files: ["libopentui.so"],
+    files: ["libopentui.so", "opentui.h"],
     package: "core-linux-arm64-musl",
     symbols: "linux-arm64-musl",
   },
-  { dir: "x86_64-macos", files: ["libopentui.dylib"], package: "core-darwin-x64", symbols: "darwin-x64" },
-  { dir: "aarch64-macos", files: ["libopentui.dylib"], package: "core-darwin-arm64", symbols: "darwin-arm64" },
-  { dir: "x86_64-windows", files: ["opentui.dll", "opentui.pdb"], package: "core-win32-x64", symbols: "win32-x64" },
+  { dir: "x86_64-macos", files: ["libopentui.dylib", "opentui.h"], package: "core-darwin-x64", symbols: "darwin-x64" },
+  {
+    dir: "aarch64-macos",
+    files: ["libopentui.dylib", "opentui.h"],
+    package: "core-darwin-arm64",
+    symbols: "darwin-arm64",
+  },
+  {
+    dir: "x86_64-windows",
+    files: ["opentui.dll", "opentui.pdb", "opentui.h", "opentui.lib"],
+    package: "core-win32-x64",
+    symbols: "win32-x64",
+  },
   {
     dir: "aarch64-windows",
-    files: ["opentui.dll", "opentui.pdb"],
+    files: ["opentui.dll", "opentui.pdb", "opentui.h", "opentui.lib"],
     package: "core-win32-arm64",
     symbols: "win32-arm64",
   },
@@ -126,8 +157,52 @@ function bottleKey(hash: string, zigVersion: string): string {
   return `${KEY_PREFIX}-${hash}-${zigVersion}-${OPTIMIZE}-all`
 }
 
+function hostBottleKey(hash: string, zigVersion: string): string {
+  assertHash(hash)
+  assertZigVersion(zigVersion)
+  return `${HOST_KEY_PREFIX}-${process.platform}-${process.arch}-${hash}-${zigVersion}-${OPTIMIZE}`
+}
+
 function bottleLibraryPaths(): string[] {
   return BOTTLE_LIBRARIES.flatMap((library) => library.files.map((file) => `${library.dir}/${file}`))
+}
+
+function hostLibrary(): (typeof BOTTLE_LIBRARIES)[number] {
+  const name = `core-${process.platform}-${process.arch}`
+  const library = BOTTLE_LIBRARIES.find((candidate) => candidate.package === name)
+  if (!library) throw new Error(`No native host bottle for ${process.platform}-${process.arch}`)
+  return library
+}
+
+// The installed package has no PDB, and a host bottle hit does not separate symbols.
+function hostLibraryFiles(library: (typeof BOTTLE_LIBRARIES)[number]): string[] {
+  return library.files.filter((file) => !file.endsWith(".pdb"))
+}
+
+function hostBottlePaths(): string[] {
+  const library = hostLibrary()
+  return hostLibraryFiles(library).map((file) => `${library.dir}/${file}`)
+}
+
+interface BottleKind {
+  manifestName: string
+  version: number
+  requiredFiles(): string[]
+}
+
+const FULL_BOTTLE: BottleKind = {
+  manifestName: MANIFEST_NAME,
+  version: BOTTLE_VERSION,
+  requiredFiles: () => [
+    ...bottleLibraryPaths(),
+    ...BOTTLE_LIBRARIES.map((library) => `symbols/${library.symbols}/manifest.json`),
+  ],
+}
+
+const HOST_BOTTLE: BottleKind = {
+  manifestName: HOST_MANIFEST_NAME,
+  version: HOST_BOTTLE_VERSION,
+  requiredFiles: hostBottlePaths,
 }
 
 function listFiles(root: string, relativePath = ""): string[] {
@@ -142,30 +217,26 @@ function listFiles(root: string, relativePath = ""): string[] {
   return files
 }
 
-function readManifest(root: string): BottleManifest {
-  const path = join(root, MANIFEST_NAME)
+function readManifest(root: string, manifestName: string): BottleManifest {
+  const path = join(root, manifestName)
   if (!existsSync(path)) throw new Error("Native bottle manifest is missing")
   const manifest = JSON.parse(readFileSync(path, "utf8")) as Partial<BottleManifest>
   if (!manifest || typeof manifest !== "object" || !manifest.files) throw new Error("Native bottle manifest is invalid")
   return manifest as BottleManifest
 }
 
-function verifyBottle(root: string, zigVersion: string, inputsRoot: string): void {
+function verifyBottle(root: string, kind: BottleKind, zigVersion: string, inputsRoot: string): void {
   assertZigVersion(zigVersion)
-  const manifest = readManifest(root)
+  const manifest = readManifest(root, kind.manifestName)
   const hash = hashNativeInputs(inputsRoot)
-  if (manifest.version !== BOTTLE_VERSION) throw new Error(`Unsupported native bottle version: ${manifest.version}`)
+  if (manifest.version !== kind.version) throw new Error(`Unsupported native bottle version: ${manifest.version}`)
   if (manifest.hash !== hash) throw new Error("Native bottle hash does not match native inputs")
   if (manifest.zig !== zigVersion)
     throw new Error(`Native bottle Zig version is ${manifest.zig}, expected ${zigVersion}`)
   if (manifest.optimize !== OPTIMIZE) throw new Error(`Native bottle optimize mode is ${manifest.optimize}`)
 
-  for (const relativePath of bottleLibraryPaths()) {
+  for (const relativePath of kind.requiredFiles()) {
     if (!manifest.files[relativePath]) throw new Error(`Native bottle manifest is missing ${relativePath}`)
-  }
-  for (const library of BOTTLE_LIBRARIES) {
-    const symbolManifest = `symbols/${library.symbols}/manifest.json`
-    if (!manifest.files[symbolManifest]) throw new Error(`Native bottle manifest is missing ${symbolManifest}`)
   }
 
   const listed = Object.keys(manifest.files).sort()
@@ -177,7 +248,7 @@ function verifyBottle(root: string, zigVersion: string, inputsRoot: string): voi
   }
 
   const onDisk = listFiles(root)
-    .filter((file) => file !== MANIFEST_NAME)
+    .filter((file) => file !== kind.manifestName)
     .sort()
   if (onDisk.join("\n") !== listed.join("\n")) throw new Error("Native bottle contents do not match its manifest")
 }
@@ -199,36 +270,32 @@ function distributionSource(root: string, library: (typeof BOTTLE_LIBRARIES)[num
   return join(coreDir, "node_modules", "@opentui", library.package, file)
 }
 
-function stageBottle(root: string, zigVersion: string, inputsRoot: string): void {
+// Sources are [bottle path, file to copy] pairs. Root is replaced only after the staged copy verifies.
+function writeBottle(
+  root: string,
+  kind: BottleKind,
+  sources: ReadonlyArray<readonly [string, string]>,
+  zigVersion: string,
+  inputsRoot: string,
+): void {
   assertZigVersion(zigVersion)
   const hash = hashNativeInputs(inputsRoot)
   const files: Record<string, string> = {}
   const staged = mkdtempSync(join(tmpdir(), "opentui-native-bottle-"))
   try {
-    for (const library of BOTTLE_LIBRARIES) {
-      for (const file of library.files) {
-        stageFile(staged, files, `${library.dir}/${file}`, distributionSource(root, library, file))
-      }
-      const symbolRoot = join(nativeRoot, "symbols", library.symbols)
-      if (!existsSync(join(symbolRoot, "manifest.json"))) {
-        throw new Error(`Missing separated symbols: ${library.symbols}`)
-      }
-      for (const file of listFiles(symbolRoot)) {
-        stageFile(staged, files, `symbols/${library.symbols}/${file}`, absolute(symbolRoot, file))
-      }
-    }
+    for (const [relativePath, source] of sources) stageFile(staged, files, relativePath, source)
     const manifest: BottleManifest = {
-      version: BOTTLE_VERSION,
+      version: kind.version,
       hash,
       zig: zigVersion,
       optimize: OPTIMIZE,
       files,
     }
-    writeFileSync(join(staged, MANIFEST_NAME), `${JSON.stringify(manifest, null, 2)}\n`)
-    verifyBottle(staged, zigVersion, inputsRoot)
+    writeFileSync(join(staged, kind.manifestName), `${JSON.stringify(manifest, null, 2)}\n`)
+    verifyBottle(staged, kind, zigVersion, inputsRoot)
     rmSync(root, { recursive: true, force: true })
     mkdirSync(root, { recursive: true })
-    for (const relativePath of [MANIFEST_NAME, ...Object.keys(files)]) {
+    for (const relativePath of [kind.manifestName, ...Object.keys(files)]) {
       const destination = absolute(root, relativePath)
       mkdirSync(dirname(destination), { recursive: true })
       writeFileSync(destination, readFileSync(absolute(staged, relativePath)))
@@ -236,6 +303,31 @@ function stageBottle(root: string, zigVersion: string, inputsRoot: string): void
   } finally {
     rmSync(staged, { recursive: true, force: true })
   }
+}
+
+function stageBottle(root: string, zigVersion: string, inputsRoot: string): void {
+  const sources: Array<readonly [string, string]> = []
+  for (const library of BOTTLE_LIBRARIES) {
+    for (const file of library.files) {
+      sources.push([`${library.dir}/${file}`, distributionSource(root, library, file)])
+    }
+    const symbolRoot = join(nativeRoot, "symbols", library.symbols)
+    if (!existsSync(join(symbolRoot, "manifest.json"))) {
+      throw new Error(`Missing separated symbols: ${library.symbols}`)
+    }
+    for (const file of listFiles(symbolRoot)) {
+      sources.push([`symbols/${library.symbols}/${file}`, absolute(symbolRoot, file)])
+    }
+  }
+  writeBottle(root, FULL_BOTTLE, sources, zigVersion, inputsRoot)
+}
+
+function stageHostBottle(root: string, zigVersion: string, inputsRoot: string): void {
+  const library = hostLibrary()
+  const sources = hostLibraryFiles(library).map(
+    (file) => [`${library.dir}/${file}`, distributionSource(root, library, file)] as const,
+  )
+  writeBottle(root, HOST_BOTTLE, sources, zigVersion, inputsRoot)
 }
 
 function installBottledSymbols(): void {
@@ -290,7 +382,7 @@ function packagePlan(options: PackageOptions): string[][] {
 
 function runPackage(options: PackageOptions): void {
   console.error(options.hit ? "Using native bottle; skipping the Zig build" : "Native bottle miss; building")
-  if (options.hit) verifyBottle(libRoot, readRequiredFlag("--zig"), nativeRoot)
+  if (options.hit) verifyBottle(libRoot, options.all ? FULL_BOTTLE : HOST_BOTTLE, readRequiredFlag("--zig"), nativeRoot)
   for (const command of packagePlan(options)) {
     const result = spawnSync(command[0] ?? "bun", command.slice(1), { cwd: coreDir, stdio: "inherit" })
     if (result.error) throw result.error
@@ -336,11 +428,23 @@ function main(): void {
     return
   }
   if (command === "verify") {
-    verifyBottle(libRoot, readRequiredFlag("--zig"), nativeRoot)
+    verifyBottle(libRoot, FULL_BOTTLE, readRequiredFlag("--zig"), nativeRoot)
     return
   }
   if (command === "stage") {
     stageBottle(libRoot, readRequiredFlag("--zig"), nativeRoot)
+    return
+  }
+  if (command === "host-key") {
+    process.stdout.write(`${hostBottleKey(hashNativeInputs(nativeRoot), readRequiredFlag("--zig"))}\n`)
+    return
+  }
+  if (command === "host-verify") {
+    verifyBottle(libRoot, HOST_BOTTLE, readRequiredFlag("--zig"), nativeRoot)
+    return
+  }
+  if (command === "host-stage") {
+    stageHostBottle(libRoot, readRequiredFlag("--zig"), nativeRoot)
     return
   }
   if (command === "package") {
@@ -352,7 +456,7 @@ function main(): void {
     })
     return
   }
-  throw new Error("Usage: native-bottle.ts <hash|key|verify|stage|package>")
+  throw new Error("Usage: native-bottle.ts <hash|key|verify|stage|host-key|host-verify|host-stage|package>")
 }
 
 const entry = process.argv[1]

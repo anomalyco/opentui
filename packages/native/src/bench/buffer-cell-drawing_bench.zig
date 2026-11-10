@@ -4,6 +4,7 @@ const bench_utils = @import("../bench-utils.zig");
 const buffer = @import("../buffer.zig");
 const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
+const utils = @import("../utils.zig");
 
 pub const benchName = "Buffer Cell Drawing";
 
@@ -96,7 +97,7 @@ fn runScenario(io: std.Io, allocator: std.mem.Allocator, pool: *gp.GraphemePool,
     defer link_pool.deinit();
     const target = try buffer.OptimizedBuffer.init(allocator, WIDTH, HEIGHT, .{ .pool = pool, .link_pool = &link_pool });
     defer target.deinit();
-    const text = "X" ** WIDTH;
+    const text = utils.repeat(u8, "X", WIDTH);
 
     var stats: bench_utils.BenchStats = .{};
     for (0..WARMUP_SAMPLES + SAMPLES) |sample| {
@@ -146,9 +147,9 @@ fn runFrameBufferScenario(io: std.Io, allocator: std.mem.Allocator, pool: *gp.Gr
 
 pub fn run(io: std.Io, allocator: std.mem.Allocator, show_mem: bool, bench_filter: ?[]const u8) ![]bench_utils.BenchResult {
     _ = show_mem;
-    const pool = gp.initGlobalPool(allocator);
-    defer gp.deinitGlobalPool();
-    defer link.deinitGlobalLinkPool();
+    var pool_storage = gp.GraphemePool.init(allocator);
+    defer pool_storage.deinit();
+    const pool = &pool_storage;
 
     const scenarios = [_]struct { name: []const u8, kind: Scenario }{
         .{ .name = "1m transparent drawChar no images", .kind = .transparent_char },

@@ -1,0 +1,24 @@
+base 0.8.2
++ @opentui/core: method EmbeddedTerminalRenderable.getScroll(): { offset: number; total: number; visible: number; }
++ @opentui/core: method FFIRenderLib.contextEmbeddedTerminalScrollbar(context: NativeContextHandle, terminal: ContextEmbeddedTerminalHandle): { offset: number; total: number; visible: number; }
++ opentui.h: const OT_AUDIO_DECODE_FAILED = -61
++ opentui.h: const OT_AUDIO_DEVICE_FAILED = -62
++ opentui.h: const OT_AUDIO_START_NO_DEVICE = 1
++ opentui.h: const OT_INPUT_KEY_TYPED = 4
++ opentui.h: field ot_embedded_terminal_scrollbar.abi_version: uint32_t, offset 4
++ opentui.h: field ot_embedded_terminal_scrollbar.offset: uint32_t, offset 8
++ opentui.h: field ot_embedded_terminal_scrollbar.reserved: uint32_t, offset 20
++ opentui.h: field ot_embedded_terminal_scrollbar.struct_size: uint32_t, offset 0
++ opentui.h: field ot_embedded_terminal_scrollbar.total: uint32_t, offset 12
++ opentui.h: field ot_embedded_terminal_scrollbar.visible: uint32_t, offset 16
++ opentui.h: function ot_audio_create(ot_context *, ot_handle *out_engine): ot_status
++ opentui.h: function ot_audio_destroy(ot_context *, const ot_handle *engine): ot_status
++ opentui.h: function ot_audio_load(ot_context *, const ot_handle *engine, const uint8_t *bytes, uint64_t byte_count, uint32_t *out_sound): ot_status
++ opentui.h: function ot_audio_mix(ot_context *, const ot_handle *engine, float *samples, uint32_t frame_count, uint32_t channels): ot_status
++ opentui.h: function ot_audio_play(ot_context *, const ot_handle *engine, uint32_t sound, float volume, uint32_t *out_voice): ot_status
++ opentui.h: function ot_audio_set_volume(ot_context *, const ot_handle *engine, float volume): ot_status
++ opentui.h: function ot_audio_start(ot_context *, const ot_handle *engine, uint32_t flags): ot_status
++ opentui.h: function ot_audio_stop(ot_context *, const ot_handle *engine): ot_status
++ opentui.h: function ot_audio_stop_voice(ot_context *, const ot_handle *engine, uint32_t voice): ot_status
++ opentui.h: function ot_embedded_terminal_scrollbar_get(ot_context *, const ot_handle *terminal, ot_embedded_terminal_scrollbar *out_scrollbar): ot_status
++ opentui.h: struct ot_embedded_terminal_scrollbar

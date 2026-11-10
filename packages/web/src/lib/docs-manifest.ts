@@ -8,8 +8,9 @@ export const DOC_SECTIONS = [
   { id: "plugin-slots", title: "Plugin slots", order: 7 },
   { id: "keymap", title: "Keymap", order: 8 },
   { id: "integrations", title: "Integrations", order: 9 },
-  { id: "ship", title: "Ship", order: 10 },
-  { id: "reference", title: "Reference", order: 11 },
+  { id: "native", title: "Native", order: 10 },
+  { id: "ship", title: "Ship", order: 11 },
+  { id: "reference", title: "Reference", order: 12 },
 ] as const
 
 export type DocSectionId = (typeof DOC_SECTIONS)[number]["id"]
@@ -119,6 +120,7 @@ const CANONICAL_SECTION: Record<DocSectionId, string> = {
   "plugin-slots": "Extend / Plugin slots",
   keymap: "Extend / Keymap",
   integrations: "Integrate",
+  native: "Native rendering and embedding",
   ship: "Ship",
   reference: "Reference / Lookup",
 }
@@ -240,13 +242,19 @@ export const DOC_MANIFEST = {
     primaryNav: false,
     status: "Maintained internals",
     searchSymbols: ["OptimizedBuffer", "CliRenderer", "render"],
-    related: ["core-concepts/layout", "components/frame-buffer", "components/image"],
+    related: [
+      "native/overview",
+      "native/frames",
+      "core-concepts/layout",
+      "components/frame-buffer",
+      "components/image",
+    ],
   }),
   "extend/custom-renderables": page("core", 10, "Custom renderables", "task-guide", {
     canonicalSection: "Extend / Custom UI",
     primaryNav: false,
     status: "Advanced",
-    searchSymbols: ["BaseRenderable", "Renderable", "render", "measure"],
+    searchSymbols: ["BaseRenderable", "Renderable", "render", "measure", "nativeIntegration", "refreshHooks"],
     related: ["core-concepts/renderables", "core-concepts/lifecycle", "bindings/react", "bindings/solid"],
   }),
 
@@ -491,7 +499,20 @@ export const DOC_MANIFEST = {
     searchSymbols: ["ImageRenderable", "Image", "image"],
     related: ["reference/native-image", "components/frame-buffer"],
   }),
-  "components/qr-code": page("components", 19, "QR code", "component-reference", {
+  "components/video": page("components", 19, "Video", "component-reference", {
+    group: "Graphics and media",
+    availability: BUILT_IN_ALL,
+    status: "Built in",
+    component: {
+      purpose: "Plays an MP4 file natively with Kitty, Sixel, or Unicode blocks and audio.",
+      coreRenderable: "VideoRenderable",
+      react: "<video> (built in)",
+      solid: "<video> (built in)",
+    },
+    searchSymbols: ["VideoRenderable", "Video", "video"],
+    related: ["components/image", "core-concepts/audio"],
+  }),
+  "components/qr-code": page("components", 20, "QR code", "component-reference", {
     group: "Graphics and media",
     packages: ["@opentui/qrcode"],
     availability: {
@@ -509,7 +530,7 @@ export const DOC_MANIFEST = {
     searchSymbols: ["QRCodeRenderable", "QRCode", "qrCode"],
     related: ["reference/qr-encoder", "components/image"],
   }),
-  "components/embedded-terminal": page("components", 20, "Embedded terminal", "component-reference", {
+  "components/embedded-terminal": page("components", 21, "Embedded terminal", "component-reference", {
     group: "Graphics and media",
     availability: CORE_ONLY,
     status: "Built-in Core renderable",
@@ -541,19 +562,23 @@ export const DOC_MANIFEST = {
     searchSymbols: ["sendNotification"],
     related: ["core-concepts/renderer", "reference/env-vars"],
   }),
-  "core-concepts/audio": page("application-apis", 3, "Audio", "task-guide", {
+  "application-apis/program-status": page("application-apis", 3, "Program status", "task-guide", {
+    searchSymbols: ["setProgramStatus", "ProgramStatus"],
+    related: ["core-concepts/notifications", "reference/terminal-capabilities"],
+  }),
+  "core-concepts/audio": page("application-apis", 4, "Audio", "task-guide", {
     searchSymbols: ["Audio", "setupAudio", "AudioSound", "AudioVoice", "AudioGroup"],
     related: ["core-concepts/lifecycle", "reference/standalone-executables"],
   }),
-  "application-apis/audio-streaming": page("application-apis", 4, "Streaming audio", "task-guide", {
+  "application-apis/audio-streaming": page("application-apis", 5, "Streaming audio", "task-guide", {
     searchSymbols: ["AudioStream", "AudioStreamError", "createIcyStreamDemuxer"],
     related: ["core-concepts/audio", "application-apis/audio-capture", "core-concepts/lifecycle"],
   }),
-  "application-apis/audio-capture": page("application-apis", 5, "Audio capture", "task-guide", {
+  "application-apis/audio-capture": page("application-apis", 6, "Audio capture", "task-guide", {
     searchSymbols: ["AudioCaptureStream", "AudioCaptureStreamError", "AudioRecorder", "AudioRecorderError"],
     related: ["core-concepts/audio", "application-apis/audio-streaming", "core-concepts/lifecycle"],
   }),
-  "application-apis/animation": page("application-apis", 6, "Animation and Timeline", "task-guide", {
+  "application-apis/animation": page("application-apis", 7, "Animation and Timeline", "task-guide", {
     searchSymbols: ["Timeline", "createTimeline", "engine", "useTimeline"],
     related: ["bindings/react", "bindings/solid", "core-concepts/lifecycle"],
   }),
@@ -706,6 +731,82 @@ export const DOC_MANIFEST = {
     availability: FRAMEWORKS,
     searchSymbols: ["createQRCode", "renderQRCode", "renderQRCodeSvg"],
     related: ["components/qr-code"],
+  }),
+
+  "native/overview": page("native", 1, "Overview", "concept", {
+    status: "Experimental native ABI",
+    packages: ["@opentui/native"],
+    availability: NOT_APPLICABLE,
+    runtimes: ["Native"],
+    searchSymbols: ["retained scene", "native rendering"],
+    related: ["native/resources", "native/frames", "native/host-io-time", "native/core", "native/c", "native/zig"],
+  }),
+  "native/resources": page("native", 2, "Resources and ownership", "low-level-api", {
+    status: "Experimental native ABI",
+    packages: ["@opentui/native"],
+    availability: NOT_APPLICABLE,
+    runtimes: ["Native"],
+    searchSymbols: ["ot_handle", "ot_context_destroy", "ot_buffer_create", "ot_styled_text_chunk", "storage lease"],
+    related: ["native/overview", "native/frames", "native/host-io-time", "native/core", "native/c", "native/zig"],
+  }),
+  "native/frames": page("native", 3, "Frames and output", "low-level-api", {
+    status: "Experimental native ABI",
+    packages: ["@opentui/native"],
+    availability: NOT_APPLICABLE,
+    runtimes: ["Native"],
+    searchSymbols: [
+      "ot_scene_frame_step_with_geometry",
+      "ot_scene_frame_get_paint_slots",
+      "ot_scene_record_header",
+      "ot_scene_frame_commit",
+      "ot_scene_frame_request",
+      "ot_scene_flush",
+      "ot_session_pump",
+      "ot_session_complete_output",
+    ],
+    related: ["native/resources", "native/host-io-time", "native/core", "native/c", "native/zig"],
+  }),
+  "native/host-io-time": page("native", 4, "Host I/O and time", "low-level-api", {
+    status: "Experimental native ABI",
+    packages: ["@opentui/native"],
+    availability: NOT_APPLICABLE,
+    runtimes: ["Native"],
+    searchSymbols: ["ot_session_poll_kitty_image_transport", "ot_session_pump_exit", "Context I/O", "Session clock"],
+    related: ["native/resources", "native/frames", "native/core", "native/c", "native/zig"],
+  }),
+  "native/core": page("native", 5, "How Core uses native", "internals", {
+    status: "Maintained Core integration",
+    searchSymbols: ["NativeScene", "NativeSession", "ResourceContext", "NativeResourceOwner", "BufferAccess"],
+    related: [
+      "native/overview",
+      "core-concepts/rendering-pipeline",
+      "extend/custom-renderables",
+      "reference/buffer-api",
+    ],
+  }),
+  "native/c": page("native", 6, "C", "integration", {
+    status: "Experimental native ABI",
+    packages: ["@opentui/native"],
+    availability: NOT_APPLICABLE,
+    runtimes: ["Native"],
+    searchSymbols: ["ot_context_create", "ot_scene_create_node", "opentui.h", "C ABI"],
+    related: ["native/resources", "native/frames", "native/host-io-time", "native/zig"],
+  }),
+  "native/zig": page("native", 7, "Zig", "integration", {
+    status: "Experimental native module",
+    packages: ["@opentui/native"],
+    availability: NOT_APPLICABLE,
+    runtimes: ["Native"],
+    searchSymbols: ["Zig", "Context.init", "Context.raw", "sceneCreateNode", "scenePaint", "commitSceneFrame"],
+    related: ["native/resources", "native/frames", "native/host-io-time", "native/c"],
+  }),
+  "bindings/rust": page("native", 8, "Rust", "integration", {
+    status: "Experimental, build from source",
+    packages: ["@opentui/native"],
+    availability: NOT_APPLICABLE,
+    runtimes: ["Native"],
+    searchSymbols: ["Rust", "Cargo", "opentui-sys", "OPENTUI_LIB_DIR"],
+    related: ["native/c", "native/overview"],
   }),
 
   "reference/standalone-executables": page("ship", 2, "Standalone executables", "task-guide", {
@@ -910,6 +1011,16 @@ export const DOC_LEARNING_SEQUENCES: DocLearningSequence[] = [
       "test-and-debug/native-crashes",
       "test-and-debug/troubleshooting",
     ],
+  },
+  {
+    id: "native",
+    title: "Native C learning path",
+    pages: ["native/overview", "native/resources", "native/frames", "native/host-io-time", "native/core", "native/c"],
+  },
+  {
+    id: "native-zig",
+    title: "Native Zig learning path",
+    pages: ["native/overview", "native/resources", "native/frames", "native/host-io-time", "native/core", "native/zig"],
   },
   {
     id: "ship",

@@ -10,6 +10,7 @@ import {
   bold,
   underline,
   italic,
+  type KeyEvent,
 } from "@opentui/core"
 import { ScrollBoxRenderable } from "@opentui/core"
 import { setupCommonDemoKeys } from "./lib/standalone-keys.js"
@@ -172,7 +173,7 @@ export function run(rendererInstance: CliRenderer): void {
     }
   }
 
-  rendererInstance.keyInput.on("keypress", (key) => {
+  const keyHandler = (key: KeyEvent) => {
     if (key.name === "a" && scrollBox) {
       const currentState = scrollBox.verticalScrollBar?.showArrows ?? false
       scrollBox.verticalScrollBar!.showArrows = !currentState
@@ -190,7 +191,9 @@ export function run(rendererInstance: CliRenderer): void {
       addBox(nextIndex)
       nextIndex++
     }
-  })
+  }
+  rendererInstance.keyInput.on("keypress", keyHandler)
+  mainContainer.once("destroyed", () => rendererInstance.keyInput.off("keypress", keyHandler))
 }
 
 export function destroy(rendererInstance: CliRenderer): void {

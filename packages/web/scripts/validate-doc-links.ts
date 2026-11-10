@@ -3,6 +3,7 @@
 import { readdir, readFile } from "node:fs/promises"
 import { join } from "node:path"
 
+import { isGeneratedDocsUrl } from "../src/lib/docs-channel"
 import { getFenceMarker, closesFence, slugifyHeading } from "../src/lib/docs-headings"
 import { buildDocsIndex } from "../src/lib/docs-index"
 import { parsePackageEntryFile } from "./package-entry-file"
@@ -24,6 +25,7 @@ interface RepositoryPathInfo {
 
 const REPO_ROOT = join(import.meta.dir, "../../..")
 const PACKAGE_DOCS_ROOT = join(REPO_ROOT, "packages/web/src/content/packages")
+const RELEASE_NOTES_ROOT = join(REPO_ROOT, "packages/web/src/content/docs/releases")
 
 async function main() {
   try {
@@ -56,7 +58,7 @@ async function main() {
 
       for (const link of [...collectLinks(content), ...frontmatterDocLinks]) {
         const target = link.target.trim()
-        if (!isDocUrl(target)) continue
+        if (!isDocUrl(target) || isGeneratedDocsUrl(target)) continue
 
         const { url, anchor } = normalizeDocTarget(target)
         const linkedPage = index.pagesByUrl[url]
@@ -108,7 +110,7 @@ async function main() {
           continue
         }
 
-        if (!isDocUrl(target)) {
+        if (!isDocUrl(target) || isGeneratedDocsUrl(target)) {
           continue
         }
 
@@ -134,6 +136,27 @@ async function main() {
       }
     }
 
+    // Release notes link to the pages their changes affect. Links to generated pages, such as release pages and
+    // the API reference, are checked in the built site instead (scripts/site/validate-site.ts).
+    const releaseFiles = (await readdir(RELEASE_NOTES_ROOT).catch(() => [] as string[])).filter((file) =>
+      file.endsWith(".md"),
+    )
+    for (const file of releaseFiles) {
+      const sourcePath = `packages/web/src/content/docs/releases/${file}`
+      for (const link of collectLinks(await readFile(join(RELEASE_NOTES_ROOT, file), "utf8"))) {
+        const target = link.target.trim()
+        if (!isDocUrl(target) || isGeneratedDocsUrl(target)) continue
+
+        const { url, anchor } = normalizeDocTarget(target)
+        const linkedPage = index.pagesByUrl[url]
+        if (!linkedPage) {
+          violations.push(`${sourcePath}:${link.lineNumber}: unresolved doc link ${target}`)
+        } else if (anchor && !(anchorsBySlug.get(linkedPage.slug) ?? new Set()).has(anchor)) {
+          violations.push(`${sourcePath}:${link.lineNumber}: unresolved doc anchor ${target}`)
+        }
+      }
+    }
+
     for (const page of index.pages) {
       if ((incomingLinks.get(page.slug) ?? 0) === 0) {
         violations.push(`${page.sourcePath}: no incoming link from another documentation page`)
@@ -148,7 +171,9 @@ async function main() {
       process.exit(1)
     }
 
-    console.log(`Link validation passed for ${index.pages.length} docs and ${packageFiles.length} package profiles.`)
+    console.log(
+      `Link validation passed for ${index.pages.length} docs, ${packageFiles.length} package profiles, and ${releaseFiles.length} release notes.`,
+    )
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error))
     process.exit(1)

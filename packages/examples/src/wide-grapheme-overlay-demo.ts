@@ -234,14 +234,16 @@ export function run(renderer: CliRenderer): void {
   root.add(box4)
   draggableBoxes.push(box4)
 
-  renderer.keyInput.on("keypress", (key: KeyEvent) => {
+  const keyHandler = (key: KeyEvent) => {
     if (key.name === "d") {
       key.preventDefault()
       toggleScrim(renderer)
     }
-  })
+  }
+  renderer.keyInput.on("keypress", keyHandler)
+  root.once("destroyed", () => renderer.keyInput.off("keypress", keyHandler))
 
-  renderer.on("resize", (width: number, height: number) => {
+  const resizeHandler = (width: number, height: number) => {
     const h = height - HEADER_HEIGHT
     background.width = width
     background.height = h
@@ -250,14 +252,16 @@ export function run(renderer: CliRenderer): void {
       scrim.height = h
     }
     renderer.requestRender()
-  })
+  }
+  renderer.on("resize", resizeHandler)
+  root.once("destroyed", () => renderer.off("resize", resizeHandler))
 }
 
 export function destroy(renderer: CliRenderer): void {
   renderer.clearFrameCallbacks()
 
   for (const box of draggableBoxes) {
-    renderer.root.remove(box)
+    box.destroyRecursively()
   }
   draggableBoxes = []
   nextZIndex = 101
@@ -266,7 +270,7 @@ export function destroy(renderer: CliRenderer): void {
   headerDisplay = null
 
   const root = renderer.root.getRenderable("wg-overlay-root")
-  if (root) renderer.root.remove(root)
+  root?.destroyRecursively()
   renderer.setCursorPosition(0, 0, false)
 }
 

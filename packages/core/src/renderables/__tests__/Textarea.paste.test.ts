@@ -1,8 +1,10 @@
-import { describe, expect, it, beforeEach, afterEach } from "bun:test"
+import { describe, expect, it, beforeEach, afterEach, spyOn } from "bun:test"
 import { createTestRenderer, type TestRenderer, type MockInput } from "../../testing/test-renderer.js"
 import { createTextareaRenderable } from "./renderable-test-utils.js"
 import { decodePasteBytes, PasteEvent } from "../../lib/index.js"
 import { pasteBytes } from "../../testing/mock-keys.js"
+import { InputRenderable } from "../Input.js"
+import { TextareaRenderable } from "../Textarea.js"
 
 let currentRenderer: TestRenderer
 let renderOnce: () => Promise<void>
@@ -24,69 +26,45 @@ describe("Textarea - Paste Tests", () => {
     currentRenderer.destroy()
   })
 
-  describe("Paste Events", () => {
-    it("should paste text at cursor position", async () => {
-      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
-        initialValue: "Hello",
-        width: 40,
-        height: 10,
-      })
-
-      editor.focus()
-      editor.gotoLine(9999) // Move to end
-
-      await currentMockInput.pasteBracketedText(" World")
-
-      expect(editor.plainText).toBe("Hello World")
-    })
-
-    it("should paste text in the middle", async () => {
-      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
-        initialValue: "HelloWorld",
-        width: 40,
-        height: 10,
-      })
-
-      editor.focus()
-      for (let i = 0; i < 5; i++) {
-        editor.moveCursorRight()
+  // A paste keeps control characters, as in Vim, but drops terminal escape sequences, a lone ESC, and a sequence that
+  // the paste cuts off, on Bun and Node alike. Input also drops CR and LF.
+  it.each([
+    ["", "x", "x"],
+    [" World", "x World", "x World"],
+    ["\nLine 2\nLine 3", "x\nLine 2\nLine 3", "xLine 2Line 3"],
+    [" 🌟世界👍", "x 🌟世界👍", "x 🌟世界👍"],
+    ["a \x1b[31mred\x1b[0m\x1b[2 q\x1b[31", "xa red", "xa red"],
+    ["a\fb\u0000c", "xa\fb\u0000c", "xa\fb\u0000c"],
+    ["\x1b]0;title\x07y\u009d0;t\u009cz\u0090q\u009c\u0098s\u009c\u009ep\u009c\u009fa\x07w", "xyzw", "xyzw"],
+    ["\x1b", "x", "x"],
+    ["a\x1bP1$r\x1b\\b\x1bXs\x1b\\c\x1b(Bd\x9b1me\x1b^p\x1b\\\x1b_a\x1b\\\x1b\x07", "xabcde\x07", "xabcde\x07"],
+    ["\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\\x1b]0;cut", "xlink", "xlink"],
+    ["p\u0085q\u007f", "xp\u0085q\u007f", "xp\u0085q\u007f"],
+    ["\ty\r\nz", "x\ty\nz", "x\tyz"],
+  ])("pastes %j into Textarea and Input", async (pasted, textareaText, inputText) => {
+    const errors = spyOn(console, "error")
+    const editors = [
+      [new TextareaRenderable(currentRenderer, { initialValue: "x", width: 40, height: 3 }), textareaText],
+      [new InputRenderable(currentRenderer, { value: "x", width: 40 }), inputText],
+    ] as const
+    try {
+      for (const [editor, expected] of editors) {
+        currentRenderer.root.add(editor)
+        editor.focus()
+        editor.gotoBufferEnd()
+        await currentMockInput.pasteBracketedText(pasted)
+        currentMockInput.pressKey("\u0085")
+        await renderOnce()
+        expect(editor.plainText).toBe(expected)
+        editor.destroy()
       }
+      expect(errors).not.toHaveBeenCalled()
+    } finally {
+      errors.mockRestore()
+    }
+  })
 
-      await currentMockInput.pasteBracketedText(" ")
-
-      expect(editor.plainText).toBe("Hello World")
-    })
-
-    it("should paste multi-line text", async () => {
-      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
-        initialValue: "Start",
-        width: 40,
-        height: 10,
-      })
-
-      editor.focus()
-      editor.gotoLine(9999)
-
-      await currentMockInput.pasteBracketedText("\nLine 2\nLine 3")
-
-      expect(editor.plainText).toBe("Start\nLine 2\nLine 3")
-    })
-
-    it("should paste text at beginning of buffer", async () => {
-      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
-        initialValue: "World",
-        width: 40,
-        height: 10,
-      })
-
-      editor.focus()
-      // Cursor starts at beginning
-
-      await currentMockInput.pasteBracketedText("Hello ")
-
-      expect(editor.plainText).toBe("Hello World")
-    })
-
+  describe("Paste Events", () => {
     it("should replace selected text when pasting", async () => {
       const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
         initialValue: "Hello World",
@@ -163,20 +141,6 @@ describe("Textarea - Paste Tests", () => {
       expect(editor.plainText).toBe("Line 1\nLine 2World")
     })
 
-    it("should paste empty string without error", async () => {
-      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
-        initialValue: "Test",
-        width: 40,
-        height: 10,
-      })
-
-      editor.focus()
-
-      await currentMockInput.pasteBracketedText("")
-
-      expect(editor.plainText).toBe("Test")
-    })
-
     it("should resize viewport when pasting multiline text", async () => {
       const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
         initialValue: "",
@@ -197,35 +161,6 @@ describe("Textarea - Paste Tests", () => {
       const viewport = editor.editorView.getViewport()
       expect(editor.plainText).toBe("Line 1\nLine 2\nLine 3")
       expect(viewport.height).toBeGreaterThan(1)
-    })
-
-    it("should paste Unicode characters (emoji, CJK)", async () => {
-      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
-        initialValue: "Hello",
-        width: 40,
-        height: 10,
-      })
-
-      editor.focus()
-      editor.gotoLine(9999)
-
-      await currentMockInput.pasteBracketedText(" 🌟世界👍")
-
-      expect(editor.plainText).toBe("Hello 🌟世界👍")
-    })
-
-    it("should strip ANSI sequences when inserting pasted text", async () => {
-      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
-        initialValue: "",
-        width: 40,
-        height: 10,
-      })
-
-      editor.focus()
-
-      await currentMockInput.pasteBracketedText("text with \x1b[31mred\x1b[0m color")
-
-      expect(editor.plainText).toBe("text with red color")
     })
 
     it("should replace entire selection with pasted text", async () => {
@@ -251,21 +186,6 @@ describe("Textarea - Paste Tests", () => {
 
       expect(editor.hasSelection()).toBe(false)
       expect(editor.plainText).toBe("AAAA\nXXXX\nCCCC")
-    })
-
-    it("should handle paste via handlePaste method directly", async () => {
-      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
-        initialValue: "Test",
-        width: 40,
-        height: 10,
-      })
-
-      editor.focus()
-      editor.gotoLine(9999)
-
-      editor.handlePaste(new PasteEvent(pasteBytes(" Content")))
-
-      expect(editor.plainText).toBe("Test Content")
     })
 
     it("should replace selection when using handlePaste directly", async () => {

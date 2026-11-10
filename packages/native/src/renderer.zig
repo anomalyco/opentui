@@ -1,6 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const io = if (builtin.is_test) std.testing.io else @import("root").io;
+const compatibility_io = if (builtin.is_test) std.testing.io else if (@hasDecl(@import("root"), "io")) @import("root").io else std.Io.failing;
 const Allocator = std.mem.Allocator;
 const ansi = @import("ansi.zig");
 const buf = @import("buffer.zig");
@@ -14,17 +14,14 @@ const output = @import("renderer-output.zig");
 const terminal_image = @import("terminal-image.zig");
 const kitty_transport = @import("kitty-transport.zig");
 const native_image = @import("image.zig");
+const utils = @import("utils.zig");
 
 pub const RGBA = ansi.RGBA;
 pub const OptimizedBuffer = buf.OptimizedBuffer;
 pub const TextAttributes = ansi.TextAttributes;
 pub const CursorStyle = Terminal.CursorStyle;
-pub const OutputBackend = output.OutputBackend;
-pub const BufferedBackend = output.BufferedBackend;
-pub const BufferedOutput = output.BufferedOutput;
 pub const StdoutOutput = output.StdoutOutput;
 pub const FeedBackend = output.FeedBackend;
-pub const OUTPUT_BUFFER_SIZE = output.OUTPUT_BUFFER_SIZE;
 
 pub const RenderStatus = enum(u8) {
     rendered = 0,
@@ -32,9 +29,20 @@ pub const RenderStatus = enum(u8) {
     failed = 2,
 };
 
-pub const RenderResult = struct {
-    renderOffset: u32,
-    status: RenderStatus,
+pub const PresentationOutcome = enum { presented, failed };
+
+pub const SplitSnapshot = struct {
+    snapshot: *OptimizedBuffer,
+    row_columns: u32,
+    start_on_new_line: bool = false,
+    trailing_newline: bool = true,
+};
+
+pub const SplitRender = struct {
+    snapshots: []const SplitSnapshot,
+    pinned_render_offset: u32,
+    paint_footer: bool,
+    suspended: bool,
 };
 
 const CLEAR_CHAR = '\u{0a00}';
@@ -66,23 +74,40 @@ fn moveToSplitOutputCursor(writer: anytype, render_offset: u32, output_column: u
     ansi.ANSI.moveToOutput(writer, column, row) catch {};
 }
 
+/// Trims only empty cells: a continuation cell belongs to the wide character before it.
 fn snapshotRowEnd(snapshot: *const OptimizedBuffer, row: u32, limit: u32) u32 {
     var x = limit;
-    while (x > 0) {
-        const cell = snapshot.get(x - 1, row) orelse {
-            x -= 1;
-            continue;
-        };
+    while (x > 0 and snapshot.get(x - 1, row).?.char == 0) x -= 1;
+    return x;
+}
 
-        if (cell.char == 0 or gp.isContinuationChar(cell.char)) {
-            x -= 1;
+/// What a frame shows: its size, cells, and image placements. An image cell counts by its
+/// placement only, so a drawn frame and its encoded copy, with fallbacks drawn, agree.
+fn frameContentHash(frame: *const OptimizedBuffer) u64 {
+    var hasher = std.hash.Wyhash.init(0x6f76_6572_7369_7a65);
+    hasher.update(std.mem.asBytes(&[2]u32{ frame.width, frame.height }));
+    for (frame.image_placements.items) |placement| {
+        const fields = [_]u32{
+            placement.image_handle,           @bitCast(placement.x),   @bitCast(placement.y),
+            placement.width,                  placement.height,        placement.pixel_width,
+            placement.pixel_height,           placement.source_x,      placement.source_y,
+            placement.source_width,           placement.source_height, placement.opacity,
+            @backingInt(placement.protocol),
+        };
+        hasher.update(std.mem.asBytes(&fields));
+    }
+    const cells = frame.buffer;
+    for (cells.char, cells.fg, cells.bg, cells.attributes) |char, fg, bg, attributes| {
+        if (gp.isImageChar(char)) {
+            hasher.update(std.mem.asBytes(&gp.imageIdFromChar(char)));
             continue;
         }
-
-        return x;
+        hasher.update(std.mem.asBytes(&char));
+        hasher.update(std.mem.asBytes(&fg));
+        hasher.update(std.mem.asBytes(&bg));
+        hasher.update(std.mem.asBytes(&attributes));
     }
-
-    return 0;
+    return hasher.final();
 }
 
 pub const SplitFooterTransitionMode = enum(u8) {
@@ -99,9 +124,56 @@ pub const RenderStatsSnapshot = struct {
     averageCellsUpdated: u32,
     renderTime: ?f64,
     outputWriteTime: ?f64,
+    frameWork: FrameWork,
 };
 
-const SplitFooterTransition = struct {
+/// Work counts of one scene frame: scene paint and encoding.
+/// Counts are deterministic; none reads a clock.
+pub const FrameWork = struct {
+    work_frame_id: u64 = 0,
+    candidate_visits: u64 = 0,
+    paint_visits: u64 = 0,
+    view_preparations: u64 = 0,
+    geometry_reads: u64 = 0,
+    yoga_solves: u64 = 0,
+    feedback_operations: u64 = 0,
+    visibility_steps: u64 = 0,
+    viewport_child_refreshes: u64 = 0,
+    overlap_tests: u64 = 0,
+    members_painted: u64 = 0,
+    member_cells: u64 = 0,
+    cells_cleared: u64 = 0,
+    rows_compared: u64 = 0,
+    rows_diffed: u64 = 0,
+    full_path_reasons: u32 = 0,
+    host_requests: u32 = 0,
+    layout_rounds: u32 = 0,
+    // Rows the encoder may find changed: all rows on the full path, none on a skipped frame.
+    damage_rows: u32 = 0,
+
+    pub const full_path_forced: u32 = 1;
+    pub const full_path_screen: u32 = 2;
+    pub const full_path_images: u32 = 4;
+    pub const full_path_tainted: u32 = 8;
+    pub const full_path_unretained: u32 = 16;
+    pub const full_path_options: u32 = 32;
+    pub const full_path_non_local: u32 = 64;
+
+    /// Adds the encoder's counts to a scene frame's counts.
+    fn merge(self: FrameWork, encode: FrameWork) FrameWork {
+        var result = self;
+        inline for (@typeInfo(FrameWork).@"struct".field_names) |name| {
+            if (comptime std.mem.eql(u8, name, "full_path_reasons")) {
+                result.full_path_reasons |= encode.full_path_reasons;
+            } else {
+                @field(result, name) += @field(encode, name);
+            }
+        }
+        return result;
+    }
+};
+
+pub const SplitFooterTransition = struct {
     mode: SplitFooterTransitionMode = .none,
     source_top_line: u32 = 0,
     source_height: u32 = 0,
@@ -118,6 +190,8 @@ const SplitFrameState = struct {
     scrollback: split_scrollback.SplitScrollback,
     render_offset: u32,
     transition: SplitFooterTransition,
+    /// Only `rollbackSplitFrame` restores this: queued bytes own their image IDs
+    /// while their presentation is pending.
     kitty_history_next_image_id: ?u32 = null,
 };
 
@@ -142,12 +216,19 @@ const CommittedImage = struct {
     // A partial overlay must rebuild placements; an unchanged overlay must not.
     reservation_intact: bool = true,
     reservation_hash: u64 = 0,
+    // Kitty runs placed for a partial reservation, ids KITTY_RUN_ID_MIN up.
+    kitty_runs: u32 = 0,
+    // The upload alone was larger than one frame. A full image is tried once more as a
+    // copy at the placement's pixel size; otherwise the placement draws as blocks while
+    // its pixel size and source size stay the same. A retry's copy that waits is marked too.
+    oversize: bool = false,
+    // The Kitty transmit is a copy of the source rectangle at the placement's pixel size.
+    copied: bool = false,
 };
 
 // Run placement ids start above every buffer placement id. Kitty scopes
 // placement ids to an image id and each owner has its own image id, so runs
-// of different owners never collide and no run needs tracking: a placement
-// delete by image id drops the owner rectangle or its runs alike.
+// of different owners never collide.
 const KITTY_RUN_ID_MIN: u32 = 0x8000_0000;
 
 comptime {
@@ -186,6 +267,8 @@ const ImageDirty = struct {
     background_hash: u64,
     lower_occupancy_hash: u64,
     propagated: bool = false,
+    // A Sixel whose upload waited paints over its cleared cells without clearing them again.
+    paint: bool = false,
     // Kitty reservation scan for this frame. Change detection, the Kitty
     // writer, and staging all read it, so the placement area is scanned once.
     reservation: PlacementReservation = .{ .intact = true, .hash = 0 },
@@ -226,6 +309,12 @@ const SIXEL_CACHE_MAX_ENTRIES = 256;
 // payload and metadata retention. An empty payload is cached for fully transparent placements.
 
 pub const CliRenderer = struct {
+    image_resolution: struct {
+        terminal_width: u32 = 0,
+        terminal_height: u32 = 0,
+        pixel_width: u32 = 0,
+        pixel_height: u32 = 0,
+    } = .{},
     width: u32,
     height: u32,
     currentRenderBuffer: *OptimizedBuffer,
@@ -236,27 +325,59 @@ pub const CliRenderer = struct {
     imageIdSalt: u32,
     kittyHistoryNextImageId: ?u32,
     imageRenderFailed: bool = false,
+    imageScreenInvalidated: bool = false,
     pool: *gp.GraphemePool,
     backgroundColor: RGBA,
     renderOffset: u32,
     terminal: Terminal,
     useAlternateScreen: bool = true,
-    terminalSetup: bool = false,
     terminalSuspended: bool = false,
     clearOnShutdown: bool = true,
 
     splitScrollback: split_scrollback.SplitScrollback = .{},
-    // Batch state for split-footer commit flushing. A single JS render tick can
-    // enqueue multiple stdout snapshots; batching keeps all of them inside one
-    // sync frame so terminals do not repeatedly enter/exit synchronized update.
-    splitBatchActive: bool = false,
-    splitBatchRedrawFooter: bool = false,
-    splitBatchDeltaTime: f64 = 0,
-    splitBatchStartState: SplitFrameState = .{ .scrollback = .{}, .render_offset = 0, .transition = .{} },
     pendingSplitFooterTransition: SplitFooterTransition = .{},
 
-    /// Output transport. Owned by the renderer; destroyed in `destroy()`.
-    backend: OutputBackend,
+    /// Output transport. Owned by the renderer; destroyed in `destroyStorage()`.
+    backend: FeedBackend,
+
+    pendingPresentation: ?struct {
+        timestamp_us: i64,
+        cells_updated: u32,
+        render_time: ?f64,
+        split_state: ?SplitFrameState = null,
+        snapshot_only: bool = false,
+        work: ?FrameWork = null,
+        // The next buffer still equals the frame at completion: nothing wrote it after paint.
+        retain: bool = false,
+    } = null,
+    presentationFailed: bool = false,
+    /// Frames dropped because they are larger than one frame of output: the count of
+    /// distinct contents dropped, the last one's size (0 once a frame is not dropped
+    /// for size), and a full repaint's content and size, which is not encoded again
+    /// until it changes.
+    dropped_frames: u32 = 0,
+    dropped_frame_bytes: u32 = 0,
+    dropped_content: ?struct { hash: u64, bytes: u32 } = null,
+    /// Set by a Session only while it commits a scene draft.
+    scene_work: ?FrameWork = null,
+    /// The draft's rows that can differ from the presented frame, or null for all rows.
+    scene_damage: ?*const std.DynamicBitSetUnmanaged = null,
+    /// The scene frame that the next buffer still holds after its presentation, or 0.
+    /// Retained paint compares against it; any other write to the buffers resets it.
+    retained_frame_id: u64 = 0,
+    /// OT_SCENE_FULL_PATH_* reasons why retention was lost, for the next scene frame.
+    retained_lost: u32 = 0,
+    /// Something wrote the next buffer after paint: encode every row and retain nothing.
+    encode_all_rows: bool = false,
+    /// A `.current` lease may have written the presented cells: the next encode diffs every
+    /// row. Next still holds the presented frame, so retention holds.
+    current_written: bool = false,
+    /// The last encode was a scene frame's, so the next buffer still holds its cells.
+    next_scene_retained: bool = false,
+    /// Written by each encode.
+    encode_work: FrameWork = .{},
+    /// The last presented scene frame.
+    last_frame_work: FrameWork = .{},
 
     renderStats: struct {
         lastFrameTime: f64,
@@ -283,8 +404,12 @@ pub const CliRenderer = struct {
         frameCallbackTime: std.ArrayListUnmanaged(f64),
     },
     lastRenderTime: i64,
+    // Microseconds from the start of the last completed frame until its output
+    // was written, so slow terminals and transports show up as frame cost.
+    lastFrameCostUs: u32 = 0,
     allocator: Allocator,
-    writeOutBuf: [1024]u8 = undefined,
+    io: std.Io,
+    logger: *const logger.Logger,
     debugOverlay: struct {
         enabled: bool,
         corner: DebugOverlayCorner,
@@ -293,31 +418,11 @@ pub const CliRenderer = struct {
         .corner = .bottomRight,
     },
 
-    // Hit grid for mouse event dispatch.
-    //
-    // The hit grid is a screen-sized array where each cell stores the renderable ID
-    // at that position. Mouse events query checkHit(x, y) to find which element to
-    // dispatch to.
-    //
-    // Double buffering: During render, addToHitGrid writes to nextHitGrid. After
-    // render completes, the buffers swap. This keeps hit testing consistent during
-    // a frame. Queries see the previous frame's state, not a half-built grid.
-    //
-    // On-demand sync: When scroll/translate changes between renders, the TypeScript
-    // layer can rebuild currentHitGrid directly via addToCurrentHitGridClipped. This
-    // updates hover states immediately rather than waiting for the next render.
-    //
-    // Scissor clipping: The hitScissorStack mirrors overflow:hidden regions. Elements
-    // outside their parent's visible area are excluded from hit testing. The stack
-    // uses screen coordinates. Buffered renderables need getHitGridScissorRect() to
-    // convert from buffer-local (0,0) to their actual screen position.
-    currentHitGrid: []u32,
-    nextHitGrid: []u32,
-    hitGridWidth: u32,
-    hitGridHeight: u32,
-    hitScissorStack: std.ArrayListUnmanaged(buf.ClipRect),
-    hitGridDirty: bool = false,
-    hitGridResizeInvalidated: bool = false,
+    // The scene keeps hit rectangles; the renderer publishes which scene frame's hits
+    // a completed presentation shows. Zero publishes none: non-scene presentations
+    // and resize. Resize also retires the hits of a painted, uncommitted draft.
+    presented_hits_frame: u64 = 0,
+    hits_generation: u64 = 0,
 
     lastCursorStyleTag: ?u8 = null,
     lastCursorBlinking: ?bool = null,
@@ -341,31 +446,23 @@ pub const CliRenderer = struct {
     sixelCacheClock: u64 = 0,
     sixelCacheHits: u64 = 0,
     sixelCacheMisses: u64 = 0,
-    kittyTransport: kitty_transport.Transport = .{},
+    kittyTransport: kitty_transport.Transport,
+    host_driven_time: bool,
 
-    pub const OutputTarget = union(enum) {
-        stdout,
-        memory,
-        buffered: BufferedOutput,
-        feed: *NativeSpanFeed.Stream,
-    };
-
-    /// Full set of options for `createWithOptions`. `output` determines the
-    /// backend variant: buffered stdout, injected buffered output, or feed.
     pub const CreateOptions = struct {
+        io: std.Io = compatibility_io,
+        /// Sessions advance resource deadlines with explicit host time.
+        host_driven_time: bool = false,
+        logger: *const logger.Logger = logger.processLogger(),
         remote_mode: Terminal.RemoteMode = .local,
-        output: OutputTarget = .stdout,
-        clearOnShutdown: bool = true,
-        // Borrowed: when provided, both frame buffers share this caller-owned pool.
-        link_pool: ?*link.LinkPool = null,
+        /// Borrowed: the owner publishes and drains the frames written here.
+        feed: *NativeSpanFeed.Stream,
+        // Borrowed: both frame buffers share this caller-owned pool.
+        link_pool: *link.LinkPool,
         // Optional override for terminal environment lookups. Borrowed: the
         // caller owns the map and must keep it alive for the renderer's lifetime.
         env_map: ?*const std.process.Environ.Map = null,
     };
-
-    pub fn create(allocator: Allocator, width: u32, height: u32, pool: *gp.GraphemePool) !*CliRenderer {
-        return createWithOptions(allocator, width, height, pool, .{});
-    }
 
     pub fn createWithOptions(
         allocator: Allocator,
@@ -380,6 +477,7 @@ pub const CliRenderer = struct {
         const currentBuffer = try OptimizedBuffer.init(allocator, width, height, .{
             .pool = pool,
             .link_pool = opts.link_pool,
+            .logger = opts.logger,
             .width_method = .unicode,
             .id = "current buffer",
         });
@@ -387,6 +485,7 @@ pub const CliRenderer = struct {
         const nextBuffer = try OptimizedBuffer.init(allocator, width, height, .{
             .pool = pool,
             .link_pool = opts.link_pool,
+            .logger = opts.logger,
             .width_method = .unicode,
             .id = "next buffer",
         });
@@ -416,25 +515,7 @@ pub const CliRenderer = struct {
         try cellsUpdated.ensureTotalCapacity(allocator, STAT_SAMPLE_CAPACITY);
         try frameCallbackTimes.ensureTotalCapacity(allocator, STAT_SAMPLE_CAPACITY);
 
-        const hitGridSize = width * height;
-        const currentHitGrid = try allocator.alloc(u32, hitGridSize);
-        errdefer allocator.free(currentHitGrid);
-        const nextHitGrid = try allocator.alloc(u32, hitGridSize);
-        errdefer allocator.free(nextHitGrid);
-        @memset(currentHitGrid, 0); // Initialize with 0 (no renderable)
-        @memset(nextHitGrid, 0);
-        const hitScissorStack: std.ArrayListUnmanaged(buf.ClipRect) = .empty;
-
-        // Backend variant selected once by opts.output.
-        var backend: OutputBackend = switch (opts.output) {
-            .stdout => .{ .buffered = try BufferedBackend.createStdout(allocator) },
-            .memory => .{ .buffered = try BufferedBackend.createMemory(allocator) },
-            .buffered => |buffered_output| .{ .buffered = try BufferedBackend.create(allocator, buffered_output) },
-            .feed => |feed_ptr| .{ .feed = FeedBackend.create(feed_ptr) },
-        };
-        errdefer backend.deinit();
-
-        const timestamp: u96 = @bitCast(std.Io.Clock.now(.real, io).nanoseconds);
+        const timestamp: u96 = @bitCast(std.Io.Clock.now(.real, opts.io).nanoseconds);
         const image_id_salt = 1 + @as(u32, @truncate(@as(u128, timestamp) ^ @as(u128, @intFromPtr(self)))) % (std.math.maxInt(u32) - gp.IMAGE_ID_MASK - 1);
         self.* = .{
             .width = width,
@@ -447,8 +528,7 @@ pub const CliRenderer = struct {
             .backgroundColor = ansi.rgbColor(0, 0, 0, 0),
             .renderOffset = 0,
             .terminal = Terminal.init(.{ .remote_mode = opts.remote_mode, .env_map = opts.env_map }),
-            .clearOnShutdown = opts.clearOnShutdown,
-            .backend = backend,
+            .backend = FeedBackend.createWithIo(opts.io, opts.feed),
             .lastCursorStyleTag = null,
             .lastCursorBlinking = null,
             .lastCursorColorRGB = null,
@@ -477,13 +557,12 @@ pub const CliRenderer = struct {
                 .cellsUpdated = cellsUpdated,
                 .frameCallbackTime = frameCallbackTimes,
             },
-            .lastRenderTime = std.Io.Clock.now(.awake, io).toMicroseconds(),
+            .lastRenderTime = std.Io.Clock.now(.awake, opts.io).toMicroseconds(),
             .allocator = allocator,
-            .currentHitGrid = currentHitGrid,
-            .nextHitGrid = nextHitGrid,
-            .hitGridWidth = width,
-            .hitGridHeight = height,
-            .hitScissorStack = hitScissorStack,
+            .io = opts.io,
+            .kittyTransport = .{ .io = opts.io },
+            .host_driven_time = opts.host_driven_time,
+            .logger = opts.logger,
             .palette_rgba = undefined,
             .default_fg_rgba = ansi.defaultColor(255, 255, 255, 255),
             .default_bg_rgba = ansi.defaultColor(0, 0, 0, 255),
@@ -500,13 +579,9 @@ pub const CliRenderer = struct {
         return self;
     }
 
-    pub fn destroy(self: *CliRenderer) void {
-        // Order matters: performShutdownSequence writes cleanup ANSI through
-        // the backend. backend.deinit then joins the render thread using a
-        // terminate-only signal (no renderRequested) so the thread exits
-        // without replaying the stale last-frame buffer on top of the
-        // freshly-restored terminal.
-        self.performShutdownSequence();
+    /// Release renderer storage after the owner restores or disconnects its terminal.
+    pub fn destroyStorage(self: *CliRenderer) void {
+        self.kittyTransport.cancel(.cancelled);
         self.backend.deinit();
         self.terminal.deinit();
 
@@ -529,132 +604,20 @@ pub const CliRenderer = struct {
         while (sixel_cache.next()) |entry| self.allocator.free(entry.value_ptr.payload);
         self.sixelCache.deinit(self.allocator);
 
-        self.allocator.free(self.currentHitGrid);
-        self.allocator.free(self.nextHitGrid);
-        self.hitScissorStack.deinit(self.allocator);
-
         self.allocator.destroy(self);
     }
 
-    pub fn setupTerminal(self: *CliRenderer, useAlternateScreen: bool) void {
-        self.useAlternateScreen = useAlternateScreen;
-        self.terminalSetup = true;
-        self.terminalSuspended = false;
-
-        // Build capability query into a stack buffer, then emit via backend.
-        // Buffer sized to accommodate all capability-query sequences with margin.
-        var queryBuf: [4096]u8 = undefined;
-        var writer: std.Io.Writer = .fixed(&queryBuf);
-        self.terminal.queryTerminalSend(&writer) catch {
-            logger.warn("Failed to query terminal capabilities", .{});
-        };
-        self.backend.writeOut(writer.buffered());
-
-        self.startKittyFileProbe();
-
-        self.setupTerminalWithoutDetection(useAlternateScreen, true);
-    }
-
-    fn setupTerminalWithoutDetection(self: *CliRenderer, useAlternateScreen: bool, reserve_non_alt_surface: bool) void {
-        var setupBuf: [4096]u8 = undefined;
-        var fixed_writer: std.Io.Writer = .fixed(&setupBuf);
-        const writer = &fixed_writer;
-
-        writer.writeAll(ansi.ANSI.saveCursorState) catch {};
-
-        if (useAlternateScreen) {
-            self.terminal.enterAltScreen(writer) catch {};
-        } else if (reserve_non_alt_surface) {
-            ansi.ANSI.makeRoomForRendererOutput(writer, @max(self.height, 1)) catch {};
-        }
-
-        self.terminal.setCursorPosition(1, 1, false);
-        const useKitty = self.terminal.opts.kitty_keyboard_flags > 0;
-        self.terminal.enableDetectedFeatures(writer, useKitty) catch {};
-
-        self.backend.writeOut(fixed_writer.buffered());
-    }
-
-    pub fn suspendRenderer(self: *CliRenderer) void {
-        if (!self.terminalSetup) return;
-        self.performShutdownSequence();
-    }
-
-    pub fn resumeRenderer(self: *CliRenderer) void {
-        if (!self.terminalSetup) return;
-        self.terminalSuspended = false;
-        self.setupTerminalWithoutDetection(self.useAlternateScreen, self.renderOffset == 0);
-        self.startKittyFileProbe();
-    }
-
-    fn clearSplitFooterSurface(self: *CliRenderer, writer: anytype) void {
-        if (self.renderOffset == 0) return;
-
-        const footer_top_line = @max(self.renderOffset + 1, @as(u32, 1));
-        writer.writeAll("\x1b[r") catch {};
-        ansi.ANSI.moveToOutput(writer, 1, footer_top_line) catch {};
-        writer.writeAll(ansi.ANSI.eraseBelowCursor) catch {};
-        ansi.ANSI.moveToOutput(writer, 1, footer_top_line) catch {};
-    }
-
-    pub fn performShutdownSequence(self: *CliRenderer) void {
-        self.terminalSuspended = true;
-        self.kittyTransport.cancel(.cancelled);
-        if (!self.terminalSetup) return;
-
-        if (self.hasCommittedProtocol(.kitty)) {
-            for (self.currentImages.items) |current| {
-                if (current.protocol != .kitty) continue;
-                var delete_buf: [128]u8 = undefined;
-                var delete_writer: std.Io.Writer = .fixed(&delete_buf);
-                terminal_image.writeKittyDelete(
-                    &delete_writer,
-                    self.kittyImageId(current.placement_id),
-                    null,
-                    true,
-                    self.terminal.isInTmux(),
-                ) catch {};
-                self.backend.writeOut(delete_writer.buffered());
-            }
-        }
-        self.currentImages.clearRetainingCapacity();
-
-        // Build the shutdown ANSI sequence into a stack buffer, then emit.
-        var shutdownBuf: [4096]u8 = undefined;
-        var fixed_writer: std.Io.Writer = .fixed(&shutdownBuf);
-        const writer = &fixed_writer;
-
-        self.terminal.resetState(writer) catch {
-            logger.warn("Failed to reset terminal state", .{});
-        };
-
-        if (self.useAlternateScreen) {
-            // Alt screen: resetState already exited alt screen; just flush.
-        } else if (self.clearOnShutdown and self.renderOffset == 0) {
-            writer.writeAll("\x1b[H\x1b[J") catch {};
-        } else if (self.clearOnShutdown and self.renderOffset > 0) {
-            self.clearSplitFooterSurface(writer);
-        }
-
-        // NOTE: This messes up state after shutdown, but might be necessary for windows?
-        // writer.writeAll(ansi.ANSI.restoreCursorState) catch {};
-
-        writer.writeAll(ansi.ANSI.resetCursorColorFallback) catch {};
-        writer.writeAll(ansi.ANSI.resetCursorColor) catch {};
-        writer.writeAll(ansi.ANSI.defaultCursorStyle) catch {};
-        writer.writeAll(ansi.ANSI.showCursor) catch {};
-
-        self.backend.writeOut(fixed_writer.buffered());
-
-        // Workaround for Ghostty not showing the cursor after shutdown for some reason.
-        // Keep this backend-agnostic: the active output transport owns delivery.
-        io.sleep(.fromMilliseconds(10), .awake) catch {};
-        self.backend.writeOut(ansi.ANSI.showCursor);
-        io.sleep(.fromMilliseconds(10), .awake) catch {};
-    }
-
-    pub fn setClearOnShutdown(self: *CliRenderer, clear: bool) void {
-        self.clearOnShutdown = clear;
+    pub fn writeShutdownImage(self: *CliRenderer, writer: anytype, index: usize) !void {
+        std.debug.assert(index < self.currentImages.items.len);
+        const current = self.currentImages.items[index];
+        if (current.protocol != .kitty) return;
+        try terminal_image.writeKittyDelete(
+            writer,
+            self.kittyImageId(current.placement_id),
+            null,
+            true,
+            self.terminal.isInTmux(),
+        );
     }
 
     fn addStatSample(self: *CliRenderer, comptime T: type, samples: *std.ArrayListUnmanaged(T), value: T) void {
@@ -683,7 +646,9 @@ pub const CliRenderer = struct {
     }
 
     fn collectFrameStats(self: *CliRenderer, deltaTime: f64) void {
-        if (self.backend.getLastWriteTimeUs()) |wt| {
+        // Every published frame path sets lastRenderTime to its frame start first.
+        self.recordFrameCost(self.lastRenderTime);
+        if (self.backend.lastWriteTimeUs) |wt| {
             self.renderStats.outputWriteTime = wt;
         }
 
@@ -701,16 +666,6 @@ pub const CliRenderer = struct {
             self.addStatSample(f64, &self.statSamples.outputWriteTime, swt);
         }
         self.addStatSample(u32, &self.statSamples.cellsUpdated, self.renderStats.cellsUpdated);
-    }
-
-    pub fn setUseThread(self: *CliRenderer, useThread: bool) void {
-        if (!self.backend.supportsThreading() and useThread) return;
-        self.backend.setUseThread(useThread);
-    }
-
-    /// Whether the backend is currently running a write thread (for debug overlay).
-    pub fn isUseThread(self: *CliRenderer) bool {
-        return self.backend.isUseThread();
     }
 
     pub fn updateStats(self: *CliRenderer, time: f64, fps: u32, frameCallbackTime: f64) void {
@@ -737,45 +692,41 @@ pub const CliRenderer = struct {
             .averageCellsUpdated = getStatAverage(u32, &self.statSamples.cellsUpdated),
             .renderTime = self.renderStats.renderTime,
             .outputWriteTime = self.renderStats.outputWriteTime,
+            .frameWork = self.last_frame_work,
         };
     }
 
     pub fn resize(self: *CliRenderer, width: u32, height: u32) !void {
-        if (self.width == width and self.height == height) return;
+        return self.resizeWithOutput(width, height, null);
+    }
 
+    /// Session screen transitions reserve storage before publishing their control packet.
+    pub fn resizeWithOutput(self: *CliRenderer, width: u32, height: u32, bytes: ?[]const u8) !void {
+        if (self.pendingPresentation != null) return error.PresentationPending;
+        if (self.presentationFailed) return error.PresentationFailed;
+        if (self.width == width and self.height == height) {
+            if (bytes) |packet| try self.backend.feed.writeAtomic(packet);
+            return;
+        }
+        _ = std.math.mul(u32, width, height) catch return error.InvalidDimensions;
+        var current = try self.currentRenderBuffer.prepareResize(width, height);
+        defer current.deinit();
+        var next = try self.nextRenderBuffer.prepareResize(width, height);
+        defer next.deinit();
+        if (bytes) |packet| try self.backend.feed.writeAtomic(packet);
+
+        // Every fallible allocation finishes before any visible state changes.
+        current.commit();
+        next.commit();
         self.width = width;
         self.height = height;
-
-        try self.currentRenderBuffer.resize(width, height);
-        try self.nextRenderBuffer.resize(width, height);
         self.nextRenderBuffer.setBlendBackdropColor(ansi.rgbColor(ansi.red(self.backgroundColor), ansi.green(self.backgroundColor), ansi.blue(self.backgroundColor), 255));
-
         self.currentRenderBuffer.clear(ansi.rgbColor(0, 0, 0, 255), CLEAR_CHAR);
         self.nextRenderBuffer.clear(self.backgroundColor, null);
-
-        const newHitGridSize = width * height;
-        const currentHitGridSize = self.hitGridWidth * self.hitGridHeight;
-        if (newHitGridSize > currentHitGridSize) {
-            const newCurrentHitGrid = try self.allocator.alloc(u32, newHitGridSize);
-            errdefer self.allocator.free(newCurrentHitGrid);
-            const newNextHitGrid = try self.allocator.alloc(u32, newHitGridSize);
-
-            self.allocator.free(self.currentHitGrid);
-            self.allocator.free(self.nextHitGrid);
-            self.currentHitGrid = newCurrentHitGrid;
-            self.nextHitGrid = newNextHitGrid;
-        }
-
-        @memset(self.currentHitGrid, 0);
-        @memset(self.nextHitGrid, 0);
-        self.hitGridResizeInvalidated = true;
-
-        // Always update dimensions. The backing buffer is at least as large as
-        // width*height, so this is safe even when the terminal shrinks. Without
-        // this, checkHit keeps using stale dimensions after a shrink and returns
-        // 0 for any coordinate beyond the old bounds.
-        self.hitGridWidth = width;
-        self.hitGridHeight = height;
+        self.presented_hits_frame = 0;
+        self.hits_generation += 1;
+        self.next_scene_retained = false;
+        self.taint(FrameWork.full_path_unretained);
 
         const cursor = self.terminal.getCursorPosition();
         self.terminal.setCursorPosition(@min(cursor.x, width), @min(cursor.y, height), cursor.visible);
@@ -886,18 +837,6 @@ pub const CliRenderer = struct {
         }
     }
 
-    pub fn setRenderOffset(self: *CliRenderer, offset: u32) void {
-        if (self.terminalSetup and !self.useAlternateScreen and self.renderOffset > 0 and offset == 0) {
-            var clearBuf: [256]u8 = undefined;
-            var fixed_writer: std.Io.Writer = .fixed(&clearBuf);
-            const writer = &fixed_writer;
-            self.clearSplitFooterSurface(writer);
-            self.backend.writeOut(fixed_writer.buffered());
-        }
-
-        self.renderOffset = offset;
-    }
-
     fn renderStatusFromWrite(status: output.WriteStatus) RenderStatus {
         return switch (status) {
             .ok => .rendered,
@@ -906,12 +845,31 @@ pub const CliRenderer = struct {
         };
     }
 
-    fn clearSkippedFrameState(self: *CliRenderer) void {
+    /// Also discards a failed scene draft.
+    pub fn clearSkippedFrameState(self: *CliRenderer) void {
         self.nextRenderBuffer.clear(self.backgroundColor, null);
-        @memset(self.nextHitGrid, 0);
+        self.next_scene_retained = false;
+        self.taint(FrameWork.full_path_unretained);
+    }
+
+    /// The next buffer no longer equals the presented frame.
+    pub fn taint(self: *CliRenderer, reason: u32) void {
+        self.retained_frame_id = 0;
+        self.retained_lost |= reason;
+        self.encode_all_rows = true;
+    }
+
+    /// Non-scene drawing and rendering start from a cleared next buffer, as before scene
+    /// frames retained it.
+    pub fn leaveRetained(self: *CliRenderer) void {
+        self.taint(FrameWork.full_path_tainted);
+        if (!self.next_scene_retained) return;
+        self.nextRenderBuffer.clear(self.backgroundColor, null);
+        self.next_scene_retained = false;
     }
 
     fn finishSkippedFrame(self: *CliRenderer) RenderStatus {
+        self.kittyTransport.finishFrame(false);
         self.pendingImages.clearRetainingCapacity();
         self.clearSkippedFrameState();
         return .skipped;
@@ -920,7 +878,25 @@ pub const CliRenderer = struct {
     fn finishFailedFrame(self: *CliRenderer) RenderStatus {
         self.kittyTransport.cancel(.io_error);
         self.pendingImages.clearRetainingCapacity();
-        @memset(self.nextHitGrid, 0);
+        self.invalidateTerminalState();
+        return .failed;
+    }
+
+    /// Discard an encoded frame that published no bytes. Encoding already synced
+    /// currentRenderBuffer, so the next frame repaints every cell. Output pressure
+    /// skips the frame and keeps the Kitty file transport enabled.
+    fn finishUnpublishedFrame(self: *CliRenderer, status: RenderStatus) RenderStatus {
+        switch (status) {
+            .rendered => unreachable,
+            .skipped => {
+                self.invalidateTerminalState();
+                return self.finishSkippedFrame();
+            },
+            .failed => return self.finishFailedFrame(),
+        }
+    }
+
+    pub fn invalidateTerminalState(self: *CliRenderer) void {
         self.force_full_repaint = true;
         self.lastCursorStyleTag = null;
         self.lastCursorBlinking = null;
@@ -929,19 +905,10 @@ pub const CliRenderer = struct {
         self.lastCursorY = null;
         self.lastCursorVisible = null;
         self.mousePointerStateValid = false;
-        return .failed;
     }
 
-    fn commitPendingHitGrid(self: *CliRenderer) void {
-        self.hitGridDirty = self.hitGridResizeInvalidated or !std.mem.eql(u32, self.currentHitGrid, self.nextHitGrid);
-        const previous = self.currentHitGrid;
-        self.currentHitGrid = self.nextHitGrid;
-        self.nextHitGrid = previous;
-        @memset(self.nextHitGrid, 0);
-    }
-
-    fn renderResult(self: *CliRenderer, status: RenderStatus) RenderResult {
-        return .{ .renderOffset = self.renderOffset, .status = status };
+    fn publishHits(self: *CliRenderer, work: ?FrameWork) void {
+        self.presented_hits_frame = if (work) |value| value.work_frame_id else 0;
     }
 
     fn splitFrameState(self: *const CliRenderer) SplitFrameState {
@@ -957,57 +924,188 @@ pub const CliRenderer = struct {
         self.splitScrollback = state.scrollback;
         self.renderOffset = state.render_offset;
         self.pendingSplitFooterTransition = state.transition;
+    }
+
+    /// Undo an unpublished frame, including the Kitty history image IDs it reserved.
+    fn rollbackSplitFrame(self: *CliRenderer, state: SplitFrameState) void {
+        self.restoreSplitFrameState(state);
         self.kittyHistoryNextImageId = state.kitty_history_next_image_id;
     }
 
-    fn finishSplitBatch(self: *CliRenderer, published: bool) void {
-        if (!published) self.restoreSplitFrameState(self.splitBatchStartState);
-        self.splitBatchActive = false;
-        self.splitBatchRedrawFooter = false;
-        self.splitBatchDeltaTime = 0;
+    /// Accept an ordinary frame into a callback-free feed without publishing its
+    /// hit grid, images, or statistics. The owner must finish or discard the frame's
+    /// bytes before calling completePresentation, and must not change hit grids,
+    /// split state, or the terminal until then. Failed output stops presentation
+    /// permanently; this helper cannot repair partially delivered terminal commands.
+    /// The owner also controls terminal lifecycle.
+    pub fn renderDeferred(self: *CliRenderer, force: bool) error{
+        PresentationPending,
+        PresentationFailed,
+        IncompatibleOutput,
+        SplitRenderPending,
+    }!RenderStatus {
+        if (self.pendingPresentation != null) return error.PresentationPending;
+        if (self.presentationFailed) return error.PresentationFailed;
+        if (self.backend.feed.callback != null or self.backend.feed.in_callback) return error.IncompatibleOutput;
+        if (self.pendingSplitFooterTransition.mode != .none) return error.SplitRenderPending;
+        if (self.backend.frameActive) return error.IncompatibleOutput;
+        return self.renderFrame(force, null);
     }
 
-    // One code path; backend selects writer type at compile time.
-    pub fn render(self: *CliRenderer, force: bool) RenderStatus {
+    pub fn renderSplitDeferred(self: *CliRenderer, split: SplitRender, force: bool) !RenderStatus {
+        if (self.pendingPresentation != null) return error.PresentationPending;
+        if (self.presentationFailed) return error.PresentationFailed;
+        if (self.backend.feed.callback != null or self.backend.feed.in_callback or self.backend.frameActive)
+            return error.IncompatibleOutput;
+        return self.renderFrame(force, split);
+    }
+
+    pub fn completePresentation(
+        self: *CliRenderer,
+        outcome: PresentationOutcome,
+    ) error{NoPendingPresentation}!void {
+        const pending = self.pendingPresentation orelse return error.NoPendingPresentation;
+        self.pendingPresentation = null;
+        if (outcome == .failed) {
+            self.presentationFailed = true;
+            _ = self.finishFailedFrame();
+            return;
+        }
+
+        const delta_time = @as(f64, @floatFromInt(pending.timestamp_us - self.lastRenderTime)) / 1000.0;
+        self.lastRenderTime = pending.timestamp_us;
+        self.renderStats.cellsUpdated = pending.cells_updated;
+        self.renderStats.renderTime = pending.render_time;
+        if (pending.split_state) |state| self.restoreSplitFrameState(state);
+        if (!pending.snapshot_only) {
+            if (pending.work) |work| {
+                self.last_frame_work = work;
+                if (pending.retain) self.retained_frame_id = work.work_frame_id;
+            }
+            self.publishHits(pending.work);
+            self.commitPendingImageState();
+        } else {
+            self.invalidateTerminalState();
+        }
+        self.collectFrameStats(delta_time);
+    }
+
+    fn renderFrame(self: *CliRenderer, force: bool, split: ?SplitRender) RenderStatus {
+        std.debug.assert(self.pendingPresentation == null and !self.presentationFailed);
+        // A dropped scrollback commit is not held: the host drops the commit instead.
+        const holds = split == null or split.?.snapshots.len == 0;
+        // The overlay is part of the frame that the hold compares.
+        const paint_footer = if (split) |options| options.paint_footer else true;
+        if (paint_footer) self.renderDebugOverlay();
+        if (self.dropped_content) |content| {
+            if (holds and frameContentHash(self.nextRenderBuffer) == content.hash) {
+                self.clearSkippedFrameState();
+                self.dropped_frame_bytes = content.bytes;
+                return .failed;
+            }
+        }
+        self.dropped_frame_bytes = 0;
         // Backpressure: skipping must NOT update lastRenderTime so the next
         // successful render sees the full accumulated delta (catch-up).
         if (self.backend.prepareFrame() != .ok) {
             return self.finishSkippedFrame();
         }
 
-        const now = std.Io.Clock.now(.awake, io).toMicroseconds();
-        const deltaTimeMs = @as(f64, @floatFromInt(now - self.lastRenderTime));
-        const deltaTime = deltaTimeMs / 1000.0;
-
-        self.lastRenderTime = now;
-        self.renderDebugOverlay();
+        const now = std.Io.Clock.now(.awake, self.io).toMicroseconds();
         const start_split_state = self.splitFrameState();
+        const previous_stats = self.renderStats;
         self.imageRenderFailed = false;
 
-        // `inline else` monomorphizes the writer type per variant — one
-        // dispatch site, zero vtable cost.
-        var write_status: output.WriteStatus = .ok;
-        switch (self.backend) {
-            inline else => |*b| {
-                b.beginFrame();
-                var w = b.writer();
-                self.prepareRenderFrameWithWriter(&w, force, false);
-                if (self.imageRenderFailed) b.failFrame();
-                write_status = b.endFrame();
-            },
+        // Batch small ANSI fragments before backend admission without retaining bytes between frames.
+        const b = &self.backend;
+        b.beginFrame();
+        var w = b.writer();
+        var scratch: [4096]u8 = undefined;
+        w.interface.buffer = &scratch;
+        const writer = &w.interface;
+        var frame_started = false;
+        var redraw_footer = force;
+        if (split) |options| {
+            const previous_offset = self.renderOffset;
+            const transition = if (options.suspended) SplitFooterTransition{} else self.pendingSplitFooterTransition;
+            self.renderOffset = if (transition.mode == .viewport_scroll and transition.target_top_line > 0 and transition.scroll_lines > 0)
+                transition.target_top_line - 1
+            else
+                self.clampSplitSurfaceOffset(previous_offset, options.pinned_render_offset);
+            redraw_footer = redraw_footer or previous_offset != self.renderOffset;
+            if (options.snapshots.len != 0) {
+                self.beginRenderFrame(writer);
+                frame_started = true;
+                if (!options.suspended) self.applyPendingSplitFooterTransition(writer, &frame_started);
+                for (options.snapshots) |commit| {
+                    const redraw = self.appendSplitFooterSnapshotCommit(writer, commit.snapshot, commit.row_columns, commit.start_on_new_line, commit.trailing_newline, options.pinned_render_offset, force) catch blk: {
+                        self.imageRenderFailed = true;
+                        b.failFrame();
+                        break :blk false;
+                    };
+                    redraw_footer = redraw_footer or redraw;
+                    if (self.imageRenderFailed) break;
+                }
+            }
         }
+        if (paint_footer) {
+            self.prepareRenderFrameWithWriter(writer, redraw_footer, frame_started) catch b.failFrame();
+        } else {
+            if (frame_started) {
+                if (split.?.suspended) {
+                    ansi.ANSI.moveToOutput(writer, 1, self.renderOffset + 1) catch b.failFrame();
+                    writer.writeAll(ansi.ANSI.showCursor) catch b.failFrame();
+                }
+                if (self.terminal.synchronizedOutput()) writer.writeAll(ansi.ANSI.syncReset) catch b.failFrame();
+            }
+            writer.flush() catch b.failFrame();
+        }
+        if (self.imageRenderFailed) b.failFrame();
+        const write_status = b.endFrame();
 
         const status = renderStatusFromWrite(write_status);
-        if (status == .failed or self.imageRenderFailed) {
-            const result = self.finishFailedFrame();
-            self.restoreSplitFrameState(start_split_state);
-            return result;
+        std.debug.assert(status != .rendered or !self.imageRenderFailed);
+        if (status != .rendered) {
+            if (b.oversizeBytes != 0) {
+                // A failed encode still syncs every cell, so the current buffer holds the dropped frame.
+                // A diff can be larger than its full repaint: only a frame that wrote every cell is
+                // held and counted, and a scrollback commit, which the host drops, is counted too.
+                const full = self.renderStats.cellsUpdated == self.width * self.height;
+                if (full or !holds) self.dropped_frames +%= 1;
+                self.dropped_frame_bytes = @intCast(@min(b.oversizeBytes, std.math.maxInt(u32)));
+                if (holds and full) self.dropped_content = .{ .hash = frameContentHash(self.currentRenderBuffer), .bytes = self.dropped_frame_bytes };
+            }
+            self.renderStats = previous_stats;
+            self.rollbackSplitFrame(start_split_state);
+            return self.finishUnpublishedFrame(status);
         }
-        self.commitPendingHitGrid();
-        self.commitPendingImageState();
-
-        self.collectFrameStats(deltaTime);
+        self.dropped_content = null;
+        self.markUploads();
+        // A Session hands over scene work only for frames that paint the footer.
+        std.debug.assert(self.scene_work == null or paint_footer);
+        self.pendingPresentation = .{
+            .timestamp_us = now,
+            .cells_updated = if (paint_footer) self.renderStats.cellsUpdated else 0,
+            .render_time = if (paint_footer) self.renderStats.renderTime else null,
+            .split_state = if (split != null) self.splitFrameState() else null,
+            .snapshot_only = !paint_footer,
+            .work = if (self.scene_work) |work| work.merge(self.encode_work) else null,
+            .retain = self.next_scene_retained,
+        };
+        if (split != null) self.restoreSplitFrameState(start_split_state);
+        self.renderStats = previous_stats;
         return status;
+    }
+
+    fn recordFrameCost(self: *CliRenderer, started_us: i64) void {
+        const elapsed = std.Io.Clock.now(.awake, self.io).toMicroseconds() - started_us;
+        self.lastFrameCostUs = utils.unsigned(u32, @min(utils.nonNegative(elapsed), std.math.maxInt(u32)));
+    }
+
+    /// The cost that adaptive image sizes follow: the last frame's, or the most
+    /// while an image waits because the uploads did not fit one frame.
+    pub fn imageFrameCostUs(self: *const CliRenderer) u32 {
+        return if (self.imageUploadsPending() != 0) std.math.maxInt(u32) else self.lastFrameCostUs;
     }
 
     fn splitOutputOffset(self: *const CliRenderer, surface_offset: u32) u32 {
@@ -1020,12 +1118,14 @@ pub const CliRenderer = struct {
     }
 
     pub fn resetSplitScrollback(self: *CliRenderer, seed_rows: u32, pinned_render_offset: u32) u32 {
+        std.debug.assert(self.pendingPresentation == null);
         self.splitScrollback.reset(seed_rows);
         self.renderOffset = self.splitScrollback.renderOffset(pinned_render_offset);
         return self.renderOffset;
     }
 
     pub fn syncSplitScrollback(self: *CliRenderer, pinned_render_offset: u32) u32 {
+        std.debug.assert(self.pendingPresentation == null);
         self.renderOffset = self.clampSplitSurfaceOffset(self.renderOffset, pinned_render_offset);
         return self.renderOffset;
     }
@@ -1034,26 +1134,8 @@ pub const CliRenderer = struct {
         return self.splitOutputOffset(surface_offset);
     }
 
-    pub fn setPendingSplitFooterTransition(
-        self: *CliRenderer,
-        mode: SplitFooterTransitionMode,
-        source_top_line: u32,
-        source_height: u32,
-        target_top_line: u32,
-        target_height: u32,
-        scroll_lines: u32,
-    ) void {
-        self.pendingSplitFooterTransition = .{
-            .mode = mode,
-            .source_top_line = source_top_line,
-            .source_height = source_height,
-            .target_top_line = target_top_line,
-            .target_height = target_height,
-            .scroll_lines = scroll_lines,
-        };
-    }
-
     pub fn clearPendingSplitFooterTransition(self: *CliRenderer) void {
+        std.debug.assert(self.pendingPresentation == null);
         self.pendingSplitFooterTransition.clear();
     }
 
@@ -1066,7 +1148,7 @@ pub const CliRenderer = struct {
         }
 
         if (!frame_started.*) {
-            beginRenderFrame(writer);
+            self.beginRenderFrame(writer);
             frame_started.* = true;
         }
 
@@ -1099,208 +1181,6 @@ pub const CliRenderer = struct {
             },
             .none => {},
         }
-    }
-
-    pub fn repaintSplitFooter(
-        self: *CliRenderer,
-        pinned_render_offset: u32,
-        force: bool,
-    ) RenderResult {
-        if (self.backend.prepareFrame() != .ok) {
-            const status = self.finishSkippedFrame();
-            return self.renderResult(status);
-        }
-
-        const now = std.Io.Clock.now(.awake, io).toMicroseconds();
-        const deltaTimeMs = @as(f64, @floatFromInt(now - self.lastRenderTime));
-        const deltaTime = deltaTimeMs / 1000.0;
-
-        self.lastRenderTime = now;
-        self.renderDebugOverlay();
-
-        const start_split_state = self.splitFrameState();
-        const status = self.prepareSplitFooterRepaintFrame(pinned_render_offset, force);
-        var result_status = status;
-        if (status == .failed) {
-            result_status = self.finishFailedFrame();
-            self.restoreSplitFrameState(start_split_state);
-        } else {
-            self.collectFrameStats(deltaTime);
-        }
-
-        return self.renderResult(result_status);
-    }
-
-    pub fn commitSplitFooterSnapshotBatched(
-        self: *CliRenderer,
-        snapshot: *OptimizedBuffer,
-        row_columns: u32,
-        start_on_new_line: bool,
-        trailing_newline: bool,
-        pinned_render_offset: u32,
-        force: bool,
-        begin_frame: bool,
-        finalize_frame: bool,
-    ) RenderResult {
-        return self.commitSplitFooterSnapshotWithOptions(
-            snapshot,
-            row_columns,
-            start_on_new_line,
-            trailing_newline,
-            pinned_render_offset,
-            force,
-            .{ .begin_frame = begin_frame, .finalize_frame = finalize_frame },
-        );
-    }
-
-    pub fn commitSplitFooterSnapshotWithOptions(
-        self: *CliRenderer,
-        snapshot: *OptimizedBuffer,
-        row_columns: u32,
-        start_on_new_line: bool,
-        trailing_newline: bool,
-        pinned_render_offset: u32,
-        force: bool,
-        options: struct {
-            begin_frame: bool = true,
-            finalize_frame: bool = true,
-            control_output: bool = false,
-        },
-    ) RenderResult {
-        // Batched commit protocol:
-        // - first call starts frame and appends payload
-        // - middle calls append payload only
-        // - final call renders footer diff/cursor and closes frame
-        // This avoids repeated syncSet/syncReset and cursor toggles per chunk.
-        if (options.begin_frame) {
-            const ready = if (options.control_output)
-                self.backend.prepareControlFrame()
-            else
-                self.backend.prepareFrame();
-            if (ready != .ok) {
-                const status = self.finishSkippedFrame();
-                return self.renderResult(status);
-            }
-
-            const now = std.Io.Clock.now(.awake, io).toMicroseconds();
-            const deltaTimeMs = @as(f64, @floatFromInt(now - self.lastRenderTime));
-            const deltaTime = deltaTimeMs / 1000.0;
-
-            self.lastRenderTime = now;
-            self.renderDebugOverlay();
-            self.imageRenderFailed = false;
-
-            var write_status: output.WriteStatus = .ok;
-            var result_status: RenderStatus = .rendered;
-            switch (self.backend) {
-                inline else => |*b| {
-                    b.beginFrame();
-                    var w = b.writer();
-                    beginRenderFrame(&w);
-                    var frame_started = true;
-                    self.splitBatchStartState = self.splitFrameState();
-                    self.applyPendingSplitFooterTransition(&w, &frame_started);
-
-                    // Track batch lifetime so subsequent calls can append into the same
-                    // output buffer without restarting frame state.
-                    self.splitBatchActive = !options.finalize_frame;
-                    self.splitBatchRedrawFooter = false;
-                    self.splitBatchDeltaTime = deltaTime;
-
-                    const redraw_footer = self.appendSplitFooterSnapshotCommit(
-                        &w,
-                        snapshot,
-                        row_columns,
-                        start_on_new_line,
-                        trailing_newline,
-                        pinned_render_offset,
-                        force,
-                    ) catch blk: {
-                        self.imageRenderFailed = true;
-                        break :blk false;
-                    };
-
-                    if (options.finalize_frame) {
-                        self.prepareRenderFrameWithWriter(&w, redraw_footer, true);
-                        if (self.imageRenderFailed) b.failFrame();
-                        write_status = b.endFrame();
-                        const status = renderStatusFromWrite(write_status);
-                        if (status == .failed or self.imageRenderFailed) {
-                            result_status = self.finishFailedFrame();
-                        } else {
-                            self.commitPendingHitGrid();
-                            self.commitPendingImageState();
-                            result_status = status;
-                            self.collectFrameStats(deltaTime);
-                        }
-
-                        self.finishSplitBatch(result_status != .failed);
-                    } else {
-                        result_status = .rendered;
-                        self.splitBatchRedrawFooter = redraw_footer;
-                    }
-                },
-            }
-
-            return self.renderResult(result_status);
-        }
-
-        // Defensive fallback: if caller forgot begin_frame, execute through a
-        // single-call frame instead of appending into undefined batch state.
-        if (!self.splitBatchActive) {
-            return self.commitSplitFooterSnapshotWithOptions(
-                snapshot,
-                row_columns,
-                start_on_new_line,
-                trailing_newline,
-                pinned_render_offset,
-                force,
-                .{ .control_output = options.control_output },
-            );
-        }
-
-        var write_status: output.WriteStatus = .ok;
-        var result_status: RenderStatus = .rendered;
-        switch (self.backend) {
-            inline else => |*b| {
-                var w = b.writer();
-                const redraw_footer = self.appendSplitFooterSnapshotCommit(
-                    &w,
-                    snapshot,
-                    row_columns,
-                    start_on_new_line,
-                    trailing_newline,
-                    pinned_render_offset,
-                    force,
-                ) catch blk: {
-                    self.imageRenderFailed = true;
-                    break :blk false;
-                };
-                self.splitBatchRedrawFooter = self.splitBatchRedrawFooter or redraw_footer;
-
-                if (options.finalize_frame) {
-                    self.prepareRenderFrameWithWriter(&w, self.splitBatchRedrawFooter, true);
-                    if (self.imageRenderFailed) b.failFrame();
-                    write_status = b.endFrame();
-
-                    const status = renderStatusFromWrite(write_status);
-                    if (status == .failed or self.imageRenderFailed) {
-                        result_status = self.finishFailedFrame();
-                    } else {
-                        self.commitPendingHitGrid();
-                        self.commitPendingImageState();
-                        result_status = status;
-                        self.collectFrameStats(self.splitBatchDeltaTime);
-                    }
-
-                    self.finishSplitBatch(result_status != .failed);
-                } else {
-                    result_status = .rendered;
-                }
-            },
-        }
-
-        return self.renderResult(result_status);
     }
 
     fn reserveKittyHistoryImageIds(self: *CliRenderer, count: usize) ?u32 {
@@ -1525,7 +1405,7 @@ pub const CliRenderer = struct {
         placement: OptimizedBuffer.ImagePlacement,
         image_id: u32,
     ) !void {
-        const transmit = try self.kittyPlacementTransmit(placement, .pixels);
+        const transmit = try self.kittyPlacementTransmit(placement, .pixels, kittyDownscaleApplies(placement));
         defer if (transmit.owned) transmit.image.deinit();
         // Scrollback has no retained source to retry after a failed file upload.
         // Keep it self-contained; compression still applies when explicitly requested.
@@ -1581,8 +1461,8 @@ pub const CliRenderer = struct {
     ///
     /// This function intentionally does not emit syncSet/syncReset or footer
     /// repaint sequences. It only writes snapshot text rows at the current output
-    /// cursor. Frame boundaries are controlled by commitSplitFooterSnapshot*
-    /// callers so multiple payloads can share one frame.
+    /// cursor. Frame boundaries are controlled by renderFrame so multiple
+    /// payloads can share one frame.
     ///
     /// row_columns limits the per-row emitted width. Caller may provide a
     /// wider buffer but a smaller logical row width for wrapped stdout chunks.
@@ -1606,6 +1486,9 @@ pub const CliRenderer = struct {
         const hyperlinksEnabled = self.terminal.getCapabilities().hyperlinks;
         const render_columns = @min(row_columns, snapshot.width);
 
+        // Erase before each row, not after it: a row that fills the width leaves the cursor on
+        // the last column with a wrap pending, and an erase there removes that cell.
+        writer.writeAll(ansi.ANSI.reset ++ ansi.ANSI.eraseToEndOfLine) catch {};
         for (0..snapshot.height) |uy| {
             const y = @as(u32, @intCast(uy));
             const row_end = snapshotRowEnd(snapshot, y, render_columns);
@@ -1699,8 +1582,6 @@ pub const CliRenderer = struct {
             }
 
             writer.writeAll(ansi.ANSI.reset) catch {};
-            // Guarantee short rows do not leave stale content from prior frame data.
-            writer.writeAll(ansi.ANSI.eraseToEndOfLine) catch {};
             if (image_state.protocol == .sixel or image_state.protocol == .kitty) {
                 try self.writeSnapshotNativeImagesForRow(writer, snapshot, y, image_state);
             }
@@ -1710,14 +1591,9 @@ pub const CliRenderer = struct {
 
             const is_last_row = @as(u32, @intCast(uy + 1)) >= snapshot.height;
             if (!is_last_row or trailing_newline) {
-                writer.writeAll("\r\n") catch {};
-            }
-
-            if (is_last_row and trailing_newline) {
-                // After a trailing newline, clear the destination row that becomes
-                // current so old footer text cannot flash through.
-                writer.writeAll(ansi.ANSI.reset) catch {};
-                writer.writeAll(ansi.ANSI.eraseToEndOfLine) catch {};
+                // The erase also clears the row that a trailing newline makes current, so old
+                // footer text cannot flash through.
+                writer.writeAll("\r\n" ++ ansi.ANSI.eraseToEndOfLine) catch {};
             }
         }
     }
@@ -1752,6 +1628,7 @@ pub const CliRenderer = struct {
         const starts_mid_line = previousOutputColumn > 0 and start_on_new_line;
         const starts_wrapped_line = previousOutputColumn >= self.width;
         const previousFooterTopLine: u32 = @max(previousSurfaceOffset + 1, @as(u32, 1));
+        var ends_last_row = trailing_newline;
 
         if (snapshot_has_content) {
             // First update logical split scrollback state, then emit terminal I/O.
@@ -1770,6 +1647,10 @@ pub const CliRenderer = struct {
             }
 
             self.splitScrollback.published_rows = @min(self.splitScrollback.published_rows, pinned_render_offset);
+            // With no output row, the footer covers the last row: a full row ends there, and the
+            // next commit starts a new line at column 1 (no CRLF, which would scroll a footer row).
+            ends_last_row = trailing_newline or (pinned_render_offset == 0 and self.splitScrollback.tail_column >= self.width);
+            if (pinned_render_offset == 0) self.splitScrollback.tail_column = 0;
         }
 
         const next_output_offset = self.splitScrollback.renderOffset(pinned_render_offset);
@@ -1779,14 +1660,13 @@ pub const CliRenderer = struct {
         // appended output must scroll only the upper pane. Without a temporary DECSTBM
         // region, terminals advance into the footer rows and overwrite them in place.
         const use_bounded_scroll_region = snapshot_has_content and
-            pinned_render_offset > 0 and
             next_render_offset == pinned_render_offset and
             next_output_offset == next_render_offset;
-        // DECSTBM protects footer cells, but terminals can still scroll native
-        // graphics placements. Repaint those placements after every pinned append.
-        const repaint_native_images = use_bounded_scroll_region and
-            (self.hasCommittedProtocol(.kitty) or self.hasCommittedProtocol(.sixel));
-        const redraw_footer = force or previousSurfaceOffset != next_render_offset or repaint_native_images;
+        // DECSTBM protects footer cells, but terminals can still scroll native graphics placements, and
+        // a pane of one row or none borrows footer rows. Repaint the footer after those pinned appends.
+        const repaint_footer = use_bounded_scroll_region and (pinned_render_offset < 2 or
+            self.hasCommittedProtocol(.kitty) or self.hasCommittedProtocol(.sixel));
+        const redraw_footer = force or previousSurfaceOffset != next_render_offset or repaint_footer;
 
         if (snapshot_has_content or force) {
             if (snapshot_has_content) {
@@ -1804,8 +1684,8 @@ pub const CliRenderer = struct {
                 if (use_bounded_scroll_region) {
                     // Temporarily bound scrolling to the upper pane so newline/wrap
                     // from appended payload pushes history upward instead of stepping
-                    // through footer rows.
-                    writer.print("\x1b[1;{d}r", .{pinned_render_offset}) catch {};
+                    // through footer rows. Terminals ignore a region of fewer than two rows.
+                    writer.print("\x1b[1;{d}r", .{@max(pinned_render_offset, 2)}) catch {};
                 }
 
                 moveToSplitOutputCursor(writer, previousOutputOffset, previousOutputColumn, self.width);
@@ -1817,15 +1697,20 @@ pub const CliRenderer = struct {
                     // Emit CRLF before payload to preserve logical row boundaries
                     // across commit chunks.
                     writer.writeAll("\r\n") catch {};
+                } else if (previousOutputColumn + snapshotRowEnd(snapshot, 0, normalized_row_columns) > self.width) {
+                    // A first row that wraps would scroll its next line in with the wrapping cell's background
+                    // (BCE). Scroll that line in first with default attributes, or clear a borrowed footer row.
+                    writer.writeAll(ansi.ANSI.reset ++ "\x1bD\x1b[2K\x1b[A") catch {};
                 }
 
                 // Serialize payload rows at current output cursor.
-                try self.writeSnapshotCommit(writer, snapshot, normalized_row_columns, trailing_newline, kitty_history_state);
+                try self.writeSnapshotCommit(writer, snapshot, normalized_row_columns, ends_last_row, kitty_history_state);
 
                 if (use_bounded_scroll_region) {
-                    // Restore default full-height scroll region for regular repaint
-                    // and cursor operations after append is complete.
-                    writer.writeAll("\x1b[r") catch {};
+                    // Restore the full-height region. A pane of one row or none first scrolls its last line
+                    // back to row 1, unless the terminal has one row, where each CRLF already scrolled.
+                    const scroll_back = pinned_render_offset < 2 and pinned_render_offset + self.height > 1;
+                    writer.writeAll(if (scroll_back) "\x1bD\x1b[r" else "\x1b[r") catch {};
                 }
             }
 
@@ -1840,47 +1725,9 @@ pub const CliRenderer = struct {
         return redraw_footer;
     }
 
-    fn beginRenderFrame(writer: anytype) void {
-        writer.writeAll(ansi.ANSI.syncSet) catch {};
+    fn beginRenderFrame(self: *const CliRenderer, writer: anytype) void {
+        if (self.terminal.synchronizedOutput()) writer.writeAll(ansi.ANSI.syncSet) catch {};
         writer.writeAll(ansi.ANSI.hideCursor) catch {};
-    }
-
-    fn prepareSplitFooterRepaintFrame(
-        self: *CliRenderer,
-        pinned_render_offset: u32,
-        force: bool,
-    ) RenderStatus {
-        const transition = self.pendingSplitFooterTransition;
-        const hasPendingViewportTarget = transition.mode == .viewport_scroll and
-            transition.target_top_line > 0 and
-            transition.scroll_lines > 0;
-        const previousRenderOffset = self.renderOffset;
-        const next_render_offset = if (hasPendingViewportTarget)
-            transition.target_top_line - 1
-        else
-            self.clampSplitSurfaceOffset(previousRenderOffset, pinned_render_offset);
-        const redraw_footer = force or previousRenderOffset != next_render_offset;
-
-        self.renderOffset = next_render_offset;
-        self.imageRenderFailed = false;
-        // Do not pre-start sync frame here. prepareRenderFrameWithWriter now lazily starts
-        // frame output only when something actually changes; this prevents no-op
-        // repaint ticks from emitting hide/show cursor and sync envelopes.
-        var write_status: output.WriteStatus = .ok;
-        switch (self.backend) {
-            inline else => |*b| {
-                b.beginFrame();
-                var w = b.writer();
-                self.prepareRenderFrameWithWriter(&w, redraw_footer, false);
-                if (self.imageRenderFailed) b.failFrame();
-                write_status = b.endFrame();
-            },
-        }
-        const status = renderStatusFromWrite(write_status);
-        if (status == .failed or self.imageRenderFailed) return self.finishFailedFrame();
-        self.commitPendingHitGrid();
-        self.commitPendingImageState();
-        return status;
     }
 
     pub fn getNextBuffer(self: *CliRenderer) *OptimizedBuffer {
@@ -1898,7 +1745,8 @@ pub const CliRenderer = struct {
             if (a.placement_id != b.placement_id or a.image_handle != b.image_handle or a.x != b.x or a.y != b.y or a.width != b.width or a.height != b.height or
                 a.pixel_width != b.pixel_width or a.pixel_height != b.pixel_height) return true;
             if (a.source_x != b.source_x or a.source_y != b.source_y or a.source_width != b.source_width or a.source_height != b.source_height or a.opacity != b.opacity) return true;
-            if (self.nextPlacementProtocol(a) != b.protocol) return true;
+            // A Kitty upload that was too large is tried again as a copy.
+            if (self.nextPlacementProtocol(a) != b.protocol or (b.oversize and b.protocol == .kitty)) return true;
             if (self.nextPlacementProtocol(a) == .kitty and index < self.imageDirty.items.len) {
                 const reservation = self.imageDirty.items[index].reservation;
                 if (reservation.intact != b.reservation_intact or reservation.hash != b.reservation_hash) return true;
@@ -1909,7 +1757,7 @@ pub const CliRenderer = struct {
         return false;
     }
 
-    fn resolveImageProtocol(self: *CliRenderer, requested: native_image.RenderProtocol) ImageProtocol {
+    pub fn resolveImageProtocol(self: *CliRenderer, requested: native_image.RenderProtocol) ImageProtocol {
         const configured = if (requested == .auto) self.terminal.image_protocol else switch (requested) {
             .auto => unreachable,
             .kitty => Terminal.ImageProtocol.kitty,
@@ -1948,7 +1796,42 @@ pub const CliRenderer = struct {
     fn nextPlacementProtocol(self: *CliRenderer, placement: OptimizedBuffer.ImagePlacement) ImageProtocol {
         const protocol = self.resolveImageProtocol(placement.protocol);
         if (protocol == .sixel and !native_image.dimensionsWithinLimits(placement.pixel_width, placement.pixel_height)) return .fallback;
+        if (protocol == .fallback) return protocol;
+        const committed = self.sameUpload(placement) orelse return protocol;
+        // A full Kitty image that was too large is sent once more as a copy at the placement's pixel size.
+        if (committed.oversize and (committed.protocol != .kitty or committed.copied or !copySmaller(placement))) return .fallback;
         return protocol;
+    }
+
+    // The committed entry of the same upload: the same image, or raw pixels whose size alone sets
+    // the upload (so each new video frame of the same size keeps its state, while a compressible
+    // neighbor that takes this id does not), at the same pixel and source size.
+    fn sameUpload(self: *const CliRenderer, placement: OptimizedBuffer.ImagePlacement) ?CommittedImage {
+        const committed = self.currentImageForPlacement(placement.placement_id) orelse return null;
+        const same = committed.image_handle == placement.image_handle or
+            (placement.image.encoded_png == null and self.kittyTransport.mode == .raw);
+        if (!same or committed.pixel_width != placement.pixel_width or committed.pixel_height != placement.pixel_height or
+            committed.source_width != placement.source_width or committed.source_height != placement.source_height) return null;
+        return committed;
+    }
+
+    // A copy at the placement's pixel size has fewer pixels than the image.
+    fn copySmaller(placement: OptimizedBuffer.ImagePlacement) bool {
+        const pixel_area = @as(u64, placement.pixel_width) * placement.pixel_height;
+        return pixel_area > 0 and pixel_area < @as(u64, placement.image.width()) * placement.image.height();
+    }
+
+    // The live Kitty transmit is a copy at the placement's pixel size: by the 4x rule, or when the
+    // full image was too large (a Kitty entry marked oversize, or a copy not by the rule; blocks
+    // and Sixel entries never tried it). The full upload depends only on the image and its
+    // opacity, so the copy outlives a size change. Scrollback snapshots use the rule alone.
+    fn kittyCopies(self: *const CliRenderer, placement: OptimizedBuffer.ImagePlacement) bool {
+        if (kittyDownscaleApplies(placement)) return true;
+        const committed = self.currentImageForPlacement(placement.placement_id) orelse return false;
+        const too_large = committed.protocol == .kitty and
+            if (committed.copied) !kittyDownscaleApplies(committed) else committed.oversize;
+        return too_large and committed.image_handle == placement.image_handle and committed.opacity == placement.opacity and
+            copySmaller(placement);
     }
 
     // Existing overlay cells are repainted by normal cell diffing. The Sixel
@@ -1992,7 +1875,7 @@ pub const CliRenderer = struct {
         // Kitty replaces image data server side, so content changes do not
         // require clearing cells. Sixel pixels are the cells, so content and
         // blended-background changes repaint the rectangle.
-        if (protocol == .sixel and (committed.image_handle != placement.image_handle or
+        if (protocol == .sixel and ((committed.image_handle != placement.image_handle and committed.image_handle != 0) or
             committed.background_hash != background_hash or
             committed.lower_occupancy_hash != lower_occupancy_hash)) return true;
         return protocol == .sixel and self.placementExposed(placement);
@@ -2033,6 +1916,7 @@ pub const CliRenderer = struct {
                 0;
             self.imageDirty.appendAssumeCapacity(.{
                 .clear = self.placementNeedsClear(placement, protocol, background_hash, lower_occupancy_hash, forced),
+                .paint = protocol == .sixel and self.uploadWaited(placement),
                 .protocol = protocol,
                 .background_hash = background_hash,
                 .lower_occupancy_hash = lower_occupancy_hash,
@@ -2062,7 +1946,8 @@ pub const CliRenderer = struct {
 
     fn placementDirty(self: *const CliRenderer, placement_id: u32) bool {
         if (placement_id == 0 or placement_id > self.imageDirty.items.len) return true;
-        return self.imageDirty.items[placement_id - 1].clear;
+        const state = self.imageDirty.items[placement_id - 1];
+        return state.clear or state.paint;
     }
 
     fn placementFrameState(self: *const CliRenderer, char: u32) ?ImageDirty {
@@ -2111,11 +1996,19 @@ pub const CliRenderer = struct {
                 .lower_occupancy_hash = if (index < self.imageDirty.items.len) self.imageDirty.items[index].lower_occupancy_hash else 0,
                 .reservation_intact = reservation.intact,
                 .reservation_hash = reservation.hash,
+                .kitty_runs = if (protocol == .kitty and !reservation.intact)
+                    self.writeKittyReservationRuns({}, placement, 0, self.kittyCopies(placement), false) catch unreachable
+                else
+                    0,
+                .oversize = protocol == .fallback and if (self.sameUpload(placement)) |committed| committed.oversize else false,
+                .copied = protocol == .kitty and self.kittyCopies(placement),
             });
         }
     }
 
     fn commitPendingImageState(self: *CliRenderer) void {
+        self.kittyTransport.finishFrame(true);
+        self.imageScreenInvalidated = false;
         if (self.imageRenderFailed) {
             self.pendingImages.clearRetainingCapacity();
             return;
@@ -2162,14 +2055,10 @@ pub const CliRenderer = struct {
     // known pixel size and at least 4x the area, transmit a downscaled copy;
     // the terminal scales the remainder. PNG passthrough is skipped for these
     // because the raw downscaled payload is smaller than the original file.
-    fn kittyDownscaleAppliesTo(source_width: u32, source_height: u32, pixel_width: u32, pixel_height: u32) bool {
-        const pixel_area = @as(u64, pixel_width) * pixel_height;
-        const source_area = @as(u64, source_width) * source_height;
+    fn kittyDownscaleApplies(sizes: anytype) bool {
+        const pixel_area = @as(u64, sizes.pixel_width) * sizes.pixel_height;
+        const source_area = @as(u64, sizes.source_width) * sizes.source_height;
         return pixel_area > 0 and source_area >= pixel_area * 4;
-    }
-
-    fn kittyDownscaleApplies(placement: OptimizedBuffer.ImagePlacement) bool {
-        return kittyDownscaleAppliesTo(placement.source_width, placement.source_height, placement.pixel_width, placement.pixel_height);
     }
 
     const KittyTransmit = struct {
@@ -2193,9 +2082,9 @@ pub const CliRenderer = struct {
         self: *CliRenderer,
         placement: OptimizedBuffer.ImagePlacement,
         crop: KittyTransmitCrop,
+        downscaled: bool,
     ) !KittyTransmit {
         const source = placement.image;
-        const downscaled = kittyDownscaleApplies(placement);
         if (downscaled or (crop == .pixels and kittyCropApplies(placement))) {
             const cropped = try native_image.extract(
                 self.allocator,
@@ -2233,7 +2122,8 @@ pub const CliRenderer = struct {
     // with the same coverage share a placement, so an uncovered band keeps the
     // owner's exact source mapping and the escape count follows the overlay
     // shape rather than the image height. z stays on the owner id so ordering
-    // does not follow the run id.
+    // does not follow the run id. Returns the run count; a void writer only
+    // counts, so committed state can name each run for its later delete.
     fn writeKittyReservationRuns(
         self: *CliRenderer,
         writer: anytype,
@@ -2241,7 +2131,7 @@ pub const CliRenderer = struct {
         image_id: u32,
         downscaled: bool,
         tmux: bool,
-    ) !void {
+    ) !u32 {
         const src_x0: u32 = if (downscaled) 0 else placement.source_x;
         const src_y0: u32 = if (downscaled) 0 else placement.source_y;
         const src_w: u32 = if (downscaled) placement.pixel_width else placement.source_width;
@@ -2265,7 +2155,7 @@ pub const CliRenderer = struct {
                 const src_x = kittySourceSpan(src_x0, src_w, start, ox - start, placement.width) orelse continue;
                 // Runs never outnumber cells, so the id space above KITTY_RUN_ID_MIN suffices.
                 std.debug.assert(run_index < std.math.maxInt(u32) - KITTY_RUN_ID_MIN);
-                try terminal_image.writeKittyPlacement(
+                if (@TypeOf(writer) != void) try terminal_image.writeKittyPlacement(
                     writer,
                     image_id,
                     KITTY_RUN_ID_MIN + run_index,
@@ -2283,11 +2173,14 @@ pub const CliRenderer = struct {
                 run_index += 1;
             }
         }
+        return run_index;
     }
 
     // Re-emit one Kitty placement when its transmit, geometry, or coverage
-    // changed, or when a full repaint is forced. Deletes address the image id,
-    // not individual placements, so a dropped frame leaves nothing to reconcile.
+    // changed, or when a full repaint is forced. Placement deletes name each
+    // committed placement: iTerm2 also frees the image on an image-wide `d=i`,
+    // so a following put would find no image. Committed state only advances
+    // with a presented frame, so a dropped frame still names what is shown.
     fn writeKittyPlacementUpdate(
         self: *CliRenderer,
         writer: anytype,
@@ -2295,20 +2188,15 @@ pub const CliRenderer = struct {
         force_place: bool,
         tmux: bool,
     ) !void {
-        const previous = if (self.currentImageForPlacement(placement.placement_id)) |current|
-            if (current.protocol == .kitty and current.image_handle == placement.image_handle) current else null
+        const previous = if (!self.imageScreenInvalidated) (if (self.currentImageForPlacement(placement.placement_id)) |current|
+            if (current.protocol == .kitty and current.image_handle == placement.image_handle and !current.oversize) current else null
         else
-            null;
+            null) else null;
         const image_id = self.kittyImageId(placement.placement_id);
-        const downscaled = kittyDownscaleApplies(placement);
+        const downscaled = self.kittyCopies(placement);
         const reservation = self.placementReservationState(placement.placement_id);
         const retransmit = if (previous) |committed| blk: {
-            const previous_downscaled = kittyDownscaleAppliesTo(
-                committed.source_width,
-                committed.source_height,
-                committed.pixel_width,
-                committed.pixel_height,
-            );
+            const previous_downscaled = committed.copied;
             const source_changed = committed.source_x != placement.source_x or committed.source_y != placement.source_y or
                 committed.source_width != placement.source_width or committed.source_height != placement.source_height;
             break :blk committed.opacity != placement.opacity or previous_downscaled != downscaled or
@@ -2330,20 +2218,31 @@ pub const CliRenderer = struct {
         if (retransmit) {
             // Frees the image and every placement of it, runs included.
             try terminal_image.writeKittyDelete(writer, image_id, null, true, tmux);
-        } else if (previous != null) {
+        } else if (previous) |committed| {
             // Drops the owner rectangle or its runs, whichever is on the
             // terminal, and keeps the image data for the new placements.
-            try terminal_image.writeKittyDelete(writer, image_id, null, false, tmux);
+            if (committed.reservation_intact) {
+                try terminal_image.writeKittyDelete(writer, image_id, placement.placement_id, false, tmux);
+            } else {
+                var run: u32 = 0;
+                while (run < committed.kitty_runs) : (run += 1) {
+                    try terminal_image.writeKittyDelete(writer, image_id, KITTY_RUN_ID_MIN + run, false, tmux);
+                }
+            }
         }
-        if (previous == null or retransmit) {
-            const transmit = try self.kittyPlacementTransmit(placement, .escape);
+        const transmits = previous == null or retransmit;
+        if (transmits) self.beginUpload(writer, placement);
+        defer if (transmits) self.endUpload(writer, placement.placement_id);
+        if (transmits) {
+            const transmit = try self.kittyPlacementTransmit(placement, .escape, downscaled);
             defer if (transmit.owned) transmit.image.deinit();
             const directory = if (self.kittyTransport.mode == .file) self.kittyTempDirectory() else "";
             try self.kittyTransport.transmit(self.allocator, writer, transmit.image, image_id, tmux, directory);
+            if (self.kittyImageTransportNow()) |now| self.kittyTransport.arm(now);
         }
         if (placement.x < 0 or placement.y < 0) return;
         if (!reservation.intact) {
-            try self.writeKittyReservationRuns(writer, placement, image_id, downscaled, tmux);
+            _ = try self.writeKittyReservationRuns(writer, placement, image_id, downscaled, tmux);
             return;
         }
         // A downscaled transmit already contains exactly the placement's
@@ -2386,16 +2285,69 @@ pub const CliRenderer = struct {
                 tmux,
             );
         }
-        for (next) |placement| {
-            if (self.nextPlacementProtocol(placement) != .kitty) continue;
-            try self.writeKittyPlacementUpdate(writer, placement, force_place, tmux);
+        // Uploads that waited go first, so a frame's upload budget cannot starve them.
+        for ([_]bool{ true, false }) |waited| {
+            for (next) |placement| {
+                if (self.nextPlacementProtocol(placement) != .kitty or self.uploadWaited(placement) != waited) continue;
+                try self.writeKittyPlacementUpdate(writer, placement, force_place, tmux);
+            }
         }
     }
 
+    // A deferred upload commits its placement with image handle 0, a retry with its oversize mark.
+    fn uploadWaited(self: *const CliRenderer, placement: OptimizedBuffer.ImagePlacement) bool {
+        const committed = self.currentImageForPlacement(placement.placement_id) orelse return false;
+        return committed.image_handle == 0 or committed.oversize;
+    }
+
+    fn beginUpload(self: *CliRenderer, writer: anytype, placement: OptimizedBuffer.ImagePlacement) void {
+        writer.flush() catch {};
+        self.backend.beginUpload(self.uploadWaited(placement));
+    }
+
+    fn endUpload(self: *CliRenderer, writer: anytype, placement_id: u32) void {
+        writer.flush() catch {};
+        self.backend.endUpload(placement_id);
+    }
+
+    /// Mark the placements whose uploads the published frame left out.
+    fn markUploads(self: *CliRenderer) void {
+        for (self.backend.uploads.items) |upload| {
+            if (upload.state == .kept) continue;
+            const staged = &self.pendingImages.items[upload.placement_id - 1];
+            std.debug.assert(staged.placement_id == upload.placement_id);
+            if (staged.protocol == .kitty) self.kittyTransport.discard(self.kittyImageId(upload.placement_id));
+            // A retry's copy that waits keeps its image, marked to be copied again.
+            const retry = upload.state == .deferred and staged.copied and !kittyDownscaleApplies(staged.*);
+            if (upload.state == .too_large or retry) staged.oversize = true else staged.image_handle = 0;
+            if (retry) staged.copied = false;
+        }
+    }
+
+    /// Committed native placements whose image a later frame still has to send.
+    pub fn imageUploadsPending(self: *const CliRenderer) u32 {
+        var count: u32 = 0;
+        for (self.currentImages.items) |image| {
+            count += @intFromBool(image.protocol != .fallback and (image.image_handle == 0 or image.oversize));
+        }
+        return count;
+    }
+
     fn writeSixelImages(self: *CliRenderer, writer: anytype) !void {
+        // Later Sixels paint over earlier ones, so after one waits, the rest wait too.
+        var waiting = false;
         for (self.nextRenderBuffer.image_placements.items) |placement| {
             if (self.nextPlacementProtocol(placement) != .sixel or !self.placementDirty(placement.placement_id)) continue;
             if (placement.pixel_width == 0 or placement.pixel_height == 0 or placement.x < 0 or placement.y < 0) continue;
+            if (waiting) {
+                self.backend.deferUpload(placement.placement_id);
+                continue;
+            }
+            self.beginUpload(writer, placement);
+            defer {
+                self.endUpload(writer, placement.placement_id);
+                waiting = self.backend.lastUploadWaits();
+            }
             const cache_key = SixelCacheKey{
                 .image_handle = placement.image_handle,
                 .source_x = placement.source_x,
@@ -2577,17 +2529,26 @@ pub const CliRenderer = struct {
         }
     }
 
-    /// Generic over the writer type so each backend can provide its own writer
-    /// (buffered frame append or feed streaming) without dispatch in the render path.
+    /// Encode and flush a frame before recording its render time.
     /// `sync_started` is true only when the caller already opened the
     /// synchronized-update envelope for a batched split-footer commit.
-    pub fn prepareRenderFrameWithWriter(self: *CliRenderer, writer: anytype, force: bool, sync_started: bool) void {
+    pub fn prepareRenderFrameWithWriter(self: *CliRenderer, writer: anytype, force: bool, sync_started: bool) error{ OutOfMemory, TrackerLimit, PresentationPending, PresentationFailed }!void {
+        if (self.pendingPresentation != null) return error.PresentationPending;
+        if (self.presentationFailed) return error.PresentationFailed;
         _ = self.pollKittyImageTransport();
-        const renderStartTime = std.Io.Clock.now(.awake, io).toMicroseconds();
+        const renderStartTime = std.Io.Clock.now(.awake, self.io).toMicroseconds();
         var cellsUpdated: u32 = 0;
+        var imageCellsCleared: u32 = 0;
         const palette_force = self.last_rendered_palette_epoch == null or self.last_rendered_palette_epoch.? != self.palette_epoch;
         const should_force = force or self.force_full_repaint or palette_force;
         const has_image_state = self.nextRenderBuffer.image_placements.items.len != 0 or self.currentImages.items.len != 0;
+        const tainted = self.encode_all_rows;
+        self.encode_all_rows = false;
+        const current_written = self.current_written;
+        self.current_written = false;
+        self.encode_work = .{
+            .full_path_reasons = (if (should_force) FrameWork.full_path_screen else 0) | (if (has_image_state) FrameWork.full_path_images else 0),
+        };
         if (self.nextRenderBuffer.image_placements.items.len != 0) {
             self.materializeFallbackImages() catch {
                 self.imageRenderFailed = true;
@@ -2610,6 +2571,18 @@ pub const CliRenderer = struct {
         }
         const images_changed = has_image_state and self.imageStateChanged();
 
+        const current = self.currentRenderBuffer;
+        const next = self.nextRenderBuffer;
+        // Sync retains one replacement before removing old references. Its distinct
+        // IDs fit in the source/destination union, capped at cells plus that replacement.
+        const entries_max = @as(u64, current.buffer.char.len) + 1;
+        try current.storage.ensureTrackerCapacity(
+            @min(@as(u64, current.grapheme_tracker.used_ids.count()) + next.grapheme_tracker.used_ids.count(), entries_max),
+            @min(@as(u64, current.link_tracker.used_ids.count()) + next.link_tracker.used_ids.count(), entries_max),
+        );
+        // Current cells and leases retain their image resources after the next buffer clears.
+        try current.syncImagePlacements(next);
+
         // Lazy frame start is the core no-op suppression mechanism. If diffing,
         // cursor state, and pointer state are unchanged, frame_started stays false
         // and we emit nothing at all for this tick.
@@ -2618,11 +2591,11 @@ pub const CliRenderer = struct {
 
         if ((images_changed or should_force) and (self.hasCommittedProtocol(.kitty) or self.hasNextProtocol(.kitty))) {
             if (!frame_started) {
-                beginRenderFrame(writer);
+                self.beginRenderFrame(writer);
                 frame_started = true;
             }
+            // The frame outcome decides the transport: output pressure keeps it enabled.
             self.writeKittyImages(writer, should_force) catch {
-                self.kittyTransport.cancel(.io_error);
                 self.force_full_repaint = true;
                 self.imageRenderFailed = true;
             };
@@ -2648,20 +2621,27 @@ pub const CliRenderer = struct {
 
         const hyperlinksEnabled = self.terminal.getCapabilities().hyperlinks;
         var use_row_equality = !should_force and !clears_pending;
+        // Rows outside a scene draft's damage equal the presented frame (retained paint).
+        const damage = if (clears_pending or has_image_state or tainted or current_written) null else self.scene_damage;
+        std.debug.assert(damage == null or damage.?.bit_length == self.height);
 
         for (0..self.height) |uy| {
             const y = @as(u32, @intCast(uy));
 
+            if (damage) |rows| {
+                if (!rows.isSet(y)) continue;
+            }
             if (use_row_equality) {
+                self.encode_work.rows_compared += 1;
                 const row_start = @as(usize, y) * self.width;
                 const row_end = row_start + self.width;
-                if (std.mem.eql(u32, self.currentRenderBuffer.buffer.char[row_start..row_end], self.nextRenderBuffer.buffer.char[row_start..row_end]) and
-                    std.mem.eql(RGBA, self.currentRenderBuffer.buffer.fg[row_start..row_end], self.nextRenderBuffer.buffer.fg[row_start..row_end]) and
-                    std.mem.eql(RGBA, self.currentRenderBuffer.buffer.bg[row_start..row_end], self.nextRenderBuffer.buffer.bg[row_start..row_end]) and
-                    std.mem.eql(u32, self.currentRenderBuffer.buffer.attributes[row_start..row_end], self.nextRenderBuffer.buffer.attributes[row_start..row_end])) continue;
+                if (utils.eql(u32, self.currentRenderBuffer.buffer.char[row_start..row_end], self.nextRenderBuffer.buffer.char[row_start..row_end]) and
+                    utils.eql(u8, std.mem.sliceAsBytes(self.currentRenderBuffer.buffer.fg[row_start..row_end]), std.mem.sliceAsBytes(self.nextRenderBuffer.buffer.fg[row_start..row_end])) and
+                    utils.eql(u8, std.mem.sliceAsBytes(self.currentRenderBuffer.buffer.bg[row_start..row_end]), std.mem.sliceAsBytes(self.nextRenderBuffer.buffer.bg[row_start..row_end])) and
+                    utils.eql(u32, self.currentRenderBuffer.buffer.attributes[row_start..row_end], self.nextRenderBuffer.buffer.attributes[row_start..row_end])) continue;
             }
 
-            var runStart: i64 = -1;
+            self.encode_work.rows_diffed += 1;
             var runLength: u32 = 0;
             const cells_updated_before_row = cellsUpdated;
 
@@ -2683,7 +2663,6 @@ pub const CliRenderer = struct {
                     if (cellsEqual and !(clears_pending and cell_type == gp.CHAR_FLAG_IMAGE and dirtyImageChar(image_dirty_items, cell.char))) {
                         if (runLength > 0) {
                             writer.writeAll(ansi.ANSI.reset) catch {};
-                            runStart = -1;
                             runLength = 0;
                         }
                         continue;
@@ -2703,14 +2682,13 @@ pub const CliRenderer = struct {
                     if (!should_force and !state.clear and gp.isImageChar(currentCell.?.char)) {
                         if (runLength > 0) {
                             writer.writeAll(ansi.ANSI.reset) catch {};
-                            runStart = -1;
                             runLength = 0;
                         }
                         if (currentCell.?.char != cell.char) self.currentRenderBuffer.syncCell(x, y, cell);
                         continue;
                     }
                     if (!frame_started) {
-                        beginRenderFrame(writer);
+                        self.beginRenderFrame(writer);
                         frame_started = true;
                     }
                     if (clearRunY != y or clearRunEnd != x) {
@@ -2723,10 +2701,10 @@ pub const CliRenderer = struct {
                     currentFg = null;
                     currentBg = null;
                     currentAttributes = null;
-                    runStart = -1;
                     runLength = 0;
                     self.currentRenderBuffer.syncCell(x, y, cell);
                     cellsUpdated += 1;
+                    imageCellsCleared += 1;
                     continue;
                 }
 
@@ -2739,7 +2717,7 @@ pub const CliRenderer = struct {
                 }
 
                 if (!frame_started) {
-                    beginRenderFrame(writer);
+                    self.beginRenderFrame(writer);
                     frame_started = true;
                 }
 
@@ -2765,12 +2743,11 @@ pub const CliRenderer = struct {
                     }
                 }
 
-                if (!sameAttributes or runStart == -1) {
+                if (!sameAttributes or runLength == 0) {
                     if (runLength > 0) {
                         writer.writeAll(ansi.ANSI.reset) catch {};
                     }
 
-                    runStart = @intCast(x);
                     runLength = 0;
 
                     currentFg = cell.fg;
@@ -2795,7 +2772,6 @@ pub const CliRenderer = struct {
                     gp.CHAR_FLAG_GRAPHEME => {
                         const gid: u32 = gp.graphemeIdFromChar(cell.char);
                         const bytes = self.pool.get(gid) catch |err| {
-                            self.performShutdownSequence();
                             std.debug.panic("Fatal: no grapheme bytes in pool for gid {d}: {}", .{ gid, err });
                         };
                         if (bytes.len > 0) {
@@ -2834,6 +2810,8 @@ pub const CliRenderer = struct {
 
                 cellsUpdated += 1;
             }
+            // A new run sets colors but only turns attributes on, so close an attributed run here.
+            if (runLength > 0 and ansi.TextAttributes.getBaseAttributes(currentAttributes.?) != 0) writer.writeAll(ansi.ANSI.reset) catch {};
             if (cellsUpdated - cells_updated_before_row == self.width) use_row_equality = false;
         }
 
@@ -2846,7 +2824,7 @@ pub const CliRenderer = struct {
         }
         if (sixel_dirty) {
             if (!frame_started) {
-                beginRenderFrame(writer);
+                self.beginRenderFrame(writer);
                 frame_started = true;
             }
             if (hyperlinksEnabled and currentLinkId != 0) {
@@ -2877,7 +2855,7 @@ pub const CliRenderer = struct {
                         }
                         if (gp.isContinuationChar(cell.char)) {
                             const start_x_i = x_i - @as(i32, @intCast(gp.charLeftExtent(cell.char)));
-                            const first_visible_placement_x = @max(placement.x, 0);
+                            const first_visible_placement_x = utils.nonNegative(placement.x);
                             if (start_x_i >= placement.x or x_i != first_visible_placement_x or start_x_i < 0) continue;
                             draw_x_i = start_x_i;
                             cell = self.nextRenderBuffer.get(@intCast(draw_x_i), @intCast(y_i)) orelse continue;
@@ -2919,7 +2897,7 @@ pub const CliRenderer = struct {
 
         if (hyperlinksEnabled and currentLinkId != 0) {
             if (!frame_started) {
-                beginRenderFrame(writer);
+                self.beginRenderFrame(writer);
                 frame_started = true;
             }
             writer.writeAll("\x1b]8;;\x1b\\") catch {};
@@ -2964,7 +2942,7 @@ pub const CliRenderer = struct {
             const cursorG = ansi.green(cursorColor);
             const cursorB = ansi.blue(cursorColor);
 
-            const styleTag: u8 = @intFromEnum(cursorStyle.style);
+            const styleTag: u8 = @backingInt(cursorStyle.style);
             const styleChanged = (self.lastCursorStyleTag == null or self.lastCursorStyleTag.? != styleTag) or
                 (self.lastCursorBlinking == null or self.lastCursorBlinking.? != cursorStyle.blinking);
             const colorChanged = (self.lastCursorColorRGB == null or self.lastCursorColorRGB.?[0] != cursorR or self.lastCursorColorRGB.?[1] != cursorG or self.lastCursorColorRGB.?[2] != cursorB);
@@ -2979,7 +2957,7 @@ pub const CliRenderer = struct {
 
             if (needsCursorRestore) {
                 if (!frame_started) {
-                    beginRenderFrame(writer);
+                    self.beginRenderFrame(writer);
                     frame_started = true;
                 }
 
@@ -3002,7 +2980,7 @@ pub const CliRenderer = struct {
             self.lastCursorVisible = true;
         } else {
             if (!frame_started and (self.lastCursorVisible == null or self.lastCursorVisible.?)) {
-                beginRenderFrame(writer);
+                self.beginRenderFrame(writer);
                 frame_started = true;
                 writer.writeAll(ansi.ANSI.hideCursor) catch {};
             }
@@ -3016,25 +2994,24 @@ pub const CliRenderer = struct {
         }
 
         const mousePointer = self.terminal.getMousePointer();
+        // Starting a frame here would hide the cursor after the cursor section has run.
         if (!self.mousePointerStateValid or mousePointer != self.lastMousePointerStyle) {
-            if (!frame_started) {
-                beginRenderFrame(writer);
-                frame_started = true;
-            }
             ansi.ANSI.setMousePointerOutput(writer, mousePointer.toName()) catch {};
             self.lastMousePointerStyle = mousePointer;
             self.mousePointerStateValid = true;
         }
 
         // Only close sync if we opened it. This keeps true no-op frames empty.
-        if (frame_started) {
+        if (frame_started and self.terminal.synchronizedOutput()) {
             writer.writeAll(ansi.ANSI.syncReset) catch {};
         }
 
-        const renderEndTime = std.Io.Clock.now(.awake, io).toMicroseconds();
+        writer.flush() catch {};
+        const renderEndTime = std.Io.Clock.now(.awake, self.io).toMicroseconds();
         const renderTime = @as(f64, @floatFromInt(renderEndTime - renderStartTime));
 
         self.renderStats.cellsUpdated = cellsUpdated;
+        self.backend.uploadsAlone = !sync_started and cellsUpdated == imageCellsCleared;
         self.renderStats.renderTime = renderTime;
         self.last_rendered_palette_epoch = self.palette_epoch;
         if (self.imageRenderFailed) {
@@ -3049,357 +3026,18 @@ pub const CliRenderer = struct {
             }
         }
 
+        // A scene frame keeps its cells for retained paint; other frames start blank, and so
+        // do frames written after paint and frames with images, whose placements hold image
+        // references. None of them is retained.
+        self.next_scene_retained = self.scene_work != null and !has_image_state and !tainted;
+        if (self.next_scene_retained) return;
         self.nextRenderBuffer.clear(self.backgroundColor, null);
+        self.encode_work.cells_cleared += @as(u64, self.width) * self.height;
     }
 
     pub fn setDebugOverlay(self: *CliRenderer, enabled: bool, corner: DebugOverlayCorner) void {
         self.debugOverlay.enabled = enabled;
         self.debugOverlay.corner = corner;
-    }
-
-    pub fn clearTerminal(self: *CliRenderer) void {
-        if (self.hasCommittedProtocol(.kitty)) {
-            for (self.currentImages.items) |current| {
-                if (current.protocol != .kitty) continue;
-                var delete_buf: [128]u8 = undefined;
-                var delete_writer: std.Io.Writer = .fixed(&delete_buf);
-                terminal_image.writeKittyDelete(
-                    &delete_writer,
-                    self.kittyImageId(current.placement_id),
-                    null,
-                    true,
-                    self.terminal.isInTmux(),
-                ) catch {};
-                self.writeOut(delete_writer.buffered());
-            }
-        }
-        self.writeOut(ansi.ANSI.clearAndHome);
-        self.currentImages.clearRetainingCapacity();
-        self.force_full_repaint = true;
-    }
-
-    pub fn writeOut(self: *CliRenderer, data: []const u8) void {
-        self.backend.writeOut(data);
-    }
-
-    pub fn writeOutMultiple(self: *CliRenderer, data_slices: []const []const u8) void {
-        self.backend.writeOutMultiple(data_slices);
-    }
-
-    /// Write a renderable's bounds to nextHitGrid for the upcoming frame.
-    ///
-    /// Called during render for each visible renderable. The rect is clipped to
-    /// the current hit scissor stack, so elements inside overflow:hidden parents
-    /// only register hits within the visible region. Later renderables overwrite
-    /// earlier ones. Z-order is determined by render order.
-    pub fn addToHitGrid(self: *CliRenderer, x: i32, y: i32, width: u32, height: u32, id: u32) void {
-        const clipped = self.clipRectToHitScissor(x, y, width, height) orelse return;
-        const startX = @max(0, clipped.x);
-        const startY = @max(0, clipped.y);
-        const endX = @min(
-            @as(i32, @intCast(self.hitGridWidth)),
-            clipped.x + @as(i32, @intCast(clipped.width)),
-        );
-        const endY = @min(
-            @as(i32, @intCast(self.hitGridHeight)),
-            clipped.y + @as(i32, @intCast(clipped.height)),
-        );
-
-        if (startX >= endX or startY >= endY) return;
-
-        const uStartX: u32 = @intCast(startX);
-        const uStartY: u32 = @intCast(startY);
-        const uEndX: u32 = @intCast(endX);
-        const uEndY: u32 = @intCast(endY);
-
-        for (uStartY..uEndY) |row| {
-            const rowStart = row * self.hitGridWidth;
-            const startIdx = rowStart + uStartX;
-            const endIdx = rowStart + uEndX;
-
-            @memset(self.nextHitGrid[startIdx..endIdx], id);
-        }
-    }
-
-    /// Clear currentHitGrid before an immediate rebuild.
-    ///
-    /// Used by syncHitGridIfNeeded in TypeScript when scroll/translate changes
-    /// require updating hit targets without waiting for the next render.
-    pub fn clearCurrentHitGrid(self: *CliRenderer) void {
-        @memset(self.currentHitGrid, 0);
-    }
-
-    /// Return whether the hit grid changed during the last render.
-    /// This is set by comparing the previous and current hit grids after render.
-    /// TypeScript can use this to decide if hover state needs rechecking.
-    pub fn getHitGridDirty(self: *CliRenderer) bool {
-        const dirty = self.hitGridDirty;
-        self.hitGridResizeInvalidated = false;
-        return dirty;
-    }
-
-    /// Return the renderable ID at screen position (x, y), or 0 if none.
-    pub fn checkHit(self: *CliRenderer, x: u32, y: u32) u32 {
-        if (x >= self.hitGridWidth or y >= self.hitGridHeight) {
-            return 0;
-        }
-
-        const index = y * self.hitGridWidth + x;
-        return self.currentHitGrid[index];
-    }
-
-    /// Return the current (topmost) hit scissor rect, or null if the stack is empty.
-    fn getCurrentHitScissorRect(self: *const CliRenderer) ?buf.ClipRect {
-        if (self.hitScissorStack.items.len == 0) return null;
-        return self.hitScissorStack.items[self.hitScissorStack.items.len - 1];
-    }
-
-    /// Intersect a rect with the current hit scissor. Returns null if fully clipped.
-    fn clipRectToHitScissor(self: *const CliRenderer, x: i32, y: i32, width: u32, height: u32) ?buf.ClipRect {
-        const scissor = self.getCurrentHitScissorRect() orelse return buf.ClipRect{
-            .x = x,
-            .y = y,
-            .width = width,
-            .height = height,
-        };
-
-        const rect_end_x = x + @as(i32, @intCast(width));
-        const rect_end_y = y + @as(i32, @intCast(height));
-        const scissor_end_x = scissor.x + @as(i32, @intCast(scissor.width));
-        const scissor_end_y = scissor.y + @as(i32, @intCast(scissor.height));
-
-        const intersect_x = @max(x, scissor.x);
-        const intersect_y = @max(y, scissor.y);
-        const intersect_end_x = @min(rect_end_x, scissor_end_x);
-        const intersect_end_y = @min(rect_end_y, scissor_end_y);
-
-        if (intersect_x >= intersect_end_x or intersect_y >= intersect_end_y) {
-            return null;
-        }
-
-        return .{
-            .x = intersect_x,
-            .y = intersect_y,
-            .width = @intCast(intersect_end_x - intersect_x),
-            .height = @intCast(intersect_end_y - intersect_y),
-        };
-    }
-
-    /// Push a scissor rect for hit grid clipping.
-    ///
-    /// The rect is intersected with any existing scissor, so nested overflow:hidden
-    /// containers compound correctly. All coordinates are in screen space.
-    pub fn hitGridPushScissorRect(self: *CliRenderer, x: i32, y: i32, width: u32, height: u32) void {
-        var rect: buf.ClipRect = .{
-            .x = x,
-            .y = y,
-            .width = width,
-            .height = height,
-        };
-
-        if (self.getCurrentHitScissorRect() != null) {
-            const intersect = self.clipRectToHitScissor(rect.x, rect.y, rect.width, rect.height);
-            if (intersect) |clipped| {
-                rect = clipped;
-            } else {
-                rect = buf.ClipRect{ .x = 0, .y = 0, .width = 0, .height = 0 };
-            }
-        }
-
-        self.hitScissorStack.append(self.allocator, rect) catch |err| {
-            logger.warn("Failed to push hit-grid scissor rect: {}", .{err});
-        };
-    }
-
-    pub fn hitGridPopScissorRect(self: *CliRenderer) void {
-        if (self.hitScissorStack.items.len > 0) {
-            _ = self.hitScissorStack.pop();
-        }
-    }
-
-    /// Clear all hit grid scissors. Called at start of render to reset state.
-    pub fn hitGridClearScissorRects(self: *CliRenderer) void {
-        self.hitScissorStack.clearRetainingCapacity();
-    }
-
-    /// Write directly to currentHitGrid with scissor clipping.
-    ///
-    /// Used for immediate hit grid sync when scroll/translate changes. Unlike
-    /// addToHitGrid (which writes to nextHitGrid for the upcoming frame), this
-    /// updates the grid that checkHit reads right now. Lets hover states update
-    /// without waiting for the next render.
-    pub fn addToCurrentHitGridClipped(self: *CliRenderer, x: i32, y: i32, width: u32, height: u32, id: u32) void {
-        const clipped = self.clipRectToHitScissor(x, y, width, height) orelse return;
-
-        const startX = @max(0, clipped.x);
-        const startY = @max(0, clipped.y);
-        const endX = @min(@as(i32, @intCast(self.hitGridWidth)), clipped.x + @as(i32, @intCast(clipped.width)));
-        const endY = @min(@as(i32, @intCast(self.hitGridHeight)), clipped.y + @as(i32, @intCast(clipped.height)));
-
-        if (startX >= endX or startY >= endY) return;
-
-        const uStartX: u32 = @intCast(startX);
-        const uStartY: u32 = @intCast(startY);
-        const uEndX: u32 = @intCast(endX);
-        const uEndY: u32 = @intCast(endY);
-
-        for (uStartY..uEndY) |row| {
-            const rowStart = row * self.hitGridWidth;
-            const startIdx = rowStart + uStartX;
-            const endIdx = rowStart + uEndX;
-
-            @memset(self.currentHitGrid[startIdx..endIdx], id);
-        }
-    }
-
-    pub fn dumpHitGrid(self: *CliRenderer) void {
-        const timestamp = std.Io.Clock.now(.real, io).toSeconds();
-        var filename_buf: [64]u8 = undefined;
-        const filename = std.fmt.bufPrint(&filename_buf, "hitgrid_{d}.txt", .{timestamp}) catch return;
-
-        const file = std.Io.Dir.cwd().createFile(io, filename, .{}) catch return;
-        defer file.close(io);
-
-        var fileBuffer: [4096]u8 = undefined;
-        var fileWriter = file.writer(io, &fileBuffer);
-        const writer = &fileWriter.interface;
-
-        for (0..self.hitGridHeight) |y| {
-            for (0..self.hitGridWidth) |x| {
-                const index = y * self.hitGridWidth + x;
-                const id = self.currentHitGrid[index];
-
-                const char = if (id == 0) '.' else ('0' + @as(u8, @intCast(id % 10)));
-                writer.writeByte(char) catch return;
-            }
-            writer.writeByte('\n') catch return;
-        }
-        writer.flush() catch {};
-    }
-
-    fn dumpSingleBuffer(self: *CliRenderer, buffer: *OptimizedBuffer, buffer_name: []const u8, timestamp: i64) void {
-        std.Io.Dir.cwd().createDir(io, "buffer_dump", .default_dir) catch |err| switch (err) {
-            error.PathAlreadyExists => {},
-            else => return,
-        };
-
-        var filename_buf: [128]u8 = undefined;
-        const filename = std.fmt.bufPrint(&filename_buf, "buffer_dump/{s}_buffer_{d}.txt", .{ buffer_name, timestamp }) catch return;
-
-        const file = std.Io.Dir.cwd().createFile(io, filename, .{}) catch return;
-        defer file.close(io);
-
-        var fileBuffer: [4096]u8 = undefined;
-        var fileWriter = file.writer(io, &fileBuffer);
-        const writer = &fileWriter.interface;
-
-        writer.print("{s} Buffer ({d}x{d}):\n", .{ buffer_name, self.width, self.height }) catch return;
-        writer.writeAll("Characters:\n") catch return;
-
-        for (0..self.height) |y| {
-            for (0..self.width) |x| {
-                const cell = buffer.get(@intCast(x), @intCast(y));
-                if (cell) |c| {
-                    if (gp.isContinuationChar(c.char)) {
-                        // skip
-                    } else if (gp.isImageChar(c.char)) {
-                        const fallback = buf.quadrantChars[gp.imageFallbackFromChar(c.char)];
-                        var utf8Buf: [4]u8 = undefined;
-                        const len = std.unicode.utf8Encode(@intCast(fallback), &utf8Buf) catch unreachable;
-                        writer.writeAll(utf8Buf[0..len]) catch return;
-                    } else if (gp.isGraphemeChar(c.char)) {
-                        const gid: u32 = gp.graphemeIdFromChar(c.char);
-                        const bytes = self.pool.get(gid) catch &[_]u8{};
-                        if (bytes.len > 0) writer.writeAll(bytes) catch return;
-                    } else {
-                        var utf8Buf: [4]u8 = undefined;
-                        const len = std.unicode.utf8Encode(@intCast(c.char), &utf8Buf) catch 1;
-                        writer.writeAll(utf8Buf[0..len]) catch return;
-                    }
-                } else {
-                    writer.writeByte(' ') catch return;
-                }
-            }
-            writer.writeByte('\n') catch return;
-        }
-        writer.flush() catch {};
-    }
-
-    /// Dump the last rendered output to a file. Backend-specific formatting
-    /// is delegated to `backend.dumpTo(writer)` — no tag inspection here.
-    pub fn dumpOutputBuffer(self: *CliRenderer, timestamp: i64) void {
-        std.Io.Dir.cwd().createDir(io, "buffer_dump", .default_dir) catch |err| switch (err) {
-            error.PathAlreadyExists => {},
-            else => return,
-        };
-
-        var filename_buf: [128]u8 = undefined;
-        const filename = std.fmt.bufPrint(&filename_buf, "buffer_dump/output_buffer_{d}.txt", .{timestamp}) catch return;
-
-        const file = std.Io.Dir.cwd().createFile(io, filename, .{}) catch return;
-        defer file.close(io);
-
-        var fileBuffer: [4096]u8 = undefined;
-        var fileWriter = file.writer(io, &fileBuffer);
-        const writer = &fileWriter.interface;
-
-        writer.print("Output Buffer Dump (timestamp: {d}):\n", .{timestamp}) catch return;
-        writer.writeAll("Last Rendered ANSI Output:\n") catch return;
-        writer.writeAll("================\n") catch return;
-
-        self.backend.dumpTo(writer);
-
-        writer.flush() catch {};
-    }
-
-    pub fn dumpBuffers(self: *CliRenderer, timestamp: i64) void {
-        self.dumpSingleBuffer(self.currentRenderBuffer, "current", timestamp);
-        self.dumpSingleBuffer(self.nextRenderBuffer, "next", timestamp);
-        self.dumpOutputBuffer(timestamp);
-    }
-
-    pub fn restoreTerminalModes(self: *CliRenderer) void {
-        var writer: std.Io.Writer = .fixed(&self.writeOutBuf);
-        self.terminal.restoreTerminalModes(&writer) catch {};
-        self.writeOut(writer.buffered());
-    }
-
-    pub fn enableMouse(self: *CliRenderer, enableMovement: bool) void {
-        var writer: std.Io.Writer = .fixed(&self.writeOutBuf);
-        self.terminal.setMouseMode(&writer, true, enableMovement) catch {};
-        self.writeOut(writer.buffered());
-    }
-
-    pub fn queryPixelResolution(self: *CliRenderer) void {
-        self.writeOut(ansi.ANSI.queryPixelSize);
-    }
-
-    pub fn queryThemeColors(self: *CliRenderer) void {
-        var writer: std.Io.Writer = .fixed(&self.writeOutBuf);
-        self.terminal.queryThemeColors(&writer) catch {};
-        self.writeOut(writer.buffered());
-    }
-
-    pub fn disableMouse(self: *CliRenderer) void {
-        var writer: std.Io.Writer = .fixed(&self.writeOutBuf);
-        self.terminal.setMouseMode(&writer, false, self.terminal.state.mouse_movement) catch {};
-        self.writeOut(writer.buffered());
-    }
-
-    pub fn enableKittyKeyboard(self: *CliRenderer, flags: u8) void {
-        var writer: std.Io.Writer = .fixed(&self.writeOutBuf);
-        self.terminal.setKittyKeyboard(&writer, true, flags) catch {};
-        self.writeOut(writer.buffered());
-    }
-
-    pub fn disableKittyKeyboard(self: *CliRenderer) void {
-        var writer: std.Io.Writer = .fixed(&self.writeOutBuf);
-        self.terminal.setKittyKeyboard(&writer, false, 0) catch {};
-        self.writeOut(writer.buffered());
-    }
-
-    pub fn getTerminalCapabilities(self: *CliRenderer) Terminal.Capabilities {
-        return self.terminal.getCapabilities();
     }
 
     pub fn setTerminalEnvVar(self: *CliRenderer, key: []const u8, value: []const u8) bool {
@@ -3408,18 +3046,11 @@ pub const CliRenderer = struct {
         return true;
     }
 
-    fn syncWidthMethod(self: *CliRenderer) void {
+    pub fn syncWidthMethod(self: *CliRenderer) void {
         const width_method = if (self.terminal.caps.unicode == .no_zwj) .unicode else self.terminal.caps.unicode;
+        if (width_method != self.nextRenderBuffer.width_method) self.taint(FrameWork.full_path_unretained);
         self.currentRenderBuffer.width_method = width_method;
         self.nextRenderBuffer.width_method = width_method;
-    }
-
-    pub fn processCapabilityResponse(self: *CliRenderer, response: []const u8) void {
-        self.terminal.processCapabilityResponse(response);
-        var writer: std.Io.Writer = .fixed(&self.writeOutBuf);
-        const useKitty = self.terminal.opts.kitty_keyboard_flags > 0;
-        self.terminal.enableDetectedFeatures(&writer, useKitty) catch {};
-        self.writeOut(writer.buffered());
     }
 
     fn kittyTempDirectory(self: *const CliRenderer) []const u8 {
@@ -3433,36 +3064,55 @@ pub const CliRenderer = struct {
         if (self.kittyTransport.mode == requested) return true;
         self.kittyTransport.mode = requested;
         self.invalidateKittyImages();
-        self.startKittyFileProbe();
         return true;
     }
 
-    fn startKittyFileProbe(self: *CliRenderer) void {
-        if (!self.terminalSetup or self.terminalSuspended or self.kittyTransport.mode != .file) return;
+    /// Probe only while the Session's terminal is active.
+    pub fn startKittyFileProbeFromSession(self: *CliRenderer) void {
+        if (self.terminalSuspended or self.kittyTransport.mode != .file) return;
         _ = self.pollKittyImageTransport();
         if (self.kittyTransport.file_state != .disabled) return;
         if (self.reserveKittyHistoryImageIds(2)) |base| {
             var buffer: [4096]u8 = undefined;
             var writer: std.Io.Writer = .fixed(&buffer);
             self.kittyTransport.startProbe(&writer, base + 1, self.kittyTempDirectory()) catch {};
+            if (self.kittyImageTransportNow()) |now| self.kittyTransport.arm(now);
             self.backend.writeOut(writer.buffered());
         } else self.kittyTransport.cancel(.unsupported);
     }
 
+    pub fn kittyImageTransportStatus(self: *const CliRenderer) [6]u32 {
+        const transport = &self.kittyTransport;
+        return .{
+            @backingInt(transport.mode),
+            @backingInt(transport.effective),
+            @backingInt(transport.file_state),
+            @backingInt(transport.fallback),
+            transport.pendingCount(),
+            @intCast(transport.pendingBytes()),
+        };
+    }
+
+    pub fn cancelKittyImageTransport(self: *CliRenderer, failed: bool) void {
+        self.kittyTransport.cancel(if (failed) .io_error else .cancelled);
+        _ = self.pollKittyImageTransport();
+    }
+
     pub fn pollKittyImageTransport(self: *CliRenderer) bool {
-        if (self.backend == .buffered) {
-            if (self.backend.buffered.ownedStdoutOutput) |stdout| {
-                if (stdout.failed.load(.acquire)) self.kittyTransport.cancel(.io_error);
-            }
-        }
         if (builtin.os.tag == .windows or self.terminal.remote or self.terminal.multiplexer != .none or !self.terminal.graphics_enabled) {
             self.kittyTransport.cancel(.unsupported);
         }
-        self.kittyTransport.expire(kitty_transport.Transport.nowMs());
+        if (self.kittyImageTransportNow()) |now| self.kittyTransport.expire(now);
         if (!self.kittyTransport.retry_images) return false;
         self.kittyTransport.retry_images = false;
         self.invalidateKittyImages();
         return true;
+    }
+
+    fn kittyImageTransportNow(self: *CliRenderer) ?u64 {
+        if (self.host_driven_time or self.kittyTransport.pendingCount() == 0) return null;
+        const now = std.Io.Clock.now(.awake, self.io).nanoseconds;
+        return @intCast(std.math.clamp(now, 0, std.math.maxInt(u64)));
     }
 
     fn invalidateKittyImages(self: *CliRenderer) void {
@@ -3470,6 +3120,8 @@ pub const CliRenderer = struct {
         for ([_][]CommittedImage{ self.currentImages.items, self.pendingImages.items }) |images| {
             for (images) |*image| {
                 if (image.protocol == .kitty) image.image_handle = 0;
+                // A new transport may send an image that was too large.
+                image.oversize = false;
             }
         }
         self.force_full_repaint = true;
@@ -3478,51 +3130,6 @@ pub const CliRenderer = struct {
     pub fn processKittyImageReply(self: *CliRenderer, response: []const u8) u32 {
         if (!self.kittyTransport.handleReply(response)) return 0;
         return if (self.pollKittyImageTransport()) 2 else 1;
-    }
-
-    pub fn setKittyKeyboardFlags(self: *CliRenderer, flags: u8) void {
-        self.terminal.setKittyKeyboardFlags(flags);
-    }
-
-    pub fn getKittyKeyboardFlags(self: *CliRenderer) u8 {
-        return self.terminal.opts.kitty_keyboard_flags;
-    }
-
-    pub fn setTerminalTitle(self: *CliRenderer, title: []const u8) void {
-        var writer: std.Io.Writer = .fixed(&self.writeOutBuf);
-        self.terminal.setTerminalTitle(&writer, title);
-        self.writeOut(writer.buffered());
-    }
-
-    pub fn copyToClipboardOSC52(self: *CliRenderer, target: Terminal.ClipboardTarget, text_utf8: []const u8) bool {
-        const output_len = self.terminal.clipboardSequenceSize(text_utf8.len) catch return false;
-        const output_bytes = self.allocator.alloc(u8, output_len) catch return false;
-        defer self.allocator.free(output_bytes);
-
-        var writer: std.Io.Writer = .fixed(output_bytes);
-        self.terminal.writeClipboard(&writer, target, text_utf8) catch return false;
-        const written = writer.buffered();
-        std.debug.assert(written.len == output_len);
-        self.writeOut(written);
-        return true;
-    }
-
-    pub fn clearClipboardOSC52(self: *CliRenderer, target: Terminal.ClipboardTarget) bool {
-        var stream: std.Io.Writer.Allocating = .init(self.allocator);
-        defer stream.deinit();
-        self.terminal.writeClipboard(&stream.writer, target, "") catch return false;
-        self.writeOut(stream.written());
-        return true;
-    }
-
-    pub fn triggerNotification(self: *CliRenderer, message: []const u8, title: ?[]const u8) bool {
-        var stream: std.Io.Writer.Allocating = .init(self.allocator);
-        defer stream.deinit();
-
-        const ok = self.terminal.writeNotification(self.allocator, &stream.writer, message, title) catch return false;
-        if (!ok) return false;
-        self.writeOut(stream.written());
-        return true;
     }
 
     fn renderDebugOverlay(self: *CliRenderer) void {
@@ -3534,6 +3141,7 @@ pub const CliRenderer = struct {
         var y: u32 = 0;
 
         if (self.width < width + 2 or self.height < height + 2) return;
+        self.taint(FrameWork.full_path_tainted);
 
         switch (self.debugOverlay.corner) {
             .topLeft => {
@@ -3634,11 +3242,5 @@ pub const CliRenderer = struct {
             self.nextRenderBuffer.drawText(memoryLen, x + 1, y + row, fg, bg, 0) catch {};
             row += 1;
         }
-
-        // Is threaded?
-        var isThreadedText: [64]u8 = undefined;
-        const isThreadedLen = std.fmt.bufPrint(&isThreadedText, "Threaded: {s}", .{if (self.backend.isUseThread()) "Yes" else "No"}) catch return;
-        self.nextRenderBuffer.drawText(isThreadedLen, x + 1, y + row, fg, bg, 0) catch {};
-        row += 1;
     }
 };

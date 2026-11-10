@@ -1,6 +1,7 @@
 import { test, expect, describe, mock, beforeEach } from "bun:test"
 import { TerminalConsole, ConsolePosition } from "./console.js"
 import { MouseEvent } from "./renderer.js"
+import { stringWidth } from "./platform/runtime.js"
 import { ManualClock } from "./testing/manual-clock.js"
 
 interface MockRenderer {
@@ -652,6 +653,72 @@ describe("TerminalConsole", () => {
       terminalConsole["_selectionEnd"] = { line: 0, col: 4 }
 
       expect(() => terminalConsole["triggerCopy"]()).not.toThrow()
+    })
+  })
+
+  describe("log wrapping", () => {
+    const entries: unknown[][] = [["hello world"], ["a\nbcdef"], [new Error("boom")]]
+
+    test("terminates with one or more cells per display line at every console width", () => {
+      for (let width = 1; width <= 6; width++) {
+        terminalConsole = new TerminalConsole({ ...mockRenderer, width, terminalWidth: width } as any, {
+          position: ConsolePosition.BOTTOM,
+        })
+        expect(terminalConsole["consoleWidth"]).toBe(width)
+        for (const args of entries) {
+          const text = terminalConsole["formatArguments"](args)
+          const lines = terminalConsole["_processLogEntry"]([new Date(0), "LOG" as any, args, null])
+          const lineCount = text.split("\n").length
+          // The first line also carries the "[time] [LOG] " prefix.
+          expect(lines.length).toBeLessThanOrEqual(text.length + lineCount + 32)
+          expect(lines.every((line: { text: string }) => line.text.length > 0)).toBe(true)
+        }
+      }
+    })
+
+    test("escapes control characters except newlines and tabs", () => {
+      terminalConsole = new TerminalConsole(mockRenderer as any, { position: ConsolePosition.BOTTOM })
+      // util.inspect already escapes strings; Error messages and stacks are written raw.
+      const error = new Error("a\x1b[31mb\r\nc\td\x00\x7f\x9b")
+      error.stack = undefined
+      expect(terminalConsole["formatArguments"]([error])).toBe("Error: a\\x1b[31mb\nc\td\\x00\\x7f\\x9b\n")
+    })
+
+    test("wraps by display cells at grapheme boundaries without dropping text", () => {
+      const graphemes = (text: string) => [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)]
+      const samples: unknown[][] = [
+        ["hello world"],
+        ["表示幅のテスト"],
+        ["e\u0301".repeat(6)],
+        ["👩‍🚀 crew 👩‍🚀"],
+        ["short\nsecond line is longer"],
+      ]
+      for (let width = 1; width <= 12; width++) {
+        terminalConsole = new TerminalConsole({ ...mockRenderer, width, terminalWidth: width } as any, {
+          position: ConsolePosition.BOTTOM,
+        })
+        for (const args of samples) {
+          const date = new Date(0)
+          const prefix = `[${terminalConsole["formatTimestamp"](date)}] [LOG] `
+          const sources = terminalConsole["formatArguments"](args).split("\n")
+          sources[0] = prefix + sources[0]
+          const lines: { text: string; indent: boolean }[] = terminalConsole["_processLogEntry"]([
+            date,
+            "LOG" as any,
+            args,
+            null,
+          ])
+
+          expect(lines.map((line) => line.text).join("")).toBe(sources.join(""))
+          expect(lines.map((line) => line.indent)).toEqual(lines.map((_, index) => index > 0))
+          const count = (texts: string[]) => texts.reduce((sum, text) => sum + graphemes(text).length, 0)
+          expect(count(lines.map((line) => line.text))).toBe(count(sources))
+          for (const line of lines) {
+            const budget = Math.max(1, width - 1 - (line.indent ? 2 : 0))
+            if (graphemes(line.text).length > 1) expect(stringWidth(line.text)).toBeLessThanOrEqual(budget)
+          }
+        }
+      }
     })
   })
 })

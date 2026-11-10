@@ -1,5 +1,6 @@
 import type { KeyEvent, Renderable } from "@opentui/core"
 import { type Keymap, type Layer, type ReactiveMatcher, type TargetMode } from "../index.js"
+import { createLayerSlot } from "../services/extension-context.js"
 import {
   createComponent,
   createContext,
@@ -107,7 +108,9 @@ export const useKeymapSelector = <T>(selector: (keymap: OpenTuiKeymap) => T): Ac
 export function useBindings<TRenderable extends Renderable = Renderable>(
   createLayer: () => UseBindingsLayer<TRenderable>,
 ): void {
-  const keymap = useKeymap()
+  const replaceLayer = createLayerSlot(useKeymap())
+
+  onCleanup(() => replaceLayer(undefined))
 
   createEffect(() => {
     const layer = createLayer()
@@ -117,14 +120,7 @@ export function useBindings<TRenderable extends Renderable = Renderable>(
 
     const { target: _target, targetMode: _targetMode, ...baseLayer } = layer
     if (!nextTargetMode) {
-      const dispose = keymap.registerLayer({
-        ...baseLayer,
-      })
-
-      onCleanup(() => {
-        dispose()
-      })
-
+      replaceLayer(baseLayer)
       return
     }
 
@@ -132,19 +128,7 @@ export function useBindings<TRenderable extends Renderable = Renderable>(
       throw new Error("useBindings local bindings need a target accessor")
     }
 
-    if (!explicitTarget) {
-      return
-    }
-
-    const dispose = keymap.registerLayer({
-      ...baseLayer,
-      target: explicitTarget,
-      targetMode: nextTargetMode,
-    })
-
-    onCleanup(() => {
-      dispose()
-    })
+    replaceLayer(explicitTarget && { ...baseLayer, target: explicitTarget, targetMode: nextTargetMode })
   })
 }
 

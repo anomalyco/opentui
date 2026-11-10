@@ -1,5 +1,4 @@
 import type { RootRenderable } from "@opentui/core"
-import React from "react"
 import ReactReconciler from "react-reconciler"
 import { ConcurrentRoot } from "react-reconciler/constants.js"
 import { hostConfig } from "./host-config.js"
@@ -31,8 +30,8 @@ $ bun add react-devtools-core@7 -d
 // @ts-expect-error the types for `react-reconciler` are not up to date with the library.
 reconciler.injectIntoDevTools()
 
-export function _render(element: React.ReactNode, root: RootRenderable) {
-  const container = reconciler.createContainer(
+export function createContainer(root: RootRenderable) {
+  return reconciler.createContainer(
     root,
     ConcurrentRoot,
     null,
@@ -44,8 +43,4 @@ export function _render(element: React.ReactNode, root: RootRenderable) {
     console.error,
     () => {},
   )
-
-  reconciler.updateContainer(element, container, null, () => {})
-
-  return container
 }

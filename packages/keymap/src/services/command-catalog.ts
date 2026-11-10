@@ -25,7 +25,7 @@ import type { ConditionService } from "./conditions.js"
 import { createFieldCompilerContext } from "./primitives/field-invariants.js"
 import type { NotificationService } from "./notify.js"
 import type { ActiveCommandView, LayerCommandEntry, CommandView, ResolvedCommandEntry, State } from "./state.js"
-import { getErrorMessage } from "./values.js"
+import { createForwarder, getErrorMessage, isPlainData } from "./values.js"
 
 const DEFAULT_COMMAND_SEARCH_FIELDS = ["name"] as const
 
@@ -34,6 +34,8 @@ const commandSearchCache = new WeakMap<CommandState<any, any>, Map<string, strin
 
 interface NormalizeCommandsOptions<TTarget extends object, TEvent extends KeymapEvent> {
   commands: readonly Command<TTarget, TEvent>[]
+  /** Hand out keymap-owned command objects; only for plain-data layers that `replaceLayer` registers. */
+  owned: boolean
   commandFields: ReadonlyMap<string, CommandFieldCompiler>
   conditions: ConditionService<TTarget, TEvent>
   onError(code: string, error: unknown, message: string): void
@@ -71,7 +73,7 @@ interface CommandResolverAttempt<TTarget extends object, TEvent extends KeymapEv
 }
 
 export interface CommandCatalogService<TTarget extends object, TEvent extends KeymapEvent> {
-  normalizeCommands(commands: readonly Command<TTarget, TEvent>[]): CommandState<TTarget, TEvent>[]
+  normalizeCommands(commands: readonly Command<TTarget, TEvent>[], owned: boolean): CommandState<TTarget, TEvent>[]
   prependCommandResolver(resolver: CommandResolver<TTarget, TEvent>): () => void
   appendCommandResolver(resolver: CommandResolver<TTarget, TEvent>): () => void
   clearCommandResolvers(): void
@@ -142,9 +144,13 @@ export function createCommandCatalogService<TTarget extends object, TEvent exten
   let registeredResolvedCacheVersion = -1
   let registeredResolvedCache = new Map<string, readonly ResolvedCommandEntry<TTarget, TEvent>[] | null>()
 
-  const normalizeLayerCommands = (commands: readonly Command<TTarget, TEvent>[]): CommandState<TTarget, TEvent>[] => {
+  const normalizeLayerCommands = (
+    commands: readonly Command<TTarget, TEvent>[],
+    owned: boolean,
+  ): CommandState<TTarget, TEvent>[] => {
     return normalizeCommands({
       commands,
+      owned,
       commandFields: state.commandFields,
       conditions: conditions,
       onError: (code, error, message) => {
@@ -907,6 +913,20 @@ export function getCommand<TTarget extends object, TEvent extends KeymapEvent>(
   return state.command
 }
 
+// Hands out a keymap-owned copy of a plain command whose methods are forwarders, so a layer re-registered
+// with fresh functions keeps the command objects that callers already hold.
+function ownCommand<TTarget extends object, TEvent extends KeymapEvent>(
+  command: Command<TTarget, TEvent>,
+  name: string,
+): Command<TTarget, TEvent> {
+  const own: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(command)) {
+    own[key] = typeof value === "function" ? createForwarder(value) : value
+  }
+  own.name = name
+  return own as unknown as Command<TTarget, TEvent>
+}
+
 function normalizeCommands<TTarget extends object, TEvent extends KeymapEvent>(
   options: NormalizeCommandsOptions<TTarget, TEvent>,
 ): CommandState<TTarget, TEvent>[] {
@@ -930,7 +950,10 @@ function normalizeCommands<TTarget extends object, TEvent extends KeymapEvent>(
         continue
       }
 
-      command.name = normalizedName
+      // A compiled command that is not plain data (a transformer can make one) is handed out as it is.
+      const owned = options.owned && isPlainData(command)
+      if (!owned) command.name = normalizedName
+      const exposed = owned ? ownCommand(command, normalizedName) : command
 
       for (const [fieldName, value] of Object.entries(fields)) {
         if (value === undefined) {
@@ -955,8 +978,9 @@ function normalizeCommands<TTarget extends object, TEvent extends KeymapEvent>(
       }
 
       const commandState: CommandState<TTarget, TEvent> = {
-        command,
-        fields,
+        command: exposed,
+        // Field compilers read the registered values; queries read the exposed command's.
+        fields: owned ? getCommandFields(exposed) : fields,
         attrs: Object.keys(attrs).length === 0 ? undefined : attrs,
         requires: Object.entries(mergedRequires),
         matchers,

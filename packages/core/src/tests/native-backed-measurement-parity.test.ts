@@ -1,322 +1,549 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { BoxRenderable } from "../renderables/Box.js"
+import type { Renderable } from "../Renderable.js"
+import { CliRenderEvents } from "../renderer.js"
+import { BoxRenderable, type BoxOptions } from "../renderables/Box.js"
+import { DiffRenderable } from "../renderables/Diff.js"
+import { ScrollBoxRenderable } from "../renderables/ScrollBox.js"
 import { TextareaRenderable } from "../renderables/Textarea.js"
-import { TextRenderable } from "../renderables/Text.js"
+import { TextRenderable, type TextOptions } from "../renderables/Text.js"
+import { SyntaxStyle } from "../syntax-style.js"
 import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
-
-// These tests lock the measurement behavior of the old TypeScript Yoga measure
-// functions at the renderable/Yoga boundary, now that TextRenderable and
-// TextareaRenderable use native-backed measurement. All expectations are
-// hardcoded so the tests stay valid across implementation refactors.
-
-const WORD_WRAP_CONTENT = "Hello wonderful world from OpenTUI"
-const PLACEHOLDER_CONTENT = "Placeholder text that is longer than content"
+import Yoga, { Edge, FlexDirection } from "../yoga.js"
 
 let renderer: TestRenderer
 let renderOnce: () => Promise<void>
+let captureCharFrame: () => string
 
 beforeEach(async () => {
-  ;({ renderer, renderOnce } = await createTestRenderer({ width: 80, height: 30 }))
+  ;({ renderer, renderOnce, captureCharFrame } = await createTestRenderer({ width: 80, height: 30 }))
 })
 
-afterEach(() => {
+afterEach(async () => {
   renderer.destroy()
+  await renderer.closed
 })
 
-function expectCloseToLayout(actual: number, expected: number): void {
-  expect(actual).toBeCloseTo(expected, 5)
+function expectLayout(renderable: TextRenderable | TextareaRenderable, width: number, height: number): void {
+  const layout = renderable.getLayout()
+  expect(renderable.width).toBeCloseTo(width, 5)
+  expect(renderable.height).toBeCloseTo(height, 5)
+  expect(layout.width).toBeCloseTo(width, 5)
+  expect(layout.height).toBeCloseTo(height, 5)
 }
 
-function expectLayout(
-  renderable: TextRenderable | TextareaRenderable,
-  expected: { width: number; height: number },
-): void {
-  expectCloseToLayout(renderable.width, expected.width)
-  expectCloseToLayout(renderable.height, expected.height)
+for (const kind of ["text", "textarea"] as const) {
+  describe(`native-backed ${kind} measurement parity`, () => {
+    const create = (
+      content: string,
+      options: Pick<TextOptions, "wrapMode" | "alignSelf" | "position" | "left" | "top" | "margin" | "flexShrink"> = {},
+    ) =>
+      kind === "text"
+        ? new TextRenderable(renderer, { content, ...options })
+        : new TextareaRenderable(renderer, { initialValue: content, ...options })
 
-  const layout = renderable.getLayoutNode().getComputedLayout()
-  expectCloseToLayout(layout.width, expected.width)
-  expectCloseToLayout(layout.height, expected.height)
-}
-
-async function renderInConstrainedColumn(renderable: TextRenderable | TextareaRenderable): Promise<void> {
-  renderer.root.add(renderable)
-  await renderOnce()
-}
-
-async function renderInParent(
-  renderable: TextRenderable | TextareaRenderable,
-  options: { width: number; height?: number },
-): Promise<void> {
-  const parent = new BoxRenderable(renderer, {
-    width: options.width,
-    ...(options.height === undefined ? {} : { height: options.height }),
-    alignItems: "flex-start",
-  })
-  parent.add(renderable)
-  renderer.root.add(parent)
-  await renderOnce()
-}
-
-describe("native-backed measurement parity", () => {
-  describe("TextRenderable", () => {
-    test("matches native char-wrap measurement with relative AtMost clamping", async () => {
-      const text = new TextRenderable(renderer, {
-        content: "ABCDEFGHIJKLMNOPQRST",
-        wrapMode: "char",
-        alignSelf: "flex-start",
-      })
-
-      await renderInConstrainedColumn(text)
-
-      expectLayout(text, { width: 20, height: 1 })
+    // Fixed expectations from the former TypeScript Yoga measurement functions.
+    test.each([
+      ["char", "ABCDEFGHIJKLMNOPQRST", 20, 1],
+      ["word", "Hello wonderful world from OpenTUI", 34, 1],
+      ["none", "Short\nAVeryLongLineHere\nMedium", 17, 3],
+      ["char", "", 1, 1],
+    ] as const)("%s wrap measures %j", async (wrapMode, content, width, height) => {
+      const node = create(content, { wrapMode, alignSelf: "flex-start" })
+      renderer.root.add(node)
+      await renderOnce()
+      expectLayout(node, width, height)
     })
 
-    test("matches native word-wrap measurement with relative AtMost clamping", async () => {
-      const text = new TextRenderable(renderer, {
-        content: WORD_WRAP_CONTENT,
-        wrapMode: "word",
-        alignSelf: "flex-start",
-      })
-
-      await renderInConstrainedColumn(text)
-
-      expectLayout(text, { width: WORD_WRAP_CONTENT.length, height: 1 })
+    test("stretches relative content to the root width by default", async () => {
+      const node = create("Short", { wrapMode: "char" })
+      renderer.root.add(node)
+      await renderOnce()
+      expectLayout(node, 80, 1)
     })
 
-    test("matches native no-wrap measurement", async () => {
-      const text = new TextRenderable(renderer, {
-        content: "Short\nAVeryLongLineHere\nMedium",
-        wrapMode: "none",
-        alignSelf: "flex-start",
-      })
-
-      await renderInConstrainedColumn(text)
-
-      expectLayout(text, { width: "AVeryLongLineHere".length, height: 3 })
+    test("clamps to a narrower parent and removes clamping for absolute positioning", async () => {
+      // An auto-height absolute parent leaves the text's height undefined.
+      const parent = new BoxRenderable(renderer, { position: "absolute", width: 10, alignItems: "flex-start" })
+      const node = create("ABCDEFGHIJKLMNOPQRST\n2\n3", { wrapMode: "none", alignSelf: "flex-start", left: 0, top: 0 })
+      parent.add(node)
+      renderer.root.add(parent)
+      for (const [position, width] of [
+        ["relative", 10],
+        ["absolute", 20],
+        ["relative", 10],
+      ] as const) {
+        node.position = position
+        await renderOnce()
+        expectLayout(node, width, 3)
+      }
     })
 
-    test("clamps relative AtMost measurement to a narrower parent", async () => {
-      const text = new TextRenderable(renderer, {
-        content: "ABCDEFGHIJKLMNOPQRST",
-        wrapMode: "none",
-        alignSelf: "flex-start",
-      })
-
-      await renderInParent(text, { width: 10 })
-
-      expectLayout(text, { width: 10, height: 1 })
+    test("wraps as a fresh layout after its parent grows by less than its margin", async () => {
+      const parent = new BoxRenderable(renderer, { width: 20 })
+      const content = "the quick brown fox jumps over the lazy dog and keeps running far away"
+      const node = create(content, { wrapMode: "word", alignSelf: "flex-start", margin: 1 })
+      parent.add(node)
+      renderer.root.add(parent)
+      await renderOnce()
+      expectLayout(node, 18, 4)
+      parent.width = 21
+      await renderOnce()
+      expectLayout(node, 19, 4)
     })
 
-    test("stretches relative text to the root width by default", async () => {
-      const text = new TextRenderable(renderer, {
-        content: "Short",
-        wrapMode: "char",
-      })
-
-      await renderInConstrainedColumn(text)
-
-      expectLayout(text, { width: 80, height: 1 })
+    test.each([
+      ["exact", 10, "flex-start", 10, "stretch"],
+      ["stricter", 3.9999998, "flex-start", 2.999999, "flex-start"],
+      // Within 1e-4 of each other across the wrap at 10 - 1e-4.
+      ["at most across a wrap", 9.99988, "flex-start", 9.99995, "flex-start"],
+      ["exact across a wrap", 9.99988, "stretch", 9.99995, "stretch"],
+      ["stricter across a wrap", 9.99995, "flex-start", 9.99988, "flex-start"],
+    ] as const)("lays out as a fresh tree after a size is reused (%s)", async (_, first, from, width, align) => {
+      const build = (w: number, alignItems: "flex-start" | "stretch") => {
+        const parent = new BoxRenderable(renderer, { width: w, height: 2, alignItems })
+        const node = create("a".repeat(40), { wrapMode: "char", flexShrink: 0 })
+        parent.add(node)
+        renderer.root.add(parent)
+        return { parent, node }
+      }
+      const tree = build(first, from)
+      await renderOnce()
+      Object.assign(tree.parent, { width, alignItems: align })
+      await renderOnce()
+      const layout = tree.node.getLayout()
+      tree.parent.destroyRecursively()
+      const fresh = build(width, align)
+      await renderOnce()
+      expect(layout).toEqual(fresh.node.getLayout())
     })
 
-    test("preserves minimum Yoga measurement size for empty content", async () => {
-      const text = new TextRenderable(renderer, {
-        content: "",
-        wrapMode: "char",
-        alignSelf: "flex-start",
-      })
-
-      await renderInConstrainedColumn(text)
-
-      expectLayout(text, { width: 1, height: 1 })
-    })
-
-    test("does not apply relative AtMost clamping for absolute-positioned text", async () => {
-      const text = new TextRenderable(renderer, {
-        content: "ABCDEFGHIJKLMNOPQRST",
-        wrapMode: "none",
-        position: "absolute",
-        left: 0,
-        top: 0,
-      })
-
-      await renderInConstrainedColumn(text)
-
-      expectLayout(text, { width: 20, height: 1 })
+    test("measures initially absolute content without AtMost clamping", async () => {
+      const node = create("ABCDEFGHIJKLMNOPQRST", { wrapMode: "none", position: "absolute", left: 0, top: 0 })
+      renderer.root.add(node)
+      await renderOnce()
+      expectLayout(node, 20, 1)
     })
 
     test("recomputes measurement after content changes", async () => {
-      const text = new TextRenderable(renderer, {
-        content: "Short",
-        wrapMode: "char",
-        alignSelf: "flex-start",
-      })
-
-      await renderInConstrainedColumn(text)
-      expectLayout(text, { width: 5, height: 1 })
-
-      text.content = "ABCDEFGHIJKLMNOPQRST"
+      const node = create("Short", { wrapMode: "char", alignSelf: "flex-start" })
+      renderer.root.add(node)
       await renderOnce()
-
-      expectLayout(text, { width: 20, height: 1 })
-    })
-
-    test("applies and removes AtMost clamping when position changes at runtime", async () => {
-      const text = new TextRenderable(renderer, {
-        content: "ABCDEFGHIJKLMNOPQRST",
-        wrapMode: "none",
-        alignSelf: "flex-start",
-        left: 0,
-        top: 0,
-      })
-
-      await renderInParent(text, { width: 10 })
-      expectLayout(text, { width: 10, height: 1 })
-
-      text.position = "absolute"
+      expectLayout(node, 5, 1)
+      if (node instanceof TextRenderable) node.content = "ABCDEFGHIJKLMNOPQRST"
+      else node.setText("ABCDEFGHIJKLMNOPQRST")
       await renderOnce()
-      expectLayout(text, { width: 20, height: 1 })
-
-      text.position = "relative"
-      await renderOnce()
-      expectLayout(text, { width: 10, height: 1 })
+      expectLayout(node, 20, 1)
     })
   })
+}
 
-  describe("TextareaRenderable", () => {
-    test("matches native char-wrap editor measurement with relative AtMost clamping", async () => {
-      const textarea = new TextareaRenderable(renderer, {
-        initialValue: "ABCDEFGHIJKLMNOPQRST",
-        wrapMode: "char",
-        alignSelf: "flex-start",
-      })
+// Measured nodes outside their parent's content box, or with more wrapped lines than height.
+// padding maps a box to its [left, right] padding. Scene nodes keep at least one cell, so sub-cell
+// nodes and content boxes are skipped.
+function escapes(root: Renderable, padding = new Map<Renderable, readonly [number, number]>()): string[] {
+  const out: string[] = []
+  const [left, right] = padding.get(root) ?? [0, 0]
+  for (const child of root.getChildren() as Renderable[]) {
+    const inside =
+      root.width - left - right < 1 ||
+      (child.x >= root.x + left &&
+        child.x + child.width <= root.x + root.width - right &&
+        child.y >= root.y &&
+        child.y + child.height <= root.y + root.height)
+    // A text narrower than a cell is measured unwrapped, so line counts are checked from two cells.
+    const lines = child instanceof TextRenderable && child.width >= 2 ? child.virtualLineCount : 0
+    const measured = renderer.nativeScene.hasMeasureFunc(child) && child.getLayout().width >= 1
+    if (measured && (!inside || lines > child.height))
+      out.push(`[${child.x},${child.width}] in [${root.x},${root.width}] lines ${lines}/${child.height}`)
+    out.push(...escapes(child, padding))
+  }
+  return out
+}
 
-      await renderInConstrainedColumn(textarea)
+describe("measured text stays inside its parent's rounded content box", () => {
+  const box = (options: BoxOptions, children: Renderable[] = []) => {
+    const node = new BoxRenderable(renderer, options)
+    for (const child of children) node.add(child)
+    return node
+  }
+  const text = (content: string, options: TextOptions = {}) =>
+    new TextRenderable(renderer, { content, wrapMode: "char", ...options })
+  const spans = (nodes: Renderable[]) => nodes.map((node) => `${node.x}+${node.width}`).join(" ")
+  const line = (row: number) => captureCharFrame().split("\n")[row]!
 
-      expectLayout(textarea, { width: 20, height: 1 })
-    })
-
-    test("matches native word-wrap editor measurement with relative AtMost clamping", async () => {
-      const textarea = new TextareaRenderable(renderer, {
-        initialValue: WORD_WRAP_CONTENT,
-        wrapMode: "word",
-        alignSelf: "flex-start",
-      })
-
-      await renderInConstrainedColumn(textarea)
-
-      expectLayout(textarea, { width: WORD_WRAP_CONTENT.length, height: 1 })
-    })
-
-    test("matches native no-wrap editor measurement", async () => {
-      const textarea = new TextareaRenderable(renderer, {
-        initialValue: "Short\nAVeryLongLineHere\nMedium",
-        wrapMode: "none",
-        alignSelf: "flex-start",
-      })
-
-      await renderInConstrainedColumn(textarea)
-
-      expectLayout(textarea, { width: "AVeryLongLineHere".length, height: 3 })
-    })
-
-    test("clamps relative editor AtMost measurement to a narrower parent", async () => {
-      const textarea = new TextareaRenderable(renderer, {
-        initialValue: "ABCDEFGHIJKLMNOPQRST",
-        wrapMode: "none",
-        alignSelf: "flex-start",
-      })
-
-      await renderInParent(textarea, { width: 10 })
-
-      expectLayout(textarea, { width: 10, height: 1 })
-    })
-
-    test("stretches relative editors to the root width by default", async () => {
-      const textarea = new TextareaRenderable(renderer, {
-        initialValue: "Short",
-        wrapMode: "char",
-      })
-
-      await renderInConstrainedColumn(textarea)
-
-      expectLayout(textarea, { width: 80, height: 1 })
-    })
-
-    test("preserves minimum Yoga measurement size for an empty editor", async () => {
-      const textarea = new TextareaRenderable(renderer, {
-        initialValue: "",
-        wrapMode: "char",
-        alignSelf: "flex-start",
-      })
-
-      await renderInConstrainedColumn(textarea)
-
-      expectLayout(textarea, { width: 1, height: 1 })
-    })
-
-    test("does not apply relative AtMost clamping for absolute-positioned editors", async () => {
-      const textarea = new TextareaRenderable(renderer, {
-        initialValue: "ABCDEFGHIJKLMNOPQRST",
-        wrapMode: "none",
-        position: "absolute",
-        left: 0,
-        top: 0,
-      })
-
-      await renderInConstrainedColumn(textarea)
-
-      expectLayout(textarea, { width: 20, height: 1 })
-    })
-
-    test("recomputes editor measurement after text changes", async () => {
-      const textarea = new TextareaRenderable(renderer, {
-        initialValue: "Short",
-        wrapMode: "char",
-        alignSelf: "flex-start",
-      })
-
-      await renderInConstrainedColumn(textarea)
-      expectLayout(textarea, { width: 5, height: 1 })
-
-      textarea.setText("ABCDEFGHIJKLMNOPQRST")
-      await renderOnce()
-
-      expectLayout(textarea, { width: 20, height: 1 })
-    })
-
-    test("captures current placeholder measurement behavior", async () => {
-      const textarea = new TextareaRenderable(renderer, {
-        initialValue: "",
-        placeholder: PLACEHOLDER_CONTENT,
-        wrapMode: "char",
-        alignSelf: "flex-start",
-      })
-
-      await renderInConstrainedColumn(textarea)
-
-      expectLayout(textarea, { width: PLACEHOLDER_CONTENT.length, height: 1 })
-    })
-
-    test("applies and removes AtMost clamping when position changes at runtime", async () => {
-      const textarea = new TextareaRenderable(renderer, {
-        initialValue: "ABCDEFGHIJKLMNOPQRST",
-        wrapMode: "none",
-        alignSelf: "flex-start",
-        left: 0,
-        top: 0,
-      })
-
-      await renderInParent(textarea, { width: 10 })
-      expectLayout(textarea, { width: 10, height: 1 })
-
-      textarea.position = "absolute"
-      await renderOnce()
-      expectLayout(textarea, { width: 20, height: 1 })
-
-      textarea.position = "relative"
-      await renderOnce()
-      expectLayout(textarea, { width: 10, height: 1 })
-    })
+  // Fractional columns: text rounding ceiled each text's right edge past its column.
+  test.each([
+    [{ width: 10 }, "abc", "0+3 3+4 7+3", "aaabbbbccc  "],
+    [{ width: 11, paddingRight: 1 }, "abc", "0+3 3+4 7+3", "aaabbbbccc  "],
+    [{ width: 11, paddingLeft: 1 }, "abc", "1+3 4+4 8+3", " aaabbbbccc "],
+    [{ width: 21 }, "ab", "0+11 11+10", "aaaaaaaaaaabbbbbbbbbb  "],
+  ] as const)("equal columns in %o", async (options, letters, expected, frame) => {
+    const texts = [...letters].map((letter) => text(letter.repeat(33)))
+    renderer.root.add(
+      box(
+        { flexDirection: "row", height: 4, ...options },
+        texts.map((t) => box({ flexGrow: 1, flexBasis: 0 }, [t])),
+      ),
+    )
+    await renderOnce()
+    expect(spans(texts)).toBe(expected)
+    expect(line(0).slice(0, frame.length)).toBe(frame)
   })
+
+  test("shrinking sibling texts do not overlap", async () => {
+    const texts = [text("aaaaaaaa"), text("bbbbbbbb")]
+    renderer.root.add(box({ flexDirection: "row", width: 11 }, texts))
+    await renderOnce()
+    expect(spans(texts)).toBe("0+6 6+5")
+  })
+
+  // Two levels of fractional ratios: text at relative 2.5 in a parent at 7.5, on either axis.
+  test.each(["row", "column"] as const)(
+    "nested fractional text in a %s keeps every wrapped line",
+    async (direction) => {
+      const flex = { flexGrow: 1, flexBasis: 0 }
+      const node = text("0123456789".repeat(4).slice(0, 38), { ...flex, flexGrow: 2 })
+      const parent = box({ ...flex, flexDirection: direction, alignItems: "flex-start" }, [box(flex), node])
+      const size = direction === "row" ? { width: 30 } : { height: 30 }
+      const outer = box({ flexDirection: direction, alignItems: "flex-start", ...size }, [
+        box(flex),
+        parent,
+        box({ ...flex, flexGrow: 2 }),
+      ])
+      renderer.root.add(outer)
+      await renderOnce()
+      const span = (n: Renderable) => (direction === "row" ? `${n.x}+${n.width}` : `${n.y}+${n.height}`)
+      expect([span(parent), span(node), node.virtualLineCount <= node.height]).toEqual(["8+7", "10+5", true])
+      expect(escapes(outer)).toEqual([])
+    },
+  )
+
+  // Every wrapped line counts toward the scroll height, also past the renderer's 30 rows.
+  test.each([
+    ["stretch", { width: "100%" }, 20, 11],
+    ["flex-start", {}, 70, 37],
+  ] as const)("wrapped text fits beside a visible ScrollBox scrollbar (%s)", async (align, options, repeat, lines) => {
+    const scroll = new ScrollBoxRenderable(renderer, { height: 4, contentOptions: { alignItems: align } })
+    const node = text("0123456789".repeat(repeat), options)
+    scroll.add(node)
+    renderer.root.add(box({ width: 20 }, [scroll]))
+    await renderOnce()
+    await renderOnce()
+    expect([scroll.verticalScrollBar.visible, node.width, scroll.content.width]).toEqual([true, 19, 19])
+    expect([node.height, scroll.scrollHeight]).toEqual([lines, lines])
+    expect(line(1).slice(0, 4)).toBe("9012")
+  })
+
+  // OpenCode's permission prompt: a split diff in a padded ScrollBox.
+  test.each([53, 59, 79, 139])("split diff code fits its side at width %d", async (width) => {
+    const style = SyntaxStyle.create(renderer.nativeScene)
+    const lines = Array.from({ length: 12 }, (_, i) => ` context ${i} ${"0123456789".repeat(8)}`)
+    const diff = new DiffRenderable(renderer, {
+      diff: `--- a/f.ts\n+++ b/f.ts\n@@ -1,12 +1,12 @@\n${lines.join("\n")}\n`,
+      view: "split",
+      width: "100%",
+      wrapMode: "word",
+      showLineNumbers: true,
+      syntaxStyle: style,
+    })
+    const scroll = new ScrollBoxRenderable(renderer, { height: "100%" })
+    scroll.add(diff)
+    renderer.root.add(box({ width, border: ["left"], paddingLeft: 1, paddingRight: 3, height: 12 }, [scroll]))
+    const errors: unknown[] = []
+    renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }) => errors.push(error))
+    for (let frame = 0; frame < 3; frame++) await renderOnce()
+    expect([errors, escapes(diff)]).toEqual([[], []])
+    style.destroy()
+  })
+
+  // Yoga's cache treats available sizes that round to the same cell as equal; the scene compares exactly.
+  test.each(["row", "column"] as const)(
+    "a subtree that Yoga reuses from its cache rounds like a fresh layout in a %s",
+    async (direction) => {
+      const size = (n: number) => (direction === "row" ? { width: n } : { height: n })
+      const spacer = box({ ...size(0), flexShrink: 0 })
+      const lines = Array.from({ length: 12 }, (_, i) => i % 10)
+      const node = text(lines.join(direction === "row" ? "" : "\n"), { flexGrow: 1, flexBasis: 0 })
+      const holder = box({ ...size(10), flexDirection: direction, flexShrink: 0 }, [spacer, node])
+      const outer = box({ flexDirection: direction, alignItems: "flex-start" }, [
+        box({ ...size(0.3), flexShrink: 0 }),
+        holder,
+        text("BELOW"),
+      ])
+      renderer.root.add(outer)
+      const spans: string[] = []
+      for (const offset of [0, 0.45, 0]) {
+        Object.assign(spacer, size(offset))
+        await renderOnce()
+        spans.push(direction === "row" ? `${node.x}+${node.width}` : `${node.y}+${node.height}`)
+        expect(escapes(outer)).toEqual([])
+      }
+      expect(spans).toEqual(["0+10", "1+9", "0+10"])
+    },
+  )
+
+  // Reduced random trees that differed from a fresh layout when a box's cached measurement or layout took
+  // a height or a width within 1e-4 of the one it was computed for, or when rounding started from a rounded
+  // width. Nodes are [parent, text length or box direction, options]; steps are [node or -1 for the holder,
+  // options].
+  type Spec = [number, number | "row" | "column", BoxOptions & TextOptions][]
+  test.each<[string, BoxOptions, Spec, [number, BoxOptions & TextOptions][]]>([
+    [
+      "a cached measurement at a height within 1e-4",
+      { width: 30, height: 27 },
+      [
+        [-1, 63, { flexShrink: 0 }],
+        [-1, "column", {}],
+        [1, "row", { flexShrink: 0, padding: 2 }],
+        [2, "row", {}],
+        [3, "column", { gap: 2 }],
+        [4, 107, { maxHeight: "15%" }],
+        [4, 8, {}],
+        [2, 19, { minHeight: "38%" }],
+        [-1, "column", { flexShrink: 0, padding: 2 }],
+        [8, 40, {}],
+        [8, "column", {}],
+        [10, "column", {}],
+        [11, "column", {}],
+        [12, 95, { width: 7 }],
+      ],
+      [[12, { padding: 1 }]],
+    ],
+    [
+      "a cached layout at a height within 1e-4",
+      { width: 2, height: 25 },
+      [
+        [-1, 112, { width: 9 }],
+        [-1, "column", { flexShrink: 1, width: 7 }],
+        [1, 72, {}],
+        [1, "column", { flexShrink: 0 }],
+        [3, "column", { gap: 1 }],
+        [4, 22, {}],
+        [4, "column", {}],
+        [6, 49, {}],
+        [4, "column", { flexShrink: 0 }],
+        [8, 23, {}],
+        [4, "row", { maxHeight: "55%" }],
+        [10, 83, {}],
+        [3, "row", { width: 12, border: true }],
+        [12, 72, { maxHeight: "32%" }],
+        [1, "column", { padding: 2 }],
+      ],
+      [
+        [11, { content: "a".repeat(39) }],
+        [-1, { width: 25, height: 19 }],
+        [0, { content: "a".repeat(55) }],
+        [4, { maxWidth: "72%" }],
+        [13, { minHeight: "100%" }],
+        [9, { minHeight: "83%" }],
+        [14, { maxHeight: "8%" }],
+      ],
+    ],
+    [
+      "rounding from a rounded width",
+      { width: 22, height: 17 },
+      [
+        [-1, 51, { flexShrink: 0 }],
+        [-1, "row", {}],
+        [1, "column", {}],
+        [2, "row", {}],
+        [3, "row", {}],
+        [4, 45, {}],
+        [4, 111, {}],
+        [4, 57, {}],
+        [3, "row", { width: 11 }],
+        [8, 69, {}],
+        [8, 30, {}],
+        [3, 114, {}],
+      ],
+      [
+        [0, { content: "a".repeat(87) }],
+        [-1, { width: 38, height: 2 }],
+        [-1, { width: 20, height: 5 }],
+      ],
+    ],
+    [
+      "a cached box at a width within 1e-4",
+      { width: 22, height: 21 },
+      [
+        [-1, "row", {}],
+        [0, 100, { flexShrink: 0 }],
+        [0, "row", {}],
+        [2, "row", { flexShrink: 0 }],
+        [3, "row", { border: true }],
+        [0, "column", { maxWidth: "1%" }],
+        [5, 15, {}],
+      ],
+      [[5, { padding: 2 }]],
+    ],
+    [
+      // Absolute, so the fresh copy rounds from the same origin.
+      "a cached measurement at a height within 1e-4 across a half cell",
+      { position: "absolute", height: 9.49988, alignItems: "flex-start" },
+      [[-1, 1, { content: "0\n1\n2\n3\n4\n5\n6\n7\n8\n9", flexGrow: 1, flexBasis: 0 }]],
+      [[-1, { height: 9.49995 }]],
+    ],
+    [
+      // 40 cells and the padding add up to 64 exactly; 63.9999008 leaves 39.999897 cells for the text.
+      "a max-content measurement within 1e-4 of an at-most width across a wrap",
+      { flexDirection: "row", overflow: "scroll", alignItems: "flex-start" },
+      [[-1, 40, { paddingLeft: 24.000003814697266 }]],
+      [[-1, { flexDirection: "column", overflow: "visible", width: 63.999900817871094 }]],
+    ],
+    // A large flexShrink ratio moves a box by less than 1e-4 across the wrap at N - 1e-4 as the holder resizes.
+    ...(
+      [
+        [{ width: 80, height: 3 }, 10, 10, 8000, [130]],
+        [{ width: 80 }, 4, 132, 2000, [79, 80]],
+      ] as const
+    ).map(
+      ([size, width, length, flexShrink, widths]): [string, BoxOptions, Spec, [number, BoxOptions & TextOptions][]] => [
+        `a cached measurement at a width within 1e-4 across a wrap at ${width}`,
+        { ...size },
+        [
+          [-1, "row", { width: "100%", alignItems: "flex-start" }],
+          [0, "column", { width, minWidth: 0, flexShrink: 1, alignItems: "flex-start" }],
+          [1, length, { flexShrink: 0 }],
+          [0, "column", { width: "100%", flexShrink, height: 1 }],
+        ],
+        widths.map((w) => [-1, { width: w }]),
+      ],
+    ),
+  ])("a reduced random tree lays out as a fresh one: %s", async (_, size, spec, steps) => {
+    const build = () => {
+      const holder = box({ ...size, flexShrink: 0 })
+      const all: Renderable[] = []
+      for (const [parent, kind, options] of spec) {
+        const node =
+          typeof kind === "number" ? text("a".repeat(kind), options) : box({ flexDirection: kind, ...options })
+        ;(parent < 0 ? holder : all[parent]!).add(node)
+        all.push(node)
+      }
+      renderer.root.add(holder)
+      return { holder, all }
+    }
+    const layouts = ({ holder, all }: ReturnType<typeof build>) =>
+      all.map((node) => [node.x - holder.x, node.y - holder.y, node.width, node.height])
+    const tree = build()
+    await renderOnce()
+    for (const [index, options] of steps) {
+      Object.assign(index < 0 ? size : spec[index]![2], options)
+      Object.assign(index < 0 ? tree.holder : tree.all[index]!, options)
+      await renderOnce()
+      const fresh = build()
+      await renderOnce()
+      expect(layouts(tree)).toEqual(layouts(fresh))
+      fresh.holder.destroyRecursively()
+    }
+  })
+
+  test("fractional padding keeps whole-cell widths for a buffered renderable", async () => {
+    const node = text("x".repeat(40), { flexGrow: 1, buffered: true })
+    // 10% of the 35-wide containing block is 3.5 cells of padding on each side.
+    renderer.root.add(box({ width: 35 }, [box({ flexDirection: "row", paddingX: "10%" }, [node])]))
+    await renderOnce()
+    expect(spans([node])).toBe("4+28")
+  })
+
+  // Overflow that does not come from rounding draws as on main.
+  test("explicit and unshrinkable widths keep their overflow", async () => {
+    const panned = text("abcdefghijklmnopqrst", { width: 20, wrapMode: "none" })
+    const clip = box({ width: 10, height: 1, overflow: "hidden" }, [panned])
+    const pushed = text("abcdefghijklmnopqrst", { flexShrink: 0 })
+    const bordered = box({ flexDirection: "row", width: 14, height: 4, border: true }, [
+      box({ width: 3, flexShrink: 0 }),
+      pushed,
+    ])
+    renderer.root.add(box({}, [clip, bordered]))
+    panned.translateX = -10
+    await renderOnce()
+    expect([spans([panned, pushed]), line(0).slice(0, 10), line(2).slice(0, 16)]).toEqual([
+      "-10+20 4+12",
+      "klmnopqrst",
+      "│   abcdefghijkl",
+    ])
+  })
+
+  test("random flex distributions keep every measured node inside its parent", async () => {
+    let seed = 228
+    const next = (n: number) => {
+      seed = (Math.imul(seed, 1103515245) + 12345) >>> 0
+      return Math.floor((seed / 2 ** 32) * n)
+    }
+    const padding = new Map<Renderable, readonly [number, number]>()
+    const item = (depth: number): Renderable => {
+      if (depth > 1 || next(3) === 0)
+        return text("x".repeat(1 + next(30)), { flexShrink: 1, flexGrow: next(3), flexBasis: next(2) ? 0 : "auto" })
+      const pad = [next(2), next(2)] as const
+      const children = Array.from({ length: 1 + next(3) }, () => item(depth + 1))
+      const node = box(
+        {
+          flexGrow: 1 + next(3),
+          flexBasis: 0,
+          flexDirection: "row",
+          alignItems: "flex-start",
+          paddingLeft: pad[0],
+          paddingRight: pad[1],
+        },
+        children,
+      )
+      padding.set(node, pad)
+      return node
+    }
+    for (let trial = 0; trial < 100; trial++) {
+      const row = box(
+        { flexDirection: "row", alignItems: "flex-start", width: 4 + next(57) },
+        Array.from({ length: 2 + next(4) }, () => item(0)),
+      )
+      renderer.root.add(row)
+      await renderOnce()
+      expect(escapes(row, padding)).toEqual([])
+      row.destroyRecursively()
+    }
+  })
+})
+
+describe("the public yoga.ts API keeps upstream rounding", () => {
+  test("measured nodes round as text and positions round relative to the parent", () => {
+    const config = Yoga.Config.create()
+    const root = Yoga.Node.create(config)
+    const parent = Yoga.Node.create(config)
+    const child = Yoga.Node.create(config)
+    const measured = Yoga.Node.create(config)
+    root.setFlexDirection(FlexDirection.Row)
+    measured.setMargin(Edge.Left, 0.5)
+    measured.setMeasureFunc(() => ({ width: 5.5, height: 1 }))
+    parent.setMargin(Edge.Left, 0.5)
+    parent.setWidth(20)
+    child.setMargin(Edge.Left, 0.6)
+    child.setWidth(5)
+    parent.insertChild(child, 0)
+    root.insertChild(measured, 0)
+    root.insertChild(parent, 1)
+    root.calculateLayout(40, 10)
+    // Text rounding floors the measured node's left and keeps 6 cells; the child rounds its own 0.6.
+    expect([measured.getComputedLeft(), measured.getComputedWidth(), child.getComputedLeft()]).toEqual([0, 6, 1])
+    // Upstream's cache reuses a measurement whose available size rounds to the same point.
+    let calls = 0
+    const leaf = Yoga.Node.create(config)
+    leaf.setMeasureFunc((width) => ({ width: (calls++, width), height: 1 }))
+    leaf.calculateLayout(10.2)
+    leaf.calculateLayout(10.4)
+    expect(calls).toBe(1)
+    leaf.free()
+    root.freeRecursive()
+    config.free()
+  })
+})
+
+test("empty textarea measures its placeholder", async () => {
+  const node = new TextareaRenderable(renderer, {
+    initialValue: "",
+    placeholder: "Placeholder text that is longer than content",
+    wrapMode: "char",
+    alignSelf: "flex-start",
+  })
+  renderer.root.add(node)
+  await renderOnce()
+  expectLayout(node, 44, 1)
 })

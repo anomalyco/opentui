@@ -54,7 +54,7 @@ Enter your name
 
 ## Focus states
 
-The input changes appearance when focused:
+The input uses its focused colors while it has focus:
 
 ```typescript
 const input = new InputRenderable(renderer, {
@@ -79,7 +79,14 @@ Ada Lovelace
 
 ### Input event
 
-Emitted after text insertion and deletion operations, and when assigning a different `value`. The listener receives the current value:
+Emitted after these operations:
+
+- Typing, paste, or `insertText()` inserts text.
+- A delete key, a delete method such as `deleteCharBackward()`, `undo()`, or `redo()` runs.
+- You assign a different `value`.
+
+The listener receives the current value. Other buffer methods, such as `setText()`, `insertChar()`, `deleteSelection()`,
+and `deleteRange()`, do not emit it:
 
 ```typescript
 import { InputRenderableEvents } from "@opentui/core"
@@ -91,7 +98,7 @@ input.on(InputRenderableEvents.INPUT, (value: string) => {
 
 ### Change event
 
-Fires on blur or after a successful `submit()` when the value differs from the last commit baseline:
+Emitted on blur, or after a successful `submit()`, when the value differs from the last commit baseline:
 
 ```typescript
 input.on(InputRenderableEvents.CHANGE, (value: string) => {
@@ -99,13 +106,13 @@ input.on(InputRenderableEvents.CHANGE, (value: string) => {
 })
 ```
 
-Each `focus()` call sets the baseline. Each emitted `CHANGE` event updates it. Thus, blur does not emit another event if
-the value did not change after a successful commit.
+The constructor and each `focus()` call set the baseline. Each emitted `CHANGE` event updates it. Thus, blur does not
+emit another event if the value did not change after a successful commit.
 
 ### Enter event
 
-Emitted when an Enter/Return submit succeeds. The input emits no event when the current UTF-16 code-unit length is less
-than `minLength`:
+Emitted when `submit()` succeeds. Return, keypad Enter, and linefeed call `submit()`. If the current UTF-16 code-unit length
+is less than `minLength`, `submit()` fails and the input emits no event:
 
 ```typescript
 input.on(InputRenderableEvents.ENTER, (value: string) => {
@@ -130,7 +137,7 @@ input.value = "New value"
 | Property                 | Type                                   | Default                                 | Description                                         |
 | ------------------------ | -------------------------------------- | --------------------------------------- | --------------------------------------------------- |
 | `width`                  | number, `"auto"`, or percentage string | `"auto"`                                | Input field width                                   |
-| `value`                  | `string`                               | `""`                                    | Initial text value                                  |
+| `value`                  | `string`                               | `""`                                    | Initial text, with newlines removed                 |
 | `placeholder`            | `string`                               | `""`                                    | Placeholder text when empty                         |
 | `minLength`              | `number`                               | `0`                                     | Minimum UTF-16 code-unit length required for submit |
 | `maxLength`              | `number`                               | `1000`                                  | Maximum UTF-16 code-unit length                     |
@@ -138,12 +145,12 @@ input.value = "New value"
 | `focusedBackgroundColor` | `string \| RGBA`                       | `backgroundColor`, else `"transparent"` | Background when focused                             |
 | `textColor`              | `string \| RGBA`                       | `"#FFFFFF"`                             | Text color                                          |
 | `cursorColor`            | `string \| RGBA`                       | `"#FFFFFF"`                             | Cursor color                                        |
-| `position`               | `"relative" \| "absolute"`             | `"relative"`                            | Effective positioning mode                          |
+| `position`               | `"relative" \| "absolute"`             | `"relative"`                            | Positioning mode                                    |
 
 ## Example: login form
 
-`Input` has no password-masking mode. This demonstration displays the password value as normal terminal text. Do not
-use this pattern for real secrets.
+`Input` has no password-masking mode. This example shows the password value as normal terminal text. Do not use this
+pattern for real secrets.
 
 ```typescript
 import { BoxRenderable, InputRenderable, TextRenderable, createCliRenderer } from "@opentui/core"

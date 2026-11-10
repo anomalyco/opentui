@@ -47,7 +47,7 @@ row.add(growing)
 renderer.root.add(row)
 ```
 
-The shaded children occupy 8 and 20 columns. The border and padding consume four columns; the gap consumes two more.
+The shaded children occupy 8 and 20 columns. The border and padding use four columns. The gap uses two more.
 
 ```text terminal=layout-flex-columns
 ┌────────────────────────────────┐
@@ -76,6 +76,7 @@ The same layout properties work across the built-in renderable classes.
 | Flex size     | `flexBasis`                                                                                     | number or `"auto"`                                          | `"auto"`                                            |
 | Flow          | `flexDirection`                                                                                 | `"column"`, `"column-reverse"`, `"row"`, or `"row-reverse"` | `"column"`                                          |
 | Flow          | `flexWrap`                                                                                      | `"no-wrap"`, `"wrap"`, or `"wrap-reverse"`                  | `"no-wrap"`                                         |
+| Flow          | `layoutMode`                                                                                    | `"flex"` or `"list"`, see [List layout](#list-layout)       | `"flex"`                                            |
 | Alignment     | `alignItems`                                                                                    | Yoga align value                                            | `"stretch"`                                         |
 | Alignment     | `alignSelf`                                                                                     | Yoga align value                                            | `"auto"`                                            |
 | Alignment     | `justifyContent`                                                                                | start, end, center, or space distribution                   | `"flex-start"`                                      |
@@ -89,6 +90,10 @@ Yoga align values are `"auto"`, `"flex-start"`, `"center"`, `"flex-end"`, `"stre
 `PositionTypeString` also includes `"static"`, but renderable option validation does not implement it. Use `"relative"` or `"absolute"`.
 
 The public TypeScript interface includes `"auto"` for min and max dimensions. The current runtime ignores that value for those four options.
+
+A numeric value, `translateX`, and `translateY` must be finite and at most about `3.4e38` in magnitude, the 32-bit float range. Other values throw `RangeError`. Drawing clamps geometry to the signed 32-bit cell range, so a very large value moves a renderable off the screen instead of failing the frame. `x`, `y`, `width`, and `height` still report the unclamped layout.
+
+Margin, padding, edge (`top`, `right`, `bottom`, `left`), and gap values beyond `±1e30` are stored as `±1e30`, and a resolved percentage is limited the same way, so layout sums stay finite. `getMargin()`, `getPadding()`, and `getGap()` read back the stored value.
 
 ## Alignment
 
@@ -139,9 +144,9 @@ Yoga alignment positions child boxes. It does not align characters inside a text
 
 ## Automatic and intrinsic size
 
-An `"auto"` dimension lets Yoga derive size from children or a renderable's measure function. Text and editor renderables supply native measure targets.
+An `"auto"` dimension lets Yoga derive size from children or from a renderable's measure function. Text and editor renderables measure their content in native code.
 
-Yoga calls a measure target with exact, at-most, or unconstrained dimensions. Text measurement uses display-cell width and the active wrap mode.
+Yoga calls a measure function with exact, at-most, or unconstrained dimensions. Text measurement uses display-cell width and the active wrap mode.
 
 `wrapMode: "word"` and `"char"` can increase measured height under a width constraint. `wrapMode: "none"` keeps the intrinsic line width.
 
@@ -160,6 +165,22 @@ Absolute children do not consume space in normal flex flow. Their edges position
 Absolute text also uses its intrinsic measure without the relative child's at-most clamp. Set a width when you need predictable wrapping.
 
 Use absolute positioning for overlays and fixed geometry. Use flex flow for ordinary page structure.
+
+## List layout
+
+`layoutMode: "list"` lays out a long column of rows, such as a log or a transcript, without a flex pass over every row. When one row changes, or a row is appended at the end, the other rows are not laid out again. Set it on [ScrollBox](/docs/components/scrollbox) content with `contentOptions: { layoutMode: "list" }`.
+
+Apart from the rules below, a list lays out like a flex column with `overflow: "scroll"`. So the list's height does not cap its rows, and a percent height inside an auto-height row resolves against no height.
+
+| Property                                                                          | In a list                                                       |
+| --------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| The list's `flexDirection` and `flexWrap`                                         | Rows always stack top to bottom in one column                   |
+| The list's `justifyContent`, rows' `marginTop: "auto"` and `marginBottom: "auto"` | Rows start at the top; auto top and bottom margins count as `0` |
+| Rows' `flexGrow`, `flexShrink`, and `flexBasis`                                   | Ignored: each row keeps its own height                          |
+| Percent `height`, `minHeight`, `maxHeight`, `top`, and `bottom` of rows           | Resolve against no height                                       |
+| A percent `gap`                                                                   | `0` unless the list has a definite height                       |
+
+Widths, `alignItems`, `alignSelf`, margins, padding, borders, point gaps, `aspectRatio`, relative insets, and `display: "none"` work as in a column. Absolute children are placed as in flex layout, and they still follow the list's `flexDirection`, `justifyContent`, and `alignItems`. `layoutMode` has no effect on a renderable that measures its own content, such as text.
 
 ## Cell rounding
 
@@ -186,11 +207,62 @@ A 32-column bordered row leaves 30 inner columns. Adding one column gives the mi
 └──────────────────────────────┘
 33 columns: 31 inside
 ┌───────────────────────────────┐
-│    10        11         10    │
+│    10         11        10    │
 └───────────────────────────────┘
 ```
 
 Renderable getters expose computed integer geometry after a layout pass. OpenTUI clamps exposed `width` and `height` to at least one cell.
+
+Paint does not clamp. A node that Yoga sizes to zero width or height draws no cells and receives no mouse events, although its getters report one cell. Its children still paint unless the node clips them. For example, when a column is too short for its children, `flexShrink` can reduce a text to zero rows, and that text disappears. Give the text `flexShrink: 0` to keep it visible.
+
+## Read style and geometry
+
+`x`, `y`, `width`, `height`, and `getLayout()` report computed geometry from the last layout pass.
+
+To read the style that was set, call the method with the name of the matching [Yoga](/docs/reference/yoga) Node getter. It returns
+the same `Value` or enum type. A change is visible at once, before the next layout pass:
+
+```typescript
+box.maxWidth = 40
+box.getMaxWidth() // { unit: Unit.Point, value: 40 }
+box.width // the computed width from the last layout pass
+```
+
+| Options                                          | Getters                                                              |
+| ------------------------------------------------ | -------------------------------------------------------------------- |
+| `width`, `height`                                | `getWidth()`, `getHeight()`                                          |
+| `minWidth`, `minHeight`, `maxWidth`, `maxHeight` | `getMinWidth()`, `getMinHeight()`, `getMaxWidth()`, `getMaxHeight()` |
+| Margin and padding options                       | `getMargin(edge)`, `getPadding(edge)`                                |
+| `gap`, `rowGap`, `columnGap`                     | `getGap(gutter)`                                                     |
+| `flexGrow`, `flexShrink`, `flexBasis`            | `getFlexGrow()`, `getFlexShrink()`, `getFlexBasis()`                 |
+| `flexDirection`, `flexWrap`                      | `getFlexDirection()`, `getFlexWrap()`                                |
+| `alignItems`, `alignSelf`, `justifyContent`      | `getAlignItems()`, `getAlignSelf()`, `getJustifyContent()`           |
+| `position`                                       | `getPositionType()`                                                  |
+
+An edge or gutter getter reads only the value set for that edge or gutter. `padding` sets `Edge.All`, `paddingX` sets
+`Edge.Horizontal`, `paddingY` sets `Edge.Vertical`, and `paddingLeft` sets `Edge.Left`. The margin and gap options work
+the same way. After `padding: 2`, `getPadding(Edge.Left)` returns a `Unit.Undefined` value, but layout still pads the
+left side by 2, because Yoga falls back from `Edge.Left` to `Edge.Horizontal` and then to `Edge.All`. Renderables have no
+getter for computed padding, margin, or border.
+
+`top`, `right`, `bottom`, `left`, and `overflow` have property getters. Assign an option to change its style.
+
+Assigning `null` or `undefined` to a layout option restores the default in [Supported options](#supported-options). A
+class that sizes itself, such as `InputRenderable` or `TabSelectRenderable`, restores its own `width` or `height`. Other
+class defaults, such as the row direction of `ScrollBoxRenderable`, are not restored, and `flexShrink` becomes `1`. A
+margin, padding, or gap edge becomes unset, so layout falls back to its shorthand again. Assigning `0` sets the edge
+instead:
+
+```typescript
+const box = new BoxRenderable(renderer, { paddingX: 2 })
+box.getPadding(Edge.Left) // { unit: Unit.Undefined, value: NaN }
+box.paddingLeft = 5 // pads the left side by 5
+box.paddingLeft = undefined // pads it by 2 again, from paddingX
+```
+
+To write back a `Value` that a getter returned, assign `undefined` for `Unit.Undefined`, `"auto"` for `Unit.Auto`,
+`` `${value}%` `` for `Unit.Percent`, and `value` for `Unit.Point`. Assigning a number to `width` or `height` also
+changes a `flexShrink` of `1` to `0`, so restore `getFlexShrink()` with them.
 
 ## Resize behavior
 
@@ -242,11 +314,11 @@ The same children before and after narrowing the terminal:
 └────────────────────┘
 ```
 
-Computed `x`, `y`, `width`, and `height` can all change. Buffered renderables resize their frame buffers before `onResize(width, height)` runs.
+Computed `x`, `y`, `width`, and `height` can all change. When a visible renderable's size changes, OpenTUI first resizes its frame buffer if it is buffered. Then it calls `onResize(width, height)`.
 
 `FrameBufferRenderable` resizes its public `frameBuffer` in its `onResize()` override, then calls the base hook.
 
-The base `onResize()` calls `onSizeChange` and emits the renderable's `"resize"` event. The layout resize path then requests another render.
+The base `onResize()` calls `onSizeChange` and emits the renderable's `"resize"` event. After `onResize()` returns, OpenTUI requests another render.
 
 Renderer `resize` listeners receive the render-region width and height.
 
@@ -260,6 +332,7 @@ Custom streams must call `renderer.resize(columns, rows)`. Local `process.stdout
 - `overflow: "scroll"` clips like a Yoga overflow mode, but it does not add scroll state. Use [ScrollBox](/docs/components/scrollbox).
 - Gap options belong to [Box](/docs/components/box), not every renderable class.
 - `visible = false` removes a renderable from layout.
+- A scene holds at most 256 levels, counting the root. An `add()` or `insertBefore()` that nests deeper throws `NativeError` with status `ObjectLimit`.
 - Text can contain fewer graphemes than cells or more UTF-16 units than cells. See [Text and terminal cells](/docs/core-concepts/text-and-cells).
 
 ## Next

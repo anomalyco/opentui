@@ -887,36 +887,30 @@ test("parseKeypress - backspace key with modifiers (Kitty keyboard protocol)", (
   expect(shiftBackspace.source).toBe("kitty")
 })
 
-test("parseKeypress - Buffer input", () => {
-  const buf = Buffer.from("a")
-  expect(parseKeypress(buf)).toEqual({
-    eventType: "press",
-    name: "a",
-    ctrl: false,
-    meta: false,
-    shift: false,
-    option: false,
-    number: false,
-    sequence: "a",
-    raw: "a",
-    source: "raw",
-  })
-})
-
-test("parseKeypress - high byte buffer handling", () => {
-  const buf = Buffer.from([160]) // 128 + 32, should become \x1b + " "
-  expect(parseKeypress(buf)).toEqual({
-    eventType: "press",
-    name: "space",
-    ctrl: false,
-    meta: true,
-    shift: false,
-    option: false,
-    number: false,
-    sequence: "\x1b ",
-    raw: "\x1b ",
-    source: "raw",
-  })
+test("parseKeypress - Buffer input leaves the buffer unchanged", () => {
+  const press = { ctrl: false, shift: false, option: false, number: false, eventType: "press", source: "raw" } as const
+  const key = (name: string, sequence: string, meta = false) => ({ ...press, name, meta, sequence, raw: sequence })
+  const kittyFlags = { super: false, hyper: false, capsLock: false, numLock: false }
+  const cases: Array<[Buffer, boolean, ParsedKey | null]> = [
+    [Buffer.from("a"), false, key("a", "a")],
+    [Buffer.from("é"), false, key("é", "é")], // two bytes, the first above 127
+    [Buffer.from([127]), false, key("backspace", "\x7f")],
+    [Buffer.from([128]), false, { ...key("space", "\x1b\x00", true), ctrl: true }],
+    [Buffer.from([160]), false, key("space", "\x1b ", true)], // 128 + 32
+    [Buffer.from([225]), false, key("a", "\x1ba", true)],
+    [Buffer.from([255]), false, key("backspace", "\x1b\x7f", true)],
+    [
+      Buffer.from("\x1b[97;5u"),
+      true,
+      { ...key("a", "a"), ...kittyFlags, ctrl: true, raw: "\x1b[97;5u", source: "kitty" },
+    ],
+    [Buffer.from("\x1b[<0;1;1M"), false, null],
+  ]
+  for (const [buf, useKittyKeyboard, expected] of cases) {
+    const before = Buffer.from(buf)
+    expect(parseKeypress(buf, { useKittyKeyboard })).toEqual(expected)
+    expect(buf).toEqual(before)
+  }
 })
 
 test("parseKeypress - empty input", () => {
