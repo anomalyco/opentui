@@ -12,6 +12,7 @@ const image = @import("../image.zig");
 const ghostty_vt = @import("../ghostty-vt.zig");
 const test_renderer_mod = @import("test-renderer.zig");
 const terminal_image_test = @import("terminal-image_test.zig");
+const terminal_image = @import("../terminal-image.zig");
 const owned_styled = @import("owned-styled-text.zig");
 const utils = @import("../utils.zig");
 const native_span_feed = @import("../native-span-feed.zig");
@@ -2971,6 +2972,8 @@ test "renderer - split scrollback uses native Kitty when Kitty is selected" {
         if (tmux) {
             test_renderer.renderer.terminal.multiplexer = .tmux;
             test_renderer.renderer.terminal.image_protocol = .kitty;
+            try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
+            try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
         }
         _ = test_renderer.renderer.resetSplitScrollback(2, 2);
 
@@ -2983,8 +2986,22 @@ test "renderer - split scrollback uses native Kitty when Kitty is selected" {
         try std.testing.expect(std.mem.find(u8, output, "C=1,z=-1073741823") != null);
         try std.testing.expectEqual(tmux, std.mem.find(u8, output, ",U=1,") != null);
         try std.testing.expectEqual(tmux, std.mem.find(u8, output, "\u{10EEEE}") != null);
+        if (tmux) {
+            var live_parent: [64]u8 = undefined;
+            const upload = try std.fmt.bufPrint(&live_parent, "a=t,f=32,s=1,v=1,i={d},", .{terminal_image.kittyAnchorId(test_renderer.renderer.imageIdSalt)});
+            try std.testing.expect(std.mem.find(u8, output, upload) == null);
+        }
         try std.testing.expect(std.mem.find(u8, output, "█") == null);
         try std.testing.expect(std.mem.find(u8, output, "48;2;1;2;3") == null);
+        if (tmux) {
+            test_renderer.renderer.kittyHistoryNextImageId = test_renderer.renderer.kittyHistoryNextImageId.? | std.math.maxInt(u24);
+            for (0..2) |commit| {
+                try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.commitSplit(snapshot, 1, false, true, 2, false));
+                const history = test_renderer.lastOutput();
+                try std.testing.expectEqual(commit == 0, std.mem.find(u8, history, "\x1b_Ga=t") != null);
+                try std.testing.expectEqual(commit == 1, std.mem.find(u8, history, "█") != null);
+            }
+        }
     }
 }
 

@@ -1189,8 +1189,14 @@ pub const CliRenderer = struct {
 
     fn reserveKittyHistoryImageIds(self: *CliRenderer, count: usize) ?u32 {
         if (count == 0 or count > std.math.maxInt(u32)) return null;
-        const first = self.kittyHistoryNextImageId orelse return null;
+        var first = self.kittyHistoryNextImageId orelse return null;
+        if (self.terminal.isInTmux()) {
+            const anchor_id = first & std.math.maxInt(u24);
+            const next_anchor = @max(anchor_id, terminal_image.kittyAnchorId(self.imageIdSalt) + 1);
+            first = std.math.add(u32, first, next_anchor - anchor_id) catch return null;
+        }
         const last = std.math.add(u32, first, @as(u32, @intCast(count)) - 1) catch return null;
+        if (self.terminal.isInTmux() and last >> 24 != (self.imageIdSalt + gp.IMAGE_ID_MASK + 1) >> 24) return null;
         self.kittyHistoryNextImageId = if (last == std.math.maxInt(u32)) null else last + 1;
         return first - 1;
     }
