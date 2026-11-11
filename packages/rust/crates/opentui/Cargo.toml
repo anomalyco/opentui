@@ -38,6 +38,10 @@ tree-sitter-rust = { version = "0.24", optional = true }
 tree-sitter-typescript = { version = "0.23", optional = true }
 tree-sitter-zig = { version = "1.1", optional = true }
 
+[dev-dependencies]
+# Reads the conformance vectors that Core's tests run too.
+serde_json = "1"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
