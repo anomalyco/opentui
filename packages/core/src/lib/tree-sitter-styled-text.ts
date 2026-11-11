@@ -111,7 +111,7 @@ export function treeSitterToTextChunks(
             text: replacementText,
             fg: defaultStyle?.fg,
             bg: defaultStyle?.bg,
-            attributes: defaultStyle ? createTextAttributes(defaultStyle) : 0,
+            attributes: createTextAttributes(defaultStyle),
           })
           ranges?.push({ start: currentOffset, end: boundary.offset })
         }
@@ -156,7 +156,7 @@ export function treeSitterToTextChunks(
           if (styleForGroup) {
             // Merge properties - later styles override earlier ones
             for (const [field, value] of Object.entries(styleForGroup)) {
-              if (value !== undefined) Object.assign(mergedStyle, { [field]: value })
+              if (value !== undefined) Reflect.set(mergedStyle, field, value)
             }
           } else {
             if (group.includes(".")) {
@@ -182,7 +182,7 @@ export function treeSitterToTextChunks(
           text: segmentText,
           fg: finalStyle?.fg,
           bg: finalStyle?.bg,
-          attributes: finalStyle ? createTextAttributes(finalStyle) : 0,
+          attributes: createTextAttributes(finalStyle),
         })
         ranges?.push({ start: currentOffset, end: boundary.offset })
       }
@@ -194,7 +194,7 @@ export function treeSitterToTextChunks(
         text,
         fg: style?.fg,
         bg: style?.bg,
-        attributes: style ? createTextAttributes(style) : 0,
+        attributes: createTextAttributes(style),
       })
       ranges?.push({ start: currentOffset, end: boundary.offset })
     }
@@ -246,7 +246,7 @@ export function treeSitterToTextChunks(
       text,
       fg: style?.fg,
       bg: style?.bg,
-      attributes: style ? createTextAttributes(style) : 0,
+      attributes: createTextAttributes(style),
     })
     ranges?.push({ start: currentOffset, end: content.length })
   }

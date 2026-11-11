@@ -558,7 +558,7 @@ export class MarkdownRenderable extends Renderable {
       text,
       fg: style?.fg,
       bg: style?.bg,
-      attributes: style ? createTextAttributes(style) : 0,
+      attributes: createTextAttributes(style),
       link,
     }
   }
