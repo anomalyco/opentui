@@ -4804,6 +4804,7 @@ test("theme switching (syntaxStyle change)", async () => {
     {
       default: { fg: RGBA.fromValues(1, 0, 0, 1) }, // Red
       "markup.heading.1": { fg: RGBA.fromValues(0, 1, 0, 1), bold: true }, // Green
+      "markup.strikethrough": { strikethrough: true },
     },
     renderer.nativeScene,
   )
@@ -4933,6 +4934,20 @@ The table alignment uses:
   expect(headingSpan2!.fg.g).toBe(1)
   expect(headingSpan2!.fg.b).toBe(0)
   expect(headingSpan2!.attributes & TextAttributes.BOLD).toBeTruthy()
+
+  // `~~x~~` in prose (tree-sitter) and in a table cell (marked) is struck only under a theme that asks for it.
+  md.content = "~~gone~~ text\n\n| a |\n|---|\n| ~~cell~~ |\n"
+  for (const [theme, struck] of [
+    [theme1, TextAttributes.STRIKETHROUGH],
+    [theme2, 0],
+  ] as const) {
+    md.syntaxStyle = theme
+    await renderMarkdownRenderable(md)
+    const frame = captureSpans()
+    for (const text of ["gone", "cell"]) {
+      expect(findSpanContaining(frame, text)!.attributes & TextAttributes.STRIKETHROUGH).toBe(struck)
+    }
+  }
 })
 
 // Paragraph rendering tests

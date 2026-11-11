@@ -558,14 +558,7 @@ export class MarkdownRenderable extends Renderable {
       text,
       fg: style?.fg,
       bg: style?.bg,
-      attributes: style
-        ? createTextAttributes({
-            bold: style.bold,
-            italic: style.italic,
-            underline: style.underline,
-            dim: style.dim,
-          })
-        : 0,
+      attributes: style ? createTextAttributes(style) : 0,
       link,
     }
   }
@@ -1454,12 +1447,7 @@ export class MarkdownRenderable extends Renderable {
       return baseChunks
     }
 
-    const headingAttributes = createTextAttributes({
-      bold: headingStyle.bold,
-      italic: headingStyle.italic,
-      underline: headingStyle.underline,
-      dim: headingStyle.dim,
-    })
+    const headingAttributes = createTextAttributes(headingStyle)
 
     return baseChunks.map((chunk) => ({
       ...chunk,

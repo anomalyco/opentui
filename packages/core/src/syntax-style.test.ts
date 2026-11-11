@@ -75,7 +75,7 @@ describe("NativeSyntaxStyle", () => {
       for (const definition of list.map((name) => scoped((key) => definitions.get(key), name))) {
         if (definition?.fg) result.fg = definition.fg
         if (definition?.bg) result.bg = definition.bg
-        for (const key of ["bold", "italic", "underline", "dim"] as const) {
+        for (const key of ["bold", "italic", "underline", "dim", "strikethrough"] as const) {
           if (definition?.[key] !== undefined) result[key] = definition[key]
         }
       }
@@ -88,7 +88,8 @@ describe("NativeSyntaxStyle", () => {
       if (operation === 0) {
         const registered = names[random(names.length)]
         const definition: StyleDefinitionInput = { fg: colors[random(4)], bg: colors[random(4)] }
-        for (const key of ["bold", "italic", "underline", "dim"] as const) definition[key] = flags[random(3)]
+        for (const key of ["bold", "italic", "underline", "dim", "strikethrough"] as const)
+          definition[key] = flags[random(3)]
         const id = style.registerStyle(registered, definition)
         expect(id).toBe(ids.get(registered) ?? id)
         expect(id).toBeGreaterThan(0)
@@ -149,7 +150,10 @@ describe("NativeSyntaxStyle", () => {
     const fromTheme = SyntaxStyle.fromTheme(
       [
         { scope: ["keyword", "keyword.control"], style: { foreground: "#ff0000", bold: true } },
-        { scope: ["styled"], style: { foreground: "#ff0000", background: "#000000", underline: true, dim: true } },
+        {
+          scope: ["styled"],
+          style: { foreground: "#ff0000", background: "#000000", underline: true, dim: true, strikethrough: true },
+        },
       ],
       owner,
     )
@@ -164,7 +168,7 @@ describe("NativeSyntaxStyle", () => {
       expect(fromTheme.mergeStyles("styled")).toEqual({
         fg: red,
         bg: RGBA.fromValues(0, 0, 0, 1),
-        attributes: createTextAttributes({ underline: true, dim: true }),
+        attributes: createTextAttributes({ underline: true, dim: true, strikethrough: true }),
       })
       expect(empty.getStyleCount()).toBe(0)
     } finally {

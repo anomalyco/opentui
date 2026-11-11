@@ -10,6 +10,7 @@ export interface StyleDefinition {
   italic?: boolean
   underline?: boolean
   dim?: boolean
+  strikethrough?: boolean
 }
 
 export interface StyleDefinitionInput {
@@ -19,6 +20,7 @@ export interface StyleDefinitionInput {
   italic?: boolean
   underline?: boolean
   dim?: boolean
+  strikethrough?: boolean
 }
 
 export interface MergedStyle {
@@ -36,8 +38,11 @@ export interface ThemeTokenStyle {
     italic?: boolean
     underline?: boolean
     dim?: boolean
+    strikethrough?: boolean
   }
 }
+
+const attributeNames = ["bold", "italic", "underline", "dim", "strikethrough"] as const
 
 function cloneStyle<T extends { fg?: RGBA; bg?: RGBA }>(style: T): T {
   return {
@@ -51,26 +56,12 @@ export function convertThemeToStyles(theme: ThemeTokenStyle[]): Record<string, S
   const flatStyles: Record<string, StyleDefinition> = {}
 
   for (const tokenStyle of theme) {
+    const { foreground, background } = tokenStyle.style
     const styleDefinition: StyleDefinition = {}
-
-    if (tokenStyle.style.foreground) {
-      styleDefinition.fg = parseColor(tokenStyle.style.foreground)
-    }
-    if (tokenStyle.style.background) {
-      styleDefinition.bg = parseColor(tokenStyle.style.background)
-    }
-
-    if (tokenStyle.style.bold !== undefined) {
-      styleDefinition.bold = tokenStyle.style.bold
-    }
-    if (tokenStyle.style.italic !== undefined) {
-      styleDefinition.italic = tokenStyle.style.italic
-    }
-    if (tokenStyle.style.underline !== undefined) {
-      styleDefinition.underline = tokenStyle.style.underline
-    }
-    if (tokenStyle.style.dim !== undefined) {
-      styleDefinition.dim = tokenStyle.style.dim
+    if (foreground) styleDefinition.fg = parseColor(foreground)
+    if (background) styleDefinition.bg = parseColor(background)
+    for (const name of attributeNames) {
+      if (tokenStyle.style[name] !== undefined) styleDefinition[name] = tokenStyle.style[name]
     }
 
     // Apply the same style to all scopes
@@ -154,12 +145,13 @@ export class SyntaxStyle {
   public registerStyle(name: string, style: StyleDefinitionInput): number {
     this.guard()
 
-    const { bold, italic, underline, dim, fg: foreground, bg: background } = style
+    const { bold, italic, underline, dim, strikethrough, fg: foreground, bg: background } = style
     const definition: StyleDefinition = {
       bold,
       italic,
       underline,
       dim,
+      strikethrough,
       fg: foreground ? RGBA.clone(parseColor(foreground)) : undefined,
       bg: background ? RGBA.clone(parseColor(background)) : undefined,
     }
@@ -251,23 +243,15 @@ export class SyntaxStyle {
 
       if (style.fg) styleDefinition.fg = style.fg
       if (style.bg) styleDefinition.bg = style.bg
-      if (style.bold !== undefined) styleDefinition.bold = style.bold
-      if (style.italic !== undefined) styleDefinition.italic = style.italic
-      if (style.underline !== undefined) styleDefinition.underline = style.underline
-      if (style.dim !== undefined) styleDefinition.dim = style.dim
+      for (const name of attributeNames) {
+        if (style[name] !== undefined) styleDefinition[name] = style[name]
+      }
     }
-
-    const attributes = createTextAttributes({
-      bold: styleDefinition.bold,
-      italic: styleDefinition.italic,
-      underline: styleDefinition.underline,
-      dim: styleDefinition.dim,
-    })
 
     const merged: MergedStyle = {
       fg: styleDefinition.fg,
       bg: styleDefinition.bg,
-      attributes,
+      attributes: createTextAttributes(styleDefinition),
     }
 
     this.mergedCache.set(cacheKey, merged)
