@@ -314,7 +314,7 @@ pub const EditorView = struct {
         return self.text_buffer_view.getVirtualLineCount();
     }
 
-    pub fn getVirtualLineSpans(self: *const EditorView, vline_idx: usize) tbv.VirtualLineSpanInfo {
+    pub fn getVirtualLineSpans(self: *const EditorView, vline_idx: usize) tb.TextBufferError!tbv.VirtualLineSpanInfo {
         return self.text_buffer_view.getVirtualLineSpans(vline_idx);
     }
 

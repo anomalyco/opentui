@@ -361,9 +361,9 @@ test "text work: line lookups after an edit in a 10,000-line buffer" {
     try expectWork(.{ .line_seeks = 1, .line_seek_nodes = 17 });
     // A highlight seeks its first line and walks the leaves of the lines it covers.
     try tb.addHighlightByCharRange(0, tb.getLength(), 1, 1, 0);
-    try expectWork(.{ .line_seeks = 2, .line_seek_nodes = 29, .highlight_leaves = 30_003, .line_span_builds = 10_001, .line_span_highlights = 10_001 });
+    try expectWork(.{ .line_seeks = 2, .line_seek_nodes = 29, .highlight_leaves = 30_003 });
     try tb.addHighlightByCharRange(5_000 * 80 + 3, 5_000 * 80 + 9, 1, 1, 0);
-    try expectWork(.{ .line_seeks = 2, .line_seek_nodes = 30, .highlight_leaves = 3, .line_span_builds = 1, .line_span_highlights = 2 });
+    try expectWork(.{ .line_seeks = 2, .line_seek_nodes = 30, .highlight_leaves = 3 });
 
     // Zero-width appends have no weight; balancing counts their leaves, so the depth stays logarithmic.
     const zero_width = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .unicode);
@@ -422,10 +422,8 @@ test "text work: drawing a long line scrolled right or down searches for its fir
             var start: usize = 0;
             while (start < text.len) : (start += row.part) try tb.append(text[start..@min(start + row.part, text.len)]);
         }
-        tb.startHighlightsTransaction();
         var col: u32 = 0;
         while (row.highlight and col < text.len) : (col += 4) try tb.addHighlightByCharRange(col, col + 2, 1, 1, 0);
-        tb.endHighlightsTransaction();
         view.setTruncate(row.truncate);
         view.setWrapMode(row.wrap);
         view.setViewport(.{ .x = 0, .y = 0, .width = 80, .height = 30 });
@@ -628,7 +626,7 @@ test "text work: styled text interns each distinct chunk style and scans no obje
     }
 }
 
-test "text work: highlights added one range at a time rebuild the spans of their line each time" {
+test "text work: highlights added one range at a time build spans only for painted lines" {
     const allocator = std.testing.allocator;
     var pools = TestPools.init(allocator);
     defer pools.deinit();
@@ -645,28 +643,21 @@ test "text work: highlights added one range at a time rebuild the spans of their
     const screen = try OptimizedBuffer.init(allocator, 80, 24, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
     defer screen.deinit();
     screen.drawTextBuffer(view, 0, 0);
-    // 100 lines of 10 words: one range per word, alone or inside one transaction.
-    const rows = [_]struct { transaction: bool, add: Counts }{
-        .{ .transaction = false, .add = .{ .line_seeks = 2_000, .line_seek_nodes = 16_600, .highlight_leaves = 2_990, .line_span_builds = 1_000, .line_span_highlights = 5_500 } },
-        .{ .transaction = true, .add = .{ .line_seeks = 2_000, .line_seek_nodes = 16_600, .highlight_leaves = 2_990, .line_span_builds = 100, .line_span_highlights = 1_000 } },
-    };
-    for (rows) |row| {
-        errdefer std.debug.print("transaction {}\n", .{row.transaction});
-        tb.clearAllHighlights();
-        _ = text_work.take();
-        if (row.transaction) tb.startHighlightsTransaction();
-        for (0..100) |row_index| {
-            var words = std.mem.tokenizeScalar(u8, line, ' ');
-            while (words.next()) |word| {
-                // Highlight offsets exclude line breaks.
-                const start: u32 = @intCast(row_index * line.len + words.index - word.len);
-                try tb.addHighlightByCharRange(start, start + @as(u32, @intCast(word.len)), 1, 1, 0);
-            }
+    tb.clearAllHighlights();
+    _ = text_work.take();
+    // 100 lines of 10 words: one range per word. Adding builds no spans (record 076).
+    for (0..100) |row_index| {
+        var words = std.mem.tokenizeScalar(u8, line, ' ');
+        while (words.next()) |word| {
+            // Highlight offsets exclude line breaks.
+            const start: u32 = @intCast(row_index * line.len + words.index - word.len);
+            try tb.addHighlightByCharRange(start, start + @as(u32, @intCast(word.len)), 1, 1, 0);
         }
-        if (row.transaction) tb.endHighlightsTransaction();
-        try expectWork(row.add);
-        // Drawing reads the spans built above; it builds none.
-        screen.drawTextBuffer(view, 0, 0);
-        try expectWork(.{ .clusters_drawn = 1_344 });
     }
+    try expectWork(.{ .line_seeks = 2_000, .line_seek_nodes = 16_600, .highlight_leaves = 2_990 });
+    // The first paint builds the 24 drawn lines' spans once; the next reuses them.
+    screen.drawTextBuffer(view, 0, 0);
+    try expectWork(.{ .clusters_drawn = 1_344, .line_span_builds = 24, .line_span_highlights = 240, .span_heap_steps = 240 });
+    screen.drawTextBuffer(view, 0, 0);
+    try expectWork(.{ .clusters_drawn = 1_344 });
 }

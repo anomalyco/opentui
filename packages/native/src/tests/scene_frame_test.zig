@@ -1319,6 +1319,42 @@ test "Scene frame work solves Yoga only for text writes that can change the meas
     try testing.expectEqualSlices(u64, &expected, &actual);
 }
 
+// Highlights never change a size, so an editor's highlight repaints without a layout solve
+// (track step C3.1, invariant 4); an edit still solves.
+test "Scene editor highlights repaint without a layout solve" {
+    const f = try Fixture.init(testing.allocator, 8, 2, .{});
+    defer f.deinit();
+    const style = try f.owner.createSyntaxStyle();
+    _ = try f.owner.syntaxStyleRegister(style, "red", .{ .fg = ansi.rgbColor(255, 0, 0, 255), .bg = null, .attributes = 0 });
+    const edit = try f.owner.createEditBuffer(.unicode);
+    try f.owner.editSetText(edit, "abc", false);
+    try f.owner.editSetSyntaxStyle(edit, style);
+    const editor = try f.owner.createEditorView(edit, 6, 1);
+    const node = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_EDITOR, 3);
+    try f.owner.sceneSetEditorView(node, editor);
+    try f.owner.sceneMoveNode(node, f.root, 0);
+    _ = try presentWork(f, .{});
+    const red = ansi.rgbColor(255, 0, 0, 255);
+    const rows = [_]struct { context.TextHighlight, bool }{
+        .{ .{ .add_range = .{ .start = 0, .end = 1, .style_id = 1, .ref = 4 } }, true },
+        .{ .{ .remove_ref = 4 }, false },
+        .{ .{ .add_line = .{ .line = 0, .range = .{ .start = 0, .end = 2, .style_id = 1 } } }, true },
+        .{ .{ .clear_line = 0 }, false },
+        .{ .{ .add_range = .{ .start = 0, .end = 3, .style_id = 1 } }, true },
+        .{ .clear_all, false },
+    };
+    for (rows) |row| {
+        try f.owner.editHighlight(edit, row[0]);
+        const w = try presentWork(f, .{});
+        try testing.expectEqual(@as(u64, 0), w.yoga_solves);
+        const cell = f.cli.currentRenderBuffer.get(0, 0).?;
+        try testing.expectEqual(@as(u32, 'a'), cell.char);
+        try testing.expectEqual(row[1], std.meta.eql(red, cell.fg));
+    }
+    try f.owner.editSetText(edit, "abcd", false);
+    try testing.expectEqual(@as(u64, 1), (try presentWork(f, .{})).yoga_solves);
+}
+
 // A reply changes the visibility of a member whose feedback already started. The visibility
 // stamp must give way to the walk: no request may reach a node the reply hid.
 test "Scene feedback visibility follows replies that hide, detach, or move a started member" {

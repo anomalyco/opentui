@@ -2442,7 +2442,10 @@ pub const OptimizedBuffer = struct {
             // The glyph that this draw wrote just before the current cluster, if any.
             var mark_base: ?MarkBase = null;
 
-            const vline_span_info = view.getVirtualLineSpans(vline_idx);
+            const vline_span_info = view.getVirtualLineSpans(vline_idx) catch |err| blk: {
+                if (checked) return err;
+                break :blk tbv.VirtualLineSpanInfo{ .spans = &.{}, .source_line = 0, .source_col_start = 0 };
+            };
             const spans = vline_span_info.spans;
             const col_offset = vline_span_info.source_col_start;
             var lineFg = text_defaults.fg orelse ansi.rgbColor(255, 255, 255, 255);
@@ -2455,16 +2458,16 @@ pub const OptimizedBuffer = struct {
             // Spans run from column 0 with rising columns, so span k ends after column k and the one
             // that holds `start_col` has an index of at most `start_col`.
             const start_col = col_offset + horizontal_offset;
-            var span_idx = lowerBound(spans[0..@min(spans.len, start_col)], "next_col", start_col +| 1, .span_search_steps);
+            var span_idx = lowerBound(spans[0..@min(spans.len, start_col)], "end_col_exclusive", start_col +| 1, .span_search_steps);
 
             var next_change_col: u32 = if (span_idx < spans.len)
-                spans[span_idx].next_col
+                spans[span_idx].end_col_exclusive
             else
                 std.math.maxInt(u32);
 
-            // Apply the style at the starting position
-            if (span_idx < spans.len and spans[span_idx].col <= start_col) {
-                if (text_buffer.resolveStyle(spans[span_idx].style_id)) |resolved_style| {
+            // Apply the style at the starting position; spans cover every column from 0.
+            if (span_idx < spans.len) {
+                if (text_buffer.resolveSpan(spans[span_idx])) |resolved_style| {
                     if (resolved_style.fg) |fg| {
                         lineFg = fg;
                     }
@@ -2651,7 +2654,7 @@ pub const OptimizedBuffer = struct {
                         lineBg = defaultBg;
                         lineAttributes = defaultAttributes;
 
-                        if (text_buffer.resolveStyle(new_span.style_id)) |resolved_style| {
+                        if (text_buffer.resolveSpan(new_span)) |resolved_style| {
                             if (resolved_style.fg) |fg| {
                                 lineFg = fg;
                             }
@@ -2661,7 +2664,7 @@ pub const OptimizedBuffer = struct {
                             lineAttributes |= resolved_style.attributes;
                         }
 
-                        next_change_col = new_span.next_col;
+                        next_change_col = new_span.end_col_exclusive;
                     }
 
                     if (vline.is_truncated) {
@@ -2679,7 +2682,7 @@ pub const OptimizedBuffer = struct {
                                 lineAttributes = defaultAttributes;
                                 next_change_col = std.math.maxInt(u32);
                             } else {
-                                const suffix_span_idx = lowerBound(spans, "next_col", suffix_col_pos +| 1, .span_search_steps);
+                                const suffix_span_idx = lowerBound(spans, "end_col_exclusive", suffix_col_pos +| 1, .span_search_steps);
                                 if (suffix_span_idx < spans.len) {
                                     span_idx = suffix_span_idx;
                                 }
@@ -2687,7 +2690,7 @@ pub const OptimizedBuffer = struct {
                                 lineFg = defaultFg;
                                 lineBg = defaultBg;
                                 lineAttributes = defaultAttributes;
-                                if (text_buffer.resolveStyle(active_span.style_id)) |resolved_style| {
+                                if (text_buffer.resolveSpan(active_span)) |resolved_style| {
                                     if (resolved_style.fg) |fg| {
                                         lineFg = fg;
                                     }
@@ -2696,7 +2699,7 @@ pub const OptimizedBuffer = struct {
                                     }
                                     lineAttributes |= resolved_style.attributes;
                                 }
-                                next_change_col = active_span.next_col;
+                                next_change_col = active_span.end_col_exclusive;
                             }
                         }
                     }

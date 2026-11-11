@@ -1632,7 +1632,7 @@ const TextState = struct {
         std.debug.assert(result.lines <= result.line_highlights.len);
         for (0..result.lines) |row| {
             const highlights = tb.getLineHighlights(row);
-            const spans = tb.getLineSpans(row);
+            const spans = tb.getLineSpans(row) catch unreachable;
             std.debug.assert(highlights.len <= result.line_highlights[row].len);
             std.debug.assert(spans.len <= result.line_spans[row].len);
             @memcpy(result.line_highlights[row][0..highlights.len], highlights);
@@ -1889,7 +1889,7 @@ test "TextBuffer owned styled replacement reclaims styled plain and empty transi
             } else {
                 mem_id = try tb.replaceOwnedText(copy, mem_id);
                 try std.testing.expectEqual(@as(u32, 0), tb.getHighlightCount());
-                for (tb.line_spans.items) |list| try std.testing.expectEqual(@as(usize, 0), list.items.len);
+                for (tb.line_spans.items) |entry| try std.testing.expectEqual(@as(usize, 0), entry.spans.items.len);
             }
             transferred = true;
             const link_count: u32 = @intFromBool(case.styled and copy.len > 0);

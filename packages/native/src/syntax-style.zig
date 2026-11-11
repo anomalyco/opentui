@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const buffer = @import("buffer.zig");
 const text_work = @import("text-work.zig");
+const layers = @import("highlight-layers.zig");
 
 pub const RGBA = buffer.RGBA;
 
@@ -61,6 +62,12 @@ pub const SyntaxStyle = struct {
 
     borrowers: ?*Borrower = null,
 
+    /// Group-set compositions against this style, indexed by group-set id - 1, filled at paint.
+    /// Every registration clears it, so it holds only current compositions.
+    group_set_cache: std.ArrayListUnmanaged(CachedComposition) = .empty,
+
+    pub const CachedComposition = struct { valid: bool = false, definition: StyleDefinition = .{ .fg = null, .bg = null, .attributes = 0 } };
+
     pub fn init(global_allocator: Allocator) SyntaxStyleError!*SyntaxStyle {
         const self = global_allocator.create(SyntaxStyle) catch return SyntaxStyleError.OutOfMemory;
         errdefer global_allocator.destroy(self);
@@ -89,6 +96,7 @@ pub const SyntaxStyle = struct {
 
         // Borrowers outlive the style: they draw without it from now on.
         while (self.borrowers) |borrower| borrower.unbind();
+        self.group_set_cache.deinit(global_allocator);
         self.arena.deinit();
         global_allocator.destroy(self.arena);
         self.* = undefined;
@@ -98,6 +106,7 @@ pub const SyntaxStyle = struct {
         text_work.add(.style_registrations, 1);
         if (self.name_to_id.get(name)) |existing_id| {
             self.id_to_style.getPtr(existing_id).?.* = definition;
+            self.group_set_cache.clearRetainingCapacity();
             return existing_id;
         }
 
@@ -113,8 +122,26 @@ pub const SyntaxStyle = struct {
         self.name_to_id.putAssumeCapacity(owned_name, id);
         self.id_to_style.putAssumeCapacity(id, definition);
         self.next_id += 1;
+        // A new name can be a fallback target or a set member, so compositions may change.
+        self.group_set_cache.clearRetainingCapacity();
 
         return id;
+    }
+
+    /// Group set `id` composed against this style, cached until the next registration. Without
+    /// memory for the cache, it composes again next time; paint never fails for it.
+    pub fn resolveGroupSet(self: *SyntaxStyle, sets: *const layers.GroupSets, id: u32) StyleDefinition {
+        std.debug.assert(id != 0 and id <= sets.count());
+        const index = id - 1;
+        if (index < self.group_set_cache.items.len and self.group_set_cache.items[index].valid) {
+            return self.group_set_cache.items[index].definition;
+        }
+        const definition = layers.compose(self, sets, id);
+        if (index >= self.group_set_cache.items.len) {
+            self.group_set_cache.appendNTimes(self.global_allocator, .{}, sets.count() - self.group_set_cache.items.len) catch return definition;
+        }
+        self.group_set_cache.items[index] = .{ .valid = true, .definition = definition };
+        return definition;
     }
 
     pub fn registerStyle(self: *SyntaxStyle, name: []const u8, fg: ?RGBA, bg: ?RGBA, attributes: u32) SyntaxStyleError!u32 {
