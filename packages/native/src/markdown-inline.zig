@@ -179,6 +179,8 @@ pub const Parser = struct {
     search_opener: u32 = std.math.maxInt(u32),
     search_position: u32 = 0,
     search_read_from: u32 = 0,
+    /// The end of the backtick run a search stopped in (its bytes before it were read).
+    search_run_end: u32 = 0,
     /// A label scan after `]` that ran out of content (its `]` is `search_opener`).
     label_scan: LabelScan = .{ .at = 0, .position = 0 },
     /// The first token whose display changed since `takeChanged` (none: nothing changed).
@@ -555,16 +557,24 @@ pub const Parser = struct {
     fn findBacktickCloser(self: *Parser, opener: u32, from: u32, count: u32) StepError!?u32 {
         if (self.backticks_scanned and count <= backtick_run_tracked_max and self.backtick_last_start[count] < from) return null;
         const s = self.subject;
+        const resumed = self.search_opener == opener;
         var i = self.resumeSearch(opener, from);
         const n: u32 = @intCast(s.len);
+        // A search that stopped in a run that touched the end counts on from the run's end.
+        var run_known: u32 = if (resumed and self.search_run_end > i) self.search_run_end - i else 0;
+        if (run_known > 0) self.search_read_from = self.search_run_end;
         while (i < n) {
             if (s[i] != '`') {
                 i += 1;
                 continue;
             }
-            const run_length = runLength(s, i, '`');
+            const run_length = run_known + runLength(s, i + run_known, '`');
+            run_known = 0;
             // A run that touches the end may still grow.
-            if (i + run_length == n and !self.final) return self.searchRanOut(opener, i);
+            if (i + run_length == n and !self.final) {
+                self.search_run_end = n;
+                return self.searchRanOut(opener, i);
+            }
             if (run_length <= backtick_run_tracked_max) self.backtick_last_start[run_length] = i;
             if (run_length == count) {
                 self.endSearch(i);
@@ -1227,6 +1237,9 @@ pub const PendingScan = struct {
     scanned: u32 = 0,
     code: ?u32 = null,
     tag: bool = false,
+    /// The code span's opener length, and the end of a backtick run that touched the end.
+    code_length: u32 = 0,
+    run_end: u32 = 0,
     /// Bytes read, summed over calls (the display work counter).
     visits: u64 = 0,
 };
@@ -1243,22 +1256,34 @@ pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *Pending
             // In a code span from `opener`: drawn raw ('\n' as a space) up to a run that closes
             // it or may still grow into its closer, and before trailing whitespace (the span
             // strips one space at each end). Bytes from `i` to `resume_at` are such whitespace.
-            const opener_length = runLength(s, opener, '`');
+            const known_opener = continues and scan.code == opener and scan.code_length > 0;
+            const opener_length = if (known_opener) scan.code_length else runLength(s, opener, '`');
             if (i == opener) i += opener_length;
+            // A span strips one leading space when its content ends in one too: it is drawn
+            // without it from the start, so closing the span takes no drawn space back.
+            if (i == opener + opener_length and i < s.len and (s[i] == ' ' or s[i] == '\n')) i += 1;
             const start = out.items.len;
             var end: u32 = @max(i, if (i == from) resume_at else i);
             const read_from = end;
             defer scan.visits += end - read_from;
+            // A run that touched the end last time: its bytes so far were read.
+            var run_known: u32 = if (continues and scan.run_end > end and end == scan.scanned) scan.run_end - end else 0;
             var drawn_end: u32 = i;
             var closed = false;
+            var run_end: u32 = 0;
             while (end < s.len) {
                 if (s[end] != '`') {
                     if (!isAsciiWhitespace(s[end])) drawn_end = end + 1;
                     end += 1;
                     continue;
                 }
-                const run = runLength(s, end, '`');
-                if (end + run == s.len) break;
+                const run = run_known + runLength(s, end + run_known, '`');
+                scan.visits += run - run_known;
+                run_known = 0;
+                if (end + run == s.len) {
+                    run_end = end + run;
+                    break;
+                }
                 if (run == opener_length) {
                     closed = true;
                     break;
@@ -1271,7 +1296,7 @@ pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *Pending
                 if (c.* == '\n') c.* = ' ';
             }
             if (!closed) {
-                scan.* = .{ .stop = drawn_end, .scanned = end, .code = opener, .visits = scan.visits };
+                scan.* = .{ .stop = drawn_end, .scanned = end, .code = opener, .code_length = opener_length, .run_end = run_end, .visits = scan.visits };
                 return;
             }
             i = end + opener_length;

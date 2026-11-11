@@ -43,7 +43,9 @@ pub const Flags = packed struct(u16) {
     math: bool = false,
     /// A table's header row.
     header: bool = false,
-    _unused: u2 = 0,
+    /// The pending line's layout ends this open paragraph (it is shown as closed).
+    ending: bool = false,
+    _unused: u1 = 0,
 };
 
 /// One block, 32 bytes. `small` holds a fence's or math block's opener indent and an HTML
@@ -121,6 +123,9 @@ pub const Counters = struct {
     inline_byte_visits: u64 = 0,
     /// Display bytes assembled or compared to find where a tail write starts.
     display_byte_visits: u64 = 0,
+    /// Display bytes copied into a buffer (tail writes, comparisons, holds), counted where
+    /// they are copied, with or without a test sink.
+    display_assembled_bytes: u64 = 0,
     /// Leaf content bytes inline-parsed again because a definition arrived.
     bytes_reinlined: u64 = 0,
     /// Allocations the doc made (capacity growth); the scratch arena is not counted here.
@@ -141,6 +146,81 @@ pub const Counters = struct {
 /// The open paragraph's inline state, kept across appends so that each append tokenizes only
 /// new bytes (design: open-leaf token tail). It holds the leaf's content from the first token
 /// that may still change; settled tokens are folded away.
+/// A held pipe whose bytes a retire dropped (its cut's display is kept).
+const pipe_folded: u32 = none - 1;
+
+/// What the pending line's layout needs to grow with the line (no line ending arrived): the
+/// blocks that end at its end, and per kind the state that decides the new bytes' effect.
+const Extension = struct {
+    kind: enum { none, plain, heading, html, row } = .none,
+    /// The line end the layout used.
+    end: u32 = 0,
+    /// Blocks that end at `end`, from the deepest up.
+    path: [depth_max + 3]u32 = undefined,
+    path_len: u32 = 0,
+    html_kind: u8 = 0,
+    math_line: bool = false,
+    heading: Heading = .{},
+    row: Row = .{},
+
+    /// An ATX heading's closing sequence, read left to right: the end of its last non-space
+    /// byte, and the trailing run of `#` that may close it.
+    const Heading = struct {
+        block: u32 = none,
+        content_start: u32 = 0,
+        last_end: u32 = 0,
+        run_start: u32 = none,
+        run_after_space: bool = false,
+        before_run_end: u32 = 0,
+
+        fn step(self: *Heading, s: []const u8, i: u32) void {
+            const c = s[i];
+            if (isSpaceOrTab(c)) return;
+            if (c == '#') {
+                if (self.run_start != none and i == self.last_end) {
+                    self.last_end = i + 1;
+                    return;
+                }
+                self.run_start = i;
+                self.run_after_space = i == self.content_start or isSpaceOrTab(s[i - 1]);
+                self.before_run_end = self.last_end;
+                self.last_end = i + 1;
+                return;
+            }
+            self.run_start = none;
+            self.last_end = i + 1;
+        }
+
+        fn contentEnd(self: *const Heading) u32 {
+            if (self.run_start == none or !self.run_after_space) return self.last_end;
+            if (self.run_start == self.content_start) return self.content_start;
+            return self.before_run_end;
+        }
+    };
+
+    /// A pending table row's scan: the cell still open at the line end (or where the next one
+    /// starts), its column, a trailing backslash, and whether every column is taken.
+    const Row = struct {
+        table: u32 = none,
+        row: u32 = none,
+        columns: u32 = 0,
+        column: u32 = 0,
+        open_cell: u32 = none,
+        cell_start: u32 = 0,
+        full: bool = false,
+        escape: bool = false,
+    };
+};
+
+const HoldCut = struct {
+    at: u32 = none,
+    display: u32 = 0,
+    partial_token: u32 = none,
+    partial_at: u32 = 0,
+    partial_from: u32 = none,
+    partial_byte_count: u32 = 0,
+};
+
 const Live = struct {
     parser: inline_parser.Parser,
     /// The leaf's content (lines joined by '\n', each complete line followed by one) from the
@@ -149,6 +229,11 @@ const Live = struct {
     content_base: u32 = 0,
     /// The leaf (a provisional index while it is only the pending line's).
     block: u32 = none,
+    /// Source offset where the content copy starts: the leaf's start, or the first byte after
+    /// its leading definitions once they are decided.
+    prose_start: u32 = none,
+    /// Where the definition scan resumes (the start of the last definition it parsed).
+    definition_scan: u32 = 0,
     /// Source offset of the leaf's first content byte: names the leaf.
     start_byte: u32 = none,
     /// The line being fed before it is complete: its content start and the end fed so far.
@@ -159,6 +244,8 @@ const Live = struct {
     folded_display_byte_count: u32 = 0,
     /// What B draws of the untokenized bytes, and where drawing stopped.
     pending_display: std.ArrayListUnmanaged(u8) = .empty,
+    /// The previous drawing, kept (not copied) while a feed compares the new display with it.
+    previous_pending: std.ArrayListUnmanaged(u8) = .empty,
     pending_scan: inline_parser.PendingScan = .{},
     /// The backtick opener whose closer search the drawing assumed (drawn as code), if any.
     pending_code_opener: ?u32 = null,
@@ -176,6 +263,12 @@ const Live = struct {
     partial_at: u32 = 0,
     partial_from: u32 = none,
     partial_byte_count: u32 = 0,
+    /// The last hold cut (content offset `at`, none: none) and its display, valid while a feed
+    /// only adds pending bytes after it.
+    hold: HoldCut = .{},
+    /// The cut's display once a retire dropped the held pipe's bytes (the pipe offset then is
+    /// `pipe_folded`).
+    pipe_folded_display: u32 = 0,
     /// The display offset of the first expired opener whose tokens were folded away (none: no
     /// such opener).
     expired_display: u32 = none,
@@ -183,20 +276,43 @@ const Live = struct {
     definition_count: u32 = 0,
 };
 
-/// Test instrument: applies every live tail write to a mirror of the leaf's display, as a bound
-/// text node would receive them, and checks the mirror against a whole parse when the leaf
-/// closes.
+/// Test instrument: applies every write the engine makes to a prose leaf to a mirror of that
+/// leaf's display, one per block, as bound text nodes would receive them, and checks a leaf's
+/// mirror against a whole parse when it closes.
 pub const TailSink = struct {
     allocator: Allocator,
-    mirror: std.ArrayListUnmanaged(u8) = .empty,
+    mirrors: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u8)) = .empty,
     checked_leaf_count: u32 = 0,
     mismatch_count: u32 = 0,
-    /// False after a replace adopted a fresh parse whose live leaf started without the sink;
-    /// the next leaf starts it again.
-    valid: bool = true,
+    /// The first block index a removal shifted since the last call ended (none: none).
+    rebind_from: u32 = none,
 
     pub fn deinit(self: *TailSink) void {
-        self.mirror.deinit(self.allocator);
+        var it = self.mirrors.valueIterator();
+        while (it.next()) |m| m.deinit(self.allocator);
+        self.mirrors.deinit(self.allocator);
+    }
+
+    pub fn mirror(self: *TailSink, block: u32) Allocator.Error!*std.ArrayListUnmanaged(u8) {
+        const entry = try self.mirrors.getOrPut(self.allocator, block);
+        if (!entry.found_existing) entry.value_ptr.* = .empty;
+        return entry.value_ptr;
+    }
+
+    /// What block `block`'s node shows ("" before any write).
+    pub fn shown(self: *const TailSink, block: u32) []const u8 {
+        return if (self.mirrors.get(block)) |m| m.items else "";
+    }
+
+    /// Writes `bytes` over the node's display from byte `from` on.
+    fn write(self: *TailSink, block: u32, from: u32, bytes: []const u8) Allocator.Error!void {
+        // A removal earlier in the call unbound the nodes from its index on (rebound after it).
+        if (block >= self.rebind_from) return;
+        const m = try self.mirror(block);
+        // A write past the node's end is a defect the checks report (the gap shows as '?').
+        while (m.items.len < from) try m.append(self.allocator, '?');
+        m.shrinkRetainingCapacity(from);
+        try m.appendSlice(self.allocator, bytes);
     }
 };
 
@@ -237,6 +353,12 @@ pub const Doc = struct {
     provisional: bool = false,
     /// The last layout ran into the block limit and was dropped.
     provisional_limited: bool = false,
+    /// A paragraph the live parse finished when the pending line's layout ended it, and its
+    /// content end then (none: no such paragraph).
+    finished_block: u32 = none,
+    finished_end_byte: u32 = 0,
+    finished_unresolved: ?bool = null,
+    finished_definition_count: u32 = 0,
     /// The previous layout's blocks and their first index, compared after the next call.
     provisional_previous: std.ArrayListUnmanaged(Block) = .empty,
     provisional_previous_from: u32 = none,
@@ -250,6 +372,10 @@ pub const Doc = struct {
     /// A pending line read as only spaces and tabs up to `pending_blank_end` (none: not so).
     pending_blank_line: u32 = none,
     pending_blank_end: u32 = 0,
+    /// The pending line's layout's state for growing with the line.
+    extension: Extension = .{},
+    /// The pending line's last hold decision and the end it was made at.
+    pending_hold: struct { line: u32 = none, end: u32 = 0, hold: Hold = Hold.not } = .{},
     filter_pool: [hook_filter_byte_count_max]u8 = undefined,
     filter_byte_count: u32 = 0,
     /// A filter match in the pending line, latched once its line is parsed; none otherwise.
@@ -283,6 +409,7 @@ pub const Doc = struct {
         self.live.content.deinit(self.allocator);
         self.live.display_ends.deinit(self.allocator);
         self.live.pending_display.deinit(self.allocator);
+        self.live.previous_pending.deinit(self.allocator);
         self.provisional_undo.deinit(self.allocator);
         self.provisional_previous.deinit(self.allocator);
         self.source.deinit(self.allocator);
@@ -297,6 +424,7 @@ pub const Doc = struct {
     pub fn append(self: *Doc, bytes: []const u8) Error!void {
         defer self.resetScratch();
         if (self.source.items.len + bytes.len > self.options.limits.source_byte_count) return error.SourceLimit;
+        if (try self.appendToLine(bytes)) return;
         self.dropProvisional();
         if (self.finished) {
             // N2: re-opening is a fresh parse of the whole resulting source.
@@ -317,14 +445,58 @@ pub const Doc = struct {
         try self.afterScan(snapshot.source_len);
     }
 
+    /// An append that only grows the pending line, whose layout can grow with it: no line is
+    /// laid out again (reading the line once per append would make a long line quadratic).
+    /// False, with nothing changed, when the line needs a new layout.
+    fn appendToLine(self: *Doc, bytes: []const u8) Error!bool {
+        if (self.finished or self.extension.kind == .none) return false;
+        const old_len: u32 = @intCast(self.source.items.len);
+        // A carriage return ends a line unless "\n" follows; the layout left it out.
+        if (old_len > 0 and self.source.items[old_len - 1] == '\r') return false;
+        if (std.mem.indexOfAny(u8, bytes, "\n\r") != null) return false;
+        self.counters.line_byte_visits += bytes.len;
+        const counters = self.counters;
+        const hook_pending_byte = self.hook_pending_byte;
+        errdefer {
+            // As before the call: the old layout again, the live leaf dropped.
+            self.dropProvisional();
+            self.source.shrinkRetainingCapacity(old_len);
+            self.counters = counters;
+            self.hook_pending_byte = hook_pending_byte;
+            self.liveReset(none, none);
+            self.finished_block = none;
+            self.addProvisional() catch {};
+        }
+        try self.reserveSource(@intCast(old_len + bytes.len));
+        self.source.appendSliceAssumeCapacity(bytes);
+        const end: u32 = @intCast(self.source.items.len);
+        if (!try self.extendProvisional(end)) {
+            self.source.shrinkRetainingCapacity(old_len);
+            self.counters = counters;
+            return false;
+        }
+        try self.latchHooks(old_len);
+        if (self.hook_pending_byte != none) {
+            self.provisional = true;
+            defer self.provisional = false;
+            try self.latchPending(@max(self.hook_pending_byte, old_len -| self.filterOverlap()), end);
+        }
+        try self.liveCheckLeaf();
+        try self.livePending();
+        self.updateCommits();
+        try self.rebindSink();
+        return true;
+    }
+
     /// After the complete lines: the pending line's live text, the filter latch, commits.
     fn afterScan(self: *Doc, new_from_byte: u32) Error!void {
         try self.latchHooks(new_from_byte);
         try self.addProvisional();
-        self.liveCheckLeaf();
+        try self.liveCheckLeaf();
         try self.livePending();
         self.updateCommits();
         self.reconcileProvisional();
+        try self.rebindSink();
     }
 
     /// Ends the document: the pending line is complete and every block closes.
@@ -347,6 +519,7 @@ pub const Doc = struct {
         self.finished = true;
         self.updateCommits();
         self.reconcileProvisional();
+        try self.rebindSink();
     }
 
     /// Replaces the whole source with a fresh parse. Leading blocks equal to the old ones keep
@@ -405,9 +578,15 @@ pub const Doc = struct {
         fresh.counters = self.counters.plus(fresh.counters);
         fresh.read_block_count = @min(self.read_block_count, equal);
         fresh.tail_sink = self.tail_sink;
-        if (self.tail_sink) |sink| sink.valid = fresh.live.block == none;
         self.deinit();
         self.* = fresh.*;
+        // A host rebinds after a replace: each node shows its leaf's display (test sink).
+        if (self.tail_sink) |sink| {
+            for (self.blocks.items, 0..) |b, i| {
+                if (!isInlineLeaf(b)) continue;
+                try sink.write(@intCast(i), 0, (try self.readLeaf(self.scratch.allocator(), @intCast(i))).bytes.items);
+            }
+        }
     }
 
     /// The two docs' definitions resolve the same labels to the same targets.
@@ -437,7 +616,13 @@ pub const Doc = struct {
         const arena = self.scratch.allocator();
         const a = try self.readLeaf(arena, index);
         const b = try fresh.readLeaf(arena, index);
-        return std.mem.eql(u8, a.bytes.items, b.bytes.items) and std.mem.eql(u8, a.urls.items, b.urls.items);
+        if (!std.mem.eql(u8, a.bytes.items, b.bytes.items) or !std.mem.eql(u8, a.urls.items, b.urls.items)) return false;
+        // The same URL pool can serve other links: compare each chunk's style, spans and target.
+        if (a.chunks.items.len != b.chunks.items.len) return false;
+        for (a.chunks.items, b.chunks.items) |x, y| {
+            if (!std.meta.eql(x, y)) return false;
+        }
+        return true;
     }
 
     fn sameBlock(self: *const Doc, fresh: *const Doc, index: u32) bool {
@@ -538,8 +723,10 @@ pub const Doc = struct {
         // The live leaf may have taken bytes of the rejected call: drop it; the open paragraph
         // is parsed whole when it closes.
         self.liveReset(none, none);
+        self.finished_block = none;
         self.pending_row_line = none;
         self.pending_blank_line = none;
+        self.pending_hold = .{};
     }
 
     /// The block for writing; the first write in a call to a block that existed before it is
@@ -1023,6 +1210,8 @@ pub const Doc = struct {
                     line.consumed = true;
                     return .leaf;
                 }
+                // Only definitions: the paragraph goes on with this line as its first.
+                (try self.blockMut(p)).content_start_byte = at;
             }
             // GFM table delimiter row under a paragraph's last line.
             if (container_kind == .paragraph and (c == '|' or c == '-' or c == ':') and depth + 2 <= limit) {
@@ -1194,7 +1383,10 @@ pub const Doc = struct {
         var block = try self.blockMut(index);
         // A provisional layout only shows what the pending line opens; closing work (definitions,
         // the last inline pass, list tightness) waits for the line's end.
-        if (self.provisional) return;
+        if (self.provisional) {
+            if (block.kind == .paragraph) block.flags.ending = true;
+            return;
+        }
         block.flags.open = false;
         switch (block.kind) {
             .paragraph => {
@@ -1236,12 +1428,13 @@ pub const Doc = struct {
                 if (end > block.source_start_byte) block.source_end_byte = end;
             },
             .heading => try self.closeLeaf(index),
-            .table_cell => try self.computeUnresolved(index),
+            .table_cell => try self.closeLeaf(index),
             .table, .table_row, .rule, .html => {},
         }
     }
 
     fn noteRemoved(self: *Doc, index: u32) void {
+        if (self.tail_sink) |sink| sink.rebind_from = @min(sink.rebind_from, index);
         // A block no read listed yet leaves nothing behind.
         if (index < self.read_block_count) {
             self.removed_from_index = @min(self.removed_from_index, index);
@@ -1435,10 +1628,16 @@ pub const Doc = struct {
         if (cell_start < line.end and s[cell_start] == '|') cell_start += 1;
         var column: u32 = 0;
         var i = cell_start;
+        // The pending row's scan state, for extending its layout as bytes arrive.
+        var open_cell: u32 = none;
+        var escape = false;
         while (column < columns) {
             // A cell ends at an unescaped pipe or the line end.
             while (i < line.end and s[i] != '|') : (i += 1) {
-                if (s[i] == '\\' and i + 1 < line.end) i += 1;
+                if (s[i] == '\\') {
+                    if (i + 1 >= line.end) escape = true;
+                    if (i + 1 < line.end) i += 1;
+                }
             }
             if (i >= line.end and isBlankRange(s, cell_start, line.end) and column > 0) break;
             const range = trimRange(s, cell_start, @min(i, line.end));
@@ -1446,11 +1645,24 @@ pub const Doc = struct {
             (try self.blockMut(cell)).payload[0] = column;
             try self.closeBlock(cell, range[1]);
             column += 1;
-            if (i >= line.end) break;
+            if (i >= line.end) {
+                open_cell = cell;
+                break;
+            }
             i += 1;
             cell_start = i;
             if (isBlankRange(s, cell_start, line.end)) break;
         }
+        if (self.provisional) self.extension.row = .{
+            .table = t,
+            .row = row,
+            .columns = columns,
+            .column = column,
+            .open_cell = open_cell,
+            .cell_start = cell_start,
+            .full = column == columns and open_cell == none,
+            .escape = escape,
+        };
         try self.closeBlock(row, line.end);
         const table = try self.blockMut(t);
         table.source_end_byte = line.end;
@@ -1535,7 +1747,10 @@ pub const Doc = struct {
             const arena = self.scratch.allocator();
             const result = try inline_parser.parse(arena, try self.leafSubject(arena, i), .{ .context = &watch, .lookup_fn = Watch.lookup }, .{ .math = self.options.math });
             if (b.flags.unresolved != result.unresolved) (try self.blockMut(i)).flags.unresolved = result.unresolved;
-            if (watch.hit) (try self.blockMut(i)).flags.unreported = true;
+            if (watch.hit) {
+                (try self.blockMut(i)).flags.unreported = true;
+                try self.writeLeaf(i);
+            }
         }
     }
 
@@ -1580,6 +1795,7 @@ pub const Doc = struct {
             self.open_count = saved_open_count;
             self.previous_line_end_byte = saved_previous_end;
         }
+        self.extension = .{};
         self.processLine(self.line_start_byte, end) catch |err| switch (err) {
             // No room for the pending line's blocks: it waits for its line end.
             error.BlockLimit => {
@@ -1591,9 +1807,179 @@ pub const Doc = struct {
             },
             else => return err,
         };
-        if (self.hook_pending_byte != none and self.pending_leaf != none and !self.blocks.items[self.pending_leaf].flags.hooked) {
-            (try self.blockMut(self.pending_leaf)).flags.hooked = true;
+        self.noteExtension(end);
+        // Filter matches in the pending line hook the leaves that show them (its cells too).
+        if (self.hook_pending_byte != none) try self.latchPending(self.hook_pending_byte, end);
+    }
+
+    /// Latches the provisional leaves holding a filter match that starts in [start, end).
+    fn latchPending(self: *Doc, start: u32, end: u32) Error!void {
+        var matches = self.filterMatches(start, end);
+        while (matches.next()) |position| try self.latchAt(position);
+    }
+
+    /// Records how the layout just made can grow with its line: the deepest block that ends
+    /// at the line end and its ancestors that do, and the state its kind needs.
+    fn noteExtension(self: *Doc, end: u32) void {
+        var ext = &self.extension;
+        ext.end = end;
+        const tip = self.tipIndex();
+        var deepest: u32 = none;
+        if (self.pending_leaf != none) {
+            deepest = self.pending_leaf;
+            const b = self.blocks.items[deepest];
+            if (b.kind == .heading) {
+                ext.kind = .heading;
+                ext.heading = .{ .block = deepest, .content_start = b.content_start_byte, .last_end = b.content_start_byte };
+                var i = b.content_start_byte;
+                while (i < end) : (i += 1) ext.heading.step(self.source.items, i);
+                self.counters.block_byte_visits += end - b.content_start_byte;
+            } else {
+                ext.kind = .plain;
+                // With math, a line that starts `$$` or `\[` becomes a one-line block when it
+                // ends with the closer: a new `$` or `]` needs a new layout.
+                const text = self.source.items[self.pending_content_start..end];
+                ext.math_line = self.options.math and (std.mem.startsWith(u8, text, "$$") or std.mem.startsWith(u8, text, "\\["));
+            }
+        } else if (ext.row.row != none and ext.row.row + 1 >= self.provisional_from) {
+            ext.kind = .row;
+            // The row's cells follow its scan state (extendRow), not the line end.
+            deepest = ext.row.row;
+        } else if (tip != none and self.blocks.items[tip].source_end_byte == end) {
+            deepest = tip;
+            const b = self.blocks.items[tip];
+            if (b.kind == .code) ext.kind = .plain;
+            if (b.kind == .html) {
+                ext.kind = .html;
+                ext.html_kind = b.small;
+            }
         }
+        if (ext.kind == .none) return;
+        var p = deepest;
+        while (p != none) : (p = self.blocks.items[p].parent_index) {
+            if (self.blocks.items[p].source_end_byte != end and p != deepest) continue;
+            ext.path[ext.path_len] = p;
+            ext.path_len += 1;
+        }
+    }
+
+    /// Grows the pending line's layout over the new bytes [extension.end, end) when they
+    /// cannot change it; false (nothing changed) when the line needs a new layout.
+    fn extendProvisional(self: *Doc, end: u32) Error!bool {
+        const ext = &self.extension;
+        const s = self.source.items;
+        const old = ext.end;
+        const new = s[old..end];
+        switch (ext.kind) {
+            .none => return false,
+            .plain, .heading => if (ext.math_line and std.mem.indexOfAny(u8, new, "$]") != null) return false,
+            .html => {
+                // A closing marker may end the block: a new layout decides (it reads the line).
+                const window = s[@max(self.line_start_byte, old -| 10)..end];
+                self.counters.block_byte_visits += window.len;
+                if (htmlBlockEnds(window, ext.html_kind)) return false;
+            },
+            .row => {
+                // Each new byte may open a cell: room for them first.
+                if (!ext.row.full and self.blocks.items.len + new.len > self.options.limits.block_count) return false;
+            },
+        }
+        self.counters.block_byte_visits += new.len;
+        self.provisional = true;
+        defer self.provisional = false;
+        for (ext.path[0..ext.path_len]) |index| {
+            const block = try self.blockMut(index);
+            if (block.content_end_byte == old and !(ext.kind == .heading and index == ext.heading.block)) block.content_end_byte = end;
+            if (block.source_end_byte == old) block.source_end_byte = end;
+        }
+        switch (ext.kind) {
+            .heading => {
+                var i = old;
+                while (i < end) : (i += 1) ext.heading.step(s, i);
+                (try self.blockMut(ext.heading.block)).content_end_byte = @max(ext.heading.content_start, ext.heading.contentEnd());
+            },
+            .row => try self.extendRow(old, end),
+            else => {},
+        }
+        ext.end = end;
+        return true;
+    }
+
+    /// The pending row's cells over the new bytes, as addTableRow lays them out.
+    fn extendRow(self: *Doc, old: u32, end: u32) Error!void {
+        const r = &self.extension.row;
+        const s = self.source.items;
+        var i = old;
+        while (i < end and !r.full) : (i += 1) {
+            const c = s[i];
+            // An escaped byte is no cell boundary; spaces trim as any.
+            const escaped = r.escape;
+            r.escape = false;
+            if (escaped and !isSpaceOrTab(c)) {
+                try self.rowContent(i);
+                continue;
+            }
+            if (c == '\\' and !escaped) {
+                r.escape = true;
+                try self.rowContent(i);
+                continue;
+            }
+            if (c == '|' and !escaped) {
+                if (r.open_cell == none) {
+                    const range = trimRange(s, r.cell_start, i);
+                    _ = try self.rowCell(range[0], range[1]);
+                }
+                r.open_cell = none;
+                if (r.column == r.columns) r.full = true;
+                r.cell_start = i + 1;
+                continue;
+            }
+            if (isSpaceOrTab(c)) {
+                // An empty cell sits at the line end (trimRange of blanks).
+                if (r.open_cell != none and self.blocks.items[r.open_cell].content_start_byte == self.blocks.items[r.open_cell].content_end_byte) {
+                    const cell = try self.blockMut(r.open_cell);
+                    cell.source_start_byte = i + 1;
+                    cell.source_end_byte = i + 1;
+                    cell.content_start_byte = i + 1;
+                    cell.content_end_byte = i + 1;
+                }
+                continue;
+            }
+            try self.rowContent(i);
+        }
+    }
+
+    fn rowContent(self: *Doc, i: u32) Error!void {
+        const r = &self.extension.row;
+        if (r.open_cell == none) {
+            r.open_cell = try self.rowCell(i, i + 1);
+            return;
+        }
+        const cell = try self.blockMut(r.open_cell);
+        if (cell.content_start_byte == cell.content_end_byte) {
+            cell.content_start_byte = i;
+            cell.source_start_byte = i;
+        }
+        cell.content_end_byte = i + 1;
+        cell.source_end_byte = i + 1;
+    }
+
+    fn rowCell(self: *Doc, start: u32, end: u32) Error!u32 {
+        const r = &self.extension.row;
+        const index: u32 = @intCast(self.blocks.items.len);
+        if (self.blocks.items.len == self.blocks.capacity) self.counters.capacity_growth_count += 1;
+        try self.blocks.append(self.allocator, .{
+            .parent_index = r.row,
+            .kind = .table_cell,
+            .flags = .{ .open = true, .unreported = true, .hooked = self.options.hook and self.filter_byte_count == 0 },
+            .source_start_byte = start,
+            .source_end_byte = end,
+            .content_start_byte = start,
+            .content_end_byte = end,
+            .payload = .{ r.column, 0 },
+        });
+        r.column += 1;
+        return index;
     }
 
     /// Undoes the provisional layout: real blocks get their values back, provisional blocks go
@@ -1616,6 +2002,7 @@ pub const Doc = struct {
         self.provisional_previous_from = from;
         self.blocks.items.len = from;
         self.provisional_from = none;
+        self.extension = .{};
     }
 
     /// After a call: a block of the previous provisional layout that the host read and that no
@@ -1675,6 +2062,19 @@ pub const Doc = struct {
             }
             self.pending_row_scanned = end;
         }
+        if (self.pending_hold.line == self.line_start_byte) {
+            const cached = self.pending_hold;
+            if (!cached.hold.held) return false;
+            if (cached.hold.any) return true;
+            if (cached.hold.keep.len > 0) {
+                const new = self.source.items[cached.end..end];
+                self.counters.block_byte_visits += new.len;
+                if (onlyBytesOf(new, cached.hold.keep)) {
+                    self.pending_hold.end = end;
+                    return true;
+                }
+            }
+        }
         var matched: u32 = 0;
         while (matched < self.open_count) : (matched += 1) {
             const index = self.open[matched];
@@ -1682,82 +2082,168 @@ pub const Doc = struct {
             line.findNextNonspace();
             if (b.kind == .code and (b.flags.fenced or b.flags.math)) {
                 // A fence takes the line unless it may still be the closer.
-                return line.blank or (line.indent <= 3 and closerPrefix(self.source.items[line.next_nonspace..end], self.source.items[b.source_start_byte], b.flags.math));
+                if (line.blank) return self.cacheHold(Hold.again, end);
+                if (line.indent > 3 or !closerPrefix(self.source.items[line.next_nonspace..end], self.source.items[b.source_start_byte], b.flags.math)) return self.cacheHold(Hold.not, end);
+                // Fence characters, then spaces: after a space only spaces keep it a closer.
+                const spaced = isSpaceOrTab(self.source.items[end - 1]);
+                return self.cacheHold(if (b.flags.math) Hold.again else Hold.keeping(if (spaced) " \t" else if (self.source.items[b.source_start_byte] == '`') "`" else "~"), end);
             }
-            if (b.kind == .html) return line.blank;
+            if (b.kind == .html) return self.cacheHold(if (line.blank) Hold.again else Hold.not, end);
             if (b.kind == .table) matched += 1;
             if (b.kind == .paragraph or b.kind == .table or b.kind == .code) break;
             if (self.continues(&line, index, b) != .matches) break;
         }
         line.findNextNonspace();
-        if (line.blank) return true;
-        if (line.indented) return false;
+        if (line.blank) return self.cacheHold(Hold.again, end);
+        if (line.indented) return self.cacheHold(Hold.not, end);
         const tip = self.tipIndex();
         const in_table = tip != none and self.blocks.items[tip].kind == .table and matched == self.open_count;
-        return heldPrefix(self.source.items[line.next_nonspace..end], self.pending_row == .row and !in_table, in_table, self.options.math);
+        const rest = self.source.items[line.next_nonspace..end];
+        const hold = heldPrefix(rest, self.pending_row == .row and !in_table, in_table, self.options.math);
+        // heldPrefix reads at most the markers and a run it keeps (charged here).
+        self.counters.block_byte_visits += rest.len;
+        return self.cacheHold(hold, end);
+    }
+
+    /// Records the pending line's hold, so the next call reads only its new bytes: a decided
+    /// line stays decided (no later byte holds it again), and a held one stays held while the
+    /// new bytes are ones that keep it.
+    fn cacheHold(self: *Doc, hold: Hold, end: u32) bool {
+        self.pending_hold = .{ .line = self.line_start_byte, .end = end, .hold = hold };
+        return hold.held;
     }
 
     // ---- The live leaf ----
 
     /// A closing prose leaf's last inline pass: the live leaf's when it followed this leaf to
-    /// its end, else a whole parse.
+    /// its end (now, or when the pending line's layout ended it), else a whole parse.
     fn closeLeaf(self: *Doc, index: u32) Error!void {
-        const live = &self.live;
         const b = self.blocks.items[index];
-        const followed = live.block == index;
-        if (followed) self.liveCheckDefinitions(b.content_start_byte);
-        if (live.block == index and live.start_byte == b.content_start_byte) {
-            // An ATX heading closes with its line: take its bytes not fed yet; its content ends
-            // before a closing sequence.
-            const atx = b.kind == .heading and !b.flags.setext;
-            if (live.line_start_byte != none and live.line_fed_end_byte < b.content_end_byte) {
-                try self.liveAppend(self.source.items[live.line_fed_end_byte..b.content_end_byte]);
-            }
-            const content_byte_count = b.content_end_byte - b.content_start_byte;
-            var end: u32 = if (atx) content_byte_count -| live.content_base else @intCast(live.content.items.len);
-            while (end > live.parser.position and isAsciiWhitespaceByte(live.content.items[end - 1])) end -= 1;
-            if (end >= live.parser.position and (!atx or content_byte_count >= live.content_base)) {
-                live.definition_possible = false;
-                live.pipe_line_start = none;
-                live.line_pipe = none;
-                try self.liveFeed(live.content.items[0..end], true);
-                if (b.flags.setext) try self.liveWriteExtra(try self.setextUnderline(self.scratch.allocator(), index));
-                if (live.expired_display != none) try self.liveRewrite(index, live.expired_display);
-                const unresolved = live.parser.unresolved;
+        if (self.finished_block == index) {
+            self.finished_block = none;
+            // Finished from the live parse when the pending line's layout ended it; that line
+            // is the one that ends it now, so its content is what was finished.
+            if (b.content_end_byte == self.finished_end_byte) {
+                if (self.finished_definition_count != self.definitions.items.len) {
+                    // Its own definitions arrived as it closed: parse it again with them.
+                    try self.writeLeaf(index);
+                    try self.computeUnresolved(index);
+                } else if (self.finished_unresolved) |unresolved| {
+                    if (b.flags.unresolved != unresolved) (try self.blockMut(index)).flags.unresolved = unresolved;
+                } else {
+                    try self.computeUnresolved(index);
+                }
                 if (self.tail_sink) |sink| try self.checkSink(sink, index);
-                self.liveReset(none, none);
-                if (b.flags.unresolved != unresolved) (try self.blockMut(index)).flags.unresolved = unresolved;
                 return;
             }
         }
-        if (followed) {
-            // The leaf showed a display a whole parse now replaces (definitions left its start,
-            // or it was parsed without them): written again whole, so a bound node stays exact.
-            try self.liveRewrite(index, 0);
-            if (self.tail_sink) |sink| try self.checkSink(sink, index);
-            self.liveReset(none, none);
-        }
+        if (self.live.block == index and try self.liveFinish(index)) return;
+        // A leaf the live parse does not follow to its end (a table cell, a heading complete
+        // in one call, a paragraph whose live state no longer applies) is written whole, so its
+        // node shows its final display.
+        if (self.live.block == index) self.liveReset(none, none);
+        try self.writeLeaf(index);
+        if (self.tail_sink) |sink| try self.checkSink(sink, index);
         try self.computeUnresolved(index);
     }
 
+    /// The live leaf's last pass over leaf `index`: the final feed, its tail write, the
+    /// UNRESOLVED bit. False when the live state does not apply (the caller parses it whole).
+    fn liveFinish(self: *Doc, index: u32) Error!bool {
+        const unresolved = (try self.liveFinishShown(index)) orelse return false;
+        const b = self.blocks.items[index];
+        if (b.flags.unresolved != unresolved) (try self.blockMut(index)).flags.unresolved = unresolved;
+        return true;
+    }
+
+    /// liveFinish's pass without the block write: the UNRESOLVED bit it found, or null.
+    fn liveFinishShown(self: *Doc, index: u32) Error!?bool {
+        const live = &self.live;
+        const b = self.blocks.items[index];
+        self.liveCheckDefinitions(b.content_start_byte);
+        if (live.block != index or (live.start_byte != b.content_start_byte and live.prose_start != b.content_start_byte)) return null;
+        // An ATX heading closes with its line: take its bytes not fed yet; its content ends
+        // before a closing sequence.
+        const atx = b.kind == .heading and !b.flags.setext;
+        if (live.line_start_byte != none and live.line_fed_end_byte < b.content_end_byte) {
+            try self.liveAppend(self.source.items[live.line_fed_end_byte..b.content_end_byte]);
+        }
+        const content_byte_count = b.content_end_byte - b.content_start_byte;
+        var end: u32 = if (atx) content_byte_count -| live.content_base else @intCast(live.content.items.len);
+        while (end > live.parser.position and isAsciiWhitespaceByte(live.content.items[end - 1])) end -= 1;
+        if (end < live.parser.position or (atx and content_byte_count < live.content_base)) return null;
+        // Undecided definitions at the start: the whole parse decides them.
+        if (live.definition_possible) return null;
+        live.pipe_line_start = none;
+        live.line_pipe = none;
+        try self.liveFeed(live.content.items[0..end], true);
+        if (b.flags.setext) try self.liveWriteExtra(try self.setextUnderline(self.scratch.allocator(), index));
+        if (live.expired_display != none) try self.liveRewrite(index, @min(live.expired_display, live.shown_byte_count));
+        const unresolved = live.parser.unresolved;
+        if (self.tail_sink) |sink| try self.checkSink(sink, index);
+        self.liveReset(none, none);
+        return unresolved;
+    }
+
+    /// Test sink: blocks from a removed index on are new blocks; the host binds their nodes when
+    /// it reads them, and they show read_leaf then.
+    fn rebindSink(self: *Doc) Error!void {
+        const sink = self.tail_sink orelse return;
+        if (sink.rebind_from == none) return;
+        var i = sink.rebind_from;
+        sink.rebind_from = none;
+        var it = sink.mirrors.iterator();
+        while (it.next()) |entry| {
+            if (entry.key_ptr.* >= i) entry.value_ptr.clearRetainingCapacity();
+        }
+        while (i < self.blocks.items.len) : (i += 1) {
+            if (isInlineLeaf(self.blocks.items[i])) try sink.write(i, 0, (try self.readLeaf(self.scratch.allocator(), i)).bytes.items);
+        }
+    }
+
+    /// Writes leaf `index`'s whole display to its node (a whole parse).
+    fn writeLeaf(self: *Doc, index: u32) Error!void {
+        const whole = (try self.readLeaf(self.scratch.allocator(), index)).bytes.items;
+        self.counters.display_byte_visits += whole.len;
+        self.counters.tail_write_bytes += whole.len;
+        if (self.tail_sink) |sink| try sink.write(index, 0, whole);
+    }
+
     fn checkSink(self: *const Doc, sink: *TailSink, index: u32) Error!void {
-        if (!sink.valid) return;
+        if (index >= sink.rebind_from) return;
         const expected = (try self.readLeaf(self.scratch.allocator(), index)).bytes.items;
         sink.checked_leaf_count += 1;
-        if (!std.mem.eql(u8, expected, sink.mirror.items)) {
+        if (!std.mem.eql(u8, expected, sink.shown(index))) {
             sink.mismatch_count += 1;
-            if (std.debug.runtime_safety) std.debug.print("live display mismatch at block {d}: expected '{s}' mirror '{s}'\n", .{ index, expected, sink.mirror.items });
+            if (std.debug.runtime_safety) std.debug.print("live display mismatch at block {d}: expected '{s}' mirror '{s}'\n", .{ index, expected, sink.shown(index) });
         }
     }
 
     /// Drops the live leaf when its block is no open prose leaf starting where it does any more
     /// (a line ended that turned the pending paragraph into another kind).
-    fn liveCheckLeaf(self: *Doc) void {
+    fn liveCheckLeaf(self: *Doc) Error!void {
         const live = &self.live;
         if (live.block == none) return;
         if (live.block < self.blocks.items.len) {
             const b = self.blocks.items[live.block];
-            if (b.flags.open and (b.kind == .paragraph or b.kind == .heading) and b.content_start_byte == live.start_byte) return;
+            if (b.flags.open and !b.flags.ending and (b.kind == .paragraph or b.kind == .heading) and b.content_start_byte == live.start_byte) return;
+            // The pending line's layout ends the paragraph: its content is complete, so the live
+            // parse finishes it now (its node gets its final display in this call).
+            if (b.flags.ending and live.block < self.provisional_from) {
+                const index = live.block;
+                const end = b.content_end_byte;
+                // The block's UNRESOLVED bit is written when it really closes (the layout's
+                // writes are undone at the next call).
+                self.finished_unresolved = try self.liveFinishShown(index);
+                if (self.finished_unresolved == null) {
+                    self.liveReset(none, none);
+                    try self.writeLeaf(index);
+                }
+                self.finished_block = index;
+                self.finished_end_byte = end;
+                self.finished_definition_count = @intCast(self.definitions.items.len);
+                return;
+            }
         }
         self.liveReset(none, none);
     }
@@ -1767,7 +2253,8 @@ pub const Doc = struct {
     /// it starts again (it holds one line; the definitions came with the line that ended it).
     fn liveCheckDefinitions(self: *Doc, leaf_start: u32) void {
         const live = &self.live;
-        if (live.start_byte != leaf_start or live.definition_count == self.definitions.items.len) return;
+        if (live.start_byte != leaf_start and live.prose_start != leaf_start) return;
+        if (live.definition_count == self.definitions.items.len) return;
         live.definition_count = @intCast(self.definitions.items.len);
         if (!live.parser.unresolved) return;
         self.counters.bytes_reinlined += live.content.items.len;
@@ -1780,6 +2267,8 @@ pub const Doc = struct {
         live.content.clearRetainingCapacity();
         live.block = block;
         live.start_byte = start_byte;
+        live.prose_start = start_byte;
+        live.definition_scan = 0;
         live.line_start_byte = none;
         live.line_fed_end_byte = 0;
         live.display_ends.clearRetainingCapacity();
@@ -1794,12 +2283,9 @@ pub const Doc = struct {
         live.line_pipe = none;
         live.partial_token = none;
         live.partial_from = none;
+        live.hold = .{};
         live.expired_display = none;
         live.definition_count = @intCast(self.definitions.items.len);
-        if (self.tail_sink) |sink| {
-            sink.mirror.clearRetainingCapacity();
-            sink.valid = true;
-        }
         self.releaseLiveCapacity();
     }
 
@@ -1811,6 +2297,7 @@ pub const Doc = struct {
         }
         if (live.display_ends.capacity > inline_parser.token_count_max) live.display_ends.clearAndFree(self.allocator);
         if (live.pending_display.capacity > live_retained_byte_count_max) live.pending_display.clearAndFree(self.allocator);
+        if (live.previous_pending.capacity > live_retained_byte_count_max) live.previous_pending.clearAndFree(self.allocator);
         live.parser.releaseCapacity();
     }
 
@@ -1853,7 +2340,38 @@ pub const Doc = struct {
         live.pipe_line_start = live.line_pipe;
         live.line_pipe = none;
         try self.liveAppend("\n");
+        if (live.definition_possible) try self.liveDecideDefinitions(index);
         try self.liveFeed(live.content.items, false);
+    }
+
+    /// A paragraph that starts with `[` shows nothing until its complete lines decide where
+    /// its leading definitions end (at most one line after them); then the content copy starts
+    /// at its prose, which the display shows from then on.
+    fn liveDecideDefinitions(self: *Doc, index: u32) Error!void {
+        const live = &self.live;
+        const scan = definitionProse(live.content.items, live.definition_scan, false);
+        self.counters.block_byte_visits += live.content.items.len - live.definition_scan;
+        live.definition_scan = scan.last_start;
+        const prose = scan.prose orelse return;
+        live.definition_possible = false;
+        if (prose == 0) return;
+        const content = try self.leafContent(self.scratch.allocator(), index);
+        live.prose_start = content.sourceOffset(prose);
+        const rest = live.content.items.len - prose;
+        std.mem.copyForwards(u8, live.content.items[0..rest], live.content.items[prose..]);
+        live.content.items.len = rest;
+        live.content_base += prose;
+        live.pipe_line_start = if (live.pipe_line_start != none and live.pipe_line_start != pipe_folded and live.pipe_line_start >= prose) live.pipe_line_start - prose else none;
+        live.parser.reset();
+        live.display_ends.clearRetainingCapacity();
+        live.folded_display_byte_count = 0;
+        live.pending_display.clearRetainingCapacity();
+        live.pending_scan = .{ .visits = live.pending_scan.visits };
+        live.pending_code_opener = null;
+        live.partial_token = none;
+        live.partial_from = none;
+        live.hold = .{};
+        assert(live.shown_byte_count == 0);
     }
 
     /// Feeds the pending line when the provisional layout gave it a prose leaf: the open
@@ -1948,9 +2466,13 @@ pub const Doc = struct {
             std.meta.eql(code, live.pending_code_opener);
         live.pending_code_opener = code;
         var old_pending: []const u8 = "";
+        // A hold cut inside the tokens or the drawn bytes moves when they change.
+        if (!pending_only) live.hold = .{};
         if (!pending_only) {
-            old_pending = try arena.dupe(u8, live.pending_display.items);
+            // The old drawing stays in the other buffer for the comparison below (no copy).
+            std.mem.swap(std.ArrayListUnmanaged(u8), &live.pending_display, &live.previous_pending);
             live.pending_display.clearRetainingCapacity();
+            old_pending = live.previous_pending.items;
             live.pending_scan = .{ .stop = parser.position, .visits = live.pending_scan.visits };
         }
         const drawn_before = live.pending_display.items.len;
@@ -1958,6 +2480,7 @@ pub const Doc = struct {
             const read_before = live.pending_scan.visits;
             try inline_parser.renderPending(content, live.pending_scan.stop, code, &live.pending_scan, self.allocator, &live.pending_display);
             self.counters.display_byte_visits += live.pending_scan.visits - read_before;
+            self.counters.display_assembled_bytes += live.pending_display.items.len - drawn_before;
         }
         const full_end = tokens_end + @as(u32, @intCast(live.pending_display.items.len));
         // Where the full display first differs from what it was.
@@ -1967,15 +2490,32 @@ pub const Doc = struct {
         } else if (first < tokens_before and !grown_last) {
             write_full = self.liveTokensEnd(first);
         } else {
-            // Only new tokens (or a grown last text token) replaced old pending bytes: compare.
-            var fresh: std.ArrayListUnmanaged(u8) = .empty;
+            // Only new tokens (or a grown last text token) replaced old pending bytes: compare
+            // the new display with the old, piece by piece, up to the first difference.
+            const grown: []const u8 = if (grown_last) content[r.tokens[first].start..position_before] else "";
+            var old: Pieces = .{ .a = grown, .b = old_pending };
+            var same: u32 = 0;
             i = first;
-            while (i < r.tokens.len) : (i += 1) try inline_parser.appendTokenDisplay(r, i, arena, &fresh);
-            try fresh.appendSlice(arena, live.pending_display.items);
-            var old: []const u8 = old_pending;
-            if (grown_last) old = try std.mem.concat(arena, u8, &.{ content[r.tokens[first].start..position_before], old_pending });
-            const same: u32 = @intCast(std.mem.indexOfDiff(u8, old, fresh.items) orelse @min(old.len, fresh.items.len));
-            self.counters.display_byte_visits += @min(old.len, fresh.items.len) + fresh.items.len;
+            while (i < r.tokens.len and !old.done()) : (i += 1) {
+                const t = r.tokens[i];
+                var piece: []const u8 = undefined;
+                if (t.kind == .text or t.kind == .html or t.kind == .extended_autolink) {
+                    piece = content[t.start..t.end()];
+                } else {
+                    var display: std.ArrayListUnmanaged(u8) = .empty;
+                    try inline_parser.appendTokenDisplay(r, i, arena, &display);
+                    self.counters.display_assembled_bytes += display.items.len;
+                    piece = display.items;
+                }
+                const matched = old.match(piece);
+                same += matched;
+                self.counters.display_byte_visits += 2 * matched + 1;
+                if (matched < piece.len) break;
+            } else if (i == r.tokens.len) {
+                const matched = old.match(live.pending_display.items);
+                same += matched;
+                self.counters.display_byte_visits += 2 * matched;
+            }
             write_full = self.liveTokensEnd(first) + same;
         }
         try self.liveShow(write_full, full_end, final);
@@ -2006,23 +2546,30 @@ pub const Doc = struct {
         var write_start = @min(@min(write_full, live.shown_byte_count), partial_before);
         write_start = @min(write_start, shown_end);
         self.counters.tail_write_bytes += shown_end - write_start;
-        if (self.tail_sink) |sink| {
-            if (sink.valid) {
-                sink.mirror.shrinkRetainingCapacity(write_start);
-                try self.liveRender(write_start, shown_end, sink.allocator, &sink.mirror);
+        // The tail write's bytes (M2 writes them to the bound node; the test sink applies them).
+        if (shown_end > write_start) {
+            var tail: std.ArrayListUnmanaged(u8) = .empty;
+            try self.liveRender(write_start, shown_end, self.scratch.allocator(), &tail);
+            if (self.tail_sink) |sink| try sink.write(live.block, write_start, tail.items);
+        } else if (self.tail_sink) |sink| {
+            if (live.block < sink.rebind_from) {
+                const m = try sink.mirror(live.block);
+                if (m.items.len > shown_end) m.shrinkRetainingCapacity(shown_end);
             }
         }
         live.shown_byte_count = shown_end;
     }
 
-    /// Appends the full display's bytes [from, to).
+    /// Appends the full display's bytes [from, to): only the tokens that reach into the range
+    /// (a text token by slicing its bytes; another rendered aside, counted as assembled) and the
+    /// slice of the drawn pending bytes.
     fn liveRender(self: *Doc, from: u32, to: u32, allocator: Allocator, out: *std.ArrayListUnmanaged(u8)) Error!void {
         if (from >= to) return;
         const live = &self.live;
         const r = live.parser.result();
         assert(from >= live.folded_display_byte_count);
-        var buffer: std.ArrayListUnmanaged(u8) = .empty;
         const arena = self.scratch.allocator();
+        const out_start = out.items.len;
         // The first token that ends after `from`.
         var low: usize = 0;
         var high: usize = r.tokens.len;
@@ -2030,36 +2577,69 @@ pub const Doc = struct {
             const mid = (low + high) / 2;
             if (live.display_ends.items[mid] <= from) low = mid + 1 else high = mid;
         }
+        const partial = live.partial_token != none and to == live.partial_from + live.partial_byte_count;
+        const last: usize = if (partial) live.partial_token else r.tokens.len;
+        var at = from;
         var i: u32 = @intCast(low);
-        const start_offset = self.liveTokensEnd(i);
-        if (live.partial_token != none and to == live.partial_from + live.partial_byte_count) {
-            // Up to a hold inside a token: the tokens before it, then what B drew of it.
-            while (i < live.partial_token) : (i += 1) try inline_parser.appendTokenDisplay(r, i, arena, &buffer);
-            try inline_parser.appendTokenDisplayBefore(r, live.partial_token, live.partial_at, arena, &buffer);
-        } else {
-            while (i < r.tokens.len) : (i += 1) try inline_parser.appendTokenDisplay(r, i, arena, &buffer);
-            try buffer.appendSlice(arena, live.pending_display.items);
+        while (i < last and at < to) : (i += 1) {
+            const start = self.liveTokensEnd(i);
+            const end = live.display_ends.items[i];
+            const t = r.tokens[i];
+            const a = at - start;
+            const b = @min(end, to) - start;
+            if (t.kind == .text or t.kind == .html or t.kind == .extended_autolink) {
+                try out.appendSlice(allocator, r.content[t.start + a .. t.start + b]);
+            } else {
+                var display: std.ArrayListUnmanaged(u8) = .empty;
+                try inline_parser.appendTokenDisplay(r, i, arena, &display);
+                self.counters.display_assembled_bytes += display.items.len;
+                try out.appendSlice(allocator, display.items[a..b]);
+            }
+            at = start + b;
         }
-        self.counters.display_byte_visits += to - from;
-        try out.appendSlice(allocator, buffer.items[from - start_offset .. to - start_offset]);
+        if (partial and at < to) {
+            // Up to a hold inside a token: what B drew of it.
+            var display: std.ArrayListUnmanaged(u8) = .empty;
+            try inline_parser.appendTokenDisplayBefore(r, live.partial_token, live.partial_at, arena, &display);
+            self.counters.display_assembled_bytes += display.items.len;
+            try out.appendSlice(allocator, display.items[at - live.partial_from .. to - live.partial_from]);
+        } else if (at < to) {
+            const tokens_end = self.liveTokensEnd(@intCast(r.tokens.len));
+            try out.appendSlice(allocator, live.pending_display.items[at - tokens_end .. to - tokens_end]);
+        }
+        // The bytes themselves are the tail write (counted as sent bytes).
+        assert(out.items.len - out_start == to - from);
     }
 
     /// The display offset where B's holds start: a paragraph that may still be only link
     /// definitions shows nothing; a last line with a pipe waits for the next line.
     fn liveHoldCut(self: *Doc) u32 {
         const live = &self.live;
-        if (live.definition_possible) {
-            const status = definitionStatus(live.content.items);
-            if (status == .possible) return 0;
-            live.definition_possible = false;
-        }
+        if (live.definition_possible) return 0;
         // The paragraph's last line, complete or pending, is held from its first pipe: with
         // the next line it may be a table's header. (Held from the pipe, not from the line's
         // start: a pipe that arrives after the line's first bytes were shown takes nothing back.)
         if (self.blocks.items[live.block].kind != .paragraph) return none;
-        const pipe = if (live.line_start_byte != none) live.line_pipe else live.pipe_line_start;
+        const pipe = self.liveHoldPipe();
         if (pipe == none) return none;
-        return self.liveDisplayAt(pipe);
+        if (pipe == pipe_folded) return live.pipe_folded_display;
+        // While only pending bytes after the cut were added, the cut's display stands.
+        if (live.hold.at == pipe) {
+            live.partial_token = live.hold.partial_token;
+            live.partial_at = live.hold.partial_at;
+            live.partial_from = live.hold.partial_from;
+            live.partial_byte_count = live.hold.partial_byte_count;
+            return live.hold.display;
+        }
+        const display = self.liveDisplayAt(pipe);
+        live.hold = .{ .at = pipe, .display = display, .partial_token = live.partial_token, .partial_at = live.partial_at, .partial_from = live.partial_from, .partial_byte_count = live.partial_byte_count };
+        return display;
+    }
+
+    /// The content offset of the pipe the paragraph's last line is held from (none: none).
+    fn liveHoldPipe(self: *const Doc) u32 {
+        const live = &self.live;
+        return if (live.line_start_byte != none) live.line_pipe else live.pipe_line_start;
     }
 
     /// The display offset of content offset `at`: from the tokens (with what B drew of a token
@@ -2072,6 +2652,7 @@ pub const Doc = struct {
             var scan: inline_parser.PendingScan = .{};
             inline_parser.renderPending(live.content.items[0..at], live.parser.position, live.pending_code_opener, &scan, self.scratch.allocator(), &drawn) catch return live.folded_display_byte_count;
             self.counters.display_byte_visits += drawn.items.len;
+            self.counters.display_assembled_bytes += drawn.items.len;
             return self.liveTokensEnd(@intCast(r.tokens.len)) + @as(u32, @intCast(drawn.items.len));
         }
         // The first token that ends after `at`.
@@ -2083,9 +2664,13 @@ pub const Doc = struct {
         }
         const start = self.liveTokensEnd(@intCast(low));
         if (low == r.tokens.len or r.tokens[low].start >= at) return start;
+        // A text token's display is its bytes: the cut's prefix of it is a prefix of the whole.
+        const kind = r.tokens[low].kind;
+        if (kind == .text or kind == .extended_autolink) return start + (at - r.tokens[low].start);
         var before: std.ArrayListUnmanaged(u8) = .empty;
         inline_parser.appendTokenDisplayBefore(r, @intCast(low), at, self.scratch.allocator(), &before) catch return start;
         self.counters.display_byte_visits += before.items.len;
+        self.counters.display_assembled_bytes += before.items.len;
         live.partial_token = @intCast(low);
         live.partial_at = at;
         live.partial_from = start;
@@ -2101,19 +2686,14 @@ pub const Doc = struct {
         const whole = (try self.readLeaf(self.scratch.allocator(), index)).bytes.items;
         self.counters.display_byte_visits += whole.len;
         self.counters.tail_write_bytes += whole.len - from;
-        if (self.tail_sink) |sink| {
-            if (sink.valid) {
-                sink.mirror.shrinkRetainingCapacity(from);
-                try sink.mirror.appendSlice(sink.allocator, whole[from..]);
-            }
-        }
+        if (self.tail_sink) |sink| try sink.write(index, from, whole[from..]);
         live.shown_byte_count = @intCast(whole.len);
     }
 
     /// Writes bytes after the leaf's display (a setext underline when the heading closes).
     fn liveWriteExtra(self: *Doc, bytes: []const u8) Error!void {
         self.counters.tail_write_bytes += bytes.len;
-        if (self.tail_sink) |sink| if (sink.valid) try sink.mirror.appendSlice(sink.allocator, bytes);
+        if (self.tail_sink) |sink| try sink.write(self.live.block, self.live.shown_byte_count, bytes);
         self.live.shown_byte_count += @intCast(bytes.len);
     }
 
@@ -2139,9 +2719,11 @@ pub const Doc = struct {
         live.content_base += drop;
         live.pending_scan.stop -= drop;
         live.pending_scan.scanned -|= drop;
+        live.pending_scan.run_end -|= drop;
         if (live.pending_scan.code) |opener| live.pending_scan.code = opener - drop;
         if (live.pending_code_opener) |opener| live.pending_code_opener = opener - drop;
         parser.rebase(drop);
+        live.hold = .{};
         self.liveClampContent();
     }
 
@@ -2170,8 +2752,11 @@ pub const Doc = struct {
         const live = &self.live;
         const parser = &live.parser;
         if (parser.tokens.items.len < 2 * inline_parser.token_count_max) return;
-        if (live.definition_possible or live.pipe_line_start != none or live.line_pipe != none) return;
-        const first = parser.firstUnresolvedToken();
+        if (live.definition_possible) return;
+        // A hold inside a token keeps that token (its partial display needs it).
+        const held_pipe = self.liveHoldPipe();
+        var first = parser.firstUnresolvedToken();
+        if (held_pipe != none and live.hold.partial_token != none) first = @min(first, live.hold.partial_token);
         const r = parser.result();
         const at = if (first < r.tokens.len) r.tokens[first].start else parser.position;
         if (at <= look_behind_byte_count) return;
@@ -2180,16 +2765,25 @@ pub const Doc = struct {
         while (drop > 0 and (live.content.items[drop] & 0xc0) == 0x80) drop -= 1;
         const folded = self.liveTokensEnd(first);
         self.liveNoteExpired(first);
+        // A held pipe whose bytes go keeps its cut: the display before it is settled.
+        if (held_pipe != none and held_pipe != pipe_folded and held_pipe < drop) {
+            live.pipe_folded_display = self.liveHoldCut();
+            if (live.line_start_byte != none) live.line_pipe = pipe_folded else live.pipe_line_start = pipe_folded;
+        } else if (held_pipe != none and held_pipe != pipe_folded) {
+            if (live.line_start_byte != none) live.line_pipe -= drop else live.pipe_line_start -= drop;
+        }
         const rest = live.content.items.len - drop;
         std.mem.copyForwards(u8, live.content.items[0..rest], live.content.items[drop..]);
         live.content.items.len = rest;
         live.content_base += drop;
         live.pending_scan.stop -= drop;
         live.pending_scan.scanned -|= drop;
+        live.pending_scan.run_end -|= drop;
         if (live.pending_scan.code) |opener| live.pending_scan.code = opener - drop;
         if (live.pending_code_opener) |opener| live.pending_code_opener = opener - drop;
         const visits_before = parser.byte_visits;
         try parser.restart(live.content.items, at - drop);
+        live.hold = .{};
         self.counters.inline_byte_visits += parser.byte_visits - visits_before;
         _ = parser.takeChanged();
         // The same tokens from `first` on, so the same display offsets.
@@ -2245,15 +2839,23 @@ pub const Doc = struct {
         var parser: inline_parser.Parser = .{ .allocator = arena, .references = self.references(), .options = .{ .math = self.options.math } };
         var cut: u32 = none;
         // A table cell of the pending row is drawn the same way.
-        const pending_cell = b.kind == .table_cell and !self.finished and b.source_start_byte >= self.line_start_byte;
-        const open = (b.flags.open and (b.kind == .paragraph or b.kind == .heading)) or pending_cell;
+        // (A cell of a row that ended is closed; one of the pending row stays open.)
+        const pending_cell = b.kind == .table_cell and b.flags.open;
+        // A paragraph the pending line's layout ends shows its final display.
+        const open = (b.flags.open and !b.flags.ending and (b.kind == .paragraph or b.kind == .heading)) or pending_cell;
         if (open) {
             // As the live leaf holds it: each complete line ends in '\n'.
             var body = (try self.leafContent(arena, index)).bytes;
             if (pending_cell) body = try unescapePipes(arena, body);
             const complete = b.content_end_byte <= self.line_start_byte;
-            const content = if (complete and b.kind == .paragraph) try std.mem.concat(arena, u8, &.{ body, "\n" }) else body;
-            if (b.kind == .paragraph and definitionStatus(content) == .possible) return leaf;
+            var content = if (complete and b.kind == .paragraph) try std.mem.concat(arena, u8, &.{ body, "\n" }) else body;
+            if (b.kind == .paragraph and content.len > 0 and content[0] == '[') {
+                // Leading definitions are not shown; the prose after them once that is decided.
+                const complete_end: usize = if (complete) content.len else if (std.mem.lastIndexOfScalar(u8, content, '\n')) |n| n + 1 else 0;
+                const prose = definitionProse(content[0..complete_end], 0, false).prose orelse return leaf;
+                content = content[prose..];
+                body = body[prose..];
+            }
             try parser.feed(content, false);
             // The last line, complete or pending, waits from its first pipe: with the next line
             // it may be a table's header.
@@ -2398,7 +3000,10 @@ pub const Doc = struct {
         var end = bytes.len;
         while (end > 0 and (bytes[end - 1] == ' ' or bytes[end - 1] == '\t' or bytes[end - 1] == '\n')) end -= 1;
         bytes = bytes[0..end];
-        if (self.blocks.items[index].kind == .table_cell) bytes = try unescapePipes(arena, bytes);
+        const kind = self.blocks.items[index].kind;
+        if (kind == .table_cell) bytes = try unescapePipes(arena, bytes);
+        // A paragraph's leading definitions are not prose (an ending paragraph still holds them).
+        if (kind == .paragraph) bytes = bytes[definitionProse(bytes, 0, true).prose.?..];
         return bytes;
     }
 
@@ -2817,15 +3422,37 @@ fn closerPrefix(rest: []const u8, opener: u8, math: bool) bool {
 /// item or quote marker that is complete is decided; what follows it is judged the same way.
 /// Once a line is not held, no later byte holds it again (its first bytes decided it), so a
 /// line shown is never withdrawn; another line with a pipe shows up to its first pipe.
-fn heldPrefix(rest_initial: []const u8, delimiter_row: bool, in_table: bool, math: bool) bool {
+/// A held pending line, and the bytes that keep it held as more arrive (so the next call reads
+/// only the new bytes): `any` holds it until its line ends.
+const Hold = struct {
+    held: bool,
+    keep: []const u8 = "",
+    any: bool = false,
+
+    const not: Hold = .{ .held = false };
+    const again: Hold = .{ .held = true };
+    const to_line_end: Hold = .{ .held = true, .any = true };
+
+    fn keeping(keep: []const u8) Hold {
+        return .{ .held = true, .keep = keep };
+    }
+};
+
+fn heldPrefix(rest_initial: []const u8, delimiter_row: bool, in_table: bool, math: bool) Hold {
     var rest = rest_initial;
-    if (delimiter_row) return true;
+    if (delimiter_row) return Hold.keeping(" \t:-|");
     var after_item = false;
-    while (true) {
-        if (rest.len == 0) return true;
+    // Markers past the nesting limit are text, so the line is decided after that many.
+    var markers: u32 = 0;
+    while (markers <= depth_max) : (markers += 1) {
+        // Nothing after the markers yet: spaces keep it so.
+        if (rest.len == 0) return Hold.keeping(" \t");
         const c = rest[0];
         // A task marker after a list item marker: `[`, `[x`, `[x]` and spaces may still be one.
-        if (after_item and c == '[') return taskPrefix(rest);
+        if (after_item and c == '[') {
+            if (!taskPrefix(rest)) return Hold.not;
+            return if (rest.len >= 3) Hold.keeping(" \t") else Hold.again;
+        }
         switch (c) {
             '>' => {
                 rest = rest[1..];
@@ -2834,45 +3461,59 @@ fn heldPrefix(rest_initial: []const u8, delimiter_row: bool, in_table: bool, mat
                 continue;
             },
             '-', '*', '+', '_', '=' => {
-                if (onlyBytes(rest, c)) return true;
-                if (c == '_' or c == '=') return false;
-                if (rest.len < 2) return true;
-                if (!isSpaceOrTab(rest[1])) return false;
+                if (onlyBytes(rest, c)) return Hold.keeping(switch (c) {
+                    '-' => "- \t",
+                    '*' => "* \t",
+                    '+' => "+ \t",
+                    '_' => "_ \t",
+                    else => "= \t",
+                });
+                if (c == '_' or c == '=') return Hold.not;
+                if (rest.len < 2) return Hold.again;
+                if (!isSpaceOrTab(rest[1])) return Hold.not;
                 rest = std.mem.trimStart(u8, rest[1..], " \t");
                 after_item = true;
                 continue;
             },
             '0'...'9' => {
+                // An ordered list marker has at most nine digits: read ten at most.
                 var i: usize = 0;
-                while (i < rest.len and std.ascii.isDigit(rest[i])) i += 1;
-                if (i >= rest.len) return i <= 9;
-                if (i > 9 or (rest[i] != '.' and rest[i] != ')')) return false;
-                if (i + 1 >= rest.len) return true;
-                if (!isSpaceOrTab(rest[i + 1])) return false;
+                while (i < rest.len and i < 10 and std.ascii.isDigit(rest[i])) i += 1;
+                if (i >= rest.len) return if (i <= 9) Hold.again else Hold.not;
+                if (i > 9 or (rest[i] != '.' and rest[i] != ')')) return Hold.not;
+                if (i + 1 >= rest.len) return Hold.again;
+                if (!isSpaceOrTab(rest[i + 1])) return Hold.not;
                 rest = std.mem.trimStart(u8, rest[i + 1 ..], " \t");
                 after_item = true;
                 continue;
             },
             '#' => {
                 var i: usize = 0;
-                while (i < rest.len and rest[i] == '#') i += 1;
-                if (i > 6) return false;
-                if (i >= rest.len) return true;
-                if (!isSpaceOrTab(rest[i])) return false;
-                return std.mem.trim(u8, rest[i..], " \t").len == 0;
+                while (i < rest.len and i <= 6 and rest[i] == '#') i += 1;
+                if (i > 6) return Hold.not;
+                if (i >= rest.len) return Hold.again;
+                if (!isSpaceOrTab(rest[i])) return Hold.not;
+                return if (onlyBytesOf(rest[i..], " \t")) Hold.keeping(" \t") else Hold.not;
             },
             '`', '~' => {
                 const run = inline_parser.runLength(rest, 0, c);
-                return run >= 3 or run == rest.len;
+                if (run >= 3) return Hold.to_line_end;
+                return if (run == rest.len) Hold.again else Hold.not;
             },
-            '<' => return true,
-            '|' => return !in_table,
-            ':' => return onlyBytesOf(rest, ":-| \t"),
-            '$' => return math and std.mem.trimEnd(u8, rest, " \t").len <= 2 and std.mem.startsWith(u8, "$$", std.mem.trimEnd(u8, rest, " \t")),
-            '\\' => return math and std.mem.trimEnd(u8, rest, " \t").len <= 2 and std.mem.startsWith(u8, "\\[", std.mem.trimEnd(u8, rest, " \t")),
-            else => return false,
+            '<' => return Hold.to_line_end,
+            '|' => return if (in_table) Hold.not else Hold.to_line_end,
+            ':' => return if (onlyBytesOf(rest, ":-| \t")) Hold.keeping(" \t:-|") else Hold.not,
+            '$', '\\' => {
+                if (!math) return Hold.not;
+                const opener: []const u8 = if (c == '$') "$$" else "\\[";
+                // `$$` or `\[` and spaces: a block opener while only spaces follow.
+                if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], opener)) return if (onlyBytesOf(rest[2..], " \t")) Hold.keeping(" \t") else Hold.not;
+                return if (rest.len == 1) Hold.again else Hold.not;
+            },
+            else => return Hold.not,
         }
     }
+    return Hold.not;
 }
 
 fn taskPrefix(rest: []const u8) bool {
@@ -2895,18 +3536,88 @@ fn onlyBytesOf(rest: []const u8, set: []const u8) bool {
     return true;
 }
 
-pub const DefinitionStatus = enum { not, possible };
+pub const DefinitionScan = struct {
+    /// Content offset where the prose starts; null while that is not decided.
+    prose: ?u32,
+    /// Start of the last definition parsed (a later scan starts there: its title may grow).
+    last_start: u32,
+};
 
-/// Whether paragraph content (lines joined by '\n') may still be only link reference
-/// definitions: it starts with a label that is not closed yet, or a closed label followed by
-/// ':' or by nothing yet. Bytes after a complete definition may still be its title.
-pub fn definitionStatus(content: []const u8) DefinitionStatus {
-    if (content.len == 0 or content[0] != '[') return .not;
-    const length = inline_parser.scanLinkLabel(content, 0, false) catch return .possible;
-    if (length < 3) return .not;
-    if (length >= content.len) return .possible;
-    return if (content[length] == ':') .possible else .not;
+/// Where a paragraph's prose starts after its leading link reference definitions (CommonMark
+/// 4.7), over its complete lines `c` (each ending in '\n' unless `closed`), parsing from `from`
+/// (the start of a definition a scan parsed before). Undecided while the last complete line may
+/// still belong to a definition (its title, its destination, a label that goes on), so a
+/// paragraph waits at most one line. With `closed`, every line is there.
+pub fn definitionProse(c: []const u8, from: u32, closed: bool) DefinitionScan {
+    if (c.len == 0) return .{ .prose = if (closed) 0 else null, .last_start = 0 };
+    if (c[0] != '[') return .{ .prose = 0, .last_start = 0 };
+    var position = from;
+    var last = from;
+    while (position < c.len and c[position] == '[') {
+        const parsed = parseDefinition(c, position) orelse break;
+        last = position;
+        position = parsed.end;
+    }
+    if (closed) return .{ .prose = position, .last_start = last };
+    const undecided: DefinitionScan = .{ .prose = null, .last_start = last };
+    if (position >= c.len) return undecided;
+    // A title the last definition may still take (it spans lines until it closes).
+    if (position > 0 and titleOpen(c, position)) return undecided;
+    if (c[position] == '[') {
+        // An attempt that fails on the last line may succeed with the next one; one whose
+        // label, destination or title is still open waits for it.
+        const body = c[0 .. c.len - 1];
+        const last_line: u32 = if (std.mem.lastIndexOfScalar(u8, body, '\n')) |n| @intCast(n + 1) else 0;
+        if (position >= last_line or definitionOpen(c, position)) return undecided;
+    }
+    return .{ .prose = position, .last_start = last };
 }
+
+fn titleOpen(c: []const u8, at: u32) bool {
+    _ = inline_parser.scanTitle(c, at, false) catch return true;
+    return false;
+}
+
+/// Whether the definition attempt at `at` may still succeed with more lines: its label,
+/// destination or title runs to the end of `c`.
+fn definitionOpen(c: []const u8, at: u32) bool {
+    const label_len = inline_parser.scanLinkLabel(c, at, false) catch return true;
+    if (label_len < 3) return false;
+    var i = at + label_len;
+    if (i >= c.len) return true;
+    if (c[i] != ':') return false;
+    i = skipSpacesOneNewline(c, i + 1) orelse return true;
+    const d = (inline_parser.scanDestination(c, i, false) catch return true) orelse return false;
+    const j = skipSpacesOneNewline(c, d.end) orelse return true;
+    if (j >= c.len) return true;
+    return j > d.end and titleOpen(c, j);
+}
+
+/// Two byte strings read as one, matched against display pieces in order.
+const Pieces = struct {
+    a: []const u8,
+    b: []const u8,
+
+    fn done(self: *const Pieces) bool {
+        return self.a.len == 0 and self.b.len == 0;
+    }
+
+    /// How many leading bytes of `piece` equal the next bytes; those are consumed.
+    fn match(self: *Pieces, piece: []const u8) u32 {
+        var n: usize = 0;
+        while (n < piece.len) {
+            const rest = if (self.a.len > 0) &self.a else &self.b;
+            if (rest.len == 0) break;
+            const count = @min(rest.len, piece.len - n);
+            const diff = std.mem.indexOfDiff(u8, rest.*[0..count], piece[n .. n + count]);
+            const equal = diff orelse count;
+            rest.* = rest.*[equal..];
+            n += equal;
+            if (diff != null) break;
+        }
+        return @intCast(n);
+    }
+};
 
 /// Bytes a live leaf keeps before its first token: one code point, for emphasis flanking.
 const look_behind_byte_count: u32 = 4;

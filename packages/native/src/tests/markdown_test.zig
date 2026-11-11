@@ -133,14 +133,19 @@ fn streamAgrees(arena: std.mem.Allocator, name: []const u8, chunks: []const std.
 /// comparison and the live tail check still run.
 const fresh_compare_byte_count_max = 4096;
 
-/// The live leaf's tail writes so far rebuilt what read_leaf shows of that leaf now (B).
+/// P5 for the writes: every prose leaf's node (the sink's mirror of the engine's writes to it)
+/// shows what read_leaf shows of that leaf now (B), at every append and at finish. A table
+/// cell of the pending row is not written until its row ends.
 pub fn liveShowsReadLeaf(arena: std.mem.Allocator, doc: *const Doc, sink: *const markdown.TailSink) !bool {
-    const leaf = doc.live.block;
-    if (leaf == markdown.none or !sink.valid or leaf >= doc.blocks.items.len) return true;
-    const expected = (try doc.readLeaf(arena, leaf)).bytes.items;
-    if (std.mem.eql(u8, expected, sink.mirror.items)) return true;
-    std.debug.print("live leaf {d} shows '{s}', read_leaf '{s}'\n", .{ leaf, sink.mirror.items, expected });
-    return false;
+    for (doc.blocks.items, 0..) |b, i| {
+        const written = b.kind == .paragraph or b.kind == .heading or (b.kind == .table_cell and !b.flags.open);
+        if (!written) continue;
+        const expected = (try doc.readLeaf(arena, @intCast(i))).bytes.items;
+        if (std.mem.eql(u8, expected, sink.shown(@intCast(i)))) continue;
+        std.debug.print("leaf {d} shows '{s}', read_leaf '{s}'\n", .{ i, sink.shown(@intCast(i)), expected });
+        return false;
+    }
+    return true;
 }
 
 fn streamAgreesParts(arena: std.mem.Allocator, name: []const u8, parts: []const []const u8) !bool {
@@ -714,7 +719,7 @@ const Engine = struct {
                 frame = next;
             }
             if (sink.mismatch_count > 0) return .{ .property = "live tail writes equal the leaf's display", .step = step };
-            if (!try liveShowsReadLeaf(arena, &f.doc, &sink)) return .{ .property = "live display equals read_leaf (B)", .step = step };
+            if (!try liveShowsReadLeaf(arena, &f.doc, &sink)) return .{ .property = "every node shows read_leaf (P5, B)", .step = step };
             if (f.doc.counters.live_mismatch_count > 0) return .{ .property = "live pending line guessed its leaf", .step = step };
         }
         return null;
@@ -771,7 +776,13 @@ fn frameIgnored(s: []const u8, i: usize, math: bool) bool {
 /// A prose leaf's read_leaf bytes and URLs, as a host keeps them.
 fn leafOutput(arena: std.mem.Allocator, doc: *const Doc, index: u32) ![]const u8 {
     const leaf = try doc.readLeaf(arena, index);
-    return std.mem.concat(arena, u8, &.{ leaf.bytes.items, "\x00", leaf.urls.items });
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    try out.appendSlice(arena, leaf.bytes.items);
+    try out.append(arena, 0);
+    try out.appendSlice(arena, leaf.urls.items);
+    // Each chunk's record: which bytes, how styled, which target.
+    for (leaf.chunks.items) |chunk| try out.print(arena, "|{d},{d},{d},{d},{d}", .{ chunk.byte_count, @as(u16, @bitCast(chunk.scope)), @as(u32, @bitCast(chunk.span)), chunk.link_offset, chunk.link_byte_count });
+    return out.items;
 }
 
 /// `source` with `/u` and `/w` swapped.
@@ -999,8 +1010,9 @@ test "Markdown limits: each store stays within its limit and a rejection publish
     }
     // Token storage: openers that never close keep the stack from emptying; the live leaf's
     // stores stay within twice the token limit (length and capacity) after every append, and its
-    // tail writes still rebuild the leaf's display.
-    {
+    // tail writes still rebuild the leaf's display. With a held pipe before them too (bigboi
+    // round 2: the hold kept every token).
+    for ([_][]const u8{ "", "text | " }) |prefix| {
         var f: Fixture = undefined;
         try f.init(.{});
         defer f.deinit();
@@ -1009,6 +1021,7 @@ test "Markdown limits: each store stays within its limit and a rejection publish
         f.doc.tail_sink = &sink;
         const bound = 2 * inline_parser.token_count_max + 64;
         var high: usize = 0;
+        try f.doc.append(prefix);
         for (0..6000) |n| {
             try f.doc.append(if (n % 2 == 0) "*a " else "[b ");
             const p = &f.doc.live.parser;
@@ -1023,7 +1036,7 @@ test "Markdown limits: each store stays within its limit and a rejection publish
         try std.testing.expect(try liveShowsReadLeaf(arena, &f.doc, &sink));
         try f.doc.finish();
         try std.testing.expectEqual(@as(u32, 0), sink.mismatch_count);
-        try std.testing.expectEqual(@as(u32, 1), sink.checked_leaf_count);
+        try std.testing.expect(try liveShowsReadLeaf(arena, &f.doc, &sink));
     }
     // Filter: at most 256 bytes of items of 1 to 64 bytes.
     {
@@ -1148,6 +1161,25 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
     // The token limit's storage row: the delimiter stack never empties.
     var openers: std.ArrayListUnmanaged(u8) = .empty;
     for (0..6000) |n| try openers.appendSlice(arena, if (n % 2 == 0) "*a " else "[b ");
+    // bigboi's rows (round 2): one 64 KiB word; a pipe between two words; a line of digits; a
+    // held pipe before openers that never close; 128-column table rows; varied backtick runs.
+    const word = try arena.alloc(u8, 65536);
+    @memset(word, 'w');
+    const piped = try std.mem.concat(arena, u8, &.{ xs[0..1024], "|", xs[0..1024] });
+    const digits = try arena.alloc(u8, 8192);
+    @memset(digits, '7');
+    const held_openers = try std.mem.concat(arena, u8, &.{ "text | ", openers.items });
+    var table: std.ArrayListUnmanaged(u8) = .empty;
+    for ([_][]const u8{ "a", "-", "b", "c" }) |cell| {
+        try table.append(arena, '|');
+        for (0..128) |_| try table.appendSlice(arena, try std.mem.concat(arena, u8, &.{ cell, "|" }));
+        try table.append(arena, '\n');
+    }
+    var runs: std.ArrayListUnmanaged(u8) = .empty;
+    for (1..32) |k| {
+        for (0..k) |_| try runs.append(arena, '`');
+        try runs.appendSlice(arena, "x ");
+    }
     const verbose = environment(arena, "MARKDOWN_GATES") != null;
     const Row = struct {
         name: []const u8,
@@ -1160,6 +1192,8 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
         /// Sent bytes: an opener drawn as closed (B) that never closes is drawn again, literal,
         /// when its leaf closes (the design's gate: at most 2x on this row).
         sent_factor: u64 = 1,
+        /// Display bytes copied into buffers (tail writes, comparisons, holds): at most 2x.
+        assembled_factor: u64 = 2,
     };
     const rows = [_]Row{
         .{ .name = "list.md, 30-byte appends", .parts = try split(arena, try fixture(arena, "fixture list"), 30), .display_factor = 2 },
@@ -1178,13 +1212,24 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
         .{ .name = "spaces in a code span, 1-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"`a"}, try split(arena, spaces, 1), &.{"`\n"} }) },
         // The leaf's close writes it again from a whole parse (expired openers show literal).
         .{ .name = "openers that never close, 3-byte appends", .parts = try split(arena, openers.items, 3), .display_factor = 4, .sent_factor = 2 },
+        .{ .name = "a 64 KiB word, 1-byte appends", .parts = try split(arena, word, 1) },
+        .{ .name = "a 64 KiB word, 30-byte appends", .parts = try split(arena, word, 30) },
+        // The cut at a held pipe is drawn once more when the pipe arrives.
+        .{ .name = "a pipe between two words, 1-byte appends", .parts = try split(arena, piped, 1), .display_factor = 4 },
+        .{ .name = "8,192 digits, 1-byte appends", .parts = try split(arena, digits, 1) },
+        .{ .name = "8,192 digits, 30-byte appends", .parts = try split(arena, digits, 30) },
+        .{ .name = "a held pipe before openers that never close, 30-byte appends", .parts = try split(arena, held_openers, 30), .display_factor = 4, .sent_factor = 2 },
+        .{ .name = "128-column table rows, 1-byte appends", .parts = try split(arena, table.items, 1) },
+        // No run closes: each opener drawn as a code span reverts when the leaf closes.
+        .{ .name = "31 different backtick runs, 1-byte appends", .parts = try split(arena, runs.items, 1), .sent_factor = 2 },
         .{ .name = "se + s_ with the filter", .options = .{ .hook = true, .hook_filter = "ses_" }, .parts = &.{ "see se", "s_abc now\n" } },
     };
+    var over = false;
     for (rows) |row| {
         const w = try work(row.options, row.parts);
         const c = w.counters;
         const n = w.byte_count;
-        if (verbose) std.debug.print("{s}: {d} bytes in {d} appends; line {d}, block {d}, hook {d}, inline {d}, display {d}, sent {d}\n", .{ row.name, n, w.append_count, c.line_byte_visits, c.block_byte_visits, c.hook_byte_visits, c.inline_byte_visits, c.display_byte_visits, c.tail_write_bytes });
+        if (verbose) std.debug.print("{s}: {d} bytes in {d} appends; line {d}, block {d}, hook {d}, inline {d}, display {d}, assembled {d}, sent {d}\n", .{ row.name, n, w.append_count, c.line_byte_visits, c.block_byte_visits, c.hook_byte_visits, c.inline_byte_visits, c.display_byte_visits, c.display_assembled_bytes, c.tail_write_bytes });
         // Each counter, where its bytes are read: the line scanner reads each byte once (and the
         // last byte again per append, a pending carriage return); the filter search reads new
         // bytes plus its overlap per append.
@@ -1196,15 +1241,16 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
             .{ "inline", c.inline_byte_visits, row.inline_factor * n + 64 },
             .{ "display", c.display_byte_visits, row.display_factor * n + 64 },
             .{ "sent", c.tail_write_bytes, row.sent_factor * n + 64 },
+            .{ "assembled", c.display_assembled_bytes, row.assembled_factor * n + 64 },
         };
         for (bounds) |bound| {
-            std.testing.expect(bound[1] <= bound[2]) catch |err| {
-                std.debug.print("{s}: {s} counter {d} above {d}\n", .{ row.name, bound[0], bound[1], bound[2] });
-                return err;
-            };
+            if (bound[1] <= bound[2]) continue;
+            std.debug.print("{s}: {s} counter {d} above {d}\n", .{ row.name, bound[0], bound[1], bound[2] });
+            over = true;
         }
         if (row.options.hook) try std.testing.expect(w.hooked);
     }
+    try std.testing.expect(!over);
     // Each counter counts: a small document's exact work.
     const small = try work(.{}, &.{ "ab *c", "d* e\n" });
     // Each byte once, and the first append's last byte again (it may be a carriage return).
@@ -1294,6 +1340,57 @@ test "Markdown stream: a leaf that changes kind or loses lines keeps its live di
     }
     // An open math span leaves a backslash before a line break untokenized: B draws the break.
     try std.testing.expect(try streamAgreesParts(arena, "math kinds", try split(arena, "x $\\\n]", 1)));
+    // opus-7: the live leaf leaves a paragraph the pending line ends; that paragraph's node
+    // gets its final display (every node is checked against read_leaf after each append).
+    try std.testing.expect(try streamAgreesParts(arena, "kinds", &.{ "- 2*3 = 6\n", "- next", "\n" }));
+    try std.testing.expect(try streamAgreesParts(arena, "kinds", &.{ "- run `ls | grep x` now\n", "- next", "\n" }));
+    try std.testing.expect(try streamAgreesParts(arena, "kinds", &.{ "- next\n", "Para with a | pipe\n", "# Heading", "\n" }));
+    // opus-9: a cell of the pending row that shows a filter match is hooked in that frame.
+    {
+        var f: Fixture = undefined;
+        try f.init(.{ .hook = true, .hook_filter = "ses_" });
+        defer f.deinit();
+        for ([_][]const u8{ "| a | b |\n| --- | --- |\n", "| ses", "_1 | x |" }) |part| try f.doc.append(part);
+        var hooked: [2]bool = undefined;
+        var n: usize = 0;
+        for (f.doc.blocks.items) |b| {
+            if (b.kind != .table_cell or !b.flags.open) continue;
+            hooked[n] = b.flags.hooked;
+            n += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 2), n);
+        try std.testing.expectEqual([2]bool{ true, false }, hooked);
+    }
+    // bigboi round 2: closing a code span takes back no drawn space (its leading space is not
+    // drawn while it may be stripped): each display starts with the one before.
+    {
+        var f: Fixture = undefined;
+        try f.init(.{});
+        defer f.deinit();
+        var previous: []const u8 = "";
+        for ([_][]const u8{ "z `", " foo", " `", " end" }) |part| {
+            try f.doc.append(part);
+            const shown = try arena.dupe(u8, (try f.doc.readLeaf(arena, 0)).bytes.items);
+            try std.testing.expect(std.mem.startsWith(u8, shown, previous));
+            previous = shown;
+        }
+        try std.testing.expectEqualStrings("z foo end", previous);
+    }
+    // opus-8, bigboi: a paragraph after its definitions shows once a line decides them.
+    for ([_]struct { []const []const u8, []const u8 }{
+        .{ &.{ "[k]: /u\n", "normal\n" }, "normal" },
+        .{ &.{ "intro\n\n[x]: /u\n", "more text", " that goes on\n", "and on" }, "more text that goes on\nand on" },
+        .{ &.{ "[Note]: this is not a definition\n", "more\n" }, "[Note]: this is not a definition\nmore" },
+    }) |row| {
+        var f: Fixture = undefined;
+        try f.init(.{});
+        defer f.deinit();
+        for (row[0]) |part| try f.doc.append(part);
+        const last: u32 = @intCast(f.doc.blocks.items.len - 1);
+        try std.testing.expect(f.doc.blocks.items[last].flags.open);
+        try std.testing.expectEqualStrings(row[1], (try f.doc.readLeaf(arena, last)).bytes.items);
+        try std.testing.expect(try streamAgreesParts(arena, "kinds", row[0]));
+    }
     // opus-4 (a): definitions leave the paragraph the next one's live text would follow; (b) a
     // pending table row latches each of its cells that holds the filter.
     try std.testing.expect(try streamAgreesParts(arena, "kinds", &.{ "[x]: /u\n\nnext para\n", "more [x]" }));
@@ -1305,7 +1402,8 @@ test "Markdown changes: a late definition lists again the paragraph it changes" 
     var f: Fixture = undefined;
     try f.init(.{});
     defer f.deinit();
-    try f.doc.append("see [x]\n\nother\n\n");
+    // `[y]` keeps the leaf UNRESOLVED, so only the definition's use lists it (opus-10).
+    try f.doc.append("see [x] [y]\n\nother\n\n");
     var out: [8]Doc.Change = undefined;
     _ = f.doc.readChanges(&out);
     try f.doc.append("[x]: /u\n\n");
@@ -1314,9 +1412,20 @@ test "Markdown changes: a late definition lists again the paragraph it changes" 
     try std.testing.expectEqual(@as(u32, 0), out[0].index);
     try std.testing.expectEqual(markdown.none, read.removed_from_index);
     // A replace that changes only a definition's target lists the leaf that uses it (bigboi-3).
-    try f.doc.set("see [x]\n\nother\n\n[x]: /w\n\n");
+    try f.doc.set("see [x] [y]\n\nother\n\n[x]: /w\n\n");
     const replaced = f.doc.readChanges(&out);
     try std.testing.expectEqual(@as(u32, 1), replaced.count);
+    try std.testing.expectEqual(@as(u32, 0), out[0].index);
+    // Two targets that change with the same URL pool (`/a` `/b/c` to `/a/b` `/c`): the chunks
+    // pick other ranges of it (bigboi round 2).
+    var g: Fixture = undefined;
+    try g.init(.{});
+    defer g.deinit();
+    try g.doc.append("[x] [y]\n\n[x]: /a\n[y]: /b/c\n\n");
+    _ = g.doc.readChanges(&out);
+    try g.doc.set("[x] [y]\n\n[x]: /a/b\n[y]: /c\n\n");
+    const pooled = g.doc.readChanges(&out);
+    try std.testing.expectEqual(@as(u32, 1), pooled.count);
     try std.testing.expectEqual(@as(u32, 0), out[0].index);
 }
 
