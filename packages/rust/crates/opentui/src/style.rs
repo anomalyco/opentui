@@ -50,17 +50,18 @@ const ANSI16: [u32; 16] = [
 ];
 
 const fn ansi256(index: u8) -> (u8, u8, u8) {
-    const fn level(n: u8) -> u8 {
-        if n == 0 { 0 } else { (sys::OT_COLOR_CUBE_BASE + sys::OT_COLOR_CUBE_STEP * n as u32) as u8 }
+    const fn level(n: u32) -> u8 {
+        (sys::OT_COLOR_CUBE_BASE + sys::OT_COLOR_CUBE_STEP * n) as u8
     }
+    const LEVELS: [u8; 6] = [0, level(1), level(2), level(3), level(4), level(5)];
     match index {
         0..=15 => {
             let rgb = ANSI16[index as usize];
             ((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
         }
         16..=231 => {
-            let cube = index - 16;
-            (level(cube / 36), level(cube / 6 % 6), level(cube % 6))
+            let cube = (index - 16) as usize;
+            (LEVELS[cube / 36], LEVELS[cube / 6 % 6], LEVELS[cube % 6])
         }
         _ => {
             let value = (sys::OT_COLOR_GRAY_BASE + (index - 232) as u32 * sys::OT_COLOR_GRAY_STEP) as u8;
