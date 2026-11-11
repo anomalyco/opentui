@@ -63,9 +63,11 @@ jobs:
       - name: Run linter
         run: bun run lint:ci
 
-      # Copies of build facts (targets, toolchain versions) against their owners.
+      # Copies of build facts (targets, toolchain versions) and the API index against their sources.
       - name: Check copies against their sources
-        run: bun run check:sources
+        run: |
+          bun run check:sources
+          bun run --cwd packages/web api:index
 
   checks-complete:
     name: Format and Lint
