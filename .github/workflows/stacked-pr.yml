@@ -42,7 +42,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.1
+          bun-version-file: package.json
 
       - name: Setup Zig
         if: steps.changes.outputs.build_native == 'true'

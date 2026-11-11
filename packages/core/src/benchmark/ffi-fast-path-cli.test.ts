@@ -41,6 +41,7 @@ test("stress output cannot be nested under its runtime build directory", () => {
   const copiedScript = join(benchmarkDir, "ffi-fast-path-stress.ts")
   mkdirSync(benchmarkDir, { recursive: true })
   cpSync(join(import.meta.dir, "ffi-fast-path-stress.ts"), copiedScript)
+  cpSync(join(import.meta.dir, "../../../../scripts/node26.mjs"), join(root, "scripts/node26.mjs"))
   const canonicalBenchmarkDir = realpathSync(benchmarkDir)
   const script = join(canonicalBenchmarkDir, "ffi-fast-path-stress.ts")
 
