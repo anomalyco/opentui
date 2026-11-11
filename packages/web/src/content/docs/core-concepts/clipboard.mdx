@@ -78,7 +78,7 @@ The composed service owns the host service passed to `createClipboard()`. The re
 | `terminal-only`  | Terminal only                                                     | Terminal only                              |
 | `host-only`      | Host only                                                         | Skipped unless `allowRemoteHost` is `true` |
 | `best-available` | Host first, then the terminal if the host is unsupported or fails | Terminal only                              |
-| `all-available`  | Both concurrently                                                 | Terminal, plus host with `allowRemoteHost` |
+| `all-available`  | Host first, then the terminal when the host settles               | Terminal, plus host with `allowRemoteHost` |
 
 Skipped destinations report `{ status: "not-attempted" }` in the result.
 
