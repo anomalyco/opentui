@@ -458,8 +458,9 @@ pub const Text = struct {
     scroll_x: f64 = 0,
     scroll_y: f64 = 0,
     pool_next: ?*Text = null,
-    /// How the view mapped cells to text when paint last drew it.
+    /// How the view mapped cells to text when paint last drew it, and the frame that drew it.
     painted: ?Mapping = null,
+    painted_frame: u64 = 0,
 
     /// What decides which grapheme a cell of the view shows, besides the node's place on screen.
     pub const Mapping = struct {
@@ -2987,7 +2988,8 @@ pub const Context = struct {
         const text = node.text orelse return error.WrongKind;
         // Only what the latest frame painted: the node's cells in that frame, and its view as drawn then.
         const area = node.owner.paintedArea(node) orelse return null;
-        if (!std.meta.eql(text.painted, text.mapping())) return null;
+        // A stamp from an attempt that did not finish describes cells that frame never showed.
+        if (text.painted_frame > area.frame or !std.meta.eql(text.painted, text.mapping())) return null;
         const clip = area.clip;
         if (x < clip.x or y < clip.y or x - @as(i64, clip.x) >= clip.width or y - @as(i64, clip.y) >= clip.height) return null;
         const hit = text.view.graphemeAtCell(@intCast(@as(i64, x) - area.x), @intCast(@as(i64, y) - area.y)) orelse return null;

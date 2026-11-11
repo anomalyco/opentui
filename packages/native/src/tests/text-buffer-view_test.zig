@@ -696,7 +696,9 @@ test "TextBufferView graphemeAtCell names the grapheme a cell draws, and none fo
             try std.testing.expectEqual(expected, view.graphemeAtCell(cell[0], cell[1]));
         }
     }
-    // An edit the view has not prepared for answers nothing, rather than laying the lines out again.
+    // A wrap change or an edit the view has not prepared for answers nothing, rather than laying the lines out again.
+    view.setWrapMode(.char);
+    try std.testing.expectEqual(null, view.graphemeAtCell(0, 0));
     try tb.setText("changed");
     try std.testing.expectEqual(null, view.graphemeAtCell(0, 0));
 }

@@ -2670,14 +2670,20 @@ pub const Scene = struct {
 
     /// Where the latest finished frame painted a member: its top-left cell and the cells it could draw. Null when
     /// that frame did not paint it.
-    pub fn paintedArea(self: *const Scene, node: *const Node) ?struct { x: i64, y: i64, clip: buffer.ClipRect } {
-        if (self.finished_frame == 0 or self.records_frame != self.finished_frame) return null;
-        const found = self.recordOf(node, self.records_frame, self.records.items) orelse return null;
+    pub fn paintedArea(self: *const Scene, node: *const Node) ?struct { x: i64, y: i64, clip: buffer.ClipRect, frame: u64 } {
+        if (self.finished_frame == 0) return null;
+        // A failed attempt leaves its own records, not the finished frame's, in `records`.
+        const found = (if (self.records_frame == self.finished_frame)
+            self.recordOf(node, self.records_frame, self.records.items)
+        else if (self.presented_records_frame == self.finished_frame)
+            self.recordOf(node, self.presented_records_frame, self.presented_records.items)
+        else
+            null) orelse return null;
         const cells = cellLayout(found.inputs.layout);
         const x: i32 = @intFromFloat(cells.screenX);
         const y: i32 = @intFromFloat(cells.screenY);
         const clip = intersection(.{ .x = x, .y = y, .width = @intFromFloat(cells.width), .height = @intFromFloat(cells.height) }, found.inputs.clip);
-        return .{ .x = x, .y = y, .clip = clip };
+        return .{ .x = x, .y = y, .clip = clip, .frame = self.finished_frame };
     }
 
     fn recordOf(_: *const Scene, node: *const Node, frame: u64, records: []const Record) ?Record {
@@ -2983,6 +2989,8 @@ pub const Scene = struct {
         if (image_state) |state| try beginImagePaint(state, cells);
         try playPhase(owner, target, surface, scissor, entry.opacity, phases, api.OT_SCENE_RECORD_PHASE_BEFORE);
         if (phases.hooks & api.OT_SCENE_HOOK_RENDER_SELF != 0) {
+            // The hook replaces the body: the text's glyphs are not on screen.
+            if (node.text) |text| text.painted = null;
             try playPhase(owner, target, surface, scissor, entry.opacity, phases, api.OT_SCENE_RECORD_PHASE_SELF);
         } else try self.paintNode(owner, cli, entry, cells);
         try playPhase(owner, target, surface, scissor, entry.opacity, phases, api.OT_SCENE_RECORD_PHASE_AFTER);
@@ -3041,7 +3049,11 @@ pub const Scene = struct {
             const hit = intersection(.{ .x = x, .y = y, .width = width, .height = height }, entry.clip);
             if (hit.width != 0 and hit.height != 0) {
                 try target.drawTextBufferChecked(text.view, x, y);
-                text.painted = text.mapping();
+                // Fully transparent text draws no glyph. A redraw of the same mapping keeps the frame it was
+                // first drawn in, which a failed attempt's redraw must not move.
+                const painted = if (entry.opacity > 0) text.mapping() else null;
+                if (!std.meta.eql(text.painted, painted)) text.painted_frame = self.attempt.?.frame_id;
+                text.painted = painted;
             }
         } else if (node.kind == api.OT_SCENE_TEXT_VIEW) {
             const view = node.control.text_view.view orelse return;

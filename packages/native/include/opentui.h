@@ -1040,7 +1040,9 @@ ot_status ot_scene_get_text_lines(ot_context *, const ot_handle *node, uint32_t 
  * finished frame drew at screen cell (x, y) starts. UINT32_MAX when that frame did not
  * paint the node, when its text or view options changed since, and when the cell lies
  * outside the node's painted cells or shows no whole grapheme: padding, a truncation
- * ellipsis, or a wide grapheme an edge cuts. It never lays text out, and does not check
+ * ellipsis, a wide grapheme an edge cuts, zero opacity, or a RENDER_SELF hook's body
+ * in place of the text. A failed paint attempt leaves the answers of the frame before
+ * it, except for nodes it drew. It never lays text out, and does not check
  * what covers the cell; ot_scene_hit_test does. Follows the text getter rules. */
 ot_status ot_scene_get_text_byte_at(ot_context *, const ot_handle *node, int32_t x, int32_t y, uint32_t *out_byte);
 /* OT_LAYOUT_PUBLIC copies local cell geometry from the node's latest preparation refresh.
