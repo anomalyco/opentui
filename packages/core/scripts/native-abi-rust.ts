@@ -139,11 +139,9 @@ export function generateRustABI(abi: HeaderABI, headerBytes: Uint8Array): string
 
   // The ABI description has constant values only; the header spells 64-bit ones with UINT64_C, signed ones with INT32_C.
   const wideConstants = new Set([...headerText.matchAll(/^#define\s+(\w+)\s+UINT64_C\(/gm)].map((match) => match[1]))
-  const signedConstants = new Set(
-    [...headerText.matchAll(/^#define\s+(\w+)\s+\(?-?INT32_C\(/gm)].map((match) => match[1]),
-  )
+  const signedConstants = new Set([...headerText.matchAll(/^#define\s+(\w+)\s+INT32_C\(/gm)].map((match) => match[1]))
   for (const [name, value] of Object.entries(abi.constants)) {
-    const type = signedConstants.has(name) ? "i32" : wideConstants.has(name) ? "u64" : "u32"
+    const type = value < 0 || signedConstants.has(name) ? "i32" : wideConstants.has(name) ? "u64" : "u32"
     lines.push(`pub const ${name}: ${type} = ${value};`)
   }
   lines.push("")
