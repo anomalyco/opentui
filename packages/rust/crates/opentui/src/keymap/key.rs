@@ -169,7 +169,7 @@ fn named_code(code: KeyCode) -> &'static str {
 
 /// Core's names for the Kitty functional keys this crate reports as [`KeyCode::Other`].
 fn other_key_name(code: u32) -> String {
-    code.checked_sub(57428)
+    code.checked_sub(crate::sys::OT_INPUT_KEY_MEDIA_PLAY)
         .and_then(|index| KITTY_KEY_NAMES.get(index as usize))
         .map_or_else(|| format!("key{code}"), |name| (*name).to_owned())
 }

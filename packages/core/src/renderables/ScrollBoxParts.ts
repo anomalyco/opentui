@@ -187,7 +187,8 @@ export class ScrollBoxViewport extends ScrollBoxSizedPart {
   }
 
   private setPadding(key: string, value: number | null | undefined): void {
-    if (value != null && (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 0xffff)) {
+    const max = nativeConstants.OT_SCENE_SCROLL_PADDING_MAX
+    if (value != null && (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > max)) {
       throw new RangeError("ScrollBox viewport padding must be a whole number of cells")
     }
     if (value == null) delete this.paddings[key]

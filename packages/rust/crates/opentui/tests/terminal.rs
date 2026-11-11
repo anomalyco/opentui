@@ -219,6 +219,9 @@ fn keys_encode_in_the_programs_keyboard_mode() {
         (3, b"\x1b[?62c\x1b", "\x1b[27u"),
         (3, b"\x1b[97;3u", "\x1b[97;3u"),
         (3, b"\x1b[97;9u", "\x1b[97;9u"),
+        // Kitty Meta goes as Alt: the emulator has no Meta.
+        (0, b"\x1b[97;33u", "\x1ba"),
+        (3, b"\x1b[97;33u", "\x1b[97;3u"),
         // A legacy line feed is Ctrl+J to the program.
         (0, b"\n", "\n"),
         (1, b"\n", "\x1b[106;5u"),

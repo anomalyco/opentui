@@ -124,7 +124,7 @@ pub const Info = extern struct {
 };
 
 pub const Limits = struct {
-    max_encoded_bytes: u64 = 64 * 1024 * 1024,
+    max_encoded_bytes: u64 = api.OT_IMAGE_ENCODED_BYTES_MAX,
     max_width: u32 = 16_384,
     max_height: u32 = 16_384,
     max_pixels: u64 = 25_000_000,

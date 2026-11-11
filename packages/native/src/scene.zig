@@ -1375,7 +1375,7 @@ pub const Scene = struct {
         if (node.kind != api.OT_SCENE_BOX) return error.WrongKind;
         if (options.axes > api.OT_SCENE_SCROLL_X | api.OT_SCENE_SCROLL_Y or options.follow > api.OT_SCENE_SCROLL_FOLLOW_RIGHT) return error.InvalidOptions;
         for (options.padding) |padding| {
-            if (!(padding >= 0 and padding <= 65535) or @trunc(padding) != padding) return error.InvalidOptions;
+            if (!(padding >= 0 and padding <= @as(f32, api.OT_SCENE_SCROLL_PADDING_MAX)) or @trunc(padding) != padding) return error.InvalidOptions;
         }
         for (options.fills) |fill| if (fill) |rgba| try buffer.validateColor(rgba);
         for (options.bars) |bar| {
