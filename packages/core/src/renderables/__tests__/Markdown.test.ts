@@ -1638,7 +1638,7 @@ test("streaming structured list updates keep previous item text visible while hi
   expect(finalFrame).toContain("- gamma")
 })
 
-test("streaming nested structured list updates keep previous nested text visible while highlighting", async () => {
+test("streaming nested structured list updates show the new nested text while highlighting", async () => {
   const mockTreeSitterClient = new MockTreeSitterClient()
   const initialContent = `1. First ordered item with \`inline code\`.
 2. Second ordered item before a nested list:
@@ -1693,8 +1693,9 @@ test("streaming nested structured list updates keep previous nested text visible
   expect(framesBeforeHighlight.length).toBeGreaterThan(0)
   for (const frame of framesBeforeHighlight) {
     expect(frame).toContain("2. Second ordered item before a nested list:")
-    expect(frame).toContain("- Nested bullet with a long phrase.")
-    expect(frame).toContain("- Nested bullet before fenced co")
+    // An updated item shows its preview, not its last highlight.
+    expect(frame).toContain("- Nested bullet with a long phrase that should wrap")
+    expect(frame).toContain("- Nested bullet before fenced code:")
   }
 
   expect(mockTreeSitterClient.isHighlighting()).toBe(true)
@@ -1883,6 +1884,80 @@ test("simple blockquote", async () => {
     │ This is a quote
     │ spanning multiple lines"
   `)
+})
+
+// A quote shows its blocks: prose stays prose, a fence is a code block.
+test.each([
+  ["> a\n>\n> b", "│ a\n│\n│ b"],
+  [">", "│"],
+  ["> # Title\n> text\n> ```\n> **raw**\n> ```", "│ Title\n│ text\n│ **raw**"],
+  ["> - one\n> - two", "│ - one\n│ - two"],
+  ["> outer\n>\n> > inner", "│ outer\n│\n│ │ inner"],
+])("blockquote %j renders its child blocks", async (markdown, expected) => {
+  expect(await renderMarkdown(markdown)).toBe("\n" + expected)
+})
+
+test.each(["coalesced", "top-level"] as const)(
+  "code-block renderers reach fences inside quotes and top-level lists (%s)",
+  async (internalBlockMode) => {
+    const seen: string[] = []
+    const md = createMarkdownRenderable({
+      // The quoted fence names no renderer's language until the first update.
+      content:
+        "> quoted\n> ```mermai\n> in quote\n> ```\n> ```text\n> as code\n> ```\n\n- item\n\n  ```mermaid\n  in list\n  ```",
+      syntaxStyle,
+      internalBlockMode,
+      renderNode: createMarkdownCodeBlockRenderer({
+        mermaid: (token) => {
+          seen.push(token.text)
+          return new TextRenderable(renderer, { content: `diagram ${token.text}` })
+        },
+        // A renderer's default result stays the plain code block.
+        text: (_token, context) => context.defaultRender(),
+      }),
+    })
+    renderer.root.add(md)
+    await renderMarkdownRenderable(md)
+
+    expect(captureFrame()).toContain("│ as code")
+    // Coalesced lists are prose, so only top-level lists hold code blocks.
+    expect(captureFrame().includes("diagram in list")).toBe(internalBlockMode === "top-level")
+
+    // A code block becomes the renderer's, and the renderer's result is replaced, as the fence changes.
+    for (const [from, to, shown] of [
+      ["mermai\n", "mermaid\n", "in quote"],
+      ["in quote", "in quote 2", "in quote 2"],
+    ]) {
+      seen.length = 0
+      md.content = md.content.replace(from, to)
+      await renderMarkdownRenderable(md)
+      expect(captureFrame()).toContain(`│ diagram ${shown}`)
+      expect(seen).toEqual([shown])
+    }
+  },
+)
+
+test("streamed quote text shows in the quote style before it highlights", async () => {
+  const quoteColor = RGBA.fromValues(0.25, 0.5, 0.75, 1)
+  const style = SyntaxStyle.fromStyles(
+    { default: { fg: RGBA.fromValues(1, 1, 1, 1) }, "markup.quote": { fg: quoteColor, italic: true } },
+    renderer.nativeScene,
+  )
+  const md = createMarkdownRenderable({
+    content: "> quoted *text*",
+    syntaxStyle: style,
+    streaming: true,
+    internalBlockMode: "top-level",
+    treeSitterClient: createMockTreeSitterClient(),
+  })
+  renderer.root.add(md)
+  await renderOnce()
+
+  const spans = captureSpans()
+  expect(captureFrame()).toContain("│ quoted text")
+  const span = findSpanContaining(spans, "quoted")
+  expect(span?.fg?.toInts()).toEqual(quoteColor.toInts())
+  expect((span?.attributes ?? 0) & TextAttributes.ITALIC).toBe(TextAttributes.ITALIC)
 })
 
 test("blockquote uses markup.quote style for text and conceal style for bar", async () => {
@@ -2555,13 +2630,25 @@ test("hyperlink capability changes preserve custom table content", async () => {
   }
 })
 
-for (const wrapped of [false, true]) {
-  test(`hyperlink capability changes refresh nested prose and tables in ${wrapped ? "wrapped " : ""}top-level lists`, async () => {
+for (const [container, wrapped] of [
+  ["list", false],
+  ["list", true],
+  ["quote", false],
+] as const) {
+  test(`hyperlink capability changes refresh nested prose and tables in ${wrapped ? "wrapped " : ""}top-level ${container}s`, async () => {
     setRendererCapabilities(renderer, { hyperlinks: false })
+    const prefix = container === "list" ? ["- ", "  "] : ["> ", "> "]
     const md = createMarkdownRenderable({
       id: "markdown-capability-nested-table",
-      content:
-        "- [Before](https://example.com/prose)\n\n  | Link |\n  |---|\n  | [Nested](https://example.com/nested) |",
+      content: [
+        "[Before](https://example.com/prose)",
+        "",
+        "| Link |",
+        "|---|",
+        "| [Nested](https://example.com/nested) |",
+      ]
+        .map((line, index) => (index === 0 ? prefix[0] : line ? prefix[1] : prefix[1].trimEnd()) + line)
+        .join("\n"),
       syntaxStyle,
       internalBlockMode: "top-level",
       tableOptions: { widthMode: "content" },
@@ -2580,7 +2667,7 @@ for (const wrapped of [false, true]) {
 
     const block = md._blockStates[0]!.renderable
     const list = wrapped ? block.getChildren()[0]! : block
-    const content = list.getChildren()[0]!.getChildren()[1]!
+    const content = container === "list" ? list.getChildren()[0]!.getChildren()[1]! : list
     const prose = content.getChildren()[0]!
     const table = content.getChildren()[1]!
     expect(prose).toBeInstanceOf(CodeRenderable)
@@ -2593,7 +2680,7 @@ for (const wrapped of [false, true]) {
 
     expect(md._blockStates[0]!.renderable).toBe(block)
     expect(wrapped ? block.getChildren()[0] : block).toBe(list)
-    expect(list.getChildren()[0]!.getChildren()[1]).toBe(content)
+    if (container === "list") expect(list.getChildren()[0]!.getChildren()[1]).toBe(content)
     expect(content.getChildren()[0]).toBe(prose)
     expect(content.getChildren()[1]).toBe(table)
     expect(captureFrame()).not.toContain("https://example.com/")
@@ -2610,7 +2697,7 @@ for (const wrapped of [false, true]) {
 
     expect(md._blockStates[0]!.renderable).toBe(block)
     expect(wrapped ? block.getChildren()[0] : block).toBe(list)
-    expect(list.getChildren()[0]!.getChildren()[1]).toBe(content)
+    if (container === "list") expect(list.getChildren()[0]!.getChildren()[1]).toBe(content)
     expect(content.getChildren()[0]).toBe(prose)
     expect(content.getChildren()[1]).toBe(table)
     expect(captureFrame()).toContain("Before (https://example.com/prose)")

@@ -303,6 +303,8 @@ export class MarkdownRenderable extends Renderable {
     this.addMarkdownLinkHighlights(highlights, context.content)
   private _linkifyMarkdownChunks: OnChunksCallback = detectLinks
   private _ownedStructuredRenderables = new WeakSet<Renderable>()
+  // The base highlight of the block whose preview is being built (quote text).
+  private _previewBase?: string
 
   private handleCapabilities(): void {
     if (!this._renderNode && !this._content.includes("]")) return
@@ -310,55 +312,80 @@ export class MarkdownRenderable extends Renderable {
     const previousHighlight = this._highlightMarkdownLinks
     this._highlightMarkdownLinks = (highlights, context) => this.addMarkdownLinkHighlights(highlights, context.content)
 
+    this.visitShownBlocks((renderable, token, state) => {
+      if (this.isOwnedTable(renderable, token)) {
+        this.refreshTable(renderable, token, state)
+        return false
+      }
+
+      if (
+        renderable instanceof CodeRenderable &&
+        renderable.filetype === "markdown" &&
+        renderable.onChunks === this._linkifyMarkdownChunks &&
+        renderable.onHighlight === previousHighlight
+      ) {
+        if (this._streaming && token) {
+          renderable.initialStyledText = this.createInitialStyledText(token, renderable.baseHighlight)
+        }
+        renderable.onHighlight = this._highlightMarkdownLinks
+      }
+      return true
+    })
+
+    this.requestRender()
+  }
+
+  private isOwnedTable(renderable: Renderable, token: MarkedToken | undefined): token is Tokens.Table {
+    return (
+      renderable instanceof TextTableRenderable &&
+      token?.type === "table" &&
+      this._ownedStructuredRenderables.has(renderable)
+    )
+  }
+
+  /** Builds an owned table's cells again, for a change their tokens do not show. */
+  private refreshTable(renderable: Renderable, token: Tokens.Table, state: BlockState): void {
+    const { cache } = this.buildTableContentCache(
+      token,
+      renderable === state.renderable ? state.tableContentCache : undefined,
+      true,
+    )
+    if (!cache) return
+    ;(renderable as TextTableRenderable).content = cache.content
+    if (renderable === state.renderable) state.tableContentCache = cache
+  }
+
+  /** Visits every renderable the blocks show, with the token it shows; `visit` returns false to skip its children. */
+  private visitShownBlocks(
+    visit: (renderable: Renderable, token: MarkedToken | undefined, state: BlockState) => boolean,
+  ): void {
     for (const state of this._blockStates) {
       const renderables: Array<[Renderable, MarkedToken?]> = [[state.renderable, state.token]]
       while (renderables.length > 0) {
         const [renderable, token] = renderables.pop()!
-        if (
-          renderable instanceof TextTableRenderable &&
-          token?.type === "table" &&
-          this._ownedStructuredRenderables.has(renderable)
-        ) {
-          const { cache } = this.buildTableContentCache(
-            token as Tokens.Table,
-            renderable === state.renderable ? state.tableContentCache : undefined,
-            true,
-          )
-          if (cache) {
-            renderable.content = cache.content
-            if (renderable === state.renderable) state.tableContentCache = cache
-          }
-          continue
-        }
+        if (!visit(renderable, token, state)) continue
 
-        if (
-          renderable instanceof CodeRenderable &&
-          renderable.filetype === "markdown" &&
-          renderable.onChunks === this._linkifyMarkdownChunks &&
-          renderable.onHighlight === previousHighlight
-        ) {
-          if (this._streaming && token) renderable.initialStyledText = this.createInitialStyledText(token)
-          renderable.onHighlight = this._highlightMarkdownLinks
-        }
-
-        if (token?.type === "list" && this._ownedStructuredRenderables.has(renderable)) {
+        const owned = this._ownedStructuredRenderables.has(renderable)
+        if (token?.type === "list" && owned) {
           const items = (token as Tokens.List).items
           const rows = renderable.getChildren()
           for (let index = 0; index < items.length; index++) {
             const children = rows[index]?.getChildren()[1]?.getChildren() ?? []
-            const tokens = this.getRenderableListItemTokens(items[index]!)
-            for (let childIndex = 0; childIndex < children.length; childIndex++) {
-              renderables.push([children[childIndex]!, tokens[childIndex]])
-            }
+            const tokens = this.getChildBlockTokens(items[index]!.tokens)
+            children.forEach((child, childIndex) => renderables.push([child, tokens[childIndex]]))
           }
+          continue
+        }
+
+        if (token?.type === "blockquote" && owned) {
+          const tokens = this.getChildBlockTokens(token.tokens)
+          renderable.getChildren().forEach((child, index) => renderables.push([child, tokens[index]]))
           continue
         }
 
         for (const child of renderable.getChildren()) renderables.push([child, token])
       }
     }
-
-    this.requestRender()
   }
 
   protected _contentDefaultOptions = {
@@ -552,6 +579,11 @@ export class MarkdownRenderable extends Renderable {
   }
 
   private createChunk(text: string, group: string, link?: { url: string }): TextChunk {
+    if (this._previewBase) {
+      // A block's base highlight lies under its groups, as the highlighted text has it.
+      const style = this._syntaxStyle.mergeStyles(this._previewBase, ...(group === "default" ? [] : [group]))
+      return { __isChunk: true, text, fg: style.fg, bg: style.bg, attributes: style.attributes, link }
+    }
     const style = this.getStyle(group) || this.getStyle("default")
     return {
       __isChunk: true,
@@ -574,16 +606,21 @@ export class MarkdownRenderable extends Renderable {
     return this.createChunk(text, "default", link)
   }
 
-  private createInitialStyledText(token: MarkedToken): StyledText | undefined {
+  private createInitialStyledText(token: MarkedToken, baseHighlight?: string): StyledText | undefined {
     if (!this._streaming) return undefined
 
     const chunks: TextChunk[] = []
-    if ("tokens" in token && Array.isArray(token.tokens)) {
-      this.renderInlineContent(token.tokens, chunks)
-    }
+    this._previewBase = baseHighlight
+    try {
+      if ("tokens" in token && Array.isArray(token.tokens)) {
+        this.renderInlineContent(token.tokens, chunks)
+      }
 
-    if (chunks.length === 0 && "text" in token && typeof token.text === "string") {
-      this.renderInlineContent(Lexer.lexInline(token.text), chunks)
+      if (chunks.length === 0 && "text" in token && typeof token.text === "string") {
+        this.renderInlineContent(Lexer.lexInline(token.text), chunks)
+      }
+    } finally {
+      this._previewBase = undefined
     }
 
     return chunks.length > 0 ? new StyledText(chunks) : undefined
@@ -845,10 +882,6 @@ export class MarkdownRenderable extends Renderable {
     })
   }
 
-  private getBlockquoteContent(token: MarkedToken): string {
-    return "text" in token && typeof token.text === "string" && token.text ? token.text : " "
-  }
-
   private getBlockquoteBorderColor(): ColorInput {
     return this.getStyle("conceal")?.fg ?? this.getStyle("default")?.fg ?? this._fg ?? "#FFFFFF"
   }
@@ -857,23 +890,18 @@ export class MarkdownRenderable extends Renderable {
     const renderable = new BoxRenderable(this.ctx, {
       id,
       width: "100%",
+      // An empty quote still shows its bar.
+      minHeight: 1,
       border: ["left"],
       borderColor: this.getBlockquoteBorderColor(),
       paddingLeft: 1,
       flexShrink: 0,
       marginBottom,
     })
+    this._ownedStructuredRenderables.add(renderable)
 
     try {
-      renderable.add(
-        this.createMarkdownCodeRenderable(
-          this.getBlockquoteContent(token),
-          `${id}-content`,
-          0,
-          this._linkifyMarkdownChunks,
-          "markup.quote",
-        ),
-      )
+      this.applyChildBlocks(renderable, (token as Tokens.Blockquote).tokens, [], id, "markup.quote")
       return renderable
     } catch (error) {
       try {
@@ -982,23 +1010,7 @@ export class MarkdownRenderable extends Renderable {
         flexShrink: 1,
       })
       row.add(content)
-
-      let pendingMarginTop = 0
-      for (let index = 0; index < input.item.tokens.length; index += 1) {
-        const child = input.item.tokens[index] as MarkedToken | undefined
-        if (!child) continue
-        if (child.type === "checkbox") continue
-        if (child.type === "space") {
-          pendingMarginTop = Math.max(pendingMarginTop, 1)
-          continue
-        }
-        const renderable = this.createListChildRenderable(child, `${input.id}-child-${index}`)
-        if (!renderable) continue
-        renderable.marginTop = child.type === "list" ? 0 : pendingMarginTop
-        pendingMarginTop = 0
-        content.add(renderable)
-      }
-
+      this.applyChildBlocks(content, input.item.tokens, [], input.id)
       return row
     } catch (error) {
       try {
@@ -1024,99 +1036,119 @@ export class MarkdownRenderable extends Renderable {
       return true
     }
 
-    return this.applyListItemChildren(content, input.item, previousItem, input.id)
+    return this.applyChildBlocks(content, input.item.tokens, previousItem?.tokens ?? [], input.id)
   }
 
-  private applyListItemChildren(
-    content: BoxRenderable,
-    item: Tokens.ListItem,
-    previousItem: Tokens.ListItem | undefined,
+  /**
+   * Shows `tokens`, a list item's or quote's blocks, as the children of `content`, updating each existing child in
+   * place where it can. `previousTokens` are the tokens the children show now; prose children get `baseHighlight`.
+   */
+  private applyChildBlocks(
+    content: Renderable,
+    tokens: Token[],
+    previousTokens: Token[],
     id: string,
-  ): boolean {
-    const previousTokens = previousItem ? this.getRenderableListItemTokens(previousItem) : []
+    baseHighlight?: string,
+  ): true {
+    const previous = this.getChildBlockTokens(previousTokens)
     const children = content.getChildren()
     let childIndex = 0
     let pendingMarginTop = 0
 
-    for (let tokenIndex = 0; tokenIndex < item.tokens.length; tokenIndex += 1) {
-      const token = item.tokens[tokenIndex] as MarkedToken | undefined
-      if (!token) continue
+    for (let tokenIndex = 0; tokenIndex < tokens.length; tokenIndex += 1) {
+      const token = tokens[tokenIndex] as MarkedToken
       if (token.type === "checkbox") continue
       if (token.type === "space") {
-        pendingMarginTop = Math.max(pendingMarginTop, 1)
+        pendingMarginTop = 1
         continue
       }
 
       const existing = children[childIndex]
       const childId = `${id}-child-${tokenIndex}`
-
-      const marginTop = token.type === "list" ? 0 : pendingMarginTop
+      const child =
+        (existing && this.applyChildBlock(existing, token, previous[childIndex], childId, baseHighlight)) ??
+        this.createChildBlock(token, childId, baseHighlight)
+      if (!child) continue
+      if (child !== existing) {
+        existing?.destroyRecursively()
+        content.add(child, childIndex)
+      }
+      child.marginTop = token.type === "list" ? 0 : pendingMarginTop
       pendingMarginTop = 0
-
-      if (!existing) {
-        const renderable = this.createListChildRenderable(token, childId)
-        if (!renderable) return false
-        renderable.marginTop = marginTop
-        content.add(renderable, childIndex)
-        childIndex += 1
-        continue
-      }
-
-      if (!this.applyListChildRenderable(existing, token, previousTokens[childIndex], childId)) {
-        return false
-      }
-      existing.marginTop = marginTop
       childIndex += 1
     }
 
-    this.destroyListItemChildrenAfter(content, childIndex)
+    for (let i = children.length - 1; i >= childIndex; i -= 1) {
+      children[i]?.destroyRecursively()
+    }
     return true
   }
 
-  private getRenderableListItemTokens(item: Tokens.ListItem): MarkedToken[] {
-    const tokens: MarkedToken[] = []
-
-    for (const token of item.tokens as MarkedToken[]) {
-      if (token.type === "checkbox" || token.type === "space") continue
-      tokens.push(token)
-    }
-
-    return tokens
+  private getChildBlockTokens(tokens: Token[]): MarkedToken[] {
+    return (tokens as MarkedToken[]).filter((token) => token.type !== "checkbox" && token.type !== "space")
   }
 
-  private applyListChildRenderable(
+  /** The child that shows `token` after updating `renderable` for it, or undefined to build a new one. */
+  private applyChildBlock(
     renderable: Renderable,
     token: MarkedToken,
     previousToken: MarkedToken | undefined,
     id: string,
-  ): boolean {
+    baseHighlight?: string,
+  ): Renderable | undefined {
     if ((token.type === "text" || token.type === "paragraph") && renderable instanceof CodeRenderable) {
-      this.applyMarkdownCodeRenderable(renderable, this.normalizeScrollbackMarkdownBlockRaw(token.raw), 0)
-      return true
+      this.applyMarkdownCodeRenderable(
+        renderable,
+        this.normalizeScrollbackMarkdownBlockRaw(token.raw),
+        0,
+        baseHighlight,
+        this.createInitialStyledText(token, baseHighlight),
+      )
+      return renderable
     }
 
     if (token.type === "list" && renderable instanceof BoxRenderable) {
-      return this.applyListRenderable(renderable, token as Tokens.List, previousToken as Tokens.List | undefined, id)
+      const list = token as Tokens.List
+      return this.applyListRenderable(renderable, list, previousToken as Tokens.List | undefined, id)
+        ? renderable
+        : undefined
     }
 
-    if (token.type === "code" && renderable instanceof CodeRenderable) {
-      this.applyCodeBlockRenderable(renderable, token as Tokens.Code, 0)
-      return true
+    if (token.type === "code") {
+      const custom = this.renderNestedCode(token, id)
+      if (custom || !(renderable instanceof CodeRenderable)) return custom
+      this.applyCodeBlockRenderable(renderable, token, 0)
+      return renderable
     }
 
     if (token.type === "blockquote" && renderable instanceof BoxRenderable) {
-      this.applyBlockquoteRenderable(renderable, token, 0)
-      return true
+      this.applyBlockquoteRenderable(renderable, token, previousToken, 0)
+      return renderable
     }
 
-    return previousToken?.raw === token.raw
+    return previousToken?.raw === token.raw ? renderable : undefined
   }
 
-  private destroyListItemChildrenAfter(content: BoxRenderable, index: number): void {
-    const children = content.getChildren()
-    for (let i = children.length - 1; i >= index; i -= 1) {
-      children[i]?.destroyRecursively()
-    }
+  private createChildBlock(token: MarkedToken, id: string, baseHighlight?: string): Renderable | null {
+    if (token.type === "list") return this.createListRenderable(token as Tokens.List, id)
+    if (token.type === "code") return this.renderNestedCode(token, id) ?? this.createCodeRenderable(token, id)
+    if (token.type === "blockquote") return this.createBlockquoteRenderable(token, id)
+    if (token.type === "hr") return this.createHorizontalRuleRenderable(id)
+    if (token.type === "table") return this.createTableBlock(token as Tokens.Table, id).renderable
+    const raw = this.normalizeScrollbackMarkdownBlockRaw(token.raw)
+    if (!raw) return null
+    const preview = this.createInitialStyledText(token, baseHighlight)
+    return this.createMarkdownCodeRenderable(raw, id, 0, this._linkifyMarkdownChunks, baseHighlight, preview)
+  }
+
+  /** A code-block renderer's result for a fence inside a list or quote, as top-level fences get it. */
+  private renderNestedCode(token: Tokens.Code, id: string): Renderable | undefined {
+    if (!this.isCodeBlockOnlyRenderer()) return undefined
+    const custom = this.renderCustomNode(token, () => ({ renderable: this.createCodeRenderable(token, id) }))
+    if (custom.renderable !== custom.defaultResult?.renderable) return custom.renderable
+    // The default code block is updated in place instead.
+    custom.renderable?.destroyRecursively()
+    return undefined
   }
 
   private applyListItemMarker(row: BoxRenderable, input: ListItemRenderInput, previousItem?: Tokens.ListItem): void {
@@ -1131,34 +1163,6 @@ export class MarkdownRenderable extends Renderable {
     if (!previousItem || marker.chunks[0]?.text !== markerText) {
       marker.content = new StyledText([this.createChunk(markerText, "markup.list")])
     }
-  }
-
-  private createListChildRenderable(token: MarkedToken, id: string): Renderable | null {
-    if (token.type === "text" || token.type === "paragraph") {
-      return this.createMarkdownCodeRenderable(
-        this.normalizeScrollbackMarkdownBlockRaw(token.raw),
-        id,
-        0,
-        this._linkifyMarkdownChunks,
-        undefined,
-        this.createInitialStyledText(token),
-      )
-    }
-    if (token.type === "list") return this.createListRenderable(token as Tokens.List, id)
-    if (token.type === "code") return this.createCodeRenderable(token as Tokens.Code, id)
-    if (token.type === "blockquote") return this.createBlockquoteRenderable(token, id)
-    if (token.type === "hr") return this.createHorizontalRuleRenderable(id)
-    if (token.type === "table") return this.createTableBlock(token as Tokens.Table, id).renderable
-    return token.raw
-      ? this.createMarkdownCodeRenderable(
-          token.raw,
-          id,
-          0,
-          this._linkifyMarkdownChunks,
-          undefined,
-          this.createInitialStyledText(token),
-        )
-      : null
   }
 
   private getHorizontalRuleColor(): ColorInput {
@@ -1219,30 +1223,18 @@ export class MarkdownRenderable extends Renderable {
     renderable.marginBottom = marginBottom
   }
 
-  private applyBlockquoteRenderable(renderable: Renderable, token: MarkedToken, marginBottom: number): void {
+  private applyBlockquoteRenderable(
+    renderable: Renderable,
+    token: MarkedToken,
+    previousToken: MarkedToken | undefined,
+    marginBottom: number,
+  ): void {
     if (!(renderable instanceof BoxRenderable)) return
 
     renderable.borderColor = this.getBlockquoteBorderColor()
     renderable.marginBottom = marginBottom
-
-    const child = renderable.getChildren()[0]
-    if (child instanceof CodeRenderable) {
-      this.applyMarkdownCodeRenderable(child, this.getBlockquoteContent(token), 0, "markup.quote")
-      return
-    }
-
-    for (const existing of renderable.getChildren()) {
-      existing.destroyRecursively()
-    }
-    renderable.add(
-      this.createMarkdownCodeRenderable(
-        this.getBlockquoteContent(token),
-        `${renderable.id}-content`,
-        0,
-        this._linkifyMarkdownChunks,
-        "markup.quote",
-      ),
-    )
+    const previous = previousToken?.type === "blockquote" ? previousToken.tokens : []
+    this.applyChildBlocks(renderable, (token as Tokens.Blockquote).tokens, previous, renderable.id, "markup.quote")
   }
 
   private applyCodeBlockRenderable(renderable: Renderable, token: Tokens.Code, marginBottom: number): void {
@@ -1909,7 +1901,7 @@ export class MarkdownRenderable extends Renderable {
     }
 
     if (token.type === "blockquote") {
-      this.applyBlockquoteRenderable(state.renderable, token, marginBottom)
+      this.applyBlockquoteRenderable(state.renderable, token, forceRefresh ? undefined : state.token, marginBottom)
       return
     }
 
