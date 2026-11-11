@@ -3,21 +3,14 @@ import {
   type BaseRenderable,
   createTextAttributes,
   ImageRenderable,
-  InputRenderable,
-  InputRenderableEvents,
   isRenderable,
   isTextNodeRenderable,
-  isEditBufferRenderable,
   Renderable,
   RootTextNodeRenderable,
-  SelectRenderable,
-  SelectRenderableEvents,
-  TabSelectRenderable,
-  TabSelectRenderableEvents,
+  setRenderableProp,
   TextNodeRenderable,
   TextRenderable,
   TextTableRenderable,
-  VideoRenderable,
   type RenderContext,
   type TextNodeOptions,
 } from "@opentui/core"
@@ -110,7 +103,8 @@ function _insertNode(parent: DomNode, node: DomNode, anchor?: DomNode): void {
     }
   }
 
-  parent.add(node, anchorIndex)
+  // Insert through the wide BaseRenderable contract, which validates children at runtime.
+  ;(parent as BaseRenderable).add(node, anchorIndex)
 
   // Hosts such as LineNumberRenderable ignore children they do not render.
   if (slot && !node.parent) node.destroy()
@@ -230,13 +224,8 @@ const {
   setProperty(node: DomNode, name: string, value: any, prev: any): void {
     if (name.startsWith("on:")) {
       const eventName = name.slice(3)
-      if (value) {
-        node.on(eventName, value)
-      }
-      if (prev) {
-        node.off(eventName, prev)
-      }
-
+      if (prev) node.off(eventName, prev)
+      if (value) node.on(eventName, value)
       return
     }
 
@@ -261,99 +250,6 @@ const {
         log("Id mapped", node.id, "=", value)
         node[name] = value
         break
-      case "focused":
-        if (!(node instanceof Renderable)) return
-        if (value) {
-          node.focus()
-        } else {
-          node.blur()
-        }
-        break
-      case "onChange":
-        let event: string | undefined = undefined
-        if (node instanceof SelectRenderable) {
-          event = SelectRenderableEvents.SELECTION_CHANGED
-        } else if (node instanceof TabSelectRenderable) {
-          event = TabSelectRenderableEvents.SELECTION_CHANGED
-        } else if (node instanceof InputRenderable) {
-          event = InputRenderableEvents.CHANGE
-        }
-        if (!event) break
-
-        if (value) {
-          node.on(event, value)
-        }
-        if (prev) {
-          node.off(event, prev)
-        }
-        break
-      case "onInput":
-        if (node instanceof InputRenderable) {
-          if (value) {
-            node.on(InputRenderableEvents.INPUT, value)
-          }
-
-          if (prev) {
-            node.off(InputRenderableEvents.INPUT, prev)
-          }
-        }
-
-        break
-      case "onSubmit":
-        if (node instanceof InputRenderable) {
-          if (value) {
-            node.on(InputRenderableEvents.ENTER, value)
-          }
-
-          if (prev) {
-            node.off(InputRenderableEvents.ENTER, prev)
-          }
-        } else {
-          // @ts-expect-error todo validate if prop is actually settable
-          node[name] = value
-        }
-        break
-      case "onSelect":
-        if (node instanceof SelectRenderable) {
-          if (value) {
-            node.on(SelectRenderableEvents.ITEM_SELECTED, value)
-          }
-
-          if (prev) {
-            node.off(SelectRenderableEvents.ITEM_SELECTED, prev)
-          }
-        } else if (node instanceof TabSelectRenderable) {
-          if (value) {
-            node.on(TabSelectRenderableEvents.ITEM_SELECTED, value)
-          }
-
-          if (prev) {
-            node.off(TabSelectRenderableEvents.ITEM_SELECTED, prev)
-          }
-        }
-        break
-      case "style":
-        const nextStyle = value ?? {}
-        const previousStyle = prev ?? {}
-        if (isEditBufferRenderable(node) && previousStyle.selectionOccupancy && !nextStyle.selectionOccupancy) {
-          node.selectionOccupancy = undefined
-        }
-        if (node instanceof ImageRenderable || node instanceof VideoRenderable) {
-          for (const prop in previousStyle) {
-            if (Object.prototype.hasOwnProperty.call(nextStyle, prop)) continue
-            if (prop !== "fit" && prop !== "protocol" && prop !== "crop") continue
-            // A video has no protocol, and a removed fit is not reset yet.
-            if (node instanceof ImageRenderable) node[prop] = undefined
-            else if (prop === "crop") node.crop = undefined
-          }
-        }
-        for (const prop in nextStyle) {
-          const propVal = nextStyle[prop]
-          if (propVal === previousStyle[prop]) continue
-          // @ts-expect-error todo validate if prop is actually settable
-          node[prop] = propVal
-        }
-        break
       case "text":
       case "content": {
         if (name === "content" && node instanceof TextTableRenderable) {
@@ -367,8 +263,7 @@ const {
       }
 
       default:
-        // @ts-expect-error todo validate if prop is actually settable
-        node[name] = value
+        setRenderableProp(node, name, value, prev)
     }
   },
 

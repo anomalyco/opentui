@@ -601,7 +601,8 @@ export class DiffRenderable extends Renderable {
       let newLineNum = hunk.newStart
 
       for (const line of hunk.lines) {
-        const firstChar = line[0]
+        // parsePatch keeps a blank line inside a hunk as "", a context line whose space some tools drop.
+        const firstChar = line[0] ?? " "
         const content = line.slice(1)
 
         if (firstChar === "+") {
@@ -704,7 +705,7 @@ export class DiffRenderable extends Renderable {
       let i = 0
       while (i < hunk.lines.length) {
         const line = hunk.lines[i]
-        const firstChar = line[0]
+        const firstChar = line[0] ?? " "
 
         if (firstChar === " ") {
           const content = line.slice(1)
@@ -731,7 +732,7 @@ export class DiffRenderable extends Renderable {
 
           while (i < hunk.lines.length) {
             const currentLine = hunk.lines[i]
-            const currentChar = currentLine[0]
+            const currentChar = currentLine[0] ?? " "
 
             if (currentChar === " " || currentChar === "\\") {
               break

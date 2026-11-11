@@ -1,4 +1,5 @@
 use super::keymap::{IntoShortcut, Shortcut};
+use crate::sys;
 use std::fmt;
 use std::ops::{BitAnd, BitOr, BitOrAssign, Not};
 
@@ -38,14 +39,14 @@ pub struct Modifiers(u8);
 
 impl Modifiers {
     pub const NONE: Self = Self(0);
-    pub const SHIFT: Self = Self(1);
-    pub const ALT: Self = Self(2);
-    pub const CTRL: Self = Self(4);
-    pub const SUPER: Self = Self(8);
-    pub const HYPER: Self = Self(16);
-    pub const META: Self = Self(32);
-    pub const CAPS_LOCK: Self = Self(64);
-    pub const NUM_LOCK: Self = Self(128);
+    pub const SHIFT: Self = Self(sys::OT_INPUT_MOD_SHIFT as u8);
+    pub const ALT: Self = Self(sys::OT_INPUT_MOD_ALT as u8);
+    pub const CTRL: Self = Self(sys::OT_INPUT_MOD_CTRL as u8);
+    pub const SUPER: Self = Self(sys::OT_INPUT_MOD_SUPER as u8);
+    pub const HYPER: Self = Self(sys::OT_INPUT_MOD_HYPER as u8);
+    pub const META: Self = Self(sys::OT_INPUT_MOD_META as u8);
+    pub const CAPS_LOCK: Self = Self(sys::OT_INPUT_MOD_CAPS_LOCK as u8);
+    pub const NUM_LOCK: Self = Self(sys::OT_INPUT_MOD_NUM_LOCK as u8);
 
     pub const fn bits(self) -> u8 {
         self.0

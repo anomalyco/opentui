@@ -6,7 +6,7 @@ import { existsSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSy
 import { availableParallelism, cpus, loadavg, release, tmpdir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { isSupportedNode26Version } from "../../../../scripts/node26.mjs"
+import { isSupportedNode26Version, NODE26_MIN_VERSION } from "../../../../scripts/node26.mjs"
 import { getNativeAssetDescriptor, type NodeAssetTarget } from "../node-asset-target.js"
 import {
   analyzePairedObservations,
@@ -138,7 +138,7 @@ if (process.env.OTUI_ASSET_ROOT || process.env.OPENTUI_LIB_PATH) {
 }
 const nodeRuntime = readNodeRuntime()
 if (!isSupportedNode26Version(nodeRuntime.version)) {
-  throw new Error(`Node v26.4.0 or later is required, got ${nodeRuntime.version}`)
+  throw new Error(`Node ${NODE26_MIN_VERSION} or later is required, got ${nodeRuntime.version}`)
 }
 
 const baseline = createTarget("baseline", baselineRoot)

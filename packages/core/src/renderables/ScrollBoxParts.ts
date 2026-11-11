@@ -30,7 +30,6 @@ import {
   type SceneNodeHandle,
 } from "../zig.js"
 import type { BoxOptions } from "./Box.js"
-import type { VNode } from "./composition/vnode.js"
 import { ScrollBarRenderable, scrollUnitSize, type ArrowOptions, type ScrollUnit } from "./ScrollBar.js"
 import type { ScrollBoxRenderable } from "./ScrollBox.js"
 
@@ -188,7 +187,8 @@ export class ScrollBoxViewport extends ScrollBoxSizedPart {
   }
 
   private setPadding(key: string, value: number | null | undefined): void {
-    if (value != null && (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 0xffff)) {
+    const max = nativeConstants.OT_SCENE_SCROLL_PADDING_MAX
+    if (value != null && (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > max)) {
       throw new RangeError("ScrollBox viewport padding must be a whole number of cells")
     }
     if (value == null) delete this.paddings[key]
@@ -326,11 +326,11 @@ export class ScrollBoxContent extends ScrollBoxSizedPart {
     this.box.viewportCulling = value
   }
 
-  add(obj: Renderable | VNode<any, any[]>, index?: number): number {
+  add(obj: Renderable, index?: number): number {
     return this.box.add(obj, index)
   }
 
-  insertBefore(obj: Renderable | VNode<any, any[]> | unknown, anchor?: Renderable | unknown): number {
+  insertBefore(obj: Renderable, anchor?: Renderable): number {
     return this.box.insertBefore(obj, anchor)
   }
 

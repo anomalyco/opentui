@@ -660,6 +660,11 @@ impl App {
         self.0.frame.get()
     }
 
+    /// Frames finished so far: [`Self::frame_number`] counts the frame being painted from its start.
+    pub(crate) fn painted_frames(&self) -> u64 {
+        self.0.frame.get() - u64::from(self.0.in_frame.get())
+    }
+
     /// The app's clock. Tests advance it manually.
     pub fn now(&self) -> Instant {
         self.0.clock.now()

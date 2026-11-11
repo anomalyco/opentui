@@ -55,4 +55,4 @@ runs:
         path: |
           packages/native/.cache/ffmpeg/prefix
           packages/native/.cache/ffmpeg/downloads
-        key: ffmpeg-v1-${{ runner.os }}-${{ hashFiles('packages/native/scripts/build-ffmpeg.ts') }}
+        key: ffmpeg-v1-${{ runner.os }}-${{ hashFiles('packages/native/scripts/build-ffmpeg.ts', '.zig-version') }}

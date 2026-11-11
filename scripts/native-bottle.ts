@@ -14,6 +14,7 @@ import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import process from "node:process"
 import { fileURLToPath } from "node:url"
+import { variantName, variants, zigOutputName } from "../packages/core/scripts/variants"
 
 // Linked libraries and their separated symbols for CI. Keyed by native inputs, Zig version,
 // and the ReleaseFast target set. Darwin symbol separation needs the original Zig object
@@ -45,46 +46,15 @@ const INPUTS = [
 ] as const
 
 // Output names match packages/native/build.zig. Package and symbol directories match build.ts.
-const BOTTLE_LIBRARIES: ReadonlyArray<{
-  dir: string
-  files: readonly string[]
-  package: string
-  symbols: string
-}> = [
-  { dir: "x86_64-linux", files: ["libopentui.so", "opentui.h"], package: "core-linux-x64", symbols: "linux-x64" },
-  { dir: "aarch64-linux", files: ["libopentui.so", "opentui.h"], package: "core-linux-arm64", symbols: "linux-arm64" },
-  {
-    dir: "x86_64-linux-musl",
-    files: ["libopentui.so", "opentui.h"],
-    package: "core-linux-x64-musl",
-    symbols: "linux-x64-musl",
-  },
-  {
-    dir: "aarch64-linux-musl",
-    files: ["libopentui.so", "opentui.h"],
-    package: "core-linux-arm64-musl",
-    symbols: "linux-arm64-musl",
-  },
-  { dir: "x86_64-macos", files: ["libopentui.dylib", "opentui.h"], package: "core-darwin-x64", symbols: "darwin-x64" },
-  {
-    dir: "aarch64-macos",
-    files: ["libopentui.dylib", "opentui.h"],
-    package: "core-darwin-arm64",
-    symbols: "darwin-arm64",
-  },
-  {
-    dir: "x86_64-windows",
-    files: ["opentui.dll", "opentui.pdb", "opentui.h", "opentui.lib"],
-    package: "core-win32-x64",
-    symbols: "win32-x64",
-  },
-  {
-    dir: "aarch64-windows",
-    files: ["opentui.dll", "opentui.pdb", "opentui.h", "opentui.lib"],
-    package: "core-win32-arm64",
-    symbols: "win32-arm64",
-  },
-]
+const BOTTLE_LIBRARIES = variants.map((variant) => ({
+  dir: zigOutputName(variant),
+  files:
+    variant.platform === "win32"
+      ? ["opentui.dll", "opentui.pdb", "opentui.h", "opentui.lib"]
+      : [variant.platform === "darwin" ? "libopentui.dylib" : "libopentui.so", "opentui.h"],
+  package: `core-${variantName(variant)}`,
+  symbols: variantName(variant),
+}))
 
 interface BottleManifest {
   version: number
@@ -145,7 +115,11 @@ function hashNativeInputs(root: string): string {
   for (const relativePath of nativeInputFiles(root)) {
     hash.update(relativePath)
     hash.update("\0")
-    hash.update(readFileSync(absolute(root, relativePath)))
+    const bytes = readFileSync(absolute(root, relativePath))
+    // The zon's package version follows each release and does not reach the library.
+    hash.update(
+      relativePath === "build.zig.zon" ? bytes.toString().replace(/^ {4}\.version = "[^"\n]*",\n/m, "") : bytes,
+    )
     hash.update("\0")
   }
   return hash.digest("hex")

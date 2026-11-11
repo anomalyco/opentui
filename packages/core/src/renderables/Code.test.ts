@@ -524,6 +524,8 @@ test("CodeRenderable - uses fallback rendering when highlighting throws error", 
     syntaxStyle,
     treeSitterClient: mockClient,
     conceal: false,
+    // Without a chunk callback, the initial text does not outlive a failed highlight.
+    initialStyledText: new StyledText([{ __isChunk: true, text: "initial" }]),
   })
 
   currentRenderer.root.add(codeRenderable)

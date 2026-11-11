@@ -1085,8 +1085,14 @@ registerEnvVar({
 })
 
 // Cursor & mouse pointer style mappings (avoid recreation on each call)
-const CURSOR_STYLE_TO_ID = { block: 0, line: 1, underline: 2, default: 3 } as const
-const CURSOR_ID_TO_STYLE = ["block", "line", "underline", "default"] as const
+const CURSOR_STYLE_TO_ID = {
+  block: nativeConstants.OT_CURSOR_STYLE_BLOCK,
+  line: nativeConstants.OT_CURSOR_STYLE_LINE,
+  underline: nativeConstants.OT_CURSOR_STYLE_UNDERLINE,
+  default: nativeConstants.OT_CURSOR_STYLE_DEFAULT,
+} as const
+const CURSOR_ID_TO_STYLE: CursorStyle[] = []
+for (const [style, id] of Object.entries(CURSOR_STYLE_TO_ID)) CURSOR_ID_TO_STYLE[id] = style as CursorStyle
 const PROGRAM_STATE_TO_ID: Record<string, number | undefined> = {
   idle: nativeConstants.OT_PROGRAM_STATE_IDLE,
   working: nativeConstants.OT_PROGRAM_STATE_WORKING,
@@ -1500,7 +1506,7 @@ function encodeDrawColors(
   return background !== undefined
 }
 
-const DIAGNOSTIC_QUEUE_MAX = 64 // Version 2 C Contexts hold at most 64 diagnostic records.
+const DIAGNOSTIC_QUEUE_MAX = nativeConstants.OT_DIAGNOSTIC_QUEUE_MAX
 const DIAGNOSTIC_BATCH = 8 // Eight 4 KiB records keep the cached drain storage near 33 KB.
 
 function createDiagnosticDrainRecord() {
@@ -1745,8 +1751,28 @@ function viewOrNull<T extends ArrayBufferView>(value: T): T | null {
   return value.byteLength === 0 ? null : value
 }
 
-// opentui.h limits each embedded terminal write and the retained replies to 1 MiB.
-const EMBEDDED_TERMINAL_IO_BYTES_MAX = 1024 * 1024
+const EMBEDDED_TERMINAL_IO_BYTES_MAX = nativeConstants.OT_EMBEDDED_TERMINAL_INPUT_BYTES_MAX
+const EMBEDDED_TERMINAL_KEY_ACTIONS = new Map<string, number>([
+  ["release", nativeConstants.OT_EMBEDDED_TERMINAL_KEY_RELEASE],
+  ["press", nativeConstants.OT_EMBEDDED_TERMINAL_KEY_PRESS],
+  ["repeat", nativeConstants.OT_EMBEDDED_TERMINAL_KEY_REPEAT],
+])
+const EMBEDDED_TERMINAL_MOUSE_ACTIONS = new Map<string, number>([
+  ["press", nativeConstants.OT_EMBEDDED_TERMINAL_MOUSE_PRESS],
+  ["release", nativeConstants.OT_EMBEDDED_TERMINAL_MOUSE_RELEASE],
+  ["motion", nativeConstants.OT_EMBEDDED_TERMINAL_MOUSE_MOTION],
+])
+const EMBEDDED_TERMINAL_BUTTONS = new Map<string | undefined, number>([
+  [undefined, nativeConstants.OT_EMBEDDED_TERMINAL_BUTTON_NONE],
+  ["unknown", nativeConstants.OT_EMBEDDED_TERMINAL_BUTTON_UNKNOWN],
+  ["left", nativeConstants.OT_EMBEDDED_TERMINAL_BUTTON_LEFT],
+  ["right", nativeConstants.OT_EMBEDDED_TERMINAL_BUTTON_RIGHT],
+  ["middle", nativeConstants.OT_EMBEDDED_TERMINAL_BUTTON_MIDDLE],
+  ["four", nativeConstants.OT_EMBEDDED_TERMINAL_BUTTON_FOUR],
+  ["five", nativeConstants.OT_EMBEDDED_TERMINAL_BUTTON_FIVE],
+  ["six", nativeConstants.OT_EMBEDDED_TERMINAL_BUTTON_SIX],
+  ["seven", nativeConstants.OT_EMBEDDED_TERMINAL_BUTTON_SEVEN],
+])
 
 function embeddedTerminalDimension(value: number, name: string) {
   if (!Number.isInteger(value) || value < 1 || value > 0xffff) {
@@ -1769,7 +1795,9 @@ function contextBufferColor(value: RGBA, color: Uint16Array = new Uint16Array(4)
     color[offset + index] = channel
   }
   const intent = color[offset + 1] >>> 8
-  if (color[offset + 2] > 255 || color[offset + 3] > 255 || intent > 2 || (intent !== 1 && color[offset] > 255)) {
+  const indexed = intent === nativeConstants.OT_COLOR_INDEXED
+  const known = indexed || intent === nativeConstants.OT_COLOR_RGB || intent === nativeConstants.OT_COLOR_DEFAULT
+  if (color[offset + 2] > 255 || color[offset + 3] > 255 || !known || (!indexed && color[offset] > 255)) {
     throw new RangeError("Invalid terminal color intent")
   }
   return color
@@ -2931,8 +2959,8 @@ function widthMethodId(widthMethod: WidthMethod | "no-zwj", label: string): numb
 }
 
 function widthMethodFromCode(code: number): WidthMethod {
-  if (code === 0) return "wcwidth"
-  return code === 3 ? "unicode-wide" : "unicode"
+  if (code === nativeConstants.OT_WIDTH_METHOD_WCWIDTH) return "wcwidth"
+  return code === nativeConstants.OT_WIDTH_METHOD_UNICODE_WIDE ? "unicode-wide" : "unicode"
 }
 
 const yogaSymbols = {
@@ -3796,7 +3824,8 @@ export class FFIRenderLib {
     const handle = encodeContextHandle(context, session)
     const ticket = frame ? encodeSceneFrameRequest(context, frame) : null
     const count = toSafeFFIU32Length(snapshots.length, "Split snapshot count")
-    if (count > 64) throw new RangeError("At most 64 split snapshots can be submitted together")
+    const max = nativeConstants.OT_SPLIT_SNAPSHOTS_MAX
+    if (count > max) throw new RangeError(`At most ${max} split snapshots can be submitted together`)
     const records = new BigUint64Array(count * (layout.size / 8))
     const fields = new Uint32Array(records.buffer)
     for (let index = 0; index < count; index++) {
@@ -4226,9 +4255,8 @@ export class FFIRenderLib {
     const layout = nativeLayouts.ot_embedded_terminal_key
     this.getYogaHost().assertMutable()
     const handle = encodeContextHandle(context, terminal)
-    const action = key.action ?? "press"
-    const actionCode = ["release", "press", "repeat"].indexOf(action)
-    if (actionCode < 0) throw new TypeError("Unknown embedded terminal key action")
+    const actionCode = EMBEDDED_TERMINAL_KEY_ACTIONS.get(key.action ?? "press")
+    if (actionCode === undefined) throw new TypeError("Unknown embedded terminal key action")
     const record = createContextRecord(layout)
     record[layout.fields.action.offset / 4] = actionCode
     record[layout.fields.composing.offset / 4] = toFFIBool(key.composing ?? false, "Key composing")
@@ -4267,13 +4295,9 @@ export class FFIRenderLib {
     const layout = nativeLayouts.ot_embedded_terminal_mouse
     this.getYogaHost().assertMutable()
     const handle = encodeContextHandle(context, terminal)
-    const action = ["press", "release", "motion"].indexOf(mouse.action)
-    const buttonName = mouse.button
-    const button =
-      buttonName === undefined
-        ? -1
-        : ["unknown", "left", "right", "middle", "four", "five", "six", "seven"].indexOf(buttonName)
-    if (action < 0 || (buttonName !== undefined && button < 0))
+    const action = EMBEDDED_TERMINAL_MOUSE_ACTIONS.get(mouse.action)
+    const button = EMBEDDED_TERMINAL_BUTTONS.get(mouse.button)
+    if (action === undefined || button === undefined)
       throw new TypeError("Unknown embedded terminal mouse action or button")
     const record = createContextRecord(layout)
     record[layout.fields.action.offset / 4] = action
@@ -4348,7 +4372,9 @@ export class FFIRenderLib {
   ): Uint8Array {
     this.getYogaHost().assertMutable()
     const handle = encodeContextHandle(context, terminal)
-    const output = (this.embeddedTerminalResponses ??= new Uint8Array(EMBEDDED_TERMINAL_IO_BYTES_MAX))
+    const output = (this.embeddedTerminalResponses ??= new Uint8Array(
+      nativeConstants.OT_EMBEDDED_TERMINAL_RESPONSE_BYTES_MAX,
+    ))
     const count = new Uint32Array(1)
     const pointer = this.nativeContextPointer(context, "ot_embedded_terminal_drain_responses")
     let status = this.opentui.symbols.ot_embedded_terminal_drain_responses(
@@ -6763,7 +6789,8 @@ export class FFIRenderLib {
     const record = createContextRecord(layout)
     record[layout.fields.flags.offset / 4] = flags
     record[layout.fields.kitty_keyboard_flags.offset / 4] = toSafeFFIU32Length(
-      options.kittyKeyboardFlags ?? 5,
+      options.kittyKeyboardFlags ??
+        nativeConstants.OT_KITTY_KEYBOARD_DISAMBIGUATE | nativeConstants.OT_KITTY_KEYBOARD_ALTERNATE_KEYS,
       "Session kittyKeyboardFlags",
     )
     const pointer = this.nativeContextPointer(context, "ot_session_setup_terminal")

@@ -10,7 +10,9 @@ import Yoga, {
   FlexDirection,
   Gutter,
   Justify,
+  LogLevel,
   MeasureMode,
+  NodeType,
   Overflow,
   PositionType,
   Unit,
@@ -34,6 +36,18 @@ function expectYogaValue(actual: Value, unit: Unit, value?: number): void {
 }
 
 describe("native Yoga API coverage", () => {
+  test("keeps numeric literal types on header-defined enum members", () => {
+    // The Node runner type-checks this: the published declarations must keep `Contents = 2` and the like.
+    const values: [2, 2147483647, 0, 5, 1] = [
+      Display.Contents,
+      Errata.All,
+      ExperimentalFeature.WebFlexBasis,
+      LogLevel.Fatal,
+      NodeType.Text,
+    ]
+    expect(values).toEqual([2, 2147483647, 0, 5, 1])
+  })
+
   test("covers config lifecycle and option getters", () => {
     const config = Yoga.Config.create()
 

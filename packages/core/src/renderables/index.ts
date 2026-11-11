@@ -1,9 +1,6 @@
 export * from "./ASCIIFont.js"
 export * from "./Box.js"
 export * from "./Code.js"
-export * from "./composition/constructs.js"
-export * from "./composition/VRenderable.js"
-export * from "./composition/vnode.js"
 export * from "./Diff.js"
 export * from "./EditBufferRenderable.js"
 export * from "./EmbeddedTerminal.js"
@@ -13,6 +10,7 @@ export * from "./Image.js"
 export * from "./Video.js"
 export * from "./LineNumberRenderable.js"
 export * from "./Markdown.js"
+export * from "./props.js"
 export * from "./ScrollBar.js"
 export {
   ScrollBoxRenderable,

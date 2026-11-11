@@ -13,6 +13,7 @@ import {
   type RenderLib,
 } from "./zig.js"
 import type { NativeImageInfo } from "./zig-structs.js"
+import { nativeConstants } from "./native-abi.generated.js"
 
 export type ImageFormat = "png" | "raw-rgba" | "jpeg" | "webp" | "gif"
 export type ImageColorStatus = "assumed-srgb" | "explicit-srgb"
@@ -239,19 +240,19 @@ export class ImageError extends Error {
 }
 
 const FILTER_IDS: Record<ResizeKernel, number> = {
-  default: 0,
-  area: 1,
-  triangle: 2,
-  "cubic-bspline": 3,
-  "catmull-rom": 4,
-  mitchell: 5,
-  nearest: 6,
+  default: nativeConstants.OT_IMAGE_FILTER_DEFAULT,
+  area: nativeConstants.OT_IMAGE_FILTER_AREA,
+  triangle: nativeConstants.OT_IMAGE_FILTER_TRIANGLE,
+  "cubic-bspline": nativeConstants.OT_IMAGE_FILTER_CUBIC_BSPLINE,
+  "catmull-rom": nativeConstants.OT_IMAGE_FILTER_CATMULL_ROM,
+  mitchell: nativeConstants.OT_IMAGE_FILTER_MITCHELL,
+  nearest: nativeConstants.OT_IMAGE_FILTER_NEAREST,
 }
 
 const BLEND_IDS: Record<BlendMode, number> = {
-  "source-over": 0,
-  source: 1,
-  "destination-over": 2,
+  "source-over": nativeConstants.OT_IMAGE_BLEND_SOURCE_OVER,
+  source: nativeConstants.OT_IMAGE_BLEND_SOURCE,
+  "destination-over": nativeConstants.OT_IMAGE_BLEND_DESTINATION_OVER,
 }
 
 const PIXEL_FORMAT_BGRA: Record<PixelFormat, boolean> = {
@@ -259,9 +260,12 @@ const PIXEL_FORMAT_BGRA: Record<PixelFormat, boolean> = {
   bgra8: true,
 }
 
-const PIXEL_ALPHA_IDS = { straight: 0, opaque: 1 } as const
+const PIXEL_ALPHA_IDS = {
+  straight: nativeConstants.OT_IMAGE_ALPHA_STRAIGHT,
+  opaque: nativeConstants.OT_IMAGE_ALPHA_OPAQUE,
+} as const
 
-const MAX_ENCODED_BYTES = 64 * 1024 * 1024
+const MAX_ENCODED_BYTES = nativeConstants.OT_IMAGE_ENCODED_BYTES_MAX
 
 function imageError(status: number): Error {
   return new ImageError(status)

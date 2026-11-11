@@ -6,22 +6,26 @@ import type { Renderable } from "./Renderable.js"
 import type { InternalKeyHandler, KeyHandler } from "./lib/KeyHandler.js"
 import type { EditBufferRenderable } from "./renderables/EditBufferRenderable.js"
 import type { NativeScene } from "./NativeScene.js"
+import { nativeConstants } from "./native-abi.generated.js"
+
+// Widened so the public attribute fields stay `number`.
+const attributeBits: { readonly [K in keyof typeof nativeConstants]: number } = nativeConstants
 
 export const TextAttributes = {
   NONE: 0,
-  BOLD: 1 << 0, // 1
-  DIM: 1 << 1, // 2
-  ITALIC: 1 << 2, // 4
-  UNDERLINE: 1 << 3, // 8
-  BLINK: 1 << 4, // 16
-  INVERSE: 1 << 5, // 32
-  HIDDEN: 1 << 6, // 64
-  STRIKETHROUGH: 1 << 7, // 128
+  BOLD: attributeBits.OT_ATTR_BOLD,
+  DIM: attributeBits.OT_ATTR_DIM,
+  ITALIC: attributeBits.OT_ATTR_ITALIC,
+  UNDERLINE: attributeBits.OT_ATTR_UNDERLINE,
+  BLINK: attributeBits.OT_ATTR_BLINK,
+  INVERSE: attributeBits.OT_ATTR_INVERSE,
+  HIDDEN: attributeBits.OT_ATTR_HIDDEN,
+  STRIKETHROUGH: attributeBits.OT_ATTR_STRIKETHROUGH,
 }
 
 // Constants for attribute bit packing
-export const ATTRIBUTE_BASE_BITS = 8
-export const ATTRIBUTE_BASE_MASK = 0xff
+export const ATTRIBUTE_BASE_BITS = nativeConstants.OT_ATTR_LINK_SHIFT
+export const ATTRIBUTE_BASE_MASK = nativeConstants.OT_ATTR_BASE_MASK
 
 /**
  * Extract the base 8 bits of attributes from a u32 attribute value.

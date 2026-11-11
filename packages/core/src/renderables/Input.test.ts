@@ -1,5 +1,6 @@
 import { describe, expect, it, afterAll, beforeAll, spyOn } from "bun:test"
 import { InputRenderable, type InputRenderableOptions, InputRenderableEvents } from "./Input.js"
+import maxLengthConformance from "./input-max-length.conformance.json" with { type: "json" }
 import { decodePasteBytes } from "../lib/paste.js"
 import { createTestRenderer } from "../testing/test-renderer.js"
 import type { KeyEvent } from "../lib/KeyHandler.js"
@@ -609,12 +610,32 @@ describe("InputRenderable", () => {
       ["constructor", "日本", "日本!"],
       ["value", "\u0000日本", "\u0000日本!"],
       ["value", "a\fb\u0085c\u007f", "a\fb\u0085c\u007f"],
+      // A lone surrogate under the limit is not cut; the buffer stores it as U+FFFD.
+      ["value", "A\uD800", "A�!"],
     ] as const)("%s keeps %j and puts the cursor after it", (path, text, expected) => {
       const { input } = createInputRenderable({ width: 20, maxLength: 6, value: path === "constructor" ? text : "" })
       if (path === "value") input.value = text
       input.insertText("!")
       expect(input.value).toBe(expected)
       input.destroy()
+    })
+
+    // The value comes through the constructor, the value setter, or before maxLength. The Rust crate runs the same rows.
+    it.each(maxLengthConformance.rows)("maxLength: %s", (_name, value, maxLength, select, insert, expected) => {
+      for (const path of ["constructor", "value", "maxLength"]) {
+        const { input } = createInputRenderable({
+          width: 20,
+          value: path === "value" ? "" : (value as string),
+          maxLength: path === "maxLength" ? undefined : (maxLength as number),
+        })
+        if (path === "value") input.value = value as string
+        if (path === "maxLength") input.maxLength = maxLength as number
+        input.focus()
+        for (let i = 0; i < (select as number); i++) mockInput.pressArrow("left", { shift: true })
+        input.insertText(insert as string)
+        expect([path, input.value]).toEqual([path, expected as string])
+        input.destroy()
+      }
     })
 
     it("should handle empty value setting", () => {
