@@ -263,6 +263,7 @@ interface ResolvedTableRenderableOptions {
 const TRAILING_MARKDOWN_BLOCK_BREAKS_RE = /(?:\r?\n){2,}$/
 const TRAILING_MARKDOWN_BLOCK_NEWLINES_RE = /(?:\r?\n)+$/
 const markdownLinkEncoder = new TextEncoder()
+const ATX_HEADING_MARKER_RE = /^ {0,3}#{1,6}(?:[ \t]+|$)/gm
 
 function isSupportedLinkTarget(url: string): boolean {
   if (url.length > MAX_LINK_URL_BYTES || /[\x00-\x1f\x7f-\x9f]/.test(url)) return false
@@ -338,8 +339,9 @@ export class MarkdownRenderable extends Renderable {
   // Every prose block's chunk callback: link detection, then the inline hook.
   private _linkifyMarkdownChunks: OnChunksCallback = (chunks, context) => this.hookHighlightedChunks(chunks, context)
   private _ownedStructuredRenderables = new WeakSet<Renderable>()
-  // The base highlight of the block whose preview is being built (quote text).
+  // The base highlight of the block whose preview is being built (quote text), and whether one is.
   private _previewBase?: string
+  private _preview = false
   private _inlineHook?: MarkdownInlineHook
   private _inlineHookFilter?: readonly string[]
   // Preview and table chunks drawn as code spans.
@@ -762,19 +764,36 @@ export class MarkdownRenderable extends Renderable {
 
     const chunks: TextChunk[] = []
     this._previewBase = baseHighlight
+    this._preview = true
     try {
       if ("tokens" in token && Array.isArray(token.tokens)) {
         this.renderInlineContent(token.tokens, chunks)
       }
 
       if (chunks.length === 0 && "text" in token && typeof token.text === "string") {
-        this.renderInlineContent(Lexer.lexInline(token.text), chunks)
+        // A coalesced block's headings are text here; the highlight conceals their markers.
+        const text = this._conceal ? token.text.replace(ATX_HEADING_MARKER_RE, "") : token.text
+        this.renderInlineContent(Lexer.lexInline(text), chunks)
+      }
+      if (token.type === "heading" && !this._conceal && chunks.length > 0) {
+        chunks.unshift(this.createChunk("#".repeat(token.depth) + " ", "markup.heading"))
       }
     } finally {
       this._previewBase = undefined
+      this._preview = false
     }
 
     return chunks.length > 0 ? new StyledText(chunks) : undefined
+  }
+
+  // The highlight shows a prose escape and a code span as written (without its delimiters when concealed); cells keep
+  // their own rendering.
+  private escapeText(token: Tokens.Escape): string {
+    return this._preview ? token.raw : token.text
+  }
+
+  private codeSpanText(token: Tokens.Codespan): string {
+    return this._conceal ? token.raw.replace(/^`+|`+$/g, "") : token.raw
   }
 
   private renderInlineContent(tokens: Token[], chunks: TextChunk[], link?: { url: string }): void {
@@ -790,12 +809,13 @@ export class MarkdownRenderable extends Renderable {
         break
 
       case "escape":
-        // The highlighted text keeps the backslash too.
-        chunks.push(this.createDefaultChunk(token.raw, link))
+        chunks.push(this.createDefaultChunk(this.escapeText(token), link))
         break
 
       case "codespan":
-        if (this._conceal) {
+        if (this._preview) {
+          chunks.push(this.createChunk(this.codeSpanText(token), "markup.raw"))
+        } else if (this._conceal) {
           chunks.push(this.createChunk(token.text, "markup.raw"))
         } else {
           chunks.push(this.createChunk("`", "markup.raw"))
@@ -914,11 +934,13 @@ export class MarkdownRenderable extends Renderable {
         break
 
       case "escape":
-        chunks.push(this.createChunk(token.raw, styleGroup, link))
+        chunks.push(this.createChunk(this.escapeText(token), styleGroup, link))
         break
 
       case "codespan":
-        if (this._conceal) {
+        if (this._preview) {
+          chunks.push(this.createChunk(this.codeSpanText(token), "markup.raw", link))
+        } else if (this._conceal) {
           chunks.push(this.createChunk(token.text, "markup.raw", link))
         } else {
           chunks.push(this.createChunk("`", "markup.raw", link))
@@ -1612,14 +1634,14 @@ export class MarkdownRenderable extends Renderable {
     if (cell) {
       this.renderInlineContent(cell.tokens, chunks)
     }
-    return chunks.length > 0 ? this.runInlineHook(chunks, cell!.text, true) : [this.createDefaultChunk(" ")]
+    const hooked = cell ? this.runInlineHook(chunks, cell.text, true) : chunks
+    return hooked.length > 0 ? hooked : [this.createDefaultChunk(" ")]
   }
 
   private createTableHeaderCellChunks(cell: Tokens.TableCell): TextChunk[] {
     const chunks: TextChunk[] = []
     this.renderInlineContent(cell.tokens, chunks)
 
-    const baseChunks = chunks.length > 0 ? chunks : [this.createDefaultChunk(" ")]
     const headingStyle = this.getStyle("markup.heading") || this.getStyle("default")
     const headingAttributes = createTextAttributes({
       bold: headingStyle?.bold,
@@ -1627,17 +1649,24 @@ export class MarkdownRenderable extends Renderable {
       underline: headingStyle?.underline,
       dim: headingStyle?.dim,
     })
-    const headed = headingStyle
-      ? baseChunks.map((chunk) => ({
-          ...chunk,
-          fg: headingStyle.fg ?? chunk.fg,
-          bg: headingStyle.bg ?? chunk.bg,
-          attributes: headingAttributes,
-        }))
-      : baseChunks
+    const head = (cells: TextChunk[]) =>
+      headingStyle
+        ? cells.map((chunk) => ({
+            ...chunk,
+            fg: headingStyle.fg ?? chunk.fg,
+            bg: headingStyle.bg ?? chunk.bg,
+            attributes: headingAttributes,
+          }))
+        : cells
     // The hook sees a header cell's content in the header style, as Rust's does.
-    if (chunks.length === 0) return headed
-    return this.runInlineHook(headed, cell.text, true, (_, index) => this._codeChunks.has(chunks[index]!))
+    const hooked = this.runInlineHook(head(chunks), cell.text, true, (_, index) => this._codeChunks.has(chunks[index]!))
+    return hooked.length > 0 ? hooked : head([this.createDefaultChunk(" ")])
+  }
+
+  // A header-only table shows its raw text until its first row arrives, unless a hook is set: then it is a table, so
+  // the hook sees its cells as cells and never as prose.
+  private rendersTable(table: Tokens.Table): boolean {
+    return table.rows.length > 0 || this._inlineHook !== undefined
   }
 
   private buildTableContentCache(
@@ -1647,7 +1676,7 @@ export class MarkdownRenderable extends Renderable {
   ): { cache: TableContentCache | null; changed: boolean } {
     const colCount = table.header.length
     const rowsToRender = this.getTableRowsToRender(table)
-    if (colCount === 0 || rowsToRender.length === 0) {
+    if (colCount === 0 || !this.rendersTable(table)) {
       return { cache: null, changed: previous !== undefined }
     }
 
@@ -1823,8 +1852,10 @@ export class MarkdownRenderable extends Renderable {
     const { cache } = this.buildTableContentCache(table, previousCache, forceRegenerate)
 
     if (!cache) {
+      // The raw text, with a preview so it draws before its highlight lands.
+      const preview = this.createInitialStyledText(this.createMarkdownBlockToken(table.raw))
       return {
-        renderable: this.createMarkdownCodeRenderable(table.raw, id, marginBottom),
+        renderable: this.createMarkdownCodeRenderable(table.raw, id, marginBottom, undefined, undefined, preview),
       }
     }
 
@@ -2119,11 +2150,11 @@ export class MarkdownRenderable extends Renderable {
         }
 
         state.renderable.destroyRecursively()
-        const fallbackRenderable = this.createMarkdownCodeRenderable(
-          tableToken.raw,
+        const fallbackRenderable = this.createTableBlock(
+          tableToken,
           `${this.id}-block-${index}`,
           marginBottom,
-        )
+        ).renderable
         this.add(fallbackRenderable, index)
         state.renderable = fallbackRenderable
         state.tableContentCache = undefined
@@ -2210,7 +2241,7 @@ export class MarkdownRenderable extends Renderable {
         existing.canUpdateInPlace &&
         existing.token.type === block.token.type &&
         (block.token.type !== "table" ||
-          block.token.rows.length > 0 === existing.renderable instanceof TextTableRenderable)
+          this.rendersTable(block.token) === existing.renderable instanceof TextTableRenderable)
       ) {
         if (this._renderNode) {
           const custom = this.createTopLevelCustomRenderable(block, blockIndex)

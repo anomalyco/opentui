@@ -849,7 +849,8 @@ test("table with escaped pipe character", async () => {
   const markdown = `| Command | Output |
 |---|---|
 | echo | Hello |
-| ls \\| grep | Filtered |`
+| ls \\| grep | Filtered |
+| \\$rate | \\*x\\* |`
 
   expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
     "
@@ -859,6 +860,8 @@ test("table with escaped pipe character", async () => {
     │echo     │Hello   │
     ├─────────┼────────┤
     │ls | grep│Filtered│
+    ├─────────┼────────┤
+    │$rate    │*x*     │
     └─────────┴────────┘"
   `)
 })
@@ -4824,6 +4827,9 @@ test("streaming table transitions from raw text to table once first row appears"
   expect(frame).not.toMatch(/[┌│└]/)
 
   md.content = "| Header |\n|---|"
+  // The raw text shows before its highlight lands.
+  await renderOnce()
+  expect(frameText()).toBe("| Header |\n|---|")
   await renderMarkdownRenderable(md)
 
   frame = captureFrame()
@@ -5204,7 +5210,7 @@ function sessionLinks(titles: Map<string, string>, calls: MarkdownInlineContext[
   return (spans, context) => {
     calls.push(context)
     return spans.flatMap((span) => {
-      if (span.link || (span.code && !/^`?ses_\w+`?$/.test(span.text))) return [span]
+      if (span.link || (span.code && !/^`*\s?ses_\w+\s?`*$/.test(span.text))) return [span]
       const out = []
       let last = 0
       for (const match of span.text.matchAll(/(?:@session:)?(ses_[a-z0-9]+)/g)) {
@@ -5465,18 +5471,6 @@ test("a rejected highlight keeps the hooked text", async () => {
   expect(frameText()).toBe("see @Again `@Again` `run @Again`")
 })
 
-test("an escaped dollar keeps its backslash in the preview, as the highlight shows it", async () => {
-  const recorder = new TestRecorder(renderer)
-  recorder.rec()
-  const md = createMarkdownRenderable({ content: "Pay \\$5 and \\*x\\*", syntaxStyle, streaming: true })
-  renderer.root.add(md)
-  await renderMarkdownRenderable(md)
-  recorder.stop()
-  const frames = recorder.recordedFrames.map((recorded) => recorded.frame.split("\n")[0]!.trimEnd())
-  expect(frames).toContain("Pay \\$5 and \\*x\\*")
-  expect(new Set(frames)).toEqual(new Set(["Pay \\$5 and \\*x\\*"]))
-})
-
 // Seeded model of a hooked, streamed Markdown answer against the fake worker. Each seed appends pieces, draws frames,
 // answers highlights in any order (even seeds also reject some), renames the linked sessions, reruns the hook and ends
 // the stream. Every frame must show no ID the hook links (no unhooked frame), and, in top-level mode until a highlight
@@ -5657,8 +5651,9 @@ test("list and quote children keep their text when their kind or the stream chan
   expect(frames).toEqual([`│ Title\n│ ${"─".repeat(58)}`, "│ Title\n│ - - - x", "│ Title\n│ - - - x"])
 })
 
-// Two dollars make tree-sitter-markdown read a LaTeX span, which drops every style between them; the preview has no
-// such span. Every frame of a streamed block must equal its settled frame.
+// A streamed block's preview and its highlight draw the same text, so every frame equals the settled one. Two dollars
+// make tree-sitter-markdown read a LaTeX span, which drops every style between them; the preview has no such span.
+const sameHook = { inlineHook: sessionLinks(new Map([["ses_known", "K"]])) }
 test.each([
   ["Pay _now_$5X", 10],
   ["$x$_ok_ tail", 20],
@@ -5667,18 +5662,70 @@ test.each([
   ["see **$x$** here", 20],
   ["\\$5 and *x* and \\$6 and $7", 40],
   ["Costs $5; check `$PATH/$HOME` *now*", 40],
-] as const)("dollars in %j draw the same before and after highlighting", async (content, width) => {
-  const recorder = new TestRecorder(renderer)
-  recorder.rec()
-  const md = createMarkdownRenderable({ content, syntaxStyle, streaming: true, width, internalBlockMode: "top-level" })
-  renderer.root.add(md)
-  await renderMarkdownRenderable(md)
-  recorder.stop()
-  const rows = (frame: string) =>
-    frame
-      .split("\n")
-      .map((row) => row.trimEnd())
-      .join("\n")
-      .trimEnd()
-  expect(new Set(recorder.recordedFrames.map((recorded) => rows(recorded.frame)))).toEqual(new Set([frameText()]))
-})
+  ["a $1 b $2 *c* d $3 e", 40],
+  ["Pay *\\$5 now*", 40],
+  ["Pay \\$5 and \\*x\\*", 40, {}, "Pay \\$5 and \\*x\\*"],
+  ["see `` ses_known `` and ` x ` tail", 40, sameHook, "see  @K  and  x  tail"],
+  ["see `` ses_known `` and ` x ` tail", 40, { ...sameHook, conceal: false }, "see `` ses_known `` and ` x ` tail"],
+  ["# Head *x*\n\ntext", 40, { conceal: false }],
+  ["# Notes\n\ntext *x*", 40, { internalBlockMode: "coalesced" }, "Notes\n\ntext x"],
+] as [string, number, Partial<MarkdownOptions>?, string?][])(
+  "streamed %j draws the same before and after highlighting",
+  // A rest parameter: Bun passes a done callback to a callback with more parameters than a row has values.
+  async (...[content, width, options, expected]) => {
+    const recorder = new TestRecorder(renderer)
+    recorder.rec()
+    const md = createMarkdownRenderable({
+      content,
+      syntaxStyle,
+      streaming: true,
+      width,
+      internalBlockMode: "top-level",
+      ...options,
+    })
+    renderer.root.add(md)
+    await renderMarkdownRenderable(md)
+    recorder.stop()
+    const rows = (frame: string) =>
+      frame
+        .split("\n")
+        .map((row) => row.trimEnd())
+        .join("\n")
+        .trimEnd()
+    expect(new Set(recorder.recordedFrames.map((recorded) => rows(recorded.frame)))).toEqual(new Set([frameText()]))
+    if (expected !== undefined) expect(frameText()).toBe(expected)
+  },
+)
+
+test.each([
+  ["coalesced", ""],
+  ["top-level", ""],
+  ["top-level", "> "],
+] as const)(
+  "with a hook, a header-only table is a table and its empty cells reach the hook (%s %j)",
+  async (mode, quote) => {
+    const hook: MarkdownInlineHook = (spans, context) => {
+      if (!context.tableCell) return spans
+      if (context.source === "") return [{ text: "EMPTY", code: false }]
+      return spans.map((span) => ({ ...span, text: span.text.toUpperCase() }))
+    }
+    const md = createMarkdownRenderable({
+      content: `${quote}| key |  |`,
+      syntaxStyle,
+      streaming: true,
+      internalBlockMode: mode,
+      tableOptions: { style: "columns" },
+      treeSitterClient: new FakeWorker(),
+      inlineHook: hook,
+    })
+    renderer.root.add(md)
+    await renderOnce()
+    const bar = quote ? "│ " : ""
+    md.content += `\n${quote}|--|--|`
+    await renderOnce()
+    expect(frameText()).toBe(`${bar}KEY  EMPTY`)
+    md.content += `\n${quote}| x | |`
+    await renderOnce()
+    expect(frameText()).toBe(`${bar}KEY  EMPTY\n${bar}X    EMPTY`)
+  },
+)
