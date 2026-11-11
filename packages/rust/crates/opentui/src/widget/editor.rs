@@ -1269,19 +1269,28 @@ mod tests {
         }
     }
 
-    // A theme switch redefines capture names: it interns no group set and highlights nothing again (after
+    // A theme or table switch redefines capture names: it interns no group set and parses nothing (the grammar,
+    // swapped for a counting lazy one after the first frame, loads at the next edit only; after
     // `clear_highlights` the text stays plain), so every new theme paints, also with the Context's name pool full.
     // Past the bound only a piece that needs a new set paints plain, and the app keeps running.
     #[test]
     fn theme_switches_intern_no_group_sets_and_highlight_nothing() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static LOADS: AtomicUsize = AtomicUsize::new(0);
+        let grammar = || syntax::Grammar::new(tree_sitter_rust::LANGUAGE, "\"let\" @keyword");
+        syntax::register("g7-churn", grammar()).unwrap();
         let app = TestApp::new(20, 2);
-        let area = Textarea::new(&app).filetype("rust").grow(1.0);
+        let area = Textarea::new(&app).filetype("g7-churn").grow(1.0);
         area.set_text("let a = 1;");
         app.root().add(&area);
         let keyword = |r: u8| SyntaxTheme::new().style("keyword", Style::new().fg(Color::rgb(r, 0, 0)));
         let fg = |app: &TestApp| app.try_render().expect("a frame past the bound").cell(0, 0).unwrap().fg;
         area.syntax_theme(keyword(1));
         assert_eq!(fg(&app), Color::rgb(1, 0, 0));
+        syntax::register_lazy("g7-churn", move || {
+            LOADS.fetch_add(1, Ordering::SeqCst);
+            grammar().compile().ok()
+        });
         let context = app.session().context();
         let first = context.group_set(&["probe.0"]).unwrap();
         for r in 2..40 {
@@ -1300,12 +1309,43 @@ mod tests {
             area.syntax_theme(keyword(r));
             assert_eq!(fg(&app), Color::rgb(r, 0, 0));
         }
+        area.syntax_style(&SyntaxStyle::new(context).unwrap());
+        assert_eq!(fg(&app), Color::rgb(79, 0, 0));
+        assert_eq!(LOADS.load(Ordering::SeqCst), 0, "a theme or table switch parsed");
         area.focus();
         app.type_text(" x");
         assert_eq!(fg(&app), Color::rgb(79, 0, 0));
+        assert_eq!(LOADS.load(Ordering::SeqCst), 1);
         area.buffer().clear_highlights().unwrap();
         area.syntax_theme(keyword(1));
         assert_eq!(fg(&app), app.theme().foreground);
+    }
+
+    // Against hand-written colors, not the widget's own capture lists: a repeated name keeps its last place, the
+    // last `none` clears what lies under it, and a three-part name takes its longest styled prefix, or its first
+    // part with `first_part_fallback`.
+    #[test]
+    fn capture_lists_follow_the_stack_rule_and_the_theme_fallback() {
+        let member = syntax::Grammar::new(tree_sitter_rust::LANGUAGE, "(identifier) @variable.other.member");
+        syntax::register("g7-member", member).unwrap();
+        let (red, blue) = (Style::new().fg(Color::RED), Style::new().fg(Color::BLUE));
+        let marks = SyntaxTheme::new().style("text.emphasis", red).style("text.strong", blue);
+        let members = SyntaxTheme::new().style("variable.other", red).style("variable", blue);
+        let fence = "````markdown\n```rust\nlet x = y;\n```\n````\n";
+        for (filetype, text, theme, symbol, want) in [
+            ("markdown", "*a **b *c* d** e*", marks, "c", Some(Color::RED)),
+            ("markdown", fence, SyntaxTheme::from_theme(&crate::theme::Theme::dark()), "y", None),
+            ("g7-member", "x", members.clone(), "x", Some(Color::RED)),
+            ("g7-member", "x", members.first_part_fallback(), "x", Some(Color::BLUE)),
+        ] {
+            let app = TestApp::new(20, 6);
+            let area = Textarea::new(&app).filetype(filetype).syntax_theme(theme).grow(1.0);
+            area.set_text(text);
+            app.root().add(&area);
+            let capture = app.render();
+            let cell = capture.cells.iter().find(|cell| cell.symbol == symbol).unwrap();
+            assert_eq!(cell.fg, want.unwrap_or(app.theme().foreground), "{text:?}");
+        }
     }
 
     // A theme set on a shared table restyles every editor on it, and an edit registers only names the table has
