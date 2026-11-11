@@ -457,34 +457,7 @@ fn codeSpanText(arena: Allocator, raw: []const u8) ![]const u8 {
     return text;
 }
 
-/// Backslash escapes and entity references resolved.
-pub fn unescapeText(arena: Allocator, raw: []const u8) ![]const u8 {
-    if (std.mem.indexOfAny(u8, raw, "\\&") == null) return raw;
-    var out: std.ArrayListUnmanaged(u8) = .empty;
-    var i: u32 = 0;
-    while (i < raw.len) {
-        const c = raw[i];
-        if (c == '\\' and i + 1 < raw.len and inline_parser.isAsciiPunctuation(raw[i + 1])) {
-            try out.append(arena, raw[i + 1]);
-            i += 2;
-            continue;
-        }
-        if (c == '&') {
-            if (inline_parser.scanEntity(raw, i)) |e| {
-                const cps = inline_parser.decodeEntity(raw[i..e.end]);
-                var buffer: [8]u8 = undefined;
-                var n = std.unicode.utf8Encode(cps[0], &buffer) catch 0;
-                if (cps[1] != 0) n += std.unicode.utf8Encode(cps[1], buffer[n..]) catch 0;
-                try out.appendSlice(arena, buffer[0..n]);
-                i = e.end;
-                continue;
-            }
-        }
-        try out.append(arena, c);
-        i += 1;
-    }
-    return out.items;
-}
+const unescapeText = inline_parser.unescapeText;
 
 /// The subset of the specs' normalize.py the corpus names (its "format" entry).
 pub fn normalize(arena: Allocator, html: []const u8) ![]const u8 {

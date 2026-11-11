@@ -116,6 +116,43 @@ pub const Counters = struct {
     bytes_reinlined: u64 = 0,
     /// Allocations the doc made (capacity growth); the scratch arena is not counted here.
     capacity_growth_count: u64 = 0,
+    /// Display bytes the live leaf's tail writes would carry: from the first changed display
+    /// byte to the end, summed over appends (invariant 4).
+    tail_write_bytes: u64 = 0,
+    /// The live leaf's guess about the pending line disagreed with the parsed line (must stay 0).
+    live_mismatch_count: u64 = 0,
+};
+
+/// The open paragraph's inline state, kept across appends so that each append tokenizes only
+/// new bytes (design: open-leaf token tail). It holds the leaf's content from the first token
+/// that may still change; settled tokens are folded away.
+const Live = struct {
+    parser: inline_parser.Parser,
+    content: std.ArrayListUnmanaged(u8) = .empty,
+    /// The paragraph, or none while the leaf is only the pending line's.
+    block: u32 = none,
+    /// Source offset of the leaf's first content byte: names the leaf.
+    start_byte: u32 = none,
+    /// The line being fed before it is complete: its content start and the end fed so far.
+    line_start_byte: u32 = none,
+    line_fed_end_byte: u32 = 0,
+    /// Display end offset of each token, counting the folded display before them.
+    display_ends: std.ArrayListUnmanaged(u32) = .empty,
+    folded_display_byte_count: u32 = 0,
+};
+
+/// Test instrument: applies every live tail write to a mirror of the leaf's display, as a bound
+/// text node would receive them, and checks the mirror against a whole parse when the leaf
+/// closes.
+pub const TailSink = struct {
+    allocator: Allocator,
+    mirror: std.ArrayListUnmanaged(u8) = .empty,
+    checked_leaf_count: u32 = 0,
+    mismatch_count: u32 = 0,
+
+    pub fn deinit(self: *TailSink) void {
+        self.mirror.deinit(self.allocator);
+    }
 };
 
 pub const Doc = struct {
@@ -138,6 +175,8 @@ pub const Doc = struct {
     committed_top_level_count: u32 = 0,
     /// Index of the first top-level block not yet committed (none when there is none).
     commit_cursor: u32 = 0,
+    live: Live,
+    tail_sink: ?*TailSink = null,
     counters: Counters = .{},
     /// Undo log of the current mutation (scratch memory): records the first change of each block
     /// that existed before the call, so a rejected call restores them.
@@ -158,10 +197,18 @@ pub const Doc = struct {
     pub fn init(allocator: Allocator, scratch: *std.heap.ArenaAllocator, options: Options) Error!Doc {
         options.limits.assertValid();
         try validateFilter(options.hook_filter);
-        return .{ .allocator = allocator, .scratch = scratch, .options = options };
+        return .{
+            .allocator = allocator,
+            .scratch = scratch,
+            .options = options,
+            .live = .{ .parser = .{ .allocator = allocator, .references = undefined, .options = .{ .math = options.math } } },
+        };
     }
 
     pub fn deinit(self: *Doc) void {
+        self.live.parser.deinit();
+        self.live.content.deinit(self.allocator);
+        self.live.display_ends.deinit(self.allocator);
         self.source.deinit(self.allocator);
         self.blocks.deinit(self.allocator);
         self.definitions.deinit(self.allocator);
@@ -186,6 +233,7 @@ pub const Doc = struct {
         try self.reserveSource(@intCast(self.source.items.len + bytes.len));
         self.source.appendSliceAssumeCapacity(bytes);
         try self.scanLines(false);
+        try self.livePending();
         try self.latchHooks(snapshot.source_len);
         self.updateCommits();
     }
@@ -193,6 +241,10 @@ pub const Doc = struct {
     /// Ends the document: the pending line is complete and every block closes.
     pub fn finish(self: *Doc) Error!void {
         defer self.resetScratch();
+        return self.finishInternal();
+    }
+
+    fn finishInternal(self: *Doc) Error!void {
         if (self.finished) return;
         var snapshot = self.beginMutation();
         errdefer self.rollback(&snapshot);
@@ -208,6 +260,32 @@ pub const Doc = struct {
     pub fn set(self: *Doc, bytes: []const u8) Error!void {
         defer self.resetScratch();
         return self.setInternal(bytes);
+    }
+
+    /// A math change is a fresh parse (it changes the block tree); a hook change latches again.
+    pub fn setOptions(self: *Doc, options: Options) Error!void {
+        defer self.resetScratch();
+        options.limits.assertValid();
+        try validateFilter(options.hook_filter);
+        if (options.math != self.options.math or !std.meta.eql(options.limits, self.options.limits)) {
+            const old = self.options;
+            self.options = options;
+            const finished = self.finished;
+            const source = try self.scratch.allocator().dupe(u8, self.source.items);
+            self.setInternal(source) catch |err| {
+                self.options = old;
+                return err;
+            };
+            if (finished) try self.finishInternal();
+            return;
+        }
+        self.options = options;
+        for (self.blocks.items, 0..) |b, i| {
+            if (b.flags.hooked) (try self.blockMut(@intCast(i))).flags.hooked = false;
+        }
+        self.hook_pending_byte = none;
+        self.hook_scan_block_count = 0;
+        try self.latchHooks(0);
     }
 
     fn setInternal(self: *Doc, bytes: []const u8) Error!void {
@@ -285,6 +363,9 @@ pub const Doc = struct {
         committed_top_level_count: u32,
         commit_cursor: u32,
         counters: Counters,
+        read_block_count: u32,
+        hook_pending_byte: u32,
+        hook_scan_block_count: u32,
     };
 
     fn beginMutation(self: *Doc) Snapshot {
@@ -302,6 +383,9 @@ pub const Doc = struct {
             .committed_top_level_count = self.committed_top_level_count,
             .commit_cursor = self.commit_cursor,
             .counters = self.counters,
+            .read_block_count = self.read_block_count,
+            .hook_pending_byte = self.hook_pending_byte,
+            .hook_scan_block_count = self.hook_scan_block_count,
         };
     }
 
@@ -323,6 +407,12 @@ pub const Doc = struct {
         self.committed_top_level_count = snapshot.committed_top_level_count;
         self.commit_cursor = snapshot.commit_cursor;
         self.counters = snapshot.counters;
+        self.read_block_count = snapshot.read_block_count;
+        self.hook_pending_byte = snapshot.hook_pending_byte;
+        self.hook_scan_block_count = snapshot.hook_scan_block_count;
+        // The live leaf may have taken bytes of the rejected call: drop it; the open paragraph
+        // is parsed whole when it closes.
+        self.liveReset(none, none);
     }
 
     /// The block for writing; the first write in a call to a block that existed before it is
@@ -332,6 +422,8 @@ pub const Doc = struct {
             // Duplicates are harmless: rollback restores in reverse, so the oldest copy wins.
             try self.undo.append(self.scratch.allocator(), .{ .index = index, .block = self.blocks.items[index] });
         }
+        // Every write is a change the next read lists.
+        self.blocks.items[index].flags.unreported = true;
         return &self.blocks.items[index];
     }
 
@@ -411,6 +503,34 @@ pub const Doc = struct {
                 }
             }
         }
+    }
+
+    /// Latches the leaves holding a filter match that starts in [start, end).
+    fn latchRange(self: *Doc, start: u32, end: u32) Error!void {
+        if (!self.options.hook or self.options.hook_filter.len == 0) return;
+        var it = std.mem.splitScalar(u8, self.options.hook_filter, 0);
+        while (it.next()) |item| {
+            var at: usize = start;
+            self.counters.bytes_scanned += end - start;
+            while (std.mem.indexOfPos(u8, self.source.items, at, item)) |found| : (at = found + 1) {
+                if (found >= end) break;
+                try self.latchAt(@intCast(found));
+            }
+        }
+    }
+
+    /// Whether a filter match starts in [start, end).
+    fn filterHolds(self: *Doc, start: u32, end: u32) Error!bool {
+        if (!self.options.hook) return false;
+        if (self.options.hook_filter.len == 0) return true;
+        self.counters.bytes_scanned += end - start;
+        var it = std.mem.splitScalar(u8, self.options.hook_filter, 0);
+        while (it.next()) |item| {
+            if (std.mem.indexOfPos(u8, self.source.items, start, item)) |found| {
+                if (found < end) return true;
+            }
+        }
+        return false;
     }
 
     /// Latches the prose leaf whose source range holds `position`.
@@ -536,6 +656,7 @@ pub const Doc = struct {
         if (!all_closed and !line.blank and tip != none and self.blocks.items[tip].kind == .paragraph) {
             // Lazy paragraph continuation.
             try self.extendLeaf(tip, end);
+            try self.liveLine(tip, line.offset, end);
         } else {
             if (!all_closed) try self.closeAbove(matched, self.previous_line_end_byte);
             all_closed = true;
@@ -548,9 +669,11 @@ pub const Doc = struct {
                 line.advanceNextNonspace();
                 if (target != none and self.blocks.items[target].kind == .paragraph) {
                     try self.extendLeaf(target, end);
+                    try self.liveLine(target, line.offset, end);
                 } else {
                     // New blocks start with their content range equal to their source range.
-                    _ = try self.addChild(.paragraph, line.offset, end);
+                    const p = try self.addChild(.paragraph, line.offset, end);
+                    try self.liveLine(p, line.offset, end);
                 }
             }
         }
@@ -917,8 +1040,7 @@ pub const Doc = struct {
                     self.noteRemoved(index);
                     return;
                 }
-                block = try self.blockMut(index);
-                try self.computeUnresolved(index);
+                try self.closeLeaf(index);
             },
             .code => {
                 if (!block.flags.fenced and !block.flags.math) {
@@ -945,7 +1067,8 @@ pub const Doc = struct {
             .quote => {
                 if (end > block.source_start_byte) block.source_end_byte = end;
             },
-            .heading, .table_cell => try self.computeUnresolved(index),
+            .heading => try self.closeLeaf(index),
+            .table_cell => try self.computeUnresolved(index),
             .table, .table_row, .rule, .html => {},
         }
     }
@@ -1093,13 +1216,16 @@ pub const Doc = struct {
         const header_end = p.content_end_byte;
         const header_cells = countCells(s, header_start, header_end);
         if (header_cells != delimiter or delimiter > table_column_count_max) return null;
+        // The live leaf followed the paragraph's lines; the paragraph now loses its last one.
+        if (self.live.block == paragraph) self.liveReset(none, none);
         // Leave the paragraph with its earlier lines, or remove it if the header was its only line.
         if (header_start == p.content_start_byte) {
             // The paragraph becomes the table: same index (a kind change).
             const block = try self.blockMut(paragraph);
             block.kind = .table;
-            block.flags.unreported = true;
+            block.flags.hooked = false;
             try self.finishTable(paragraph, header_start, header_end, line, delimiter);
+            try self.latchRange(header_start, header_end);
             return paragraph;
         }
         const block = try self.blockMut(paragraph);
@@ -1109,6 +1235,11 @@ pub const Doc = struct {
         if (self.blocks.items.len >= self.options.limits.block_count) return error.BlockLimit;
         const t = try self.addChild(.table, header_start, line.end);
         try self.finishTable(t, header_start, header_end, line, delimiter);
+        // The filter latch follows the split: the paragraph's own lines, and the header's cells.
+        const kept = self.blocks.items[paragraph];
+        const hooked = try self.filterHolds(kept.source_start_byte, kept.source_end_byte);
+        if (kept.flags.hooked != hooked) (try self.blockMut(paragraph)).flags.hooked = hooked;
+        try self.latchRange(header_start, header_end);
         return t;
     }
 
@@ -1239,6 +1370,304 @@ pub const Doc = struct {
         }
     }
 
+    /// A closing prose leaf's last inline pass: the live leaf's when it followed this leaf to
+    /// its end, else a whole parse.
+    fn closeLeaf(self: *Doc, index: u32) Error!void {
+        const live = &self.live;
+        const b = self.blocks.items[index];
+        if (live.block == index and live.start_byte == b.content_start_byte and live.line_start_byte == none) {
+            var end = live.content.items.len;
+            while (end > live.parser.position and isAsciiWhitespaceByte(live.content.items[end - 1])) end -= 1;
+            try self.liveFeed(live.content.items[0..end], true);
+            const unresolved = live.parser.unresolved;
+            if (self.tail_sink) |sink| {
+                const expected = try self.leafDisplay(self.scratch.allocator(), index);
+                sink.checked_leaf_count += 1;
+                if (!std.mem.eql(u8, expected, sink.mirror.items)) {
+                    sink.mismatch_count += 1;
+                    if (std.debug.runtime_safety) std.debug.print("live display mismatch: expected '{s}' mirror '{s}'\n", .{ expected, sink.mirror.items });
+                }
+            }
+            self.liveReset(none, none);
+            if (b.flags.unresolved != unresolved) (try self.blockMut(index)).flags.unresolved = unresolved;
+            return;
+        }
+        if (live.block == index) self.liveReset(none, none);
+        try self.computeUnresolved(index);
+    }
+
+    fn liveReset(self: *Doc, start_byte: u32, block: u32) void {
+        const live = &self.live;
+        live.parser.reset();
+        live.content.clearRetainingCapacity();
+        live.block = block;
+        live.start_byte = start_byte;
+        live.line_start_byte = none;
+        live.line_fed_end_byte = 0;
+        live.display_ends.clearRetainingCapacity();
+        live.folded_display_byte_count = 0;
+        if (self.tail_sink) |sink| sink.mirror.clearRetainingCapacity();
+    }
+
+    /// A complete line of paragraph `index`, its content from `content_start` to `end`.
+    fn liveLine(self: *Doc, index: u32, content_start: u32, end: u32) Error!void {
+        const live = &self.live;
+        const s = self.source.items;
+        if (live.block != index) {
+            const new_paragraph = self.blocks.items[index].content_start_byte == content_start;
+            if (live.block == none and live.start_byte == content_start and new_paragraph) {
+                live.block = index;
+            } else if (new_paragraph) {
+                if (live.start_byte != none) self.counters.live_mismatch_count += @intFromBool(live.line_start_byte != none and live.line_start_byte != content_start);
+                self.liveReset(content_start, index);
+            } else {
+                // A paragraph the live leaf does not follow (its state was dropped): its close
+                // parses it whole.
+                return;
+            }
+        }
+        var from = content_start;
+        if (live.line_start_byte != none) {
+            if (live.line_start_byte == content_start) {
+                from = live.line_fed_end_byte;
+            } else {
+                // The pending line was fed as this leaf's but parsed otherwise.
+                self.counters.live_mismatch_count += 1;
+                self.liveReset(none, none);
+                return;
+            }
+            live.line_start_byte = none;
+        }
+        if (from < end) try self.liveAppend(s[from..end]);
+        try self.liveAppend("\n");
+        try self.liveFeed(live.content.items, false);
+    }
+
+    /// Feeds the pending line once its first bytes show that it can only continue the open
+    /// paragraph or start one: a byte that no block start, setext underline or delimiter row
+    /// begins with. Anything else waits for the line's end.
+    fn livePending(self: *Doc) Error!void {
+        const live = &self.live;
+        const s = self.source.items;
+        var end: u32 = @intCast(s.len);
+        if (end > self.line_start_byte and s[end - 1] == '\r') end -= 1;
+        if (live.line_start_byte != none) {
+            if (live.line_fed_end_byte < end) {
+                try self.liveAppend(s[live.line_fed_end_byte..end]);
+                live.line_fed_end_byte = end;
+                try self.liveFeed(live.content.items, false);
+            }
+            return;
+        }
+        const content_start = self.pendingParagraphLine(end) orelse return;
+        const tip = self.tipIndex();
+        const continues_tip = tip != none and self.blocks.items[tip].kind == .paragraph;
+        if (continues_tip) {
+            if (live.block != tip) return;
+        } else if (live.block != none or live.start_byte != content_start) {
+            self.liveReset(content_start, none);
+        }
+        live.line_start_byte = content_start;
+        live.line_fed_end_byte = end;
+        try self.liveAppend(s[content_start..end]);
+        try self.liveFeed(live.content.items, false);
+    }
+
+    /// The content start of the pending line when its kind is decided as paragraph text.
+    fn pendingParagraphLine(self: *Doc, end: u32) ?u32 {
+        var line = Line{ .s = self.source.items, .start = self.line_start_byte, .end = end, .offset = self.line_start_byte };
+        var matched: u32 = 0;
+        while (matched < self.open_count) : (matched += 1) {
+            const index = self.open[matched];
+            const b = self.blocks.items[index];
+            if (b.kind == .paragraph) break;
+            if (b.kind != .quote and b.kind != .item and b.kind != .list) return null;
+            line.findNextNonspace();
+            if (line.blank) return null;
+            if (self.continues(&line, index, b) != .matches) break;
+        }
+        line.findNextNonspace();
+        if (line.blank) return null;
+        const tip = self.tipIndex();
+        const tip_is_paragraph = tip != none and self.blocks.items[tip].kind == .paragraph;
+        if (line.indented) return if (tip_is_paragraph) line.next_nonspace else null;
+        if (maybeSpecial(line.peek(line.next_nonspace))) return null;
+        // An open table, fence or HTML block whose containers all match takes the line itself.
+        if (!tip_is_paragraph and tip != none and matched == self.open_count) {
+            const kind = self.blocks.items[tip].kind;
+            if (kind == .table or kind == .code or kind == .html) return null;
+        }
+        return line.next_nonspace;
+    }
+
+    fn liveAppend(self: *Doc, bytes: []const u8) Error!void {
+        const content = &self.live.content;
+        if (content.items.len + bytes.len > content.capacity) self.counters.capacity_growth_count += 1;
+        try content.appendSlice(self.allocator, bytes);
+    }
+
+    /// Runs the live parser over its content and counts the display bytes a tail write would
+    /// carry: from the first token whose display changed (or the pending bytes' start) to the end.
+    fn liveFeed(self: *Doc, content: []const u8, final: bool) Error!void {
+        const live = &self.live;
+        const parser = &live.parser;
+        parser.references = self.references();
+        const tokens_before: u32 = @intCast(parser.tokens.items.len);
+        const pending_before: u32 = @intCast(parser.subject.len - parser.position);
+        const scanned_before = parser.bytes_scanned;
+        try parser.feed(content, final);
+        self.counters.bytes_scanned += parser.bytes_scanned - scanned_before;
+        const changed = parser.takeChanged();
+        const pending: u32 = @intCast(content.len - parser.position);
+        const r = parser.result();
+        // Display offsets of the tokens from the first changed one on.
+        const first: u32 = if (changed == none) @intCast(r.tokens.len) else @min(changed, tokens_before);
+        const ends = &live.display_ends;
+        if (r.tokens.len > ends.capacity) self.counters.capacity_growth_count += 1;
+        try ends.resize(self.allocator, r.tokens.len);
+        var offset: u32 = if (first == 0) live.folded_display_byte_count else ends.items[first - 1];
+        // Without token changes only pending bytes move: new ones append, trimmed ones go.
+        const write_start = if (changed == none) offset + @min(pending, pending_before) else offset;
+        var i = first;
+        while (i < r.tokens.len) : (i += 1) {
+            offset += inline_parser.tokenDisplayLength(r, i);
+            ends.items[i] = offset;
+        }
+        const display_end = offset + pending;
+        self.counters.tail_write_bytes += display_end - write_start;
+        if (self.tail_sink) |sink| {
+            // The tail write: drop the old display from its first changed byte, write the new.
+            sink.mirror.shrinkRetainingCapacity(write_start);
+            i = first;
+            if (changed == none) {
+                try sink.mirror.appendSlice(sink.allocator, content[content.len - (pending -| pending_before) ..]);
+            } else {
+                while (i < r.tokens.len) : (i += 1) try inline_parser.appendTokenDisplay(r, i, sink.allocator, &sink.mirror);
+                try sink.mirror.appendSlice(sink.allocator, content[parser.position..]);
+            }
+        }
+        if (!final) self.liveFold();
+    }
+
+    /// Drops the settled tokens and the content before them, keeping one code point of look
+    /// behind; only at a word start, where no construct can reach back across the cut.
+    fn liveFold(self: *Doc) void {
+        const live = &self.live;
+        const parser = &live.parser;
+        const position = parser.position;
+        if (!parser.settled() or position != parser.limit or position >= live.content.items.len) return;
+        if (position <= 2 * look_behind_byte_count or !isAsciiWhitespaceByte(live.content.items[position - 1])) return;
+        const drop = position - look_behind_byte_count;
+        const rest = live.content.items.len - drop;
+        if (live.display_ends.items.len > 0) live.folded_display_byte_count = live.display_ends.items[live.display_ends.items.len - 1];
+        live.display_ends.clearRetainingCapacity();
+        std.mem.copyForwards(u8, live.content.items[0..rest], live.content.items[drop..]);
+        live.content.items.len = rest;
+        parser.rebase(drop);
+    }
+
+    /// The display bytes of leaf `index` (read_leaf's text): its inline content with markers
+    /// concealed.
+    pub fn leafDisplay(self: *const Doc, arena: Allocator, index: u32) Error![]const u8 {
+        const r = try self.parseLeaf(arena, index);
+        var out: std.ArrayListUnmanaged(u8) = .empty;
+        var i: u32 = 0;
+        while (i < r.tokens.len) : (i += 1) try inline_parser.appendTokenDisplay(r, i, arena, &out);
+        return out.items;
+    }
+
+    /// Parser output for leaf `index` (read_leaf, design "What the engine writes"): display bytes,
+    /// chunks of one style each with span flags, and the URL pool the chunks' links point into.
+    /// Prose leaves get their inline styles; a fence or math block gives its normalized code, an
+    /// HTML block its source text. Styles are Markdown scopes; M2 resolves them through the
+    /// document's SyntaxStyle into `ot_styled_text_chunk` values.
+    pub fn readLeaf(self: *const Doc, arena: Allocator, index: u32) Error!Leaf {
+        const b = self.blocks.items[index];
+        var leaf: Leaf = .{};
+        var writer: LeafWriter = .{ .arena = arena, .leaf = &leaf };
+        writer.base.heading_level = if (b.kind == .heading) @intCast(b.payload[0]) else 0;
+        if (!isInlineLeaf(b)) {
+            const content = try self.leafContent(arena, index);
+            writer.base.raw = b.kind == .code;
+            writer.base.math = b.flags.math;
+            try writer.write(content.bytes, .{});
+            return leaf;
+        }
+        const r = try self.parseLeaf(arena, index);
+        var styles: Styles = .{};
+        var i: u32 = 0;
+        while (i < r.tokens.len) : (i += 1) {
+            const t = r.tokens[i];
+            const raw = r.content[t.start..t.end()];
+            writer.base.strong = styles.strong > 0;
+            writer.base.italic = styles.italic > 0;
+            writer.base.strikethrough = styles.strikethrough > 0;
+            writer.link = styles.link;
+            switch (t.kind) {
+                .delimiter => {
+                    const d_index = inline_parser.delimiterOf(r, i);
+                    const d = if (d_index) |di| r.delimiters[di] else null;
+                    const length = inline_parser.tokenDisplayLength(r, i);
+                    if (d != null and d.?.closer_match_count > 0) {
+                        var m = d.?.closer_first_match;
+                        while (m < d.?.closer_first_match + d.?.closer_match_count) : (m += 1) styles.apply(r.matches[m].kind, -1);
+                        writer.base.strong = styles.strong > 0;
+                        writer.base.italic = styles.italic > 0;
+                        writer.base.strikethrough = styles.strikethrough > 0;
+                        try writer.plain(r, t.end() - length, t.end());
+                    } else {
+                        try writer.plain(r, t.start, t.start + length);
+                        if (d) |dd| {
+                            var m = dd.opener_matches;
+                            while (m) |mi| : (m = r.matches[mi].next_for_opener) styles.apply(r.matches[mi].kind, 1);
+                        }
+                    }
+                },
+                .bracket_open => {
+                    if (t.aux == 0) {
+                        try writer.write(raw, .{});
+                        continue;
+                    }
+                    const link = r.links[t.aux - 1];
+                    styles.link = try writer.url("", try inline_parser.unescapeText(arena, link.destination));
+                },
+                .bracket_close => {
+                    if (t.aux == 0) try writer.write(raw[0..1], .{}) else styles.link = null;
+                },
+                .autolink, .autolink_email, .extended_autolink => {
+                    const target = if (t.kind == .extended_autolink) raw else raw[1 .. raw.len - 1];
+                    const prefix: []const u8 = if (t.kind == .autolink_email) "mailto:" else if (t.kind == .extended_autolink and t.aux == @backingInt(inline_parser.ExtendedKind.www)) "http://" else "";
+                    writer.link = try writer.url(prefix, target);
+                    try writer.write(target, .{});
+                },
+                .code => {
+                    var display: std.ArrayListUnmanaged(u8) = .empty;
+                    try inline_parser.appendTokenDisplay(r, i, arena, &display);
+                    writer.base.raw = true;
+                    try writer.write(display.items, .{ .code = true });
+                    writer.base.raw = false;
+                },
+                .math => {
+                    writer.base.math = true;
+                    try writer.write(raw[t.aux .. raw.len - t.aux], .{ .math = true });
+                    writer.base.math = false;
+                },
+                .escape => {
+                    writer.base.escape = true;
+                    try writer.write(raw[1..], .{});
+                    writer.base.escape = false;
+                },
+                .text => try writer.plain(r, t.start, t.end()),
+                else => {
+                    var display: std.ArrayListUnmanaged(u8) = .empty;
+                    try inline_parser.appendTokenDisplay(r, i, arena, &display);
+                    try writer.write(display.items, .{});
+                },
+            }
+        }
+        return leaf;
+    }
+
     fn computeUnresolved(self: *Doc, index: u32) Error!void {
         const arena = self.scratch.allocator();
         const result = try self.parseLeaf(arena, index);
@@ -1267,8 +1696,9 @@ pub const Doc = struct {
         return .{ .context = self, .lookup_fn = lookupReference };
     }
 
-    fn lookupReference(context: *const anyopaque, arena: Allocator, label: []const u8) ?inline_parser.Link {
+    fn lookupReference(context: *const anyopaque, label: []const u8) ?inline_parser.Link {
         const self: *const Doc = @ptrCast(@alignCast(context));
+        const arena = self.scratch.allocator();
         const normalized = normalizeLabel(arena, label) catch return null;
         if (normalized.len == 0) return null;
         const hash: u32 = @truncate(std.hash.Wyhash.hash(0, normalized));
@@ -1512,6 +1942,115 @@ const Line = struct {
 
 // ---- Helpers over source bytes ----
 
+/// Markdown scopes of one chunk (the names Core styles prose with today: markup.heading.N,
+/// markup.strong, markup.italic, markup.strikethrough, markup.raw, markup.link, markup.math,
+/// string.escape).
+pub const Scope = packed struct(u16) {
+    heading_level: u3 = 0,
+    strong: bool = false,
+    italic: bool = false,
+    strikethrough: bool = false,
+    raw: bool = false,
+    link: bool = false,
+    math: bool = false,
+    escape: bool = false,
+    _unused: u6 = 0,
+};
+
+/// Span flags per chunk (design: OT_MD_SPAN_CODE, OT_MD_SPAN_MATH).
+pub const Span = packed struct(u32) {
+    code: bool = false,
+    math: bool = false,
+    _unused: u30 = 0,
+};
+
+pub const Chunk = struct {
+    byte_count: u32,
+    scope: Scope,
+    span: Span,
+    /// The link target in `Leaf.urls`; zero length without a link.
+    link_offset: u32 = 0,
+    link_byte_count: u32 = 0,
+};
+
+pub const Leaf = struct {
+    bytes: std.ArrayListUnmanaged(u8) = .empty,
+    chunks: std.ArrayListUnmanaged(Chunk) = .empty,
+    urls: std.ArrayListUnmanaged(u8) = .empty,
+};
+
+const Styles = struct {
+    strong: i32 = 0,
+    italic: i32 = 0,
+    strikethrough: i32 = 0,
+    link: ?[2]u32 = null,
+
+    fn apply(self: *Styles, kind: inline_parser.MatchKind, delta: i32) void {
+        switch (kind) {
+            .strong => self.strong += delta,
+            .emphasis => self.italic += delta,
+            .strikethrough => self.strikethrough += delta,
+        }
+    }
+};
+
+const LeafWriter = struct {
+    arena: Allocator,
+    leaf: *Leaf,
+    base: Scope = .{},
+    link: ?[2]u32 = null,
+
+    /// Appends bytes with the current style, merging into the previous chunk when equal.
+    fn write(self: *LeafWriter, bytes: []const u8, span: Span) Error!void {
+        if (bytes.len == 0) return;
+        var scope = self.base;
+        scope.link = self.link != null;
+        const link = self.link orelse [2]u32{ 0, 0 };
+        try self.leaf.bytes.appendSlice(self.arena, bytes);
+        const chunks = &self.leaf.chunks;
+        if (chunks.items.len > 0) {
+            const last = &chunks.items[chunks.items.len - 1];
+            if (@as(u16, @bitCast(last.scope)) == @as(u16, @bitCast(scope)) and @as(u32, @bitCast(last.span)) == @as(u32, @bitCast(span)) and
+                last.link_offset == link[0] and last.link_byte_count == link[1] and !span.code and !span.math)
+            {
+                last.byte_count += @intCast(bytes.len);
+                return;
+            }
+        }
+        try chunks.append(self.arena, .{ .byte_count = @intCast(bytes.len), .scope = scope, .span = span, .link_offset = link[0], .link_byte_count = link[1] });
+    }
+
+    /// Plain content bytes [start, end), with GFM email autolinks inside them linked.
+    fn plain(self: *LeafWriter, r: inline_parser.Result, start: u32, end: u32) Error!void {
+        var at = start;
+        for (r.emails) |email| {
+            if (email[1] <= at or email[0] >= end) continue;
+            if (at < email[0]) try self.write(r.content[at..email[0]], .{});
+            const saved = self.link;
+            self.link = try self.url("mailto:", r.content[email[0]..email[1]]);
+            const stop = @min(end, email[1]);
+            try self.write(r.content[@max(at, email[0])..stop], .{});
+            self.link = saved;
+            at = stop;
+        }
+        if (at < end) try self.write(r.content[at..end], .{});
+    }
+
+    fn url(self: *LeafWriter, prefix: []const u8, target: []const u8) Error![2]u32 {
+        const offset: u32 = @intCast(self.leaf.urls.items.len);
+        try self.leaf.urls.appendSlice(self.arena, prefix);
+        try self.leaf.urls.appendSlice(self.arena, target);
+        return .{ offset, @intCast(prefix.len + target.len) };
+    }
+};
+
+/// Bytes a live leaf keeps before its first token: one code point, for emphasis flanking.
+const look_behind_byte_count: u32 = 4;
+
+fn isAsciiWhitespaceByte(c: u8) bool {
+    return c == ' ' or c == '\t' or c == '\n';
+}
+
 fn openerLineEnd(s: []const u8, b: Block) u32 {
     return lineContentEnd(s, b.source_start_byte);
 }
@@ -1714,7 +2253,7 @@ fn htmlBlockStart(s: []const u8, at: u32, end: u32) ?u8 {
         if (j < line.len and line[j] == '>' and isBlankRange(line, @intCast(j + 1), @intCast(line.len))) return 7;
         return null;
     }
-    const tag_end = inline_parser.scanOpenTag(line, 0) orelse return null;
+    const tag_end = (inline_parser.scanOpenTag(line, 0, true) catch unreachable) orelse return null;
     const tag_name_end = blk: {
         var j: usize = 1;
         while (j < line.len and (std.ascii.isAlphanumeric(line[j]) or line[j] == '-')) j += 1;
@@ -1817,7 +2356,7 @@ const ParsedDefinition = struct { label: [2]u32, destination: [2]u32, title: ?[2
 
 /// One definition at `at` in paragraph content, ending at a line end, or null.
 fn parseDefinition(c: []const u8, at: u32) ?ParsedDefinition {
-    const label_len = inline_parser.scanLinkLabel(c, at);
+    const label_len = inline_parser.scanLinkLabel(c, at, true) catch unreachable;
     if (label_len < 3) return null;
     const label = [2]u32{ at + 1, at + label_len - 1 };
     if (!inline_parser.isValidLabel(c[label[0]..label[1]])) return null;
@@ -1825,7 +2364,7 @@ fn parseDefinition(c: []const u8, at: u32) ?ParsedDefinition {
     if (i >= c.len or c[i] != ':') return null;
     i += 1;
     i = skipSpacesOneNewline(c, i) orelse return null;
-    const d = inline_parser.scanDestination(c, i) orelse return null;
+    const d = (inline_parser.scanDestination(c, i, true) catch unreachable) orelse return null;
     const destination_start: u32 = if (c[i] == '<') i + 1 else i;
     const destination = [2]u32{ destination_start, destination_start + @as(u32, @intCast(d.value.len)) };
     i = d.end;
@@ -1833,7 +2372,7 @@ fn parseDefinition(c: []const u8, at: u32) ?ParsedDefinition {
     // A title must follow whitespace; the definition may also end at the line end.
     var j = skipSpacesOneNewline(c, i) orelse c.len;
     if (j > before_title) {
-        if (inline_parser.scanTitle(c, @intCast(j))) |t| {
+        if (inline_parser.scanTitle(c, @intCast(j), true) catch unreachable) |t| {
             const title_end = t.end;
             var k = title_end;
             while (k < c.len and isSpaceOrTab(c[k])) k += 1;
