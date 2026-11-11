@@ -82,7 +82,7 @@ pub struct TerminalKey<'a> {
     /// The physical key as a W3C `KeyboardEvent.code` name, such as `"KeyA"`, `"Digit1"`, `"Enter"`, `"ArrowUp"`, or
     /// `"F5"`. Empty when unknown.
     pub code: &'a str,
-    /// Hyper has no encoding and is dropped; Meta is sent as Super.
+    /// Hyper has no encoding and is dropped; Meta is sent as Alt.
     pub modifiers: Modifiers,
     /// Modifiers the keyboard layout used to produce `text`, such as Shift for `"A"`.
     pub consumed: Modifiers,
@@ -150,7 +150,7 @@ fn key_mods(modifiers: Modifiers) -> u32 {
         (Modifiers::CTRL, sys::OT_EMBEDDED_TERMINAL_MOD_CTRL),
         (Modifiers::ALT, sys::OT_EMBEDDED_TERMINAL_MOD_ALT),
         (Modifiers::SUPER, sys::OT_EMBEDDED_TERMINAL_MOD_SUPER),
-        (Modifiers::META, sys::OT_EMBEDDED_TERMINAL_MOD_SUPER),
+        (Modifiers::META, sys::OT_EMBEDDED_TERMINAL_MOD_ALT),
         (Modifiers::CAPS_LOCK, sys::OT_EMBEDDED_TERMINAL_MOD_CAPS_LOCK),
         (Modifiers::NUM_LOCK, sys::OT_EMBEDDED_TERMINAL_MOD_NUM_LOCK),
     ]
