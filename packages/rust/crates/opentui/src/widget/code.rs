@@ -342,6 +342,11 @@ impl Code {
     ///
     /// Panics if native code cannot create the text buffer or view, after the app recorded the error.
     pub fn new(app: &App) -> Self {
+        Self::themed(app, Arc::new(SyntaxTheme::from_theme(&app.theme())))
+    }
+
+    /// A code view that shares `syntax`, as Markdown's code blocks share the document's.
+    pub(crate) fn themed(app: &App, syntax: Arc<SyntaxTheme>) -> Self {
         let theme = app.theme();
         let buffer = app.report(TextBuffer::new(app.session().context(), app.width_method()));
         let buffer = buffer.unwrap_or_else(|| panic!("opentui: failed to create a text buffer: {:?}", app.check()));
@@ -361,7 +366,7 @@ impl Code {
                 buffer,
                 view,
                 filetype: RefCell::new(None),
-                syntax: RefCell::new(Arc::new(SyntaxTheme::from_theme(&theme))),
+                syntax: RefCell::new(syntax),
                 fg: Cell::new(theme.foreground),
                 styled: RefCell::new(None),
                 stale: Cell::new(false),
