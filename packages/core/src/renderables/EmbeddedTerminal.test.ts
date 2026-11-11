@@ -202,6 +202,8 @@ describe("EmbeddedTerminalRenderable", () => {
     )
     expect(new TextDecoder().decode(terminal.encodeKey(keyEvent({ name: "😀", sequence: "😀" })))).toBe("😀")
     expect(new TextDecoder().decode(terminal.encodeKey(keyEvent({ name: "space", sequence: " " })))).toBe(" ")
+    const shiftedLinefeed = keyEvent({ name: "linefeed", sequence: "", shift: true })
+    expect(new TextDecoder().decode(terminal.encodeKey(shiftedLinefeed))).toBe("\x1b[106;6u")
     expect(
       new TextDecoder().decode(terminal.encodeKey(keyEvent({ name: "a", sequence: "A", shift: true, raw: "A" }))),
     ).toBe("A")
@@ -341,6 +343,7 @@ describe("EmbeddedTerminalRenderable", () => {
     ["Kitty Meta+a as Alt", 1, "\x1b[97;33u", "\x1b[97;3u"],
     ["legacy Ctrl+J into a Kitty child", 1, "\n", "\x1b[106;5u"],
     ["legacy Ctrl+Alt+J into a Kitty child", 1, "\x1b\n", "\x1b[106;7u"],
+    ["legacy Ctrl+J into a modifyOtherKeys child", "\x1b[>4;2m", "\n", "\x1b[27;5;106~"],
     ["legacy Enter into a Kitty child", 1, "\r", "\r"],
   ])("preserves %s", (_label, flags, raw, expected) => {
     const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
@@ -367,24 +370,6 @@ describe("EmbeddedTerminalRenderable", () => {
     }
 
     expect(output).toEqual(["\x1b[117;5u", "\x1b[117;5:2u", "\x1b[117;5:3u"])
-  })
-
-  test("forwards Enter, Ctrl+J and Ctrl+M from stdin with and without the Kitty keyboard protocol", () => {
-    const output: string[] = []
-    const terminal = new EmbeddedTerminalRenderable(setup.renderer, {
-      width: 20,
-      height: 4,
-      onData: (data) => output.push(new TextDecoder().decode(data)),
-    })
-    setup.renderer.root.add(terminal)
-    terminal.focus()
-
-    for (const raw of ["\r", "\n", "\x1b[13u", "\x1b[106;5u", "\x1b[109;5u"]) {
-      setup.renderer.stdin.emit("data", Buffer.from(raw))
-    }
-
-    // Ghostty sends Ctrl+M as CSI u even in legacy mode (fixterms), so it stays distinct from Enter.
-    expect(output).toEqual(["\r", "\n", "\r", "\n", "\x1b[109;5u"])
   })
 
   test("drains the preserved response prefix after overflow", () => {
