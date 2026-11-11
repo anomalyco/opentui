@@ -1,0 +1,20 @@
+{
+  "format": [
+    "Theme mode conformance vectors. Core (renderer-theme-mode.test.ts) and Rust (theme.rs) run this file. A row is [name, reply, mode, issue?].",
+    "reply is an OSC 11 reply as a terminal sends it. mode is the theme mode of its background: \"dark\" or \"light\".",
+    "A background is light when its brightness (299 R + 587 G + 114 B) / 1000, computed exactly, is above 128."
+  ],
+  "rows": [
+    ["black", "\u001b]11;rgb:0000/0000/0000\u0007", "dark"],
+    ["white, ended by ST", "\u001b]11;rgb:ffff/ffff/ffff\u001b\\", "light"],
+    ["dark gray, #rrggbb", "\u001b]11;#1e1e1e\u0007", "dark"],
+    ["Solarized light", "\u001b]11;#fdf6e3\u0007", "light"],
+    ["pure blue", "\u001b]11;rgb:00/00/ff\u0007", "dark"],
+    ["one hex digit per channel", "\u001b]11;rgb:8/8/8\u0007", "light"],
+    ["brightness 128", "\u001b]11;rgb:8080/8080/8080\u0007", "dark", "541"],
+    ["brightness 128.299", "\u001b]11;rgb:8181/8080/8080\u0007", "light", "541"],
+    ["brightness 128.587", "\u001b]11;rgb:8080/8181/8080\u0007", "light", "541"],
+    ["brightness 128.114", "\u001b]11;#808081\u0007", "light", "541"],
+    ["brightness 129", "\u001b]11;rgb:8181/8181/8181\u0007", "light", "541"]
+  ]
+}

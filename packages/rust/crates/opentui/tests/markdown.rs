@@ -97,6 +97,19 @@ fn corpus_matches_core_one_shot_and_streamed() {
 }
 
 #[test]
+fn conformance_text_matches_core() {
+    // Core's Markdown test renders the same rows, except the ones that name a Core defect.
+    let corpus: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../core/src/renderables/markdown-blocks.conformance.json"))
+            .unwrap();
+    for row in corpus["rows"].as_array().unwrap().iter().filter(|row| row.get(3).is_some()) {
+        let app = TestApp::new(60, 10);
+        document(&app, true).set_markdown(row[1].as_str().unwrap());
+        assert_eq!(frame(&app), format!("{}\n", row[3].as_str().unwrap()), "{}", row[0]);
+    }
+}
+
+#[test]
 fn code_block_renderers_replace_and_keep_their_widgets() {
     let app = TestApp::new(30, 8);
     let calls = Rc::new(Cell::new(0));

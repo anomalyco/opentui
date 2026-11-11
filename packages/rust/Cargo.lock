@@ -943,6 +943,7 @@ dependencies = [
  "libc",
  "log",
  "opentui-sys",
+ "serde_json",
  "tokio",
  "tree-sitter",
  "tree-sitter-javascript",

@@ -1,0 +1,70 @@
+{
+  "format": [
+    "Unified diff conformance vectors. Core (Diff.test.ts) and Rust (widget/diff.rs) run this file. A row is [name, diff, shown, coreDefect?].",
+    "shown is \"error\" when the diff view shows a parse error. Otherwise it lists the hunks of the first file, each as its lines with their sign.",
+    "A blank line inside a hunk is the context line \" \". `\\ No newline at end of file` markers are left out.",
+    "Lines after a hunk's counts, up to the next hunk or file, are ignored, as `git apply` and GNU `patch` ignore them.",
+    "coreDefect names a known Core defect that gives another result; Core runs that row as test.todo until it is fixed."
+  ],
+  "rows": [
+    ["counts match", "@@ -1,2 +1,2 @@\n a\n-b\n+c\n", [[" a", "-b", "+c"]]],
+    [
+      "two hunks",
+      "@@ -1,2 +1,2 @@\n a\n-b\n+b2\n@@ -10 +10,2 @@\n x\n+y\n",
+      [
+        [" a", "-b", "+b2"],
+        [" x", "+y"]
+      ]
+    ],
+    ["file headers", "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n", [["-a", "+b"]]],
+    [
+      "only the first file",
+      "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-c\n+d\n",
+      [["-a", "+b"]]
+    ],
+    [
+      "only the first file, headers separated by tabs",
+      "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n---\ta/y\n+++\tb/y\n@@ -1 +1 @@\n-c\n+d\n",
+      [["-a", "+b"]]
+    ],
+    ["blank context line without its space", "@@ -1,3 +1,3 @@\n a\n\n-b\n+c\n", [[" a", " ", "-b", "+c"]]],
+    [
+      "no newline markers",
+      "@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+b\n\\ No newline at end of file\n",
+      [["-a", "+b"]]
+    ],
+    ["indented prose after a blank line", "@@ -1 +1 @@\n-a\n+b\n\n  some prose\n", [["-a", "+b"]]],
+    ["counts too large", "@@ -1,3 +1,3 @@\n a\n-b\n+c\n", "error"],
+    ["unknown line in a hunk", "@@ -1,2 +1,2 @@\n a\n*b\n+c\n", "error"],
+    [
+      "an added line after the counts",
+      "@@ -1 +1 @@\n-a\n+b\n+e\n",
+      [["-a", "+b"]],
+      "Core shows a parse error for a hunk line after the counts (jsdiff 9's extra-lines check)"
+    ],
+    [
+      "a context line after the counts",
+      "@@ -1 +1 @@\n-a\n+b\n e\n",
+      [["-a", "+b"]],
+      "Core shows a parse error for a hunk line after the counts (jsdiff 9's extra-lines check)"
+    ],
+    [
+      "a line after the counts and a no newline marker",
+      "@@ -1 +1 @@\n-a\n+b\n\\ No newline at end of file\n+c\n",
+      [["-a", "+b"]],
+      "Core shows a parse error for a hunk line after the counts (jsdiff 9's extra-lines check)"
+    ],
+    [
+      "git format-patch signature",
+      "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n-- \n2.56.0\n",
+      [["-a", "+b"]],
+      "Core shows a parse error for a hunk line after the counts (jsdiff 9's extra-lines check)"
+    ],
+    [
+      "a removed line that looks like a file header",
+      "@@ -1 +1 @@\n-a\n+b\n--- comment\n+next\n",
+      [["-a", "+b"]],
+      "Core reads `--- comment` as a file header and shows a parse error for the missing `+++` line"
+    ]
+  ]
+}

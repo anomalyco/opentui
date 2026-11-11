@@ -172,13 +172,14 @@ macro_rules! editor_methods {
             self.clone()
         }
 
-        /// The most characters the text may hold, counted as Unicode scalar values: 1000 by default for an `Input`,
-        /// unlimited for a `Textarea`. Longer text is cut to fit.
+        /// The longest text it may hold: in UTF-16 code units for an `Input`, as Core counts `maxLength`, 1000 by
+        /// default; in characters (Unicode scalar values) for a `Textarea`, unlimited by default. Longer text is cut
+        /// to fit, leaving out a character that does not fit whole.
         pub fn max_length(&self, max: usize) -> Self {
             self.0.max_length.set(max);
             let text = self.0.text();
-            if text.chars().count() > max {
-                self.0.set_text(&text.chars().take(max).collect::<String>());
+            if self.0.length(&text) > max {
+                self.0.set_text(&text);
             }
             self.clone()
         }
@@ -420,15 +421,24 @@ impl EditorCore {
         }
     }
 
-    /// Cuts `text` so the document stays within the maximum length, given `removed` characters being replaced.
+    /// The units `max_length` counts a character in: UTF-16 code units in an `Input`, one per character in a `Textarea`.
+    fn units(&self, character: char) -> usize {
+        if self.single_line { character.len_utf16() } else { 1 }
+    }
+
+    pub(crate) fn length(&self, text: &str) -> usize {
+        text.chars().map(|character| self.units(character)).sum()
+    }
+
+    /// Cuts `text` so the document stays within the maximum length, given `removed` units being replaced.
     fn limit(&self, text: &str, removed: usize) -> String {
         let max = self.max_length.get();
         if max == usize::MAX {
             return text.to_owned();
         }
-        let current = if text.is_empty() { 0 } else { self.text().chars().count() };
-        let room = max.saturating_sub(current.saturating_sub(removed));
-        text.chars().take(room).collect()
+        let current = if text.is_empty() { 0 } else { self.length(&self.text()) };
+        let mut room = max.saturating_sub(current.saturating_sub(removed));
+        text.chars().take_while(|c| room.checked_sub(self.units(*c)).map(|left| room = left).is_some()).collect()
     }
 
     fn clear_selection_state(&self) {
@@ -444,7 +454,7 @@ impl EditorCore {
     pub fn insert(&self, text: &str) {
         let text = sanitize(text, !self.single_line);
         let removed =
-            self.selection().map_or(0, |_| self.report(self.view.selected_text()).unwrap_or_default().chars().count());
+            self.selection().map_or(0, |_| self.length(&self.report(self.view.selected_text()).unwrap_or_default()));
         let text = self.limit(&text, removed);
         if text.is_empty() {
             return;

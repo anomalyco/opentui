@@ -27,6 +27,7 @@ import { NativeSession } from "../../NativeSession.js"
 import { TextAttributes, type CapturedFrame } from "../../types.js"
 import type { SimpleHighlight } from "../../lib/tree-sitter/types.js"
 import { stringWidth } from "../../platform/runtime.js"
+import blockConformance from "../markdown-blocks.conformance.json" with { type: "json" }
 
 let renderer: TestRenderer
 let mockMouse: MockMouse
@@ -2667,6 +2668,13 @@ test("multiple markdown renderables share and clean up one renderer capability l
   for (const renderable of renderables) renderable.destroyRecursively()
   expect(renderer.listenerCount("capabilities")).toBe(listenersBefore)
 })
+
+// The Rust crate's tests/markdown.rs renders the same rows. A row that names a Core defect is a todo until it is fixed.
+for (const [name, markdown, , text, coreDefect] of blockConformance.rows.filter((row) => row.length > 3)) {
+  ;(coreDefect ? test.todo : test)(`conformance text: ${name}`, async () => {
+    expect(await renderMarkdown(markdown as string)).toBe(`\n${text}`)
+  })
+}
 
 test("links with conceal mode", async () => {
   const markdown = `Check out [OpenTUI](https://github.com/sst/opentui) for more.`

@@ -126,10 +126,11 @@ pub enum ThemeMode {
 }
 
 impl ThemeMode {
-    /// Classifies a background color by its perceived brightness, as Core does.
+    /// Classifies a background color by its perceived brightness, `(299 R + 587 G + 114 B) / 1000` above 128 without
+    /// rounding, as Core does.
     pub fn from_background(color: Color) -> Self {
-        let brightness = (u32::from(color.r) * 299 + u32::from(color.g) * 587 + u32::from(color.b) * 114) / 1000;
-        if brightness > 128 { Self::Light } else { Self::Dark }
+        let brightness = u32::from(color.r) * 299 + u32::from(color.g) * 587 + u32::from(color.b) * 114;
+        if brightness > 128_000 { Self::Light } else { Self::Dark }
     }
 }
 
@@ -146,13 +147,22 @@ impl Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::{OscColor, osc_color};
 
     #[test]
     fn backgrounds_classify_by_brightness() {
-        assert_eq!(ThemeMode::from_background(Color::hex(0x1e1e1e)), ThemeMode::Dark);
-        assert_eq!(ThemeMode::from_background(Color::hex(0xfdf6e3)), ThemeMode::Light);
-        // Pure blue is dark even at full intensity.
-        assert_eq!(ThemeMode::from_background(Color::rgb(0, 0, 255)), ThemeMode::Dark);
+        // Core's vectors: each OSC 11 reply, parsed and classified as the host does.
+        let corpus: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../core/src/theme-mode.conformance.json")).unwrap();
+        for row in corpus["rows"].as_array().unwrap() {
+            let Some(OscColor::Background(color)) = osc_color(row[1].as_str().unwrap().as_bytes()) else { panic!() };
+            let mode = match row[2].as_str() {
+                Some("light") => ThemeMode::Light,
+                Some("dark") => ThemeMode::Dark,
+                other => panic!("{}: mode {other:?}", row[0]),
+            };
+            assert_eq!(ThemeMode::from_background(color), mode, "{}", row[0]);
+        }
         assert_eq!(Theme::for_mode(ThemeMode::Light), Theme::light());
     }
 }

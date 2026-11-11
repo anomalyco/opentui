@@ -5,7 +5,7 @@ import { CliRenderEvents, Renderable, RGBA, SyntaxStyle, TabSelectRenderable } f
 import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
 import { Edge, Gutter } from "../yoga.js"
 
-// React writes `null` when a prop is removed, and Solid writes `undefined` when a prop expression becomes undefined.
+// React and Solid write `undefined` when a prop or style key is removed, and `null` when the app passes it.
 // Every public setter of every exported renderable accepts both, keeps frames rendering, and restores the value that
 // the constructor uses when the option is omitted.
 
@@ -16,10 +16,7 @@ const excludedClasses: Record<string, string> = {
 
 // Key: `prop` for every class, or `Class.prop`. None of these accepted a nullish write on `main` either, unless noted.
 const excludedProps: Record<string, string> = {
-  keyBindings: "list without a default",
   traits: "editor traits without a default",
-  cursorStyle: "style object without a default",
-  options: "Select, TabSelect: option list without a default",
   "TextRenderable.content": "text without a default",
   "CodeRenderable.content": "text without a default",
   "InputRenderable.value": "text without a default",

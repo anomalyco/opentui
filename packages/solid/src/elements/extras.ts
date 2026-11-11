@@ -50,7 +50,9 @@ export function Portal(props: { mount?: DomNode; ref?: (el: {}) => void; childre
       }
       createEffect(
         () => {
-          const el = mount()
+          // Mount through the wide dynamic contract (BaseRenderable); the mount
+          // point validates children at runtime.
+          const el: DomNode = mount()
           content ||= runWithOwner(
             owner,
             () =>

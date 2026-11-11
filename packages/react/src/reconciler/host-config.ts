@@ -89,9 +89,12 @@ export const hostConfig: HostConfig<
     parent.insertBefore(child, beforeChild)
   },
 
-  // Insert a child at a specific index
+  // Insert a child at a specific index. The container is a concrete
+  // RootRenderable; reconciler children go through the wide dynamic
+  // contract (BaseRenderable), which validates at runtime.
   insertInContainerBefore(parent: Container, child: Instance, beforeChild: Instance) {
-    parent.insertBefore(child, beforeChild)
+    const target: Instance = parent
+    target.insertBefore(child, beforeChild)
   },
 
   // Remove a child from container. Skips children that were already detached
@@ -178,9 +181,10 @@ export const hostConfig: HostConfig<
     textInstance.children = [newText]
   },
 
-  // Append child to container
+  // Append child to container through the wide dynamic contract.
   appendChildToContainer(container: Container, child: Instance) {
-    container.add(child)
+    const target: Instance = container
+    target.add(child)
   },
 
   appendInitialChild(parent: Instance, child: Instance) {
