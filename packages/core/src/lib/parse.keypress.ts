@@ -1,5 +1,4 @@
 import { Buffer } from "node:buffer"
-import { SystemClock } from "./clock.js"
 import { kittyKeyMap } from "./kitty-keys.js"
 import { NativeStdinParser } from "./stdin-parser-native.js"
 
@@ -32,26 +31,26 @@ export type ParseKeypressOptions = {
   useKittyKeyboard?: boolean
 }
 
-/** Every multi-character key name the input parser gives a key. */
+/** The input parser's symbolic key names: Kitty's functional keys, linefeed and space. */
 export const terminalNamedSingleStrokeKeys = [...new Set(["linefeed", "space", ...Object.values(kittyKeyMap)])]
 
-let oneShotMs = 0
-let oneShot: NativeStdinParser | null = null
-
 /**
- * Parses `s` as complete input with the renderer's native input parser. Returns the first event when it is a key,
- * and null when the input is empty or starts with a mouse event, a paste, or a terminal reply.
+ * Decodes `s` as one complete input with the native input parser and returns its first event if that is a key, else
+ * null. A live renderer can read the same bytes differently: it delivers keys after a leading mouse, focus or paste
+ * event, and while it awaits a terminal reply it takes `CSI 1;2 R` as that reply instead of Shift+F3.
  */
 export function parseKeypress(s: Buffer | string = "", options: ParseKeypressOptions = {}): ParsedKey | null {
-  // Each call runs past the escape timeout on its own clock, so a lone ESC ends as Escape.
-  oneShot ??= new NativeStdinParser({
+  const parser = new NativeStdinParser({
     armTimeouts: false,
-    clock: Object.assign(new SystemClock(), { now: () => oneShotMs }),
+    protocolContext: { kittyKeyboardEnabled: options.useKittyKeyboard === true },
   })
-  oneShot.reset()
-  oneShot.updateProtocolContext({ kittyKeyboardEnabled: options.useKittyKeyboard === true })
-  oneShot.push(typeof s === "string" ? Buffer.from(s) : s)
-  oneShot.flushTimeout((oneShotMs += 1000))
-  const event = oneShot.read()
-  return event?.type === "key" ? event.key : null
+  try {
+    parser.push(typeof s === "string" ? Buffer.from(s) : s)
+    // Far past the escape timeout, so a lone ESC ends as Escape.
+    parser.flushTimeout(1e12)
+    const event = parser.read()
+    return event?.type === "key" ? event.key : null
+  } finally {
+    parser.destroy()
+  }
 }

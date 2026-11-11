@@ -98,8 +98,6 @@ const REPLY_PROTOCOLS: Record<number, StdinResponseProtocol> = {
 // Core's `code` for legacy sequences: the introducer, number, and final without modifiers.
 const LEGACY_CODE_RE = /^\x1b+(O|\[\[?)(?:(\d+)(?:;\d+)?([~^$])|(?:1;)?\d*([a-zA-Z]))/
 const LEGACY_SEQUENCE_RE = /^\x1b\x1b?[[O]./s
-// What the keypad keys type when they type text (Kitty kp0-kp9, kpdecimal, kpdivide, ...).
-const KEYPAD_TEXT = new Set("0123456789./*-+=,")
 
 function concat(parts: Uint8Array[]): Uint8Array {
   let length = 0
@@ -436,7 +434,6 @@ function compatCode(raw: string, code: number, kitty: boolean): string | undefin
     if (!raw.endsWith("u") || kittyKeyMap[code] === undefined) return undefined
     return `[${/^\x1b+\[(\d+)/.exec(raw)![1]}u`
   }
-  if (kittyKeyMap[code] === undefined && !KEYPAD_TEXT.has(String.fromCodePoint(code))) return undefined
   const match = LEGACY_CODE_RE.exec(raw)
   return match ? [match[1], match[2], match[3], match[4]].filter(Boolean).join("") : undefined
 }
