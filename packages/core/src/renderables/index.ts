@@ -13,6 +13,7 @@ export * from "./Image.js"
 export * from "./Video.js"
 export * from "./LineNumberRenderable.js"
 export * from "./Markdown.js"
+export * from "./props.js"
 export * from "./ScrollBar.js"
 export {
   ScrollBoxRenderable,

@@ -126,7 +126,13 @@ it("resets removed props and style keys to their defaults", async () => {
     const [on, set] = useState(true)
     setOn = set
     const boxProps = on
-      ? { titleAlignment: "center" as const, focusable: true, shouldFill: false, style: { translateX: 1 } }
+      ? {
+          titleAlignment: "center" as const,
+          focusable: true,
+          shouldFill: false,
+          opacity: 0.5,
+          style: { translateX: 1 },
+        }
       : { style: {} }
     return (
       <box ref={(node) => (box = node!)} title="T" border width={7} height={3} {...boxProps}>
@@ -142,5 +148,7 @@ it("resets removed props and style keys to their defaults", async () => {
   await setup.renderOnce()
   expect(setup.captureCharFrame().split("\n")[0]).toBe("┌─T───┐ ")
   expect([box.titleAlignment, box.focusable, box.shouldFill, box.translateX]).toEqual(["left", false, true, 0])
+  // A removed prop is omitted, not `null`: `opacity = null` is 0.
+  expect(box.opacity).toBe(1)
   expect([text.wrapMode, text.truncate]).toEqual(["word", false])
 })
