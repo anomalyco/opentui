@@ -1919,14 +1919,18 @@ test.each(["coalesced", "top-level"] as const)(
           seen.push(token.text)
           return new TextRenderable(renderer, { content: `diagram ${token.text}` })
         },
-        // A renderer's default result stays the plain code block.
-        text: (_token, context) => context.defaultRender(),
+        // A renderer may change the default code block it returns, as at the top level.
+        text: (token, context) => {
+          const code = context.defaultRender() as CodeRenderable
+          code.content = `custom ${token.text}`
+          return code
+        },
       }),
     })
     renderer.root.add(md)
     await renderMarkdownRenderable(md)
 
-    expect(captureFrame()).toContain("│ as code")
+    expect(captureFrame()).toContain("│ custom as code")
     // Coalesced lists are prose, so only top-level lists hold code blocks.
     expect(captureFrame().includes("diagram in list")).toBe(internalBlockMode === "top-level")
 

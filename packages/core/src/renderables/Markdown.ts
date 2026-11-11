@@ -1323,11 +1323,7 @@ export class MarkdownRenderable extends Renderable {
   /** A code-block renderer's result for a fence inside a list or quote, as top-level fences get it. */
   private renderNestedCode(token: Tokens.Code, id: string): Renderable | undefined {
     if (!this.isCodeBlockOnlyRenderer()) return undefined
-    const custom = this.renderCustomNode(token, () => ({ renderable: this.createCodeRenderable(token, id) }))
-    if (custom.renderable !== custom.defaultResult?.renderable) return custom.renderable
-    // The default code block is updated in place instead.
-    custom.renderable?.destroyRecursively()
-    return undefined
+    return this.renderCustomNode(token, () => ({ renderable: this.createCodeRenderable(token, id) })).renderable
   }
 
   private applyListItemMarker(row: BoxRenderable, input: ListItemRenderInput, previousItem?: Tokens.ListItem): void {
