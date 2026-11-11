@@ -27,7 +27,7 @@ import { NativeSession } from "../../NativeSession.js"
 import { TextAttributes, type CapturedFrame } from "../../types.js"
 import type { SimpleHighlight } from "../../lib/tree-sitter/types.js"
 import { stringWidth } from "../../platform/runtime.js"
-import blockConformance from "../markdown-blocks.conformance.json" with { type: "json" }
+import corpus from "../markdown.conformance.json" with { type: "json" }
 
 let renderer: TestRenderer
 let mockMouse: MockMouse
@@ -138,13 +138,13 @@ async function waitForHighlight(codeRenderable: CodeRenderable): Promise<void> {
   await flushAsync()
 }
 
-function getPendingMarkdownParagraphHighlights(md: MarkdownRenderable): CodeRenderable[] {
+function getPendingMarkdownParagraphHighlights(md: MarkdownRenderable, fences = false): CodeRenderable[] {
   const children = [...md.getChildren()]
   const pending: CodeRenderable[] = []
 
   while (children.length > 0) {
     const child = children.pop()!
-    if (child instanceof CodeRenderable && child.filetype === "markdown" && child.isHighlighting) {
+    if (child instanceof CodeRenderable && (fences || child.filetype === "markdown") && child.isHighlighting) {
       pending.push(child)
     }
     children.push(...child.getChildren())
@@ -153,11 +153,11 @@ function getPendingMarkdownParagraphHighlights(md: MarkdownRenderable): CodeRend
   return pending
 }
 
-async function renderMarkdownRenderable(md: MarkdownRenderable): Promise<void> {
+async function renderMarkdownRenderable(md: MarkdownRenderable, fences = false): Promise<void> {
   await renderOnce()
 
   for (let attempt = 0; attempt < 20; attempt++) {
-    const pendingHighlights = getPendingMarkdownParagraphHighlights(md)
+    const pendingHighlights = getPendingMarkdownParagraphHighlights(md, fences)
     if (pendingHighlights.length === 0) {
       await renderOnce()
       return
@@ -2669,10 +2669,31 @@ test("multiple markdown renderables share and clean up one renderer capability l
   expect(renderer.listenerCount("capabilities")).toBe(listenersBefore)
 })
 
-// The Rust crate's tests/markdown.rs renders the same rows. A row that names a Core defect is a todo until it is fixed.
-for (const [name, markdown, , text, coreDefect] of blockConformance.rows.filter((row) => row.length > 3)) {
-  ;(coreDefect ? test.todo : test)(`conformance text: ${name}`, async () => {
-    expect(await renderMarkdown(markdown as string)).toBe(`\n${text}`)
+// The Rust crate's tests/markdown.rs renders the same rows: the frame after each chunk, the last after streaming ends.
+type CorpusRow = [name: string, chunks: string[], html: string, fails: string[], text?: string[]]
+for (const [name, chunks, , fails, text] of (corpus.rows as unknown as CorpusRow[]).filter((row) => row[4])) {
+  test(`corpus text: ${name}`, async () => {
+    const md = createMarkdownRenderable({
+      syntaxStyle,
+      streaming: chunks.length > 1,
+      tableOptions: { widthMode: "content" },
+    })
+    renderer.root.add(md)
+    const frames: string[] = []
+    for (const [index, chunk] of chunks.entries()) {
+      md.content += chunk
+      if (index === chunks.length - 1) md.streaming = false
+      await renderMarkdownRenderable(md, true)
+      frames.push(
+        captureFrame()
+          .split("\n")
+          .map((line) => line.trimEnd())
+          .join("\n")
+          .trimEnd(),
+      )
+    }
+    if (fails.includes("core-text")) expect(frames).not.toEqual(text!)
+    else expect(frames).toEqual(text!)
   })
 }
 

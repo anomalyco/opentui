@@ -1,10 +1,11 @@
-// Renders the Markdown corpus with OpenTUI Core's MarkdownRenderable, configured as the OpenCode TUI configures it,
-// and writes one character frame per case to `<case>.<mode>.txt` beside this script.
+// Renders the shared Markdown corpus's `fixture <case>` rows that have frames here with OpenTUI Core's
+// MarkdownRenderable, configured as the OpenCode TUI configures it, and writes one character frame per case to
+// `<case>.<mode>.txt` beside this script.
 //
 // Run it from a directory where `@opentui/core` resolves, such as OpenCode's `packages/tui`:
 //
 //     bun --cwd /path/to/opencode/packages/tui /path/to/render.ts
-import { readdirSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
 const core = await import(Bun.resolveSync("@opentui/core", process.cwd()))
@@ -12,16 +13,18 @@ const testing = await import(Bun.resolveSync("@opentui/core/testing", process.cw
 const directory = import.meta.dir
 const width = 60
 
-const cases = readdirSync(directory)
-  .filter((name) => name.endsWith(".md"))
-  .sort()
+const corpus = JSON.parse(
+  readFileSync(join(directory, "../../../../../../core/src/renderables/markdown.conformance.json"), "utf8"),
+) as { rows: [string, string[]][] }
+const cases = corpus.rows
+  .filter(([name]) => name.startsWith("fixture ") && existsSync(join(directory, `${name.slice(8)}.conceal.txt`)))
+  .map(([name, chunks]) => [name.slice(8), chunks.join("")] as const)
 
-for (const name of cases) {
-  const content = (await Bun.file(join(directory, name)).text()).trim()
+for (const [name, content] of cases) {
   for (const conceal of [true, false]) {
     const oneShot = await render(content, conceal, [content])
     const mode = conceal ? "conceal" : "source"
-    writeFileSync(join(directory, name.replace(/\.md$/, `.${mode}.txt`)), oneShot)
+    writeFileSync(join(directory, `${name}.${mode}.txt`), oneShot)
     // Streaming in chunks of 7 characters, then finishing, must end at the one-shot frame.
     const chunks = content.match(/[\s\S]{1,7}/g) ?? []
     const streamed = await render(content, conceal, chunks)

@@ -1,8 +1,8 @@
-//! Frames of the Markdown corpus in `tests/fixtures/markdown`, compared with the frames OpenTUI Core renders for it
-//! (`render.ts` there writes them).
+//! Frames of the shared Markdown corpus (`packages/core/src/renderables/markdown.conformance.json`), compared with
+//! the frames OpenTUI Core renders for it (`tests/fixtures/markdown/render.ts` writes the fixtures' frames).
 
 use opentui::testing::TestApp;
-use opentui::widget::{AnyWidget, Container, Markdown, MarkdownTableOptions, Text, Widget};
+use opentui::widget::{AnyWidget, ColumnWidthMode, Container, Markdown, MarkdownTableOptions, Text, Widget};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::{Cell, RefCell};
 use std::path::Path;
@@ -45,6 +45,17 @@ fn fixture(name: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 
+/// The rows of the Markdown corpus that Core's tests run too: name, chunks, HTML, failing runners, and frames.
+fn corpus() -> Vec<serde_json::Value> {
+    let corpus: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../core/src/renderables/markdown.conformance.json")).unwrap();
+    corpus["rows"].as_array().unwrap().clone()
+}
+
+fn strings(value: &serde_json::Value) -> Vec<&str> {
+    value.as_array().unwrap().iter().map(|item| item.as_str().unwrap()).collect()
+}
+
 fn frame(app: &TestApp) -> String {
     let capture = app.render();
     let rows: Vec<String> = (0..capture.height).map(|y| capture.row(y).trim_end().to_owned()).collect();
@@ -61,9 +72,10 @@ fn document(app: &TestApp, conceal: bool) -> Markdown {
 
 #[test]
 fn corpus_matches_core_one_shot_and_streamed() {
+    let corpus = corpus();
     for case in CASES {
-        let source = fixture(&format!("{case}.md"));
-        let source = source.trim();
+        let row = corpus.iter().find(|row| row[0] == format!("fixture {case}")).unwrap();
+        let source = strings(&row[1])[0];
         for (mode, conceal) in [("conceal", true), ("source", false)] {
             let expected = DEVIATIONS
                 .iter()
@@ -97,16 +109,34 @@ fn corpus_matches_core_one_shot_and_streamed() {
 }
 
 #[test]
-fn conformance_text_matches_core() {
-    // Core's Markdown test renders the same rows, except the ones that name a Core defect.
-    let corpus: serde_json::Value =
-        serde_json::from_str(include_str!("../../../../core/src/renderables/markdown-blocks.conformance.json"))
-            .unwrap();
-    for row in corpus["rows"].as_array().unwrap().iter().filter(|row| row.get(3).is_some()) {
-        let app = TestApp::new(60, 10);
-        document(&app, true).set_markdown(row[1].as_str().unwrap());
-        assert_eq!(frame(&app), format!("{}\n", row[3].as_str().unwrap()), "{}", row[0]);
+fn corpus_text_matches_unless_listed() {
+    // Core's Markdown test renders the same rows with the same table options: the frame after each chunk, the last
+    // after streaming ends.
+    let corpus = corpus();
+    let mut wrong = Vec::new();
+    for row in corpus.iter().filter(|row| row.get(4).is_some()) {
+        let chunks = strings(&row[1]);
+        let app = TestApp::new(60, 40);
+        let options = MarkdownTableOptions { width_mode: Some(ColumnWidthMode::Content), ..Default::default() };
+        let markdown = Markdown::new(&app).table_options(options).streaming(chunks.len() > 1);
+        app.root().add(&markdown);
+        let frames: Vec<String> = chunks
+            .iter()
+            .enumerate()
+            .map(|(index, chunk)| {
+                markdown.append(chunk);
+                if index + 1 == chunks.len() {
+                    markdown.streaming(false);
+                }
+                frame(&app)
+            })
+            .collect();
+        let text: Vec<String> = strings(&row[4]).iter().map(|text| format!("{text}\n")).collect();
+        if (frames == text) == strings(&row[3]).contains(&"rust-text") {
+            wrong.push(row[0].as_str().unwrap());
+        }
     }
+    assert!(wrong.is_empty(), "{wrong:#?}");
 }
 
 #[test]

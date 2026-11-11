@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test"
-import { Lexer } from "marked"
+import { Lexer, Parser } from "marked"
 import { parseMarkdownIncremental, type ParseState } from "../markdown-parser.js"
-import blockConformance from "../markdown-blocks.conformance.json" with { type: "json" }
+import corpus from "../markdown.conformance.json" with { type: "json" }
 
 test("first parse returns all tokens", () => {
   const state = parseMarkdownIncremental("# Hello\n\nParagraph", null)
@@ -97,17 +97,49 @@ test("code blocks are parsed correctly", () => {
 })
 
 // The Rust crate's widget/markdown.rs runs the same rows through its own block parser.
-test.each(blockConformance.rows)("blocks: %s", (_name, markdown, blocks) => {
-  const names = parseMarkdownIncremental(markdown as string, null)
-    .tokens.filter((token) => token.type !== "space")
-    .map((token) => {
-      if (token.type === "paragraph") return "p"
-      if (token.type === "code") return "pre"
-      if (token.type === "heading") return `h${token.depth}`
-      if (token.type === "list") return token.ordered ? "ol" : "ul"
-      return token.type
+const rows = corpus.rows as unknown as [name: string, chunks: string[], html: string, fails: string[]][]
+const blockTag = /\s*(<\/?(?:p|h[1-6]|pre|ul|ol|li|blockquote|hr|table|thead|tbody|tr|th|td)\b[^>]*>)\s*/g
+// The corpus' canonical HTML differs from marked's in these spellings only.
+const html = (state: ParseState) =>
+  Parser.parse(state.tokens)
+    .replace(/\s*\/>/g, ">")
+    .replace(blockTag, "$1")
+    .replace(/<br>\n/g, "<br>")
+    .replace(/&#39;/g, "'")
+
+/** The row's chunks, or 32 pieces of equal code point count for a one-chunk row. */
+function pieces(chunks: string[]): string[] {
+  if (chunks.length > 1) return chunks
+  const points = [...chunks[0]!]
+  const size = Math.max(1, Math.ceil(points.length / 32))
+  return Array.from({ length: Math.ceil(points.length / size) }, (_, i) =>
+    points.slice(i * size, (i + 1) * size).join(""),
+  )
+}
+
+test("corpus: marked renders each row's HTML unless the row lists it", () => {
+  const runners = ["marked", "marked-stream", "rust", "rust-stream", "core-text", "rust-text"]
+  expect(rows.flatMap(([name, , , fails]) => fails.filter((fail) => !runners.includes(fail)).map(() => name))).toEqual(
+    [],
+  )
+  const wrong = rows.filter(([, chunks, expected, fails]) => {
+    return (html(parseMarkdownIncremental(chunks.join(""), null)) === expected) === fails.includes("marked")
+  })
+  expect(wrong.map(([name]) => name)).toEqual([])
+})
+
+test("corpus: streamed, marked parses each prefix as fresh text unless the row lists marked-stream", () => {
+  const wrong = rows.filter(([, chunks, , fails]) => {
+    let state: ParseState | null = null
+    let text = ""
+    const same = pieces(chunks).every((piece) => {
+      text += piece
+      state = parseMarkdownIncremental(text, state, 2)
+      return html(state) === html(parseMarkdownIncremental(text, null, 0))
     })
-  expect(names).toEqual(blocks as string[])
+    return same === fails.includes("marked-stream")
+  })
+  expect(wrong.map(([name]) => name)).toEqual([])
 })
 
 test("streaming scenario with incremental typing", () => {

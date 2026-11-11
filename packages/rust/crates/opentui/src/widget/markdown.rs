@@ -1319,27 +1319,99 @@ mod tests {
         );
     }
 
-    #[test]
-    fn blocks_follow_cores_vectors() {
-        // CommonMark's examples and the rows Core's markdown-parser test runs through marked.
-        let corpus: serde_json::Value =
-            serde_json::from_str(include_str!("../../../../../core/src/renderables/markdown-blocks.conformance.json"))
+    /// The shared corpus that Core's markdown-parser test runs through marked: name, chunks, HTML, and the runners
+    /// that disagree with the row.
+    fn corpus() -> Vec<(String, Vec<String>, String, Vec<String>)> {
+        let mut corpus: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../../core/src/renderables/markdown.conformance.json"))
                 .unwrap();
-        for row in corpus["rows"].as_array().unwrap() {
-            let names: Vec<String> = blocks(row[1].as_str().unwrap())
-                .iter()
-                .map(|block| match block {
-                    Block::Heading(level, _) => format!("h{level}"),
-                    Block::Paragraph(_) => "p".into(),
-                    Block::List(list) => if list.start.is_some() { "ol" } else { "ul" }.into(),
-                    Block::Quote(_) => "blockquote".into(),
-                    Block::Code(..) => "pre".into(),
-                    Block::Table(_) => "table".into(),
-                    Block::Rule => "hr".into(),
-                })
-                .collect();
-            assert_eq!(serde_json::json!(names), row[2], "{}", row[0]);
+        let rows: Vec<Vec<serde_json::Value>> = serde_json::from_value(corpus["rows"].take()).unwrap();
+        rows.into_iter()
+            .map(|mut row| {
+                row.truncate(4);
+                serde_json::from_value(serde_json::Value::Array(row)).unwrap()
+            })
+            .collect()
+    }
+
+    /// The block tags of an HTML fragment, without attributes or content: `<ul><li><p></p></li></ul>`.
+    fn html_tags(html: &str) -> String {
+        let mut tags = String::new();
+        for tag in html.split('<').skip(1) {
+            let close = if tag.starts_with('/') { "/" } else { "" };
+            let name = tag[close.len()..].split(|c: char| !c.is_ascii_alphanumeric()).next().unwrap_or_default();
+            if ["p", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "ul", "ol", "li", "blockquote", "hr", "table"]
+                .contains(&name)
+            {
+                tags.push_str(&format!("<{close}{name}>"));
+            }
         }
+        tags
+    }
+
+    /// The block tags HTML gives these blocks. A tight list's paragraphs have none.
+    fn block_tags(blocks: &[Block], tight: bool) -> String {
+        blocks
+            .iter()
+            .map(|block| match block {
+                Block::Heading(level, _) => format!("<h{level}></h{level}>"),
+                Block::Paragraph(_) if tight => String::new(),
+                Block::Paragraph(_) => "<p></p>".into(),
+                Block::List(list) => {
+                    let name = if list.start.is_some() { "ol" } else { "ul" };
+                    let items: String = list
+                        .items
+                        .iter()
+                        .map(|item| format!("<li>{}</li>", block_tags(&item.blocks, list.tight)))
+                        .collect();
+                    format!("<{name}>{items}</{name}>")
+                }
+                Block::Quote(blocks) => format!("<blockquote>{}</blockquote>", block_tags(blocks, false)),
+                Block::Code(..) => "<pre></pre>".into(),
+                Block::Table(_) => "<table></table>".into(),
+                Block::Rule => "<hr>".into(),
+            })
+            .collect()
+    }
+
+    /// A row's chunks, or 32 pieces of equal code point count for a one-chunk row, as the corpus format says.
+    fn pieces(chunks: &[String]) -> Vec<&str> {
+        let [text] = chunks else { return chunks.iter().map(String::as_str).collect() };
+        let size = text.chars().count().div_ceil(32).max(1);
+        let starts: Vec<usize> = text.char_indices().map(|(i, _)| i).step_by(size).chain([text.len()]).collect();
+        starts.windows(2).map(|pair| &text[pair[0]..pair[1]]).collect()
+    }
+
+    #[test]
+    fn corpus_blocks_follow_the_spec_unless_listed() {
+        let wrong: Vec<String> = corpus()
+            .into_iter()
+            .filter(|(_, chunks, html, fails)| {
+                (block_tags(&blocks(&chunks.concat()), false) == html_tags(html)) == fails.iter().any(|f| f == "rust")
+            })
+            .map(|(name, ..)| name)
+            .collect();
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    #[test]
+    fn corpus_streams_parse_as_fresh_text_unless_listed() {
+        let app = crate::testing::TestApp::new(60, 10);
+        let wrong: Vec<String> = corpus()
+            .into_iter()
+            .filter(|(_, chunks, _, fails)| {
+                let markdown = Markdown::new(&app).streaming(true);
+                let mut text = String::new();
+                let same = pieces(chunks).into_iter().all(|piece| {
+                    markdown.append(piece);
+                    text.push_str(piece);
+                    markdown.0.shown.borrow().iter().map(|shown| &shown.block).eq(&blocks(&text))
+                });
+                same == fails.iter().any(|f| f == "rust-stream")
+            })
+            .map(|(name, ..)| name)
+            .collect();
+        assert!(wrong.is_empty(), "{wrong:#?}");
     }
 
     #[test]
