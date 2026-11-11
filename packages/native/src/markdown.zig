@@ -751,10 +751,14 @@ pub const Doc = struct {
         const tip = self.tipIndex();
         const tip_is_paragraph = tip != none and self.blocks.items[tip].kind == .paragraph;
         // Depth limit: deeper nesting is text in the innermost leaf.
-        const depth_left = self.depthOf(container.*) + 1 < self.options.limits.depth;
+        // Depth limit: a container opens only with room for what it needs below it (a quote: a
+        // leaf; an item: its list and a leaf; a table: a row and a cell); deeper markers are
+        // text in the innermost leaf.
+        const depth = self.depthOf(container.*);
+        const limit = self.options.limits.depth;
         if (!line.indented) {
             // Block quote.
-            if (c == '>' and depth_left) {
+            if (c == '>' and depth + 2 <= limit) {
                 line.advanceNextNonspace();
                 line.advanceOffset(1, false);
                 if (isSpaceOrTab(line.peek(line.offset))) line.advanceOffset(1, true);
@@ -860,7 +864,7 @@ pub const Doc = struct {
                 }
             }
             // GFM table delimiter row under a paragraph's last line.
-            if (container_kind == .paragraph and (c == '|' or c == '-' or c == ':')) {
+            if (container_kind == .paragraph and (c == '|' or c == '-' or c == ':') and depth + 2 <= limit) {
                 if (try self.tryTable(container.*, line)) |t| {
                     container.* = t;
                     matched.* = self.open_count;
@@ -880,7 +884,7 @@ pub const Doc = struct {
             }
         }
         // List item.
-        if ((!line.indented or container_kind == .list) and depth_left) {
+        if ((!line.indented or container_kind == .list) and depth + 3 <= limit) {
             if (self.listMarker(line, container_kind)) |marker| {
                 try self.closeAbove(matched.*, self.previous_line_end_byte);
                 all_closed.* = true;
@@ -1513,38 +1517,54 @@ pub const Doc = struct {
         const parser = &live.parser;
         parser.references = self.references();
         const tokens_before: u32 = @intCast(parser.tokens.items.len);
-        const pending_before: u32 = @intCast(parser.subject.len - parser.position);
+        const position_before = parser.position;
+        const pending_before: u32 = @intCast(parser.subject.len - position_before);
         const scanned_before = parser.bytes_scanned;
         try parser.feed(content, final);
         self.counters.bytes_scanned += parser.bytes_scanned - scanned_before;
-        const changed = parser.takeChanged();
+        const changes = parser.takeChanged();
         const pending: u32 = @intCast(content.len - parser.position);
         const r = parser.result();
+        // A text token that only grew is compared byte by byte below, like pending bytes; any
+        // other change rewrites from its token.
+        const grown_last = changes.extended != none and changes.extended + 1 == tokens_before and changes.extended < changes.token;
+        const changed = if (grown_last) changes.token else @min(changes.token, changes.extended);
         // Display offsets of the tokens from the first changed one on.
-        const first: u32 = if (changed == none) @intCast(r.tokens.len) else @min(changed, tokens_before);
+        const first: u32 = if (grown_last) changes.extended else if (changed == none) @intCast(r.tokens.len) else @min(changed, tokens_before);
         const ends = &live.display_ends;
         if (r.tokens.len > ends.capacity) self.counters.capacity_growth_count += 1;
         try ends.resize(self.allocator, r.tokens.len);
-        var offset: u32 = if (first == 0) live.folded_display_byte_count else ends.items[first - 1];
-        // Without token changes only pending bytes move: new ones append, trimmed ones go.
-        const write_start = if (changed == none) offset + @min(pending, pending_before) else offset;
+        const first_offset: u32 = if (first == 0) live.folded_display_byte_count else ends.items[first - 1];
+        var offset = first_offset;
         var i = first;
         while (i < r.tokens.len) : (i += 1) {
             offset += inline_parser.tokenDisplayLength(r, i);
             ends.items[i] = offset;
         }
         const display_end = offset + pending;
+        // The new display from `first_offset` on. When no old token changed, the old display
+        // there was the old pending bytes, shown as they are: the write starts where the two
+        // first differ (a word that becomes plain text rewrites nothing).
+        const arena = self.scratch.allocator();
+        var fresh: std.ArrayListUnmanaged(u8) = .empty;
+        i = first;
+        while (i < r.tokens.len) : (i += 1) try inline_parser.appendTokenDisplay(r, i, arena, &fresh);
+        try fresh.appendSlice(arena, content[parser.position..]);
+        var same: u32 = 0;
+        if (first >= tokens_before or grown_last) {
+            // The old display here: the grown token's old bytes (text shows as it is), then the
+            // old pending bytes.
+            const old_start = if (grown_last) r.tokens[first].start else position_before;
+            const old = content[old_start..@min(content.len, position_before + pending_before)];
+            same = @intCast(std.mem.indexOfDiff(u8, old, fresh.items) orelse old.len);
+            same = @min(same, @as(u32, @intCast(@min(old.len, fresh.items.len))));
+        }
+        const write_start = first_offset + same;
         self.counters.tail_write_bytes += display_end - write_start;
         if (self.tail_sink) |sink| {
             // The tail write: drop the old display from its first changed byte, write the new.
             sink.mirror.shrinkRetainingCapacity(write_start);
-            i = first;
-            if (changed == none) {
-                try sink.mirror.appendSlice(sink.allocator, content[content.len - (pending -| pending_before) ..]);
-            } else {
-                while (i < r.tokens.len) : (i += 1) try inline_parser.appendTokenDisplay(r, i, sink.allocator, &sink.mirror);
-                try sink.mirror.appendSlice(sink.allocator, content[parser.position..]);
-            }
+            try sink.mirror.appendSlice(sink.allocator, fresh.items[same..]);
         }
         if (!final) self.liveFold();
     }

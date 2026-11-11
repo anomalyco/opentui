@@ -545,3 +545,246 @@ test "Markdown read_leaf: display bytes, chunk styles, spans and the URL pool" {
         try std.testing.expectEqual(leaf.bytes.items.len, at);
     }
 }
+
+fn repeat(comptime text: []const u8, comptime count: usize) *const [text.len * count]u8 {
+    comptime var out: [text.len * count]u8 = undefined;
+    inline for (0..count) |i| @memcpy(out[i * text.len ..][0..text.len], text);
+    const result = out;
+    return &result;
+}
+
+/// The doc's state a rejected call must leave as it was.
+fn expectUnchanged(before_source: []const u8, before_blocks: []const markdown.Block, doc: *const Doc) !void {
+    try std.testing.expectEqualStrings(before_source, doc.source.items);
+    try std.testing.expectEqual(before_blocks.len, doc.blocks.items.len);
+    for (before_blocks, doc.blocks.items) |a, b| try std.testing.expect(std.meta.eql(a, b));
+}
+
+test "Markdown limits: each store stays within its limit and a rejection publishes nothing" {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // Source: the append that would pass the limit fails and changes nothing.
+    {
+        var f: Fixture = undefined;
+        try f.init(.{ .limits = .{ .source_byte_count = 16 } });
+        defer f.deinit();
+        try f.doc.append("# a\n\nsome **x");
+        const source = try arena.dupe(u8, f.doc.source.items);
+        const blocks = try arena.dupe(markdown.Block, f.doc.blocks.items);
+        try std.testing.expectError(error.SourceLimit, f.doc.append("y\n\nz"));
+        try expectUnchanged(source, blocks, &f.doc);
+        try f.doc.append("y\n");
+        try std.testing.expectError(error.SourceLimit, f.doc.set("0123456789abcdefg"));
+    }
+    // Blocks: an append that opens one block too many fails as a whole, mid-line included.
+    {
+        var f: Fixture = undefined;
+        try f.init(.{ .limits = .{ .block_count = 4 } });
+        defer f.deinit();
+        try f.doc.append("a\n\n> b\n");
+        const source = try arena.dupe(u8, f.doc.source.items);
+        const blocks = try arena.dupe(markdown.Block, f.doc.blocks.items);
+        try std.testing.expectError(error.BlockLimit, f.doc.append("\nc\n\n- d\n- e\n"));
+        try expectUnchanged(source, blocks, &f.doc);
+        try f.doc.append("\nc\n");
+        try std.testing.expectEqual(@as(usize, 4), f.doc.blocks.items.len);
+        try std.testing.expectError(error.BlockLimit, f.doc.append("\n- e\n"));
+        try f.doc.finish();
+    }
+    // Definitions: one past the limit is hidden as the spec says but resolves nothing.
+    {
+        var f: Fixture = undefined;
+        try f.init(.{ .limits = .{ .definition_count = 2 } });
+        defer f.deinit();
+        try f.doc.append("[a]: /a\n[b]: /b\n[c]: /c\n\n[a] [b] [c]\n");
+        try f.doc.finish();
+        try std.testing.expectEqual(@as(usize, 2), f.doc.definitions.items.len);
+        try std.testing.expectEqualStrings("<p><a href=\"/a\">a</a> <a href=\"/b\">b</a> [c]</p>", try html.normalize(arena, try html.render(arena, &f.doc)));
+    }
+    // Tokens: an opener 4,096 tokens back becomes literal, streamed or whole.
+    {
+        var text: std.ArrayListUnmanaged(u8) = .empty;
+        try text.appendSlice(arena, "*a");
+        for (0..2100) |_| try text.appendSlice(arena, " `b`");
+        try text.appendSlice(arena, " c*\n");
+        var whole: Fixture = undefined;
+        try whole.init(.{});
+        defer whole.deinit();
+        try whole.doc.append(text.items);
+        try whole.doc.finish();
+        const rendered = try html.render(arena, &whole.doc);
+        try std.testing.expect(std.mem.indexOf(u8, rendered, "<em>") == null);
+        try std.testing.expect(try streamAgreesParts(arena, "tokens", &.{ text.items[0..3], text.items[3..4000], text.items[4000..] }));
+        // One token short of the limit the opener still matches.
+        const short = try std.mem.concat(arena, u8, &.{ "*a", text.items[2 + 4 * 60 ..] });
+        var near: Fixture = undefined;
+        try near.init(.{});
+        defer near.deinit();
+        try near.doc.append(short);
+        try near.doc.finish();
+        try std.testing.expect(std.mem.indexOf(u8, try html.render(arena, &near.doc), "<em>") != null);
+    }
+    // Filter: at most 256 bytes of items of 1 to 64 bytes.
+    {
+        var scratch = std.heap.ArenaAllocator.init(gpa);
+        defer scratch.deinit();
+        const long_item = repeat("x", 65);
+        try std.testing.expectError(error.InvalidOptions, Doc.init(gpa, &scratch, .{ .hook = true, .hook_filter = long_item }));
+        try std.testing.expectError(error.InvalidOptions, Doc.init(gpa, &scratch, .{ .hook = true, .hook_filter = "a\x00\x00b" }));
+        const items = repeat("x" ++ repeat("x", 62) ++ "\x00", 4) ++ "y";
+        try std.testing.expectError(error.InvalidOptions, Doc.init(gpa, &scratch, .{ .hook = true, .hook_filter = items }));
+        var doc = try Doc.init(gpa, &scratch, .{ .hook = true, .hook_filter = items[0 .. items.len - 2] });
+        doc.deinit();
+    }
+    // Depth: nesting stops at the limit; deeper markers are text in the innermost leaf.
+    {
+        var f: Fixture = undefined;
+        try f.init(.{});
+        defer f.deinit();
+        try f.doc.append(repeat(">", 40) ++ " x\n" ++ repeat("- ", 20) ++ "y\n");
+        try f.doc.finish();
+        var deepest: u32 = 0;
+        for (f.doc.blocks.items, 0..) |_, i| {
+            var depth: u32 = 0;
+            var p: u32 = @intCast(i);
+            while (p != markdown.none) : (p = f.doc.blocks.items[p].parent_index) depth += 1;
+            deepest = @max(deepest, depth);
+        }
+        try std.testing.expectEqual(markdown.depth_max, deepest);
+        const leaf = try f.doc.leafDisplay(arena, @intCast(f.doc.blocks.items.len - 1));
+        try std.testing.expect(std.mem.startsWith(u8, leaf, "- ") or std.mem.indexOf(u8, leaf, "y") != null);
+    }
+}
+
+const Work = struct { byte_count: usize, scanned: u64, tail: u64, hooked: bool };
+
+/// Streams `parts` into a fresh doc (with finish) and returns its work counters.
+fn work(options: markdown.Options, parts: []const []const u8) !Work {
+    var f: Fixture = undefined;
+    try f.init(options);
+    defer f.deinit();
+    var byte_count: usize = 0;
+    for (parts) |part| {
+        try f.doc.append(part);
+        byte_count += part.len;
+    }
+    try f.doc.finish();
+    var hooked = false;
+    for (f.doc.blocks.items) |b| hooked = hooked or b.flags.hooked;
+    return .{ .byte_count = byte_count, .scanned = f.doc.counters.bytes_scanned, .tail = f.doc.counters.tail_write_bytes, .hooked = hooked };
+}
+
+fn split(arena: std.mem.Allocator, text: []const u8, size: usize) ![]const []const u8 {
+    var parts: std.ArrayListUnmanaged([]const u8) = .empty;
+    var at: usize = 0;
+    while (at < text.len) {
+        var end = @min(text.len, at + size);
+        while (end < text.len and (text[end] & 0xc0) == 0x80) end += 1;
+        try parts.append(arena, text[at..end]);
+        at = end;
+    }
+    return parts.items;
+}
+
+fn fixture(arena: std.mem.Allocator, name: []const u8) ![]const u8 {
+    const corpus = try std.json.parseFromSliceLeaky(std.json.Value, arena, @embedFile("markdown_conformance"), .{});
+    for (corpus.object.get("rows").?.array.items) |row| {
+        if (std.mem.eql(u8, row.array.items[0].string, name)) return row.array.items[1].array.items[0].string;
+    }
+    return error.NoSuchRow;
+}
+
+test "Markdown work: bytes scanned and tail writes stay linear in the document (invariant 4)" {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var words: std.ArrayListUnmanaged(u8) = .empty;
+    while (words.items.len < 8192) try words.appendSlice(arena, "word ");
+    const line = words.items[0..8192];
+    const xs = try arena.alloc(u8, 8192);
+    @memset(xs, 'x');
+    const verbose = environment(arena, "MARKDOWN_GATES") != null;
+    // Scanned bytes count every byte the line scanner, the hook filter and the inline parser
+    // read, retries included. A stray backtick reads the rest of its leaf a third time: the
+    // closer search, then the tokens once the leaf ends without a closer.
+    const rows = [_]struct { name: []const u8, options: markdown.Options = .{}, parts: []const []const u8, tail_max: ?u64 = null, scanned_factor: u64 = 2 }{
+        .{ .name = "list.md, 30-byte appends", .parts = try split(arena, try fixture(arena, "fixture list"), 30) },
+        .{ .name = "prose.md, 30-byte appends", .parts = try split(arena, try fixture(arena, "fixture prose"), 30) },
+        .{ .name = "an 8,192-byte line, 1-byte appends", .parts = try split(arena, line, 1) },
+        .{ .name = "some **x + 8,192 one-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"some **x"}, try split(arena, xs, 1) }) },
+        .{ .name = "a stray backtick, 1-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"a `b "}, try split(arena, line, 1) }), .scanned_factor = 3 },
+        .{ .name = "se + s_ with the filter", .options = .{ .hook = true, .hook_filter = "ses_" }, .parts = &.{ "see se", "s_abc now\n" } },
+    };
+    for (rows) |row| {
+        const w = try work(row.options, row.parts);
+        if (verbose) std.debug.print("{s}: {d} bytes, scanned {d}, tail writes {d}\n", .{ row.name, w.byte_count, w.scanned, w.tail });
+        // A few bytes of slack per call: the filter overlap and the pending line ending.
+        std.testing.expect(w.scanned <= row.scanned_factor * w.byte_count + 64) catch |err| {
+            std.debug.print("{s}: scanned {d} of {d} bytes\n", .{ row.name, w.scanned, w.byte_count });
+            return err;
+        };
+        // A tail write carries each display byte about once.
+        try std.testing.expect(w.tail <= (row.tail_max orelse w.byte_count + 16));
+        if (row.options.hook) try std.testing.expect(w.hooked);
+    }
+}
+
+/// Counts allocator calls that reach the backing allocator.
+const CountingAllocator = struct {
+    backing: std.mem.Allocator,
+    count: u64 = 0,
+
+    fn allocator(self: *CountingAllocator) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
+    }
+
+    fn alloc(context: *anyopaque, len: usize, alignment: std.mem.Alignment, ret: usize) ?[*]u8 {
+        const self: *CountingAllocator = @ptrCast(@alignCast(context));
+        self.count += 1;
+        return self.backing.rawAlloc(len, alignment, ret);
+    }
+
+    fn resize(context: *anyopaque, memory: []u8, alignment: std.mem.Alignment, len: usize, ret: usize) bool {
+        const self: *CountingAllocator = @ptrCast(@alignCast(context));
+        self.count += 1;
+        return self.backing.rawResize(memory, alignment, len, ret);
+    }
+
+    fn remap(context: *anyopaque, memory: []u8, alignment: std.mem.Alignment, len: usize, ret: usize) ?[*]u8 {
+        const self: *CountingAllocator = @ptrCast(@alignCast(context));
+        self.count += 1;
+        return self.backing.rawRemap(memory, alignment, len, ret);
+    }
+
+    fn free(context: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret: usize) void {
+        const self: *CountingAllocator = @ptrCast(@alignCast(context));
+        self.backing.rawFree(memory, alignment, ret);
+    }
+};
+
+test "Markdown work: no allocation per append in steady state, capacity growth counted apart" {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const prose = try fixture(arena, "fixture prose");
+    // long.md: prose.md ten times (M0's note).
+    var copies: [10][]const u8 = undefined;
+    @memset(&copies, prose);
+    const long = try std.mem.join(arena, "\n", &copies);
+    var counting: CountingAllocator = .{ .backing = gpa };
+    var scratch = std.heap.ArenaAllocator.init(counting.allocator());
+    defer scratch.deinit();
+    var doc = try Doc.init(counting.allocator(), &scratch, .{});
+    defer doc.deinit();
+    const parts = try split(arena, long, 30);
+    const warm_up = parts.len / 2;
+    for (parts[0..warm_up]) |part| try doc.append(part);
+    const calls_before = counting.count;
+    const growth_before = doc.counters.capacity_growth_count;
+    for (parts[warm_up..]) |part| try doc.append(part);
+    const calls = counting.count - calls_before;
+    const growth = doc.counters.capacity_growth_count - growth_before;
+    if (environment(arena, "MARKDOWN_GATES") != null) std.debug.print("steady state: {d} appends, {d} allocator calls, {d} capacity growths\n", .{ parts.len - warm_up, calls, growth });
+    try std.testing.expect(calls <= growth);
+}

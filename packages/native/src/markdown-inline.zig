@@ -173,6 +173,7 @@ pub const Parser = struct {
     search_position: u32 = 0,
     /// The first token whose display changed since `takeChanged` (none: nothing changed).
     changed_from: u32 = std.math.maxInt(u32),
+    extended_from: u32 = std.math.maxInt(u32),
     /// Bytes the tokenizer examined (counters; a construct retried after "need more" counts again).
     bytes_scanned: u64 = 0,
 
@@ -265,6 +266,7 @@ pub const Parser = struct {
         self.matches.clearRetainingCapacity();
         self.links.clearRetainingCapacity();
         self.changed_from = std.math.maxInt(u32);
+        self.extended_from = std.math.maxInt(u32);
     }
 
     pub fn result(self: *const Parser) Result {
@@ -279,10 +281,18 @@ pub const Parser = struct {
         };
     }
 
-    /// The first token whose display changed since the last call, and forgets it.
-    pub fn takeChanged(self: *Parser) u32 {
-        const changed = self.changed_from;
+    pub const Changed = struct {
+        /// The first token whose display changed (none: no token changed).
+        token: u32,
+        /// The first text token that only grew at its end (none: none did).
+        extended: u32,
+    };
+
+    /// What changed since the last call, and forgets it.
+    pub fn takeChanged(self: *Parser) Changed {
+        const changed: Changed = .{ .token = self.changed_from, .extended = self.extended_from };
         self.changed_from = std.math.maxInt(u32);
+        self.extended_from = std.math.maxInt(u32);
         return changed;
     }
 
@@ -298,7 +308,8 @@ pub const Parser = struct {
 
     fn step(self: *Parser) StepError!void {
         const c = self.subject[self.position];
-        self.bytes_scanned += 1;
+        // A resumed search counts the bytes it reads itself.
+        if (self.search_opener != self.position) self.bytes_scanned += 1;
         switch (c) {
             '\n' => try self.newline(),
             '\\' => try self.backslash(),
@@ -346,7 +357,8 @@ pub const Parser = struct {
             const last = &self.tokens.items[last_index];
             if (last.kind == .text and last.end() == start) {
                 last.len += end - start;
-                self.markChanged(last_index);
+                // Only its end moved: a display write can start at its old end.
+                self.extended_from = @min(self.extended_from, last_index);
                 return;
             }
         }
