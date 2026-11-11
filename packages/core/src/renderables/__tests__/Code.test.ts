@@ -336,6 +336,55 @@ describe("CodeRenderable", () => {
       ["shared block"],
     ],
     [
+      "mounted again with a callback that changes the parser",
+      async (t) => {
+        t.client.addFiletypeParser({ ...(await t.markdown(false)), filetype: "review" })
+        await t.settle(t.mount("A **reload**", { filetype: "review" }))
+        t.clear()
+        const inline = { ...(await t.markdown()), filetype: "review" }
+        let changed = false
+        const onChunks = (chunks: TextChunk[]) => {
+          if (!changed) t.client.addFiletypeParser(inline)
+          changed = true
+          return chunks
+        }
+        const b = t.mount("A **reload**", { filetype: "review", onChunks })
+        return [await t.frame(), await t.settle(b)]
+      },
+      ["", "A reload"],
+    ],
+    [
+      "the parser cache cleared in four generations under live blocks keeps no old results",
+      async (t) => {
+        const generations: WeakRef<object>[] = []
+        for (let generation = 0; generation < 4; generation++) {
+          const big = t.mount(`G${generation} ${"word ".repeat(30_000)}`)
+          await t.settle(big)
+          big.destroyRecursively()
+          await t.settle(t.mount(`${generation}`))
+          generations.push(new WeakRef(CodeRenderable._rememberedFor(t.client)!))
+          await t.client.clearCache()
+        }
+        await t.tick()
+        Bun.gc(true)
+        return [generations.filter((memory) => memory.deref()).length]
+      },
+      [0],
+    ],
+    [
+      "five blocks moved to another client, then destroyed, leave no owners behind",
+      async (t) => {
+        const other = await t.client2()
+        const blocks = [1, 2, 3, 4, 5].map((i) => t.mount(`A **${i}**`))
+        for (const block of blocks) await t.settle(block)
+        for (const block of blocks) block.treeSitterClient = other
+        for (const block of blocks) await t.settle(block)
+        t.clear()
+        return [CodeRenderable._rememberedFor(t.client)!.owners.size, CodeRenderable._rememberedFor(other)!.owners.size]
+      },
+      [0, 0],
+    ],
+    [
       "mounted again after the parser cache was cleared",
       async (t) => {
         await t.settle(t.mount("A **cache**"))

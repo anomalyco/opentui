@@ -154,7 +154,6 @@ export class CodeRenderable extends TextBufferRenderable {
   private _initialStyledText?: StyledText
   private _hadInitialContent: boolean = false
   private readonly _rememberOwner = ++rememberOwners
-  private _rememberedIn?: Memory
   // A remembered result for the current state is painted; the next change of state ends it.
   private _restored = false
   private _restorePending = true
@@ -236,7 +235,8 @@ export class CodeRenderable extends TextBufferRenderable {
     const content = this._content
     const filetype = this._filetype
     if (!this._highlightsDirty || this._drawUnstyledText || !filetype || !content) return
-    const last = remembered.get(this._treeSitterClient)?.results.get(rememberKey(filetype, content))
+    const memory = remembered.get(this._treeSitterClient)
+    const last = memory?.results.get(rememberKey(filetype, content))
     if (!last) return
     const snapshot = this._highlightSnapshotId
     let text: StyledText | undefined
@@ -255,8 +255,9 @@ export class CodeRenderable extends TextBufferRenderable {
     } catch {
       return
     }
-    // A callback may have changed the block (its content, filetype, ...) or destroyed it.
+    // A callback may have changed the block (its content, filetype, ...), destroyed it, or changed the client's parsers.
     if (snapshot !== this._highlightSnapshotId || this.isDestroyed) return
+    if (remembered.get(this._treeSitterClient) !== memory) return
     if (text) this.textBuffer.setStyledText(text)
     else this.textBuffer.setText(content)
     this.setRenderedLineSources(lineSources)
@@ -439,8 +440,20 @@ export class CodeRenderable extends TextBufferRenderable {
     return this._treeSitterClient
   }
 
+  /** @internal The client's current remembered results, for tests. */
+  static _rememberedFor(client: TreeSitterClient): { length: number; owners: ReadonlyMap<number, string> } | undefined {
+    return remembered.get(client)
+  }
+
+  // A memory that a parser change or a destroyed worker has dropped holds nothing to release.
+  private releaseRemembered(destroyed: boolean): void {
+    const memory = remembered.get(this._treeSitterClient)
+    if (memory) release(memory, this._rememberOwner, destroyed)
+  }
+
   set treeSitterClient(value: TreeSitterClient) {
     if (this._treeSitterClient !== value) {
+      this.releaseRemembered(false)
       this._treeSitterClient = value
       this.invalidateHighlights()
     }
@@ -558,7 +571,6 @@ export class CodeRenderable extends TextBufferRenderable {
       if (memory && !result.error) {
         const copy = this.exposesHighlights() ? copyHighlights(highlights) : highlights
         remember(memory, this._rememberOwner, rememberKey(filetype, content), copy)
-        this._rememberedIn = memory
       }
 
       if (this._onHighlight && highlights.length >= 0) {
@@ -800,7 +812,7 @@ export class CodeRenderable extends TextBufferRenderable {
     this.runCleanup((run) => {
       run(() => this.clearPendingHighlight())
       // Its last result stays for the block mounted in its place.
-      run(() => this._rememberedIn && release(this._rememberedIn, this._rememberOwner, true))
+      run(() => this.releaseRemembered(true))
       run(() => super.destroyOwnedResources())
     })
   }
