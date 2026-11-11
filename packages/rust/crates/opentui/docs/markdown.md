@@ -190,11 +190,18 @@ per top-level block, a blank row between blocks. These change to match Core:
 
 ## Proof
 
-`tests/fixtures/markdown/*.md` is a small corpus: headings, lists, code fences,
-tables, links, emphasis, quotes and rules. `tests/fixtures/markdown/render.ts`
-renders each with `@opentui/core` in `createTestRenderer` at 60 columns, as
-OpenCode configures it, with conceal on and off, into `<case>.<mode>.txt`. It
-also checks that Core's streamed frame, in chunks of 7 characters, equals the
-one-shot frame. `tests/markdown.rs` renders the same corpus with the Rust
-widget, one-shot and streamed in chunks, and compares the frames with Core's,
-except where a deviation above applies.
+Core and the Rust crate share one Markdown corpus,
+`packages/core/src/renderables/markdown.conformance.json`: the CommonMark and
+GFM spec examples with their HTML, the cases where the two parsers differed,
+and whole documents. `src/widget/markdown.rs` checks its block tree against
+each row's HTML and its streamed blocks against a fresh parse; rows where it
+disagrees with the spec are listed in the row.
+
+Its `fixture` rows with frames here are headings, lists, code fences, tables,
+links, emphasis, quotes and rules. `tests/fixtures/markdown/render.ts` renders
+each with `@opentui/core` in `createTestRenderer` at 60 columns, as OpenCode
+configures it, with conceal on and off, into `<case>.<mode>.txt`. It also checks
+that Core's streamed frame, in chunks of 7 characters, equals the one-shot
+frame. `tests/markdown.rs` renders the same rows with the Rust widget, one-shot
+and streamed in chunks, and compares the frames with Core's, except where a
+deviation above applies.
