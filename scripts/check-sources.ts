@@ -22,7 +22,8 @@ function expectAll(file: string, pattern: RegExp, expected: string, owner: strin
   }
 }
 
-// The targets that `file` names must be `expected` (all: true) or some of them.
+// The targets that `file` names (each match's first group, else the match) must be `expected` (all: true) or some
+// of them.
 function expectTargets(
   file: string,
   pattern: RegExp,
@@ -30,7 +31,7 @@ function expectTargets(
   all: boolean,
   normalize = (name: string) => name,
 ): void {
-  const found = new Set([...read(file).matchAll(pattern)].map((match) => normalize(match[0])))
+  const found = new Set([...read(file).matchAll(pattern)].map((match) => normalize(match[1] ?? match[0])))
   for (const name of found) if (!expected.has(name)) problems.add(`${file}: ${name} is not a target of variants.ts`)
   if (all) for (const name of expected) if (!found.has(name)) problems.add(`${file}: missing target ${name}`)
 }
@@ -87,34 +88,41 @@ for (const name of readdirSync(join(root, "packages"))) {
 const zigNames = new Set(variants.map(zigOutputName))
 const npmNames = new Set(variants.map(variantName))
 const zigPattern = /\b(?:x86_64|aarch64)-(?:linux|macos|windows)(?:-musl)?\b/g
-const npmPattern = /\b(?:darwin|linux|win32|windows)-(?:x64|arm64)(?:-musl)?\b/g
+const npmPattern = /\b(?:darwin|linux|win32|windows)-(?:x64|arm64)(?:-[a-z0-9]+)?\b/g
 const npm = (name: string) => name.replace(/^windows-/, "win32-")
-for (const file of [
-  "packages/native/build.zig",
-  "packages/native/scripts/build-ffmpeg.ts",
-  "packages/rust/crates/opentui-sys/build.rs",
-  "packages/rust/README.md",
-]) {
-  expectTargets(file, zigPattern, zigNames, true)
-}
+expectTargets("packages/native/build.zig", /\.output_name = "([^"]+)"/g, zigNames, true)
+expectTargets("packages/native/scripts/build-ffmpeg.ts", /\{ name: "([^"]+)"/g, zigNames, true)
+expectTargets("packages/rust/crates/opentui-sys/build.rs", /\("[^"]+", "([^"]+)",/g, zigNames, true)
+expectTargets("packages/rust/README.md", /\| `([^`]+)` +\|$/gm, zigNames, true)
 for (const file of ["packages/rust/scripts/check-targets.sh", "packages/rust/run.sh", "packages/rust/test.sh"]) {
   expectTargets(file, zigPattern, zigNames, false)
 }
 for (const file of [
   "packages/core/src/platform/runtime-assets.bun.ts",
-  ".github/workflows/build-native.yml",
-  ".github/workflows/release.yml",
   "packages/web/src/content/docs/getting-started/runtime-support.mdx",
   "packages/web/src/content/docs/reference/api-index.mdx",
 ]) {
+  expectTargets(file, /@opentui\/core-([a-z0-9-]+)/g, npmNames, true)
+}
+for (const file of [".github/workflows/build-native.yml", ".github/workflows/release.yml"]) {
   expectTargets(file, npmPattern, npmNames, true, npm)
 }
+// CI reads Bun and Node from their files (build-core.yml's minimum-Bun job aside), and FFmpeg's objects belong to
+// one Zig version, so its cache keys hash .zig-version.
 for (const dir of [
   ".github/workflows",
   ...readdirSync(join(root, ".github/actions")).map((name) => `.github/actions/${name}`),
 ]) {
   for (const name of readdirSync(join(root, dir)).filter((name) => name.endsWith(".yml"))) {
-    expectTargets(`${dir}/${name}`, npmPattern, npmNames, false, npm)
+    const file = `${dir}/${name}`
+    expectTargets(file, npmPattern, npmNames, false, npm)
+    const text = read(file)
+    if (/^\s*node-version:/m.test(text))
+      problems.add(`${file}: node-version, expected node-version-file: .node-version`)
+    if (/^\s*bun-version:/m.test(text) && file !== ".github/workflows/build-core.yml")
+      problems.add(`${file}: bun-version, expected bun-version-file: package.json`)
+    for (const key of text.match(/key: ffmpeg-.*/g) ?? [])
+      if (!key.includes("'.zig-version'")) problems.add(`${file}: FFmpeg cache key without .zig-version: ${key}`)
   }
 }
 const optional = Object.keys(json("packages/core/package.json").optionalDependencies ?? {})
