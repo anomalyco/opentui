@@ -21,6 +21,7 @@ test.each(["", "."])("stress output %p does not remove its package directory", (
   const sentinel = join(packageRoot, "sentinel.txt")
   mkdirSync(benchmarkDir, { recursive: true })
   cpSync(join(import.meta.dir, "ffi-fast-path-stress.ts"), script)
+  cpSync(join(import.meta.dir, "../../../../scripts/node26.mjs"), join(root, "scripts/node26.mjs"))
   writeFileSync(sentinel, "keep")
 
   const child = spawnSync(process.execPath, [script, `--output=${output}`], {
@@ -30,6 +31,7 @@ test.each(["", "."])("stress output %p does not remove its package directory", (
   })
 
   expect(child.status).not.toBe(0)
+  expect(child.stderr).toContain("--output must not be")
   expect(existsSync(sentinel)).toBe(true)
 })
 
