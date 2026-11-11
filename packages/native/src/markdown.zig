@@ -2275,19 +2275,24 @@ pub const Doc = struct {
                     const d_index = inline_parser.delimiterOf(r, i);
                     const d = if (d_index) |di| r.delimiters[di] else null;
                     const length = inline_parser.tokenDisplayLength(r, i);
-                    if (d != null and d.?.closer_match_count > 0) {
-                        var m = d.?.closer_first_match;
-                        while (m < d.?.closer_first_match + d.?.closer_match_count) : (m += 1) styles.apply(r.matches[m].kind, -1);
-                        writer.base.strong = styles.strong > 0;
-                        writer.base.italic = styles.italic > 0;
-                        writer.base.strikethrough = styles.strikethrough > 0;
-                        try writer.plain(r, t.end() - length, t.end());
-                    } else {
-                        try writer.plain(r, t.start, t.start + length);
-                        if (d) |dd| {
-                            var m = dd.opener_matches;
-                            while (m) |mi| : (m = r.matches[mi].next_for_opener) styles.apply(r.matches[mi].kind, 1);
+                    // A run may close spans and open others (CommonMark 6.2: `*a***b**`): the
+                    // closing matches end their styles, the literal rest shows, then the opening
+                    // matches start theirs.
+                    var closed: u32 = 0;
+                    if (d) |dd| {
+                        var m = dd.closer_first_match;
+                        while (m < dd.closer_first_match + dd.closer_match_count) : (m += 1) {
+                            styles.apply(r.matches[m].kind, -1);
+                            closed += r.matches[m].count;
                         }
+                    }
+                    writer.base.strong = styles.strong > 0;
+                    writer.base.italic = styles.italic > 0;
+                    writer.base.strikethrough = styles.strikethrough > 0;
+                    try writer.plain(r, t.start + closed, t.start + closed + length);
+                    if (d) |dd| {
+                        var m = dd.opener_matches;
+                        while (m) |mi| : (m = r.matches[mi].next_for_opener) styles.apply(r.matches[mi].kind, 1);
                     }
                 },
                 .bracket_open => {

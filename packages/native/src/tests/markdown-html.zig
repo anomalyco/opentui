@@ -407,24 +407,21 @@ const Inline = struct {
         const r = self.r;
         if (delimiter_index == none) return self.literal(token.start, token.end());
         const d = r.delimiters[delimiter_index];
-        if (d.closer_match_count > 0) {
-            // Closer: inner matches first, then the unmatched characters.
-            var m = d.closer_first_match;
-            var used: u32 = 0;
-            while (m < d.closer_first_match + d.closer_match_count) : (m += 1) {
-                try self.tag(closeTag(r.matches[m].kind));
-                used += r.matches[m].count;
-            }
-            try self.literal(token.start + used, token.end());
-            return;
+        // A run may close spans and open others (CommonMark 6.2: `*a***b**`): its closing
+        // matches take its first characters, its opening matches its last, and what neither
+        // took is literal in between.
+        var closed: u32 = 0;
+        var m = d.closer_first_match;
+        while (m < d.closer_first_match + d.closer_match_count) : (m += 1) {
+            try self.tag(closeTag(r.matches[m].kind));
+            closed += r.matches[m].count;
         }
-        // Opener: unmatched characters first, then the outermost match.
-        var used: u32 = 0;
-        var m = d.opener_matches;
-        while (m) |index| : (m = r.matches[index].next_for_opener) used += r.matches[index].count;
-        try self.literal(token.start, token.end() - used);
-        m = d.opener_matches;
-        while (m) |index| : (m = r.matches[index].next_for_opener) try self.tag(openTag(r.matches[index].kind));
+        var opened: u32 = 0;
+        var o = d.opener_matches;
+        while (o) |index| : (o = r.matches[index].next_for_opener) opened += r.matches[index].count;
+        try self.literal(token.start + closed, token.end() - opened);
+        o = d.opener_matches;
+        while (o) |index| : (o = r.matches[index].next_for_opener) try self.tag(openTag(r.matches[index].kind));
     }
 };
 

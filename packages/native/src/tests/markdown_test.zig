@@ -794,6 +794,8 @@ test "Markdown read_leaf: display bytes, chunk styles, spans and the URL pool" {
         .{ .source = "mail a.b@c.de now", .block = 0, .chunks = &.{ .{ "mail ", "", "" }, .{ "a.b@c.de", "link", "mailto:a.b@c.de" }, .{ " now", "", "" } } },
         .{ .source = "## *a* \\* b", .block = 0, .chunks = &.{ .{ "a", "heading italic", "" }, .{ " ", "heading", "" }, .{ "*", "heading escape", "" }, .{ " b", "heading", "" } } },
         .{ .source = "- x\n\n      code\n       more\n", .block = 3, .chunks = &.{.{ "code\n more", "raw", "" }} },
+        // One run closes a span and opens another (CommonMark 6.2).
+        .{ .source = "*a***b**", .block = 0, .chunks = &.{ .{ "a", " italic", "" }, .{ "b", "strong", "" } } },
     };
     for (rows) |row| {
         var f: Fixture = undefined;
