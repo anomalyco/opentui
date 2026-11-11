@@ -255,6 +255,21 @@ describe("EmbeddedTerminalRenderable", () => {
         y: 1,
       })
       expect(new TextDecoder().decode(motion)).toBe("\x1b[<35;2;2M")
+      const events = [
+        ["press", "left"],
+        ["release", "right"],
+        ["press", "middle"],
+        ["press", "five"],
+      ] as const
+      const encoded = events.map(([action, button]) =>
+        lib.contextEmbeddedTerminalEncodeMouse(context, handle, { action, button, x: 1, y: 1 }),
+      )
+      expect(encoded.map((bytes) => new TextDecoder().decode(bytes))).toEqual([
+        "\x1b[<0;2;2M",
+        "\x1b[<2;2;2m",
+        "\x1b[<1;2;2M",
+        "\x1b[<65;2;2M",
+      ])
 
       lib.contextEmbeddedTerminalWrite(context, handle, "\x1b[?1016h")
       expect(
