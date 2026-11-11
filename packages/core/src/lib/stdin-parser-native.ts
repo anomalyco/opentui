@@ -14,7 +14,7 @@ import {
   type SessionHandle,
 } from "../zig.js"
 import { SystemClock, type Clock, type TimerHandle } from "./clock.js"
-import { kittyKeyMap, printableKeypadText } from "./parse.keypress-kitty.js"
+import { kittyKeyMap } from "./kitty-keys.js"
 import type { ParsedKey } from "./parse.keypress.js"
 import type { MouseEventType, RawMouseEvent } from "./parse.mouse.js"
 
@@ -98,7 +98,6 @@ const REPLY_PROTOCOLS: Record<number, StdinResponseProtocol> = {
 // Core's `code` for legacy sequences: the introducer, number, and final without modifiers.
 const LEGACY_CODE_RE = /^\x1b+(O|\[\[?)(?:(\d+)(?:;\d+)?([~^$])|(?:1;)?\d*([a-zA-Z]))/
 const LEGACY_SEQUENCE_RE = /^\x1b\x1b?[[O]./s
-const KEYPAD_TEXT = new Set(Object.values(printableKeypadText))
 
 function concat(parts: Uint8Array[]): Uint8Array {
   let length = 0
@@ -435,7 +434,6 @@ function compatCode(raw: string, code: number, kitty: boolean): string | undefin
     if (!raw.endsWith("u") || kittyKeyMap[code] === undefined) return undefined
     return `[${/^\x1b+\[(\d+)/.exec(raw)![1]}u`
   }
-  if (kittyKeyMap[code] === undefined && !KEYPAD_TEXT.has(String.fromCodePoint(code))) return undefined
   const match = LEGACY_CODE_RE.exec(raw)
   return match ? [match[1], match[2], match[3], match[4]].filter(Boolean).join("") : undefined
 }

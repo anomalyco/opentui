@@ -1,4 +1,24 @@
-import { nativeConstants } from "./native-abi.generated.js"
+import {
+  OT_DISPLAY_FLEX,
+  OT_DISPLAY_NONE,
+  OT_DISPLAY_CONTENTS,
+  OT_YOGA_ERRATA_NONE,
+  OT_YOGA_ERRATA_STRETCH_FLEX_BASIS,
+  OT_YOGA_ERRATA_ABSOLUTE_POSITION_WITHOUT_INSETS_EXCLUDES_PADDING,
+  OT_YOGA_ERRATA_ABSOLUTE_PERCENT_AGAINST_INNER_SIZE,
+  OT_YOGA_ERRATA_ALL,
+  OT_YOGA_ERRATA_CLASSIC,
+  OT_YOGA_EXPERIMENTAL_FEATURE_WEB_FLEX_BASIS,
+  OT_YOGA_LOG_LEVEL_ERROR,
+  OT_YOGA_LOG_LEVEL_WARN,
+  OT_YOGA_LOG_LEVEL_INFO,
+  OT_YOGA_LOG_LEVEL_DEBUG,
+  OT_YOGA_LOG_LEVEL_VERBOSE,
+  OT_YOGA_LOG_LEVEL_FATAL,
+  OT_YOGA_NODE_TYPE_DEFAULT,
+  OT_YOGA_NODE_TYPE_TEXT,
+  nativeConstants,
+} from "./native-abi.generated.js"
 import { NATIVE_EDGE_NONE, resolveRenderLib, type RenderLib } from "./zig.js"
 import type { FFICallbackInstance, Pointer } from "./platform/ffi.js"
 import {
@@ -43,9 +63,9 @@ export enum Direction {
 }
 
 export enum Display {
-  Flex = 0,
-  None = 1,
-  Contents = 2,
+  Flex = OT_DISPLAY_FLEX,
+  None = OT_DISPLAY_NONE,
+  Contents = OT_DISPLAY_CONTENTS,
 }
 
 export enum Edge {
@@ -61,16 +81,16 @@ export enum Edge {
 }
 
 export enum Errata {
-  None = 0,
-  StretchFlexBasis = 1,
-  AbsolutePositionWithoutInsetsExcludesPadding = 2,
-  AbsolutePercentAgainstInnerSize = 4,
-  All = 2147483647,
-  Classic = 2147483646,
+  None = OT_YOGA_ERRATA_NONE,
+  StretchFlexBasis = OT_YOGA_ERRATA_STRETCH_FLEX_BASIS,
+  AbsolutePositionWithoutInsetsExcludesPadding = OT_YOGA_ERRATA_ABSOLUTE_POSITION_WITHOUT_INSETS_EXCLUDES_PADDING,
+  AbsolutePercentAgainstInnerSize = OT_YOGA_ERRATA_ABSOLUTE_PERCENT_AGAINST_INNER_SIZE,
+  All = OT_YOGA_ERRATA_ALL,
+  Classic = OT_YOGA_ERRATA_CLASSIC,
 }
 
 export enum ExperimentalFeature {
-  WebFlexBasis = 0,
+  WebFlexBasis = OT_YOGA_EXPERIMENTAL_FEATURE_WEB_FLEX_BASIS,
 }
 
 export enum FlexDirection {
@@ -96,12 +116,12 @@ export enum Justify {
 }
 
 export enum LogLevel {
-  Error = 0,
-  Warn = 1,
-  Info = 2,
-  Debug = 3,
-  Verbose = 4,
-  Fatal = 5,
+  Error = OT_YOGA_LOG_LEVEL_ERROR,
+  Warn = OT_YOGA_LOG_LEVEL_WARN,
+  Info = OT_YOGA_LOG_LEVEL_INFO,
+  Debug = OT_YOGA_LOG_LEVEL_DEBUG,
+  Verbose = OT_YOGA_LOG_LEVEL_VERBOSE,
+  Fatal = OT_YOGA_LOG_LEVEL_FATAL,
 }
 
 export enum MeasureMode {
@@ -111,8 +131,8 @@ export enum MeasureMode {
 }
 
 export enum NodeType {
-  Default = 0,
-  Text = 1,
+  Default = OT_YOGA_NODE_TYPE_DEFAULT,
+  Text = OT_YOGA_NODE_TYPE_TEXT,
 }
 
 export enum Overflow {

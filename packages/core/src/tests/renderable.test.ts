@@ -798,6 +798,49 @@ describe("Renderable - Child Management", () => {
     expect(parent.getChildrenCount()).toBe(0)
   })
 
+  // Typed callers are rejected at compile time; the wide dynamic contract (BaseRenderable) used by reconcilers and
+  // plain JS callers validates at runtime: falsy input returns -1 silently, other non-renderables return -1 and warn.
+  test("add and insertBefore reject non-renderable input", () => {
+    const parent = new TestRenderable(testRenderer, { id: "parent" })
+    const anchor = new TestRenderable(testRenderer, { id: "anchor" })
+    const dynParent: BaseRenderable = parent
+    parent.add(anchor)
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {})
+    const rows: [unknown, number][] = [
+      [null, 0],
+      [undefined, 0],
+      [false, 0],
+      [0, 0],
+      ["", 0],
+      [{}, 1],
+      ["not a renderable", 1],
+      [42, 1],
+      [[anchor], 1],
+    ]
+    for (const [input, warnings] of rows) {
+      for (const call of [() => dynParent.add(input), () => dynParent.insertBefore(input, anchor)]) {
+        warnSpy.mockClear()
+        expect<unknown>(call()).toBe(-1)
+        expect(warnSpy).toHaveBeenCalledTimes(warnings)
+      }
+    }
+    warnSpy.mockRestore()
+    expect(parent.getChildren()).toEqual([anchor])
+
+    const child = new TestRenderable(testRenderer, { id: "child" })
+    expect(() => dynParent.insertBefore(child, {})).toThrow("Anchor must be a Renderable")
+    expect(parent.insertBefore(child)).toBe(1)
+
+    // TextRenderable takes text children only; tsconfig.node-test.json checks these rows.
+    const text = new TextRenderable(testRenderer, {})
+    // @ts-expect-error a layout renderable is not a text child
+    expect(() => text.add(anchor)).toThrow()
+    // @ts-expect-error a number is not a text child
+    expect(() => text.add(42)).toThrow()
+    // @ts-expect-error an anchor must be a TextNodeRenderable
+    expect(() => text.insertBefore("hi", {})).toThrow()
+  })
+
   test("can change renderable id and updates parent mapping", () => {
     const parent = new TestRenderable(testRenderer, { id: "parent" })
     const child = new TestRenderable(testRenderer, { id: "child" })

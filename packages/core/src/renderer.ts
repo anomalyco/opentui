@@ -23,6 +23,7 @@ import {
   type WidthMethod,
 } from "./types.js"
 import { RGBA, parseColor, type ColorInput } from "./lib/RGBA.js"
+import { nativeConstants } from "./native-abi.generated.js"
 import { OptimizedBuffer } from "./buffer.js"
 import {
   LogLevel,
@@ -847,11 +848,12 @@ const DEFAULT_FORWARDED_ENV_KEYS = [
 
 // Kitty keyboard protocol flags
 // See: https://sw.kovidgoyal.net/kitty/keyboard-protocol/
-const KITTY_FLAG_DISAMBIGUATE = 0b1 // Report disambiguated escape codes
-const KITTY_FLAG_EVENT_TYPES = 0b10 // Report event types (press/repeat/release)
-const KITTY_FLAG_ALTERNATE_KEYS = 0b100 // Report alternate keys (e.g., numpad vs regular)
-const KITTY_FLAG_ALL_KEYS_AS_ESCAPES = 0b1000 // Report all keys as escape codes
-const KITTY_FLAG_REPORT_TEXT = 0b10000 // Report text associated with key events
+const KITTY_FLAG_DISAMBIGUATE = nativeConstants.OT_KITTY_KEYBOARD_DISAMBIGUATE
+const KITTY_FLAG_EVENT_TYPES = nativeConstants.OT_KITTY_KEYBOARD_EVENT_TYPES
+const KITTY_FLAG_ALTERNATE_KEYS = nativeConstants.OT_KITTY_KEYBOARD_ALTERNATE_KEYS
+const KITTY_FLAG_ALL_KEYS_AS_ESCAPES = nativeConstants.OT_KITTY_KEYBOARD_ALL_KEYS_AS_ESCAPES
+const KITTY_FLAG_REPORT_TEXT = nativeConstants.OT_KITTY_KEYBOARD_REPORT_TEXT
+const KITTY_FLAGS_ALL = nativeConstants.OT_KITTY_KEYBOARD_ALL
 
 const NATIVE_PALETTE_QUERY_SIZE = 16
 // The one reply clock: a peer that never answers DA1 gives no event that ends its batch.
@@ -3406,12 +3408,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.capturedRenderable = undefined
   }
 
-  public enableKittyKeyboard(flags: number = 0b00011): void {
+  public enableKittyKeyboard(flags: number = KITTY_FLAG_DISAMBIGUATE | KITTY_FLAG_EVENT_TYPES): void {
     if (this.nativeTerminalTransition || this._controlState === RendererControlState.EXPLICIT_SUSPENDED) {
       throw new Error("Cannot change native scene Kitty modes during a terminal transition or suspension")
     }
-    if (!Number.isInteger(flags) || flags < 0 || flags > 31)
-      throw new RangeError("Native scene Kitty flags must be in 0..31")
+    if (!Number.isInteger(flags) || flags < 0 || flags > KITTY_FLAGS_ALL)
+      throw new RangeError(`Native scene Kitty flags must be in 0..${KITTY_FLAGS_ALL}`)
     if (this._terminalIsSetup) this.nativeSession.control({ kind: "kitty-keyboard-flags", flags })
     this.nativeKittyKeyboardFlags = flags
   }

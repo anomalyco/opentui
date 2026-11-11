@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test"
 import { createMockMouse, MouseButtons } from "./mock-mouse.js"
-import { MouseParser } from "../lib/parse.mouse.js"
+import type { RawMouseEvent } from "../lib/parse.mouse.js"
+import { NativeStdinParser } from "../lib/stdin-parser-native.js"
 
 class MockRenderer {
   public stdin: { emit: (event: string, data: Buffer) => void }
@@ -19,19 +20,28 @@ class MockRenderer {
   }
 }
 
-// Helper function to parse all events from buffer
-function parseAllEvents(emittedData: Buffer, parser: MouseParser) {
-  return parser.parseAllMouseEvents(emittedData)
+// Parses the bytes with the renderer's native input parser and keeps the mouse events.
+function parseAllEvents(emittedData: Buffer): RawMouseEvent[] {
+  const parser = new NativeStdinParser({ armTimeouts: false })
+  const events: RawMouseEvent[] = []
+  try {
+    parser.push(emittedData)
+    parser.drain((event) => {
+      if (event.type === "mouse") events.push(event.event)
+    })
+    return events
+  } finally {
+    parser.destroy()
+  }
 }
 
 describe("mock-mouse + parser integration", () => {
   test("simple click is correctly parsed", async () => {
     const mockRenderer = new MockRenderer()
     const mockMouse = createMockMouse(mockRenderer as any)
-    const parser = new MouseParser()
 
     await mockMouse.click(10, 5)
-    const parsedEvents = parseAllEvents(mockRenderer.getEmittedData(), parser)
+    const parsedEvents = parseAllEvents(mockRenderer.getEmittedData())
 
     expect(parsedEvents).toHaveLength(2)
     expect(parsedEvents[0]).toEqual({
@@ -40,7 +50,6 @@ describe("mock-mouse + parser integration", () => {
       x: 10,
       y: 5,
       modifiers: { shift: false, alt: false, ctrl: false },
-      scroll: undefined,
     })
     expect(parsedEvents[1]).toEqual({
       type: "up",
@@ -48,17 +57,15 @@ describe("mock-mouse + parser integration", () => {
       x: 10,
       y: 5,
       modifiers: { shift: false, alt: false, ctrl: false },
-      scroll: undefined,
     })
   })
 
   test("double click is correctly parsed", async () => {
     const mockRenderer = new MockRenderer()
     const mockMouse = createMockMouse(mockRenderer as any)
-    const parser = new MouseParser()
 
     await mockMouse.doubleClick(10, 5)
-    const parsedEvents = parseAllEvents(mockRenderer.getEmittedData(), parser)
+    const parsedEvents = parseAllEvents(mockRenderer.getEmittedData())
 
     expect(parsedEvents).toHaveLength(4)
     // All events should be at the same position with LEFT button
@@ -74,11 +81,10 @@ describe("mock-mouse + parser integration", () => {
   test("pressDown and release separately are correctly parsed", async () => {
     const mockRenderer = new MockRenderer()
     const mockMouse = createMockMouse(mockRenderer as any)
-    const parser = new MouseParser()
 
     await mockMouse.pressDown(10, 5, MouseButtons.MIDDLE)
     await mockMouse.release(10, 5, MouseButtons.MIDDLE)
-    const parsedEvents = parseAllEvents(mockRenderer.getEmittedData(), parser)
+    const parsedEvents = parseAllEvents(mockRenderer.getEmittedData())
 
     expect(parsedEvents).toHaveLength(2)
     expect(parsedEvents[0]).toEqual({
@@ -87,7 +93,6 @@ describe("mock-mouse + parser integration", () => {
       x: 10,
       y: 5,
       modifiers: { shift: false, alt: false, ctrl: false },
-      scroll: undefined,
     })
     expect(parsedEvents[1]).toEqual({
       type: "up",
@@ -95,18 +100,16 @@ describe("mock-mouse + parser integration", () => {
       x: 10,
       y: 5,
       modifiers: { shift: false, alt: false, ctrl: false },
-      scroll: undefined,
     })
   })
 
   test("different buttons work correctly", async () => {
     const mockRenderer = new MockRenderer()
     const mockMouse = createMockMouse(mockRenderer as any)
-    const parser = new MouseParser()
 
     // Test RIGHT button
     await mockMouse.click(10, 5, MouseButtons.RIGHT)
-    const parsedEvents = parseAllEvents(mockRenderer.getEmittedData(), parser)
+    const parsedEvents = parseAllEvents(mockRenderer.getEmittedData())
 
     expect(parsedEvents).toHaveLength(2)
     parsedEvents.forEach((event) => {
@@ -119,14 +122,13 @@ describe("mock-mouse + parser integration", () => {
   test("all scroll directions are correctly parsed", async () => {
     const mockRenderer = new MockRenderer()
     const mockMouse = createMockMouse(mockRenderer as any)
-    const parser = new MouseParser()
 
     await mockMouse.scroll(15, 8, "up")
     await mockMouse.scroll(15, 8, "down")
     await mockMouse.scroll(15, 8, "left")
     await mockMouse.scroll(15, 8, "right")
 
-    const parsedEvents = parseAllEvents(mockRenderer.getEmittedData(), parser)
+    const parsedEvents = parseAllEvents(mockRenderer.getEmittedData())
 
     expect(parsedEvents).toHaveLength(4)
     const expectedDirections: ("up" | "down" | "left" | "right")[] = ["up", "down", "left", "right"]
@@ -146,10 +148,9 @@ describe("mock-mouse + parser integration", () => {
   test("scroll with modifiers is correctly parsed", async () => {
     const mockRenderer = new MockRenderer()
     const mockMouse = createMockMouse(mockRenderer as any)
-    const parser = new MouseParser()
 
     await mockMouse.scroll(15, 8, "left", { modifiers: { shift: true } })
-    const parsedEvents = parseAllEvents(mockRenderer.getEmittedData(), parser)
+    const parsedEvents = parseAllEvents(mockRenderer.getEmittedData())
 
     expect(parsedEvents).toHaveLength(1)
     expect(parsedEvents[0]).toEqual({
@@ -165,10 +166,9 @@ describe("mock-mouse + parser integration", () => {
   test("drag events are correctly parsed", async () => {
     const mockRenderer = new MockRenderer()
     const mockMouse = createMockMouse(mockRenderer as any)
-    const parser = new MouseParser()
 
     await mockMouse.drag(5, 5, 15, 10)
-    const parsedEvents = parseAllEvents(mockRenderer.getEmittedData(), parser)
+    const parsedEvents = parseAllEvents(mockRenderer.getEmittedData())
 
     // Should have down, several drag events, and up
     expect(parsedEvents.length).toBeGreaterThan(3)
@@ -192,10 +192,9 @@ describe("mock-mouse + parser integration", () => {
   test("moveTo without button press generates move events", async () => {
     const mockRenderer = new MockRenderer()
     const mockMouse = createMockMouse(mockRenderer as any)
-    const parser = new MouseParser()
 
     await mockMouse.moveTo(15, 8)
-    const parsedEvents = parseAllEvents(mockRenderer.getEmittedData(), parser)
+    const parsedEvents = parseAllEvents(mockRenderer.getEmittedData())
 
     expect(parsedEvents).toHaveLength(1)
     expect(parsedEvents[0]).toEqual({
@@ -204,18 +203,16 @@ describe("mock-mouse + parser integration", () => {
       x: 15,
       y: 8,
       modifiers: { shift: false, alt: false, ctrl: false },
-      scroll: undefined,
     })
   })
 
   test("moveTo with button press generates drag events", async () => {
     const mockRenderer = new MockRenderer()
     const mockMouse = createMockMouse(mockRenderer as any)
-    const parser = new MouseParser()
 
     await mockMouse.pressDown(5, 5)
     await mockMouse.moveTo(15, 8)
-    const parsedEvents = parseAllEvents(mockRenderer.getEmittedData(), parser)
+    const parsedEvents = parseAllEvents(mockRenderer.getEmittedData())
 
     expect(parsedEvents).toHaveLength(2)
     expect(parsedEvents[0].type).toBe("down")
@@ -227,7 +224,6 @@ describe("mock-mouse + parser integration", () => {
   test("all modifier combinations work", async () => {
     const mockRenderer = new MockRenderer()
     const mockMouse = createMockMouse(mockRenderer as any)
-    const parser = new MouseParser()
 
     const modifierCombos = [
       { shift: true },
@@ -242,10 +238,9 @@ describe("mock-mouse + parser integration", () => {
     for (const modifiers of modifierCombos) {
       const testRenderer = new MockRenderer()
       const testMouse = createMockMouse(testRenderer as any)
-      const testParser = new MouseParser()
 
       await testMouse.click(10, 5, MouseButtons.LEFT, { modifiers })
-      const parsedEvents = parseAllEvents(testRenderer.getEmittedData(), testParser)
+      const parsedEvents = parseAllEvents(testRenderer.getEmittedData())
 
       expect(parsedEvents).toHaveLength(2)
       parsedEvents.forEach((event) => {
@@ -262,10 +257,9 @@ describe("mock-mouse + parser integration", () => {
   test("drag with different button and modifiers", async () => {
     const mockRenderer = new MockRenderer()
     const mockMouse = createMockMouse(mockRenderer as any)
-    const parser = new MouseParser()
 
     await mockMouse.drag(5, 5, 15, 10, MouseButtons.RIGHT, { modifiers: { alt: true } })
-    const parsedEvents = parseAllEvents(mockRenderer.getEmittedData(), parser)
+    const parsedEvents = parseAllEvents(mockRenderer.getEmittedData())
 
     expect(parsedEvents.length).toBeGreaterThan(3)
     parsedEvents.forEach((event) => {

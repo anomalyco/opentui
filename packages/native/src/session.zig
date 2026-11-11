@@ -9,6 +9,7 @@ const scene = @import("scene.zig");
 const buffer = @import("buffer.zig");
 const input_parser = @import("input-parser.zig");
 const stdout_writer = @import("stdout-writer.zig");
+const utf8 = @import("utf8.zig");
 const Context = @import("context.zig").Context;
 const api = @import("context_abi_c");
 
@@ -255,7 +256,7 @@ pub const program_status_bytes_max: u32 = "\x1b]7501;state=blocked:id=:kind=perm
     program_status_id_bytes_max + program_status_app_bytes_max + std.base64.standard.Encoder.calcSize(program_status_title_bytes_max) +
     std.base64.standard.Encoder.calcSize(program_status_message_bytes_max);
 pub const cursor_settle_ns: u64 = 10 * std.time.ns_per_ms;
-pub const split_snapshots_max: u32 = 64;
+pub const split_snapshots_max: u32 = api.OT_SPLIT_SNAPSHOTS_MAX;
 
 pub const SplitControl = union(enum) {
     reset: struct { seed_rows: u32, pinned_render_offset: u32 },
@@ -760,7 +761,7 @@ pub const Session = struct {
         switch (command) {
             .title => |title| try validateText(title, title_bytes_max),
             .kitty_keyboard_flags => |flags| {
-                if (flags & ~@as(u8, 0b11111) != 0) return error.InvalidOptions;
+                if (flags & ~@as(u8, api.OT_KITTY_KEYBOARD_ALL) != 0) return error.InvalidOptions;
             },
             .palette_query => |query| try validatePaletteQuery(query.bytes),
             .program_status => |status| try validateProgramStatus(status),
@@ -781,14 +782,7 @@ pub const Session = struct {
 
     /// UTF-8 without C0, DEL, or C1 controls.
     fn validateText(text: []const u8, bytes_max: u32) Error!void {
-        if (text.len > bytes_max) return error.InvalidOptions;
-        const view = std.unicode.Utf8View.init(text) catch return error.InvalidOptions;
-        var codepoints = view.iterator();
-        while (codepoints.nextCodepoint()) |codepoint| {
-            if (codepoint < 0x20 or (codepoint >= 0x7f and codepoint <= 0x9f)) {
-                return error.InvalidOptions;
-            }
-        }
+        if (text.len > bytes_max or !std.unicode.utf8ValidateSlice(text) or utf8.containsControl(text)) return error.InvalidOptions;
     }
 
     /// Rejects every report a terminal would discard or partly ignore, so each
@@ -1098,7 +1092,7 @@ pub const Session = struct {
         std.debug.assert(value.height > 0 and value.renderOffset < std.math.maxInt(u32));
         // Reserved rows follow the current footer geometry, which a transition replaces.
         if (value.pendingSplitFooterTransition.mode != .none) return error.SplitRenderPending;
-        if (kitty_keyboard_flags & ~@as(u8, 0b11111) != 0) return error.InvalidOptions;
+        if (kitty_keyboard_flags & ~@as(u8, api.OT_KITTY_KEYBOARD_ALL) != 0) return error.InvalidOptions;
         if (@as(u64, self.output.control_chunks) * self.output.options.chunk_size < control_packet_bytes_max) {
             return error.NoSpace;
         }

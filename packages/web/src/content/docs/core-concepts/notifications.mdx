@@ -87,7 +87,7 @@ Use `allow-passthrough all` if notifications need to work from panes that are no
 
 Zellij notification forwarding uses OSC 99. OpenTUI ignores inherited outer-terminal heuristics inside Zellij. It enables notifications only after a matching OSC 99 query reply or an explicit protocol override. Selected OSC 99 output remains raw instead of using tmux wrapping.
 
-For a local GNU Screen session with `STY` set, OpenTUI wraps a selected protocol in Screen DCS passthrough. Screen does not itself select a notification protocol, so detection or an override must still enable one.
+When `renderer.capabilities?.multiplexer === "screen"`, OpenTUI wraps a selected protocol in Screen DCS passthrough, as it does for OSC 52. Screen forwards only the low byte of each character, so inside Screen every non-ASCII character in OSC 777 and OSC 9 text becomes a space; OSC 99 payloads are base64 and keep their text. Screen does not itself select a notification protocol, so detection or an override must still enable one.
 
 In an [SSH session](/docs/reference/ssh), the renderer sends the sequence to the client terminal. The server desktop is not the notification destination.
 

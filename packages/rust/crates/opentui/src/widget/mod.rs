@@ -49,7 +49,9 @@ pub use frame_buffer::FrameBuffer;
 pub use image::ImageView;
 pub use input::Input;
 pub use line_numbers::{LineColor, LineNumbers, LineSign};
-pub use markdown::{CodeBlock, Markdown, MarkdownColors, MarkdownTableOptions, MarkdownTableStyle};
+pub use markdown::{
+    CodeBlock, InlineContext, InlineSpan, Markdown, MarkdownColors, MarkdownTableOptions, MarkdownTableStyle,
+};
 pub use painter::Painter;
 pub use scroll::{LinearScroll, MacOsScroll, ScrollAcceleration, ScrollAction, ScrollBox, ScrollEdge};
 pub use select::{Select, SelectAction, SelectOption};

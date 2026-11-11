@@ -356,7 +356,7 @@ impl<'a> Surface<'a> {
     pub fn char(&mut self, x: u32, y: u32) -> Option<char> {
         let (planes, index) = self.index(x, y)?;
         let raw = planes.chars[index];
-        if raw & CHAR_TYPE_MASK != 0 { None } else { char::from_u32(raw) }
+        if is_pooled(raw) { None } else { char::from_u32(raw) }
     }
 
     /// Whether a cell holds part of a grapheme that native code keeps in its pool: text outside ASCII, such as an
@@ -401,17 +401,15 @@ impl std::fmt::Debug for Surface<'_> {
     }
 }
 
-/// The high bits that mark pooled graphemes (`10`), their continuation cells (`11`), and image cells (`01`).
-const CHAR_TYPE_MASK: u32 = 0xc000_0000;
-
 /// Whether a raw character names a pooled grapheme or one of its continuation cells.
 pub(crate) fn is_cluster(raw: u32) -> bool {
-    raw & 0x8000_0000 != 0
+    use crate::sys::{OT_CELL_CHAR_CONTINUATION, OT_CELL_CHAR_GRAPHEME, OT_CELL_CHAR_KIND_MASK};
+    matches!(raw & OT_CELL_CHAR_KIND_MASK, OT_CELL_CHAR_GRAPHEME | OT_CELL_CHAR_CONTINUATION)
 }
 
 /// Whether a raw character is anything but a plain character.
 pub(crate) fn is_pooled(raw: u32) -> bool {
-    raw & CHAR_TYPE_MASK != 0
+    raw & crate::sys::OT_CELL_CHAR_KIND_MASK != 0
 }
 
 fn read_color(plane: &[u16], index: usize) -> Color {

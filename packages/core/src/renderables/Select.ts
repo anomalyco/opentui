@@ -234,9 +234,9 @@ export class SelectRenderable extends Renderable {
     return this._options
   }
 
-  public set options(options: SelectOption[]) {
-    this._options = options
-    this._selectedIndex = Math.min(this._selectedIndex, Math.max(0, options.length - 1))
+  public set options(options: SelectOption[] | null | undefined) {
+    this._options = options ?? []
+    this._selectedIndex = Math.min(this._selectedIndex, Math.max(0, this._options.length - 1))
     this.updateScrollOffset()
     this.requestRender()
   }
@@ -449,9 +449,9 @@ export class SelectRenderable extends Renderable {
     this._fastScrollStep = step
   }
 
-  public set keyBindings(bindings: SelectKeyBinding[]) {
-    this._keyBindings = bindings
-    const mergedBindings = mergeKeyBindings(defaultSelectKeybindings, bindings)
+  public set keyBindings(bindings: SelectKeyBinding[] | null | undefined) {
+    this._keyBindings = bindings ?? []
+    const mergedBindings = mergeKeyBindings(defaultSelectKeybindings, this._keyBindings)
     this._keyBindingsMap = buildKeyBindingsMap(mergedBindings, this._keyAliasMap)
   }
 

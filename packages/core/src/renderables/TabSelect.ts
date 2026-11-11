@@ -328,8 +328,8 @@ export class TabSelectRenderable extends Renderable {
     return this._options
   }
 
-  public set options(options: TabSelectOption[]) {
-    this.setOptions(options)
+  public set options(options: TabSelectOption[] | null | undefined) {
+    this.setOptions(options ?? [])
   }
 
   public set backgroundColor(color: ColorInput) {
@@ -423,9 +423,9 @@ export class TabSelectRenderable extends Renderable {
     this.setTabWidth(tabWidth)
   }
 
-  public set keyBindings(bindings: TabSelectKeyBinding[]) {
-    this._keyBindings = bindings
-    const mergedBindings = mergeKeyBindings(defaultTabSelectKeybindings, bindings)
+  public set keyBindings(bindings: TabSelectKeyBinding[] | null | undefined) {
+    this._keyBindings = bindings ?? []
+    const mergedBindings = mergeKeyBindings(defaultTabSelectKeybindings, this._keyBindings)
     this._keyBindingsMap = buildKeyBindingsMap(mergedBindings, this._keyAliasMap)
   }
 

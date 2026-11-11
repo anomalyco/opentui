@@ -24,7 +24,7 @@ files=$(git -c core.quotePath=false diff --name-only --no-renames "$2" "$3")
 # The crates, what they link, generate from and read in tests, and the CI that tests them.
 rust=false
 if printf '%s\n' "$files" | grep -Eq \
-    '^(packages/rust/|packages/native/|packages/core/scripts/native-abi|packages/core/src/tests/fixtures/video/|packages/core/src/.*\.conformance\.json$|scripts/(native-bottle\.ts|ci-changes\.sh)$|\.github/actions/|\.github/workflows/(build-core|changes)\.yml$)'; then
+    '^(packages/rust/|packages/native/|packages/core/scripts/native-abi|packages/keymap/scripts/rust-tables\.ts$|packages/core/src/tests/fixtures/video/|packages/core/src/.*\.conformance\.json$|scripts/(native-bottle\.ts|ci-changes\.sh)$|\.github/actions/|\.github/workflows/(build-core|changes)\.yml$)'; then
     rust=true
 fi
 # Every changed file is in the crates. An empty diff prints one empty line, which is not, so it runs everything.
@@ -42,7 +42,7 @@ fi
 # runs all of them. A framework change also runs the packages that build against it.
 shared=false
 if printf '%s\n' "$files" | grep -Eq \
-    '^(packages/(core|native|three)/|bun\.lock$|package\.json$|tsconfig[^/]*\.json$|\.github/|scripts/)'; then
+    '^(packages/(core|native|three)/|bun\.lock$|package\.json$|\.node-version$|tsconfig[^/]*\.json$|\.github/|scripts/)'; then
     shared=true
 fi
 core=$shared

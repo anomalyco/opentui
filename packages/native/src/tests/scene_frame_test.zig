@@ -659,7 +659,13 @@ test "Scene frame band frames clear and paint only the damaged rows' members" {
         if (!verify) continue;
         for ([_]*@import("../buffer.zig").OptimizedBuffer{ f.cli.getNextBuffer(), f.cli.currentRenderBuffer }) |target| try target.drawText("X", 0, 50, ansi.rgbColor(255, 255, 255, 255), null, 0);
         try f.owner.sceneSetText(texts[0], "z");
+        try f.owner.sceneSetPositions(texts[2], 3, .{ 1, 1, 0, 0 }, .{ 2, 6, 0, 0 });
         try testing.expectError(error.RetainedMismatch, f.owner.scenePaint(f.id, options.background, true, 0));
+        // The failed frame leaves the finished one's answers: kept text answers where that frame drew it, and
+        // the changed text does not answer.
+        try testing.expectEqual(@as(?u32, 0), try f.owner.sceneGetTextByteAt(texts[1], 0, 3));
+        try testing.expectEqual(@as(?u32, 0), try f.owner.sceneGetTextByteAt(texts[2], 0, 6));
+        try testing.expectEqual(@as(?u32, null), try f.owner.sceneGetTextByteAt(texts[0], 0, 0));
     }
     try testing.expectEqual(results[0], results[1]);
     // A scroll node's bars paint on the band only, under a later box that covers them elsewhere.
@@ -678,6 +684,25 @@ test "Scene frame band frames clear and paint only the damaged rows' members" {
     const w = try presentWork(f, .{});
     try testing.expectEqual(@as(u64, 4), w.cells_cleared);
     try testing.expectEqual(@as(u8, 90), ansi.red(f.cli.currentRenderBuffer.get(1, 2).?.bg));
+}
+
+test "Scene text bytes answer only for glyphs a finished frame drew" {
+    const f = try Fixture.init(testing.allocator, 6, 2, .{});
+    defer f.deinit();
+    const text = try placedAt(f, f.root, c.OT_SCENE_TEXT, 2, 0, 0, 6, 1);
+    try f.owner.sceneSetText(text, "abc");
+    _ = try presentWork(f, .{});
+    try testing.expectEqual(@as(?u32, 1), try f.owner.sceneGetTextByteAt(text, 1, 0));
+    // A SELF hook that draws nothing replaces the glyphs.
+    try f.owner.sceneSetHooks(text, c.OT_SCENE_HOOK_RENDER_SELF, 1, 0, 0);
+    var request = try f.owner.sceneFrameStep(f.id, null, options);
+    while (request.kind != c.OT_SCENE_FRAME_DONE) {
+        var recording: Recording = .{};
+        request = try f.owner.sceneFrameStepWithRecording(f.id, request, options, recording.view());
+    }
+    _ = try f.owner.sceneFrameCommit(f.id, request, false);
+    try drain(f.owner, f.id);
+    try testing.expectEqual(@as(?u32, null), try f.owner.sceneGetTextByteAt(text, 1, 0));
 }
 
 const BandCase = enum { space_border_tall, space_border_tracker, hooked_body, hooked_after, surface, offscreen_view, offscreen_view_self };

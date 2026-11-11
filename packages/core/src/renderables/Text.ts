@@ -109,17 +109,21 @@ export class TextRenderable extends TextBufferRenderable {
     super.requestRender()
   }
 
-  public add(obj: TextNodeRenderable | StyledText | string, index?: number): number {
-    return this.textNode.add(obj, index)
+  public override add(obj: TextNodeRenderable | StyledText | string, index?: number): number
+  public override add(obj: never, index?: number): number
+  public override add(obj: unknown, index?: number): number {
+    return this.textNode.add(obj as TextNodeRenderable | StyledText | string, index)
   }
 
   public remove(child: BaseRenderable): void {
     this.textNode.remove(child)
   }
 
-  public insertBefore(obj: BaseRenderable | any, anchor?: TextNodeRenderable): number {
-    this.textNode.insertBefore(obj, anchor)
-    return this.textNode.children.indexOf(obj)
+  public override insertBefore(obj: TextNodeRenderable | StyledText | string, anchor?: TextNodeRenderable): number
+  public override insertBefore(obj: never, anchor?: never): number
+  public override insertBefore(obj: unknown, anchor?: unknown): number {
+    this.textNode.insertBefore(obj as TextNodeRenderable | StyledText | string, anchor)
+    return this.textNode.children.indexOf(obj as string | TextNodeRenderable)
   }
 
   public getTextChildren(): BaseRenderable[] {
