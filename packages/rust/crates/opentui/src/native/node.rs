@@ -410,9 +410,10 @@ impl Node {
         })
     }
 
-    /// The byte, in the text last set, where the grapheme at screen cell `(x, y)` starts, with the node where the
-    /// latest frame painted it, or `None` where it draws none, such as wrap padding. It does not check what covers
-    /// the cell; [`Session::hit_test`](super::Session::hit_test) does.
+    /// The byte, in the text last set, where the grapheme the latest finished frame drew at screen cell `(x, y)`
+    /// starts. `None` when that frame did not paint the node, when its text or view options changed since, and on
+    /// cells without a whole grapheme, such as padding or a wide character an edge cuts. It does not check what
+    /// covers the cell; [`Session::hit_test`](super::Session::hit_test) does.
     pub fn text_byte_at(&self, x: i32, y: i32) -> Result<Option<u32>> {
         let mut byte = 0;
         check("ot_scene_get_text_byte_at", unsafe {

@@ -765,6 +765,10 @@ type InlineHook = Rc<dyn Fn(Vec<InlineSpan>, &InlineContext<'_>) -> Vec<InlineSp
 struct Targets {
     text: Text,
     ranges: Vec<(Range<usize>, String)>,
+    /// The app's frame number when `ranges` arrived: later frames paint them.
+    since: u64,
+    /// The ranges the frames up to `since` painted.
+    painted: Vec<(Range<usize>, String)>,
 }
 
 /// The look of Markdown tables. See [`MarkdownTableOptions`].
@@ -905,6 +909,8 @@ struct Renderer<'a> {
     urls: bool,
     /// The click targets of the paragraphs and headings built since the caller last took them.
     targets: &'a RefCell<Vec<Targets>>,
+    /// The targets of the block being built again, before it changed.
+    previous: &'a RefCell<Vec<Targets>>,
 }
 
 impl Renderer<'_> {
@@ -943,8 +949,14 @@ impl Renderer<'_> {
             Some(widget) => widget.set_text(content),
             None => Text::new(self.app, content),
         };
-        if !ranges.is_empty() {
-            self.targets.borrow_mut().push(Targets { text: text.clone(), ranges });
+        // Until a frame paints the new ranges, clicks keep reaching the ones on screen.
+        let mut previous = self.previous.borrow_mut();
+        let old = previous.iter().position(|old| old.text.id() == text.id()).map(|index| previous.swap_remove(index));
+        let since = self.app.frame_number();
+        let painted = old.map_or_else(Vec::new, |old| if old.since < since { old.ranges } else { old.painted });
+        if !ranges.is_empty() || !painted.is_empty() {
+            self.targets.borrow_mut().push(Targets { text: text.clone(), ranges, since, painted });
+            self.app.request_redraw();
         }
         text
     }
@@ -1348,12 +1360,11 @@ impl Markdown {
         let hit = self.0.element.app()?.widget_at(x, y)?;
         let shown = self.0.shown.borrow();
         let targets = shown.iter().flat_map(|shown| &shown.targets).find(|targets| targets.text.id() == hit.id())?;
-        // Text that changed after that frame is not what the cell shows.
-        if !targets.text.painted() {
-            return None;
-        }
         let byte = targets.text.element().query(|node| node.text_byte_at(i32::from(x), i32::from(y)))?? as usize;
-        let (_, target) = targets.ranges.iter().find(|(range, _)| range.contains(&byte))?;
+        // The ranges that frame painted, which the newest are once a frame has followed them.
+        let app = self.0.element.app()?;
+        let ranges = if app.frame_number() > targets.since { &targets.ranges } else { &targets.painted };
+        let (_, target) = ranges.iter().find(|(range, _)| range.contains(&byte))?;
         Some(target.clone())
     }
 
@@ -1371,7 +1382,7 @@ impl Markdown {
         let styles =
             self.0.styles.get().unwrap_or_else(|| MarkdownStyles::new(&colors, options.scopes.then_some(&**syntax)));
         self.0.styles.set(Some(styles));
-        let targets = RefCell::new(Vec::new());
+        let (targets, previous) = (RefCell::new(Vec::new()), RefCell::new(Vec::new()));
         let renderer = Renderer {
             app: &app,
             colors,
@@ -1380,11 +1391,13 @@ impl Markdown {
             options: &options,
             urls: !hyperlinks,
             targets: &targets,
+            previous: &previous,
         };
         let source = self.0.source.borrow();
         let mut shown = self.0.shown.borrow_mut();
         if let Rebuild::Hook(_) = rebuild {
             for (index, old) in shown.iter_mut().enumerate().filter(|(_, old)| rebuild.matches(&old.block)) {
+                previous.replace(std::mem::take(&mut old.targets));
                 let rendered = renderer.render(&old.block, Some((&old.block, &old.rendered)));
                 self.replace(index, &old.rendered, &rendered);
                 (old.rendered, old.targets) = (rendered, targets.take());
@@ -1416,6 +1429,7 @@ impl Markdown {
                 old.start = start;
                 continue;
             }
+            previous.replace(std::mem::take(&mut old.targets));
             let rendered = renderer.render(&block, (!rebuilt).then_some((&old.block, &old.rendered)));
             self.replace(index, &old.rendered, &rendered);
             *old = Shown { start, block, rendered, targets: targets.take() };

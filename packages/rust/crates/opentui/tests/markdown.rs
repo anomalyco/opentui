@@ -421,6 +421,20 @@ fn targets_answer_only_where_the_last_frame_drew_them() {
     assert_eq!(markdown.target_at(0, 0), None, "{}", shown.text());
     let capture = app.render();
     assert_targets(&capture, &markdown, |_| "ses_bot");
+
+    // Equal text for another target: the painted target answers until a frame paints the new one.
+    let same: Titles =
+        Rc::new(RefCell::new(HashMap::from([("ses_top", "Same"), ("ses_mid", "Same"), ("ses_bot", "Same")])));
+    let app = TestApp::new(12, 2);
+    let markdown = Markdown::new(&app).inline_hook(session_links(&same, &Calls::default())).set_markdown("ses_top");
+    app.root().add(&markdown);
+    app.render();
+    markdown.set_markdown("ses_mid").set_markdown("ses_bot");
+    assert_eq!(markdown.target_at(0, 0).as_deref(), Some("ses_top"));
+    // Only the targets changed, and a frame comes to paint them.
+    assert!(app.needs_frame());
+    let capture = app.render();
+    assert_targets(&capture, &markdown, |_| "ses_bot");
 }
 
 #[test]
