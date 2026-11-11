@@ -1479,7 +1479,7 @@ pub const Context = struct {
         const value = try self.getEmbeddedTerminal(handle);
         if (comptime !@import("ghostty_vt_options").available) return error.Unsupported;
         if (options.action > 2 or options.mods & ~@as(u32, 0x3f) != 0 or options.consumed_mods & ~@as(u32, 0x3f) != 0 or
-            options.unshifted_codepoint > 0x10ffff or (options.unshifted_codepoint >= 0xd800 and options.unshifted_codepoint <= 0xdfff)) return error.InvalidOptions;
+            !utf8.isScalar(options.unshifted_codepoint)) return error.InvalidOptions;
         if (options.key.len > terminal_input_bytes_max or options.text.len > terminal_input_bytes_max) return error.TextLimit;
         if (!std.unicode.utf8ValidateSlice(options.text)) return error.InvalidUnicode;
         const vt = @import("ghostty-vt.zig").vt;
@@ -1718,9 +1718,9 @@ pub const Context = struct {
                 if (options.packed_options & ~@as(u32, 0x1ff) != 0 or
                     (options.packed_options >> 5) & 3 > 2 or (options.packed_options >> 7) & 3 > 2) return error.InvalidOptions;
                 if (options.width == 0 or options.height == 0) return;
+                // Zero keeps the default border character.
                 for (options.border_chars) |char| {
-                    if (char > 0x10ffff or (char >= 0xd800 and char <= 0xdfff) or
-                        (char != 0 and (char < 32 or (char >= 127 and char <= 159)))) return error.InvalidOptions;
+                    if (!utf8.isScalar(char) or (char != 0 and utf8.isControl(char))) return error.InvalidOptions;
                 }
                 try buf.validateTextInput(text);
                 try buf.validateTextInput(bottom_title);
@@ -1735,8 +1735,8 @@ pub const Context = struct {
             .text => try target.drawTextFitted(text, options.x, options.y, options.foreground, options.background, options.attributes, options.fit),
             .fill => target.fillRectClipped(options.x, options.y, options.width, options.height, background),
             .cell, .cell_blend, .char => {
-                if (options.char > 0x10ffff or (options.char >= 0xd800 and options.char <= 0xdfff)) return error.InvalidOptions;
-                const char = if (buf.isControlCodepoint(options.char)) buf.DEFAULT_SPACE_CHAR else options.char;
+                if (!utf8.isScalar(options.char)) return error.InvalidOptions;
+                const char = if (utf8.isControl(options.char)) buf.DEFAULT_SPACE_CHAR else options.char;
                 if (options.x < 0 or options.y < 0) return;
                 const x: u32 = @intCast(options.x);
                 const y: u32 = @intCast(options.y);
@@ -1798,8 +1798,7 @@ pub const Context = struct {
         try buf.validateColor(options.foreground);
         try buf.validateColor(options.background);
         for (options.border_chars) |char| {
-            if (char > 0x10ffff or (char >= 0xd800 and char <= 0xdfff) or
-                (char != 0 and utf8.eastAsianWidth(@intCast(char)) != 1)) return error.InvalidOptions;
+            if (!utf8.isScalar(char) or (char != 0 and utf8.eastAsianWidth(@intCast(char)) != 1)) return error.InvalidOptions;
         }
         for ([_][]const i32{ columns, rows }) |offsets| {
             if (offsets.len > @as(u64, self.render_cells_max) + 1) return error.InvalidOptions;
@@ -2708,10 +2707,7 @@ pub const Context = struct {
         try buf.validateColor(options.foreground);
         try buf.validateColor(options.background);
         if (options.tab_color) |rgba| try buf.validateColor(rgba);
-        if (options.tab_indicator) |indicator| {
-            if (indicator < 0x20 or (indicator >= 0x7f and indicator <= 0x9f) or
-                indicator > 0x10ffff or (indicator >= 0xd800 and indicator <= 0xdfff)) return error.InvalidOptions;
-        }
+        try validateTabIndicator(options.tab_indicator);
         var dirty: u32 = 0;
         try yoga.check(yoga.yogaNodeIsDirtyChecked(node.yoga_node, &dirty));
         const previous_viewport = text.view.getViewport();
@@ -3835,8 +3831,7 @@ pub const Context = struct {
 
     fn validateTabIndicator(indicator: ?u32) !void {
         if (indicator) |value| {
-            if (value < 0x20 or (value >= 0x7f and value <= 0x9f) or
-                value > 0x10ffff or (value >= 0xd800 and value <= 0xdfff)) return error.InvalidOptions;
+            if (utf8.isControl(value) or !utf8.isScalar(value)) return error.InvalidOptions;
         }
     }
 

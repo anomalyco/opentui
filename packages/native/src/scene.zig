@@ -1315,9 +1315,7 @@ pub const Scene = struct {
         try buffer.validateTextInput(options.bottom_title);
         if (options.custom_border_chars) |chars| {
             for (chars) |char| {
-                if (char < 0x20 or (char >= 0x7f and char <= 0x9f) or
-                    char > 0x10ffff or (char >= 0xd800 and char <= 0xdfff)) return error.InvalidUnicode;
-                if (utf8.eastAsianWidth(@intCast(char)) != 1) return error.InvalidUnicode;
+                if (utf8.isControl(char) or !utf8.isScalar(char) or utf8.eastAsianWidth(@intCast(char)) != 1) return error.InvalidUnicode;
             }
         }
         try checkWritable(value);
