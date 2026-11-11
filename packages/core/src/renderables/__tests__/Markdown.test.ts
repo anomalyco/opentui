@@ -1903,6 +1903,7 @@ test.each([
   ["> # Title\n> text\n> ```\n> **raw**\n> ```", "│ Title\n│ text\n│ **raw**"],
   ["> - one\n> - two", "│ - one\n│ - two"],
   ["> outer\n>\n> > inner", "│ outer\n│\n│ │ inner"],
+  ["> a\n>\n> b\n> ```\n> c\n> ```", "│ a\n│\n│ b\n│ c"],
 ])("blockquote %j renders its child blocks", async (markdown, expected) => {
   expect(await renderMarkdown(markdown)).toBe("\n" + expected)
 })
@@ -5255,7 +5256,7 @@ test.each(["coalesced", "top-level"] as const)(
         "ses_known",
         "```",
         "",
-        "| id |",
+        "| `run ses_known` |",
         "| -- |",
         "| ses_known |",
       ].join("\n"),
@@ -5273,14 +5274,14 @@ test.each(["coalesced", "top-level"] as const)(
     const [afterFence, afterDiagram] = internalBlockMode === "top-level" ? ["\n", "\n\n"] : ["\n\n", "\n"]
     expect(frameText()).toBe(
       "Plan @Known\n\nSee @Known, @Known and ses_other.\n\n- run opencode -s ses_known or @Known\n\n│ @Known\n\n" +
-        `ses_known${afterFence}diagram ses_known${afterDiagram}id\n@Known`,
+        `ses_known${afterFence}diagram ses_known${afterDiagram}run ses_known\n@Known`,
     )
     const prose = ["run `opencode -s ses_known` or `ses_known`", "ses_known"]
     const top = ["# Plan ses_known", "See ses_known, @session:ses_known and ses_other."]
     // Coalesced mode joins the heading and the paragraph into one block.
     if (internalBlockMode === "coalesced") top.splice(0, 2, top.join("\n\n"))
     expect(new Set(calls.map((call) => `${call.tableCell} ${call.source}`))).toEqual(
-      new Set([...[...top, ...prose].map((source) => `false ${source}`), "true id", "true ses_known"]),
+      new Set([...[...top, ...prose].map((source) => `false ${source}`), "true `run ses_known`", "true ses_known"]),
     )
   },
 )
@@ -5471,18 +5472,21 @@ test("a rejected highlight keeps the hooked text", async () => {
   expect(frameText()).toBe("see @Again `@Again` `run @Again`")
 })
 
-// Seeded model of a hooked, streamed Markdown answer against the fake worker. Each seed appends pieces, draws frames,
-// answers highlights in any order (even seeds also reject some), renames the linked sessions, reruns the hook and ends
-// the stream. Every frame must show no ID the hook links (no unhooked frame), and, in top-level mode until a highlight
-// fails, a row of a stable block that showed text must not change (no flicker above the streamed block). The settled
-// frame must equal a fresh render.
+// Seeded model of a hooked, streamed Markdown answer against the fake worker. Each seed appends pieces (prose, quotes,
+// lists, code spans, a table's header, delimiter and row), draws frames, answers highlights in any order (even seeds
+// also reject some), renames the linked sessions, reruns the hook and ends the stream. Every frame must show no ID the
+// hook links (no unhooked frame); while streaming, it must show a label for every ID the content holds and lose no
+// drawn row or text; in top-level mode, a row of a stable block that showed text must not change (no flicker above
+// the streamed block). The settled frame must equal a fresh render.
 test("hooked streaming Markdown never shows unhooked text or changes settled rows", async () => {
   const pieces = ["see ", "ses_a ", "ses_b\n", "word ", "\n\n", "# ", "> ", "- ", "*x* ", "`ses_a` ", "`run x` ", "\n"]
-  // MARKDOWN_MODEL_SEED=<s> replays one seed; MARKDOWN_MODEL_SEEDS=<n> runs more.
+  // Three columns: a line holds at most one table piece, so only a delimiter's "--" cells can fall beyond the header.
+  pieces.push("| ses_a | | |\n", "|--|--|--|\n", "| x ses_b |\n")
+  // MARKDOWN_MODEL_SEED=<s> replays one seed; MARKDOWN_MODEL_SEEDS=<n> runs more. Seeds 449 and 3638 found the
+  // child-kind defects.
   const one = process.env.MARKDOWN_MODEL_SEED
-  const seeds = one
-    ? [Number(one)]
-    : Array.from({ length: Number(process.env.MARKDOWN_MODEL_SEEDS ?? 40) }, (_, i) => i + 1)
+  const count = Number(process.env.MARKDOWN_MODEL_SEEDS ?? 40)
+  const seeds = one ? [Number(one)] : [449, 3638, ...Array.from({ length: count }, (_, i) => i + 1)]
   for (const seed of seeds) {
     let state = seed * 2654435761
     const random = () => {
@@ -5526,17 +5530,33 @@ test("hooked streaming Markdown never shows unhooked text or changes settled row
       return rows().slice(0, block ? block.y - md.y : md._blockStates.length > 0 ? md.height : 0)
     }
     let previous: string[] = []
-    let failed = false
+    let drawn = { rows: 0, text: 0 }
     const frame = async () => {
       const settledCount = settledBlocks()
       await renderOnce()
       const frame = captureFrame()
-      if (/ses_[ab]/.test(frame)) throw new Error(`seed ${seed}: unhooked ID after ${trace.join(" | ")}\n${frame}`)
+      const fail = (what: string) => {
+        throw new Error(`seed ${seed}: ${what} after ${trace.join(" | ")}\n${JSON.stringify(md.content)}\n${frame}`)
+      }
+      if (/ses_[ab]/.test(frame)) fail("unhooked ID")
+      if (md.streaming) {
+        // Every ID shows as a label, so a blank or half-drawn block fails too.
+        const labels = rows().join("\n").match(/@\?/g)?.length ?? 0
+        if (md.height <= renderer.height && labels !== (md.content.match(/ses_[ab]/g)?.length ?? 0))
+          fail("missing label")
+        const now = { rows: rows().filter((row) => /[^│\s#]/.test(row)).length, text: 0 }
+        // Markers are not text: a header line drops its pipes when the delimiter makes it a table.
+        now.text = rows()
+          .join("")
+          .replace(/[\s│#─|-]/g, "").length
+        if (now.rows < drawn.rows || now.text < drawn.text - 2) fail("drawn text lost")
+        drawn = now
+      }
       if (internalBlockMode !== "top-level") return
       const stable = stableRows(settledCount)
       const kept = rows().slice(0, previous.length)
       // A block not yet drawn (blank, or only a quote's bar) may draw; drawn text may not change.
-      if (!failed && previous.some((row, index) => /[^│\s]/.test(row) && row !== kept[index])) {
+      if (previous.some((row, index) => /[^│\s]/.test(row) && row !== kept[index])) {
         throw new Error(
           `seed ${seed}: settled rows changed after ${trace.join(" | ")}\n${JSON.stringify(previous)}\n${JSON.stringify(kept)} stable ${md._stableBlockCount}`,
         )
@@ -5561,7 +5581,6 @@ test("hooked streaming Markdown never shows unhooked text or changes settled row
           await flushAsync()
         } else if (roll < 0.82 && seed % 2 === 0) {
           trace.push("fail")
-          if (worker.pending.length > 0) failed = true
           worker.fail(pick(worker.pending.length))
           await flushAsync()
         } else if (roll < 0.88) {
