@@ -1085,15 +1085,15 @@ pub const Doc = struct {
         }
     }
 
+    /// The last child of `index`, a block whose subtree ends the table (it is open, or it
+    /// closes now): walking back from the end reads only that last child's subtree.
     fn lastChild(self: *const Doc, index: u32) u32 {
-        var last = none;
-        var i = index + 1;
-        while (i < self.blocks.items.len) : (i += 1) {
-            const p = self.blocks.items[i].parent_index;
-            if (p == index) last = i else if (!self.isDescendant(i, index)) break;
+        var i = self.blocks.items.len;
+        while (i > index + 1) {
+            i -= 1;
+            if (self.blocks.items[i].parent_index == index) return @intCast(i);
         }
-        assert(last != none);
-        return last;
+        unreachable;
     }
 
     fn markBlankAfterLastChild(self: *Doc, list: u32, next_start: u32) Error!void {
