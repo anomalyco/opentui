@@ -14,7 +14,7 @@ import {
   type SessionHandle,
 } from "../zig.js"
 import { SystemClock, type Clock, type TimerHandle } from "./clock.js"
-import { kittyKeyMap, printableKeypadText } from "./parse.keypress-kitty.js"
+import { kittyKeyMap } from "./kitty-keys.js"
 import type { ParsedKey } from "./parse.keypress.js"
 import type { MouseEventType, RawMouseEvent } from "./parse.mouse.js"
 
@@ -98,7 +98,8 @@ const REPLY_PROTOCOLS: Record<number, StdinResponseProtocol> = {
 // Core's `code` for legacy sequences: the introducer, number, and final without modifiers.
 const LEGACY_CODE_RE = /^\x1b+(O|\[\[?)(?:(\d+)(?:;\d+)?([~^$])|(?:1;)?\d*([a-zA-Z]))/
 const LEGACY_SEQUENCE_RE = /^\x1b\x1b?[[O]./s
-const KEYPAD_TEXT = new Set(Object.values(printableKeypadText))
+// What the keypad keys type when they type text (Kitty kp0-kp9, kpdecimal, kpdivide, ...).
+const KEYPAD_TEXT = new Set("0123456789./*-+=,")
 
 function concat(parts: Uint8Array[]): Uint8Array {
   let length = 0

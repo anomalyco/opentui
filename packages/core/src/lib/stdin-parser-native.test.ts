@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test"
 import { Buffer } from "node:buffer"
 import { ManualClock } from "../testing/manual-clock.js"
 import { resolveRenderLib } from "../zig.js"
-import { kittyKeyMap } from "./parse.keypress-kitty.js"
+import { kittyKeyMap } from "./kitty-keys.js"
+import { parseKeypress } from "./parse.keypress.js"
 import { NativeStdinParser, type NativeStdinParserOptions, type StdinEvent } from "./stdin-parser-native.js"
 
 function events(parser: NativeStdinParser): StdinEvent[] {
@@ -232,6 +233,23 @@ describe("native stdin parser: replay", () => {
 })
 
 describe("native stdin parser: adapter", () => {
+  test.each([
+    ["a lone ESC as Escape", "\x1b", false, { name: "escape" }],
+    ["a lone ESC again", "\x1b", false, { name: "escape" }],
+    ["an eight-bit Alt byte that UTF-8 rules out", Buffer.from([0xe1, 0x78]), false, { name: "a", meta: true }],
+    ["the first of several keys", "ab", false, { name: "a" }],
+    ["modified F3 in legacy mode", "\x1b[1;2R", false, { name: "f3", shift: true }],
+    ["CSI R as a reply under Kitty", "\x1b[1;2R", true, null],
+    ["Kitty Ctrl+Delete", "\x1b[57349;5u", true, { name: "delete", ctrl: true, source: "kitty" }],
+    ["no input", undefined, false, null],
+    ["a mouse event first", "\x1b[<0;1;1Ma", false, null],
+    ["a paste", "\x1b[200~a\x1b[201~", false, null],
+  ] as const)("parseKeypress returns %s", (_label, input, useKittyKeyboard, expected) => {
+    const key = parseKeypress(input as string | Buffer | undefined, { useKittyKeyboard })
+    if (expected === null) expect(key).toBeNull()
+    else expect(key).toMatchObject(expected)
+  })
+
   test("names every Kitty functional key like Core", () => {
     const codes = [27, 13, 9, 127, ...Array.from({ length: 57454 - 57348 + 1 }, (_, index) => 57348 + index)]
     const parser = new NativeStdinParser({ armTimeouts: false, clock: new ManualClock() })

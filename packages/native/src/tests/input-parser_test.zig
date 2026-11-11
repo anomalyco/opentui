@@ -1872,7 +1872,7 @@ fn notation(allocator: std.mem.Allocator, got: Got) ![]const u8 {
     return out.items;
 }
 
-/// Core's names (parse.keypress-kitty.ts kittyKeyMap) for the codes the vectors use.
+/// Core's names (stdin-parser-native.ts kittyKeyMap) for the codes the vectors use.
 fn coreKeyName(code: u32) ?[]const u8 {
     return switch (code) {
         ' ' => "space",
