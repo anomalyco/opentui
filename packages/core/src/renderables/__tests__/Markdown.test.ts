@@ -5337,7 +5337,11 @@ test.each([true, false])("inline hooks keep the frames and see the mode with con
   ].join("\n")
   const frames: string[] = []
   const calls: MarkdownInlineContext[] = []
-  for (const inlineHook of [undefined, (spans: MarkdownInlineSpan[]) => spans, sessionLinks(new Map([["ses_known", "K"]]), calls)]) {
+  for (const inlineHook of [
+    undefined,
+    (spans: MarkdownInlineSpan[]) => spans,
+    sessionLinks(new Map([["ses_known", "K"]]), calls),
+  ]) {
     const md = createMarkdownRenderable({ content, syntaxStyle, conceal, internalBlockMode: "top-level", inlineHook })
     renderer.root.add(md)
     await renderMarkdownRenderable(md)
@@ -5623,4 +5627,30 @@ test("list and quote children keep their text when their kind or the stream chan
   await renderOnce()
   frames.push(frameText())
   expect(frames).toEqual([`│ Title\n│ ${"─".repeat(58)}`, "│ Title\n│ - - - x", "│ Title\n│ - - - x"])
+})
+
+// Two dollars make tree-sitter-markdown read a LaTeX span, which drops every style between them; the preview has no
+// such span. Every frame of a streamed block must equal its settled frame.
+test.each([
+  ["Pay _now_$5X", 10],
+  ["$x$_ok_ tail", 20],
+  ["price $5 and *important* or [docs](https://e.x) for $6 today", 40],
+  ["a *b*$5 and _c_ $6_d_ end", 20],
+  ["see **$x$** here", 20],
+  ["\\$5 and *x* and \\$6 and $7", 40],
+  ["Costs $5; check `$PATH/$HOME` *now*", 40],
+] as const)("dollars in %j draw the same before and after highlighting", async (content, width) => {
+  const recorder = new TestRecorder(renderer)
+  recorder.rec()
+  const md = createMarkdownRenderable({ content, syntaxStyle, streaming: true, width, internalBlockMode: "top-level" })
+  renderer.root.add(md)
+  await renderMarkdownRenderable(md)
+  recorder.stop()
+  const rows = (frame: string) =>
+    frame
+      .split("\n")
+      .map((row) => row.trimEnd())
+      .join("\n")
+      .trimEnd()
+  expect(new Set(recorder.recordedFrames.map((recorded) => rows(recorded.frame)))).toEqual(new Set([frameText()]))
 })

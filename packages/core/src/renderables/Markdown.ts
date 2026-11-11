@@ -17,7 +17,7 @@ import {
   type TextTableColumnWidthMode,
   type TextTableContent,
 } from "./TextTable.js"
-import type { TreeSitterClient } from "../lib/tree-sitter/index.js"
+import { getTreeSitterClient, type TreeSitterClient } from "../lib/tree-sitter/index.js"
 import { infoStringToFiletype } from "../lib/tree-sitter/resolve-ft.js"
 import { parseMarkdownIncremental, type ParseState } from "./markdown-parser.js"
 import { detectLinks, normalizeMarkdownLinkTarget } from "../lib/detect-links.js"
@@ -344,6 +344,7 @@ export class MarkdownRenderable extends Renderable {
   private _inlineHookFilter?: readonly string[]
   // Preview and table chunks drawn as code spans.
   private _codeChunks = new WeakSet<TextChunk>()
+  private _proseClient?: TreeSitterClient
   // The kind of block each list item or quote child shows, so a child is updated only for a block of its kind.
   private _childKinds = new WeakMap<Renderable, string>()
 
@@ -1027,11 +1028,29 @@ export class MarkdownRenderable extends Renderable {
       baseHighlight,
       onHighlight: this._highlightMarkdownLinks,
       onChunks,
-      treeSitterClient: this._treeSitterClient,
+      treeSitterClient: this.getProseClient(),
       width: "100%",
       marginBottom,
     })
     return renderable
+  }
+
+  /**
+   * The highlighter for prose, which gets each `$` as `%`, punctuation as well (`\%` is an escape as `\$` is): two
+   * dollars would make tree-sitter-markdown read a LaTeX span and drop every style between them, as the preview never
+   * does.
+   */
+  private getProseClient(): TreeSitterClient {
+    this._proseClient ??= new Proxy(this._treeSitterClient ?? getTreeSitterClient(), {
+      get: (target, property) => {
+        if (property === "highlightOnce") {
+          return (content: string, filetype: string) => target.highlightOnce(content.replaceAll("$", "%"), filetype)
+        }
+        const value = Reflect.get(target, property, target)
+        return typeof value === "function" ? value.bind(target) : value
+      },
+    })
+    return this._proseClient
   }
 
   private getBlockquoteBorderColor(): ColorInput {
