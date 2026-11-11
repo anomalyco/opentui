@@ -180,6 +180,14 @@ fn duplicate_command_names_across_layers_dedupe_by_name() {
     assert_eq!(reachable[0].title.as_deref(), Some("New"));
     assert_eq!(keymap.commands(&CommandQuery::visibility(Visibility::Active)).len(), 2);
     assert_eq!(keymap.commands(&CommandQuery::visibility(Visibility::Registered)).len(), 2);
+    // Past 20 entries, where an unstable sort stops keeping equal names in their order.
+    for index in 0..12 {
+        let commands = [record(&calls, "save").title(index.to_string()), record(&calls, &format!("z{}", index % 3))];
+        keymap.register_layer(Layer::new().commands(commands)).forget();
+    }
+    let reachable = keymap.commands(&CommandQuery::default());
+    let names: Vec<_> = reachable.iter().map(|command| format!("{}:{:?}", command.name, command.title)).collect();
+    assert_eq!(names, ["save:Some(\"11\")", "z2:None", "z1:None", "z0:None"]);
 }
 
 #[test]
@@ -748,12 +756,13 @@ fn enabled_conditions_gate_layers_and_commands() {
     let calls = calls();
     let layer_on = Rc::new(Cell::new(true));
     let command_on = Rc::new(Cell::new(true));
-    let (layer_gate, command_gate) = (layer_on.clone(), command_on.clone());
-    keymap
-        .register_layer(
-            Layer::new().command(record(&calls, "run").enabled(Condition::when(move || command_gate.get()))),
-        )
-        .forget();
+    let checks = Rc::new(Cell::new(0));
+    let (layer_gate, command_gate, counter) = (layer_on.clone(), command_on.clone(), checks.clone());
+    let gate = Condition::when(move || {
+        counter.set(counter.get() + 1);
+        command_gate.get()
+    });
+    keymap.register_layer(Layer::new().command(record(&calls, "run").enabled(gate))).forget();
     keymap
         .register_layer(
             Layer::new().enabled(Condition::when(move || layer_gate.get())).binding(Binding::new("r").cmd("run")),
@@ -761,6 +770,8 @@ fn enabled_conditions_gate_layers_and_commands() {
         .forget();
     keymap.register_layer(Layer::new().enabled(false).binding(Binding::new("s").cmd("run"))).forget();
     assert!(press(&keymap, "r").handled);
+    // One view per key: the command's condition runs once, not again before the command runs.
+    assert_eq!(checks.get(), 1);
     assert!(!press(&keymap, "s").handled);
     command_on.set(false);
     assert!(!press(&keymap, "r").stop_propagation);
