@@ -29,35 +29,41 @@ pub struct Color {
     intent: Intent,
 }
 
-const ANSI16: [(u8, u8, u8); 16] = [
-    (0x00, 0x00, 0x00),
-    (0x80, 0x00, 0x00),
-    (0x00, 0x80, 0x00),
-    (0x80, 0x80, 0x00),
-    (0x00, 0x00, 0x80),
-    (0x80, 0x00, 0x80),
-    (0x00, 0x80, 0x80),
-    (0xc0, 0xc0, 0xc0),
-    (0x80, 0x80, 0x80),
-    (0xff, 0x00, 0x00),
-    (0x00, 0xff, 0x00),
-    (0xff, 0xff, 0x00),
-    (0x00, 0x00, 0xff),
-    (0xff, 0x00, 0xff),
-    (0x00, 0xff, 0xff),
-    (0xff, 0xff, 0xff),
+/// The palette snapshots `opentui.h` defines, as `0xRRGGBB`.
+const ANSI16: [u32; 16] = [
+    sys::OT_COLOR_ANSI_0,
+    sys::OT_COLOR_ANSI_1,
+    sys::OT_COLOR_ANSI_2,
+    sys::OT_COLOR_ANSI_3,
+    sys::OT_COLOR_ANSI_4,
+    sys::OT_COLOR_ANSI_5,
+    sys::OT_COLOR_ANSI_6,
+    sys::OT_COLOR_ANSI_7,
+    sys::OT_COLOR_ANSI_8,
+    sys::OT_COLOR_ANSI_9,
+    sys::OT_COLOR_ANSI_10,
+    sys::OT_COLOR_ANSI_11,
+    sys::OT_COLOR_ANSI_12,
+    sys::OT_COLOR_ANSI_13,
+    sys::OT_COLOR_ANSI_14,
+    sys::OT_COLOR_ANSI_15,
 ];
 
 const fn ansi256(index: u8) -> (u8, u8, u8) {
-    const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+    const fn level(n: u8) -> u8 {
+        if n == 0 { 0 } else { (sys::OT_COLOR_CUBE_BASE + sys::OT_COLOR_CUBE_STEP * n as u32) as u8 }
+    }
     match index {
-        0..=15 => ANSI16[index as usize],
+        0..=15 => {
+            let rgb = ANSI16[index as usize];
+            ((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
+        }
         16..=231 => {
-            let cube = (index - 16) as usize;
-            (LEVELS[cube / 36], LEVELS[cube / 6 % 6], LEVELS[cube % 6])
+            let cube = index - 16;
+            (level(cube / 36), level(cube / 6 % 6), level(cube % 6))
         }
         _ => {
-            let value = 8 + (index - 232) * 10;
+            let value = (sys::OT_COLOR_GRAY_BASE + (index - 232) as u32 * sys::OT_COLOR_GRAY_STEP) as u8;
             (value, value, value)
         }
     }
@@ -194,14 +200,14 @@ pub struct Attributes(u8);
 
 impl Attributes {
     pub const NONE: Self = Self(0);
-    pub const BOLD: Self = Self(1 << 0);
-    pub const DIM: Self = Self(1 << 1);
-    pub const ITALIC: Self = Self(1 << 2);
-    pub const UNDERLINE: Self = Self(1 << 3);
-    pub const BLINK: Self = Self(1 << 4);
-    pub const INVERSE: Self = Self(1 << 5);
-    pub const HIDDEN: Self = Self(1 << 6);
-    pub const STRIKETHROUGH: Self = Self(1 << 7);
+    pub const BOLD: Self = Self(sys::OT_ATTR_BOLD as u8);
+    pub const DIM: Self = Self(sys::OT_ATTR_DIM as u8);
+    pub const ITALIC: Self = Self(sys::OT_ATTR_ITALIC as u8);
+    pub const UNDERLINE: Self = Self(sys::OT_ATTR_UNDERLINE as u8);
+    pub const BLINK: Self = Self(sys::OT_ATTR_BLINK as u8);
+    pub const INVERSE: Self = Self(sys::OT_ATTR_INVERSE as u8);
+    pub const HIDDEN: Self = Self(sys::OT_ATTR_HIDDEN as u8);
+    pub const STRIKETHROUGH: Self = Self(sys::OT_ATTR_STRIKETHROUGH as u8);
 
     pub const fn bits(self) -> u8 {
         self.0

@@ -197,7 +197,7 @@ fn other_key_name(code: u32) -> String {
         "iso_level3_shift",
         "iso_level5_shift",
     ];
-    code.checked_sub(57428)
+    code.checked_sub(crate::sys::OT_INPUT_KEY_MEDIA_PLAY)
         .and_then(|index| NAMES.get(index as usize))
         .map_or_else(|| format!("key{code}"), |name| (*name).to_owned())
 }

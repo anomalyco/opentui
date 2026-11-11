@@ -5,7 +5,7 @@ use crate::native::{Buffer, Draft, RenderOutcome, Session};
 use crate::sys;
 
 /// The most snapshots one [`Session::render_split`] call takes.
-pub const SPLIT_SNAPSHOTS_MAX: usize = 64;
+pub const SPLIT_SNAPSHOTS_MAX: usize = sys::OT_SPLIT_SNAPSHOTS_MAX as usize;
 
 /// One block of rows to append to the scrollback above the footer.
 #[derive(Clone, Debug)]

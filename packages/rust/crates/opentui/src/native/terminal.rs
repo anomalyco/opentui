@@ -7,7 +7,7 @@ use crate::sys;
 use std::rc::Rc;
 
 /// The most bytes one native write, key text, or paste accepts. [`EmbeddedTerminal::write`] splits longer input.
-pub const TERMINAL_INPUT_BYTES_MAX: usize = 1 << 20;
+pub const TERMINAL_INPUT_BYTES_MAX: usize = sys::OT_EMBEDDED_TERMINAL_INPUT_BYTES_MAX as usize;
 
 /// The size of a new [`EmbeddedTerminal`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,16 +143,16 @@ pub struct TerminalMouse {
     pub any_button_pressed: bool,
 }
 
-/// Native key modifier bits: Shift, Ctrl, Alt, Super, Caps Lock, and Num Lock.
+/// The emulator's modifier bits: Shift, Ctrl, Alt, Super, Caps Lock, and Num Lock.
 fn key_mods(modifiers: Modifiers) -> u32 {
     [
-        (Modifiers::SHIFT, 1),
-        (Modifiers::CTRL, 2),
-        (Modifiers::ALT, 4),
-        (Modifiers::SUPER, 8),
-        (Modifiers::META, 8),
-        (Modifiers::CAPS_LOCK, 16),
-        (Modifiers::NUM_LOCK, 32),
+        (Modifiers::SHIFT, sys::OT_EMBEDDED_TERMINAL_MOD_SHIFT),
+        (Modifiers::CTRL, sys::OT_EMBEDDED_TERMINAL_MOD_CTRL),
+        (Modifiers::ALT, sys::OT_EMBEDDED_TERMINAL_MOD_ALT),
+        (Modifiers::SUPER, sys::OT_EMBEDDED_TERMINAL_MOD_SUPER),
+        (Modifiers::META, sys::OT_EMBEDDED_TERMINAL_MOD_SUPER),
+        (Modifiers::CAPS_LOCK, sys::OT_EMBEDDED_TERMINAL_MOD_CAPS_LOCK),
+        (Modifiers::NUM_LOCK, sys::OT_EMBEDDED_TERMINAL_MOD_NUM_LOCK),
     ]
     .into_iter()
     .filter(|(modifier, _)| modifiers.contains(*modifier))
@@ -330,9 +330,9 @@ impl EmbeddedTerminal {
     pub fn encode_key(&self, key: &TerminalKey<'_>) -> Result<Vec<u8>> {
         let raw = sys::ot_embedded_terminal_key {
             action: match key.kind {
-                KeyEventKind::Release => 0,
-                KeyEventKind::Press => 1,
-                KeyEventKind::Repeat => 2,
+                KeyEventKind::Release => sys::OT_EMBEDDED_TERMINAL_KEY_RELEASE,
+                KeyEventKind::Press => sys::OT_EMBEDDED_TERMINAL_KEY_PRESS,
+                KeyEventKind::Repeat => sys::OT_EMBEDDED_TERMINAL_KEY_REPEAT,
             },
             composing: u32::from(key.composing),
             mods: key_mods(key.modifiers),
@@ -369,19 +369,19 @@ impl EmbeddedTerminal {
     pub fn encode_mouse(&self, mouse: &TerminalMouse) -> Result<Vec<u8>> {
         let raw = sys::ot_embedded_terminal_mouse {
             action: match mouse.action {
-                TerminalMouseAction::Press => 0,
-                TerminalMouseAction::Release => 1,
-                TerminalMouseAction::Motion => 2,
+                TerminalMouseAction::Press => sys::OT_EMBEDDED_TERMINAL_MOUSE_PRESS,
+                TerminalMouseAction::Release => sys::OT_EMBEDDED_TERMINAL_MOUSE_RELEASE,
+                TerminalMouseAction::Motion => sys::OT_EMBEDDED_TERMINAL_MOUSE_MOTION,
             },
             button: match mouse.button {
-                None => -1,
-                Some(TerminalMouseButton::Left) => 1,
-                Some(TerminalMouseButton::Right) => 2,
-                Some(TerminalMouseButton::Middle) => 3,
-                Some(TerminalMouseButton::WheelUp) => 4,
-                Some(TerminalMouseButton::WheelDown) => 5,
-                Some(TerminalMouseButton::WheelLeft) => 6,
-                Some(TerminalMouseButton::WheelRight) => 7,
+                None => sys::OT_EMBEDDED_TERMINAL_BUTTON_NONE,
+                Some(TerminalMouseButton::Left) => sys::OT_EMBEDDED_TERMINAL_BUTTON_LEFT,
+                Some(TerminalMouseButton::Right) => sys::OT_EMBEDDED_TERMINAL_BUTTON_RIGHT,
+                Some(TerminalMouseButton::Middle) => sys::OT_EMBEDDED_TERMINAL_BUTTON_MIDDLE,
+                Some(TerminalMouseButton::WheelUp) => sys::OT_EMBEDDED_TERMINAL_BUTTON_FOUR,
+                Some(TerminalMouseButton::WheelDown) => sys::OT_EMBEDDED_TERMINAL_BUTTON_FIVE,
+                Some(TerminalMouseButton::WheelLeft) => sys::OT_EMBEDDED_TERMINAL_BUTTON_SIX,
+                Some(TerminalMouseButton::WheelRight) => sys::OT_EMBEDDED_TERMINAL_BUTTON_SEVEN,
             },
             mods: key_mods(mouse.modifiers),
             any_button_pressed: u32::from(mouse.any_button_pressed),

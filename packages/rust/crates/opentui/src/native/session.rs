@@ -72,18 +72,19 @@ pub struct KittyKeyboard(u32);
 
 impl KittyKeyboard {
     pub const OFF: Self = Self(0);
-    pub const DISAMBIGUATE: Self = Self(1);
-    pub const EVENT_TYPES: Self = Self(2);
-    pub const ALTERNATE_KEYS: Self = Self(4);
-    pub const ALL_KEYS_AS_ESCAPES: Self = Self(8);
-    pub const ASSOCIATED_TEXT: Self = Self(16);
+    pub const DISAMBIGUATE: Self = Self(sys::OT_KITTY_KEYBOARD_DISAMBIGUATE);
+    pub const EVENT_TYPES: Self = Self(sys::OT_KITTY_KEYBOARD_EVENT_TYPES);
+    pub const ALTERNATE_KEYS: Self = Self(sys::OT_KITTY_KEYBOARD_ALTERNATE_KEYS);
+    pub const ALL_KEYS_AS_ESCAPES: Self = Self(sys::OT_KITTY_KEYBOARD_ALL_KEYS_AS_ESCAPES);
+    pub const ASSOCIATED_TEXT: Self = Self(sys::OT_KITTY_KEYBOARD_REPORT_TEXT);
 
     pub const fn bits(self) -> u32 {
         self.0
     }
 
     pub const fn from_bits(bits: u32) -> Self {
-        Self(bits & 31)
+        // Every flag up to the highest one.
+        Self(bits & (2 * Self::ASSOCIATED_TEXT.0 - 1))
     }
 
     pub const fn union(self, other: Self) -> Self {
