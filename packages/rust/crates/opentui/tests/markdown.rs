@@ -435,6 +435,21 @@ fn targets_answer_only_where_the_last_frame_drew_them() {
     assert!(app.needs_frame());
     let capture = app.render();
     assert_targets(&capture, &markdown, |_| "ses_bot");
+
+    // An update from a resize handler, inside the frame, answers for what that frame shows.
+    let app = TestApp::new(12, 2);
+    let markdown = hooked(&app);
+    let (doc, first) = (markdown.clone(), Cell::new(true));
+    let parent = View::new(&app).child(&markdown).on_resize(move |_, _| {
+        doc.set_markdown(if first.replace(false) { "ses_top" } else { "ses_mid" });
+    });
+    app.root().add(&parent);
+    for (width, id) in [(12, "ses_top"), (10, "ses_mid")] {
+        app.resize(width, 2);
+        let capture = app.render();
+        assert_targets(&capture, &markdown, |_| id);
+        assert!(capture.text().starts_with('@'), "{}", capture.text());
+    }
 }
 
 #[test]

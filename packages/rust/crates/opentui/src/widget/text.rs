@@ -198,10 +198,26 @@ mod tests {
         type Cells = &'static [(i32, i32, Option<u32>)];
         // Each case builds a text and renders it, optionally changes it without rendering, and checks cells:
         // (x, y, byte) after the change and, where given, after the next frame.
-        let cases: [(&str, Setup, Cells, Cells); 14] = [
+        let cases: [(&str, Setup, Cells, Cells); 16] = [
             ("painted", |app| (Text::new(app, "hello"), None), &[(0, 0, Some(0)), (4, 0, Some(4)), (5, 0, None)], &[]),
             ("hidden", |app| (Text::new(app, "hello"), Some(|text| drop(text.visible(false)))), &[], &[(0, 0, None)]),
             ("detached", |app| (Text::new(app, "hello"), Some(|text| text.detach())), &[], &[(0, 0, None)]),
+            (
+                "transparent",
+                |app| (Text::new(app, "hello"), Some(|text| drop(text.opacity(0.0)))),
+                &[],
+                &[(0, 0, None)],
+            ),
+            (
+                "in a transparent parent",
+                |app| {
+                    let text = Text::new(app, "hello");
+                    app.root().add(&View::new(app).opacity(0.0).child(&text));
+                    (text, None)
+                },
+                &[(0, 0, None)],
+                &[],
+            ),
             (
                 "edited",
                 |app| (Text::new(app, "A"), Some(|text| drop(text.set_text("ABCDE")))),

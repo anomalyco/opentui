@@ -950,9 +950,17 @@ impl Renderer<'_> {
             None => Text::new(self.app, content),
         };
         // Until a frame paints the new ranges, clicks keep reaching the ones on screen.
+        // Only a widget updated in place had targets before: a new one has none.
         let mut previous = self.previous.borrow_mut();
-        let old = previous.iter().position(|old| old.text.id() == text.id()).map(|index| previous.swap_remove(index));
-        let since = self.app.frame_number();
+        let old = widget.and_then(|_| {
+            let index = previous.iter().position(|old| {
+                #[cfg(test)]
+                tests::LOOKUPS.with(|lookups| lookups.set(lookups.get() + 1));
+                old.text.id() == text.id()
+            })?;
+            Some(previous.swap_remove(index))
+        });
+        let since = self.app.painted_frames();
         let painted = old.map_or_else(Vec::new, |old| if old.since < since { old.ranges } else { old.painted });
         if !ranges.is_empty() || !painted.is_empty() {
             self.targets.borrow_mut().push(Targets { text: text.clone(), ranges, since, painted });
@@ -1363,7 +1371,7 @@ impl Markdown {
         let byte = targets.text.element().query(|node| node.text_byte_at(i32::from(x), i32::from(y)))?? as usize;
         // The ranges that frame painted, which the newest are once a frame has followed them.
         let app = self.0.element.app()?;
-        let ranges = if app.frame_number() > targets.since { &targets.ranges } else { &targets.painted };
+        let ranges = if app.painted_frames() > targets.since { &targets.ranges } else { &targets.painted };
         let (_, target) = ranges.iter().find(|(range, _)| range.contains(&byte))?;
         Some(target.clone())
     }
@@ -1452,6 +1460,31 @@ impl Markdown {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        /// Targets compared while matching new targets to old ones.
+        pub(super) static LOOKUPS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    #[test]
+    fn rebuilt_lists_do_not_look_up_targets_their_new_texts_cannot_have() {
+        let app = crate::testing::TestApp::new(20, 10);
+        let markdown = Markdown::new(&app).inline_hook(|spans, _| {
+            spans.into_iter().map(|span| InlineSpan { target: Some("id".to_owned()), ..span }).collect()
+        });
+        app.root().add(&markdown);
+        markdown.set_markdown((1..=8).map(|item| format!("- item {item}\n")).collect::<String>());
+        app.render();
+        LOOKUPS.with(|lookups| lookups.set(0));
+        markdown.rerun_inline_hook(|_| true);
+        assert_eq!(LOOKUPS.with(Cell::get), 0);
+        // A paragraph updated in place finds its own targets.
+        markdown.set_markdown("one\n\ntwo");
+        app.render();
+        LOOKUPS.with(|lookups| lookups.set(0));
+        markdown.rerun_inline_hook(|_| true);
+        assert_eq!(LOOKUPS.with(Cell::get), 2);
+    }
 
     fn inline(text: &str, base: Style, options: &Inline) -> Vec<Span<'static>> {
         super::inline(text, base, options).into_iter().map(|span| span.span).collect()
