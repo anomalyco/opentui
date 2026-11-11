@@ -1,5 +1,6 @@
 import { TextAttributes } from "./types.js"
 import { Renderable } from "./Renderable.js"
+import { nativeConstants } from "./native-abi.generated.js"
 
 export function createTextAttributes({
   bold = false,
@@ -37,9 +38,9 @@ export function createTextAttributes({
 }
 
 // Link attribute helpers (bits 8-31 encode link_id)
-const ATTRIBUTE_BASE_MASK = 0xff
-const LINK_ID_SHIFT = 8
-const LINK_ID_PAYLOAD_MASK = 0xffffff
+const ATTRIBUTE_BASE_MASK = nativeConstants.OT_ATTR_BASE_MASK
+const LINK_ID_SHIFT = nativeConstants.OT_ATTR_LINK_SHIFT
+const LINK_ID_PAYLOAD_MASK = nativeConstants.OT_ATTR_LINK_MASK
 
 export function attributesWithLink(baseAttributes: number, linkId: number): number {
   const base = baseAttributes & ATTRIBUTE_BASE_MASK

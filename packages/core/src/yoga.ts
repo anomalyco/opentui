@@ -43,9 +43,9 @@ export enum Direction {
 }
 
 export enum Display {
-  Flex = 0,
-  None = 1,
-  Contents = 2,
+  Flex = nativeConstants.OT_DISPLAY_FLEX,
+  None = nativeConstants.OT_DISPLAY_NONE,
+  Contents = nativeConstants.OT_DISPLAY_CONTENTS,
 }
 
 export enum Edge {
@@ -61,16 +61,16 @@ export enum Edge {
 }
 
 export enum Errata {
-  None = 0,
-  StretchFlexBasis = 1,
-  AbsolutePositionWithoutInsetsExcludesPadding = 2,
-  AbsolutePercentAgainstInnerSize = 4,
-  All = 2147483647,
-  Classic = 2147483646,
+  None = nativeConstants.OT_YOGA_ERRATA_NONE,
+  StretchFlexBasis = nativeConstants.OT_YOGA_ERRATA_STRETCH_FLEX_BASIS,
+  AbsolutePositionWithoutInsetsExcludesPadding = nativeConstants.OT_YOGA_ERRATA_ABSOLUTE_POSITION_WITHOUT_INSETS_EXCLUDES_PADDING,
+  AbsolutePercentAgainstInnerSize = nativeConstants.OT_YOGA_ERRATA_ABSOLUTE_PERCENT_AGAINST_INNER_SIZE,
+  All = nativeConstants.OT_YOGA_ERRATA_ALL,
+  Classic = nativeConstants.OT_YOGA_ERRATA_CLASSIC,
 }
 
 export enum ExperimentalFeature {
-  WebFlexBasis = 0,
+  WebFlexBasis = nativeConstants.OT_YOGA_EXPERIMENTAL_FEATURE_WEB_FLEX_BASIS,
 }
 
 export enum FlexDirection {
@@ -96,12 +96,12 @@ export enum Justify {
 }
 
 export enum LogLevel {
-  Error = 0,
-  Warn = 1,
-  Info = 2,
-  Debug = 3,
-  Verbose = 4,
-  Fatal = 5,
+  Error = nativeConstants.OT_YOGA_LOG_LEVEL_ERROR,
+  Warn = nativeConstants.OT_YOGA_LOG_LEVEL_WARN,
+  Info = nativeConstants.OT_YOGA_LOG_LEVEL_INFO,
+  Debug = nativeConstants.OT_YOGA_LOG_LEVEL_DEBUG,
+  Verbose = nativeConstants.OT_YOGA_LOG_LEVEL_VERBOSE,
+  Fatal = nativeConstants.OT_YOGA_LOG_LEVEL_FATAL,
 }
 
 export enum MeasureMode {
@@ -111,8 +111,8 @@ export enum MeasureMode {
 }
 
 export enum NodeType {
-  Default = 0,
-  Text = 1,
+  Default = nativeConstants.OT_YOGA_NODE_TYPE_DEFAULT,
+  Text = nativeConstants.OT_YOGA_NODE_TYPE_TEXT,
 }
 
 export enum Overflow {
