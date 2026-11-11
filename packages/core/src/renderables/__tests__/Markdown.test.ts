@@ -5533,6 +5533,56 @@ test("a rejected highlight keeps the hooked text", async () => {
   expect(frameText()).toBe("see @Again `@Again` `run @Again`!")
 })
 
+// After the stream, a theme swap or a hook rerun asks the worker again; a rejected request keeps the painted hooked
+// text and its colors, never a redraw without highlights.
+test("after a stream, a rejected highlight keeps the painted hooked text", async () => {
+  const worker = new FakeWorker()
+  const titles = new Map([["ses_alpha", "Title"]])
+  const md = createMarkdownRenderable({
+    content: "see *ses_alpha* `ses_alpha`",
+    syntaxStyle,
+    streaming: true,
+    internalBlockMode: "top-level",
+    treeSitterClient: worker,
+    inlineHook: sessionLinks(titles),
+  })
+  renderer.root.add(md)
+  const settle = async () => {
+    for (let pass = 0; pass < 3; pass++) {
+      await renderOnce()
+      while (worker.pending.length > 0) worker.reply()
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+    await renderOnce()
+  }
+  await settle()
+  md.streaming = false
+  await settle()
+  const painted = () =>
+    captureSpans().lines[0]!.spans.map((span) => [span.text, span.fg.toInts(), span.attributes].join(" "))
+  const before = painted()
+  expect(frameText()).toBe("see @Title @Title")
+  const warn = console.warn
+  console.warn = () => {}
+  const reject = async () => {
+    await renderOnce()
+    expect(worker.pending.length).toBeGreaterThan(0)
+    while (worker.pending.length > 0) worker.fail()
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    await renderOnce()
+  }
+  const other = SyntaxStyle.create(renderer.nativeScene)
+  md.syntaxStyle = other
+  await reject()
+  const afterTheme = painted()
+  md.rerunInlineHook(() => true)
+  await reject()
+  console.warn = warn
+  expect([afterTheme, painted()]).toEqual([before, before])
+  md.syntaxStyle = syntaxStyle
+  other.destroy()
+})
+
 // Seeded model of a hooked, streamed Markdown answer against the fake worker. Each seed appends pieces (prose, quotes,
 // lists, code spans, a table's header, delimiter and row), draws frames, answers highlights in any order (even seeds
 // also reject some), renames the linked sessions, reruns the hook, swaps the theme, scrolls the Markdown out of view

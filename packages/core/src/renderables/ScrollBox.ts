@@ -399,7 +399,9 @@ export class ScrollBoxRenderable extends BoxRenderable {
 
   /** Runs `callback` once in the next frame, after its layout and before it paints: layout reads in it are current,
    * and a scroll it makes shows in that frame. Asked during a frame, it runs in the frame after. It waits while the box
-   * is hidden; destroying the box drops it. */
+   * is hidden; destroying the box drops it. A `Code` block that the frame before painted keeps its last highlight's
+   * height through the frame that moves it out of view: a growth hold here reads that height, and for a block that ends
+   * above the view the rows in view move in the next frame. `anchor` and sticky bottom hold them. */
   public afterLayout(callback: () => void): void {
     if (this.isFreed()) return
     this.assertMutable()

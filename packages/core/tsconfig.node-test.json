@@ -43,6 +43,8 @@
     "src/renderables/Slider.test.ts",
     "src/renderables/TimeToFirstDraw.test.ts",
     "src/renderables/controls.test.ts",
+    "src/renderables/__tests__/Code.blocks.model.test.ts",
+    "src/renderables/__tests__/Code.model.test.ts",
     "src/renderables/__tests__/Code.test.ts",
     "src/renderables/__tests__/LineNumberRenderable.paint-window.test.ts",
     "src/renderables/__tests__/LineNumberRenderable.scrollbox-simple.test.ts",
