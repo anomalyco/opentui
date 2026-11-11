@@ -2,7 +2,14 @@ import type { Renderable } from "../../Renderable.js"
 import { test, expect, beforeAll, beforeEach, afterEach, afterAll } from "bun:test"
 import { Edge } from "../../yoga.js"
 import { Lexer } from "marked"
-import { createMarkdownCodeBlockRenderer, MarkdownRenderable, type MarkdownOptions } from "../Markdown.js"
+import {
+  createMarkdownCodeBlockRenderer,
+  MarkdownRenderable,
+  type MarkdownInlineContext,
+  type MarkdownInlineHook,
+  type MarkdownInlineSpan,
+  type MarkdownOptions,
+} from "../Markdown.js"
 import { CodeRenderable } from "../Code.js"
 import { BoxRenderable } from "../Box.js"
 import { TextRenderable } from "../Text.js"
@@ -5179,4 +5186,441 @@ test("top-level lists keep tight multi-level nesting compact", async () => {
       - Lead-in item:
         - Explanation below the lead-in"
   `)
+})
+
+// Inline hook
+
+// Like OpenCode's session links: a known ID, alone or after `@session:`, shows as `@title`, or as written without
+// conceal; a code span takes part only when it is exactly an ID. `calls` gets each context the hook sees.
+function sessionLinks(titles: Map<string, string>, calls: MarkdownInlineContext[] = []): MarkdownInlineHook {
+  return (spans, context) => {
+    calls.push(context)
+    return spans.flatMap((span) => {
+      if (span.link || (span.code && !/^`?ses_\w+`?$/.test(span.text))) return [span]
+      const out = []
+      let last = 0
+      for (const match of span.text.matchAll(/(?:@session:)?(ses_[a-z0-9]+)/g)) {
+        const title = titles.get(match[1]!)
+        if (!title) continue
+        out.push({ ...span, text: span.text.slice(last, match.index) })
+        out.push({ ...span, text: context.conceal ? `@${title}` : match[0], target: match[1] })
+        last = match.index + match[0].length
+      }
+      out.push({ ...span, text: span.text.slice(last) })
+      return out.filter((part) => part.text)
+    })
+  }
+}
+
+const frameText = () =>
+  captureFrame()
+    .split("\n")
+    .map((row) => row.trimEnd())
+    .join("\n")
+    .trimEnd()
+
+test.each(["coalesced", "top-level"] as const)(
+  "inline hooks rewrite prose and table cells but not code or renderers (%s)",
+  async (internalBlockMode) => {
+    const calls: MarkdownInlineContext[] = []
+    const md = createMarkdownRenderable({
+      content: [
+        "# Plan ses_known",
+        "",
+        "See ses_known, @session:ses_known and ses_other.",
+        "",
+        "- run `opencode -s ses_known` or `ses_known`",
+        "",
+        "> ses_known",
+        "",
+        "```",
+        "ses_known",
+        "```",
+        "",
+        "```mermaid",
+        "ses_known",
+        "```",
+        "",
+        "| id |",
+        "| -- |",
+        "| ses_known |",
+      ].join("\n"),
+      syntaxStyle,
+      internalBlockMode,
+      tableOptions: { style: "columns" },
+      renderNode: createMarkdownCodeBlockRenderer({
+        mermaid: (token) => new TextRenderable(renderer, { content: `diagram ${token.text}` }),
+      }),
+      inlineHook: sessionLinks(new Map([["ses_known", "Known"]]), calls),
+    })
+    renderer.root.add(md)
+    await renderMarkdownRenderable(md)
+    // Spacing around renderer results differs by mode on main too.
+    const [afterFence, afterDiagram] = internalBlockMode === "top-level" ? ["\n", "\n\n"] : ["\n\n", "\n"]
+    expect(frameText()).toBe(
+      "Plan @Known\n\nSee @Known, @Known and ses_other.\n\n- run opencode -s ses_known or @Known\n\n│ @Known\n\n" +
+        `ses_known${afterFence}diagram ses_known${afterDiagram}id\n@Known`,
+    )
+    const prose = ["run `opencode -s ses_known` or `ses_known`", "ses_known"]
+    const top = ["# Plan ses_known", "See ses_known, @session:ses_known and ses_other."]
+    // Coalesced mode joins the heading and the paragraph into one block.
+    if (internalBlockMode === "coalesced") top.splice(0, 2, top.join("\n\n"))
+    expect(new Set(calls.map((call) => `${call.tableCell} ${call.source}`))).toEqual(
+      new Set([...[...top, ...prose].map((source) => `false ${source}`), "true id", "true ses_known"]),
+    )
+  },
+)
+
+test("rerunning the inline hook reaches only selected blocks and cells, and removing it restores them", async () => {
+  const titles = new Map([
+    ["ses_a", "A"],
+    ["ses_b", "B"],
+  ])
+  const calls: MarkdownInlineContext[] = []
+  const md = createMarkdownRenderable({
+    content:
+      "First ses_a\n\n## Head ses_a\n\nOther ses_b\n\n```\nses_a\n```\n\n- item ses_a\n\n| id |\n| -- |\n| ses_a |",
+    syntaxStyle,
+    streaming: true,
+    internalBlockMode: "top-level",
+  })
+  renderer.root.add(md)
+  await renderMarkdownRenderable(md)
+  const plain = frameText()
+  // Without a hook a rerun marks no block for a new highlight.
+  const dirty = (node: Renderable): boolean => Reflect.get(node, "_highlightsDirty") || node.getChildren().some(dirty)
+  md.rerunInlineHook(() => true)
+  expect(dirty(md)).toBe(false)
+
+  md.inlineHook = sessionLinks(titles, calls)
+  await renderMarkdownRenderable(md)
+  const shown = (a: string, b = "@B") => [`First ${a}`, `Head ${a}`, `Other ${b}`, "ses_a", `- item ${a}`, `id\n${a}`]
+  expect(plain).toBe(shown("ses_a", "ses_b").join("\n\n"))
+  expect(frameText()).toBe(shown("@A").join("\n\n"))
+  // A streamed row's cells go through the hook as they arrive.
+  md.content += "\n| ses_a too |"
+  await renderMarkdownRenderable(md)
+  expect(frameText()).toBe(shown("@A").join("\n\n") + "\n@A too")
+
+  titles.set("ses_a", "Z")
+  calls.length = 0
+  md.rerunInlineHook((source) => source.includes("ses_a"))
+  await renderMarkdownRenderable(md)
+  expect(frameText()).toBe(shown("@Z").join("\n\n") + "\n@Z too")
+  expect(calls.map((call) => `${call.tableCell} ${call.source}`).sort()).toEqual([
+    "false ## Head ses_a",
+    "false First ses_a",
+    "false item ses_a",
+    "true id",
+    "true ses_a",
+    "true ses_a too",
+  ])
+
+  md.inlineHook = undefined
+  await renderMarkdownRenderable(md)
+  expect(frameText()).toBe(plain + "\nses_a too")
+})
+
+test.each([true, false])("inline hooks keep the frames and see the mode with conceal %p", async (conceal) => {
+  const content = [
+    "# Head *em* `code` ses_known",
+    "",
+    "See [docs](https://e.x) and https://bare.example/x, **bold** \\*esc\\* `ses_known` ses_known.",
+    "",
+    "> quote [l](https://q.x)",
+    "",
+    "- item `x`",
+    "",
+    "| a | b |",
+    "| - | - |",
+    "| `c` | [d](https://d.x) |",
+  ].join("\n")
+  const frames: string[] = []
+  const calls: MarkdownInlineContext[] = []
+  for (const inlineHook of [undefined, (spans: MarkdownInlineSpan[]) => spans, sessionLinks(new Map([["ses_known", "K"]]), calls)]) {
+    const md = createMarkdownRenderable({ content, syntaxStyle, conceal, internalBlockMode: "top-level", inlineHook })
+    renderer.root.add(md)
+    await renderMarkdownRenderable(md)
+    frames.push(frameText())
+    md.destroyRecursively()
+  }
+  // An identity hook changes nothing; without conceal the session hook keeps the source text.
+  expect(frames[1]).toBe(frames[0])
+  expect(frames[2]).toBe(conceal ? frames[0].replaceAll("ses_known", "@K") : frames[0])
+  expect(calls.length).toBeGreaterThan(0)
+  expect(calls.every((call) => call.conceal === conceal && call.syntaxStyle === syntaxStyle)).toBe(true)
+})
+
+test("inlineHookFilter limits the hook to blocks and cells that hold one of its strings", async () => {
+  const calls: MarkdownInlineContext[] = []
+  const md = createMarkdownRenderable({
+    content: "plain\n\nsee ses_a\n\n| id | x |\n| -- | - |\n| ses_a | y |",
+    syntaxStyle,
+    internalBlockMode: "top-level",
+    inlineHook: sessionLinks(new Map([["ses_a", "A"]]), calls),
+    inlineHookFilter: ["ses_"],
+  })
+  renderer.root.add(md)
+  await renderMarkdownRenderable(md)
+  expect(calls.map((call) => call.source).sort()).toEqual(["see ses_a", "ses_a"])
+  expect(frameText()).toContain("see @A")
+
+  md.inlineHookFilter = ["plain"]
+  calls.length = 0
+  await renderMarkdownRenderable(md)
+  expect(calls.map((call) => call.source)).toEqual(["plain"])
+  expect(frameText()).toContain("see ses_a")
+})
+
+// A worker whose replies a test releases one by one, in any order. Its grammar conceals heading markers and the
+// delimiters of `*x*` and code spans, as the Markdown grammar does, so previews and highlights draw the same text.
+class FakeWorker extends TreeSitterClient {
+  pending: { content: string; resolve: (result: { highlights: SimpleHighlight[] }) => void; reject: () => void }[] = []
+
+  constructor() {
+    super({ dataPath: join(tmpdir(), "markdown-fake-worker") }, { autoStartWorker: false })
+  }
+
+  override async highlightOnce(content: string) {
+    const { promise, resolve, reject } = Promise.withResolvers<{ highlights: SimpleHighlight[] }>()
+    this.pending.push({ content, resolve, reject: () => reject(new Error("worker failed")) })
+    return promise
+  }
+
+  reply(index = 0) {
+    const [item] = this.pending.splice(index, 1)
+    if (!item) return
+    const highlights: SimpleHighlight[] = []
+    // Heading markers take their space with them; inline delimiters come from the injected inline grammar.
+    for (const match of item.content.matchAll(/^#{1,6}(?= )|\*(?=\w+\*)|(?<=\*\w+)\*|`(?=[^`\n]+`)|(?<=`[^`\n]+)`/gm)) {
+      const meta = { conceal: "", isInjection: match[0][0] !== "#" }
+      highlights.push([match.index, match.index + match[0].length, "conceal", meta])
+    }
+    for (const match of item.content.matchAll(/`[^`\n]+`/g)) {
+      highlights.push([match.index, match.index + match[0].length, "markup.raw", {}])
+    }
+    item.resolve({ highlights })
+  }
+
+  fail(index = 0) {
+    this.pending.splice(index, 1)[0]?.reject()
+  }
+}
+
+test("a rejected highlight after streaming keeps the hooked text", async () => {
+  const worker = new FakeWorker()
+  const md = createMarkdownRenderable({
+    content: "see ses_alpha `ses_alpha` `run ses_alpha`",
+    syntaxStyle,
+    streaming: true,
+    internalBlockMode: "top-level",
+    treeSitterClient: worker,
+    inlineHook: sessionLinks(new Map([["ses_alpha", "Title"]])),
+  })
+  renderer.root.add(md)
+  await renderOnce()
+  // The preview links an exact-ID code span only, as the highlight does.
+  expect(frameText()).toBe("see @Title @Title run ses_alpha")
+  worker.reply()
+  await flushAsync()
+  md.streaming = false
+  await renderOnce()
+  // No preview is left to keep, so the block draws its text without highlights, through the hook: backticks show and
+  // no span is code.
+  const warn = console.warn
+  console.warn = () => {}
+  worker.fail()
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  console.warn = warn
+  await renderOnce()
+  expect(frameText()).toBe("see @Title `@Title` `run @Title`")
+})
+
+test("an escaped dollar keeps its backslash in the preview, as the highlight shows it", async () => {
+  const recorder = new TestRecorder(renderer)
+  recorder.rec()
+  const md = createMarkdownRenderable({ content: "Pay \\$5 and \\*x\\*", syntaxStyle, streaming: true })
+  renderer.root.add(md)
+  await renderMarkdownRenderable(md)
+  recorder.stop()
+  const frames = recorder.recordedFrames.map((recorded) => recorded.frame.split("\n")[0]!.trimEnd())
+  expect(frames).toContain("Pay \\$5 and \\*x\\*")
+  expect(new Set(frames)).toEqual(new Set(["Pay \\$5 and \\*x\\*"]))
+})
+
+// Seeded model of a hooked, streamed Markdown answer against the fake worker. Each seed appends pieces, draws frames,
+// answers highlights in any order (even seeds also reject some), renames the linked sessions, reruns the hook and ends
+// the stream. Every frame must show no ID the hook links (no unhooked frame), and, in top-level mode until a highlight
+// fails, a row of a stable block that showed text must not change (no flicker above the streamed block). The settled
+// frame must equal a fresh render.
+test("hooked streaming Markdown never shows unhooked text or changes settled rows", async () => {
+  const pieces = ["see ", "ses_a ", "ses_b\n", "word ", "\n\n", "# ", "> ", "- ", "*x* ", "`ses_a` ", "`run x` ", "\n"]
+  // MARKDOWN_MODEL_SEED=<s> replays one seed; MARKDOWN_MODEL_SEEDS=<n> runs more.
+  const one = process.env.MARKDOWN_MODEL_SEED
+  const seeds = one
+    ? [Number(one)]
+    : Array.from({ length: Number(process.env.MARKDOWN_MODEL_SEEDS ?? 40) }, (_, i) => i + 1)
+  for (const seed of seeds) {
+    let state = seed * 2654435761
+    const random = () => {
+      state ^= state << 13
+      state ^= state >>> 17
+      state ^= state << 5
+      return (state >>> 0) / 4294967296
+    }
+    const pick = (count: number) => Math.floor(random() * count)
+    const internalBlockMode = random() < 0.7 ? "top-level" : "coalesced"
+    const titles = new Map([
+      ["ses_a", "A"],
+      ["ses_b", "B"],
+    ])
+    const worker = new FakeWorker()
+    const md = createMarkdownRenderable({
+      content: "",
+      syntaxStyle,
+      streaming: true,
+      internalBlockMode,
+      treeSitterClient: worker,
+      inlineHook: sessionLinks(titles),
+    })
+    renderer.root.add(md)
+    const trace: string[] = []
+    const rows = () =>
+      captureFrame()
+        .split("\n")
+        .map((row) => row.trimEnd().replace(/@[AB]\b/g, "@?"))
+    // Before a frame: the blocks the frame draws in their final form, up to the first one not stable yet or still to
+    // highlight its current text.
+    const waiting = (node: Renderable): boolean =>
+      (node instanceof CodeRenderable && (node.isHighlighting || Reflect.get(node, "_highlightsDirty"))) ||
+      node.getChildren().some(waiting)
+    const settledBlocks = () => {
+      const end = md._blockStates.slice(0, md._stableBlockCount).findIndex((state) => waiting(state.renderable))
+      return end === -1 ? md._stableBlockCount : end
+    }
+    const stableRows = (count: number) => {
+      const block = md._blockStates[count]?.renderable
+      return rows().slice(0, block ? block.y - md.y : md._blockStates.length > 0 ? md.height : 0)
+    }
+    let previous: string[] = []
+    let failed = false
+    const frame = async () => {
+      const settledCount = settledBlocks()
+      await renderOnce()
+      const frame = captureFrame()
+      if (/ses_[ab]/.test(frame)) throw new Error(`seed ${seed}: unhooked ID after ${trace.join(" | ")}\n${frame}`)
+      if (internalBlockMode !== "top-level") return
+      const stable = stableRows(settledCount)
+      const kept = rows().slice(0, previous.length)
+      // A block not yet drawn (blank, or only a quote's bar) may draw; drawn text may not change.
+      if (!failed && previous.some((row, index) => /[^│\s]/.test(row) && row !== kept[index])) {
+        throw new Error(
+          `seed ${seed}: settled rows changed after ${trace.join(" | ")}\n${JSON.stringify(previous)}\n${JSON.stringify(kept)} stable ${md._stableBlockCount}`,
+        )
+      }
+      previous = stable
+    }
+    const warn = console.warn
+    console.warn = () => {}
+    try {
+      for (let step = 0; step < 40; step++) {
+        const roll = random()
+        if (roll < 0.35 && md.streaming) {
+          const piece = pieces[pick(pieces.length)]!
+          trace.push(`append ${JSON.stringify(piece)}`)
+          md.content += piece
+        } else if (roll < 0.55) {
+          trace.push("frame")
+          await frame()
+        } else if (roll < 0.75) {
+          trace.push("reply")
+          worker.reply(pick(worker.pending.length))
+          await flushAsync()
+        } else if (roll < 0.82 && seed % 2 === 0) {
+          trace.push("fail")
+          if (worker.pending.length > 0) failed = true
+          worker.fail(pick(worker.pending.length))
+          await flushAsync()
+        } else if (roll < 0.88) {
+          // Titles keep their width, so a rename moves no row.
+          const title = titles.get("ses_a") === "A" ? "B" : "A"
+          trace.push(`rename ${title}`)
+          titles.set("ses_a", title)
+          md.rerunInlineHook((source) => source.includes("ses_a"))
+        } else if (roll < 0.9) {
+          trace.push("finish")
+          md.streaming = false
+        } else {
+          trace.push("tick")
+          await new Promise<void>((resolve) => setImmediate(resolve))
+        }
+      }
+      trace.push("settle")
+      md.streaming = false
+      // Highlights rejected on the way are asked again, as a later change would.
+      md.rerunInlineHook(() => true)
+      for (let pass = 0; pass < 6; pass++) {
+        await frame()
+        while (worker.pending.length > 0) worker.reply()
+        await flushAsync()
+      }
+      await renderOnce()
+      const settled = frameText()
+      md.destroyRecursively()
+
+      const twinWorker = new FakeWorker()
+      const twin = createMarkdownRenderable({
+        content: md.content,
+        syntaxStyle,
+        internalBlockMode,
+        treeSitterClient: twinWorker,
+        inlineHook: sessionLinks(titles),
+      })
+      renderer.root.add(twin)
+      for (let pass = 0; pass < 4; pass++) {
+        await renderOnce()
+        while (twinWorker.pending.length > 0) twinWorker.reply()
+        await flushAsync()
+      }
+      await renderOnce()
+      if (frameText() !== settled) {
+        throw new Error(`seed ${seed}: settled frame differs from a fresh render after ${trace.join(" | ")}
+${settled}
+--- fresh
+${frameText()}`)
+      }
+      twin.destroyRecursively()
+    } finally {
+      console.warn = warn
+    }
+  }
+}, 600_000)
+
+test("list and quote children keep their text when their kind or the stream changes", async () => {
+  const worker = new FakeWorker()
+  const md = createMarkdownRenderable({
+    content: "> # Title\n> - - -",
+    syntaxStyle,
+    streaming: true,
+    internalBlockMode: "top-level",
+    treeSitterClient: worker,
+  })
+  renderer.root.add(md)
+  const frames: string[] = []
+  const settle = async () => {
+    await renderOnce()
+    while (worker.pending.length > 0) worker.reply()
+    await flushAsync()
+    await renderOnce()
+    frames.push(frameText())
+  }
+  await settle()
+  // The rule becomes a list.
+  md.content += " x"
+  await settle()
+  // The end of the stream builds no child again, so no frame waits for a highlight.
+  md.streaming = false
+  await renderOnce()
+  frames.push(frameText())
+  expect(frames).toEqual([`│ Title\n│ ${"─".repeat(58)}`, "│ Title\n│ - - - x", "│ Title\n│ - - - x"])
 })

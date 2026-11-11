@@ -6,7 +6,7 @@ import { createTextAttributes } from "../utils.js"
 import type { BorderStyle } from "../lib/border.js"
 import { RGBA, parseColor, type ColorInput } from "../lib/RGBA.js"
 import { Lexer, type MarkedToken, type Token, type Tokens } from "marked"
-import { CodeRenderable, type OnChunksCallback, type OnHighlightCallback } from "./Code.js"
+import { CodeRenderable, type ChunkRenderContext, type OnChunksCallback, type OnHighlightCallback } from "./Code.js"
 import { BoxRenderable } from "./Box.js"
 import { StyledText } from "../lib/styled-text.js"
 import { TextRenderable } from "./Text.js"
@@ -122,7 +122,41 @@ export interface MarkdownOptions extends RenderableOptions<MarkdownRenderable> {
    * - "top-level": preserve top-level markdown blocks as separate render blocks.
    */
   internalBlockMode?: "coalesced" | "top-level"
+  /**
+   * Rewrites the display text of every paragraph, heading and table cell, in lists and quotes too, before it is
+   * shown: to show IDs as titled links, for example. Code blocks and `renderNode` results never reach it. It runs
+   * when a block is drawn or changes, on the streaming preview too, and must be synchronous.
+   */
+  inlineHook?: MarkdownInlineHook
+  /** When set, the hook runs only on blocks and cells whose source contains one of these strings. */
+  inlineHookFilter?: readonly string[]
 }
+
+/** One piece of a prose block's display text, as an inline hook sees and returns it. */
+export interface MarkdownInlineSpan {
+  text: string
+  fg?: RGBA
+  bg?: RGBA
+  attributes?: number
+  /** A hyperlink Markdown already found (a Markdown link, an autolink or a bare URL). */
+  link?: { url: string }
+  /** Whether the span is a code span. Without conceal its text keeps the backticks. */
+  code: boolean
+  /** What a click on the span means to the app, such as a session ID. Never sent to the terminal. */
+  target?: string
+}
+
+/** What an inline hook knows about the block or table cell. */
+export interface MarkdownInlineContext {
+  /** The block's or cell's Markdown source. */
+  source: string
+  conceal: boolean
+  syntaxStyle: SyntaxStyle
+  /** Whether the spans are one table cell's content; false for paragraphs and headings, in lists and quotes too. */
+  tableCell: boolean
+}
+
+export type MarkdownInlineHook = (spans: MarkdownInlineSpan[], context: MarkdownInlineContext) => MarkdownInlineSpan[]
 
 export interface RenderNodeContext {
   syntaxStyle: SyntaxStyle
@@ -301,10 +335,17 @@ export class MarkdownRenderable extends Renderable {
   private readonly applyStyleChanges = () => this.rerenderDirtyStyles()
   private _highlightMarkdownLinks: OnHighlightCallback = (highlights, context) =>
     this.addMarkdownLinkHighlights(highlights, context.content)
-  private _linkifyMarkdownChunks: OnChunksCallback = detectLinks
+  // Every prose block's chunk callback: link detection, then the inline hook.
+  private _linkifyMarkdownChunks: OnChunksCallback = (chunks, context) => this.hookHighlightedChunks(chunks, context)
   private _ownedStructuredRenderables = new WeakSet<Renderable>()
   // The base highlight of the block whose preview is being built (quote text).
   private _previewBase?: string
+  private _inlineHook?: MarkdownInlineHook
+  private _inlineHookFilter?: readonly string[]
+  // Preview and table chunks drawn as code spans.
+  private _codeChunks = new WeakSet<TextChunk>()
+  // The kind of block each list item or quote child shows, so a child is updated only for a block of its kind.
+  private _childKinds = new WeakMap<Renderable, string>()
 
   private handleCapabilities(): void {
     if (!this._renderNode && !this._content.includes("]")) return
@@ -325,7 +366,8 @@ export class MarkdownRenderable extends Renderable {
         renderable.onHighlight === previousHighlight
       ) {
         if (this._streaming && token) {
-          renderable.initialStyledText = this.createInitialStyledText(token, renderable.baseHighlight)
+          const preview = this.createInitialStyledText(token, renderable.baseHighlight)
+          renderable.initialStyledText = this.hookPreview(preview, renderable.content)
         }
         renderable.onHighlight = this._highlightMarkdownLinks
       }
@@ -415,6 +457,8 @@ export class MarkdownRenderable extends Renderable {
       this._renderNode = options.renderNode
       this._streaming = options.streaming ?? this._contentDefaultOptions.streaming
       this._internalBlockMode = options.internalBlockMode ?? this._contentDefaultOptions.internalBlockMode
+      this._inlineHook = options.inlineHook
+      this._inlineHookFilter = options.inlineHookFilter
 
       this.updateBlocks()
       this.onLifecyclePass = this.applyStyleChanges
@@ -565,6 +609,105 @@ export class MarkdownRenderable extends Renderable {
     this.requestRender()
   }
 
+  get inlineHook(): MarkdownInlineHook | undefined {
+    return this._inlineHook
+  }
+
+  set inlineHook(value: MarkdownInlineHook | undefined) {
+    if (this._inlineHook === value) return
+    this._inlineHook = value
+    this.rehook()
+  }
+
+  get inlineHookFilter(): readonly string[] | undefined {
+    return this._inlineHookFilter
+  }
+
+  set inlineHookFilter(value: readonly string[] | undefined) {
+    if (this._inlineHookFilter === value) return
+    this._inlineHookFilter = value
+    this.rehook()
+  }
+
+  /**
+   * Runs the inline hook again on the shown blocks and table cells whose source `select` accepts, for a change only
+   * the hook knows about, such as a new title for an ID it links. Nothing is parsed again; a block keeps its text
+   * until its new text is ready. Does nothing without a hook.
+   */
+  public rerunInlineHook(select: (source: string) => boolean): void {
+    if (!this._inlineHook) return
+    this.visitShownBlocks((renderable, token, state) => {
+      if (this.isOwnedTable(renderable, token)) {
+        const cells = [...token.header, ...token.rows.flat()]
+        if (cells.some((cell) => select(cell.text))) this.refreshTable(renderable, token, state)
+        return false
+      }
+      if (
+        renderable instanceof CodeRenderable &&
+        renderable.onChunks === this._linkifyMarkdownChunks &&
+        select(renderable.content)
+      ) {
+        // A new callback marks the block for a new highlight; it keeps its text until that lands.
+        renderable.onChunks = undefined
+        renderable.onChunks = this._linkifyMarkdownChunks
+      }
+      return true
+    })
+    this.requestRender()
+  }
+
+  // Lists in coalesced mode render on their own while a hook is set, so the blocks are built again, as for a style.
+  private rehook(): void {
+    const previous = this._linkifyMarkdownChunks
+    this._linkifyMarkdownChunks = (chunks, context) => this.hookHighlightedChunks(chunks, context)
+    this.visitShownBlocks((renderable) => {
+      if (renderable instanceof CodeRenderable && renderable.onChunks === previous) {
+        renderable.onChunks = this._linkifyMarkdownChunks
+      }
+      return true
+    })
+    this.markStyleDirty()
+  }
+
+  private hookHighlightedChunks(chunks: TextChunk[], context: ChunkRenderContext): TextChunk[] {
+    const linked = detectLinks(chunks, context)
+    if (!this.hooks(context.content)) return linked
+    const raw = context.highlights.filter(([, , group]) => group === "markup.raw" || group.startsWith("markup.raw."))
+    const code = new Set<TextChunk>()
+    chunks.forEach((chunk, index) => {
+      const source = context.sourceRanges?.[index]
+      if (source && raw.some(([start, end]) => start <= source.start && source.end <= end)) code.add(chunk)
+    })
+    return this.runInlineHook(linked, context.content, false, (chunk) => code.has(chunk))
+  }
+
+  private hooks(source: string): boolean {
+    if (!this._inlineHook) return false
+    return !this._inlineHookFilter || this._inlineHookFilter.some((text) => source.includes(text))
+  }
+
+  /** `chunks` of `source` as the inline hook rewrites them. */
+  private runInlineHook(
+    chunks: TextChunk[],
+    source: string,
+    tableCell: boolean,
+    code: (chunk: TextChunk, index: number) => boolean = (chunk) => this._codeChunks.has(chunk),
+  ): TextChunk[] {
+    if (!this.hooks(source)) return chunks
+    const spans = chunks.map((chunk, index) => {
+      const { text, fg, bg, attributes, link } = chunk
+      return { text, fg, bg, attributes, link, code: code(chunk, index) }
+    })
+    const context = { source, conceal: this._conceal, syntaxStyle: this._syntaxStyle, tableCell }
+    return this._inlineHook!(spans, context).map(({ text, fg, bg, attributes, link }) => {
+      return { __isChunk: true, text, fg, bg, attributes, link }
+    })
+  }
+
+  private hookPreview(preview: StyledText | undefined, source: string): StyledText | undefined {
+    return preview && this.hooks(source) ? new StyledText(this.runInlineHook(preview.chunks, source, false)) : preview
+  }
+
   private getStyle(group: string): StyleDefinition | undefined {
     // The solid reconciler applies props via setters in JSX declaration order.
     // If `content` is set before `syntaxStyle`, updateBlocks() runs before
@@ -579,6 +722,12 @@ export class MarkdownRenderable extends Renderable {
   }
 
   private createChunk(text: string, group: string, link?: { url: string }): TextChunk {
+    const chunk = this.createStyledChunk(text, group, link)
+    if (group === "markup.raw") this._codeChunks.add(chunk)
+    return chunk
+  }
+
+  private createStyledChunk(text: string, group: string, link?: { url: string }): TextChunk {
     if (this._previewBase) {
       // A block's base highlight lies under its groups, as the highlighted text has it.
       const style = this._syntaxStyle.mergeStyles(this._previewBase, ...(group === "default" ? [] : [group]))
@@ -639,7 +788,8 @@ export class MarkdownRenderable extends Renderable {
         break
 
       case "escape":
-        chunks.push(this.createDefaultChunk(token.text, link))
+        // The highlighted text keeps the backslash too.
+        chunks.push(this.createDefaultChunk(token.raw, link))
         break
 
       case "codespan":
@@ -762,7 +912,7 @@ export class MarkdownRenderable extends Renderable {
         break
 
       case "escape":
-        chunks.push(this.createChunk(token.text, styleGroup, link))
+        chunks.push(this.createChunk(token.raw, styleGroup, link))
         break
 
       case "codespan":
@@ -860,9 +1010,10 @@ export class MarkdownRenderable extends Renderable {
     marginBottom: number = 0,
     onChunks: OnChunksCallback = this._linkifyMarkdownChunks,
     baseHighlight?: string,
-    initialStyledText?: StyledText,
+    preview?: StyledText,
   ): CodeRenderable {
-    return new CodeRenderable(this.ctx, {
+    const initialStyledText = this.hookPreview(preview, content)
+    const renderable = new CodeRenderable(this.ctx, {
       id,
       content,
       filetype: "markdown",
@@ -880,6 +1031,7 @@ export class MarkdownRenderable extends Renderable {
       width: "100%",
       marginBottom,
     })
+    return renderable
   }
 
   private getBlockquoteBorderColor(): ColorInput {
@@ -1073,6 +1225,7 @@ export class MarkdownRenderable extends Renderable {
         existing?.destroyRecursively()
         content.add(child, childIndex)
       }
+      this._childKinds.set(child, this.getBlockKind(token))
       child.marginTop = token.type === "list" ? 0 : pendingMarginTop
       pendingMarginTop = 0
       childIndex += 1
@@ -1096,9 +1249,12 @@ export class MarkdownRenderable extends Renderable {
     id: string,
     baseHighlight?: string,
   ): Renderable | undefined {
-    if ((token.type === "text" || token.type === "paragraph") && renderable instanceof CodeRenderable) {
+    if (this._childKinds.get(renderable) !== this.getBlockKind(token)) return undefined
+
+    // The kind says what the child is: prose is a CodeRenderable, a list or quote a box.
+    if (this.getBlockKind(token) === "prose") {
       this.applyMarkdownCodeRenderable(
-        renderable,
+        renderable as CodeRenderable,
         this.normalizeScrollbackMarkdownBlockRaw(token.raw),
         0,
         baseHighlight,
@@ -1107,11 +1263,9 @@ export class MarkdownRenderable extends Renderable {
       return renderable
     }
 
-    if (token.type === "list" && renderable instanceof BoxRenderable) {
-      const list = token as Tokens.List
-      return this.applyListRenderable(renderable, list, previousToken as Tokens.List | undefined, id)
-        ? renderable
-        : undefined
+    if (token.type === "list") {
+      this.applyListRenderable(renderable, token as Tokens.List, previousToken as Tokens.List | undefined, id)
+      return renderable
     }
 
     if (token.type === "code") {
@@ -1121,7 +1275,7 @@ export class MarkdownRenderable extends Renderable {
       return renderable
     }
 
-    if (token.type === "blockquote" && renderable instanceof BoxRenderable) {
+    if (token.type === "blockquote") {
       this.applyBlockquoteRenderable(renderable, token, previousToken, 0)
       return renderable
     }
@@ -1135,10 +1289,15 @@ export class MarkdownRenderable extends Renderable {
     if (token.type === "blockquote") return this.createBlockquoteRenderable(token, id)
     if (token.type === "hr") return this.createHorizontalRuleRenderable(id)
     if (token.type === "table") return this.createTableBlock(token as Tokens.Table, id).renderable
+    // Anything else is prose, as `getBlockKind` says.
     const raw = this.normalizeScrollbackMarkdownBlockRaw(token.raw)
     if (!raw) return null
     const preview = this.createInitialStyledText(token, baseHighlight)
     return this.createMarkdownCodeRenderable(raw, id, 0, this._linkifyMarkdownChunks, baseHighlight, preview)
+  }
+
+  private getBlockKind(token: MarkedToken): string {
+    return ["list", "code", "blockquote", "hr", "table"].includes(token.type) ? token.type : "prose"
   }
 
   /** A code-block renderer's result for a fence inside a list or quote, as top-level fences get it. */
@@ -1203,8 +1362,9 @@ export class MarkdownRenderable extends Renderable {
     content: string,
     marginBottom: number,
     baseHighlight?: string,
-    initialStyledText?: StyledText,
+    preview?: StyledText,
   ): void {
+    const initialStyledText = this.hookPreview(preview, content)
     if (initialStyledText && renderable.streaming && renderable.drawUnstyledText && renderable.isHighlighting) {
       renderable.updateStreamingPreview(content, initialStyledText)
     } else {
@@ -1252,6 +1412,8 @@ export class MarkdownRenderable extends Renderable {
   }
 
   private shouldRenderSeparately(token: MarkedToken): boolean {
+    // While a hook is set, a list is never prose: its fences stay code and the hook sees its items.
+    if (token.type === "list") return this._inlineHook !== undefined
     return token.type === "code" || token.type === "table" || token.type === "blockquote" || token.type === "hr"
   }
 
@@ -1433,7 +1595,7 @@ export class MarkdownRenderable extends Renderable {
     if (cell) {
       this.renderInlineContent(cell.tokens, chunks)
     }
-    return chunks.length > 0 ? chunks : [this.createDefaultChunk(" ")]
+    return chunks.length > 0 ? this.runInlineHook(chunks, cell!.text, true) : [this.createDefaultChunk(" ")]
   }
 
   private createTableHeaderCellChunks(cell: Tokens.TableCell): TextChunk[] {
@@ -1442,23 +1604,23 @@ export class MarkdownRenderable extends Renderable {
 
     const baseChunks = chunks.length > 0 ? chunks : [this.createDefaultChunk(" ")]
     const headingStyle = this.getStyle("markup.heading") || this.getStyle("default")
-    if (!headingStyle) {
-      return baseChunks
-    }
-
     const headingAttributes = createTextAttributes({
-      bold: headingStyle.bold,
-      italic: headingStyle.italic,
-      underline: headingStyle.underline,
-      dim: headingStyle.dim,
+      bold: headingStyle?.bold,
+      italic: headingStyle?.italic,
+      underline: headingStyle?.underline,
+      dim: headingStyle?.dim,
     })
-
-    return baseChunks.map((chunk) => ({
-      ...chunk,
-      fg: headingStyle.fg ?? chunk.fg,
-      bg: headingStyle.bg ?? chunk.bg,
-      attributes: headingAttributes,
-    }))
+    const headed = headingStyle
+      ? baseChunks.map((chunk) => ({
+          ...chunk,
+          fg: headingStyle.fg ?? chunk.fg,
+          bg: headingStyle.bg ?? chunk.bg,
+          attributes: headingAttributes,
+        }))
+      : baseChunks
+    // The hook sees a header cell's content in the header style, as Rust's does.
+    if (chunks.length === 0) return headed
+    return this.runInlineHook(headed, cell.text, true, (_, index) => this._codeChunks.has(chunks[index]!))
   }
 
   private buildTableContentCache(
