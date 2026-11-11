@@ -15,7 +15,7 @@ runs:
     # Bun runs native-bottle.ts.
     - uses: oven-sh/setup-bun@v2
       with:
-        bun-version: 1.4.1
+        bun-version-file: package.json
 
     # The bottle holds the files of the npm package, without libopentui.a. A miss restores the FFmpeg cache that
     # Core's jobs save, so the library built below has video for tests/video.rs.

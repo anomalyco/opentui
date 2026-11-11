@@ -6,7 +6,7 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs"
 import { availableParallelism, tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { isSupportedNode26Version } from "../../../../scripts/node26.mjs"
+import { isSupportedNode26Version, NODE26_MIN_VERSION } from "../../../../scripts/node26.mjs"
 import type { ParityEvidence, ScenarioResult } from "./render-traversal-benchmark.js"
 
 type RuntimeName = "bun" | "node"
@@ -66,7 +66,7 @@ if (optionalArg("scene-backend") !== null) {
 
 const nodeVersion = readNodeVersion()
 if (!isSupportedNode26Version(nodeVersion)) {
-  throw new Error(`Node v26.4.0 or later is required, got ${nodeVersion}`)
+  throw new Error(`Node ${NODE26_MIN_VERSION} or later is required, got ${nodeVersion}`)
 }
 
 const verifiedScenarios = new Set(listScenarios(true))

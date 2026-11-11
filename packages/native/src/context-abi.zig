@@ -5264,4 +5264,9 @@ comptime {
             @compileError("ot_scene_text_line differs from scene.TextLine: " ++ name);
     }
     if (@import("link.zig").MAX_URL_LENGTH != 512) @compileError("opentui.h documents 512-byte URLs");
+    const session = @import("session.zig");
+    if (session.program_status_id_bytes_max != 128 or session.program_status_id_segment_bytes_max != 32 or
+        session.program_status_id_segments_max != 8 or session.program_status_app_bytes_max != 32 or
+        session.program_status_title_bytes_max != 192 or session.program_status_message_bytes_max != 2048)
+        @compileError("opentui.h and program-status.mdx document the program status limits");
 }

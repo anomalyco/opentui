@@ -42,7 +42,7 @@ fi
 # runs all of them. A framework change also runs the packages that build against it.
 shared=false
 if printf '%s\n' "$files" | grep -Eq \
-    '^(packages/(core|native|three)/|bun\.lock$|package\.json$|tsconfig[^/]*\.json$|\.github/|scripts/)'; then
+    '^(packages/(core|native|three)/|bun\.lock$|package\.json$|\.node-version$|tsconfig[^/]*\.json$|\.github/|scripts/)'; then
     shared=true
 fi
 core=$shared
