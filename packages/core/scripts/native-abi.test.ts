@@ -9,6 +9,7 @@ import {
   verifyNativeABI,
   type HeaderABI,
 } from "./native-abi.js"
+import { generateRustABI } from "./native-abi-rust.js"
 
 // `bun run check:abi` checks the committed output for the real header before `bun test` runs.
 const buffer = { ffi: "buffer", nullable: "never", retention: "call", source: "view" } as const
@@ -42,6 +43,12 @@ describe("checked native ABI generation", () => {
     const [typescript, rust] = [outputPath, rustOutputPath].map((path) => readFileSync(path, "utf8"))
     expect(() => verifyNativeABI("stale", rust!)).toThrow("Stale generated ABI: native-abi.generated.ts;")
     expect(() => verifyNativeABI(typescript!, "stale")).toThrow("Stale generated ABI: generated.rs;")
+    // A negative value is i32 even when the header spells it as an alias, not with INT32_C.
+    const constants = { OT_ALIAS: -1, OT_ZERO: 0 }
+    const header = new TextEncoder().encode("#define OT_ALIAS OT_FAILED\n#define OT_ZERO INT32_C(0)\n")
+    const generated = generateRustABI({ symbols: {}, callbacks: {}, layouts: {}, constants }, header)
+    expect(generated).toContain("pub const OT_ALIAS: i32 = -1;")
+    expect(generated).toContain("pub const OT_ZERO: i32 = 0;")
   })
 
   test.each<[string, Mutation]>([

@@ -15,7 +15,20 @@ export * from "./tree-sitter-styled-text.js"
 export * from "./tree-sitter/index.js"
 export * from "./data-paths.js"
 export * from "./extmarks.js"
-export * from "./terminal-palette.js"
+// The palette reply helpers stay internal to the renderer.
+export {
+  buildTerminalPaletteSignature,
+  createTerminalPalette,
+  normalizeTerminalPalette,
+  TerminalPalette,
+  type GetPaletteOptions,
+  type NormalizedTerminalPalette,
+  type OscSubscriptionSource,
+  type TerminalColors,
+  type TerminalPaletteDetector,
+  type TerminalPaletteOptions,
+  type WriteFunction,
+} from "./terminal-palette.js"
 export * from "./paste.js"
 export * from "./clipboard.js"
 export { detectLinks } from "./detect-links.js"

@@ -1,5 +1,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
+const api = @import("context_abi_c");
 
 pub const GraphemePoolError = error{
     OutOfMemory,
@@ -9,16 +10,16 @@ pub const GraphemePoolError = error{
     RefcountOverflow,
 };
 
-// Encoding flags for char buffer entries (u32)
+// Encoding flags for char buffer entries (u32), as opentui.h's OT_CELL_CHAR_* define them.
 // Bits 31-30: encoding type
 //   00xxxxxxxx: direct unicode scalar value (30 bits, as-is)
 //   01xxxxxxxx: image cell with reservation ID and fallback quadrant
 //   10xxxxxxxx: grapheme start cell with pool ID (26 bits total payload)
 //   11xxxxxxxx: continuation cell marker for wide/grapheme rendering
-pub const CHAR_FLAG_IMAGE: u32 = 0x4000_0000;
-pub const CHAR_FLAG_GRAPHEME: u32 = 0x8000_0000;
-pub const CHAR_FLAG_CONTINUATION: u32 = 0xC000_0000;
-pub const CHAR_TYPE_MASK: u32 = 0xC000_0000;
+pub const CHAR_FLAG_IMAGE: u32 = api.OT_CELL_CHAR_IMAGE;
+pub const CHAR_FLAG_GRAPHEME: u32 = api.OT_CELL_CHAR_GRAPHEME;
+pub const CHAR_FLAG_CONTINUATION: u32 = api.OT_CELL_CHAR_CONTINUATION;
+pub const CHAR_TYPE_MASK: u32 = api.OT_CELL_CHAR_KIND_MASK;
 pub const IMAGE_ID_MASK: u32 = 0x03FF_FFFF;
 
 pub fn packImageCell(id: u32, fallback: u4) u32 {
@@ -505,15 +506,15 @@ pub const GraphemePool = struct {
 // Bit manipulation functions for encoded char values
 
 pub fn isGraphemeChar(c: u32) bool {
-    return (c & 0xC000_0000) == CHAR_FLAG_GRAPHEME;
+    return (c & CHAR_TYPE_MASK) == CHAR_FLAG_GRAPHEME;
 }
 
 pub fn isContinuationChar(c: u32) bool {
-    return (c & 0xC000_0000) == CHAR_FLAG_CONTINUATION;
+    return (c & CHAR_TYPE_MASK) == CHAR_FLAG_CONTINUATION;
 }
 
 pub fn isClusterChar(c: u32) bool {
-    return (c & 0x8000_0000) == 0x8000_0000;
+    return isGraphemeChar(c) or isContinuationChar(c);
 }
 
 pub fn graphemeIdFromChar(c: u32) u32 {

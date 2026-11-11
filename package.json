@@ -9,6 +9,7 @@
   "scripts": {
     "build": "cd packages/native && bun run build && cd ../core && bun scripts/build.ts --native --skip-zig && bun run build:lib && cd ../qrcode && bun run build && cd ../three && bun run build && cd ../solid && bun run build && cd ../react && bun run build && cd ../keymap && bun run build && cd ../ssh && bun run build",
     "build:examples": "cd packages/examples && bun run build",
+    "check:sources": "bun scripts/check-sources.ts",
     "clean": "bun scripts/clean.ts",
     "examples:node": "node packages/examples/scripts/run-node26.mjs",
     "fmt": "oxfmt --write .",

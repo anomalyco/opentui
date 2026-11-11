@@ -21,9 +21,6 @@ on:
 permissions:
   contents: write
 
-env:
-  NODE_VERSION: 26.13.0
-
 jobs:
   # Decides whether this push is a release, and extracts the version and the dry-run flag.
   prepare:
@@ -69,7 +66,7 @@ jobs:
         if: steps.versions.outputs.current != steps.versions.outputs.previous
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.1
+          bun-version-file: package.json
 
       - name: Extract version and dry-run flag
         id: extract
@@ -187,7 +184,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
 
       - name: Check version matches package.json files
         run: |
@@ -322,12 +319,12 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.1
+          bun-version-file: package.json
 
       - name: Extract and test npm packages
         uses: ./.github/actions/extract-npm-packages
@@ -572,12 +569,12 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.1
+          bun-version-file: package.json
 
       # The packages that npm-publish published, to compare npm's contents with.
       - name: Extract npm packages
@@ -603,7 +600,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.1
+          bun-version-file: package.json
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -753,7 +750,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.1
+          bun-version-file: package.json
 
       # The release commit carries the release notes (packages/web/src/content/docs/releases). They open the
       # GitHub release, and GitHub appends its list of pull requests. Without notes the file is empty.

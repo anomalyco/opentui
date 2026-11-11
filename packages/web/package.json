@@ -13,6 +13,7 @@
     "api:current": "bun scripts/api.ts current",
     "api:diff": "bun scripts/api.ts diff",
     "api:check": "bun scripts/api.ts check",
+    "api:index": "bun scripts/api.ts index",
     "api:backfill": "bun scripts/api.ts backfill",
     "preview": "astro preview",
     "astro": "astro",

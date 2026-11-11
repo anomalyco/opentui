@@ -8,7 +8,7 @@ import type {
   KeyStrokeInput,
 } from "../../index.js"
 
-const namedSingleStrokeKeys = new Set<string>([
+export const namedSingleStrokeKeys = new Set<string>([
   "up",
   "down",
   "left",
@@ -113,7 +113,7 @@ const namedSingleStrokeKeys = new Set<string>([
   "shift",
 ])
 
-const modifierKeyNames = new Set<string>(["ctrl", "control", "shift", "meta", "alt", "option", "super", "hyper"])
+export const modifierKeyNames = new Set<string>(["ctrl", "control", "shift", "meta", "alt", "option", "super", "hyper"])
 
 const namedSingleStrokeKeyPrefixes = createPrefixBuckets(namedSingleStrokeKeys)
 const modifierKeyPrefixes = createPrefixBuckets(modifierKeyNames)

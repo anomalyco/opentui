@@ -121,13 +121,20 @@ it("keeps direct content ahead of JSX edits, including an explicit empty replace
 it("resets removed props and style keys to their defaults", async () => {
   let box!: BoxRenderable
   let text!: TextRenderable
-  let setOn!: (on: boolean) => void
+  let setOn!: (on: boolean | null) => void
   function App() {
-    const [on, set] = useState(true)
+    // `null` passes `opacity={null}` (0) before the prop is removed.
+    const [on, set] = useState<boolean | null>(true)
     setOn = set
     const boxProps = on
-      ? { titleAlignment: "center" as const, focusable: true, shouldFill: false, style: { translateX: 1 } }
-      : { style: {} }
+      ? {
+          titleAlignment: "center" as const,
+          focusable: true,
+          shouldFill: false,
+          opacity: 0.5,
+          style: { translateX: 1 },
+        }
+      : { style: {}, ...(on === null && { opacity: null as unknown as number }) }
     return (
       <box ref={(node) => (box = node!)} title="T" border width={7} height={3} {...boxProps}>
         <text ref={(node) => (text = node!)} {...(on ? { wrapMode: "char" as const, truncate: true } : {})}>
@@ -138,9 +145,12 @@ it("resets removed props and style keys to their defaults", async () => {
   }
   setup = await testRender(<App />, { width: 8, height: 3, clock: new ManualClock() })
   await setup.renderOnce()
+  act(() => setOn(null))
   act(() => setOn(false))
   await setup.renderOnce()
   expect(setup.captureCharFrame().split("\n")[0]).toBe("┌─T───┐ ")
   expect([box.titleAlignment, box.focusable, box.shouldFill, box.translateX]).toEqual(["left", false, true, 0])
+  // A removed prop is omitted, not `null`: `opacity = null` is 0.
+  expect(box.opacity).toBe(1)
   expect([text.wrapMode, text.truncate]).toEqual(["word", false])
 })

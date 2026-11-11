@@ -256,7 +256,7 @@ program status reports.
 | `Code`         | Read-only text with line numbers, tree-sitter highlighting, and tail-following.                                                 |
 | `LineNumbers`  | A gutter beside a `Code` view or `Textarea`, with per-line signs, colors, and custom numbers.                                   |
 | `Diff`         | A unified diff in one column or side by side, with line numbers, signs, and colored lines.                                      |
-| `Markdown`     | Rendered or source Markdown with nested lists, tables, code, and code-block renderers; streamed text updates only what changed. |
+| `Markdown`     | Rendered or source Markdown with nested lists, tables, code, code-block renderers, and inline hooks; streamed text stays cheap. |
 | `TerminalView` | A shell or any program on a pseudo-terminal, emulated natively, with scrollback and selection.                                  |
 | `ImageView`    | A picture, drawn with the Kitty protocol, Sixel, or half blocks.                                                                |
 | `VideoView`    | An MP4 file played natively, with audio, looping, and seeking; events report the position, the end, and failures.               |

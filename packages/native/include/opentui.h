@@ -196,6 +196,24 @@ typedef struct ot_handle {
 #define OT_BOX_SIZING_CONTENT_BOX UINT32_C(1)
 #define OT_LAYOUT_MODE_FLEX UINT32_C(0)
 #define OT_LAYOUT_MODE_LIST UINT32_C(1)
+/* Yoga values for the standalone Yoga bindings only; scene styles reject
+ * DISPLAY_CONTENTS (OT_STYLE_ENUM_DISPLAY_MAX). */
+#define OT_DISPLAY_CONTENTS UINT32_C(2)
+#define OT_YOGA_ERRATA_NONE UINT32_C(0)
+#define OT_YOGA_ERRATA_STRETCH_FLEX_BASIS UINT32_C(1)
+#define OT_YOGA_ERRATA_ABSOLUTE_POSITION_WITHOUT_INSETS_EXCLUDES_PADDING UINT32_C(2)
+#define OT_YOGA_ERRATA_ABSOLUTE_PERCENT_AGAINST_INNER_SIZE UINT32_C(4)
+#define OT_YOGA_ERRATA_ALL UINT32_C(2147483647)
+#define OT_YOGA_ERRATA_CLASSIC UINT32_C(2147483646)
+#define OT_YOGA_EXPERIMENTAL_FEATURE_WEB_FLEX_BASIS UINT32_C(0)
+#define OT_YOGA_LOG_LEVEL_ERROR UINT32_C(0)
+#define OT_YOGA_LOG_LEVEL_WARN UINT32_C(1)
+#define OT_YOGA_LOG_LEVEL_INFO UINT32_C(2)
+#define OT_YOGA_LOG_LEVEL_DEBUG UINT32_C(3)
+#define OT_YOGA_LOG_LEVEL_VERBOSE UINT32_C(4)
+#define OT_YOGA_LOG_LEVEL_FATAL UINT32_C(5)
+#define OT_YOGA_NODE_TYPE_DEFAULT UINT32_C(0)
+#define OT_YOGA_NODE_TYPE_TEXT UINT32_C(1)
 /* Inclusive enum limits also drive generated host validation. */
 #define OT_STYLE_ENUM_DIRECTION_MAX OT_DIRECTION_RTL
 #define OT_STYLE_ENUM_FLEX_DIRECTION_MAX OT_FLEX_DIRECTION_ROW_REVERSE
@@ -243,6 +261,44 @@ typedef struct ot_handle {
 #define OT_COLOR_DEFAULT UINT32_C(2)
 #define OT_COLOR_CHANNEL_MASK UINT32_C(255)
 #define OT_COLOR_META_SHIFT UINT32_C(8)
+/* The RGB snapshot of each palette slot, as 0xRRGGBB: slots 0..15 are ANSI_n;
+ * slots 16..231 are a 6x6x6 cube whose channel level n is 0 for n=0 and
+ * CUBE_BASE + CUBE_STEP * n otherwise; slots 232..255 are a gray ramp of
+ * GRAY_BASE + GRAY_STEP * (slot - 232). */
+#define OT_COLOR_ANSI_0 UINT32_C(0x000000)
+#define OT_COLOR_ANSI_1 UINT32_C(0x800000)
+#define OT_COLOR_ANSI_2 UINT32_C(0x008000)
+#define OT_COLOR_ANSI_3 UINT32_C(0x808000)
+#define OT_COLOR_ANSI_4 UINT32_C(0x000080)
+#define OT_COLOR_ANSI_5 UINT32_C(0x800080)
+#define OT_COLOR_ANSI_6 UINT32_C(0x008080)
+#define OT_COLOR_ANSI_7 UINT32_C(0xC0C0C0)
+#define OT_COLOR_ANSI_8 UINT32_C(0x808080)
+#define OT_COLOR_ANSI_9 UINT32_C(0xFF0000)
+#define OT_COLOR_ANSI_10 UINT32_C(0x00FF00)
+#define OT_COLOR_ANSI_11 UINT32_C(0xFFFF00)
+#define OT_COLOR_ANSI_12 UINT32_C(0x0000FF)
+#define OT_COLOR_ANSI_13 UINT32_C(0xFF00FF)
+#define OT_COLOR_ANSI_14 UINT32_C(0x00FFFF)
+#define OT_COLOR_ANSI_15 UINT32_C(0xFFFFFF)
+#define OT_COLOR_CUBE_BASE UINT32_C(55)
+#define OT_COLOR_CUBE_STEP UINT32_C(40)
+#define OT_COLOR_GRAY_BASE UINT32_C(8)
+#define OT_COLOR_GRAY_STEP UINT32_C(10)
+
+/* Text attribute words: bits 0..7 are the ATTR flags. Where a call or plane
+ * carries a link, bits 8..31 hold its link ID: (attributes >> LINK_SHIFT) & LINK_MASK. */
+#define OT_ATTR_BOLD UINT32_C(1)
+#define OT_ATTR_DIM UINT32_C(2)
+#define OT_ATTR_ITALIC UINT32_C(4)
+#define OT_ATTR_UNDERLINE UINT32_C(8)
+#define OT_ATTR_BLINK UINT32_C(16)
+#define OT_ATTR_INVERSE UINT32_C(32)
+#define OT_ATTR_HIDDEN UINT32_C(64)
+#define OT_ATTR_STRIKETHROUGH UINT32_C(128)
+#define OT_ATTR_BASE_MASK UINT32_C(255)
+#define OT_ATTR_LINK_SHIFT UINT32_C(8)
+#define OT_ATTR_LINK_MASK UINT32_C(0xFFFFFF)
 
 /* Complete slider options. orientation is horizontal=0 or vertical=1. Colors
  * retain terminal color intent. All numbers and derived thumb arithmetic must be finite.
@@ -489,6 +545,11 @@ typedef struct ot_scene_stats {
     uint32_t damage_rows;
 } ot_scene_stats;
 
+/* Cursor styles of the session cursor, the scene cursor state and editors. */
+#define OT_CURSOR_STYLE_BLOCK UINT32_C(0)
+#define OT_CURSOR_STYLE_LINE UINT32_C(1)
+#define OT_CURSOR_STYLE_UNDERLINE UINT32_C(2)
+#define OT_CURSOR_STYLE_DEFAULT UINT32_C(3)
 typedef struct ot_scene_cursor_state {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -859,8 +920,9 @@ typedef struct ot_scene_scroll_bar_options {
     uint16_t track_background[4];
 } ot_scene_scroll_bar_options;
 
+#define OT_SCENE_SCROLL_PADDING_MAX UINT32_C(65535)
 /* axes holds OT_SCENE_SCROLL_X/Y. culling is 0 or 1. padding is the viewport
- * padding in whole cells, left, top, right, bottom, each 0..65535. fills selects
+ * padding in whole cells, left, top, right, bottom, each 0..PADDING_MAX. fills selects
  * which of the wrapper (box inner rect minus the vertical gutter), viewport, and
  * content (moving with the offset) backgrounds paint, in that order, before the
  * children. bars[0] is the horizontal bar, bars[1] the vertical bar. */
@@ -1036,6 +1098,15 @@ ot_status ot_scene_get_text(ot_context *, const ot_handle *node, uint8_t *bytes,
 ot_status ot_scene_get_text_info(ot_context *, const ot_handle *node, ot_scene_text_info *out_info);
 ot_status ot_scene_get_text_lines(ot_context *, const ot_handle *node, uint32_t first_line,
     ot_scene_text_line *lines, uint32_t capacity, uint32_t *out_count);
+/* The byte offset, in the UTF-8 last set on the text node, where the grapheme the latest
+ * finished frame drew at screen cell (x, y) starts. UINT32_MAX when that frame did not
+ * paint the node, when its text or view options changed since, and when the cell lies
+ * outside the node's painted cells or shows no whole grapheme: padding, a truncation
+ * ellipsis, a wide grapheme an edge cuts, zero opacity, or a RENDER_SELF hook's body
+ * in place of the text. A failed paint attempt leaves the answers of the frame before
+ * it, except for nodes it drew. It never lays text out, and does not check
+ * what covers the cell; ot_scene_hit_test does. Follows the text getter rules. */
+ot_status ot_scene_get_text_byte_at(ot_context *, const ot_handle *node, int32_t x, int32_t y, uint32_t *out_byte);
 /* OT_LAYOUT_PUBLIC copies local cell geometry from the node's latest preparation refresh.
  * Below a child that its filtering parent's latest selection culled, which no refresh
  * reaches, it copies the latest solved geometry instead, if Yoga has laid the node out since
@@ -1090,7 +1161,7 @@ ot_status ot_scene_get_stats(ot_context *, const ot_handle *session, ot_scene_st
  * repainted frame. A mismatch fails the frame step
  * with OT_INTERNAL_ERROR; VERIFY changes no other state or count. */
 ot_status ot_scene_set_debug_flags(ot_context *, const ot_handle *session, uint32_t flags);
-/* Copied renderer cursor state. Style: block=0 line=1 underline=2 default=3.
+/* Copied renderer cursor state. style is an OT_CURSOR_STYLE_* value.
  * Colors use normalized float channels. Output requires exact size/version. */
 ot_status ot_scene_get_cursor_state(ot_context *, const ot_handle *session, ot_scene_cursor_state *out_state);
 
@@ -1197,7 +1268,8 @@ ot_status ot_scene_frame_copy_buffer(ot_context *, const ot_handle *session,
 /* Solve an idle scene's existing root without frame preparation, hooks, or painting.
  * Custom Yoga measurement providers may run. Read computed dimensions with raw_yoga=1. */
 ot_status ot_scene_measure_layout(ot_context *, const ot_handle *session, const ot_handle *root);
-/* At most 64 snapshots; Context identities are checked before native bounded copies.
+#define OT_SPLIT_SNAPSHOTS_MAX UINT32_C(64)
+/* At most SPLIT_SNAPSHOTS_MAX snapshots; Context identities are checked before native bounded copies.
  * A null frame submits snapshots only, without painting or publishing the footer draft.
  * After suspension completes, null-frame snapshots remain permitted without reactivating
  * terminal modes; their output packet leaves the cursor restored. Non-null frames and
@@ -1307,6 +1379,11 @@ typedef struct ot_embedded_terminal_cursor {
     uint32_t color_b;
     uint32_t reserved;
 } ot_embedded_terminal_cursor;
+/* The emulator's cursor styles for style above; not the OT_CURSOR_STYLE_* order. */
+#define OT_EMBEDDED_TERMINAL_CURSOR_BAR UINT32_C(0)
+#define OT_EMBEDDED_TERMINAL_CURSOR_BLOCK UINT32_C(1)
+#define OT_EMBEDDED_TERMINAL_CURSOR_UNDERLINE UINT32_C(2)
+#define OT_EMBEDDED_TERMINAL_CURSOR_BLOCK_HOLLOW UINT32_C(3)
 
 /* The active screen's viewport, in rows. offset is the distance from the live
  * screen (0 there; total - visible at the top of history). total includes the
@@ -1343,10 +1420,36 @@ typedef struct ot_embedded_terminal_mouse {
     float y;
 } ot_embedded_terminal_mouse;
 
+/* mods and consumed_mods use the emulator's bits, not OT_INPUT_MOD_*. It has no
+ * Hyper or Meta: hosts send Kitty Meta as ALT. button is BUTTON_NONE for motion
+ * without a pressed button. */
+#define OT_EMBEDDED_TERMINAL_MOD_SHIFT UINT32_C(1)
+#define OT_EMBEDDED_TERMINAL_MOD_CTRL UINT32_C(2)
+#define OT_EMBEDDED_TERMINAL_MOD_ALT UINT32_C(4)
+#define OT_EMBEDDED_TERMINAL_MOD_SUPER UINT32_C(8)
+#define OT_EMBEDDED_TERMINAL_MOD_CAPS_LOCK UINT32_C(16)
+#define OT_EMBEDDED_TERMINAL_MOD_NUM_LOCK UINT32_C(32)
+#define OT_EMBEDDED_TERMINAL_KEY_RELEASE UINT32_C(0)
+#define OT_EMBEDDED_TERMINAL_KEY_PRESS UINT32_C(1)
+#define OT_EMBEDDED_TERMINAL_KEY_REPEAT UINT32_C(2)
+#define OT_EMBEDDED_TERMINAL_MOUSE_PRESS UINT32_C(0)
+#define OT_EMBEDDED_TERMINAL_MOUSE_RELEASE UINT32_C(1)
+#define OT_EMBEDDED_TERMINAL_MOUSE_MOTION UINT32_C(2)
+#define OT_EMBEDDED_TERMINAL_BUTTON_NONE INT32_C(-1)
+#define OT_EMBEDDED_TERMINAL_BUTTON_UNKNOWN INT32_C(0)
+#define OT_EMBEDDED_TERMINAL_BUTTON_LEFT INT32_C(1)
+#define OT_EMBEDDED_TERMINAL_BUTTON_RIGHT INT32_C(2)
+#define OT_EMBEDDED_TERMINAL_BUTTON_MIDDLE INT32_C(3)
+#define OT_EMBEDDED_TERMINAL_BUTTON_FOUR INT32_C(4)
+#define OT_EMBEDDED_TERMINAL_BUTTON_FIVE INT32_C(5)
+#define OT_EMBEDDED_TERMINAL_BUTTON_SIX INT32_C(6)
+#define OT_EMBEDDED_TERMINAL_BUTTON_SEVEN INT32_C(7)
+
 /* All option records require exact size/version and zero reserved fields.
  * Booleans are 0/1. Input and output buffers are borrowed only during the call.
  * Columns and rows are positive u16 values within the Context cell budget.
- * Write, key-name, key-text, and paste inputs are each limited to 1 MiB. */
+ * Write, key-name, key-text, and paste inputs are each limited to INPUT_BYTES_MAX. */
+#define OT_EMBEDDED_TERMINAL_INPUT_BYTES_MAX UINT32_C(1048576)
 ot_status ot_embedded_terminal_create(ot_context *, const ot_embedded_terminal_options *, ot_handle *out_terminal);
 ot_status ot_embedded_terminal_destroy(ot_context *, const ot_handle *terminal);
 ot_status ot_embedded_terminal_write(ot_context *, const ot_handle *terminal, const uint8_t *bytes, uint32_t byte_count);
@@ -1377,8 +1480,9 @@ ot_status ot_embedded_terminal_encode_paste(ot_context *, const ot_handle *termi
     const uint8_t *input, uint32_t input_count, uint8_t *bytes, uint32_t capacity, uint32_t *out_count);
 ot_status ot_embedded_terminal_encode_focus(ot_context *, const ot_handle *terminal,
     uint32_t focused, uint8_t *bytes, uint32_t capacity, uint32_t *out_count);
+#define OT_EMBEDDED_TERMINAL_RESPONSE_BYTES_MAX UINT32_C(1048576)
 /* Drains at most capacity bytes, not a sizing query. Response overflow returns
- * OT_OUTPUT_BACKPRESSURE once without consuming the retained 1 MiB prefix. */
+ * OT_OUTPUT_BACKPRESSURE once without consuming the retained RESPONSE_BYTES_MAX prefix. */
 ot_status ot_embedded_terminal_drain_responses(ot_context *, const ot_handle *terminal,
     uint8_t *bytes, uint32_t capacity, uint32_t *out_count);
 
@@ -1457,7 +1561,7 @@ typedef struct ot_edit_buffer_info {
 #define OT_MOUSE_POINTER_UNCHANGED UINT32_C(0xFFFFFFFF)
 
 /* Complete cursor options, not a patch. Exact size/version and zero reserved.
- * show_cursor and blinking are 0 or 1. style is block=0, line=1, underline=2, default=3.
+ * show_cursor and blinking are 0 or 1. style is an OT_CURSOR_STYLE_* value.
  * color retains packed intent for capture; cursor output uses its RGB snapshot.
  * mouse_pointer is an OT_MOUSE_POINTER_* shape or OT_MOUSE_POINTER_UNCHANGED. */
 typedef struct ot_scene_editor_options {
@@ -1797,8 +1901,9 @@ ot_status ot_scene_set_editor_options(ot_context *, const ot_handle *node, const
 
 ot_status ot_image_destroy(ot_context *, const ot_handle *image);
 
+#define OT_IMAGE_ENCODED_BYTES_MAX UINT32_C(67108864)
 /* Image resources use Context allocation, I/O and handle capacity. Encoded inputs
- * are limited to 64 MiB; dimensions to 16384 per axis and 25000000 pixels.
+ * are limited to ENCODED_BYTES_MAX; dimensions to 16384 per axis and 25000000 pixels.
  * Inputs are copied during creation. Failed operations leave outputs unchanged.
  * Transform/clone/retain return independently releasable handles. Clone copies
  * pixels and encoded data; retain shares immutable storage within one Context.
@@ -2319,6 +2424,14 @@ typedef struct ot_buffer_lease_snapshot {
     uint64_t reserved;
 } ot_buffer_lease_snapshot;
 
+/* Bits 31..30 of a char plane element (KIND_MASK) select its kind: 00 is a
+ * Unicode scalar; IMAGE, GRAPHEME (a pooled grapheme's first cell) and
+ * CONTINUATION (a later cell of a wide glyph) carry native payloads. */
+#define OT_CELL_CHAR_KIND_MASK UINT32_C(0xC0000000)
+#define OT_CELL_CHAR_IMAGE UINT32_C(0x40000000)
+#define OT_CELL_CHAR_GRAPHEME UINT32_C(0x80000000)
+#define OT_CELL_CHAR_CONTINUATION UINT32_C(0xC0000000)
+
 /* Acquire local frame access for the exact retained DONE record. which is
  * OT_SESSION_BUFFER_CURRENT or NEXT. Both require this qualified operation while
  * a draft is live; ordinary Session draw, render, and borrowing cannot bypass it.
@@ -2371,8 +2484,8 @@ ot_status ot_scene_frame_commit(ot_context *, const ot_handle *session,
  * is remote and, once its replies passed the 2026 query (a width-probe report
  * or DA1), either did not report the mode or HOST_MULTIPLEXER is set: the host
  * runs inside tmux, screen or Zellij between the app and the link.
- * SYNC_ALWAYS or SYNC_NEVER (not both) forces the wrapper on or off. kitty_keyboard_flags accepts bits 0 through 4, or zero to disable
- * Kitty keyboard. clear-on-close also controls surface clearing on suspend. It
+ * SYNC_ALWAYS or SYNC_NEVER (not both) forces the wrapper on or off. kitty_keyboard_flags accepts OT_KITTY_KEYBOARD_* bits, or zero to
+ * disable Kitty keyboard. clear-on-close also controls surface clearing on suspend. It
  * clears only a surface that setup or resume claimed: a close before their mode
  * packet leaves visible shell output in place. */
 typedef struct ot_session_terminal_options {
@@ -2381,6 +2494,15 @@ typedef struct ot_session_terminal_options {
     uint32_t flags;
     uint32_t kitty_keyboard_flags;
 } ot_session_terminal_options;
+
+/* Kitty keyboard protocol progressive-enhancement flags. */
+#define OT_KITTY_KEYBOARD_DISAMBIGUATE UINT32_C(1)
+#define OT_KITTY_KEYBOARD_EVENT_TYPES UINT32_C(2)
+#define OT_KITTY_KEYBOARD_ALTERNATE_KEYS UINT32_C(4)
+#define OT_KITTY_KEYBOARD_ALL_KEYS_AS_ESCAPES UINT32_C(8)
+#define OT_KITTY_KEYBOARD_REPORT_TEXT UINT32_C(16)
+#define OT_KITTY_KEYBOARD_ALL (OT_KITTY_KEYBOARD_DISAMBIGUATE | OT_KITTY_KEYBOARD_EVENT_TYPES | \
+    OT_KITTY_KEYBOARD_ALTERNATE_KEYS | OT_KITTY_KEYBOARD_ALL_KEYS_AS_ESCAPES | OT_KITTY_KEYBOARD_REPORT_TEXT)
 
 #define OT_CONTROL_CAPABILITY_RESPONSE UINT32_C(1)
 #define OT_CONTROL_TITLE UINT32_C(2)
@@ -2420,7 +2542,7 @@ typedef struct ot_session_control_options {
 /* CURSOR payload is exactly one copied ot_session_cursor_update, with native
  * byte order and no alignment requirement. fields selects updated properties;
  * other bits must be zero. x/y clamp to 1 and must not exceed 65536. visible and
- * blinking are 0/1. style is 0=block, 1=line, 2=underline, 3=default. mouse_pointer
+ * blinking are 0/1. style is an OT_CURSOR_STYLE_* value. mouse_pointer
  * is an OT_MOUSE_POINTER_* shape. Color uses the packed RGBA lanes. Unselected
  * fields must be zero. */
 typedef struct ot_session_cursor_update {
@@ -2745,6 +2867,7 @@ typedef struct ot_context_error {
 
 #define OT_DIAGNOSTIC_MESSAGE_BYTES UINT32_C(4096)
 #define OT_DIAGNOSTIC_TRUNCATED UINT32_C(1)
+#define OT_DIAGNOSTIC_QUEUE_MAX UINT32_C(64)
 
 /* Copied diagnostic record. level is 0 (error), 1 (warning), 2 (info), or
  * 3 (debug). message_len counts bytes, not a terminating NUL. Unused message
@@ -2794,7 +2917,7 @@ ot_status ot_context_destroy(ot_context *context);
 ot_status ot_context_get_last_error(ot_context *context, ot_context_error *out_error);
 
 /* Copy up to capacity records in arrival order without allocation or callbacks.
- * Version 2 C contexts hold at most 64 records and drop newest on overflow.
+ * Version 2 C contexts hold at most OT_DIAGNOSTIC_QUEUE_MAX records and drop newest on overflow.
  * records may be NULL only when capacity is zero. A zero-capacity drain reports
  * queue pressure without removing records. out_drain must have the exact size
  * and version. The caller owns both outputs for the call. Outputs and queued

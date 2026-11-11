@@ -19,7 +19,7 @@ interface KeyBindingLike {
   super?: boolean
 }
 
-function keyBindingToString(binding: KeyBindingLike): string {
+export function keyBindingToString(binding: KeyBindingLike): string {
   const parts: string[] = []
 
   if (binding.ctrl) parts.push("ctrl")
@@ -77,7 +77,7 @@ export type EditBufferFineGroup = "Cursor" | "Selection" | "Delete" | "History" 
 
 const DEFAULT_EDIT_BUFFER_METADATA_GROUP = "Text Editing"
 
-const editBufferCommandNames = {
+export const editBufferCommandNames = {
   "move-left": "input.move.left",
   "move-right": "input.move.right",
   "move-up": "input.move.up",
@@ -116,7 +116,7 @@ const editBufferCommandNames = {
   submit: "input.submit",
 } as const satisfies Record<EditBufferCommandName, string>
 
-const editBufferCommandDescriptions = {
+export const editBufferCommandDescriptions = {
   "move-left": "Cursor left",
   "move-right": "Cursor right",
   "move-up": "Cursor up",

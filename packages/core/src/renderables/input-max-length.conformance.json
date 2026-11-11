@@ -1,0 +1,21 @@
+{
+  "format": [
+    "Input maxLength conformance vectors. Core (Input.test.ts) and Rust (tests/widgets.rs) run this file. A row is [name, value, maxLength, select, insert, expected, issue?].",
+    "The input gets value and maxLength in each order the binding allows, Shift+Left selects `select` characters left of the end, and insert replaces the selection. expected is the value it holds.",
+    "maxLength counts UTF-16 code units. A cut never splits a character: a character that does not fit whole is left out."
+  ],
+  "rows": [
+    ["ASCII value", "hello world", 5, 0, "", "hello"],
+    ["an insert fills the room", "abc", 5, 0, "defg", "abcde"],
+    ["an insert into a full value", "abc", 3, 0, "d", "abc"],
+    ["a selection frees its length", "hello", 5, 2, "xyz", "helxy"],
+    ["a CJK character counts one unit", "日本語", 2, 0, "", "日本"],
+    ["an emoji counts two units", "😀😀", 2, 0, "", "😀", "529"],
+    ["an emoji across the limit", "ab😀", 3, 0, "", "ab", "529"],
+    ["an emoji across the limit after a CJK character", "hel日😀", 5, 0, "", "hel日", "529"],
+    ["an inserted emoji with one unit of room", "hell", 5, 0, "😀", "hell", "529"],
+    ["an inserted emoji with two units of room", "hel", 5, 0, "😀", "hel😀"],
+    ["a selected emoji frees two units", "ab😀", 4, 1, "xyz", "abxy", "529"],
+    ["newlines go before the cut", "a\nbc", 3, 0, "", "abc", "529"]
+  ]
+}

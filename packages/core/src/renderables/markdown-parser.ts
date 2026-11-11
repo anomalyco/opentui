@@ -16,57 +16,45 @@ export function parseMarkdownIncremental(
   prevState: ParseState | null,
   trailingUnstable: number = 2,
 ): ParseState {
-  if (
-    trailingUnstable === 0 &&
-    prevState?.content === newContent &&
-    prevState.stableTokenCount === prevState.tokens.length
-  )
-    return prevState
-  if (!prevState || prevState.tokens.length === 0 || trailingUnstable === 0) {
+  if (trailingUnstable === 0) {
+    if (prevState?.content === newContent && prevState.stableTokenCount === prevState.tokens.length) return prevState
     try {
       const tokens = Lexer.lex(newContent, { gfm: true }) as MarkedToken[]
-      return {
-        content: newContent,
-        tokens,
-        stableTokenCount: Math.max(0, tokens.length - trailingUnstable),
-      }
+      return { content: newContent, tokens, stableTokenCount: tokens.length }
     } catch {
       return { content: newContent, tokens: [], stableTokenCount: 0 }
     }
   }
 
-  // Find how many tokens from start are unchanged
+  // Find how many tokens from start are unchanged by an append; any other edit parses afresh
+  const prevTokens = prevState && newContent.startsWith(prevState.content) ? prevState.tokens : []
   let offset = 0
   let reuseCount = 0
 
-  for (const token of prevState.tokens) {
-    const tokenLength = token.raw.length
-    if (offset + tokenLength <= newContent.length && newContent.startsWith(token.raw, offset)) {
-      reuseCount++
-      offset += tokenLength
-    } else {
-      break
-    }
+  for (const token of prevTokens) {
+    if (!newContent.startsWith(token.raw, offset)) break
+    reuseCount++
+    offset += token.raw.length
   }
 
-  // Keep last N tokens unstable (e.g. "# Hello" might become "# Hello World")
-  reuseCount = Math.max(0, reuseCount - trailingUnstable)
+  // A streamed parse keeps its stable tokens; a parse that did not stream has none. Tokens with N after them (e.g.
+  // "# Hello" might become "# Hello World") become stable, but the last is lexed again with the tail, which can still
+  // continue it (a list item after a blank line). It stays only if it comes back unchanged and, for a list, the last
+  // line cannot still become its item ("1. a\n\n10", "- a\n\n- - -").
+  const stable = prevState?.stableTokenCount ?? 0
+  const keptCount = stable < prevTokens.length ? Math.max(reuseCount - trailingUnstable, stable) : 0
+  reuseCount = keptCount > stable ? keptCount - 1 : keptCount
+  const confirm =
+    reuseCount < keptCount &&
+    (prevTokens[reuseCount].type !== "list" || !/(^|\n)[ \t]*(\d{1,9}|[-*][-* \t]*)$/.test(newContent))
 
-  offset = 0
-  for (let i = 0; i < reuseCount; i++) {
-    offset += prevState.tokens[i].raw.length
-  }
-
-  const stableTokens = prevState.tokens.slice(0, reuseCount)
-  const remainingContent = newContent.slice(offset)
+  const stableTokens = prevTokens.slice(0, reuseCount)
+  const remainingContent = newContent.slice(stableTokens.reduce((length, token) => length + token.raw.length, 0))
 
   try {
     const newTokens = Lexer.lex(remainingContent, { gfm: true }) as MarkedToken[]
-    return {
-      content: newContent,
-      tokens: [...stableTokens, ...newTokens],
-      stableTokenCount: stableTokens.length,
-    }
+    if (confirm && newTokens[0]?.raw === prevTokens[reuseCount].raw) newTokens[0] = prevTokens[reuseCount++]
+    return { content: newContent, tokens: [...stableTokens, ...newTokens], stableTokenCount: reuseCount }
   } catch {
     try {
       const fullTokens = Lexer.lex(newContent, { gfm: true }) as MarkedToken[]

@@ -30,7 +30,7 @@ function requireInteger(value: number, name: string, min: number, max: number): 
   }
 }
 import { type BorderStyle, type BorderSides, BorderCharArrays, parseBorderStyle } from "./lib/index.js"
-import { TargetChannel, type WidthMethod, type CapturedSpan, type CapturedLine } from "./types.js"
+import { TargetChannel, getBaseAttributes, type WidthMethod, type CapturedSpan, type CapturedLine } from "./types.js"
 import type { TextBufferView } from "./text-buffer-view.js"
 import type { EditorView } from "./editor-view.js"
 
@@ -443,7 +443,7 @@ export class OptimizedBuffer {
           const i = y * width + x
           const cellFg = RGBA.fromArray(fg.subarray(i * 4, i * 4 + 4))
           const cellBg = RGBA.fromArray(bg.subarray(i * 4, i * 4 + 4))
-          const cellAttrs = attributes[i] & 0xff
+          const cellAttrs = getBaseAttributes(attributes[i])
 
           const end = offset + lengths![i]
           const cellChar = decoder.decode(bytes.subarray(offset, end))

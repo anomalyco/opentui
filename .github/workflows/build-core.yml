@@ -17,7 +17,6 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  NODE_VERSION: 26.13.0
 
 jobs:
   changes:
@@ -40,7 +39,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.1
+          bun-version-file: package.json
 
       - name: Install dependencies
         run: bun install
@@ -62,7 +61,7 @@ jobs:
           path: |
             packages/native/.cache/ffmpeg/prefix
             packages/native/.cache/ffmpeg/downloads
-          key: ffmpeg-v1-${{ runner.os }}-${{ hashFiles('packages/native/scripts/build-ffmpeg.ts') }}
+          key: ffmpeg-v1-${{ runner.os }}-${{ hashFiles('packages/native/scripts/build-ffmpeg.ts', '.zig-version') }}
 
       - name: Build or package native libraries
         run: bun scripts/native-bottle.ts package --hit "${{ steps.bottle.outputs.cache-hit }}" --zig "${{ env.ZIG_VERSION }}" --all
@@ -144,12 +143,12 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.1
+          bun-version-file: package.json
 
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
 
       - name: Install dependencies
         run: bun install
@@ -275,12 +274,12 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.1
+          bun-version-file: package.json
 
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
 
       - name: Install dependencies
         run: bun install
@@ -304,7 +303,7 @@ jobs:
           path: |
             packages/native/.cache/ffmpeg/prefix
             packages/native/.cache/ffmpeg/downloads
-          key: ffmpeg-v1-${{ runner.os }}-${{ hashFiles('packages/native/scripts/build-ffmpeg.ts') }}
+          key: ffmpeg-v1-${{ runner.os }}-${{ hashFiles('packages/native/scripts/build-ffmpeg.ts', '.zig-version') }}
 
       # FFmpeg cannot build on Windows, so a cache miss waits for the build job's cross-built prefix.
       - name: Wait for Windows FFmpeg prefix
@@ -511,7 +510,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.1
+          bun-version-file: package.json
 
       - name: Install dependencies
         run: bun install
@@ -595,7 +594,7 @@ jobs:
       - name: Setup development Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.1
+          bun-version-file: package.json
           no-cache: true
 
       - name: Install dependencies
@@ -634,10 +633,14 @@ jobs:
       - name: Install dependencies
         run: bun install
 
-      # A Rust-only pull request skips Core's tests, which also run this check.
+      # A Rust-only pull request skips Core's and keymap's tests, which also run these checks.
       - name: Check the generated ABI files
         working-directory: packages/core
         run: bun run check:abi
+
+      - name: Check the generated tables
+        working-directory: packages/keymap
+        run: bun scripts/rust-tables.ts --check
 
       - name: Test
         working-directory: packages/rust
