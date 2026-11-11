@@ -1,0 +1,287 @@
+name: Build Packages
+
+# The React, Solid, keymap, QRCode and SSH checks were five workflows that each repeated checkout, bun install and the
+# core build on the same commit. A pull request runs the packages its paths touch on one small Linux runner; a push to
+# the default branch runs all of them there, and adds the SSH macOS leg. Build Core tests the same packages on Windows,
+# where it already holds the native artifacts.
+on:
+  push:
+    branches: [main, "[0-9]+.[0-9]+.x"]
+  pull_request:
+    branches: [main, "[0-9]+.[0-9]+.x"]
+
+permissions:
+  contents: read
+
+concurrency:
+  # Each commit gets its own group. In a shared group, the next push cancels a waiting run, and that
+  # commit gets no CI.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NODE_VERSION: 26.13.0
+
+jobs:
+  changes:
+    uses: ./.github/workflows/changes.yml
+
+  # A change to core, the shared toolchain or the repository configuration runs every package. A package change runs
+  # the packages that build against it.
+  react:
+    name: React
+    needs: changes
+    if: needs.changes.outputs.react == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Set up
+        uses: ./.github/actions/setup-build
+        with:
+          zig-cache-save: ${{ github.event_name == 'push' }}
+
+      - name: Build
+        working-directory: packages/react
+        run: bun run build --ci
+
+      - name: Enable Linux core dumps
+        uses: ./.github/actions/enable-linux-coredumps
+
+      - name: Run tests
+        working-directory: packages/react
+        run: |
+          if [ "$(uname -s)" = Linux ]; then ulimit -c unlimited; fi
+          bun run test
+
+      - name: Upload Linux core dumps
+        if: failure()
+        uses: ./.github/actions/upload-linux-coredumps
+        with:
+          name: crash-dumps-react-${{ github.run_attempt }}
+
+  solid:
+    name: Solid
+    needs: changes
+    if: needs.changes.outputs.solid == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Set up
+        uses: ./.github/actions/setup-build
+
+      - name: Build
+        working-directory: packages/solid
+        run: bun run build --ci
+
+      - name: Enable Linux core dumps
+        uses: ./.github/actions/enable-linux-coredumps
+
+      - name: Run tests
+        working-directory: packages/solid
+        run: |
+          if [ "$(uname -s)" = Linux ]; then ulimit -c unlimited; fi
+          bun run test
+
+      # The Node source lane and the packed consumer need the build above, so they share this runner instead of
+      # repeating checkout, install and the core build.
+      - name: Run Node source lane
+        working-directory: packages/solid
+        run: bun run test:js:node
+
+      - name: Test packed distribution
+        working-directory: packages/solid
+        run: bun run test:dist --skip-build
+
+      - name: Upload Linux core dumps
+        if: failure()
+        uses: ./.github/actions/upload-linux-coredumps
+        with:
+          name: crash-dumps-solid-${{ github.run_attempt }}
+
+  keymap:
+    name: Keymap
+    needs: changes
+    if: needs.changes.outputs.keymap == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Set up
+        uses: ./.github/actions/setup-build
+
+      # The packed consumer resolves @opentui/solid from its build.
+      - name: Build solid
+        working-directory: packages/solid
+        run: bun run build --ci
+
+      - name: Build
+        working-directory: packages/keymap
+        run: bun run build --ci
+
+      - name: Enable Linux core dumps
+        uses: ./.github/actions/enable-linux-coredumps
+
+      - name: Run tests
+        working-directory: packages/keymap
+        run: |
+          if [ "$(uname -s)" = Linux ]; then ulimit -c unlimited; fi
+          bun run test
+
+      - name: Test packed distribution
+        working-directory: packages/keymap
+        run: bun run test:dist --skip-build
+
+      - name: Upload Linux core dumps
+        if: failure()
+        uses: ./.github/actions/upload-linux-coredumps
+        with:
+          name: crash-dumps-keymap-${{ github.run_attempt }}
+
+  qrcode:
+    name: QRCode
+    needs: changes
+    if: needs.changes.outputs.qrcode == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Set up
+        uses: ./.github/actions/setup-build
+
+      - name: Build
+        working-directory: packages/qrcode
+        run: bun run build
+
+      - name: Enable Linux core dumps
+        uses: ./.github/actions/enable-linux-coredumps
+
+      - name: Run tests
+        working-directory: packages/qrcode
+        run: |
+          if [ "$(uname -s)" = Linux ]; then ulimit -c unlimited; fi
+          bun run test
+
+      - name: Upload Linux core dumps
+        if: failure()
+        uses: ./.github/actions/upload-linux-coredumps
+        with:
+          name: crash-dumps-qrcode-${{ github.run_attempt }}
+
+  ssh:
+    name: SSH
+    needs: changes
+    if: needs.changes.outputs.ssh == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Set up
+        uses: ./.github/actions/setup-build
+
+      - name: Build framework declarations
+        run: |
+          cd packages/react
+          bun run build
+          cd ../solid
+          bun run build
+
+      - name: Build
+        working-directory: packages/ssh
+        run: bun run build
+
+      - name: Typecheck
+        working-directory: packages/ssh
+        run: bun run typecheck
+
+      - name: Enable Linux core dumps
+        uses: ./.github/actions/enable-linux-coredumps
+
+      - name: Run tests
+        working-directory: packages/ssh
+        run: |
+          if [ "$(uname -s)" = Linux ]; then ulimit -c unlimited; fi
+          bun run test
+
+      - name: Test packed distribution
+        working-directory: packages/ssh
+        run: bun run test:dist
+
+      - name: Upload Linux core dumps
+        if: failure()
+        uses: ./.github/actions/upload-linux-coredumps
+        with:
+          name: crash-dumps-ssh-${{ github.run_attempt }}
+
+  # SSH is the only package with an OS-dependent path (loopback SSH), so its macOS leg stays.
+  ssh-macos:
+    name: SSH (macOS)
+    needs: changes
+    if: github.event_name == 'push' && needs.changes.outputs.ssh == 'true'
+    runs-on: blacksmith-12vcpu-macos-15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Set up
+        uses: ./.github/actions/setup-build
+
+      - name: Build framework declarations
+        run: |
+          cd packages/react
+          bun run build
+          cd ../solid
+          bun run build
+
+      - name: Build
+        working-directory: packages/ssh
+        run: bun run build
+
+      - name: Typecheck
+        working-directory: packages/ssh
+        run: bun run typecheck
+
+      - name: Run tests
+        working-directory: packages/ssh
+        run: bun run test
+
+  # Gate job for branch protection
+  build-complete:
+    name: Packages - Build and Test
+    needs: [changes, react, solid, keymap, qrcode, ssh, ssh-macos]
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    if: always()
+    steps:
+      # Without the changes job no skip is known to be safe. A package check may skip only when its paths did not
+      # change, and the macOS leg only on a pull request.
+      - name: Check test results
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          EVENT: ${{ github.event_name }}
+          REACT: ${{ needs.react.result }}
+          REACT_CHANGED: ${{ needs.changes.outputs.react }}
+          SOLID: ${{ needs.solid.result }}
+          SOLID_CHANGED: ${{ needs.changes.outputs.solid }}
+          KEYMAP: ${{ needs.keymap.result }}
+          KEYMAP_CHANGED: ${{ needs.changes.outputs.keymap }}
+          QRCODE: ${{ needs.qrcode.result }}
+          QRCODE_CHANGED: ${{ needs.changes.outputs.qrcode }}
+          SSH: ${{ needs.ssh.result }}
+          SSH_CHANGED: ${{ needs.changes.outputs.ssh }}
+          SSH_MACOS: ${{ needs.ssh-macos.result }}
+        run: |
+          [ "$CHANGES" = success ] || { echo "Change detection: $CHANGES"; exit 1; }
+          [ "$REACT" = success ] || [ "$REACT-$REACT_CHANGED" = skipped-false ] || { echo "React failed: $REACT"; exit 1; }
+          [ "$SOLID" = success ] || [ "$SOLID-$SOLID_CHANGED" = skipped-false ] || { echo "Solid failed: $SOLID"; exit 1; }
+          [ "$KEYMAP" = success ] || [ "$KEYMAP-$KEYMAP_CHANGED" = skipped-false ] || { echo "Keymap failed: $KEYMAP"; exit 1; }
+          [ "$QRCODE" = success ] || [ "$QRCODE-$QRCODE_CHANGED" = skipped-false ] || { echo "QRCode failed: $QRCODE"; exit 1; }
+          [ "$SSH" = success ] || [ "$SSH-$SSH_CHANGED" = skipped-false ] || { echo "SSH failed: $SSH"; exit 1; }
+          [ "$SSH_MACOS" = success ] || [ "$SSH_MACOS-$EVENT" = skipped-pull_request ] || { echo "SSH (macOS) failed: $SSH_MACOS"; exit 1; }
+          echo "All tests passed"
