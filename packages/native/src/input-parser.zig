@@ -3,6 +3,8 @@
 //! every feed and calls again with zero bytes at `deadlineNs()`. See
 //! docs/input-parser.md for the grammar, the state table, and the guarantees.
 const std = @import("std");
+const isControl = @import("utf8.zig").isControl;
+const isScalar = @import("utf8.zig").isScalar;
 
 pub const timeout_ns: u64 = 20 * std.time.ns_per_ms;
 pub const unit_bytes_max: u16 = 4096;
@@ -1192,14 +1194,6 @@ fn utf8Continues(lead: u8, count: u16, b: u8) bool {
 fn utf8Encode(scalar: u21, buffer: *[4]u8) []const u8 {
     const len = std.unicode.utf8Encode(scalar, buffer) catch unreachable;
     return buffer[0..len];
-}
-
-fn isScalar(value: u32) bool {
-    return value <= 0x10ffff and !(value >= 0xd800 and value <= 0xdfff);
-}
-
-fn isControl(value: u32) bool {
-    return value < 0x20 or (value >= 0x7f and value <= 0x9f);
 }
 
 fn modsFromParam(value: u32) Modifiers {

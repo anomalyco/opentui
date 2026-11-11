@@ -1551,6 +1551,58 @@ pub const UnifiedTextBufferView = struct {
         return result;
     }
 
+    /// A grapheme the view draws: the byte where it starts in the UTF-8 the text was set with, and the local columns
+    /// it spans.
+    pub const CellGrapheme = struct { byte: u32, x: i64, width: u32 };
+
+    /// The grapheme the view draws at local cell `(x, y)`, from the lines it was last prepared with. Null for a cell
+    /// that shows none: outside the viewport, alignment or wrap padding, past the last line, or a truncation
+    /// ellipsis, and while the lines need preparing again, which a read never does.
+    pub fn graphemeAtCell(self: *const Self, x: i32, y: i32) ?CellGrapheme {
+        if (self.needsPrepare()) return null;
+        var vp_x: i64 = 0;
+        var vp_y: i64 = 0;
+        if (self.viewport) |vp| {
+            if (x < 0 or y < 0 or x >= vp.width or y >= vp.height) return null;
+            vp_y = vp.y;
+            if (self.wrap_mode == .none) vp_x = vp.x;
+        }
+        const row = @as(i64, y) + vp_y;
+        if (row < 0 or row >= self.virtual_lines.items.len) return null;
+        const vline_idx: usize = @intCast(row);
+        const vline = &self.virtual_lines.items[vline_idx];
+        const pad = self.getLineAlignmentPad(vline_idx, vline.width_cols);
+        const col = @as(i64, x) + vp_x - pad;
+        if (col < 0) return null;
+        // Past the line's chunks lies wrap padding.
+        var start: u32 = 0;
+        for (vline.chunks.items) |vchunk| {
+            const local: u32 = @intCast(col - start);
+            defer start += vchunk.width_cols;
+            if (local >= vchunk.width_cols) continue;
+            const chunk = vchunk.chunk;
+            if ((chunk.flags & TextChunk.Flags.STATIC_ELLIPSIS) != 0) return null;
+            const bytes = chunk.getBytes(self.text_buffer.memRegistry());
+            const pos = utf8.findGraphemePosByWidth(
+                bytes,
+                vchunk.col_start_in_chunk + local,
+                self.text_buffer.tabWidth(),
+                self.text_buffer.controlDisplay(),
+                chunk.isAsciiOnly(),
+                false,
+                self.text_buffer.widthMethod(),
+            );
+            if (pos.byte_offset >= bytes.len) return null;
+            const width = utf8.getGraphemeWidthAt(bytes, pos.byte_offset, self.text_buffer.tabWidth(), self.text_buffer.controlDisplay(), self.text_buffer.widthMethod());
+            return .{
+                .byte = chunk.byte_start + pos.byte_offset,
+                .x = @as(i64, start) + pos.columns_used - vchunk.col_start_in_chunk + pad - vp_x,
+                .width = width,
+            };
+        }
+        return null;
+    }
+
     /// Pack selection info into u64 for efficient passing
     /// Returns 0xFFFF_FFFF_FFFF_FFFF for no selection or zero-width selection
     pub fn packSelectionInfo(self: *const Self) u64 {

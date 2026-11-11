@@ -699,8 +699,8 @@ export function run(rendererInstance: CliRenderer): void {
   })
 
   // Insert statusbar before the body
-  rootContainer.add(statusbarSlot, 0)
-  body.add(sidebarSlot)
+  rootContainer.add(statusbarSlot!, 0)
+  body.add(sidebarSlot!)
   body.add(infoPanel!)
 
   setClockPluginEnabled(true)

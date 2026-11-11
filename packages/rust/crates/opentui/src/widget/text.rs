@@ -188,6 +188,145 @@ mod tests {
     use crate::prelude::*;
     use crate::testing::TestApp;
 
+    fn byte(text: &Text, x: i32, y: i32) -> Option<u32> {
+        text.0.element.query(|node| node.text_byte_at(x, y)).flatten()
+    }
+
+    #[test]
+    fn bytes_answer_only_for_what_the_last_frame_painted() {
+        type Setup = fn(&TestApp) -> (Text, Option<fn(&Text)>);
+        type Cells = &'static [(i32, i32, Option<u32>)];
+        // Each case builds a text and renders it, optionally changes it without rendering, and checks cells:
+        // (x, y, byte) after the change and, where given, after the next frame.
+        let cases: [(&str, Setup, Cells, Cells); 16] = [
+            ("painted", |app| (Text::new(app, "hello"), None), &[(0, 0, Some(0)), (4, 0, Some(4)), (5, 0, None)], &[]),
+            ("hidden", |app| (Text::new(app, "hello"), Some(|text| drop(text.visible(false)))), &[], &[(0, 0, None)]),
+            ("detached", |app| (Text::new(app, "hello"), Some(|text| text.detach())), &[], &[(0, 0, None)]),
+            (
+                "transparent",
+                |app| (Text::new(app, "hello"), Some(|text| drop(text.opacity(0.0)))),
+                &[],
+                &[(0, 0, None)],
+            ),
+            (
+                "in a transparent parent",
+                |app| {
+                    let text = Text::new(app, "hello");
+                    app.root().add(&View::new(app).opacity(0.0).child(&text));
+                    (text, None)
+                },
+                &[(0, 0, None)],
+                &[],
+            ),
+            (
+                "edited",
+                |app| (Text::new(app, "A"), Some(|text| drop(text.set_text("ABCDE")))),
+                &[(0, 0, None), (1, 0, None)],
+                &[(1, 0, Some(1))],
+            ),
+            (
+                "realigned",
+                |app| (Text::new(app, "abcde").width(8), Some(|text| drop(text.align(Alignment::Right)))),
+                &[(4, 0, None)],
+                &[(4, 0, Some(1)), (2, 0, None)],
+            ),
+            (
+                "scrolled",
+                |app| {
+                    (
+                        Text::new(app, "abcdefghij\nklmnopqrst\nuvwxyz").wrap(WrapMode::None).width(4).height(2),
+                        Some(|text| drop(text.scroll_to(2.0, 1.0))),
+                    )
+                },
+                &[(0, 0, None)],
+                &[(0, 0, Some(13)), (3, 1, Some(27)), (4, 0, None), (0, 2, None)],
+            ),
+            ("one row", |app| (Text::new(app, "AAA\nBBB").height(1), None), &[(0, 0, Some(0)), (0, 1, None)], &[]),
+            (
+                "wide cut by scrolling",
+                |app| (Text::new(app, "\u{4e2d}a").wrap(WrapMode::None).width(3).scroll_to(1.0, 0.0), None),
+                &[(0, 0, None), (1, 0, Some(3))],
+                &[],
+            ),
+            (
+                "wide cut by width",
+                |app| (Text::new(app, "a\u{4e2d}").wrap(WrapMode::None).width(2), None),
+                &[(0, 0, Some(0)), (1, 0, None)],
+                &[],
+            ),
+            ("wide wider than the text", |app| (Text::new(app, "\u{4e2d}").width(1), None), &[(0, 0, None)], &[]),
+            (
+                "wide cut by translation",
+                |app| {
+                    let text = Text::new(app, "\u{4e2d}a");
+                    app.root().add(&View::new(app).translate(-1.0, 0.0).child(&text));
+                    (text, None)
+                },
+                &[(0, 0, None), (1, 0, Some(3))],
+                &[],
+            ),
+            (
+                "wide cut by a clip",
+                |app| {
+                    let text = Text::new(app, "a\u{4e2d}b").width(4);
+                    app.root().add(&View::new(app).width(2).overflow(Overflow::Hidden).child(&text));
+                    (text, None)
+                },
+                &[(0, 0, Some(0)), (1, 0, None), (2, 0, None)],
+                &[],
+            ),
+            (
+                "rows cut by a clip",
+                |app| {
+                    let text = Text::new(app, "a\nb\nc").height(3).shrink(0.0);
+                    app.root().add(&View::new(app).height(1).overflow(Overflow::Hidden).child(&text));
+                    (text, None)
+                },
+                &[(0, 0, Some(0)), (0, 1, None)],
+                &[],
+            ),
+            (
+                // A wider layout re-wraps the text at the next frame, not before.
+                "widened",
+                |app| (Text::new(app, "hello world").width(5), Some(|text| drop(text.width(11)))),
+                &[(0, 1, Some(6)), (5, 0, None)],
+                &[(6, 0, Some(6)), (0, 1, None)],
+            ),
+        ];
+        for (name, setup, before, after) in cases {
+            let app = TestApp::new(12, 4);
+            let (text, change) = setup(&app);
+            if text.element().parent_behavior().is_none() {
+                app.root().add(&text);
+            }
+            app.render();
+            if let Some(change) = change {
+                change(&text);
+            }
+            for &(x, y, expected) in before {
+                assert_eq!(byte(&text, x, y), expected, "{name}: ({x}, {y}) before the next frame");
+            }
+            app.render();
+            for &(x, y, expected) in after {
+                assert_eq!(byte(&text, x, y), expected, "{name}: ({x}, {y}) after the next frame");
+            }
+        }
+        // Never painted, and culled out of a scroll box.
+        let app = TestApp::new(12, 4);
+        let text = Text::new(&app, "hello");
+        app.root().add(&text);
+        assert_eq!(byte(&text, 0, 0), None);
+        let items: Vec<Text> = (0..10).map(|row| Text::new(&app, format!("item {row}"))).collect();
+        let scroll = ScrollBox::new(&app).height(2);
+        for item in &items {
+            scroll.add(item);
+        }
+        app.root().add(&scroll);
+        scroll.scroll_to(0.0, 7.0);
+        app.render();
+        assert!((-8..4).all(|y| byte(&items[0], 0, y).is_none()), "culled");
+    }
+
     #[test]
     fn equal_values_leave_the_frame_alone() {
         let app = TestApp::new(10, 2);

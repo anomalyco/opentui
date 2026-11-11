@@ -1,7 +1,7 @@
 import { afterEach, expect, it } from "bun:test"
 import { BoxRenderable, InputRenderable, TextareaRenderable } from "@opentui/core"
 import { ManualClock } from "@opentui/core/testing"
-import { createSignal, For } from "solid-js"
+import { createSignal, For, mergeProps } from "solid-js"
 import { testRender, type InputProps } from "../index.js"
 
 let setup: Awaited<ReturnType<typeof testRender>>
@@ -15,7 +15,8 @@ it("preserves editor state through keyed moves and defers disposal of removed ed
   let box!: BoxRenderable
   let textarea!: TextareaRenderable
   let input!: InputRenderable
-  const style = () => (state().styled ? { selectionOccupancy: "boundary" as const } : {})
+  // An empty `mergeProps` style is a proxy that reports no keys through `has`.
+  const style = () => (state().styled ? { selectionOccupancy: "boundary" as const } : mergeProps(() => ({})))
   setup = await testRender(
     () => (
       <box ref={box}>

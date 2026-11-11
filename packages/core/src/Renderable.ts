@@ -1,4 +1,5 @@
 import { EventEmitter } from "events"
+import util from "node:util"
 import {
   Align,
   Dimension,
@@ -49,7 +50,6 @@ import {
   type PositionTypeString,
   type WrapString,
 } from "./lib/yoga.options.js"
-import { isVNode, maybeMakeRenderable, type VNode } from "./renderables/composition/vnode.js"
 import type { MouseEvent } from "./renderer.js"
 import type { RenderContext } from "./types.js"
 import { RGBA } from "./lib/RGBA.js"
@@ -251,9 +251,9 @@ export abstract class BaseRenderable extends EventEmitter {
     this._id = options.id ?? `renderable-${this.num}`
   }
 
-  public abstract add(obj: BaseRenderable | unknown, index?: number): number
+  public abstract add(obj: unknown, index?: number): number
   public abstract remove(child: BaseRenderable): void
-  public abstract insertBefore(obj: BaseRenderable | unknown, anchor: BaseRenderable | unknown): void
+  public abstract insertBefore(obj: unknown, anchor: unknown): void
   public abstract getChildren(): BaseRenderable[]
   public abstract getChildrenCount(): number
   public abstract getRenderable(id: string): BaseRenderable | undefined
@@ -1674,14 +1674,15 @@ export abstract class Renderable extends BaseRenderable {
     })
   }
 
-  public add(obj: Renderable | VNode<any, any[]> | unknown, index?: number): number {
+  public add(obj: Renderable, index?: number): number {
     if (!obj) {
       return -1
     }
-    if (isVNode(obj)) this.assertMutable()
 
-    const renderable = maybeMakeRenderable(this._ctx, obj)
-    if (!renderable) {
+    if (!isRenderable(obj)) {
+      if (process.env.NODE_ENV !== "production") {
+        console.warn("add() received an invalid renderable", util.inspect(obj, { depth: 2 }))
+      }
       return -1
     }
 
@@ -1692,9 +1693,9 @@ export abstract class Renderable extends BaseRenderable {
       return -1
     }
 
-    if (renderable.isDestroyed) {
+    if (obj.isDestroyed) {
       if (process.env.NODE_ENV !== "production") {
-        console.warn(`Renderable with id ${renderable.id} was already destroyed, skipping add`)
+        console.warn(`Renderable with id ${obj.id} was already destroyed, skipping add`)
       }
       return -1
     }
@@ -1702,13 +1703,13 @@ export abstract class Renderable extends BaseRenderable {
     const anchorRenderable = index !== undefined ? this._childrenInLayoutOrder[index] : undefined
 
     if (anchorRenderable) {
-      return this.insertBefore(renderable, anchorRenderable)
+      return this.insertBefore(obj, anchorRenderable)
     }
 
-    return this.placeChild(renderable)
+    return this.placeChild(obj)
   }
 
-  insertBefore(obj: Renderable | VNode<any, any[]> | unknown, anchor?: Renderable | unknown): number {
+  insertBefore(obj: Renderable, anchor?: Renderable): number {
     if (!anchor) {
       return this.add(obj)
     }
@@ -1716,10 +1717,11 @@ export abstract class Renderable extends BaseRenderable {
     if (!obj) {
       return -1
     }
-    if (isVNode(obj)) this.assertMutable()
 
-    const renderable = maybeMakeRenderable(this._ctx, obj)
-    if (!renderable) {
+    if (!isRenderable(obj)) {
+      if (process.env.NODE_ENV !== "production") {
+        console.warn("insertBefore() received an invalid renderable", util.inspect(obj, { depth: 2 }))
+      }
       return -1
     }
 
@@ -1730,9 +1732,9 @@ export abstract class Renderable extends BaseRenderable {
       return -1
     }
 
-    if (renderable.isDestroyed) {
+    if (obj.isDestroyed) {
       if (process.env.NODE_ENV !== "production") {
-        console.warn(`Renderable with id ${renderable.id} was already destroyed, skipping insertBefore`)
+        console.warn(`Renderable with id ${obj.id} was already destroyed, skipping insertBefore`)
       }
       return -1
     }
@@ -1755,14 +1757,14 @@ export abstract class Renderable extends BaseRenderable {
       return -1
     }
 
-    if (renderable === anchor) {
+    if (obj === anchor) {
       if (process.env.NODE_ENV !== "production") {
-        console.warn(`Anchor is the same as the node ${renderable.id} being inserted, skipping insertBefore`)
+        console.warn(`Anchor is the same as the node ${obj.id} being inserted, skipping insertBefore`)
       }
       return -1
     }
 
-    return this.placeChild(renderable, anchor)
+    return this.placeChild(obj, anchor)
   }
 
   // TODO: that naming is meh
