@@ -534,6 +534,9 @@ fn addTestFixtures(b: *std.Build, module: *std.Build.Module) void {
     module.addAnonymousImport("input_conformance", .{
         .root_source_file = b.path("../core/src/lib/stdin-parser.conformance.json"),
     });
+    module.addAnonymousImport("markdown_conformance", .{
+        .root_source_file = b.path("../core/src/renderables/markdown.conformance.json"),
+    });
 }
 
 /// Apply dependencies to a module
