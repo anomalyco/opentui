@@ -41,9 +41,12 @@ impl SyntaxStyle {
         self.0.handle()
     }
 
-    /// Defines or replaces a named style and returns its id for highlights.
+    /// Defines or replaces a named style and returns its id for highlights. In a group set it adds its attributes to
+    /// earlier names' (a [`Style`] has no attribute that says "off"), as [`Style::patch`] does.
     pub fn register(&self, name: &str, style: Style) -> Result<u32> {
-        let raw = encode_style(style);
+        let mut raw = encode_style(style);
+        raw.flags |= sys::OT_EDITOR_STYLE_ATTRIBUTE_MASK;
+        raw.attributes |= raw.attributes << 16;
         let length = count("ot_syntax_style_register", name.len())?;
         let (context, handle) = self.0.raw();
         let mut id = 0;

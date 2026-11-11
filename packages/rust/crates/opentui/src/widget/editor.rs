@@ -1221,6 +1221,51 @@ mod tests {
     const KEYS: &[&str] = &["backspace", "delete", "left", "right", "up", "down", "home", "end", "ctrl+-", "ctrl+."];
     const FILETYPES: &[Option<&str>] = &[Some("rust"), Some("markdown"), Some("cobol"), None];
 
+    // A group set composes its names as `Style::patch` does: fg and bg from the last name with one, attributes added.
+    // Each run of random names paints as a run of its merged style under one name of its own.
+    #[test]
+    fn group_sets_compose_their_names_as_style_patch() {
+        let app = TestApp::new(64, 1);
+        let area = Textarea::new(&app).grow(1.0);
+        area.set_text("x".repeat(64));
+        app.root().add(&area);
+        let context = app.session().context();
+        let table = SyntaxStyle::new(context).unwrap();
+        area.syntax_style(&table);
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = |bound: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % bound
+        };
+        for _ in 0..16 {
+            let mut runs = Vec::new();
+            let mut theme = SyntaxTheme::new();
+            for name in ["n0", "n1", "n2", "n3", "n4", "n5"] {
+                let mut color = || (next(2) == 1).then(|| Color::rgb(next(256) as u8, next(256) as u8, 0));
+                let (fg, bg) = (color(), color());
+                theme.set(name, Style { fg, bg, attributes: crate::style::Attributes::from_bits(next(256) as u8) });
+                table.register(name, theme.get(name).unwrap()).unwrap();
+            }
+            for at in 0..32u32 {
+                let names: Vec<String> = (0..=next(8)).map(|_| format!("n{}", next(6))).collect();
+                let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                let merged = format!("merged.{at}");
+                table.register(&merged, theme.merge(names.iter().copied())).unwrap();
+                for (start_byte, names) in [(2 * at, &names[..]), (2 * at + 1, &[merged.as_str()][..])] {
+                    let group_set = context.group_set(names).unwrap();
+                    runs.push(LayerRun { start_byte, end_byte: start_byte + 1, group_set });
+                }
+            }
+            area.buffer().set_layer(extmarks::SYNTAX_LAYER, 0..u32::MAX, &runs).unwrap();
+            let capture = app.render();
+            for at in 0..32 {
+                assert_eq!(capture.cell(2 * at, 0), capture.cell(2 * at + 1, 0), "run {at}");
+            }
+        }
+    }
+
     // Group sets are never freed. Past the Context's bound, styles that need a new set paint plain, and
     // the app keeps running.
     #[test]
