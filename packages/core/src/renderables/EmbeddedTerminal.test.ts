@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { createTestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
 import { KeyEvent } from "../lib/KeyHandler.js"
-import { nonAlphanumericKeys, parseKeypress } from "../lib/parse.keypress.js"
+import { parseKeypress, terminalNamedSingleStrokeKeys } from "../lib/parse.keypress.js"
 import { RGBA } from "../lib/RGBA.js"
 import { resolveRenderLib } from "../zig.js"
 import { nativeSymbols, withStubbedSymbols } from "../tests/native-symbol-stubs.js"
@@ -271,10 +271,21 @@ describe("EmbeddedTerminalRenderable", () => {
     }
   })
 
-  // Only "menu" encodes to nothing: Ghostty has no encoding for ContextMenu or the Kitty MENU key.
-  test.each([...new Set([...nonAlphanumericKeys, "linefeed"])])("encodes the parser key name %s", (name) => {
+  // Legacy encoding has no bytes for these names: Ghostty has no ContextMenu, F26-F35, media, or volume key, and no
+  // legacy form for the lock, modifier, keypad = and separator keys.
+  test("encodes every parser key name that legacy encoding has", () => {
     const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
-    expect(terminal.encodeKey(keyEvent({ name, sequence: "" })).length > 0).toBe(name !== "menu")
+    expect(terminalNamedSingleStrokeKeys).toHaveLength(130)
+    expect(terminalNamedSingleStrokeKeys.filter((name) => name.length === 1).join("")).toBe("0123456789./*-+=,")
+    const silent = terminalNamedSingleStrokeKeys.filter(
+      (name) => terminal.encodeKey(keyEvent({ name, sequence: "" })).length === 0,
+    )
+    expect(silent.join(" ")).toBe(
+      "capslock scrolllock numlock printscreen pause menu f26 f27 f28 f29 f30 f31 f32 f33 f34 f35 kpequal " +
+        "kpseparator mediaplay mediapause mediaplaypause mediareverse mediastop mediafastforward mediarewind medianext " +
+        "mediaprev mediarecord volumedown volumeup mute leftshift leftctrl leftalt leftsuper lefthyper leftmeta " +
+        "rightshift rightctrl rightalt rightsuper righthyper rightmeta iso_level3_shift iso_level5_shift",
+    )
   })
 
   // Ghostty has no key or no Kitty encoding for 30 of the 111 Kitty functional keys: menu, F26-F35, the 10 media
