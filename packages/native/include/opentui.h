@@ -767,6 +767,9 @@ ot_status ot_scene_has_measure(ot_context *, const ot_handle *node, uint32_t *ou
  * and child count from the latest layout (a child moved since then has no position, and is
  * not selected). A node they do not reach gets no hook calls. */
 ot_status ot_scene_reaches_hooks(ot_context *, const ot_handle *node, uint32_t *out_reached);
+/* out_painted is 1 when the last frame that finished paint painted the node, or the presented
+ * frame once a later one is cancelled; 0 for the root and before any frame. */
+ot_status ot_scene_painted(ot_context *, const ot_handle *node, uint32_t *out_painted);
 ot_status ot_scene_mark_dirty(ot_context *, const ot_handle *node);
 /* Use OT_STYLE_* groups/kinds, OT_EDGE_* (or OT_GUTTER_* for GAP), and OT_UNIT_*.
  * Only OT_STYLE_DIMENSION accepts OT_STYLE_DISABLE_FLEX_SHRINK, which disables

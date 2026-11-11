@@ -1654,6 +1654,16 @@ pub fn ot_scene_reaches_hooks(context: ?*ContextHandle, node_ptr: ?*const c.ot_h
     return c.OT_OK;
 }
 
+pub fn ot_scene_painted(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, out_ptr: ?*u32) callconv(.c) c.ot_status {
+    const status = sceneReadStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const id = node_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const out = out_ptr orelse return sessionError(owner, error.InvalidOptions);
+    out.* = @intFromBool(owner.core.scenePainted(handleFromC(id.*)) catch |err| return sessionError(owner, err));
+    return c.OT_OK;
+}
+
 pub fn ot_scene_mark_dirty(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle) callconv(.c) c.ot_status {
     const status = sessionContextStatus(context);
     if (status != c.OT_OK) return status;
@@ -3753,7 +3763,7 @@ test "Scene ABI wrappers share admission handle and record rules and keep output
     inline for (.{
         ot_scene_has_measure,       ot_scene_get_style,        ot_scene_get_layout,    ot_scene_get_text_selection,
         ot_scene_get_selected_text, ot_scene_get_text,         ot_scene_get_text_info, ot_scene_get_text_lines,
-        ot_scene_reaches_hooks,     ot_scene_get_text_byte_at,
+        ot_scene_reaches_hooks,     ot_scene_get_text_byte_at, ot_scene_painted,
     }) |wrapper| {
         try expectSceneWrapperRules(wrapper, true, handle, &nodes, 0);
     }

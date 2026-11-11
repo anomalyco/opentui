@@ -2149,8 +2149,42 @@ test "Scene reaches exactly the nodes whose hooks the next frame runs" {
             const requested = std.mem.indexOfScalar(usize, log.items, index) != null;
             if (step != 0 and step != 7 and (step != 2 or index == 4)) try testing.expectEqual(requested, before);
             try testing.expectEqual(requested, try f.owner.sceneReachesHooks(node));
+            // What the frame painted, until the next one paints.
+            try testing.expectEqual(requested, try f.owner.scenePainted(node));
         }
     }
+}
+
+// A frame cancelled at a new node's RECORD request, after its paint list, or after its paint is
+// done, never reached the screen: the last presented frame still decides.
+test "Scene painted ignores a frame cancelled before it is presented" {
+    const f = try Fixture.init(testing.allocator, 8, 4, .{});
+    defer f.deinit();
+    const step_options: scene.FrameOptions = .{ .background = options.background, .use_mouse = true, .excluded_hit_num = 0, .max_layout_rounds = 8, .max_host_requests = 4096 };
+    var nodes: [3]context.Handle = undefined;
+    try feedbackNode(f, &nodes, 0, c.OT_SCENE_BOX, f.root, 0);
+    var request = try f.owner.sceneFrameStep(f.id, null, step_options);
+    try testing.expectEqual(@as(u32, 0), request.kind);
+    _ = try f.owner.sceneFrameCommit(f.id, request, false);
+    try drain(f.owner, f.id);
+    try testing.expect(try f.owner.scenePainted(nodes[0]));
+    try feedbackNode(f, &nodes, 1, c.OT_SCENE_BOX, f.root, 1);
+    try feedbackHook(f, nodes[1], c.OT_SCENE_HOOK_RENDER_SELF);
+    try testing.expect(!try f.owner.scenePainted(nodes[1]));
+    request = try f.owner.sceneFrameStep(f.id, null, step_options);
+    try testing.expect(request.kind != 0);
+    try f.owner.sceneFrameCancel(f.id, request.frame_id);
+    try testing.expect(!try f.owner.scenePainted(nodes[1]));
+    try testing.expect(try f.owner.scenePainted(nodes[0]));
+    // Paint done, then cancelled without being presented.
+    try feedbackHook(f, nodes[1], 0);
+    try feedbackNode(f, &nodes, 2, c.OT_SCENE_BOX, f.root, 2);
+    request = try f.owner.sceneFrameStep(f.id, null, step_options);
+    try testing.expectEqual(@as(u32, 0), request.kind);
+    try testing.expect(try f.owner.scenePainted(nodes[2]));
+    try f.owner.sceneFrameCancel(f.id, request.frame_id);
+    try testing.expect(!try f.owner.scenePainted(nodes[2]));
+    try testing.expect(try f.owner.scenePainted(nodes[0]));
 }
 
 // Re-sending a scene text's bytes with styles rebuilds its rope, which leaves the view to
