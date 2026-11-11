@@ -115,7 +115,11 @@ function hashNativeInputs(root: string): string {
   for (const relativePath of nativeInputFiles(root)) {
     hash.update(relativePath)
     hash.update("\0")
-    hash.update(readFileSync(absolute(root, relativePath)))
+    const bytes = readFileSync(absolute(root, relativePath))
+    // The zon's package version follows each release and does not reach the library.
+    hash.update(
+      relativePath === "build.zig.zon" ? bytes.toString().replace(/^ {4}\.version = "[^"\n]*",\n/m, "") : bytes,
+    )
     hash.update("\0")
   }
   return hash.digest("hex")
