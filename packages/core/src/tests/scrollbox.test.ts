@@ -531,6 +531,36 @@ const attempt = (write: () => void) => {
     return (error as Error).name
   }
 }
+// From `start`, clicks thumb `cell`, then drags from it 2 cells and back. From `firstStart`, clicks the thumb's first
+// cell `first`, whose edge lies before the thumb's exact start, then drags from it to the track start. Traces the
+// offsets and the change events of each click.
+const thumbSteps =
+  (vertical: boolean, start: number, cell: number, firstStart: number, first: number) =>
+  async (box: ScrollBoxRenderable) => {
+    const at = (c: number): [number, number] => (vertical ? [19, c] : [c, 4])
+    const key = vertical ? "scrollTop" : "scrollLeft"
+    const changes: number[] = []
+    box[vertical ? "verticalScrollBar" : "horizontalScrollBar"].on("change", (e: { position: number }) =>
+      changes.push(e.position),
+    )
+    const trace: unknown[] = []
+    const click = async (offset: number, c: number) => {
+      box[key] = offset
+      await renderOnce()
+      changes.length = 0
+      await mockMouse.click(...at(c))
+      trace.push(box[key], changes.join(" "))
+    }
+    await click(start, cell)
+    await mockMouse.pressDown(...at(cell))
+    await mockMouse.moveTo(...at(cell + 2))
+    await mockMouse.moveTo(...at(cell))
+    await mockMouse.release(...at(cell))
+    trace.push(box[key])
+    await click(firstStart, first)
+    await mockMouse.drag(...at(first), ...at(0))
+    return [...trace, box[key]]
+  }
 const facadeRows: FacadeRow[] = [
   [
     "destroy keeps the last presented state",
@@ -639,6 +669,19 @@ const facadeRows: FacadeRow[] = [
       return trace
     },
     "40,40,50",
+  ],
+  // The thumb's painted start is rounded to a half cell: at 5 of 20 its exact start is 3.5 and it paints from 4.
+  [
+    "a vertical thumb click or a drag back keeps the offset, and a first-cell grab reaches 0",
+    {},
+    thumbSteps(true, 5, 3, 7, 2),
+    "5,,5,7,,0",
+  ],
+  [
+    "a horizontal thumb click or a drag back keeps the offset, and a first-cell grab reaches 0",
+    { wide: true },
+    thumbSteps(false, 37, 8, 37, 7),
+    "37,,37,37,,0",
   ],
   [
     "viewport padding writes",

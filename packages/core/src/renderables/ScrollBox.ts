@@ -70,7 +70,7 @@ function stripScrollBoxPadding<T extends object>(options: T): Omit<T, ScrollBoxP
   return sanitized as Omit<T, ScrollBoxPaddingKey>
 }
 
-type BarPress = { axis: number; offset: number } | { axis: number; arrow: -1 | 1; timer?: TimerHandle }
+type BarPress = { axis: number; offset: number; at: number } | { axis: number; arrow: -1 | 1; timer?: TimerHandle }
 
 /** A box whose scroll offset, range, sticky edge and scrollbars are native state of its scene node. The
  * `wrapper`, `viewport`, `content` and scrollbar fields are facades over that state, not renderables; the
@@ -569,11 +569,18 @@ export class ScrollBoxRenderable extends BoxRenderable {
       if (this.isDestroyed) return
       thumb = this.thumbPointer(axis, event)
     }
-    this.barPress = { axis, offset: Math.max(0, Math.min(thumb.size, thumb.at - thumb.start)) }
+    // Measured from the thumb start the offset implies, not the painted start, which is rounded to a half cell.
+    const { offset, max } = this._scrollState()
+    const start = max[axis] === 0 ? 0 : (offset[axis] / max[axis]) * Math.max(0, thumb.length - thumb.size)
+    this.barPress = { axis, offset: Math.max(0, Math.min(thumb.size, thumb.at - start)), at: thumb.at }
   }
 
-  private dragThumb(press: { axis: number; offset: number }, event: MouseEvent): void {
+  /** A pointer at the position the offset already reflects has nothing to apply: recomputing the offset could move
+   * it, by a rounding error or by the clamp on a press before the thumb's exact start. */
+  private dragThumb(press: { axis: number; offset: number; at: number }, event: MouseEvent): void {
     const thumb = this.thumbPointer(press.axis, event)
+    if (thumb.at === press.at) return
+    press.at = thumb.at
     const span = Math.max(0, thumb.length - thumb.size)
     const start = Math.max(0, Math.min(span, thumb.at - press.offset))
     this._scrollAxis(press.axis, span === 0 ? 0 : (start / span) * this._scrollState().max[press.axis], false)
