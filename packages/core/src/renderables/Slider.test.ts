@@ -219,7 +219,7 @@ test("SliderRenderable > Mouse interaction - click emits no rounding-error chang
 })
 
 test.each(["horizontal", "vertical"] as const)(
-  "SliderRenderable > Mouse interaction - %s drag returning to the press position restores the value",
+  "SliderRenderable > Mouse interaction - %s thumb drag restores the value at the press position and reaches min",
   async (orientation) => {
     const vertical = orientation === "vertical"
     const { slider } = await createSliderRenderable(currentRenderer, {
@@ -238,6 +238,11 @@ test.each(["horizontal", "vertical"] as const)(
     await currentMockMouse.moveTo(...point(10))
     await currentMockMouse.release(...point(10))
     expect(slider.value).toBeCloseTo(50, 10)
+
+    // Cell 9 is the thumb's first cell. It starts before the thumb's exact start, which is not on a half-cell edge.
+    await currentMockMouse.pressDown(...point(9))
+    await currentMockMouse.moveTo(...point(0))
+    expect(slider.value).toBe(0)
   },
 )
 

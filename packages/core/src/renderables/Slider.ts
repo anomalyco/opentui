@@ -174,27 +174,29 @@ export class SliderRenderable extends Renderable {
     })
   }
 
-  // The pointer's distance from the thumb start that the current value implies. The painted thumb starts on a whole
-  // half cell, but measuring from that rounded start would make a press and release at one position change the value.
+  // The pointer's distance from the thumb start that the current value implies, not from the painted start, which is
+  // rounded to a half cell: a drag then moves the value by the pointer's travel from the first move. The clamp keeps
+  // the track start reachable from a press on the thumb's first cell, whose edge can lie before the exact start.
   private calculateDragOffsetVirtual(event: any): number {
     const trackStart = this.orientation === "vertical" ? this.y : this.x
     const trackSize = this.orientation === "vertical" ? this.height : this.width
     const mousePos = (this.orientation === "vertical" ? event.y : event.x) - trackStart
     const virtualMousePos = Math.max(0, Math.min(trackSize, mousePos)) * 2
-    const maxThumbStart = Math.max(0, trackSize * 2 - this._ctx.nativeScene.getSliderThumb(this).size)
+    const thumbSize = this._ctx.nativeScene.getSliderThumb(this).size
+    const maxThumbStart = Math.max(0, trackSize * 2 - thumbSize)
     const range = this._max - this._min
     const ratio = range === 0 ? 0 : (this._value - this._min) / range
 
-    return virtualMousePos - ratio * maxThumbStart
+    return Math.max(0, Math.min(thumbSize, virtualMousePos - ratio * maxThumbStart))
   }
 
   private setupMouseHandling(): void {
     let isDragging = false
     let dragOffsetVirtual = 0
-    // The track position the value already reflects. An event there has nothing to apply, and recomputing the value
-    // could differ from it by a rounding error.
+    // The pointer position the value already reflects. An event there has nothing to apply, and recomputing the value
+    // could differ from it by a rounding error: a press and release at one position would change it.
     let appliedMousePos = 0
-    const trackMousePos = (event: any): number => (this.orientation === "vertical" ? event.y : event.x)
+    const pointerAxis = (event: any): number => (this.orientation === "vertical" ? event.y : event.x)
 
     this.onMouseDown = (event) => {
       event.stopPropagation()
@@ -210,11 +212,11 @@ export class SliderRenderable extends Renderable {
       }
       isDragging = true
       dragOffsetVirtual = this.calculateDragOffsetVirtual(event)
-      appliedMousePos = trackMousePos(event)
+      appliedMousePos = pointerAxis(event)
     }
 
     const drag = (event: any): void => {
-      const mousePos = trackMousePos(event)
+      const mousePos = pointerAxis(event)
       if (mousePos === appliedMousePos) return
       appliedMousePos = mousePos
       this.updateValueFromMouseWithOffset(event, dragOffsetVirtual)
