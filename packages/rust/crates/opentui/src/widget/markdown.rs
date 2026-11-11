@@ -596,6 +596,10 @@ pub(crate) fn inline(text: &str, base: Style, options: &Inline) -> Vec<Span<'sta
         };
         // Intraword underscores stay literal, as in snake_case names.
         let word_before = previous.is_some_and(char::is_alphanumeric);
+        // Emphasis delimiters never border whitespace, Unicode spaces included.
+        let flanked = |(_, (inner, _)): &(&str, (&str, &str))| {
+            !inner.starts_with(char::is_whitespace) && !inner.ends_with(char::is_whitespace)
+        };
         let ticks = rest.bytes().take_while(|byte| *byte == b'`').count();
         if character == '\\' && options.conceal && rest[1..].starts_with('\n') {
             // A backslash before a line break marks a hard break, which the line break already shows.
@@ -624,6 +628,7 @@ pub(crate) fn inline(text: &str, base: Style, options: &Inline) -> Vec<Span<'sta
         } else if let Some((open, (inner, after))) = delimited("**", "**")
             .map(|found| ("**", found))
             .or_else(|| delimited("__", "__").filter(|_| !word_before).map(|found| ("__", found)))
+            .filter(flanked)
         {
             flush(&mut plain, &mut spans, base);
             let style = base.patch(styles.strong);
@@ -641,7 +646,7 @@ pub(crate) fn inline(text: &str, base: Style, options: &Inline) -> Vec<Span<'sta
         } else if let Some((open, (inner, after))) = delimited("*", "*")
             .map(|found| ("*", found))
             .or_else(|| delimited("_", "_").filter(|_| !word_before).map(|found| ("_", found)))
-            .filter(|(_, (inner, _))| !inner.starts_with(' ') && !inner.ends_with(' '))
+            .filter(flanked)
         {
             flush(&mut plain, &mut spans, base);
             let style = base.patch(styles.italic);

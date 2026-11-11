@@ -1,9 +1,11 @@
 {
   "format": [
-    "Markdown block conformance vectors. Core (markdown-parser.test.ts) and Rust (widget/markdown.rs) run this file. A row is [name, markdown, blocks, issue?].",
+    "Markdown block conformance vectors. Core (markdown-parser.test.ts, Markdown.test.ts) and Rust (widget/markdown.rs, tests/markdown.rs) run this file. A row is [name, markdown, blocks, text?, coreDefect?].",
     "blocks lists the top-level blocks in order: p, pre (code), hr, h1 to h6, ul, ol, blockquote, table.",
-    "Rows named `spec N` are CommonMark 0.31.2 example N (Thematic breaks, Setext headings, Fenced code blocks); their blocks are the top-level tags of the spec's HTML.",
-    "CommonMark separates and indents block markers with spaces and tabs only, never with other Unicode spaces such as U+00A0."
+    "text, when present, is the frame the widget shows with markup concealed, 60 columns wide, each line trimmed at its end.",
+    "coreDefect names a known Core defect that gives another text; Core runs that row as test.todo until it is fixed.",
+    "CommonMark separates and indents block markers with spaces and tabs only, never with other Unicode spaces such as U+00A0. Emphasis delimiters never border any Unicode whitespace.",
+    "Rows named `spec N` are example N of the CommonMark Spec 0.31.2 by John MacFarlane (https://spec.commonmark.org/0.31.2/), Copyright (C) 2014-16 John MacFarlane, released under CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/; upstream notice in LICENSE-COMMONMARK-SPEC). Their markdown is copied unchanged; their blocks are the top-level tags of the spec's HTML output, an adaptation shared under the same license."
   ],
   "rows": [
     ["spec 43", "***\n---\n___\n", ["hr", "hr", "hr"]],
@@ -84,7 +86,6 @@
     ["rule \"---\"", "---", ["hr"]],
     ["rule \"***\"", "***", ["hr"]],
     ["rule \"___\"", "___", ["hr"]],
-    ["rule \"- - -\"", "- - -", ["hr"]],
     ["rule \" ** * **\"", " ** * **", ["hr"]],
     ["rule \"_ _ _ _\"", "_ _ _ _", ["hr"]],
     ["rule \"---   \"", "---   ", ["hr"]],
@@ -107,21 +108,58 @@
     ["spaced dashes after a paragraph", "a\n- - -", ["p", "hr"]],
     ["stars after a paragraph", "a\n***", ["p", "hr"]],
     ["two rules", "---\n* * *", ["hr", "hr"]],
-    ["rule, spaces between marks", "- - -", ["hr"], "540"],
-    ["rule, tabs between marks", "-\t-\t-", ["hr"], "540"],
-    ["no rule, NBSP between marks", "-\u00a0-\u00a0-", ["p"], "540"],
-    ["no rule, em space between marks", "*\u2003*\u2003*", ["p"], "540"],
-    ["no rule, ideographic space between marks", "_\u3000_\u3000_", ["p"], "540"],
-    ["no rule, NBSP after the marks", "***\u00a0", ["p"], "540"],
-    ["no rule, NBSP before the marks", "\u00a0***", ["p"], "540"],
-    ["no rule, NBSP marks after a paragraph", "above\n-\u00a0-\u00a0-", ["p"], "540"],
-    ["no setext underline, NBSP after it", "Title\n---\u00a0", ["p"], "540"],
-    ["no blank line, NBSP only", "a\n\u00a0\nb", ["p"], "540"],
-    ["no heading, NBSP before it", "\u00a0# h", ["p"], "540"],
-    ["no fence, NBSP before it", "\u00a0```\ncode", ["p"], "540"],
-    ["no list, NBSP before the marker", "\u00a0- item", ["p"], "540"],
-    ["no quote, NBSP before the marker", "\u00a0> quoted", ["p"], "540"],
-    ["no fence, backtick in a backtick fence's info string", "``` a`b\ncode", ["p"], "540"],
-    ["fence after a paragraph whose info string has a backtick", "``` a`b\ncode\n```\n", ["p", "pre"], "540"]
+    ["rule, spaces between marks", "- - -", ["hr"]],
+    ["rule, tabs between marks", "-\t-\t-", ["hr"]],
+    ["no rule, NBSP between marks", "-\u00a0-\u00a0-", ["p"], "-\u00a0-\u00a0-"],
+    [
+      "no rule, em space between marks",
+      "*\u2003*\u2003*",
+      ["p"],
+      "*\u2003*\u2003*",
+      "Core conceals emphasis whose delimiters border a Unicode space (tree-sitter Markdown inline grammar)"
+    ],
+    [
+      "no rule, ideographic space between marks",
+      "_\u3000_\u3000_",
+      ["p"],
+      "_\u3000_\u3000_",
+      "Core conceals emphasis whose delimiters border a Unicode space (tree-sitter Markdown inline grammar)"
+    ],
+    ["no rule, NBSP after the marks", "***\u00a0", ["p"], "***"],
+    ["no rule, NBSP before the marks", "\u00a0***", ["p"], "\u00a0***"],
+    ["no rule, NBSP marks after a paragraph", "above\n-\u00a0-\u00a0-", ["p"], "above\n-\u00a0-\u00a0-"],
+    ["no setext underline, NBSP after it", "Title\n---\u00a0", ["p"], "Title\n---"],
+    ["no blank line, NBSP only", "a\n\u00a0\nb", ["p"], "a\n\nb"],
+    ["no heading, NBSP before it", "\u00a0# h", ["p"], "\u00a0# h"],
+    ["no fence, NBSP before it", "\u00a0```\ncode", ["p"]],
+    ["no list, NBSP before the marker", "\u00a0- item", ["p"], "\u00a0- item"],
+    ["no quote, NBSP before the marker", "\u00a0> quoted", ["p"]],
+    ["no fence, backtick in a backtick fence's info string", "``` a`b\ncode", ["p"]],
+    ["fence after a paragraph whose info string has a backtick", "``` a`b\ncode\n```\n", ["p", "pre"]],
+    [
+      "no emphasis, em space inside double stars",
+      "**\u2003**\u2003**",
+      ["p"],
+      "**\u2003**\u2003**",
+      "Core conceals emphasis whose delimiters border a Unicode space (tree-sitter Markdown inline grammar)"
+    ],
+    [
+      "no emphasis, ideographic space inside double underscores",
+      "__\u3000__\u3000__",
+      ["p"],
+      "__\u3000__\u3000__",
+      "Core conceals emphasis whose delimiters border a Unicode space (tree-sitter Markdown inline grammar)"
+    ],
+    [
+      "no emphasis, NBSP inside stars",
+      "a *\u00a0b\u00a0* c",
+      ["p"],
+      "a *\u00a0b\u00a0* c",
+      "Core conceals emphasis whose delimiters border a Unicode space (tree-sitter Markdown inline grammar)"
+    ],
+    ["emphasis and strong text conceal their marks", "*a* and **b**", ["p"], "a and b"],
+    ["no closing fence, NBSP after it", "```\ncode\n```\u00a0\nafter\n", ["pre"]],
+    ["no table, NBSP after the delimiter row", "| a | b |\n| --- | --- |\u00a0\n", ["p"]],
+    ["lazy quote line, NBSP before the marker", "> quote\n\u00a0> lazy\n", ["blockquote"]]
   ]
 }
