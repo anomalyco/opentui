@@ -547,7 +547,22 @@ pub fn spans(source: &str, captures: &[Capture], theme: &SyntaxTheme) -> Vec<Spa
 /// The pieces of `source` as [`spans`] styles them: byte ranges in order that cover the source, each with its style,
 /// and neighbors of one style joined.
 pub(crate) fn styled_ranges(source: &str, captures: &[Capture], theme: &SyntaxTheme) -> Vec<(ByteRange, Style)> {
-    let default = theme.get("default").unwrap_or_default();
+    let (lists, named) = named_ranges(source, captures);
+    let styles: Vec<Style> = lists.into_iter().map(|names| theme.merge(names)).collect();
+    let mut pieces: Vec<(ByteRange, Style)> = Vec::new();
+    for (range, list) in named {
+        match pieces.last_mut() {
+            Some((last, style)) if *style == styles[list] => last.end = range.end,
+            _ => pieces.push((range, styles[list])),
+        }
+    }
+    pieces
+}
+
+/// The lists of names whose styles [`spans`] merges, in order, and the pieces of `source` with the index of their
+/// list: byte ranges in order that cover the source, neighbors with one list joined. A list holds `default`, then the
+/// covering captures after the last `none`, each name at its last place.
+pub(crate) fn named_ranges(source: &str, captures: &[Capture]) -> super::NamedRanges {
     // Ends sort before starts at one offset, so a range closes before the next one opens.
     let mut boundaries: Vec<(usize, bool, usize)> = Vec::with_capacity(captures.len() * 2);
     for (index, capture) in captures.iter().enumerate() {
@@ -557,21 +572,30 @@ pub(crate) fn styled_ranges(source: &str, captures: &[Capture], theme: &SyntaxTh
         }
     }
     boundaries.sort_unstable();
-    let mut pieces: Vec<(ByteRange, Style)> = Vec::new();
-    let mut push = |range: ByteRange, style: Style| match pieces.last_mut() {
-        Some((last, last_style)) if *last_style == style => last.end = range.end,
-        _ => pieces.push((range, style)),
-    };
-    let style_of = |active: &[usize]| {
-        active.iter().fold(default, |style, &index| match captures[index].name {
-            "none" => default,
-            name => theme.get(name).map_or(style, |own| style.patch(own)),
-        })
+    let (mut named, mut names): (super::NamedRanges, Vec<&'static str>) = Default::default();
+    let (lists, pieces) = &mut named;
+    let mut push = |range: ByteRange, active: &[usize]| {
+        let after_none = active.iter().rposition(|&index| captures[index].name == "none").map_or(0, |at| at + 1);
+        names.clear();
+        names.push("default");
+        for &index in &active[after_none..] {
+            // A name again adds nothing to the merge but its place.
+            names.retain(|&name| name != captures[index].name);
+            names.push(captures[index].name);
+        }
+        let list = lists.iter().position(|list| *list == names).unwrap_or_else(|| {
+            lists.push(names.clone());
+            lists.len() - 1
+        });
+        match pieces.last_mut() {
+            Some((last, last_list)) if *last_list == list => last.end = range.end,
+            _ => pieces.push((range, list)),
+        }
     };
     let (mut active, mut offset): (Vec<usize>, usize) = (Vec::new(), 0);
     for (at, start, index) in boundaries {
         if offset < at {
-            push(offset..at, style_of(&active));
+            push(offset..at, &active);
             offset = at;
         }
         match (active.binary_search(&index), start) {
@@ -581,9 +605,9 @@ pub(crate) fn styled_ranges(source: &str, captures: &[Capture], theme: &SyntaxTh
         }
     }
     if offset < source.len() {
-        push(offset..source.len(), default);
+        push(offset..source.len(), &[]);
     }
-    pieces
+    named
 }
 
 /// Highlights `source` as `filetype` with `theme`: [`highlights`], then [`spans`].

@@ -227,6 +227,20 @@ pub(crate) fn highlight_ranges(
     }
 }
 
+pub(crate) type NamedRanges = (Vec<Vec<&'static str>>, Vec<(Range<usize>, usize)>);
+
+/// The lists of capture names whose styles [`highlight_ranges`] would merge with any theme, in order, and the byte
+/// ranges of `source` as `filetype` with the index of their list; `None` as there.
+pub(crate) fn highlight_names(source: &str, filetype: &str) -> Option<NamedRanges> {
+    #[cfg(feature = "tree-sitter")]
+    return Some(highlight::named_ranges(source, &highlights(source, filetype)?));
+    #[cfg(not(feature = "tree-sitter"))]
+    {
+        let _ = (source, filetype);
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

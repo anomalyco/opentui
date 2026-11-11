@@ -106,8 +106,9 @@ impl Textarea {
     /// [`SyntaxTheme::to_syntax_style`]. Without one, the textarea makes its own.
     ///
     /// The textarea registers the styles of [`Self::filetype`] highlighting and of extmarks in this table, under
-    /// names that start with `opentui.`, and adds their highlights under tags 65534 and 65535. Highlighting draws at
-    /// priority 0 and extmarks above it.
+    /// names that start with `opentui.`: each capture name as `opentui.<capture>`, with its [`Self::syntax_theme`]
+    /// style. Textareas that share a table share those names, so each name has the style registered last: give them
+    /// one syntax theme. Highlighting draws on layer 1 and extmarks above it, under tag 65535.
     pub fn syntax_style(&self, style: &SyntaxStyle) -> Self {
         self.0.set_syntax_style(style);
         self.clone()
