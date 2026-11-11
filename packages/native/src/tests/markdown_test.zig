@@ -1400,6 +1400,8 @@ test "Markdown stream: a leaf that changes kind or loses lines keeps its live di
     // arrives as the paragraph the layout ended closes.
     try std.testing.expect(try streamAgreesParts(arena, "kinds", &.{ "-", "|", "-", "\n", "- | -", "\n", "\\", " " }));
     try std.testing.expect(try streamAgreesParts(arena, "kinds", &.{ "[x]: /u\n", " [x]\n*", "\r", "#", " ", "]", "\n" }));
+    // A backtick search that ran out after plain bytes does not count on from an older run.
+    try std.testing.expect(try streamAgreesParts(arena, "kinds", &.{ "ses_```\nwww.", ". s_===\t```", "\ns_`s", "- ww", "`\n", "\n" }));
     // opus-4 (a): definitions leave the paragraph the next one's live text would follow; (b) a
     // pending table row latches each of its cells that holds the filter.
     try std.testing.expect(try streamAgreesParts(arena, "kinds", &.{ "[x]: /u\n\nnext para\n", "more [x]" }));

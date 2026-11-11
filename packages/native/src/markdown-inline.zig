@@ -582,6 +582,8 @@ pub const Parser = struct {
             }
             i += run_length;
         }
+        // It stopped after plain bytes: no run to count on from.
+        self.search_run_end = 0;
         const failed = try self.searchRanOut(opener, i);
         self.backticks_scanned = true;
         return failed;
