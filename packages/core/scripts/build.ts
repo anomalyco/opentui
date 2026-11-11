@@ -5,7 +5,7 @@ import { ModuleKind, ScriptTarget, transpileModule } from "typescript"
 import { fileURLToPath } from "url"
 import process from "process"
 import path from "path"
-import { variants, type Variant } from "./variants"
+import { variants, zigOutputName, type Variant } from "./variants"
 import { fnv1a64 } from "./native-abi-rust"
 import { separateNativeSymbols } from "./native-symbols"
 
@@ -69,13 +69,6 @@ const getHostVariant = (): Variant => {
 if (!buildLib && !buildNative) {
   console.error("Error: Please specify --lib, --native, or both")
   process.exit(1)
-}
-
-const getZigTarget = (platform: string, arch: string, abi?: string): string => {
-  const platformMap: Record<string, string> = { darwin: "macos", win32: "windows", linux: "linux" }
-  const archMap: Record<string, string> = { x64: "x86_64", arm64: "aarch64" }
-  const base = `${archMap[arch] ?? arch}-${platformMap[platform] ?? platform}`
-  return abi ? `${base}-${abi}` : base
 }
 
 const replaceLinks = (text: string): string => {
@@ -218,7 +211,7 @@ if (buildNative) {
   for (const { platform, arch, abi } of variantsToPackage) {
     const nativeName = `${packageJson.name}-${platform}-${arch}${abi ? `-${abi}` : ""}`
     const nativeDir = join(rootDir, "node_modules", nativeName)
-    const libDir = join(nativeRoot, "lib", getZigTarget(platform, arch, abi))
+    const libDir = join(nativeRoot, "lib", zigOutputName({ platform, arch, abi }))
 
     rmSync(nativeDir, { recursive: true, force: true })
     mkdirSync(nativeDir, { recursive: true })
@@ -265,7 +258,7 @@ if (buildNative) {
         binary: join(nativeDir, libraryFileName),
         symbolsDir: join(nativeRoot, "symbols", `${platform}-${arch}${abi ? `-${abi}` : ""}`),
         platform,
-        target: getZigTarget(platform, arch, abi),
+        target: zigOutputName({ platform, arch, abi }),
         version: packageJson.version,
         commit: execFileSync("git", ["rev-parse", "HEAD"], { cwd: rootDir, encoding: "utf8" }).trim(),
         abi: abi ?? (platform === "linux" || platform === "win32" ? "gnu" : undefined),
