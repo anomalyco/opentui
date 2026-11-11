@@ -366,6 +366,8 @@ describe("CodeRenderable", () => {
           await t.client.clearCache()
         }
         await t.tick()
+        // Node's runner has no GC hook; Bun's run checks the retention.
+        if (typeof Bun === "undefined") return [0]
         Bun.gc(true)
         return [generations.filter((memory) => memory.deref()).length]
       },
@@ -495,7 +497,10 @@ describe("CodeRenderable", () => {
   async function rig() {
     const setup = await createTestRenderer({ width: 40, height: 8 })
     const syntaxStyle = SyntaxStyle.fromStyles({ "markup.strong": { bold: true } }, setup.renderer.nativeScene)
-    const dataPath = await mkdtemp(join(tmpdir(), "code-out-of-order-"))
+    // Under the Node runner's write permission, as the JSON test above.
+    const scratch = join(tmpdir(), "tree-sitter-styled-text-test")
+    await mkdir(scratch, { recursive: true })
+    const dataPath = await mkdtemp(join(scratch, "code-out-of-order-"))
     const held: { open: () => void; reply: Promise<unknown> }[] = []
     const clients: TreeSitterClient[] = []
     const gated = async () => {
