@@ -5,7 +5,7 @@ use core::ffi::c_void;
 
 /// FNV-1a 64-bit hash of the `opentui.h` these declarations were generated from.
 /// The build script rejects native artifacts whose header has a different hash.
-pub const OPENTUI_HEADER_FNV1A64: u64 = 0x2ab5c5d7b7f1c181;
+pub const OPENTUI_HEADER_FNV1A64: u64 = 0x665e126cd5a2ecae;
 
 pub type ot_status = i32;
 
@@ -377,6 +377,8 @@ pub const OT_EDIT_HIGHLIGHT_REMOVE_REF: u32 = 2;
 pub const OT_EDIT_HIGHLIGHT_CLEAR_LINE: u32 = 3;
 pub const OT_EDIT_HIGHLIGHT_CLEAR_ALL: u32 = 4;
 pub const OT_STYLE_RUN_FLAG: u32 = 2147483648;
+pub const OT_GROUP_SET_NAME_COUNT_MAX: u32 = 16;
+pub const OT_GROUP_SET_NAME_BYTE_COUNT_MAX: u32 = 64;
 pub const OT_EDITOR_MOVE_UP: u32 = 0;
 pub const OT_EDITOR_MOVE_DOWN: u32 = 1;
 pub const OT_EDITOR_GOTO_LINE_END: u32 = 2;

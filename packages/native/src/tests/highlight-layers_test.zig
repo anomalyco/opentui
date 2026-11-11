@@ -41,14 +41,14 @@ test "group sets: malformed lists and each name bound reject without interning" 
     defer sets.deinit();
     const long_bytes: [hl.group_set_name_byte_count_max + 1]u8 = @splat('x');
     const long: []const u8 = &long_bytes;
-    const nine: [hl.group_set_name_count_max + 1][]const u8 = @splat("a");
-    const eight: [hl.group_set_name_count_max][]const u8 = @splat("a");
+    const too_many: [hl.group_set_name_count_max + 1][]const u8 = @splat("a");
+    const most: [hl.group_set_name_count_max][]const u8 = @splat("a");
     // No names or an empty name is malformed; past a name bound is a limit.
     for ([_]struct { []const []const u8, anyerror }{
         .{ &.{}, error.InvalidIndex },
         .{ &.{""}, error.InvalidIndex },
         .{ &.{ "a", "" }, error.InvalidIndex },
-        .{ &nine, error.GroupSetLimit },
+        .{ &too_many, error.GroupSetLimit },
         .{ &.{long}, error.GroupSetLimit },
         .{ &.{ "a", long }, error.GroupSetLimit },
     }) |row| {
@@ -57,8 +57,8 @@ test "group sets: malformed lists and each name bound reject without interning" 
         try testing.expectEqual(@as(usize, 0), sets.name_bytes.items.len);
     }
     // Exactly at each name bound is accepted, and equal lists share an id.
-    const id = try sets.intern(&eight);
-    try testing.expectEqual(id, try sets.intern(&eight));
+    const id = try sets.intern(&most);
+    try testing.expectEqual(id, try sets.intern(&most));
     try testing.expectEqual(try sets.intern(&.{long[1..]}), try sets.intern(&.{long[1..]}));
     try testing.expectEqual(@as(u32, 2), sets.count());
     try testing.expect(id != try sets.intern(&.{ "a", "b" }));
@@ -1070,9 +1070,14 @@ test "layers: seeded C ABI calls reject malformed runs atomically and match the 
     // Over the length bound and not UTF-8: the bound is checked first, without a scan.
     var long_invalid = long;
     long_invalid[long.len - 1] = 0xff;
-    const nine_ends = [_]u32{ 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    const one_too_many: [hl.group_set_name_count_max + 1]u8 = @splat('a');
+    const one_too_many_ends = comptime ends: {
+        var ends: [one_too_many.len]u32 = undefined;
+        for (&ends, 1..) |*end, index| end.* = index;
+        break :ends ends;
+    };
     for ([_]struct { c.ot_status, []const u8, []const u32 }{
-        .{ c.OT_OBJECT_LIMIT, "abcdefghi", &nine_ends },
+        .{ c.OT_OBJECT_LIMIT, &one_too_many, &one_too_many_ends },
         .{ c.OT_OBJECT_LIMIT, &long, &.{long.len} },
         .{ c.OT_OBJECT_LIMIT, &long_invalid, &.{long.len} },
         .{ c.OT_INVALID_ARGUMENT, "ab", &.{1} },

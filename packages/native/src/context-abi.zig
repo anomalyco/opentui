@@ -200,6 +200,11 @@ pub fn ot_context_get_link_url(
     return c.OT_OK;
 }
 
+comptime {
+    std.debug.assert(highlight_layers.group_set_name_count_max == c.OT_GROUP_SET_NAME_COUNT_MAX);
+    std.debug.assert(highlight_layers.group_set_name_byte_count_max == c.OT_GROUP_SET_NAME_BYTE_COUNT_MAX);
+}
+
 pub fn ot_context_group_set(
     context: ?*ContextHandle,
     names: ?[*]const u8,

@@ -14,7 +14,8 @@ const link = @import("link.zig");
 pub const layer_count_max = 4;
 /// Group sets live as long as their Context; the limit is the only bound.
 pub const group_set_count_max = 4096;
-pub const group_set_name_count_max = 8;
+/// Core's Markdown queries stack up to 10 names on one piece.
+pub const group_set_name_count_max = 16;
 pub const group_set_name_byte_count_max = 64;
 pub const group_set_pool_byte_count_max = 64 * 1024;
 

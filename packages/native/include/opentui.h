@@ -1643,8 +1643,11 @@ ot_status ot_edit_buffer_get_highlights(ot_context *, const ot_handle *, uint32_
  * name_byte_count. Equal lists give equal ids on this Context, whatever style a buffer binds;
  * ids are never freed. Paint composes the names against the buffer's bound style, later names
  * winning, and a missing name falls back to its first dotted component. Names must be
- * nonempty. More than 8 names, a name over 64 bytes, or a new set past 4,096 sets or 64 KiB of
- * names fails with OT_OBJECT_LIMIT. Failures preserve out_group_set. */
+ * nonempty. More than OT_GROUP_SET_NAME_COUNT_MAX names, a name over
+ * OT_GROUP_SET_NAME_BYTE_COUNT_MAX bytes, or a new set past 4,096 sets or 64 KiB of names fails
+ * with OT_OBJECT_LIMIT. Failures preserve out_group_set. */
+#define OT_GROUP_SET_NAME_COUNT_MAX UINT32_C(16)
+#define OT_GROUP_SET_NAME_BYTE_COUNT_MAX UINT32_C(64)
 ot_status ot_context_group_set(ot_context *, const uint8_t *names, uint32_t name_byte_count,
     const uint32_t *name_end_bytes, uint32_t name_count, uint32_t *out_group_set);
 
