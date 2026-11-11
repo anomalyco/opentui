@@ -21,8 +21,8 @@ export function setInitialProperties(instance: Instance, type: Type, props: Prop
 export function updateProperties(instance: Instance, type: Type, oldProps: Props, newProps: Props) {
   for (const propKey in oldProps) {
     const oldProp = oldProps[propKey]
-    if (oldProps.hasOwnProperty(propKey) && oldProp != null && !newProps.hasOwnProperty(propKey)) {
-      // A removed prop is omitted, as in Solid: `undefined` restores each setter's default, `null` may not.
+    if (oldProps.hasOwnProperty(propKey) && oldProp !== undefined && !newProps.hasOwnProperty(propKey)) {
+      // A removed prop is omitted, as in Solid: write `undefined`, also after an explicit `null`.
       if (propKey !== "children") setRenderableProp(instance, propKey, undefined, oldProp)
     }
   }
@@ -31,7 +31,7 @@ export function updateProperties(instance: Instance, type: Type, oldProps: Props
     const newProp = newProps[propKey]
     const oldProp = oldProps[propKey]
 
-    if (newProps.hasOwnProperty(propKey) && newProp !== oldProp && (newProp != null || oldProp != null)) {
+    if (newProps.hasOwnProperty(propKey) && newProp !== oldProp) {
       if (propKey !== "children") setRenderableProp(instance, propKey, newProp, oldProp)
     }
   }
