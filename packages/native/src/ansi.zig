@@ -153,8 +153,8 @@ pub fn getMeta(c: RGBA) u32 {
 /// Returns the color intent (rgb, indexed, or default).
 pub inline fn intent(c: RGBA) ColorIntent {
     return switch (@as(u8, @truncate(getMeta(c) >> 8))) {
-        1 => .indexed,
-        2 => .default,
+        api.OT_COLOR_INDEXED => .indexed,
+        api.OT_COLOR_DEFAULT => .default,
         else => .rgb,
     };
 }

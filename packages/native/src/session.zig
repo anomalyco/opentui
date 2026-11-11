@@ -760,7 +760,7 @@ pub const Session = struct {
         switch (command) {
             .title => |title| try validateText(title, title_bytes_max),
             .kitty_keyboard_flags => |flags| {
-                if (flags & ~@as(u8, 0b11111) != 0) return error.InvalidOptions;
+                if (flags & ~@as(u8, api.OT_KITTY_KEYBOARD_ALL) != 0) return error.InvalidOptions;
             },
             .palette_query => |query| try validatePaletteQuery(query.bytes),
             .program_status => |status| try validateProgramStatus(status),
@@ -1098,7 +1098,7 @@ pub const Session = struct {
         std.debug.assert(value.height > 0 and value.renderOffset < std.math.maxInt(u32));
         // Reserved rows follow the current footer geometry, which a transition replaces.
         if (value.pendingSplitFooterTransition.mode != .none) return error.SplitRenderPending;
-        if (kitty_keyboard_flags & ~@as(u8, 0b11111) != 0) return error.InvalidOptions;
+        if (kitty_keyboard_flags & ~@as(u8, api.OT_KITTY_KEYBOARD_ALL) != 0) return error.InvalidOptions;
         if (@as(u64, self.output.control_chunks) * self.output.options.chunk_size < control_packet_bytes_max) {
             return error.NoSpace;
         }

@@ -1183,7 +1183,7 @@ pub fn ot_session_setup_terminal(
     const known_flags: u32 = c.OT_TERMINAL_ALTERNATE_SCREEN | c.OT_TERMINAL_MOUSE |
         c.OT_TERMINAL_MOUSE_MOVEMENT | c.OT_TERMINAL_CLEAR_ON_CLOSE | c.OT_TERMINAL_REPLY_SENTINEL | sync_flags |
         c.OT_TERMINAL_HOST_MULTIPLEXER;
-    if (options.flags & ~known_flags != 0 or options.kitty_keyboard_flags > 31) {
+    if (options.flags & ~known_flags != 0 or options.kitty_keyboard_flags & ~@as(u32, c.OT_KITTY_KEYBOARD_ALL) != 0) {
         return sessionError(owner, error.InvalidOptions);
     }
     owner.core.setupSessionTerminal(handleFromC(id.*), .{
@@ -1321,7 +1321,7 @@ pub fn ot_session_control(
         options.kind == c.OT_CONTROL_PROGRAM_STATUS;
     const argument_max: u32 = switch (options.kind) {
         c.OT_CONTROL_MOUSE => @backingInt(@import("session.zig").MouseMode.motion),
-        c.OT_CONTROL_KITTY_KEYBOARD_FLAGS => 31,
+        c.OT_CONTROL_KITTY_KEYBOARD_FLAGS => c.OT_KITTY_KEYBOARD_ALL,
         c.OT_CONTROL_QUERY_PIXEL_RESOLUTION, c.OT_CONTROL_QUERY_THEME_COLORS, c.OT_CONTROL_PALETTE_QUERY => 1,
         else => 0,
     };

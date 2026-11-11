@@ -5,7 +5,7 @@ use core::ffi::c_void;
 
 /// FNV-1a 64-bit hash of the `opentui.h` these declarations were generated from.
 /// The build script rejects native artifacts whose header has a different hash.
-pub const OPENTUI_HEADER_FNV1A64: u64 = 0x0c83a475c502aeb3;
+pub const OPENTUI_HEADER_FNV1A64: u64 = 0x1a9e120815b702e7;
 
 pub type ot_status = i32;
 
@@ -578,6 +578,7 @@ pub const OT_KITTY_KEYBOARD_EVENT_TYPES: u32 = 2;
 pub const OT_KITTY_KEYBOARD_ALTERNATE_KEYS: u32 = 4;
 pub const OT_KITTY_KEYBOARD_ALL_KEYS_AS_ESCAPES: u32 = 8;
 pub const OT_KITTY_KEYBOARD_REPORT_TEXT: u32 = 16;
+pub const OT_KITTY_KEYBOARD_ALL: u32 = 31;
 pub const OT_CONTROL_CAPABILITY_RESPONSE: u32 = 1;
 pub const OT_CONTROL_TITLE: u32 = 2;
 pub const OT_CONTROL_MOUSE: u32 = 3;

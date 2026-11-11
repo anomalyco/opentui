@@ -506,15 +506,15 @@ pub const GraphemePool = struct {
 // Bit manipulation functions for encoded char values
 
 pub fn isGraphemeChar(c: u32) bool {
-    return (c & 0xC000_0000) == CHAR_FLAG_GRAPHEME;
+    return (c & CHAR_TYPE_MASK) == CHAR_FLAG_GRAPHEME;
 }
 
 pub fn isContinuationChar(c: u32) bool {
-    return (c & 0xC000_0000) == CHAR_FLAG_CONTINUATION;
+    return (c & CHAR_TYPE_MASK) == CHAR_FLAG_CONTINUATION;
 }
 
 pub fn isClusterChar(c: u32) bool {
-    return (c & 0x8000_0000) == 0x8000_0000;
+    return isGraphemeChar(c) or isContinuationChar(c);
 }
 
 pub fn graphemeIdFromChar(c: u32) u32 {

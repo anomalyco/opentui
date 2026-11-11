@@ -1788,7 +1788,9 @@ function contextBufferColor(value: RGBA, color: Uint16Array = new Uint16Array(4)
     color[offset + index] = channel
   }
   const intent = color[offset + 1] >>> 8
-  if (color[offset + 2] > 255 || color[offset + 3] > 255 || intent > 2 || (intent !== 1 && color[offset] > 255)) {
+  const indexed = intent === nativeConstants.OT_COLOR_INDEXED
+  const known = indexed || intent === nativeConstants.OT_COLOR_RGB || intent === nativeConstants.OT_COLOR_DEFAULT
+  if (color[offset + 2] > 255 || color[offset + 3] > 255 || !known || (!indexed && color[offset] > 255)) {
     throw new RangeError("Invalid terminal color intent")
   }
   return color

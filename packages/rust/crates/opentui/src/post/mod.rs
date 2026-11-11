@@ -401,9 +401,10 @@ impl std::fmt::Debug for Surface<'_> {
     }
 }
 
-/// Whether a raw character names a pooled grapheme or one of its continuation cells (both set the grapheme bit).
+/// Whether a raw character names a pooled grapheme or one of its continuation cells.
 pub(crate) fn is_cluster(raw: u32) -> bool {
-    raw & crate::sys::OT_CELL_CHAR_GRAPHEME != 0
+    use crate::sys::{OT_CELL_CHAR_CONTINUATION, OT_CELL_CHAR_GRAPHEME, OT_CELL_CHAR_KIND_MASK};
+    matches!(raw & OT_CELL_CHAR_KIND_MASK, OT_CELL_CHAR_GRAPHEME | OT_CELL_CHAR_CONTINUATION)
 }
 
 /// Whether a raw character is anything but a plain character.

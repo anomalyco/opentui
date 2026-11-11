@@ -83,8 +83,7 @@ impl KittyKeyboard {
     }
 
     pub const fn from_bits(bits: u32) -> Self {
-        // Every flag up to the highest one.
-        Self(bits & (2 * Self::ASSOCIATED_TEXT.0 - 1))
+        Self(bits & sys::OT_KITTY_KEYBOARD_ALL)
     }
 
     pub const fn union(self, other: Self) -> Self {

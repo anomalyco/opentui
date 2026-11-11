@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 388ec14c488f3ac9370080cb69bee5fd88ceff36c0e9a3789a660a1d5ed9c897
+// ABI audit SHA-256: d06b1a7cd618895d5f3665b19295c8d5e62ebe4a1d831fce907e24060615645b
 
 export const OT_CONTEXT_ABI_VERSION = 2
 export const OT_OK = 0
@@ -565,6 +565,7 @@ export const OT_KITTY_KEYBOARD_EVENT_TYPES = 2
 export const OT_KITTY_KEYBOARD_ALTERNATE_KEYS = 4
 export const OT_KITTY_KEYBOARD_ALL_KEYS_AS_ESCAPES = 8
 export const OT_KITTY_KEYBOARD_REPORT_TEXT = 16
+export const OT_KITTY_KEYBOARD_ALL = 31
 export const OT_CONTROL_CAPABILITY_RESPONSE = 1
 export const OT_CONTROL_TITLE = 2
 export const OT_CONTROL_MOUSE = 3
@@ -2938,6 +2939,7 @@ export const nativeConstants = {
   OT_KITTY_KEYBOARD_ALTERNATE_KEYS: 4,
   OT_KITTY_KEYBOARD_ALL_KEYS_AS_ESCAPES: 8,
   OT_KITTY_KEYBOARD_REPORT_TEXT: 16,
+  OT_KITTY_KEYBOARD_ALL: 31,
   OT_CONTROL_CAPABILITY_RESPONSE: 1,
   OT_CONTROL_TITLE: 2,
   OT_CONTROL_MOUSE: 3,
