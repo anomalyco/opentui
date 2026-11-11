@@ -52,18 +52,7 @@ pub const grapheme_bytes_max = 128;
 /// Checked draws write any other cluster as blank cells of its width instead of failing. Text
 /// layout gives a lone control zero width.
 pub fn isPrintableGlyph(bytes: []const u8, width: u32) bool {
-    if (bytes.len > grapheme_bytes_max or width > gp.glyph_width_max) return false;
-    for (bytes, 0..) |byte, index| {
-        if (byte < 0x20 or byte == 0x7f) return false;
-        // U+0080..U+009F encode as C2 80..C2 9F.
-        if (byte == 0xc2 and index + 1 < bytes.len and bytes[index + 1] < 0xa0) return false;
-    }
-    return true;
-}
-
-/// The code point form of the control rule in isPrintableGlyph.
-pub fn isControlCodepoint(codepoint: u32) bool {
-    return codepoint < 0x20 or (codepoint >= 0x7f and codepoint <= 0x9f);
+    return bytes.len <= grapheme_bytes_max and width <= gp.glyph_width_max and !utf8.containsControl(bytes);
 }
 
 const MAX_UNICODE_CODEPOINT: u32 = 0x10FFFF;
@@ -3781,7 +3770,7 @@ pub const OptimizedBuffer = struct {
                     const bg = ansi.rgbaFromFloats(colors[0], colors[1], colors[2], colors[3]);
                     const fg = ansi.rgbaFromFloats(colors[4], colors[5], colors[6], colors[7]);
                     var char = @as(*align(1) const u32, @ptrCast(data.ptr + offset + 32)).*;
-                    if (char == 0 or char > MAX_UNICODE_CODEPOINT or (char >= 0xd800 and char <= 0xdfff)) {
+                    if (char == 0 or !utf8.isScalar(char)) {
                         char = DEFAULT_SPACE_CHAR;
                     } else if (char < 32 or (char > 126 and char < 0x2580) or !isSingleWidthBorderChar(char)) {
                         char = BLOCK_CHAR;

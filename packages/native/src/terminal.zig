@@ -1661,7 +1661,7 @@ fn writeSanitizedNotificationText(writer: anytype, text: []const u8, replace_sem
     var code_points = std.unicode.Utf8View.initUnchecked(text).iterator();
     while (code_points.nextCodepointSlice()) |slice| {
         const code_point = std.unicode.utf8Decode(slice) catch unreachable;
-        if (code_point < 0x20 or (code_point >= 0x7f and code_point < 0xa0) or (replace_semicolon and code_point == ';')) {
+        if (utf8.isControl(code_point) or (replace_semicolon and code_point == ';')) {
             try writer.writeByte(' ');
         } else {
             try writer.writeAll(slice);
