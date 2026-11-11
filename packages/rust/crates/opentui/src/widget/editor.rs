@@ -12,6 +12,7 @@ use crate::native::{
 };
 use crate::style::{Color, Span, Style};
 use crate::syntax::{self, SyntaxTheme};
+use crate::sys;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -917,13 +918,14 @@ impl EditorCore {
         app.request_redraw();
     }
 
-    /// The buffer's style table. Until `syntax_style` sets one, the editor makes its own.
+    /// The buffer's style table. Until `syntax_style` sets one, the editor makes its own, with its syntax theme.
     fn table(&self) -> Option<SyntaxStyle> {
         if let Some(table) = &self.extmarks.borrow().syntax {
             return Some(table.clone());
         }
         let app = self.element.app()?;
         let table = app.report(SyntaxStyle::new(app.session().context()))?;
+        self.report(table.set_capture_theme(&self.syntax_theme.borrow()));
         self.report(self.buffer.set_syntax_style(Some(&table)));
         self.extmarks.borrow_mut().syntax = Some(table.clone());
         Some(table)
@@ -940,30 +942,19 @@ impl EditorCore {
         Some(id)
     }
 
-    /// Registers capture names in the style table as `opentui.<name>`, with the syntax theme's style for each.
-    fn register_captures(&self, names: &[&str]) -> Option<()> {
-        let (table, theme) = (self.table()?, self.syntax_theme.borrow());
-        for name in names {
-            self.report(table.register(&format!("opentui.{name}"), theme.get(name).unwrap_or_default()))?;
-        }
-        Some(())
-    }
-
-    /// Registers the names of every group set again, for a new theme or table. Runs keep their sets and repaint.
-    fn restyle(&self) {
-        let names: Vec<&str> = self.extmarks.borrow().group_sets.keys().flatten().copied().collect();
-        self.register_captures(&names);
-    }
-
-    /// The group set of a piece's capture names, registered first. Past the Context's group-set bound there is none,
-    /// and the piece paints plain rather than ending the app.
+    /// The group set of a piece's capture names, registered first with the table's palette. A name over the
+    /// group-set name bound is left out, and past the name count bound the outermost names go. Past the Context's
+    /// group-set bound there is none, and the piece paints plain rather than ending the app.
     fn group_set(&self, names: Vec<&'static str>) -> Option<u32> {
         if let Some(&id) = self.extmarks.borrow().group_sets.get(&names) {
             return Some(id);
         }
-        self.register_captures(&names)?;
-        let prefixed: Vec<String> = names.iter().map(|name| format!("opentui.{name}")).collect();
-        let id = self.buffer.context().group_set(&prefixed.iter().map(String::as_str).collect::<Vec<_>>()).ok()?;
+        self.report(self.table()?.register_captures(&names))?;
+        let prefixed: Vec<String> = (names.iter().map(|name| format!("opentui.{name}")))
+            .filter(|name| name.len() <= sys::OT_GROUP_SET_NAME_BYTE_COUNT_MAX as usize)
+            .collect();
+        let kept = &prefixed[prefixed.len().saturating_sub(sys::OT_GROUP_SET_NAME_COUNT_MAX as usize)..];
+        let id = self.buffer.context().group_set(&kept.iter().map(String::as_str).collect::<Vec<_>>()).ok()?;
         self.extmarks.borrow_mut().group_sets.insert(names, id);
         Some(id)
     }
@@ -976,7 +967,10 @@ impl EditorCore {
             extmarks.syntax = Some(style.clone());
             extmarks.styles.clear();
         }
-        self.restyle();
+        // The table takes this editor's theme and names; editors sharing it paint the theme set last.
+        let names: Vec<&'static str> = self.extmarks.borrow().group_sets.keys().flatten().copied().collect();
+        self.report(style.set_capture_theme(&self.syntax_theme.borrow()));
+        self.report(style.register_captures(&names));
         self.refresh_extmarks();
     }
 
@@ -1043,9 +1037,11 @@ impl EditorCore {
     }
 
     pub fn set_syntax_theme(&self, theme: SyntaxTheme) {
-        if *self.syntax_theme.borrow() != theme {
+        // Without a table yet there is nothing to restyle, and no table to make: one the app bound stays.
+        let table = self.extmarks.borrow().syntax.clone();
+        let restyled = table.is_some_and(|table| self.report(table.set_capture_theme(&theme)) == Some(true));
+        if restyled || *self.syntax_theme.borrow() != theme {
             *self.syntax_theme.borrow_mut() = theme;
-            self.restyle();
             self.element.app().inspect(App::request_redraw);
         }
     }
@@ -1310,6 +1306,84 @@ mod tests {
         area.buffer().clear_highlights().unwrap();
         area.syntax_theme(keyword(1));
         assert_eq!(fg(&app), app.theme().foreground);
+    }
+
+    // A theme set on a shared table restyles every editor on it, and an edit registers only names the table has
+    // not seen, with its palette: typing in one editor leaves the other's colors alone.
+    #[test]
+    fn editors_sharing_a_table_paint_the_theme_set_last() {
+        let app = TestApp::new(24, 2);
+        let theme = |color: Color| -> SyntaxTheme {
+            ["keyword", "string", "escape", "comment"].into_iter().map(|name| (name, Style::new().fg(color))).collect()
+        };
+        let table = SyntaxStyle::new(app.session().context()).unwrap();
+        let areas = [("let x = \"a\";", Color::RED), ("let s = \"b\"; // c", Color::RED)].map(|(text, color)| {
+            let area = Textarea::new(&app).filetype("rust").syntax_theme(theme(color)).syntax_style(&table).height(1);
+            area.set_text(text);
+            app.root().add(&area);
+            area
+        });
+        let colors = |app: &TestApp| {
+            let capture = app.render();
+            [(8, 0), (8, 1), (13, 1)].map(|(x, y)| capture.cell(x, y).unwrap().fg)
+        };
+        assert_eq!(colors(&app), [Color::RED; 3]);
+        areas[0].syntax_theme(theme(Color::BLUE));
+        assert_eq!(colors(&app), [Color::BLUE; 3]);
+        areas[1].set_text("let s = \"b\\n\"; // c");
+        assert_eq!(colors(&app)[0], Color::BLUE);
+    }
+
+    // Without a filetype, a theme change neither makes nor binds a table: one the app bound on the buffer stays.
+    #[test]
+    fn a_theme_change_without_a_filetype_keeps_the_apps_table() {
+        let app = TestApp::new(20, 1);
+        let area = Textarea::new(&app).grow(1.0);
+        area.set_text("let a = 1;");
+        app.root().add(&area);
+        let table = SyntaxStyle::new(app.session().context()).unwrap();
+        let style_id = table.register("app", Style::new().fg(Color::GREEN)).unwrap();
+        area.buffer().set_syntax_style(Some(&table)).unwrap();
+        area.buffer().highlight(Highlight { start: 0, end: 3, style_id, priority: 1, tag: 1 }).unwrap();
+        area.syntax_theme(SyntaxTheme::new().style("keyword", Style::new().fg(Color::RED)));
+        assert_eq!(app.render().cell(0, 0).unwrap().fg, Color::GREEN);
+    }
+
+    // A list of capture names past the group-set bounds still paints: a name over the byte bound is left out, and
+    // past the name count bound the outermost names go (`default` first), so the innermost capture keeps its style.
+    #[test]
+    fn capture_lists_past_the_group_set_bounds_drop_names_not_pieces() {
+        let bytes = sys::OT_GROUP_SET_NAME_BYTE_COUNT_MAX as usize - "opentui.".len();
+        let count = sys::OT_GROUP_SET_NAME_COUNT_MAX as usize - 1;
+        let default = Style::new().fg(Color::BLUE);
+        for (captures, want) in [
+            (vec!["n".repeat(bytes)], Style::new().fg(Color::RED)),
+            (vec!["n".repeat(bytes + 1)], default),
+            ((1..=count).map(|index| format!("c{index}")).collect(), default.bold()),
+            ((1..=count + 1).map(|index| format!("c{index}")).collect(), Style::new().bold()),
+        ] {
+            let query: String = captures.iter().map(|name| format!("(\"let\" @{name})")).collect();
+            let filetype = format!("g7-bounds-{}-{}", captures.len(), captures[0].len());
+            let grammar = syntax::Grammar::new(tree_sitter_rust::LANGUAGE, query).core_captures();
+            syntax::register(&filetype, grammar).unwrap();
+            let last = captures.last().unwrap();
+            let style = if captures.len() == 1 { Style::new().fg(Color::RED) } else { Style::new().bold() };
+            let theme = SyntaxTheme::new().style("default", default).style(last.as_str(), style);
+            let app = TestApp::new(20, 1);
+            let area = Textarea::new(&app).filetype(filetype.as_str()).syntax_theme(theme).grow(1.0);
+            area.set_text("let a = 1;");
+            app.root().add(&area);
+            let capture = app.render();
+            let cell = capture.cell(0, 0).unwrap();
+            let fg = want.fg.unwrap_or(app.theme().foreground);
+            assert_eq!(
+                (cell.fg, cell.attributes),
+                (fg, want.attributes),
+                "{} names of {} bytes",
+                captures.len(),
+                last.len()
+            );
+        }
     }
 
     // A grapheme cluster across a capture boundary: VS16 joins the `n` of the escape `\n` but starts the string's
