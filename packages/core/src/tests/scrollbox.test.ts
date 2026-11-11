@@ -1212,6 +1212,43 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
     expect(trace).toEqual(Array(12).fill("30/0"))
   })
 
+  // A tab switch mounts a sticky-bottom transcript again whose 18 blocks the highlight shrinks from 30 rows to 1. Their
+  // remembered highlights apply before layout, so the first frame is the settled one, laid out at once.
+  test("a transcript of shrinking blocks mounted again paints its settled frame first", async () => {
+    const client = createMockTreeSitterClient()
+    const body = (i: number) => [`block ${i}`, ...Array.from({ length: 29 }, (_, k) => `raw ${i}.${k}`)].join("\n")
+    client.setMockResult({ highlights: [[body(10).indexOf("\n"), 1000, "conceal", { conceal: "" }]] })
+    const syntaxStyle = SyntaxStyle.create(testRenderer.nativeScene)
+    const mount = (height: number) => {
+      const box = new ScrollBoxRenderable(testRenderer, { height, stickyScroll: true, stickyStart: "bottom" })
+      const options = { filetype: "markdown", syntaxStyle, treeSitterClient: client, streaming: true }
+      for (let i = 10; i < 28; i++) {
+        box.add(new CodeRenderable(testRenderer, { ...options, content: body(i), drawUnstyledText: false }))
+      }
+      testRenderer.root.add(box)
+      return box
+    }
+    const settle = async () => {
+      for (let pass = 0; pass < 3; pass++) {
+        await renderOnce()
+        client.resolveAllHighlightOnce()
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
+    }
+    // Every block highlights once in a tall view, then the tab goes away.
+    mount(600)
+    await settle()
+    testRenderer.root.getChildren().forEach((child) => child.destroyRecursively())
+    const errors: unknown[] = []
+    testRenderer.on("render:error", (error) => errors.push(error))
+    mount(12)
+    await renderOnce()
+    const first = captureCharFrame()
+    await settle()
+    expect({ errors, first }).toEqual({ errors: [], first: captureCharFrame() })
+    expect(first).toContain("block 27")
+  })
+
   // A block first or last of 16 children highlights in view, grows from 1 line to 5, and scrolls back into view. Grown
   // where the scene runs none of its hooks (culled with an edge on the view's edge, hidden, or detached, then shown or
   // mounted out of view, or moved out by the same tick's layout), it measures as the block grown in view does, never

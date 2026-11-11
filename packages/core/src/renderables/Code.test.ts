@@ -2362,7 +2362,6 @@ const lines = (count: number) => Array.from({ length: count }, (_, i) => `line${
 const earlyBlocks: Record<string, (client: MockTreeSitterClient) => CodeRenderable | MarkdownRenderable> = {
   empty: (client) => code(client, ""),
   text: (client) => code(client, lines(2)),
-  unstyled: (client) => Object.assign(code(client, ""), { drawUnstyledText: true }),
   reasoning: (client) => {
     const block = new CodeRenderable(currentRenderer, { syntaxStyle, treeSitterClient: client, width: "100%" })
     return Object.assign(block, { filetype: "markdown", drawUnstyledText: false, streaming: true, conceal: true })
@@ -2393,10 +2392,9 @@ test.each([
   ["prose", "3! r", "3 - 3 line1 3"],
   ["text", "3! r4", "3 - 4 - 4"],
   ["text", "30000! r", "24 - 24 - 24"],
-  // Deltas faster than the highlight: each result shows when it lands, for a prefix of the content, unless the block
-  // shows all of its text unstyled.
-  ["concealed", "3 4. 5. 6!", "3 - 4 - 2 line2 3 line2 5"],
-  ["unstyled", "3 4. .", "3 line1 4 line1 4 line1 4"],
+  // Deltas faster than the highlight: a stale result never shows, since a prefix of the source need not render as a
+  // prefix of the text.
+  ["concealed", "3 4. 5. 6!", "3 - 4 - 5 - 6 - 5"],
 ])(
   "CodeRenderable - streaming without unstyled text measures early content (%s, %s)",
   async (kind, steps, expected) => {

@@ -47,10 +47,69 @@ export interface CodeOptions extends TextBufferOptions {
 
 type ConcealLineRange = [start: number, end: number]
 
-// Each client's last results by exact filetype and content, oldest first, so a block mounted again (a tab switch)
-// paints in its first frame. They are the worker's output only: style, conceal and callbacks apply when shown.
+// The worker's last results per client by exact filetype and content, oldest first, so that a block mounted again
+// (a tab switch) paints in its first frame. Only worker output is kept; style, conceal and callbacks apply when it
+// shows. Each block owns at most one entry; each ownership costs its key's length against the bound.
 const REMEMBERED_LENGTH_MAX = 1 << 18
-const remembered = new WeakMap<TreeSitterClient, { length: number; results: Map<string, SimpleHighlight[]> }>()
+type Remembered = { highlights: SimpleHighlight[]; owners: Set<number> }
+type Memory = { length: number; results: Map<string, Remembered>; owners: Map<number, string> }
+const remembered = new WeakMap<TreeSitterClient, Memory>()
+let rememberOwners = 0
+
+const rememberKey = (filetype: string, content: string) => `${filetype.length}:${filetype}${content}`
+
+// Callbacks may change what they get; a remembered result must not change with them.
+const copyHighlights = (highlights: SimpleHighlight[]) =>
+  highlights.map(
+    ([start, end, group, meta]): SimpleHighlight => (meta ? [start, end, group, { ...meta }] : [start, end, group]),
+  )
+
+// A callback answer usable before layout is an array or undefined; anything else may settle later and is dropped.
+function answeredNow<T>(value: T[] | undefined | PromiseLike<T[] | undefined>): value is T[] | undefined {
+  if (value === undefined || Array.isArray(value)) return true
+  Promise.resolve(value).then(undefined, () => {})
+  return false
+}
+
+function memoryOf(client: TreeSitterClient): Memory {
+  const known = remembered.get(client)
+  if (known) return known
+  const memory: Memory = { length: 0, results: new Map(), owners: new Map() }
+  remembered.set(client, memory)
+  // A new parser or a destroyed worker may highlight the same text differently.
+  const forget = () => {
+    client.off("parsers:changed", forget)
+    stop()
+    if (remembered.get(client) === memory) remembered.delete(client)
+  }
+  client.on("parsers:changed", forget)
+  const stop = client.onDestroy(forget)
+  return memory
+}
+
+function release(memory: Memory, owner: number): void {
+  const key = memory.owners.get(owner)
+  if (key === undefined) return
+  memory.owners.delete(owner)
+  memory.length -= key.length
+  const entry = memory.results.get(key)!
+  entry.owners.delete(owner)
+  if (entry.owners.size === 0) memory.results.delete(key)
+}
+
+function remember(memory: Memory, owner: number, key: string, highlights: SimpleHighlight[]): void {
+  release(memory, owner)
+  if (key.length > REMEMBERED_LENGTH_MAX) return
+  for (const entry of memory.results.values()) {
+    if (memory.length + key.length <= REMEMBERED_LENGTH_MAX) break
+    for (const other of entry.owners) release(memory, other)
+  }
+  const owners = memory.results.get(key)?.owners ?? new Set<number>()
+  memory.results.delete(key)
+  memory.results.set(key, { highlights, owners: owners.add(owner) })
+  memory.owners.set(owner, key)
+  memory.length += key.length
+}
 
 export class CodeRenderable extends TextBufferRenderable {
   static override readonly nativeIntegration: NativeRenderableIntegration = {
@@ -82,7 +141,10 @@ export class CodeRenderable extends TextBufferRenderable {
   private _streaming: boolean
   private _initialStyledText?: StyledText
   private _hadInitialContent: boolean = false
-  private _rememberedKey?: string
+  private readonly _rememberOwner = ++rememberOwners
+  // A remembered result for the current state is painted; the next change of state ends it.
+  private _restored = false
+  private _restorePending = true
   private _baseHighlight?: string
   private _onHighlight?: OnHighlightCallback
   private _onChunks?: OnChunksCallback
@@ -125,6 +187,7 @@ export class CodeRenderable extends TextBufferRenderable {
       }
 
       this.setHighlightsDirty(this._content.length > 0)
+      this.onLifecyclePass = this.restoreHighlights
     } catch (error) {
       this.rollbackConstruction(error)
     }
@@ -137,6 +200,46 @@ export class CodeRenderable extends TextBufferRenderable {
   private invalidateHighlights(): void {
     this.setHighlightsDirty(true)
     this._highlightSnapshotId++
+    this._restored = false
+    this._restorePending = true
+    this._ctx.nativeScene.lifecyclePasses.refresh(this)
+  }
+
+  override _needsLifecyclePass(): boolean {
+    if (this.onLifecyclePass !== this.restoreHighlights) return super._needsLifecyclePass()
+    return this._restorePending
+  }
+
+  // Before layout, a block that would wait for the worker shows the worker's last result for exactly its filetype and
+  // content, when its callbacks answer at once. The worker still runs and replaces it.
+  private readonly restoreHighlights = (): void => {
+    this._restorePending = false
+    this._ctx.nativeScene.lifecyclePasses.refresh(this)
+    const content = this._content
+    const filetype = this._filetype
+    if (!this._highlightsDirty || this._drawUnstyledText || !filetype || !content) return
+    const last = remembered.get(this._treeSitterClient)?.results.get(rememberKey(filetype, content))
+    if (!last) return
+    try {
+      const own = this._onHighlight || this._onChunks ? copyHighlights(last.highlights) : last.highlights
+      const modified = this._onHighlight?.(own, { content, filetype, syntaxStyle: this._syntaxStyle })
+      if (!answeredNow(modified)) return
+      const highlights = modified ?? own
+      if (highlights.length > 0 || this._onChunks || this._baseHighlight) {
+        const styled = this.styleHighlights(content, filetype, highlights)
+        if (!answeredNow(styled.chunks)) return
+        this.textBuffer.setStyledText(new StyledText(styled.chunks ?? []))
+        this.setRenderedLineSources(styled.lineSources)
+      } else {
+        this.textBuffer.setText(content)
+        this.setRenderedLineSources(undefined)
+      }
+    } catch {
+      return
+    }
+    this._restored = true
+    this.setShouldRenderTextBuffer(true)
+    this.updateTextInfo()
   }
 
   private setHighlightsDirty(value: boolean): void {
@@ -361,10 +464,24 @@ export class CodeRenderable extends TextBufferRenderable {
     return this._highlightingPromise
   }
 
-  // Synchronous when onChunks is, so a remembered result shows in the frame that asks for it.
+  // Synchronous when onChunks answers at once, so a remembered result can show before layout.
   protected transformChunks(chunks: TextChunk[], context: ChunkRenderContext): TextChunk[] | Promise<TextChunk[]> {
     const modified = this._onChunks?.(chunks, context)
-    return modified instanceof Promise ? modified.then((value) => value ?? chunks) : (modified ?? chunks)
+    if (modified === undefined || Array.isArray(modified)) return modified ?? chunks
+    return Promise.resolve(modified).then((value) => value ?? chunks)
+  }
+
+  private styleHighlights(content: string, filetype: string, highlights: SimpleHighlight[]) {
+    const sourceRanges: Array<{ start: number; end: number }> | undefined = this._onChunks ? [] : undefined
+    const context: ChunkRenderContext = { content, filetype, syntaxStyle: this._syntaxStyle, highlights, sourceRanges }
+    const chunks = treeSitterToTextChunks(content, highlights, this._syntaxStyle, {
+      enabled: this._conceal,
+      baseHighlight: this._baseHighlight,
+      ranges: sourceRanges,
+    })
+    // onChunks may rewrite text arbitrarily, so the conceal-only source map would be invalid.
+    const lineSources = this._onChunks ? undefined : this.getConcealLinesSourceMap(content, highlights)
+    return { chunks: this.transformChunks(chunks, context), lineSources }
   }
 
   private ensureVisibleTextBeforeHighlight(): void {
@@ -383,7 +500,7 @@ export class CodeRenderable extends TextBufferRenderable {
       this.setRenderedLineSources(undefined)
       this.setShouldRenderTextBuffer(true)
     } else {
-      this.setShouldRenderTextBuffer(false)
+      this.setShouldRenderTextBuffer(this._restored)
     }
   }
 
@@ -400,27 +517,69 @@ export class CodeRenderable extends TextBufferRenderable {
     }
 
     this._isHighlighting = true
-    // A streaming block in view shows a result for a prefix of its content rather than nothing or an older one. A culled
-    // one keeps measuring its plain text.
-    const current = () => snapshotId === this._highlightSnapshotId
-    const shows = () =>
-      !this.isDestroyed &&
-      (current() ||
-        (this._streaming &&
-          !this._drawUnstyledText &&
-          this._content.startsWith(content) &&
-          this._ctx.nativeScene.reachesHooks(this)))
-    const key = `${filetype}\0${content}`
-    // A block that would paint nothing shows the last result for exactly its content until the worker's lands.
-    const last = this._shouldRenderTextBuffer ? undefined : remembered.get(this._treeSitterClient)?.results.get(key)
-    if (last) this.showHighlights(content, filetype, last, shows, () => false).catch(() => {})
+    const client = this._treeSitterClient
+    const memory = this._drawUnstyledText ? undefined : memoryOf(client)
 
     try {
-      const result = await this._treeSitterClient.highlightOnce(content, filetype)
-      if (!this._drawUnstyledText) this.rememberHighlights(key, result.highlights ?? [])
-      if (!(await this.showHighlights(content, filetype, result.highlights ?? [], shows, current))) {
+      const result = await client.highlightOnce(content, filetype)
+
+      if (snapshotId !== this._highlightSnapshotId) {
         this.requestRender()
+        return
       }
+
+      if (this.isDestroyed) return
+
+      let highlights = result.highlights ?? []
+      // Into the memory it was asked of; after a parser change or a destroyed worker, nothing reads that one.
+      if (memory && !result.error) {
+        const copy = this._onHighlight || this._onChunks ? copyHighlights(highlights) : highlights
+        remember(memory, this._rememberOwner, rememberKey(filetype, content), copy)
+      }
+
+      if (this._onHighlight && highlights.length >= 0) {
+        const context: HighlightContext = {
+          content,
+          filetype,
+          syntaxStyle: this._syntaxStyle,
+        }
+        const modified = await this._onHighlight(highlights, context)
+        if (modified !== undefined) {
+          highlights = modified
+        }
+      }
+
+      if (snapshotId !== this._highlightSnapshotId) {
+        this.requestRender()
+        return
+      }
+
+      if (this.isDestroyed) return
+
+      if (highlights.length > 0 || this._onChunks || this._baseHighlight) {
+        const styled = this.styleHighlights(content, filetype, highlights)
+        const chunks = await styled.chunks
+
+        if (snapshotId !== this._highlightSnapshotId) {
+          this.requestRender()
+          return
+        }
+
+        if (this.isDestroyed) return
+
+        const styledText = new StyledText(chunks)
+        this.textBuffer.setStyledText(styledText)
+        this.setRenderedLineSources(styled.lineSources)
+      } else {
+        this.textBuffer.setText(content)
+        this.setRenderedLineSources(undefined)
+      }
+
+      this.setShouldRenderTextBuffer(true)
+      this._isHighlighting = false
+      this.setHighlightsDirty(false)
+      this.updateTextInfo()
+      this.requestRender()
     } catch (error) {
       if (snapshotId !== this._highlightSnapshotId) {
         this.requestRender()
@@ -436,73 +595,6 @@ export class CodeRenderable extends TextBufferRenderable {
       this.setHighlightsDirty(false)
       this.updateTextInfo()
       this.requestRender()
-    }
-  }
-
-  // Synchronous when the callbacks are; false, with nothing shown, once `shows()` is false. `settles()` says whether
-  // the shown result ends the highlight.
-  private async showHighlights(
-    content: string,
-    filetype: string,
-    highlights: SimpleHighlight[],
-    shows: () => boolean,
-    settles: () => boolean,
-  ): Promise<boolean> {
-    if (!shows()) return false
-    if (this._onHighlight) {
-      // A copy, since the callback may change it and the result may be remembered.
-      const modified = this._onHighlight([...highlights], { content, filetype, syntaxStyle: this._syntaxStyle })
-      highlights = (modified instanceof Promise ? await modified : modified) ?? highlights
-    }
-    let text: StyledText | undefined
-    let renderedLineSources: number[] | undefined
-    if (highlights.length > 0 || this._onChunks || this._baseHighlight) {
-      const sourceRanges: Array<{ start: number; end: number }> | undefined = this._onChunks ? [] : undefined
-      const context: ChunkRenderContext = {
-        content,
-        filetype,
-        syntaxStyle: this._syntaxStyle,
-        highlights,
-        sourceRanges,
-      }
-      const chunks = treeSitterToTextChunks(content, highlights, this._syntaxStyle, {
-        enabled: this._conceal,
-        baseHighlight: this._baseHighlight,
-        ranges: sourceRanges,
-      })
-      // onChunks may rewrite text arbitrarily, so the conceal-only source map would be invalid.
-      renderedLineSources = this._onChunks ? undefined : this.getConcealLinesSourceMap(content, highlights)
-      const transformed = this.transformChunks(chunks, context)
-      text = new StyledText(transformed instanceof Promise ? await transformed : transformed)
-    }
-    if (!shows()) return false
-    if (text) this.textBuffer.setStyledText(text)
-    else this.textBuffer.setText(content)
-    this.setRenderedLineSources(renderedLineSources)
-    this.setShouldRenderTextBuffer(true)
-    if (settles()) {
-      this._isHighlighting = false
-      this.setHighlightsDirty(false)
-    }
-    this.updateTextInfo()
-    this.requestRender()
-    return true
-  }
-
-  private rememberHighlights(key: string, highlights: SimpleHighlight[]): void {
-    let memory = remembered.get(this._treeSitterClient)
-    if (!memory) remembered.set(this._treeSitterClient, (memory = { length: 0, results: new Map() }))
-    // One result per block: a streaming block's earlier results are for content it no longer has.
-    for (const old of [this._rememberedKey, key]) {
-      if (old !== undefined && memory.results.delete(old)) memory.length -= old.length
-    }
-    memory.results.set(key, highlights)
-    memory.length += key.length
-    this._rememberedKey = key
-    for (const [oldest] of memory.results) {
-      if (memory.length <= REMEMBERED_LENGTH_MAX) break
-      memory.results.delete(oldest)
-      memory.length -= oldest.length
     }
   }
 

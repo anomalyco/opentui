@@ -352,6 +352,7 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
 
   public addFiletypeParser(filetypeParser: FiletypeParserOptions): void {
     this.sendWorkerMessage({ type: "ADD_FILETYPE_PARSER", filetypeParser: this.resolveFiletypeParser(filetypeParser) })
+    this.emit("parsers:changed")
   }
 
   private resolveFiletypeParser(filetypeParser: FiletypeParserOptions): FiletypeParserOptions {
@@ -760,6 +761,7 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
     }
 
     this.options.dataPath = dataPath
+    this.emit("parsers:changed")
 
     if (this.initialized && this.worker) {
       const messageId = `update_datapath_${this.messageIdCounter++}`

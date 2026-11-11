@@ -105,6 +105,8 @@ export interface TreeSitterClientEvents {
   "buffer:initialized": [bufferId: number, hasParser: boolean]
   "buffer:disposed": [bufferId: number]
   "worker:log": [logType: TreeSitterWorkerLogType, message: string]
+  /** A parser or the data path changed, so a later highlight of the same text may differ. */
+  "parsers:changed": []
   error: [error: string, bufferId?: number]
   warning: [warning: string, bufferId?: number]
 }
