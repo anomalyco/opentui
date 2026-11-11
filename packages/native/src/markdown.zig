@@ -189,8 +189,6 @@ pub const Doc = struct {
     watch_hit: bool = false,
     /// A filter match in the pending line, latched once its line is parsed; none otherwise.
     hook_pending_byte: u32 = none,
-    /// Blocks already latched under an empty filter (every prose leaf).
-    hook_scan_block_count: u32 = 0,
 
     const UndoEntry = struct { index: u32, block: Block };
 
@@ -280,11 +278,12 @@ pub const Doc = struct {
             return;
         }
         self.options = options;
+        const hook_all = options.hook and options.hook_filter.len == 0;
         for (self.blocks.items, 0..) |b, i| {
-            if (b.flags.hooked) (try self.blockMut(@intCast(i))).flags.hooked = false;
+            const hooked = hook_all and isInlineLeaf(b);
+            if (b.flags.hooked != hooked) (try self.blockMut(@intCast(i))).flags.hooked = hooked;
         }
         self.hook_pending_byte = none;
-        self.hook_scan_block_count = 0;
         try self.latchHooks(0);
     }
 
@@ -365,7 +364,6 @@ pub const Doc = struct {
         counters: Counters,
         read_block_count: u32,
         hook_pending_byte: u32,
-        hook_scan_block_count: u32,
     };
 
     fn beginMutation(self: *Doc) Snapshot {
@@ -385,7 +383,6 @@ pub const Doc = struct {
             .counters = self.counters,
             .read_block_count = self.read_block_count,
             .hook_pending_byte = self.hook_pending_byte,
-            .hook_scan_block_count = self.hook_scan_block_count,
         };
     }
 
@@ -409,7 +406,6 @@ pub const Doc = struct {
         self.counters = snapshot.counters;
         self.read_block_count = snapshot.read_block_count;
         self.hook_pending_byte = snapshot.hook_pending_byte;
-        self.hook_scan_block_count = snapshot.hook_scan_block_count;
         // The live leaf may have taken bytes of the rejected call: drop it; the open paragraph
         // is parsed whole when it closes.
         self.liveReset(none, none);
@@ -477,13 +473,8 @@ pub const Doc = struct {
     fn latchHooks(self: *Doc, from_byte: u32) Error!void {
         if (!self.options.hook) return;
         const s = self.source.items;
-        if (self.options.hook_filter.len == 0) {
-            for (self.blocks.items[self.hook_scan_block_count..], self.hook_scan_block_count..) |b, i| {
-                if (Doc.isInlineLeaf(b) and !b.flags.hooked) (try self.blockMut(@intCast(i))).flags.hooked = true;
-            }
-            self.hook_scan_block_count = @intCast(self.blocks.items.len);
-            return;
-        }
+        // An empty filter hooks every prose leaf when it is created (addChild).
+        if (self.options.hook_filter.len == 0) return;
         if (self.hook_pending_byte != none and self.hook_pending_byte < self.line_start_byte) {
             try self.latchAt(self.hook_pending_byte);
             self.hook_pending_byte = none;
@@ -964,7 +955,7 @@ pub const Doc = struct {
         try self.blocks.append(self.allocator, .{
             .parent_index = parent,
             .kind = kind,
-            .flags = .{ .open = true, .unreported = true },
+            .flags = .{ .open = true, .unreported = true, .hooked = self.options.hook and self.options.hook_filter.len == 0 and isInlineKind(kind) },
             .source_start_byte = start,
             .source_end_byte = end,
             .content_start_byte = start,
@@ -1699,7 +1690,11 @@ pub const Doc = struct {
     }
 
     pub fn isInlineLeaf(b: Block) bool {
-        return b.kind == .paragraph or b.kind == .heading or b.kind == .table_cell;
+        return isInlineKind(b.kind);
+    }
+
+    fn isInlineKind(kind: Kind) bool {
+        return kind == .paragraph or kind == .heading or kind == .table_cell;
     }
 
     /// The inline parse of a leaf (paragraph, heading, table cell).

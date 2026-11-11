@@ -8,10 +8,11 @@
 //!   a fresh doc of the same complete lines after every append, and one append of the whole after
 //!   finish (invariant 1).
 //!
-//! The model tests (properties named as in markdown-highlight-ssot-models.md) run 384 seeds of
-//! 64 commands and 4 random splits of every corpus row in CI, about 5 s in a debug build. Longer
-//! runs: MODEL_SEEDS=20000 for the command model, MARKDOWN_SPLITS=64 for the splits; MODEL_SEED
-//! replays one seed, MARKDOWN_ROW runs one corpus row and prints its HTML.
+//! The model tests (properties named as in markdown-highlight-ssot-models.md) run 256 seeds
+//! of 64 commands, 64 more with an empty hook filter, and 4 random splits of every corpus row:
+//! about 6 s in a debug build. Longer runs: MODEL_SEEDS=20000 for the command model,
+//! MARKDOWN_SPLITS=64 for the splits; MODEL_SEED replays one seed, MARKDOWN_ROW runs one corpus
+//! row and prints its HTML.
 const std = @import("std");
 const markdown = @import("../markdown.zig");
 const html = @import("markdown-html.zig");
@@ -250,12 +251,15 @@ const EngineCommand = union(enum) {
     /// read_changes with capacity 0, one short of the count, or the count.
     read: u8,
     toggle_math,
+    /// set_options with the other hook filter (latches again).
+    swap_filter,
 };
 
 const Engine = struct {
     corpus_texts: []const []const u8,
     hook: bool = true,
     filter: []const u8 = "ses_",
+    other_filter: []const u8 = "se",
 
     pub const Command = EngineCommand;
 
@@ -285,8 +289,10 @@ const Engine = struct {
                 try commands.append(arena, .{ .set = .{ .text = text, .shared = random.boolean() } });
             } else if (roll < 97) {
                 try commands.append(arena, .{ .read = random.uintLessThan(u8, 3) });
-            } else {
+            } else if (roll < 99) {
                 try commands.append(arena, .toggle_math);
+            } else {
+                try commands.append(arena, .swap_filter);
             }
         }
         return commands.items;
@@ -311,6 +317,7 @@ const Engine = struct {
                 else => "count",
             }}) catch {},
             .toggle_math => writer.writeAll("set_options math toggled") catch {},
+            .swap_filter => writer.writeAll("set_options filter swapped") catch {},
         }
     }
 
@@ -378,6 +385,10 @@ const Engine = struct {
                     options.math = !options.math;
                     try f.doc.setOptions(options);
                 },
+                .swap_filter => {
+                    options.hook_filter = if (std.mem.eql(u8, options.hook_filter, self.filter)) self.other_filter else self.filter;
+                    try f.doc.setOptions(options);
+                },
             }
             // A replace, a math change and an append after finish (N2) parse afresh.
             const reopened = command == .append and was_finished;
@@ -424,8 +435,9 @@ const Engine = struct {
             if (self.hook) {
                 for (f.doc.blocks.items) |b| {
                     if (!markdown.Doc.isInlineLeaf(b) or b.source_end_byte > f.doc.line_start_byte) continue;
-                    const found = std.mem.indexOfPos(u8, f.doc.source.items, b.source_start_byte, self.filter);
-                    const holds = found != null and found.? < b.source_end_byte;
+                    const found = std.mem.indexOfPos(u8, f.doc.source.items, b.source_start_byte, options.hook_filter);
+                    // An empty filter hooks every prose leaf.
+                    const holds = options.hook_filter.len == 0 or (found != null and found.? < b.source_end_byte);
                     if (holds != b.flags.hooked) return .{ .property = "P18 filter latch equals substring", .step = step };
                 }
             }
@@ -471,7 +483,10 @@ test "Markdown model: append, set, finish and reads keep P1-P5, P18 and the live
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     var engine: Engine = .{ .corpus_texts = try corpusTexts(arena_state.allocator()) };
-    try model.check(Engine, &engine, .{ .seeds = 384, .steps = 64 });
+    try model.check(Engine, &engine, .{ .seeds = 256, .steps = 64 });
+    // An empty filter hooks every prose leaf.
+    var hook_all: Engine = .{ .corpus_texts = engine.corpus_texts, .filter = "", .other_filter = "ses_" };
+    try model.check(Engine, &hook_all, .{ .seeds = 64, .steps = 64 });
 }
 
 test "Markdown model: corpus rows split at random code points stream like one append" {
