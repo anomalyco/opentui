@@ -325,26 +325,28 @@ async function check(options: Options): Promise<void> {
   console.error(`${files.length} API files in ${dir} are valid`)
 }
 
-// The index names each export of an npm entry point under its module. A re-export counts as indexed when its original
-// is: the same name with the same declarations in another module, as in "Every root export" rows. C declarations
-// need not be indexed.
+// The index names each export of an npm entry point under its module. A row "Every root export" or "Every export from
+// `<module>`" names every export of that module under its own. C declarations need not be indexed.
 async function index(options: Options): Promise<void> {
-  const declarations = new Map<string, string[]>()
-  for (const feature of (await currentFeatures(options)).map(parseFeature)) {
-    const key = `${feature.module} ${exportName(feature.name)}`
-    declarations.set(key, [...(declarations.get(key) ?? []), feature.line.slice(feature.module.length)])
-  }
-  const shape = (key: string) => `${key.slice(key.indexOf(" "))}\n${declarations.get(key)!.join("\n")}`
+  const exported = new Set(
+    (await currentFeatures(options)).map(parseFeature).map((f) => `${f.module} ${exportName(f.name)}`),
+  )
   const file = join(
     resolve(options.values.get("root") ?? repoRoot),
     "packages/web/src/content/docs/reference/api-index.mdx",
   )
-  const indexed = new Set(documentedSymbols(await readFile(file, "utf8")).map((s) => `${s.module} ${s.name}`))
-  const indexedShapes = new Set([...indexed].filter((key) => declarations.has(key)).map(shape))
+  const text = await readFile(file, "utf8")
+  const indexed = new Set(documentedSymbols(text).map((s) => `${s.module} ${s.name}`))
+  for (const [, module, name, from] of text.matchAll(
+    /^\| `(@opentui\/([^/`]+)\/[^`]+)` +\| Every (?:root export|export from `(@opentui\/[^`]+)`)/gm,
+  )) {
+    const source = `${from ?? `@opentui/${name}`} `
+    for (const key of exported) if (key.startsWith(source)) indexed.add(`${module} ${key.slice(source.length)}`)
+  }
   const problems = [
-    ...[...indexed].filter((key) => !declarations.has(key)).map((key) => `indexes ${key}, which is not exported`),
-    ...[...declarations.keys()]
-      .filter((key) => !key.startsWith(`${C_MODULE} `) && !indexed.has(key) && !indexedShapes.has(shape(key)))
+    ...[...indexed].filter((key) => !exported.has(key)).map((key) => `indexes ${key}, which is not exported`),
+    ...[...exported]
+      .filter((key) => !key.startsWith(`${C_MODULE} `) && !indexed.has(key))
       .map((key) => `does not index ${key}`),
   ]
   for (const problem of problems) console.error(`api-index.mdx ${problem}`)
