@@ -5,7 +5,7 @@
 //! grammar, recursively, and add that grammar's captures.
 
 use super::{SyntaxTheme, filetype_for_info_string};
-use crate::style::{Span, Style};
+use crate::style::Span;
 use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::collections::hash_map::Entry as Slot;
@@ -540,23 +540,8 @@ pub fn highlights(source: &str, filetype: &str) -> Option<Vec<Capture>> {
 /// earlier ones. Unlike Core, which orders them by name length, the order is the list's: [`highlights`] puts inner
 /// captures after the ones enclosing them. A capture named `none` clears the styles under it, as in Neovim.
 pub fn spans(source: &str, captures: &[Capture], theme: &SyntaxTheme) -> Vec<Span<'static>> {
-    let pieces = styled_ranges(source, captures, theme);
+    let pieces = super::styled_ranges(named_ranges(source, captures), theme);
     pieces.into_iter().map(|(range, style)| Span::styled(source[range].to_owned(), style)).collect()
-}
-
-/// The pieces of `source` as [`spans`] styles them: byte ranges in order that cover the source, each with its style,
-/// and neighbors of one style joined.
-pub(crate) fn styled_ranges(source: &str, captures: &[Capture], theme: &SyntaxTheme) -> Vec<(ByteRange, Style)> {
-    let (lists, named) = named_ranges(source, captures);
-    let styles: Vec<Style> = lists.into_iter().map(|names| theme.merge(names)).collect();
-    let mut pieces: Vec<(ByteRange, Style)> = Vec::new();
-    for (range, list) in named {
-        match pieces.last_mut() {
-            Some((last, style)) if *style == styles[list] => last.end = range.end,
-            _ => pieces.push((range, styles[list])),
-        }
-    }
-    pieces
 }
 
 /// The lists of names whose styles [`spans`] merges, in order, and the pieces of `source` with the index of their
@@ -618,7 +603,7 @@ pub fn highlight(source: &str, filetype: &str, theme: &SyntaxTheme) -> Option<Ve
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::style::Color;
+    use crate::style::{Color, Style};
 
     /// The captured text and names, for readable assertions.
     fn captured(source: &str, filetype: &str) -> Vec<(String, &'static str)> {

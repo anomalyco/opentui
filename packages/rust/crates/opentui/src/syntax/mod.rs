@@ -218,13 +218,20 @@ pub(crate) fn highlight_ranges(
     filetype: &str,
     theme: &SyntaxTheme,
 ) -> Option<Vec<(Range<usize>, Style)>> {
-    #[cfg(feature = "tree-sitter")]
-    return Some(highlight::styled_ranges(source, &highlights(source, filetype)?, theme));
-    #[cfg(not(feature = "tree-sitter"))]
-    {
-        let _ = (source, filetype, theme);
-        None
+    Some(styled_ranges(highlight_names(source, filetype)?, theme))
+}
+
+/// The pieces of named ranges with their lists' styles merged, neighbors of one style joined.
+fn styled_ranges((lists, named): NamedRanges, theme: &SyntaxTheme) -> Vec<(Range<usize>, Style)> {
+    let styles: Vec<Style> = lists.into_iter().map(|names| theme.merge(names)).collect();
+    let mut pieces: Vec<(Range<usize>, Style)> = Vec::new();
+    for (range, list) in named {
+        match pieces.last_mut() {
+            Some((last, style)) if *style == styles[list] => last.end = range.end,
+            _ => pieces.push((range, styles[list])),
+        }
     }
+    pieces
 }
 
 pub(crate) type NamedRanges = (Vec<Vec<&'static str>>, Vec<(Range<usize>, usize)>);
