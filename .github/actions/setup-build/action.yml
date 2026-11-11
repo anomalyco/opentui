@@ -1,8 +1,8 @@
 name: Set up a package check
 description: >-
-  Check out the repository and prepare the core library this runner tests against. The package checks shared this
-  sequence of checkout, caches, bun install and the native host bottle, which every one of them repeated on the same
-  commit.
+  Prepare the core library this runner tests against: Zig, the caches, bun install and the native host bottle. The
+  package checks shared this sequence, which every one of them repeated on the same commit. Check out the repository
+  before this action, because the action itself lives in it.
 inputs:
   zig-cache-save:
     description: This job saves the lib Zig cache on pushes to main
@@ -11,9 +11,6 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Checkout code
-      uses: actions/checkout@v6
-
     - name: Setup Zig
       uses: ./.github/actions/setup-zig
 
