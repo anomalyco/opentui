@@ -914,6 +914,34 @@ test "Markdown limits: each store stays within its limit and a rejection publish
             }
         }
     }
+    // Token storage: openers that never close keep the stack from emptying; the live leaf's
+    // stores stay within twice the token limit (length and capacity) after every append, and its
+    // tail writes still rebuild the leaf's display.
+    {
+        var f: Fixture = undefined;
+        try f.init(.{});
+        defer f.deinit();
+        var sink: markdown.TailSink = .{ .allocator = gpa };
+        defer sink.deinit();
+        f.doc.tail_sink = &sink;
+        const bound = 2 * inline_parser.token_count_max + 64;
+        var high: usize = 0;
+        for (0..6000) |n| {
+            try f.doc.append(if (n % 2 == 0) "*a " else "[b ");
+            const p = &f.doc.live.parser;
+            high = @max(high, p.tokens.items.len);
+            try std.testing.expect(p.tokens.items.len <= bound and p.tokens.capacity <= 2 * bound);
+            try std.testing.expect(p.delimiters.items.len <= bound and p.delimiters.capacity <= 2 * bound);
+            try std.testing.expect(p.matches.items.len <= bound and p.brackets.items.len <= inline_parser.bracket_count_max);
+            try std.testing.expect(f.doc.live.display_ends.items.len <= bound and f.doc.live.display_ends.capacity <= 2 * bound);
+            try std.testing.expect(f.doc.live.content.items.len <= 8 * bound);
+        }
+        try std.testing.expect(high > inline_parser.token_count_max);
+        try std.testing.expect(try liveShowsReadLeaf(arena, &f.doc, &sink));
+        try f.doc.finish();
+        try std.testing.expectEqual(@as(u32, 0), sink.mismatch_count);
+        try std.testing.expectEqual(@as(u32, 1), sink.checked_leaf_count);
+    }
     // Filter: at most 256 bytes of items of 1 to 64 bytes.
     {
         var scratch = std.heap.ArenaAllocator.init(gpa);
@@ -998,6 +1026,9 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
     var label: std.ArrayListUnmanaged(u8) = .empty;
     try label.appendSlice(arena, "see [a][");
     while (label.items.len < 900) try label.appendSlice(arena, "label ");
+    // The token limit's storage row: the delimiter stack never empties.
+    var openers: std.ArrayListUnmanaged(u8) = .empty;
+    for (0..6000) |n| try openers.appendSlice(arena, if (n % 2 == 0) "*a " else "[b ");
     const verbose = environment(arena, "MARKDOWN_GATES") != null;
     const Row = struct {
         name: []const u8,
@@ -1025,6 +1056,8 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
         .{ .name = "a long unfinished entity, 1-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"&"}, try split(arena, xs[0..4096], 1), &.{";\n"} }) },
         .{ .name = "a long unfinished autolink, 1-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"a <"}, try split(arena, xs[0..4096], 1), &.{">\n"} }) },
         .{ .name = "spaces in a code span, 1-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"`a"}, try split(arena, spaces, 1), &.{"`\n"} }) },
+        // The leaf's close writes it again from a whole parse (expired openers show literal).
+        .{ .name = "openers that never close, 3-byte appends", .parts = try split(arena, openers.items, 3), .display_factor = 4, .sent_factor = 2 },
         .{ .name = "se + s_ with the filter", .options = .{ .hook = true, .hook_filter = "ses_" }, .parts = &.{ "see se", "s_abc now\n" } },
     };
     for (rows) |row| {

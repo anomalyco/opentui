@@ -177,6 +177,9 @@ const Live = struct {
     partial_at: u32 = 0,
     partial_from: u32 = none,
     partial_byte_count: u32 = 0,
+    /// The display offset of the first expired opener whose tokens were folded away (none: no
+    /// such opener).
+    expired_display: u32 = none,
     /// The doc's definition count when the leaf was parsed against them.
     definition_count: u32 = 0,
 };
@@ -1706,6 +1709,7 @@ pub const Doc = struct {
                 live.line_pipe = none;
                 try self.liveFeed(live.content.items[0..end], true);
                 if (b.flags.setext) try self.liveWriteExtra(try self.setextUnderline(self.scratch.allocator(), index));
+                if (live.expired_display != none) try self.liveRewriteExpired(index);
                 const unresolved = live.parser.unresolved;
                 if (self.tail_sink) |sink| try self.checkSink(sink, index);
                 self.liveReset(none, none);
@@ -1771,6 +1775,7 @@ pub const Doc = struct {
         live.line_pipe = none;
         live.partial_token = none;
         live.partial_from = none;
+        live.expired_display = none;
         live.definition_count = @intCast(self.definitions.items.len);
         if (self.tail_sink) |sink| {
             sink.mirror.clearRetainingCapacity();
@@ -1956,7 +1961,10 @@ pub const Doc = struct {
             write_full = self.liveTokensEnd(first) + same;
         }
         try self.liveShow(write_full, full_end, final);
-        if (!final) self.liveFold();
+        if (!final) {
+            self.liveFold();
+            try self.liveRetire();
+        }
     }
 
     /// Display offset where token `index` starts.
@@ -1973,6 +1981,8 @@ pub const Doc = struct {
         const partial_before = live.partial_from;
         live.partial_token = none;
         live.partial_from = none;
+        // A leaf that closes with an expired opener folded away is written again whole.
+        if (final and live.expired_display != none) return;
         const cut = if (final) none else self.liveHoldCut();
         const shown_end = @min(full_end, cut);
         var write_start = @min(@min(write_full, live.shown_byte_count), partial_before);
@@ -2065,6 +2075,23 @@ pub const Doc = struct {
         return start + live.partial_byte_count;
     }
 
+    /// An expired opener whose tokens were folded away shows literal now: the display from it
+    /// on is written again from a whole parse of the closed leaf.
+    fn liveRewriteExpired(self: *Doc, index: u32) Error!void {
+        const live = &self.live;
+        const from = live.expired_display;
+        const whole = (try self.readLeaf(self.scratch.allocator(), index)).bytes.items;
+        self.counters.display_byte_visits += whole.len;
+        self.counters.tail_write_bytes += whole.len - from;
+        if (self.tail_sink) |sink| {
+            if (sink.valid) {
+                sink.mirror.shrinkRetainingCapacity(from);
+                try sink.mirror.appendSlice(sink.allocator, whole[from..]);
+            }
+        }
+        live.shown_byte_count = @intCast(whole.len);
+    }
+
     /// Writes bytes after the leaf's display (a setext underline when the heading closes).
     fn liveWriteExtra(self: *Doc, bytes: []const u8) Error!void {
         self.counters.tail_write_bytes += bytes.len;
@@ -2086,6 +2113,7 @@ pub const Doc = struct {
         assert(isAsciiWhitespaceByte(live.content.items[position - 1]));
         const drop = position - look_behind_byte_count;
         const rest = live.content.items.len - drop;
+        self.liveNoteExpired(@intCast(parser.tokens.items.len));
         if (live.display_ends.items.len > 0) live.folded_display_byte_count = live.display_ends.items[live.display_ends.items.len - 1];
         live.display_ends.clearRetainingCapacity();
         std.mem.copyForwards(u8, live.content.items[0..rest], live.content.items[drop..]);
@@ -2096,6 +2124,70 @@ pub const Doc = struct {
         if (live.pending_scan.code) |opener| live.pending_scan.code = opener - drop;
         if (live.pending_code_opener) |opener| live.pending_code_opener = opener - drop;
         parser.rebase(drop);
+        self.liveClampContent();
+    }
+
+    /// Tokens before `dropped` go: an expired opener among them is drawn concealed, and turns
+    /// literal only when the leaf closes, from a whole parse (one tail write from there).
+    fn liveNoteExpired(self: *Doc, dropped: u32) void {
+        const live = &self.live;
+        const expired = live.parser.expired_from;
+        if (expired < dropped) live.expired_display = @min(live.expired_display, self.liveTokensEnd(expired));
+    }
+
+    /// The content copy's capacity follows what it holds once it is past the retained maximum.
+    fn liveClampContent(self: *Doc) void {
+        const content = &self.live.content;
+        if (content.capacity > live_retained_byte_count_max and content.capacity > 4 * content.items.len) {
+            content.shrinkAndFree(self.allocator, @max(content.items.len, live_retained_byte_count_max / 2));
+        }
+    }
+
+    /// Bounds the live leaf's stores when an opener keeps the stack from emptying (the token
+    /// limit makes an opener literal once it is `token_count_max` tokens back, so the first
+    /// unresolved token is never further back than that): at twice the limit, the settled
+    /// tokens before the first unresolved one and their content go, and the parser parses the
+    /// rest again. Each byte is parsed again at most twice.
+    fn liveRetire(self: *Doc) Error!void {
+        const live = &self.live;
+        const parser = &live.parser;
+        if (parser.tokens.items.len < 2 * inline_parser.token_count_max) return;
+        if (live.definition_possible or live.pipe_line_start != none or live.line_pipe != none) return;
+        const first = parser.firstUnresolvedToken();
+        const r = parser.result();
+        const at = if (first < r.tokens.len) r.tokens[first].start else parser.position;
+        if (at <= look_behind_byte_count) return;
+        // One code point of look behind stays (flanking reads it).
+        var drop = at - look_behind_byte_count;
+        while (drop > 0 and (live.content.items[drop] & 0xc0) == 0x80) drop -= 1;
+        const folded = self.liveTokensEnd(first);
+        self.liveNoteExpired(first);
+        const rest = live.content.items.len - drop;
+        std.mem.copyForwards(u8, live.content.items[0..rest], live.content.items[drop..]);
+        live.content.items.len = rest;
+        live.content_base += drop;
+        live.pending_scan.stop -= drop;
+        live.pending_scan.scanned -|= drop;
+        if (live.pending_scan.code) |opener| live.pending_scan.code = opener - drop;
+        if (live.pending_code_opener) |opener| live.pending_code_opener = opener - drop;
+        const visits_before = parser.byte_visits;
+        try parser.restart(live.content.items, at - drop);
+        self.counters.inline_byte_visits += parser.byte_visits - visits_before;
+        _ = parser.takeChanged();
+        // The same tokens from `first` on, so the same display offsets.
+        const tokens = parser.result().tokens;
+        live.folded_display_byte_count = folded;
+        try live.display_ends.resize(self.allocator, tokens.len);
+        var offset = folded;
+        for (0..tokens.len) |i| {
+            offset += inline_parser.tokenDisplayLength(parser.result(), @intCast(i));
+            live.display_ends.items[i] = offset;
+        }
+        // Capacity follows what the stores hold now.
+        const keep = 2 * inline_parser.token_count_max;
+        if (parser.tokens.capacity > 2 * keep) parser.tokens.shrinkAndFree(self.allocator, parser.tokens.items.len);
+        if (live.display_ends.capacity > 2 * keep) live.display_ends.shrinkAndFree(self.allocator, live.display_ends.items.len);
+        self.liveClampContent();
     }
 
     /// The display bytes of leaf `index` (read_leaf's text): its inline content with markers

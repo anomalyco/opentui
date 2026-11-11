@@ -74,6 +74,10 @@ pub const Delimiter = struct {
     on_stack: bool = true,
     /// Already processed as a closer: processing it again would find nothing new.
     processed: bool = false,
+    /// Left the stack because the token limit passed it (it matches nothing more). While the
+    /// leaf is open its display stays as it was (concealed); it shows literal once final, so
+    /// an expiry costs no tail write until the leaf ends.
+    expired: bool = false,
 };
 
 pub const Match = struct {
@@ -124,6 +128,8 @@ pub const Result = struct {
     emails: []const [2]u32,
     /// A reference candidate found no definition: a later definition may change this leaf.
     unresolved: bool,
+    /// The content is complete: expired openers show literal.
+    final: bool,
 };
 
 /// Parses a whole leaf's content. `content` must not end in whitespace the leaf strips (the
@@ -178,6 +184,8 @@ pub const Parser = struct {
     /// The first token whose display changed since `takeChanged` (none: nothing changed).
     changed_from: u32 = std.math.maxInt(u32),
     extended_from: u32 = std.math.maxInt(u32),
+    /// The first token whose delimiter expired (none: none did).
+    expired_from: u32 = std.math.maxInt(u32),
     /// Bytes the tokenizer examined (counters; a construct retried after "need more" counts again).
     byte_visits: u64 = 0,
 
@@ -211,6 +219,31 @@ pub const Parser = struct {
         self.emails.clearRetainingCapacity();
     }
 
+    /// The first token a later byte may still change: the bottom delimiter on the stack or the
+    /// oldest open bracket (the token count when there is none). Tokens before it are settled.
+    pub fn firstUnresolvedToken(self: *const Parser) u32 {
+        var first: u32 = @intCast(self.tokens.items.len);
+        if (self.bottomDelimiter()) |bottom| first = @min(first, self.delimiters.items[bottom].token_index);
+        if (self.brackets.items.len > 0) first = @min(first, self.brackets.items[0].token_index);
+        return first;
+    }
+
+    /// Parses `subject` again from content offset `at`, the bytes before it settled text whose
+    /// tokens the caller dropped (it keeps their display): a parse from there gives the tokens
+    /// a parse from the start gave, since nothing before `at` is on a stack.
+    pub fn restart(self: *Parser, subject: []const u8, at: u32) Error!void {
+        const unresolved = self.unresolved;
+        self.reset();
+        self.unresolved = unresolved;
+        self.subject = subject[0..at];
+        self.position = at;
+        self.limit = at;
+        var run = at;
+        while (run > 0 and !isAsciiWhitespace(subject[run - 1])) run -= 1;
+        self.tail_run_start = if (run == at) at else run;
+        try self.feed(subject, false);
+    }
+
     /// Continues with `subject`, which extends the previous one. With `final`, the leaf ends:
     /// unmatched openers become literal and emails are found.
     pub fn feed(self: *Parser, subject: []const u8, final: bool) Error!void {
@@ -221,6 +254,8 @@ pub const Parser = struct {
         self.subject = subject;
         self.final = final;
         if (final) {
+            // Expired openers show literal from here.
+            if (self.expired_from != std.math.maxInt(u32)) self.markChanged(self.expired_from);
             self.limit = @intCast(subject.len);
         } else {
             self.updateLimit(previous_len);
@@ -280,6 +315,7 @@ pub const Parser = struct {
         self.links.clearRetainingCapacity();
         self.changed_from = std.math.maxInt(u32);
         self.extended_from = std.math.maxInt(u32);
+        self.expired_from = std.math.maxInt(u32);
     }
 
     pub fn result(self: *const Parser) Result {
@@ -291,6 +327,7 @@ pub const Parser = struct {
             .links = self.links.items,
             .emails = self.emails.items,
             .unresolved = self.unresolved,
+            .final = self.final,
         };
     }
 
@@ -390,14 +427,15 @@ pub const Parser = struct {
         const count: u32 = @intCast(self.tokens.items.len);
         if (count <= token_count_max) return;
         const oldest_allowed = count - token_count_max;
+        // A bracket's display does not change when it leaves the stack (it was drawn raw).
         while (self.brackets.items.len > 0 and self.brackets.items[0].token_index < oldest_allowed) {
-            self.markChanged(self.brackets.items[0].token_index);
             _ = self.brackets.orderedRemove(0);
         }
         while (self.bottomDelimiter()) |bottom| {
-            const token_index = self.delimiters.items[bottom].token_index;
-            if (token_index >= oldest_allowed) break;
-            self.markChanged(token_index);
+            const d = &self.delimiters.items[bottom];
+            if (d.token_index >= oldest_allowed) break;
+            d.expired = true;
+            self.expired_from = @min(self.expired_from, d.token_index);
             self.removeDelimiter(bottom);
         }
     }
@@ -608,8 +646,9 @@ pub const Parser = struct {
         d.next = null;
         d.on_stack = false;
         self.delimiter_stack_count -= 1;
-        // A run the display concealed (it could still open or close) is literal now.
-        if ((d.can_open or d.can_close) and d.count > 0) self.markChanged(d.token_index);
+        // A run the display concealed (it could still open or close) is literal now; an
+        // expired one stays concealed until the leaf is final.
+        if ((d.can_open or d.can_close) and d.count > 0 and !d.expired) self.markChanged(d.token_index);
     }
 
     /// CommonMark's "process emphasis" over the delimiters above `bottom`.
@@ -1089,6 +1128,7 @@ pub fn tokenDisplayLength(r: Result, index: u32) u32 {
             // A run that may still open or close is drawn as matched (B) until it is decided.
             const d = r.delimiters[delimiterOf(r, index) orelse break :blk t.len];
             if (d.on_stack and (d.can_open or d.can_close)) break :blk 0;
+            if (d.expired and !r.final) break :blk 0;
             break :blk d.count;
         },
     };
