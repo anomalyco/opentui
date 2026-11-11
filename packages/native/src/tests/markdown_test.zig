@@ -191,6 +191,7 @@ fn streamAgreesParts(arena: std.mem.Allocator, name: []const u8, parts: []const 
     }
     // Each live leaf's tail writes rebuilt the display a whole parse gives the leaf.
     if (sink.mismatch_count > 0 or streamed.doc.counters.live_mismatch_count > 0) return false;
+    if (!try liveShowsReadLeaf(arena, &streamed.doc, &sink)) return false;
     var whole: Fixture = undefined;
     try whole.init(rowOptions(name));
     defer whole.deinit();
@@ -1285,6 +1286,7 @@ test "Markdown stream: a leaf that changes kind or loses lines keeps its live di
         "a\n- b\n10. c\n",
         "x `y\n\nz` w\n",
         "a\\\nb\n",
+        "[x]: /\n---",
     };
     for (rows) |text| {
         try std.testing.expect(try streamAgreesParts(arena, "kinds", try split(arena, text, 1)));
