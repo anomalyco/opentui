@@ -14,6 +14,20 @@ test "decodeUtf8Unchecked keeps its result in one word" {
     try testing.expectEqual(@as(u8, 0), decoded._padding);
 }
 
+test "isControl is general category Cc and isScalar a UTF-8 code point; the UTF-8 and notation forms agree" {
+    var bytes: [4]u8 = undefined;
+    for (0..0x110001) |value| {
+        const cp: u21 = @intCast(value);
+        try testing.expectEqual(cp <= 0x10ffff and std.unicode.utf8ValidCodepoint(cp), utf8.isScalar(cp));
+        if (!utf8.isScalar(cp)) continue;
+        try testing.expectEqual(uucode.get(.general_category, cp) == .other_control, utf8.isControl(cp));
+        const len = try std.unicode.utf8Encode(cp, &bytes);
+        try testing.expectEqual(utf8.isControl(cp), utf8.containsControl(bytes[0..len]));
+        const notation = utf8.isControl(cp) and cp != '\t' and cp != '\n' and cp != '\r';
+        try testing.expectEqual(notation, utf8.controlNotationWidth(cp) != 0);
+    }
+}
+
 test "decodeUtf8Unchecked preserves scalar values and bounded progress" {
     var bytes: [5]u8 = undefined;
     bytes[0] = 'x';

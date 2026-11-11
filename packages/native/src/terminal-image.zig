@@ -2,6 +2,9 @@ const std = @import("std");
 const gp = @import("grapheme.zig");
 const native_image = @import("image.zig");
 const base64Encode = @import("utils.zig").base64Encode;
+const tmuxDcsStart = @import("ansi.zig").ANSI.tmuxDcsStart;
+/// A Kitty graphics APC inside tmux passthrough, whose ESC tmux needs doubled.
+const tmux_apc_start = tmuxDcsStart ++ "\x1b\x1b_G";
 
 pub const KittyPixelFormat = enum { auto, rgb, rgba };
 pub const KittyEncoding = enum(u32) { raw, zlib, png, file };
@@ -64,7 +67,7 @@ pub fn writeKittyTransmitEncoded(
         const payload = output.buffered();
         while (offset < payload.len) {
             const end = @min(offset + 3072, payload.len);
-            if (tmux) try writer.writeAll("\x1bPtmux;\x1b\x1b_G") else try writer.writeAll("\x1b_G");
+            if (tmux) try writer.writeAll(tmux_apc_start) else try writer.writeAll("\x1b_G");
             if (offset == 0) {
                 try writer.print("a=t,f={d},s={d},v={d},i={d},o=z,m={d},q=2;", .{
                     @as(u32, if (image.metadata.has_alpha == 0) 24 else 32),
@@ -102,7 +105,7 @@ pub fn writeKittyTransmitFormat(writer: anytype, image: *native_image.Image, id:
             while (offset < png.len) {
                 const end = @min(offset + raw_chunk, png.len);
                 const more = end < png.len;
-                if (tmux) try writer.writeAll("\x1bPtmux;\x1b\x1b_G") else try writer.writeAll("\x1b_G");
+                if (tmux) try writer.writeAll(tmux_apc_start) else try writer.writeAll("\x1b_G");
                 if (first) {
                     try writer.print("a=t,f=100,i={d},m={d},q=2;", .{ id, @intFromBool(more) });
                 } else {
@@ -138,7 +141,7 @@ pub fn writeKittyTransmitFormat(writer: anytype, image: *native_image.Image, id:
                 @memcpy(raw[index * 3 ..][0..3], pixels[source..][0..3]);
             }
             const more = rgb_offset + chunk_len < rgb_len;
-            if (tmux) try writer.writeAll("\x1bPtmux;\x1b\x1b_G") else try writer.writeAll("\x1b_G");
+            if (tmux) try writer.writeAll(tmux_apc_start) else try writer.writeAll("\x1b_G");
             if (first) {
                 try writer.print("a=t,f=24,s={d},v={d},i={d},m={d},q=2;", .{ image.width(), image.height(), id, @intFromBool(more) });
             } else {
@@ -159,7 +162,7 @@ pub fn writeKittyTransmitFormat(writer: anytype, image: *native_image.Image, id:
     while (offset < rgba_len) {
         const end = @min(offset + raw_chunk, rgba_len);
         const more = end < rgba_len;
-        if (tmux) try writer.writeAll("\x1bPtmux;\x1b\x1b_G") else try writer.writeAll("\x1b_G");
+        if (tmux) try writer.writeAll(tmux_apc_start) else try writer.writeAll("\x1b_G");
         if (first) {
             try writer.print("a=t,f=32,s={d},v={d},i={d},m={d},q=2;", .{ image.width(), image.height(), id, @intFromBool(more) });
         } else {
@@ -209,7 +212,7 @@ pub fn writeKittyPlacement(
     tmux: bool,
 ) !void {
     try writer.print("\x1b[{d};{d}H", .{ y + 1, x + 1 });
-    if (tmux) try writer.writeAll("\x1bPtmux;\x1b\x1b_G") else try writer.writeAll("\x1b_G");
+    if (tmux) try writer.writeAll(tmux_apc_start) else try writer.writeAll("\x1b_G");
     try writer.print("a=p,i={d},p={d},c={d},r={d},x={d},y={d},w={d},h={d},C=1,z={d},q=2", .{
         id, placement_id, width, height, source_x, source_y, source_width, source_height, z,
     });
@@ -225,13 +228,13 @@ pub fn writeKittyPlacementAtCursor(
     z: i32,
     tmux: bool,
 ) !void {
-    if (tmux) try writer.writeAll("\x1bPtmux;\x1b\x1b_G") else try writer.writeAll("\x1b_G");
+    if (tmux) try writer.writeAll(tmux_apc_start) else try writer.writeAll("\x1b_G");
     try writer.print("a=p,i={d},p={d},c={d},r={d},C=1,z={d},q=2", .{ id, placement_id, width, height, z });
     if (tmux) try writer.writeAll("\x1b\x1b\\\x1b\\") else try writer.writeAll("\x1b\\");
 }
 
 pub fn writeKittyDelete(writer: anytype, id: u32, placement_id: ?u32, free_image: bool, tmux: bool) !void {
-    if (tmux) try writer.writeAll("\x1bPtmux;\x1b\x1b_G") else try writer.writeAll("\x1b_G");
+    if (tmux) try writer.writeAll(tmux_apc_start) else try writer.writeAll("\x1b_G");
     try writer.print("a=d,d={c},i={d}", .{ if (free_image) @as(u8, 'I') else @as(u8, 'i'), id });
     if (placement_id) |p| try writer.print(",p={d}", .{p});
     try writer.writeAll(",q=2");
@@ -617,7 +620,7 @@ pub fn writeSixelIndexedPayload(
 }
 
 pub fn writeSixelFramedPayload(writer: anytype, payload: []const u8, tmux: bool) !void {
-    if (tmux) try writer.writeAll("\x1bPtmux;\x1b\x1bP") else try writer.writeAll("\x1bP");
+    if (tmux) try writer.writeAll(tmuxDcsStart ++ "\x1b\x1bP") else try writer.writeAll("\x1bP");
     try writer.writeAll(payload);
     if (tmux) try writer.writeAll("\x1b\x1b\\\x1b\\") else try writer.writeAll("\x1b\\");
 }

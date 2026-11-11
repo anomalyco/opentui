@@ -9,6 +9,7 @@ const scene = @import("scene.zig");
 const buffer = @import("buffer.zig");
 const input_parser = @import("input-parser.zig");
 const stdout_writer = @import("stdout-writer.zig");
+const utf8 = @import("utf8.zig");
 const Context = @import("context.zig").Context;
 const api = @import("context_abi_c");
 
@@ -781,14 +782,7 @@ pub const Session = struct {
 
     /// UTF-8 without C0, DEL, or C1 controls.
     fn validateText(text: []const u8, bytes_max: u32) Error!void {
-        if (text.len > bytes_max) return error.InvalidOptions;
-        const view = std.unicode.Utf8View.init(text) catch return error.InvalidOptions;
-        var codepoints = view.iterator();
-        while (codepoints.nextCodepoint()) |codepoint| {
-            if (codepoint < 0x20 or (codepoint >= 0x7f and codepoint <= 0x9f)) {
-                return error.InvalidOptions;
-            }
-        }
+        if (text.len > bytes_max or !std.unicode.utf8ValidateSlice(text) or utf8.containsControl(text)) return error.InvalidOptions;
     }
 
     /// Rejects every report a terminal would discard or partly ignore, so each
