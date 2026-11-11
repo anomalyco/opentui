@@ -273,7 +273,8 @@ describe("EmbeddedTerminalRenderable", () => {
   // legacy form for the lock, modifier, keypad = and separator keys. A linefeed without its sequence has none either.
   test("encodes every parser key name that legacy encoding has", () => {
     const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
-    expect(terminalNamedSingleStrokeKeys).toHaveLength(113)
+    expect(terminalNamedSingleStrokeKeys).toHaveLength(130)
+    expect(terminalNamedSingleStrokeKeys.filter((name) => name.length === 1).join("")).toBe("0123456789./*-+=,")
     const silent = terminalNamedSingleStrokeKeys.filter(
       (name) => terminal.encodeKey(keyEvent({ name, sequence: "" })).length === 0,
     )

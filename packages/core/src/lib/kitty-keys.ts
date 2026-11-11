@@ -1,5 +1,9 @@
 // Core's key names for the native key codes that are not typed characters. A leaf module: the input parser and
 // parse.keypress.ts both read it while their import cycle through zig.ts loads.
+
+// The names the keypad keys get from SS3 application-keypad sequences: ESC O p is "0", ESC O j is "*".
+export const keypadKeyNames = "0123456789./*-+=,"
+
 export const kittyKeyMap: Record<number, string> = {
   // Standard keys
   27: "escape",

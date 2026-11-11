@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer"
-import { kittyKeyMap } from "./kitty-keys.js"
+import { keypadKeyNames, kittyKeyMap } from "./kitty-keys.js"
 import { NativeStdinParser } from "./stdin-parser-native.js"
 
 export type KeyEventType = "press" | "repeat" | "release"
@@ -31,8 +31,10 @@ export type ParseKeypressOptions = {
   useKittyKeyboard?: boolean
 }
 
-/** The input parser's symbolic key names: Kitty's functional keys, linefeed and space. */
-export const terminalNamedSingleStrokeKeys = [...new Set(["linefeed", "space", ...Object.values(kittyKeyMap)])]
+/** The input parser's key names: Kitty's functional keys, linefeed, space, and the SS3 keypad keys' names. */
+export const terminalNamedSingleStrokeKeys = [
+  ...new Set(["linefeed", "space", ...Object.values(kittyKeyMap), ...keypadKeyNames]),
+]
 
 /**
  * Decodes `s` as one complete input with the native input parser and returns its first event if that is a key, else
