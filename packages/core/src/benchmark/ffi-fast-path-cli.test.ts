@@ -13,7 +13,8 @@ afterEach(() => {
 })
 
 test.each(["", "."])("stress output %p does not remove its package directory", (output) => {
-  const root = mkdtempSync(join(tmpdir(), "opentui-ffi-stress-test-"))
+  // The long path: Windows' TEMP is an 8.3 short path, and the script compares cwd with its own long path.
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "opentui-ffi-stress-test-")))
   temporaryDirectories.push(root)
   const packageRoot = join(root, "packages/core")
   const benchmarkDir = join(packageRoot, "src/benchmark")
