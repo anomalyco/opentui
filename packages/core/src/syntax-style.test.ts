@@ -119,10 +119,9 @@ describe("NativeSyntaxStyle", () => {
       } else if (operation === 3) {
         expect(style.getStyle(name)).toEqual(scoped((key) => definitions.get(key), name))
       } else if (operation === 4) {
-        // Non-empty lists: the cache key joins names with ":", so `[]` and `[""]` collide (also on `main`).
-        const list = Array.from({ length: 1 + random(3) }, () => lookups[random(lookups.length)])
+        const list = Array.from({ length: random(4) }, () => lookups[random(lookups.length)])
         const result = style.mergeStyles(...list)
-        merged.add(list.join(":"))
+        merged.add(JSON.stringify(list))
         expect(result).toEqual(merge(list))
         // Callers own the returned colors; mutating them must not change the cache.
         result.fg?.buffer.fill(0.25)
@@ -171,6 +170,14 @@ describe("NativeSyntaxStyle", () => {
     style.registerStyle("markup.strikethrough", { strikethrough: false })
     expect(style.mergeStyles("markup.strikethrough").attributes).toBe(0)
     expect(style.getStyle("markup.list")?.strikethrough).toBeUndefined()
+  })
+
+  it("caches merges by the list of names, not by their joined text", () => {
+    style.registerStyle("a", { bold: true })
+    style.registerStyle("b", { italic: true })
+    style.registerStyle("a:b", { underline: true })
+    expect(style.mergeStyles("a:b").attributes).toBe(createTextAttributes({ underline: true }))
+    expect(style.mergeStyles("a", "b").attributes).toBe(createTextAttributes({ bold: true, italic: true }))
   })
 
   it("rejects every call after destroy, and destroy is idempotent", () => {

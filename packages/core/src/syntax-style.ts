@@ -232,7 +232,7 @@ export class SyntaxStyle {
   public mergeStyles(...styleNames: string[]): MergedStyle {
     this.guard()
 
-    const cacheKey = styleNames.join(":")
+    const cacheKey = JSON.stringify(styleNames)
     const cached = this.mergedCache.get(cacheKey)
     if (cached) return cloneStyle(cached)
 
