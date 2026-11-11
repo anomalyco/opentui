@@ -1889,7 +1889,7 @@ test "TextBuffer owned styled replacement reclaims styled plain and empty transi
             } else {
                 mem_id = try tb.replaceOwnedText(copy, mem_id);
                 try std.testing.expectEqual(@as(u32, 0), tb.getHighlightCount());
-                for (tb.line_spans.items) |entry| try std.testing.expectEqual(@as(usize, 0), entry.spans.items.len);
+                for (0..tb.getLineCount()) |row| try std.testing.expectEqual(@as(usize, 0), (try tb.getLineSpans(row)).len);
             }
             transferred = true;
             const link_count: u32 = @intFromBool(case.styled and copy.len > 0);

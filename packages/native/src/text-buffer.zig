@@ -138,7 +138,7 @@ pub const UnifiedTextBuffer = struct {
     /// text), exactly as `ot_*_highlight` sets and `get_highlights` reports them.
     line_highlights: std.ArrayListUnmanaged(std.ArrayListUnmanaged(Highlight)),
     /// Derived paint cache: a line's spans and the `span_generation` they were built at.
-    line_spans: std.ArrayListUnmanaged(LineSpans),
+    line_spans: std.AutoHashMapUnmanaged(u32, LineSpans),
     /// Increments on every highlight or text change; a line whose spans carry an older stamp is
     /// rebuilt when a view reads it.
     span_generation: u64,
@@ -438,7 +438,7 @@ pub const UnifiedTextBuffer = struct {
         std.debug.assert(self.next_view_id == 0 and self.style_binding.style == null and self.link_tracker == null);
         // retireStorage left only capacity behind.
         std.debug.assert(self.mem_registry.buffers.items.len == 0 and self.view_dirty_flags.items.len == 0);
-        std.debug.assert(self.line_highlights.items.len == 0 and self.line_spans.items.len == 0);
+        std.debug.assert(self.line_highlights.items.len == 0 and self.line_spans.count() == 0);
         std.debug.assert(self.run_styles.count() == 0 and self.run_styles.capacity() == 0);
         const registry = self.mem_registry;
         const view_dirty_flags = self.view_dirty_flags;
@@ -1380,16 +1380,18 @@ pub const UnifiedTextBuffer = struct {
     }
 
     /// The spans that paint `line_idx`, rebuilt from its legacy records and the layers when they
-    /// are older than the buffer's `span_generation`. A line without inputs has none and takes no
-    /// storage. Only growth allocates, so warm paints do not.
+    /// are older than the buffer's `span_generation`. Only lines read get an entry, and a line
+    /// without inputs gets none. Only a newly read line allocates, so warm paints do not.
     pub fn getLineSpans(self: *Self, line_idx: usize) TextBufferError![]const StyleSpan {
-        if (line_idx >= self.line_spans.items.len) {
+        const row: u32 = @intCast(line_idx);
+        const entry = self.line_spans.getPtr(row) orelse entry: {
             const has_records = line_idx < self.line_highlights.items.len and self.line_highlights.items[line_idx].items.len > 0;
             if (!has_records and self.layers.isEmpty()) return &.{};
-            try self.line_spans.ensureTotalCapacity(self.global_allocator, line_idx + 1);
-            while (self.line_spans.items.len <= line_idx) self.line_spans.appendAssumeCapacity(.{});
-        }
-        const entry = &self.line_spans.items[line_idx];
+            try self.line_spans.ensureUnusedCapacity(self.global_allocator, 1);
+            const added = self.line_spans.getOrPutAssumeCapacity(row);
+            added.value_ptr.* = .{};
+            break :entry added.value_ptr;
+        };
         if (entry.generation != self.span_generation) {
             try self.buildLineSpans(line_idx, &entry.spans);
             entry.generation = self.span_generation;
@@ -1413,16 +1415,20 @@ pub const UnifiedTextBuffer = struct {
     }
 
     fn freeLineSpans(self: *Self) void {
-        for (self.line_spans.items) |*entry| entry.spans.deinit(self.global_allocator);
+        var entries = self.line_spans.valueIterator();
+        while (entries.next()) |entry| entry.spans.deinit(self.global_allocator);
         self.line_spans.deinit(self.global_allocator);
         self.line_spans = .empty;
     }
 
     /// Releases the span storage of lines a replaced text no longer has.
     fn trimLineSpans(self: *Self, line_count: usize) void {
-        if (self.line_spans.items.len <= line_count) return;
-        for (self.line_spans.items[line_count..]) |*entry| entry.spans.deinit(self.global_allocator);
-        self.line_spans.items.len = line_count;
+        var entries = self.line_spans.iterator();
+        while (entries.next()) |entry| {
+            if (entry.key_ptr.* < line_count) continue;
+            entry.value_ptr.spans.deinit(self.global_allocator);
+            self.line_spans.removeByPtr(entry.key_ptr);
+        }
     }
 
     /// One sweep over the line's inputs: the highest priority wins each column; on a tie the later
@@ -1622,23 +1628,39 @@ pub const UnifiedTextBuffer = struct {
 
     /// Replaces layer `layer_id` inside `[start_byte, end_byte)` with `runs`, in bytes of the text
     /// as `getPlainText` returns it. Runs must name live group sets and lie on UTF-8 boundaries
-    /// inside the text; see `highlight-layers.zig` for the rest. Rejection changes nothing.
+    /// inside the text, and the range ends inside the text must too, since the runs it cuts keep
+    /// their outside parts; see `highlight-layers.zig` for the rest. Rejection changes nothing.
     pub fn setLayer(self: *Self, layer_id: u32, start_byte: u32, end_byte: u32, runs: []const LayerRun) TextBufferError!void {
         const sets = self.group_sets orelse return TextBufferError.InvalidId;
         const byte_count = self.getByteSize();
+        for ([_]u32{ start_byte, end_byte }) |edge| {
+            if (edge < byte_count and !self.isCharBoundary(edge)) return TextBufferError.InvalidIndex;
+        }
         for (runs) |run| {
             if (run.group_set == 0 or run.group_set > sets.count()) return TextBufferError.InvalidId;
             if (run.end_byte > byte_count) return TextBufferError.InvalidIndex;
             if (!self.isCharBoundary(run.start_byte) or !self.isCharBoundary(run.end_byte)) return TextBufferError.InvalidIndex;
         }
-        self.layers.set(self.global_allocator, self.link_pool, layer_id, start_byte, end_byte, runs) catch |err| return switch (err) {
+        const changed = self.layers.set(self.global_allocator, self.link_pool, layer_id, start_byte, end_byte, runs) catch |err| return switch (err) {
             error.OutOfMemory => TextBufferError.OutOfMemory,
             error.InvalidIndex => TextBufferError.InvalidIndex,
             error.InvalidId => TextBufferError.InvalidId,
             error.LayerLimit => TextBufferError.LayerLimit,
             error.GroupSetLimit => unreachable,
         };
-        self.span_generation += 1;
+        self.assertLayerBoundaries();
+        if (changed) self.span_generation += 1;
+    }
+
+    /// Every layer run starts and ends on a code point boundary inside the text. Debug builds check
+    /// it after each layer change and edit.
+    pub fn assertLayerBoundaries(self: *const Self) void {
+        if (!std.debug.runtime_safety) return;
+        const byte_count = self.getByteSize();
+        for (self.layers.slice()) |layer| for (layer.runs.items) |run| {
+            std.debug.assert(run.end_byte <= byte_count);
+            std.debug.assert(self.isCharBoundary(run.start_byte) and self.isCharBoundary(run.end_byte));
+        };
     }
 
     /// Whether text byte `byte` starts a code point, a line break, or the end of the text.
@@ -1667,23 +1689,9 @@ pub const UnifiedTextBuffer = struct {
         return iter_mod.lineStartByte(&self._rope, row) orelse unreachable;
     }
 
-    /// Empties the layers, as every whole-text change does.
+    /// Empties the layers, as every whole-text change does. Its callers advance the span stamp.
     fn resetLayers(self: *Self) void {
-        if (self.layers.isEmpty()) return;
         self.layers.reset(self.global_allocator, self.link_pool);
-        self.span_generation += 1;
-    }
-
-    /// An edit inserted `byte_count` bytes at `at_byte`; layer runs follow it.
-    pub fn insertLayerBytes(self: *Self, at_byte: u32, byte_count: u32) void {
-        self.layers.insertBytes(at_byte, byte_count);
-        self.span_generation += 1;
-    }
-
-    /// An edit deleted `[start_byte, end_byte)`; layer runs clip.
-    pub fn deleteLayerBytes(self: *Self, start_byte: u32, end_byte: u32) void {
-        self.layers.deleteBytes(self.global_allocator, self.link_pool, start_byte, end_byte);
-        self.span_generation += 1;
     }
 
     /// Add highlight by row/col coordinates

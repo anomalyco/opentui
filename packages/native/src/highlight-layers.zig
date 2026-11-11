@@ -58,13 +58,15 @@ pub const GroupSets = struct {
         return self.name_bytes.items[start..self.name_end_bytes.items[first_name]];
     }
 
-    /// Equal lists give equal ids. A list that breaks a name bound is `InvalidIndex`; a new set past
-    /// the count or pool bound is `GroupSetLimit`. Rejection changes nothing.
+    /// Equal lists give equal ids. No names or an empty name is `InvalidIndex`; a list past a name
+    /// bound, or a new set past the count or pool bound, is `GroupSetLimit`. Rejection changes nothing.
     pub fn intern(self: *GroupSets, names: []const []const u8) Error!u32 {
-        if (names.len == 0 or names.len > group_set_name_count_max) return Error.InvalidIndex;
+        if (names.len == 0) return Error.InvalidIndex;
+        if (names.len > group_set_name_count_max) return Error.GroupSetLimit;
         var byte_count: usize = 0;
         for (names) |value| {
-            if (value.len == 0 or value.len > group_set_name_byte_count_max) return Error.InvalidIndex;
+            if (value.len == 0) return Error.InvalidIndex;
+            if (value.len > group_set_name_byte_count_max) return Error.GroupSetLimit;
             byte_count += value.len;
         }
         if (self.find(names)) |id| return id;
@@ -147,7 +149,7 @@ pub const Layers = struct {
 
     /// Replaces layer `layer_id` inside `[start_byte, end_byte)` with `runs`: absolute, sorted,
     /// disjoint, nonempty and inside the range. Runs that cross the range edges keep their outside
-    /// parts. One transaction: rejection changes nothing.
+    /// parts. One transaction: rejection changes nothing. Returns whether any run changed.
     pub fn set(
         self: *Layers,
         allocator: Allocator,
@@ -156,7 +158,7 @@ pub const Layers = struct {
         start_byte: u32,
         end_byte: u32,
         runs: []const LayerRun,
-    ) Error!void {
+    ) Error!bool {
         if (start_byte > end_byte) return Error.InvalidIndex;
         var previous_end = start_byte;
         for (runs) |run| {
@@ -164,7 +166,7 @@ pub const Layers = struct {
             previous_end = run.end_byte;
         }
         // An empty range holds no runs; splitting a run at it would only add a seam.
-        if (start_byte == end_byte) return;
+        if (start_byte == end_byte) return false;
 
         const found = self.position(layer_id);
         const old: []const LayerRun = if (found.exists) self.items[found.index].runs.items else &.{};
@@ -177,7 +179,8 @@ pub const Layers = struct {
         const split = keep_head and keep_tail and last - first == 1;
         const result_len = first + @intFromBool(keep_head) + runs.len + @intFromBool(keep_tail) + (old.len - last);
 
-        if (result_len == 0 and !found.exists) return;
+        // Nothing to drop and nothing to add.
+        if (runs.len == 0 and last == first) return false;
         if (result_len > 0 and !found.exists and self.count >= layer_count_max) return Error.LayerLimit;
 
         var next: std.ArrayListUnmanaged(LayerRun) = .empty;
@@ -225,6 +228,7 @@ pub const Layers = struct {
             self.count += 1;
         }
         std.debug.assert(self.count <= layer_count_max);
+        return true;
     }
 
     /// Bytes inserted at `at_byte`: runs at or after it shift, a run strictly containing it grows,

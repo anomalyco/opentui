@@ -32,15 +32,23 @@ fn nameOf(buffer: []u8, prefix: []const u8, index: usize, length: usize) []const
     return buffer[0..@max(head.len, length)];
 }
 
-test "group sets: each name bound rejects without interning" {
+test "group sets: malformed lists and each name bound reject without interning" {
     var sets = hl.GroupSets.init(gpa);
     defer sets.deinit();
     const long_bytes: [hl.group_set_name_byte_count_max + 1]u8 = @splat('x');
     const long: []const u8 = &long_bytes;
     const nine: [hl.group_set_name_count_max + 1][]const u8 = @splat("a");
     const eight: [hl.group_set_name_count_max][]const u8 = @splat("a");
-    for ([_][]const []const u8{ &.{}, &nine, &.{""}, &.{ "a", "" }, &.{long} }) |names| {
-        try testing.expectError(error.InvalidIndex, sets.intern(names));
+    // No names or an empty name is malformed; past a name bound is a limit.
+    for ([_]struct { []const []const u8, anyerror }{
+        .{ &.{}, error.InvalidIndex },
+        .{ &.{""}, error.InvalidIndex },
+        .{ &.{ "a", "" }, error.InvalidIndex },
+        .{ &nine, error.GroupSetLimit },
+        .{ &.{long}, error.GroupSetLimit },
+        .{ &.{ "a", long }, error.GroupSetLimit },
+    }) |row| {
+        try testing.expectError(row[1], sets.intern(row[0]));
         try testing.expectEqual(@as(u32, 0), sets.count());
         try testing.expectEqual(@as(usize, 0), sets.name_bytes.items.len);
     }
@@ -123,12 +131,15 @@ test "group sets: later names win per field, a missing name falls back to its fi
     _ = try style.registerStyle("keyword", red, null, 1);
     _ = try style.registerStyle("markup", green, null, 2);
     _ = try style.registerStyle("string", null, blue, 0);
+    _ = try style.registerStyle("panel", null, green, 4);
     const D = ss.StyleDefinition;
     for ([_]struct { []const []const u8, D }{
         .{ &.{"keyword"}, .{ .fg = red, .bg = null, .attributes = 1 } },
         .{ &.{ "keyword", "markup.bold" }, .{ .fg = green, .bg = null, .attributes = 3 } },
         .{ &.{ "markup", "keyword" }, .{ .fg = red, .bg = null, .attributes = 3 } },
         .{ &.{ "string", "keyword" }, .{ .fg = red, .bg = blue, .attributes = 1 } },
+        .{ &.{ "string", "panel" }, .{ .fg = null, .bg = green, .attributes = 4 } },
+        .{ &.{ "panel", "string" }, .{ .fg = null, .bg = blue, .attributes = 4 } },
         // Only the first dotted component is a fallback; an undotted miss adds nothing.
         .{ &.{ "keyword", "missing", "missing.keyword", "other.markup" }, .{ .fg = red, .bg = null, .attributes = 1 } },
         .{ &.{"keyword.control.flow"}, .{ .fg = red, .bg = null, .attributes = 1 } },
@@ -196,8 +207,8 @@ test "layers: a set replaces its range and keeps the outside parts of crossing r
         var layers: hl.Layers = .{};
         defer layers.reset(gpa, &links);
         var buffer: [8]LayerRun = undefined;
-        try layers.set(gpa, &links, 1, 0, 10, toRuns(&buffer, row[0]));
-        try layers.set(gpa, &links, 1, row[1], row[2], toRuns(&buffer, row[3]));
+        _ = try layers.set(gpa, &links, 1, 0, 10, toRuns(&buffer, row[0]));
+        _ = try layers.set(gpa, &links, 1, row[1], row[2], toRuns(&buffer, row[3]));
         try expectRuns(row[4], runsOf(&layers, 1));
         // An emptied layer is dropped.
         try testing.expectEqual(@as(u8, @intFromBool(row[4].len > 0)), layers.count);
@@ -210,7 +221,7 @@ test "layers: invalid runs and a fifth layer reject without a change" {
     var layers: hl.Layers = .{};
     defer layers.reset(gpa, &links);
     var buffer: [8]LayerRun = undefined;
-    for ([_]u32{ 4, 1, 3, 2 }) |layer_id| try layers.set(gpa, &links, layer_id, 0, 10, toRuns(&buffer, &.{.{ layer_id, layer_id + 1, layer_id }}));
+    for ([_]u32{ 4, 1, 3, 2 }) |layer_id| _ = try layers.set(gpa, &links, layer_id, 0, 10, toRuns(&buffer, &.{.{ layer_id, layer_id + 1, layer_id }}));
     for ([_]struct { u32, u32, []const RunSpec }{
         .{ 6, 5, &.{} },
         .{ 0, 10, &.{.{ 3, 3, 1 }} },
@@ -225,12 +236,12 @@ test "layers: invalid runs and a fifth layer reject without a change" {
     try testing.expectEqual(@as(u8, hl.layer_count_max), layers.count);
     try testing.expectError(error.LayerLimit, layers.set(gpa, &links, 5, 0, 10, toRuns(&buffer, &.{.{ 0, 1, 5 }})));
     // Clearing a missing layer and replacing a present one are not new layers.
-    try layers.set(gpa, &links, 5, 0, 10, &.{});
-    try layers.set(gpa, &links, 2, 0, 10, toRuns(&buffer, &.{.{ 7, 8, 9 }}));
+    _ = try layers.set(gpa, &links, 5, 0, 10, &.{});
+    _ = try layers.set(gpa, &links, 2, 0, 10, toRuns(&buffer, &.{.{ 7, 8, 9 }}));
     try testing.expectEqual(@as(u8, hl.layer_count_max), layers.count);
     for (layers.slice(), [_]u32{ 1, 2, 3, 4 }) |layer, layer_id| try testing.expectEqual(layer_id, layer.layer_id);
-    try layers.set(gpa, &links, 3, 0, 10, &.{});
-    try layers.set(gpa, &links, 5, 0, 10, toRuns(&buffer, &.{.{ 0, 1, 5 }}));
+    _ = try layers.set(gpa, &links, 3, 0, 10, &.{});
+    _ = try layers.set(gpa, &links, 5, 0, 10, toRuns(&buffer, &.{.{ 0, 1, 5 }}));
     for (layers.slice(), [_]u32{ 1, 2, 4, 5 }) |layer, layer_id| try testing.expectEqual(layer_id, layer.layer_id);
 }
 
@@ -415,7 +426,7 @@ test "layers: a run with a dead link rejects the set and returns the references 
     try links.decref(dead);
     var layers: hl.Layers = .{};
     defer layers.reset(gpa, &links);
-    try layers.set(gpa, &links, 1, 0, 10, &.{.{ .start_byte = 0, .end_byte = 10, .group_set = 1, .link_id = live }});
+    _ = try layers.set(gpa, &links, 1, 0, 10, &.{.{ .start_byte = 0, .end_byte = 10, .group_set = 1, .link_id = live }});
     try testing.expectEqual(@as(u32, 2), try links.getRefcount(live));
     try testing.expectError(error.InvalidId, layers.set(gpa, &links, 1, 2, 8, &.{
         .{ .start_byte = 2, .end_byte = 3, .group_set = 1, .link_id = live },
@@ -424,7 +435,7 @@ test "layers: a run with a dead link rejects the set and returns the references 
     try testing.expectEqual(@as(u32, 2), try links.getRefcount(live));
     try expectRuns(&.{.{ 0, 10, 1 }}, runsOf(&layers, 1));
     // The split keeps both outside parts, each holding a reference.
-    try layers.set(gpa, &links, 1, 2, 8, &.{});
+    _ = try layers.set(gpa, &links, 1, 2, 8, &.{});
     try testing.expectEqual(@as(u32, 3), try links.getRefcount(live));
     layers.reset(gpa, &links);
     try testing.expectEqual(@as(u32, 1), try links.getRefcount(live));
@@ -735,6 +746,60 @@ test "layers: edits beside zero-width text keep runs on their characters" {
     }
 }
 
+// A replacement deletes, then inserts at the same byte. Seeking the cell again in the deleted
+// text lands after a combining mark the deletion joined to the line before.
+test "layers: a replacement inserts at the byte it deleted from" {
+    var setup: Setup = undefined;
+    try setup.init();
+    defer setup.deinit();
+    // Each row: text, the run, the replaced cell range, the bytes, the text and run after.
+    for ([_]struct { []const u8, [2]u32, [2]u32, []const u8, []const u8, [2]u32 }{
+        .{ "a\n\u{301}b", .{ 2, 4 }, .{ 1, 2 }, "x", "ax\u{301}b", .{ 2, 4 } },
+        .{ "ab\u{301}c", .{ 1, 4 }, .{ 0, 1 }, "xy", "xyb\u{301}c", .{ 2, 5 } },
+        .{ "a\nb", .{ 2, 3 }, .{ 1, 2 }, "\u{4e16}", "a\u{4e16}b", .{ 4, 5 } },
+    }) |row| {
+        const eb = try EditBuffer.initWithOptions(gpa, &setup.pools.graphemes, &setup.pools.links, .unicode, null, .{ .group_sets = &setup.sets });
+        defer eb.deinit();
+        try eb.setText(row[0]);
+        try eb.tb.setLayer(1, 0, eb.tb.getByteSize(), &.{.{ .start_byte = row[1][0], .end_byte = row[1][1], .group_set = 1 }});
+        try eb.replaceRange(row[2][0], row[2][1], row[3], .{ .ctx = eb, .handle = ignore });
+        var bytes: [32]u8 = undefined;
+        try testing.expectEqualStrings(row[4], plainText(eb.tb, &bytes));
+        try expectRuns(&.{.{ row[5][0], row[5][1], 1 }}, runsOf(&eb.tb.layers, 1));
+    }
+}
+
+// One painted row deep in a long document stores one span entry, not one per line before it.
+test "layers: a deep viewport stores spans for the painted rows only" {
+    var setup: Setup = undefined;
+    try setup.init();
+    defer setup.deinit();
+    const tb = try setup.buffer(.unicode);
+    defer tb.deinit();
+    const line_count = 20_000;
+    const text = try gpa.alloc(u8, 2 * line_count - 1);
+    defer gpa.free(text);
+    for (0..line_count) |row| {
+        text[2 * row] = 'a';
+        if (row + 1 < line_count) text[2 * row + 1] = '\n';
+    }
+    try tb.setText(text);
+    try tb.setLayer(1, 0, tb.getByteSize(), &.{.{ .start_byte = 0, .end_byte = 1, .group_set = 1 }});
+    const view = try TextBufferView.init(gpa, tb);
+    defer view.deinit();
+    view.setViewport(.{ .x = 0, .y = line_count - 1, .width = 8, .height = 1 });
+    const screen = try setup.screen(8, 1);
+    defer screen.deinit();
+    _ = text_work.take();
+    try screen.drawTextBufferChecked(view, 0, 0);
+    try testing.expectEqual(@as(u64, 1), text_work.take().line_span_builds);
+    try testing.expectEqual(@as(u32, 1), tb.line_spans.count());
+    // A layer call that changes nothing builds nothing at the next paint.
+    try tb.setLayer(1, 0, 0, &.{});
+    try screen.drawTextBufferChecked(view, 0, 0);
+    try testing.expectEqual(@as(u64, 0), text_work.take().line_span_builds);
+}
+
 // Invariant 5, second half: every whole-text change and CLEAR_ALL empties the layers and gives
 // back their link references; legacy records follow their own rules.
 test "layers: whole-text changes, history and clear all empty the layers" {
@@ -792,6 +857,20 @@ test "layers: setLayer rejects bad ids, ranges and boundaries, and failed memory
     // Boundaries: the CJK character's ends, the break, and the text end.
     try tb.setLayer(2, 0, 8, &.{ .{ .start_byte = 1, .end_byte = 4, .group_set = 1 }, .{ .start_byte = 5, .end_byte = 8, .group_set = 2 } });
     try expectRuns(&.{ .{ 1, 4, 1 }, .{ 5, 8, 2 } }, runsOf(&tb.layers, 2));
+    // A range edge inside a character would cut the run there, with no new run passed.
+    for ([_][2]u32{ .{ 2, 3 }, .{ 0, 2 }, .{ 3, 8 } }) |range| {
+        try testing.expectError(error.InvalidIndex, tb.setLayer(2, range[0], range[1], &.{}));
+        try expectRuns(&.{ .{ 1, 4, 1 }, .{ 5, 8, 2 } }, runsOf(&tb.layers, 2));
+    }
+    // An end past the text clears to the end; a range that changes nothing keeps the stamp.
+    const unchanged = tb.span_generation;
+    try tb.setLayer(2, 0, 0, &.{});
+    try tb.setLayer(2, 4, 5, &.{});
+    try tb.setLayer(3, 0, 8, &.{});
+    try testing.expectEqual(unchanged, tb.span_generation);
+    try tb.setLayer(2, 4, std.math.maxInt(u32), &.{});
+    try expectRuns(&.{.{ 1, 4, 1 }}, runsOf(&tb.layers, 2));
+    try tb.setLayer(2, 0, 8, &.{ .{ .start_byte = 1, .end_byte = 4, .group_set = 1 }, .{ .start_byte = 5, .end_byte = 8, .group_set = 2 } });
     // Without a Context's group sets, no layer can be set.
     const bare = try TextBuffer.init(gpa, &setup.pools.graphemes, &setup.pools.links, .unicode);
     defer bare.deinit();
@@ -879,6 +958,9 @@ test "layers: priority and ties order records and layers" {
         .{ &.{ .{ 0, 6, 3, 0 }, .{ 0, 6, 2, 0 }, .{ 0, 6, 1, 0 } }, &.{}, red },
         .{ &.{ .{ 0, 6, 3, 0 }, .{ 0, 6, 1, 0 }, .{ 0, 6, 2, 0 } }, &.{}, green },
         .{ &.{ .{ 0, 6, 3, 1 }, .{ 0, 6, 1, 0 }, .{ 0, 6, 2, 0 } }, &.{}, blue },
+        // A record elsewhere on the line does not change which of two tied records wins (main's
+        // hash order did).
+        .{ &.{ .{ 4, 5, 1, 0 }, .{ 0, 3, 2, 0 }, .{ 0, 3, 3, 0 } }, &.{}, blue },
         .{ &.{.{ 0, 6, 2, 0 }}, &.{.{ 1, 0, 6, 1 }}, red },
         .{ &.{.{ 0, 6, 2, 1 }}, &.{.{ 1, 0, 6, 1 }}, green },
         .{ &.{}, &.{ .{ 2, 0, 6, 3 }, .{ 1, 0, 6, 1 } }, blue },
@@ -929,7 +1011,7 @@ test "layers: a span build without memory fails and leaves the line to rebuild" 
             succeeded = true;
             break;
         } else |err| try testing.expectEqual(error.OutOfMemory, err);
-        if (tb.line_spans.items.len > 0) try testing.expect(tb.line_spans.items[0].generation != tb.span_generation);
+        if (tb.line_spans.get(0)) |entry| try testing.expect(entry.generation != tb.span_generation);
         try testing.expectEqualSlices(text_buffer.StyleSpan, expected[0..expected_len], try tb.getLineSpans(0));
     }
     try testing.expect(succeeded);
@@ -956,7 +1038,13 @@ test "layers: theme changes rebuild no spans and unpainted lines stay unbuilt" {
     _ = text_work.take();
     try screen.drawTextBufferChecked(view, 0, 0);
     try testing.expectEqual(@as(u64, 10), text_work.take().line_span_builds);
-    for (tb.line_spans.items, 0..) |entry, line| try testing.expectEqual(line < 10, entry.generation == tb.span_generation);
+    // Only the ten painted lines have entries, all current.
+    try testing.expectEqual(@as(u32, 10), tb.line_spans.count());
+    var entries = tb.line_spans.iterator();
+    while (entries.next()) |entry| {
+        try testing.expect(entry.key_ptr.* < 10);
+        try testing.expectEqual(tb.span_generation, entry.value_ptr.generation);
+    }
     try testing.expectEqual(red, screen.get(0, 0).?.fg);
 
     _ = try setup.style.registerStyle("s1", blue, null, 0);
@@ -1043,126 +1131,182 @@ test "layers: a linked run paints its link id, and a run crosses lines" {
     }
 }
 
-/// Reference for the span model test: the legacy records per line in add order, the layers as
-/// a byte model, the text, and the colors each style gives each name. Paint is recomputed from
-/// scratch per character: the highest priority wins, ties go to the later input (records in add
+/// Reference for the span model test (work file `tracks/c3-1-highlight-layers.md`, "Span model"):
+/// the legacy records per line in add order (styled-text records carry their value), the layers as a
+/// byte model, the text, and what each style defines for each name. A character's paint is
+/// recomputed from scratch: the highest priority wins, ties go to the later input (records in add
 /// order, then layers by id, priority 0).
 const SpanModel = struct {
-    const line_count_max = 16;
+    const line_count_max = 24;
+    const record_count_max = 40;
     const names = [_][]const u8{ "s1", "s2", "s3" };
     /// Group sets 1..3 are one name each; 4 is ["s3", "s2"]; 5 falls back to s1.
     const sets = [_][]const []const u8{ &.{"s1"}, &.{"s2"}, &.{"s3"}, &.{ "s3", "s2" }, &.{"s1.extra"} };
-    const palette = [_]ansi.RGBA{ red, green, blue, ansi.rgbColor(9, 9, 9, 255), ansi.rgbColor(200, 100, 0, 255) };
-    const Record = struct { col_start: u32, col_end: u32, style_id: u32, priority: u8, ref: u16 };
+    const palette = [_]?ansi.RGBA{ red, green, blue, ansi.rgbColor(9, 9, 9, 255), ansi.rgbColor(200, 100, 0, 255), null };
+    const attribute_choices = [_]u32{ 0, 1, 2, 4, 8, 16, 3 };
+    const Def = struct { fg: ?ansi.RGBA = null, bg: ?ansi.RGBA = null, attributes: u32 = 0 };
+    /// A record's style: a SyntaxStyle id, or for styled text the value of its part.
+    const Record = struct { col_start: u32, col_end: u32, priority: u8, ref: u16, style_id: u32, value: ?Def = null };
+    const Cell = struct { fg: ansi.RGBA, bg: ansi.RGBA, attributes: u32 };
 
-    records: [line_count_max * 4][32]Record = undefined,
+    records: [line_count_max * 4][record_count_max]Record = undefined,
     record_counts: [line_count_max * 4]usize = @splat(0),
     layers: LayerModel,
     text: std.ArrayListUnmanaged(u8) = .empty,
-    /// Per style (A, B), per name: its color.
-    colors: [2][names.len]ansi.RGBA = .{ .{ red, green, blue }, .{ blue, red, green } },
+    /// Per style (A, B), per name.
+    defs: [2][names.len]Def,
     bound: usize = 0,
     tab_width: u32 = 2,
+    /// Lines some paint drew: the only lines that may hold span entries.
+    painted: std.AutoHashMapUnmanaged(u32, void) = .empty,
 
     fn deinit(self: *SpanModel) void {
         self.text.deinit(gpa);
         self.layers.deinit();
+        self.painted.deinit(gpa);
     }
 
     fn lineCount(self: *const SpanModel) u32 {
         return @intCast(std.mem.count(u8, self.text.items, "\n") + 1);
     }
 
-    fn nameColor(self: *const SpanModel, name: []const u8) ?ansi.RGBA {
-        for (names, 0..) |known, index| if (std.mem.eql(u8, known, name)) return self.colors[self.bound][index];
+    fn add(self: *SpanModel, row: u32, record: Record) void {
+        self.records[row][self.record_counts[row]] = record;
+        self.record_counts[row] += 1;
+    }
+
+    fn nameDef(self: *const SpanModel, name: []const u8) ?Def {
+        for (names, 0..) |known, index| if (std.mem.eql(u8, known, name)) return self.defs[self.bound][index];
         return null;
     }
 
-    fn setColor(self: *const SpanModel, group_set: u32) ?ansi.RGBA {
-        var result: ?ansi.RGBA = null;
+    fn setDef(self: *const SpanModel, group_set: u32) Def {
+        var result: Def = .{};
         for (sets[group_set - 1]) |name| {
-            const color = self.nameColor(name) orelse self.nameColor(name[0 .. std.mem.indexOfScalar(u8, name, '.') orelse continue]) orelse continue;
-            result = color;
+            const def = self.nameDef(name) orelse self.nameDef(name[0 .. std.mem.indexOfScalar(u8, name, '.') orelse continue]) orelse continue;
+            if (def.fg) |fg| result.fg = fg;
+            if (def.bg) |bg| result.bg = bg;
+            result.attributes |= def.attributes;
         }
         return result;
     }
 
-    /// The color a character at `byte`, column `col` of line `row` paints in, or null for the default.
-    fn expected(self: *const SpanModel, row: u32, col: u32, byte: u32, layer_count: usize) ?ansi.RGBA {
+    /// What the character at `byte`, column `col` of line `row` paints.
+    fn expected(self: *const SpanModel, row: u32, col: u32, byte: u32, defaults: Cell) Cell {
         var best_priority: i16 = -1;
-        var best: ?ansi.RGBA = null;
+        var best: Def = .{};
+        var link_id: u32 = 0;
         for (self.records[row][0..self.record_counts[row]]) |record| {
             if (col < record.col_start or col >= record.col_end or record.priority < best_priority) continue;
             best_priority = record.priority;
-            best = if (record.style_id >= 1 and record.style_id <= names.len) self.colors[self.bound][record.style_id - 1] else null;
+            best = record.value orelse if (record.style_id >= 1 and record.style_id <= names.len) self.defs[self.bound][record.style_id - 1] else .{};
+            link_id = 0;
         }
-        for (self.layers.labels[0..layer_count]) |labels| {
+        for (self.layers.labels) |labels| {
             const label = labels[byte];
             if (label == 0 or best_priority > 0) continue;
             best_priority = 0;
-            best = self.setColor(self.layers.pieces.items[label - 1].group_set);
+            const piece = self.layers.pieces.items[label - 1];
+            best = self.setDef(piece.group_set);
+            link_id = piece.link_id;
         }
-        return best;
+        var attributes = defaults.attributes | best.attributes;
+        if (link_id != 0) attributes = ansi.TextAttributes.setLinkId(attributes, link_id);
+        return .{ .fg = best.fg orelse defaults.fg, .bg = best.bg orelse defaults.bg, .attributes = attributes };
+    }
+
+    fn randomDef(random: std.Random) Def {
+        return .{
+            .fg = palette[random.uintLessThan(usize, palette.len)],
+            .bg = palette[random.uintLessThan(usize, palette.len)],
+            .attributes = attribute_choices[random.uintLessThan(usize, attribute_choices.len)],
+        };
     }
 };
 
-// The span model (work file `tracks/c3-1-highlight-layers.md`): random legacy adds, removals and
-// clears, layer sets, edits, whole-text replacement, CLEAR_ALL, theme redefinitions and rebinds,
-// checked at every paint against cells recomputed from scratch, with get_highlights equal to the
-// records, spans equal to a fresh build, and layer runs equal to the byte model. 24 seeds of 160
-// events: about 130 ms and 11 MB in a debug build.
-test "layers: seeded span model of records, layers, edits and themes matches every paint" {
+/// The buffer under test: an editor (edits) or a text buffer (styled text and appends).
+const ModelTarget = struct {
+    eb: ?*EditBuffer,
+    tb: *TextBuffer,
+    view: *TextBufferView,
+    wrap_width: ?u32 = null,
+    viewport: text_buffer_view.Viewport = .{ .x = 0, .y = 0, .width = 64, .height = SpanModel.line_count_max },
+
+    fn configure(self: *const ModelTarget, view: *TextBufferView) void {
+        view.setWrapMode(if (self.wrap_width == null) .none else .char);
+        view.setWrapWidth(self.wrap_width);
+        view.setViewport(self.viewport);
+    }
+};
+
+const model_defaults: SpanModel.Cell = .{ .fg = ansi.rgbColor(128, 128, 128, 255), .bg = ansi.rgbColor(10, 10, 30, 255), .attributes = 0 };
+
+// The span model (P13 path independence): random legacy adds, removals and clears, layer sets with
+// links, editor inserts, deletes and replacements, styled text and appends, whole-text replacement,
+// CLEAR_ALL, theme redefinitions and rebinds, tab width, wrapping and scrolling. At every paint:
+// each character's fg, bg, attributes and link equal the from-scratch model; get_highlights equals
+// the records; only painted lines hold span entries and only they are built; and the retained paint
+// equals a forced full repaint (new view, stale spans, empty composition caches) byte for byte.
+// Even seeds drive an editor, odd seeds a text buffer. 64 seeds of 256 events: about 1 s and
+// 11 MB in a debug build.
+test "layers: seeded span model, from-scratch cells and a forced full repaint agree at every paint" {
     var setup: Setup = undefined;
     try setup.init();
     defer setup.deinit();
     for (SpanModel.sets[3..]) |names| _ = try setup.sets.intern(names);
     const other = try ss.SyntaxStyle.init(gpa);
     defer other.deinit();
-    for (SpanModel.names, [_]ansi.RGBA{ blue, red, green }) |name, color| _ = try other.registerStyle(name, color, null, 0);
     const styles = [_]*ss.SyntaxStyle{ setup.style, other };
-    const gray = ansi.rgbColor(128, 128, 128, 255);
+    const urls = [_]u32{ 0, try setup.pools.links.acquire("https://a.example"), try setup.pools.links.acquire("https://b.example") };
+    defer for (urls[1..]) |id| setup.pools.links.decref(id) catch unreachable;
     const layer_ids = [_]u32{ 1, 2, 3, 4, 5, 6 };
     const inserts = [_][]const u8{ "a", "\u{e9}", "\u{4e16}", "\n", "xyz", "b\nc", "\t" };
-    for (0..24) |seed| {
+    const replacements = [_][]const u8{ "one\ntwo", "a\nb\nc\nd\ne", "\tx\u{4e16}y" };
+    const max = std.math.maxInt(u32);
+    for (0..64) |seed| {
         var prng = std.Random.DefaultPrng.init(seed);
         const random = prng.random();
-        // Each seed starts from the first theme again.
-        for (SpanModel.names, [_]ansi.RGBA{ red, green, blue }) |name, color| _ = try setup.style.registerStyle(name, color, null, 0);
-        for (SpanModel.names, [_]ansi.RGBA{ blue, red, green }) |name, color| _ = try other.registerStyle(name, color, null, 0);
-        const eb = try EditBuffer.initWithOptions(gpa, &setup.pools.graphemes, &setup.pools.links, .unicode, null, .{ .group_sets = &setup.sets });
-        defer eb.deinit();
-        const tb = eb.tb;
-        tb.setSyntaxStyle(setup.style);
-        tb.setDefaultFg(gray);
-        tb.setTabWidth(2);
-        try eb.setText("al\tpha \u{4e16}\n\tbeta \u{e9}t\u{e9}\n\ngamma");
-        const view = try TextBufferView.init(gpa, tb);
-        defer view.deinit();
-        view.setViewport(.{ .x = 0, .y = 0, .width = 64, .height = SpanModel.line_count_max });
-        var model: SpanModel = .{ .layers = .{ .byte_count = 0 } };
+        const editor = seed % 2 == 0;
+        var model: SpanModel = .{ .layers = .{ .byte_count = 0 }, .defs = undefined };
         defer model.deinit();
+        for (&model.defs) |*defs| for (defs) |*def| {
+            def.* = SpanModel.randomDef(random);
+        };
+        for (styles, model.defs) |style, defs| for (SpanModel.names, defs) |name, def| {
+            _ = try style.registerStyle(name, def.fg, def.bg, def.attributes);
+        };
+        const eb: ?*EditBuffer = if (editor) try EditBuffer.initWithOptions(gpa, &setup.pools.graphemes, &setup.pools.links, .unicode, null, .{ .group_sets = &setup.sets }) else null;
+        defer if (eb) |value| value.deinit();
+        const tb = if (eb) |value| value.tb else try setup.buffer(.unicode);
+        defer if (eb == null) tb.deinit();
+        tb.setSyntaxStyle(setup.style);
+        tb.setDefaultFg(model_defaults.fg);
+        tb.setDefaultBg(model_defaults.bg);
+        tb.setTabWidth(2);
+        const initial = "al\tpha \u{4e16}\n\tbeta \u{e9}t\u{e9}\n\ngamma";
+        if (eb) |value| try value.setText(initial) else try tb.setText(initial);
+        var target: ModelTarget = .{ .eb = eb, .tb = tb, .view = try TextBufferView.init(gpa, tb) };
+        defer target.view.deinit();
+        target.configure(target.view);
         var bytes: [LayerModel.byte_count_max + 64]u8 = undefined;
         try model.text.appendSlice(gpa, plainText(tb, &bytes));
         model.layers.byte_count = @intCast(model.text.items.len);
-        const max = std.math.maxInt(u32);
-        for (0..160) |_| {
+        for (0..256) |_| {
             const text = model.text.items;
             const model_tab = model.tab_width;
             const room = text.len < 160 and model.lineCount() < SpanModel.line_count_max - 2;
-            switch (random.uintLessThan(u8, 16)) {
+            switch (random.uintLessThan(u8, 20)) {
                 0, 1, 2 => {
                     const row = random.uintAtMost(u32, model.lineCount());
                     const start = random.uintAtMost(u32, 16);
                     const record: SpanModel.Record = .{ .col_start = start, .col_end = start + 1 + random.uintAtMost(u32, 7), .style_id = 1 + random.uintAtMost(u32, 3), .priority = random.uintAtMost(u8, 2), .ref = random.uintAtMost(u16, 3) };
-                    // The model holds 32 records a line; a full line takes no more.
-                    if (row < model.lineCount() and model.record_counts[row] == 32) continue;
+                    if (row < model.lineCount() and model.record_counts[row] == SpanModel.record_count_max) continue;
                     const result = tb.addHighlight(row, record.col_start, record.col_end, record.style_id, record.priority, record.ref);
                     if (row >= model.lineCount()) {
                         try testing.expectError(error.InvalidIndex, result);
                     } else {
                         try result;
-                        model.records[row][model.record_counts[row]] = record;
-                        model.record_counts[row] += 1;
+                        model.add(row, record);
                     }
                 },
                 3 => {
@@ -1188,7 +1332,7 @@ test "layers: seeded span model of records, layers, edits and themes matches eve
                     const end = randomBoundary(random, text, start, max);
                     var buffer: [8]LayerRun = undefined;
                     var kept: usize = 0;
-                    for (randomRuns(random, &buffer, start, end, &.{0})) |run| {
+                    for (randomRuns(random, &buffer, start, end, &urls)) |run| {
                         if (run.start_byte < text.len and text[run.start_byte] & 0xC0 == 0x80) continue;
                         if (run.end_byte < text.len and text[run.end_byte] & 0xC0 == 0x80) continue;
                         buffer[kept] = run;
@@ -1199,28 +1343,85 @@ test "layers: seeded span model of records, layers, edits and themes matches eve
                     if (try model.layers.set(layer, start, end, buffer[0..kept])) try testing.expectError(error.LayerLimit, result) else try result;
                 },
                 8, 9 => if (room) {
-                    const at = randomBoundary(random, text, 0, max);
                     const insert = inserts[random.uintLessThan(usize, inserts.len)];
-                    const cursor = coordsOf(text, at, model_tab);
-                    try eb.setCursor(cursor.row, cursor.col);
-                    try eb.insertText(insert);
-                    model.layers.insert(at, @intCast(insert.len));
-                    try model.text.insertSlice(gpa, at, insert);
+                    if (eb) |value| {
+                        const at = randomBoundary(random, text, 0, max);
+                        const cursor = coordsOf(text, at, model_tab);
+                        try value.setCursor(cursor.row, cursor.col);
+                        try value.insertText(insert);
+                        model.layers.insert(at, @intCast(insert.len));
+                        try model.text.insertSlice(gpa, at, insert);
+                    } else {
+                        // Appended text joins no run: a run ending at the old end does not grow.
+                        try tb.append(insert);
+                        model.layers.insert(@intCast(text.len), @intCast(insert.len));
+                        try model.text.appendSlice(gpa, insert);
+                    }
                 },
-                10 => {
+                10, 17 => if (eb) |value| {
                     const start = randomBoundary(random, text, 0, max);
                     const end = randomBoundary(random, text, start, 8);
-                    try eb.deleteRange(coordsOf(text, start, model_tab), coordsOf(text, end, model_tab));
-                    model.layers.delete(start, end);
-                    try model.text.replaceRange(gpa, start, end - start, "");
+                    if (random.boolean() or !room) {
+                        try value.deleteRange(coordsOf(text, start, model_tab), coordsOf(text, end, model_tab));
+                        model.layers.delete(start, end);
+                        try model.text.replaceRange(gpa, start, end - start, "");
+                    } else {
+                        const insert = inserts[random.uintLessThan(usize, inserts.len)];
+                        const start_cursor = coordsOf(text, start, model_tab);
+                        const end_cursor = coordsOf(text, end, model_tab);
+                        const start_offset = iter_mod.coordsToOffset(tb.rope(), start_cursor.row, start_cursor.col).?;
+                        const end_offset = iter_mod.coordsToOffset(tb.rope(), end_cursor.row, end_cursor.col).?;
+                        try value.setCursor(start_cursor.row, start_cursor.col);
+                        try value.replaceRange(start_offset, end_offset, insert, .{ .ctx = value, .handle = ignore });
+                        model.layers.delete(start, end);
+                        model.layers.insert(start, @intCast(insert.len));
+                        try model.text.replaceRange(gpa, start, end - start, insert);
+                    }
+                } else {
+                    // Styled text replaces the text, every record, and empties the layers.
+                    var parts: [5]owned_styled.Part = undefined;
+                    const part_count = 1 + random.uintLessThan(usize, parts.len);
+                    model.text.clearRetainingCapacity();
+                    model.record_counts = @splat(0);
+                    var row: u32 = 0;
+                    var col: u32 = 0;
+                    for (parts[0..part_count]) |*part| {
+                        const def = SpanModel.randomDef(random);
+                        part.* = .{ .text = inserts[random.uintLessThan(usize, inserts.len)], .fg = def.fg, .bg = def.bg, .attributes = def.attributes };
+                        try model.text.appendSlice(gpa, part.text);
+                        var start_col = col;
+                        var index: usize = 0;
+                        while (index < part.text.len) {
+                            const length: u32 = std.unicode.utf8ByteSequenceLength(part.text[index]) catch unreachable;
+                            if (part.text[index] == '\n') {
+                                if (col > start_col) model.add(row, .{ .col_start = start_col, .col_end = col, .priority = 1, .ref = 0, .style_id = 0, .value = def });
+                                row += 1;
+                                col = 0;
+                                start_col = 0;
+                            } else col += charCols(part.text[index], length, model.tab_width);
+                            index += length;
+                        }
+                        if (col > start_col) model.add(row, .{ .col_start = start_col, .col_end = col, .priority = 1, .ref = 0, .style_id = 0, .value = def });
+                    }
+                    _ = try owned_styled.replace(tb, null, parts[0..part_count]);
+                    model.layers.reset();
+                    model.layers.byte_count = @intCast(model.text.items.len);
                 },
                 11 => if (random.uintLessThan(u8, 3) == 0) {
-                    // Records stay on lines the new text still has; layers empty.
-                    const replacement = if (random.boolean()) "one\ntwo" else "a\nb\nc\nd\ne";
-                    try eb.setText(replacement);
+                    // User records stay on lines the new text still has; styled-text records and
+                    // layers go.
+                    const replacement = replacements[random.uintLessThan(usize, replacements.len)];
+                    if (eb) |value| try value.setText(replacement) else try tb.setText(replacement);
                     model.text.clearRetainingCapacity();
                     try model.text.appendSlice(gpa, replacement);
-                    for (model.record_counts[model.lineCount()..]) |*count| count.* = 0;
+                    for (&model.records, &model.record_counts, 0..) |*list, *count, row| {
+                        var kept: usize = 0;
+                        if (row < model.lineCount()) for (list[0..count.*]) |record| if (record.value == null) {
+                            list[kept] = record;
+                            kept += 1;
+                        };
+                        count.* = kept;
+                    }
                     model.layers.reset();
                     model.layers.byte_count = @intCast(replacement.len);
                 },
@@ -1234,67 +1435,127 @@ test "layers: seeded span model of records, layers, edits and themes matches eve
                     const generation = tb.span_generation;
                     const style = random.uintLessThan(usize, 2);
                     const name = random.uintLessThan(usize, SpanModel.names.len);
-                    const color = SpanModel.palette[random.uintLessThan(usize, SpanModel.palette.len)];
-                    _ = try styles[style].registerStyle(SpanModel.names[name], color, null, 0);
-                    model.colors[style][name] = color;
+                    const def = SpanModel.randomDef(random);
+                    _ = try styles[style].registerStyle(SpanModel.names[name], def.fg, def.bg, def.attributes);
+                    model.defs[style][name] = def;
                     try testing.expectEqual(generation, tb.span_generation);
-                    try expectPaint(&setup, &model, tb, view, gray);
+                    try expectModelPaint(&setup, &model, &target, styles[0..]);
                 },
-                14 => if (random.boolean()) {
-                    model.bound = 1 - model.bound;
-                    tb.setSyntaxStyle(styles[model.bound]);
-                    try expectPaint(&setup, &model, tb, view, gray);
-                } else {
-                    // Tab cells move under byte runs without a byte changing.
-                    model.tab_width = if (model.tab_width == 2) 4 else 2;
-                    tb.setTabWidth(@intCast(model.tab_width));
-                    try expectPaint(&setup, &model, tb, view, gray);
+                14 => {
+                    if (random.boolean()) {
+                        model.bound = 1 - model.bound;
+                        tb.setSyntaxStyle(styles[model.bound]);
+                    } else {
+                        // Tab cells move under byte runs without a byte changing.
+                        model.tab_width = if (model.tab_width == 2) 4 else 2;
+                        tb.setTabWidth(@intCast(model.tab_width));
+                    }
+                    try expectModelPaint(&setup, &model, &target, styles[0..]);
                 },
-                else => try expectPaint(&setup, &model, tb, view, gray),
+                15 => {
+                    target.wrap_width = if (random.boolean()) null else 4 + random.uintLessThan(u32, 16);
+                    target.configure(target.view);
+                },
+                16 => {
+                    // A viewport shorter than the text, scrolled anywhere.
+                    target.viewport.height = 4 + random.uintLessThan(u32, SpanModel.line_count_max - 4);
+                    target.viewport.y = random.uintLessThan(u32, SpanModel.line_count_max);
+                    target.configure(target.view);
+                },
+                else => try expectModelPaint(&setup, &model, &target, styles[0..]),
             }
             try testing.expectEqualStrings(model.text.items, plainText(tb, &bytes));
             try model.layers.expectEqual(&tb.layers, &layer_ids);
+            for (urls[1..]) |id| try testing.expectEqual(1 + model.layers.linkedPieces(id), try setup.pools.links.getRefcount(id));
         }
-        try expectPaint(&setup, &model, tb, view, gray);
+        try expectModelPaint(&setup, &model, &target, styles[0..]);
     }
 }
 
-fn expectPaint(setup: *Setup, model: *const SpanModel, tb: *TextBuffer, view: *TextBufferView, default_fg: ansi.RGBA) !void {
-    const screen = try setup.screen(64, SpanModel.line_count_max);
-    defer screen.deinit();
-    try screen.drawTextBufferChecked(view, 0, 0);
-    var lines = std.mem.splitScalar(u8, model.text.items, '\n');
-    var row: u32 = 0;
-    var line_start: u32 = 0;
-    while (lines.next()) |line| : (row += 1) {
-        // get_highlights reports exactly the records, in add order.
+fn expectModelPaint(setup: *Setup, model: *SpanModel, target: *const ModelTarget, styles: []const *ss.SyntaxStyle) !void {
+    const tb = target.tb;
+    const width = target.viewport.width;
+    const height = target.viewport.height;
+    const retained = try setup.screen(width, height);
+    defer retained.deinit();
+    _ = text_work.take();
+    try retained.drawTextBufferChecked(target.view, 0, 0);
+    const builds = text_work.take().line_span_builds;
+
+    // The rows the viewport shows, by virtual line (the view returns the viewport's slice).
+    const shown = target.view.getVirtualLines();
+    var painted_lines: u32 = 0;
+    for (shown, 0..) |vline, index| {
+        const row: u32 = @intCast(vline.source_line);
+        if (index == 0 or shown[index - 1].source_line != vline.source_line) painted_lines += 1;
+        try model.painted.put(gpa, row, {});
+    }
+    // Only painted lines are built, and only painted lines hold entries.
+    try testing.expect(builds <= painted_lines);
+    var keys = tb.line_spans.keyIterator();
+    while (keys.next()) |row| try testing.expect(model.painted.contains(row.*));
+
+    // get_highlights reports exactly the records, in add order.
+    for (0..model.lineCount()) |row| {
         const actual = tb.getLineHighlights(row);
         try testing.expectEqual(model.record_counts[row], actual.len);
         for (model.records[row][0..model.record_counts[row]], actual) |want, got| {
-            try testing.expectEqual(want, SpanModel.Record{ .col_start = got.col_start, .col_end = got.col_end, .style_id = got.style_id, .priority = got.priority, .ref = got.hl_ref });
+            try testing.expectEqual([4]u32{ want.col_start, want.col_end, want.priority, want.ref }, [4]u32{ got.col_start, got.col_end, got.priority, got.hl_ref });
+            if (want.value == null) try testing.expectEqual(want.style_id, got.style_id);
         }
-        // Cached spans equal a fresh build of the same inputs. The stamps go back after, so the
-        // next paint still sees only what the events invalidated.
-        const cached = try gpa.dupe(text_buffer.StyleSpan, try tb.getLineSpans(row));
-        defer gpa.free(cached);
-        const generation = tb.span_generation;
-        tb.span_generation += 1;
-        try testing.expectEqualSlices(text_buffer.StyleSpan, cached, try tb.getLineSpans(row));
-        tb.span_generation = generation;
-        if (row < tb.line_spans.items.len) tb.line_spans.items[row].generation = generation;
-        var byte: u32 = 0;
+    }
+
+    // Each shown character against the model.
+    var line_starts: [SpanModel.line_count_max + 1]u32 = undefined;
+    var lines = std.mem.splitScalar(u8, model.text.items, '\n');
+    var line_count: usize = 0;
+    var byte: u32 = 0;
+    while (lines.next()) |line| : (line_count += 1) {
+        line_starts[line_count] = byte;
+        byte += @as(u32, @intCast(line.len)) + 1;
+    }
+    for (shown, 0..) |vline, y| {
+        const row: u32 = @intCast(vline.source_line);
+        const start = line_starts[row];
+        const end = if (row + 1 < line_count) line_starts[row + 1] - 1 else @as(u32, @intCast(model.text.items.len));
+        const line = model.text.items[start..end];
+        var index: u32 = 0;
         var col: u32 = 0;
-        while (byte < line.len) {
-            const length: u32 = std.unicode.utf8ByteSequenceLength(line[byte]) catch unreachable;
-            const want = model.expected(row, col, line_start + byte, model.layers.labels.len) orelse default_fg;
-            const cell = screen.get(col, row).?;
-            if (!std.meta.eql(want, cell.fg)) {
-                std.debug.print("row {d} col {d} byte {d}\n", .{ row, col, line_start + byte });
-                try testing.expectEqual(want, cell.fg);
+        while (index < line.len) {
+            const length: u32 = std.unicode.utf8ByteSequenceLength(line[index]) catch unreachable;
+            if (col >= vline.source_col_start and col < vline.source_col_start + vline.width_cols and col - vline.source_col_start < width) {
+                const want = model.expected(row, col, start + index, model_defaults);
+                const cell = retained.get(col - vline.source_col_start, @intCast(y)).?;
+                const got: SpanModel.Cell = .{ .fg = cell.fg, .bg = cell.bg, .attributes = cell.attributes };
+                if (!std.meta.eql(want, got)) {
+                    std.debug.print("line {d} col {d} byte {d} y {d} vp {any} wrap {any} vlines {d} char {d}\n", .{ row, col, start + index, y, target.viewport, target.wrap_width, shown.len, retained.get(col - vline.source_col_start, @intCast(y)).?.char });
+                    try testing.expectEqualDeep(want, got);
+                }
             }
-            col += charCols(line[byte], length, model.tab_width);
-            byte += length;
+            col += charCols(line[index], length, model.tab_width);
+            index += length;
         }
-        line_start += @as(u32, @intCast(line.len)) + 1;
+    }
+
+    // A forced full repaint: a new view, every span stale, the composition caches empty. The
+    // stamps go back after, so the next paint still sees only what the events invalidated.
+    const generation = tb.span_generation;
+    tb.span_generation += 1;
+    for (styles) |style| style.group_set_cache.clearRetainingCapacity();
+    const fresh_view = try TextBufferView.init(gpa, tb);
+    defer fresh_view.deinit();
+    target.configure(fresh_view);
+    const fresh = try setup.screen(width, height);
+    defer fresh.deinit();
+    try fresh.drawTextBufferChecked(fresh_view, 0, 0);
+    var y: u32 = 0;
+    while (y < height) : (y += 1) {
+        var x: u32 = 0;
+        while (x < width) : (x += 1) try testing.expectEqualDeep(retained.get(x, y).?, fresh.get(x, y).?);
+    }
+    tb.span_generation = generation;
+    var entries = tb.line_spans.valueIterator();
+    while (entries.next()) |entry| {
+        if (entry.generation == generation + 1) entry.generation = generation;
     }
 }

@@ -247,7 +247,7 @@ fn checkHighlightRejection(comptime range: bool) !void {
         const spans = try std.testing.allocator.dupe(text_buffer.StyleSpan, (try tb.getLineSpans(0)));
         defer std.testing.allocator.free(spans);
         const highlights_len = tb.line_highlights.items.len;
-        const spans_len = tb.line_spans.items.len;
+        const spans_len = tb.line_spans.count();
         const allocator = tb.global_allocator;
         var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = fail_index, .resize_fail_index = 0 });
         tb.global_allocator = failing.allocator();
@@ -267,7 +267,7 @@ fn checkHighlightRejection(comptime range: bool) !void {
         try std.testing.expectEqualDeep(accepted, tb.getLineHighlights(0)[0]);
         try std.testing.expectEqualSlices(text_buffer.StyleSpan, spans, (try tb.getLineSpans(0)));
         try std.testing.expectEqual(highlights_len, tb.line_highlights.items.len);
-        try std.testing.expectEqual(spans_len, tb.line_spans.items.len);
+        try std.testing.expectEqual(spans_len, tb.line_spans.count());
         for (1..tb.getLineCount()) |line_idx| {
             try std.testing.expectEqual(@as(usize, 0), tb.getLineHighlights(line_idx).len);
             try std.testing.expectEqual(@as(usize, 0), (try tb.getLineSpans(line_idx)).len);
@@ -303,7 +303,7 @@ test "TextBuffer rejection - first highlight does not publish partial storage" {
             try std.testing.expectEqual(error.OutOfMemory, err);
         }
         try std.testing.expectEqual(@as(usize, 0), tb.line_highlights.items.len);
-        try std.testing.expectEqual(@as(usize, 0), tb.line_spans.items.len);
+        try std.testing.expectEqual(@as(u32, 0), tb.line_spans.count());
         try std.testing.expectEqual(@as(u32, 0), tb.getHighlightCount());
     }
     try std.testing.expect(succeeded);
