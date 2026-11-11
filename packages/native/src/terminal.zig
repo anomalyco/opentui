@@ -1657,11 +1657,13 @@ pub fn setKittyKeyboardFlags(self: *Terminal, flags: u8) void {
 }
 
 /// A C0, DEL, or C1 control in the text can end the OSC and start another one, so each becomes a space.
-fn writeSanitizedNotificationText(writer: anytype, text: []const u8, replace_semicolon: bool) !void {
+/// GNU screen forwards only the low byte of a code point (U+4E07 as BEL), so there every non-ASCII
+/// code point becomes a space too.
+fn writeSanitizedNotificationText(writer: anytype, text: []const u8, replace_semicolon: bool, ascii: bool) !void {
     var code_points = std.unicode.Utf8View.initUnchecked(text).iterator();
     while (code_points.nextCodepointSlice()) |slice| {
         const code_point = std.unicode.utf8Decode(slice) catch unreachable;
-        if (utf8.isControl(code_point) or (replace_semicolon and code_point == ';')) {
+        if (utf8.isControl(code_point) or (ascii and code_point >= 0x80) or (replace_semicolon and code_point == ';')) {
             try writer.writeByte(' ');
         } else {
             try writer.writeAll(slice);
@@ -1693,6 +1695,7 @@ pub fn writeNotification(self: *Terminal, allocator: std.mem.Allocator, tty: any
     defer buffer.deinit();
     const writer = &buffer.writer;
     const end = oscEnd(self.multiplexer);
+    const ascii = self.multiplexer == .screen;
 
     switch (self.notification_protocol) {
         .none => return false,
@@ -1706,11 +1709,11 @@ pub fn writeNotification(self: *Terminal, allocator: std.mem.Allocator, tty: any
         .osc777 => {
             try writer.writeAll("\x1b]777;notify;");
             if (title != null) {
-                try writeSanitizedNotificationText(writer, notification_title, true);
+                try writeSanitizedNotificationText(writer, notification_title, true, ascii);
                 try writer.writeByte(';');
-                try writeSanitizedNotificationText(writer, message, true);
+                try writeSanitizedNotificationText(writer, message, true, ascii);
             } else {
-                try writeSanitizedNotificationText(writer, message, true);
+                try writeSanitizedNotificationText(writer, message, true, ascii);
                 try writer.writeByte(';');
             }
             try writer.writeAll(end);
@@ -1721,10 +1724,10 @@ pub fn writeNotification(self: *Terminal, allocator: std.mem.Allocator, tty: any
             const lead = if (notification_title.len > 0) notification_title else message;
             try writer.writeAll(if (lead.len > 0 and std.ascii.isDigit(lead[0])) "\x1b]9; " else "\x1b]9;");
             if (notification_title.len > 0) {
-                try writeSanitizedNotificationText(writer, notification_title, false);
+                try writeSanitizedNotificationText(writer, notification_title, false, ascii);
                 try writer.writeAll(": ");
             }
-            try writeSanitizedNotificationText(writer, message, false);
+            try writeSanitizedNotificationText(writer, message, false, ascii);
             try writer.writeAll(end);
         },
     }
@@ -1796,21 +1799,41 @@ fn PassthroughWriter(comptime Writer: type) type {
         }
 
         pub fn writeAll(self: *Self, bytes: []const u8) !void {
-            for (bytes) |byte| try self.writeByte(byte);
+            switch (self.multiplexer) {
+                .tmux => {
+                    var rest = bytes;
+                    while (std.mem.findScalar(u8, rest, '\x1b')) |at| {
+                        try self.writer.writeAll(rest[0..at]);
+                        try self.writer.writeAll("\x1b\x1b");
+                        rest = rest[at + 1 ..];
+                    }
+                    try self.writer.writeAll(rest);
+                },
+                .screen => {
+                    // Screen forwards only the low byte of a code point, so its writers send ASCII.
+                    for (bytes) |byte| assert(byte < 0x80);
+                    var rest = bytes;
+                    while (rest.len > 0) {
+                        if (self.length == self.buffer.len) {
+                            // An ESC that ends a full chunk starts the next one, with the byte after it.
+                            const esc = self.buffer[self.length - 1] == '\x1b';
+                            self.length -= @intFromBool(esc);
+                            try self.flush();
+                            if (esc) self.buffer[0] = '\x1b';
+                            self.length = @intFromBool(esc);
+                        }
+                        const count = @min(rest.len, self.buffer.len - self.length);
+                        @memcpy(self.buffer[self.length..][0..count], rest[0..count]);
+                        self.length += count;
+                        rest = rest[count..];
+                    }
+                },
+                else => try self.writer.writeAll(bytes),
+            }
         }
 
         pub fn writeByte(self: *Self, byte: u8) !void {
-            switch (self.multiplexer) {
-                .tmux => if (byte == '\x1b') try self.writer.writeByte('\x1b'),
-                .screen => {
-                    if (self.length == self.buffer.len) try self.flush();
-                    self.buffer[self.length] = byte;
-                    self.length += 1;
-                    return;
-                },
-                else => {},
-            }
-            try self.writer.writeByte(byte);
+            try self.writeAll(&.{byte});
         }
 
         fn finish(self: *Self) !void {

@@ -1838,16 +1838,23 @@ test "multiplexer sets clipboard framing, OSC 52, widths and the graphics query,
         writer.reset();
         try term.writeClipboard(&writer, .clipboard, "test");
         try testing.expectEqualStrings(row.clipboard, writer.getWritten());
-        // A notification takes the clipboard's framing and terminator, also past one screen chunk.
+        // A notification takes the clipboard's framing and terminator, also past one screen chunk. Screen
+        // forwards only the low byte of a code point (U+4E07 as BEL, U+4E1B as ESC, U+039C as ST, U+0134
+        // as '4'; a C locale ends its DCS at the 9C in U+00DC), so there non-ASCII text becomes spaces.
         term.caps.notifications = true;
-        for ([_]struct { Terminal.NotificationProtocol, []const u8, []const u8 }{
-            .{ .osc99, "test", "99;i=opentui-1:p=body:e=1:d=1;dGVzdA==" },
-            .{ .osc777, "dGVzdA==", "777;notify;dGVzdA==;" },
+        for ([_]struct { Terminal.NotificationProtocol, []const u8, []const u8, ?[]const u8 }{
+            .{ .osc99, "test", "99;i=opentui-1:p=body:e=1:d=1;dGVzdA==", null },
+            .{ .osc777, "dGVzdA==", "777;notify;dGVzdA==;", null },
+            .{ .osc9, "42 tests", "9; 42 tests", null },
+            .{ .osc9, "万丛]52;c;UFdORUQ=万", "9;万丛]52;c;UFdORUQ=万", "9;  ]52;c;UFdORUQ= " },
+            .{ .osc9, "Ĵ;1;50", "9;Ĵ;1;50", "9; ;1;50" },
+            .{ .osc777, "ΜΛ21tćě€Ü“", "777;notify;ΜΛ21tćě€Ü“;", "777;notify;  21t     ;" },
         }) |case| {
             term.notification_protocol = case[0];
             writer.reset();
             try testing.expect(try term.writeNotification(testing.allocator, &writer, case[1], null));
-            const notification = try std.mem.replaceOwned(u8, testing.allocator, row.clipboard, "52;c;dGVzdA==", case[2]);
+            const sent = if (row.mux == .screen) case[3] orelse case[2] else case[2];
+            const notification = try std.mem.replaceOwned(u8, testing.allocator, row.clipboard, "52;c;dGVzdA==", sent);
             defer testing.allocator.free(notification);
             try testing.expectEqualStrings(notification, writer.getWritten());
         }
@@ -1857,6 +1864,14 @@ test "multiplexer sets clipboard framing, OSC 52, widths and the graphics query,
         try testing.expect(try term.writeNotification(testing.allocator, &writer, &long, null));
         var forwarded: [1100]u8 = undefined;
         try testing.expectEqualStrings("\x1b]777;notify;" ++ long ++ ";\x07", try forwardScreenDcs(writer.getWritten(), &forwarded));
+        // The body's ESC falls on the first chunk's last byte, so it starts the next chunk instead.
+        writer.reset();
+        term.notification_protocol = .osc99;
+        term.notification_id_counter = 9;
+        const title: [162]u8 = @splat('x');
+        try testing.expect(try term.writeNotification(testing.allocator, &writer, "test", &title));
+        try testing.expect(std.mem.find(u8, writer.getWritten(), "\x1b\x1b\\") == null);
+        try testing.expect(std.mem.endsWith(u8, try forwardScreenDcs(writer.getWritten(), &forwarded), "\x07\x1b]99;i=opentui-10:p=body:e=1:d=1;dGVzdA==\x07"));
     }
 }
 
