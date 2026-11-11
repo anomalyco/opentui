@@ -65,6 +65,17 @@ pub mod widget;
 
 /// Tables that Core and `@opentui/keymap` own, generated from them.
 mod tables {
+    /// A filetype `match` over generated rows, and the rows themselves for tests.
+    macro_rules! filetypes {
+        ($name:ident, $rows:ident: $($key:literal => $filetype:literal,)*) => {
+            pub(crate) fn $name(key: &str) -> Option<&'static str> {
+                Some(match key { $($key => $filetype,)* _ => return None })
+            }
+            #[cfg(test)]
+            pub(crate) const $rows: &[(&str, &str)] = &[$(($key, $filetype)),*];
+        };
+    }
+
     include!("generated.rs");
 }
 

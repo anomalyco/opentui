@@ -21,18 +21,28 @@ const action = (name: string) =>
 const shortcut = (key: string) =>
   key
     .split("+")
-    .map((part) => ({ meta: "alt", kpenter: "enter" })[part] ?? part)
+    .map((part) => ({ meta: "alt", return: "enter", kpenter: "enter" })[part] ?? part)
     .join("+")
 
 // Packs the entries into lines of at most 120 columns; rustfmt leaves included files alone.
-function table(doc: string, declaration: string, entries: string[]): string {
+function pack(entries: string[]): string {
   const lines: string[] = []
   for (const entry of entries) {
     const last = lines.length - 1
     if (last >= 0 && lines[last].length + entry.length + 2 <= 120) lines[last] += ` ${entry},`
     else lines.push(`    ${entry},`)
   }
-  return `${doc}\n${declaration} = &[\n${lines.join("\n")}\n];\n`
+  return lines.join("\n")
+}
+
+const table = (doc: string, declaration: string, entries: string[]) =>
+  `${doc}\n${declaration} = &[\n${pack(entries)}\n];\n`
+
+// A `match` from file name or extension to filetype; `filetypes!` in the crate's `tables` module expands it. Sorted
+// arms compile to fewer instructions per lookup than Core's order.
+const filetypes = (doc: string, names: string, map: Map<string, string>) => {
+  const arms = [...map].sort(([a], [b]) => (a < b ? -1 : 1)).map(([key, type]) => `${string(key)} => ${string(type)}`)
+  return `// ${doc}\nfiletypes! {\n    ${names}:\n${pack(arms)}\n}\n`
 }
 
 function generateRustTables(): string {
@@ -55,10 +65,9 @@ function generateRustTables(): string {
       bindings.map(([key, name]) => `(${string(key)}, ${name})`),
     ),
     table(
-      "/// The same bindings as shortcuts: Core's `meta` is Alt here, and Enter is both `return` and `kpenter`.\n" +
-        "/// Duplicate rows bind the same action.",
+      "/// The same bindings as shortcuts: Core's `meta` is Alt here, and Enter is both `return` and `kpenter`.",
       "pub(crate) const TEXTAREA_SHORTCUTS: &[(&str, EditorAction)]",
-      bindings.map(([key, name]) => `(${string(shortcut(key))}, ${name})`),
+      [...new Set(bindings.map(([key, name]) => `(${string(shortcut(key))}, ${name})`))],
     ),
     table(
       "/// `@opentui/keymap`'s named keys in binding syntax.",
@@ -75,17 +84,18 @@ function generateRustTables(): string {
       "pub(crate) const KITTY_KEY_NAMES: &[&str]",
       Object.entries(kittyKeyMap)
         .filter(([code]) => Number(code) >= 57428)
-        .map(([, name]) => string(name)),
+        .map(([code, name], index) => {
+          // The crate finds a name by its code's offset from 57428.
+          if (Number(code) !== 57428 + index)
+            throw new Error(`Kitty key ${name} has code ${code}, not ${57428 + index}`)
+          return string(name)
+        }),
     ),
-    table(
-      "/// Core's filetypes by file extension.",
-      "pub(crate) const FILETYPE_EXTENSIONS: &[(&str, &str)]",
-      [...extensionToFiletype].map(([extension, filetype]) => `(${string(extension)}, ${string(filetype)})`),
-    ),
-    table(
-      "/// Core's filetypes by lowercase file name.",
-      "pub(crate) const FILETYPE_BASENAMES: &[(&str, &str)]",
-      [...basenameToFiletype].map(([basename, filetype]) => `(${string(basename)}, ${string(filetype)})`),
+    filetypes("Core's filetypes by file extension.", "filetype_by_extension, FILETYPE_EXTENSIONS", extensionToFiletype),
+    filetypes(
+      "Core's filetypes by lowercase file name.",
+      "filetype_for_basename, FILETYPE_BASENAMES",
+      basenameToFiletype,
     ),
   ].join("\n")
 }

@@ -1,20 +1,12 @@
 //! Filetype names from paths, extensions, and Markdown info strings, by the rules and tables of Core's
 //! `resolve-ft.ts`.
 
-use crate::tables::{FILETYPE_BASENAMES, FILETYPE_EXTENSIONS};
-
-fn lookup(table: &[(&str, &'static str)], key: &str) -> Option<&'static str> {
-    table.iter().find(|(known, _)| *known == key).map(|&(_, filetype)| filetype)
-}
+// The filetype for a lowercase file name with no telling extension, such as `makefile` or `.bashrc`.
+use crate::tables::filetype_for_basename;
 
 /// The filetype for a file extension, with or without its dot, such as `"rs"` or `".tsx"`.
 pub fn filetype_for_extension(extension: &str) -> Option<&'static str> {
-    lookup(FILETYPE_EXTENSIONS, &normalize(extension)?)
-}
-
-/// The filetype for a file name with no telling extension, such as `Makefile` or `.bashrc`. Lowercase input only.
-fn filetype_for_basename(basename: &str) -> Option<&'static str> {
-    lookup(FILETYPE_BASENAMES, basename)
+    crate::tables::filetype_by_extension(&normalize(extension)?)
 }
 
 /// Trims, drops a leading dot, and lowercases; `None` when nothing is left.
@@ -55,6 +47,7 @@ pub fn filetype_for_info_string(info: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tables::{FILETYPE_BASENAMES, FILETYPE_EXTENSIONS};
 
     #[test]
     fn paths_resolve_by_file_name_then_extension() {

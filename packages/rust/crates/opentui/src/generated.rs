@@ -73,7 +73,6 @@ pub const TEXTAREA_BINDINGS: &[(&str, EditorAction)] = &[
 ];
 
 /// The same bindings as shortcuts: Core's `meta` is Alt here, and Enter is both `return` and `kpenter`.
-/// Duplicate rows bind the same action.
 pub(crate) const TEXTAREA_SHORTCUTS: &[(&str, EditorAction)] = &[
     ("left", EditorAction::MoveLeft), ("right", EditorAction::MoveRight), ("up", EditorAction::MoveUp),
     ("down", EditorAction::MoveDown), ("shift+left", EditorAction::SelectLeft),
@@ -91,10 +90,9 @@ pub(crate) const TEXTAREA_SHORTCUTS: &[(&str, EditorAction)] = &[
     ("ctrl+k", EditorAction::DeleteToLineEnd), ("ctrl+u", EditorAction::DeleteToLineStart),
     ("backspace", EditorAction::Backspace), ("shift+backspace", EditorAction::Backspace),
     ("ctrl+d", EditorAction::Delete), ("delete", EditorAction::Delete), ("shift+delete", EditorAction::Delete),
-    ("return", EditorAction::Newline), ("enter", EditorAction::Newline), ("linefeed", EditorAction::Newline),
-    ("alt+return", EditorAction::Submit), ("alt+enter", EditorAction::Submit), ("ctrl+-", EditorAction::Undo),
-    ("ctrl+.", EditorAction::Redo), ("super+z", EditorAction::Undo), ("shift+super+z", EditorAction::Redo),
-    ("alt+f", EditorAction::WordForward), ("alt+b", EditorAction::WordBackward),
+    ("enter", EditorAction::Newline), ("linefeed", EditorAction::Newline), ("alt+enter", EditorAction::Submit),
+    ("ctrl+-", EditorAction::Undo), ("ctrl+.", EditorAction::Redo), ("super+z", EditorAction::Undo),
+    ("shift+super+z", EditorAction::Redo), ("alt+f", EditorAction::WordForward), ("alt+b", EditorAction::WordBackward),
     ("alt+right", EditorAction::WordForward), ("alt+left", EditorAction::WordBackward),
     ("ctrl+right", EditorAction::WordForward), ("ctrl+left", EditorAction::WordBackward),
     ("shift+alt+f", EditorAction::SelectWordForward), ("shift+alt+b", EditorAction::SelectWordBackward),
@@ -134,33 +132,35 @@ pub(crate) const KITTY_KEY_NAMES: &[&str] = &[
     "rightmeta", "iso_level3_shift", "iso_level5_shift",
 ];
 
-/// Core's filetypes by file extension.
-pub(crate) const FILETYPE_EXTENSIONS: &[(&str, &str)] = &[
-    ("astro", "astro"), ("bash", "bash"), ("c", "c"), ("cc", "cpp"), ("cjs", "javascript"), ("clj", "clojure"),
-    ("cljs", "clojure"), ("cljc", "clojure"), ("cpp", "cpp"), ("cxx", "cpp"), ("cs", "csharp"), ("cts", "typescript"),
-    ("ctsx", "typescriptreact"), ("dart", "dart"), ("diff", "diff"), ("edn", "clojure"), ("go", "go"),
-    ("gemspec", "ruby"), ("groovy", "groovy"), ("h", "c"), ("handlebars", "handlebars"), ("hbs", "handlebars"),
-    ("hpp", "cpp"), ("hxx", "cpp"), ("h++", "cpp"), ("hh", "cpp"), ("hrl", "erlang"), ("hs", "haskell"),
-    ("htm", "html"), ("html", "html"), ("ini", "ini"), ("js", "javascript"), ("jsx", "javascriptreact"),
-    ("jl", "julia"), ("json", "json"), ("ksh", "bash"), ("kt", "kotlin"), ("kts", "kotlin"), ("latex", "latex"),
-    ("less", "less"), ("lua", "lua"), ("markdown", "markdown"), ("md", "markdown"), ("mdown", "markdown"),
-    ("mkd", "markdown"), ("mjs", "javascript"), ("ml", "ocaml"), ("mli", "ocaml"), ("mts", "typescript"),
-    ("mtsx", "typescriptreact"), ("patch", "diff"), ("php", "php"), ("pl", "perl"), ("pm", "perl"),
-    ("ps1", "powershell"), ("psm1", "powershell"), ("py", "python"), ("pyi", "python"), ("r", "r"), ("rb", "ruby"),
-    ("rake", "ruby"), ("rs", "rust"), ("ru", "ruby"), ("sass", "sass"), ("sc", "scala"), ("scala", "scala"),
-    ("scss", "scss"), ("sh", "bash"), ("sql", "sql"), ("svelte", "svelte"), ("swift", "swift"), ("ts", "typescript"),
-    ("tsx", "typescriptreact"), ("tex", "latex"), ("toml", "toml"), ("vue", "vue"), ("vim", "vim"), ("xml", "xml"),
-    ("xsl", "xsl"), ("yaml", "yaml"), ("yml", "yaml"), ("zig", "zig"), ("zon", "zig"), ("zsh", "bash"), ("c++", "cpp"),
-    ("erl", "erlang"), ("exs", "elixir"), ("ex", "elixir"), ("elm", "elm"), ("fsharp", "fsharp"), ("fs", "fsharp"),
-    ("fsx", "fsharp"), ("fsscript", "fsharp"), ("fsi", "fsharp"), ("java", "java"), ("css", "css"),
-];
+// Core's filetypes by file extension.
+filetypes! {
+    filetype_by_extension, FILETYPE_EXTENSIONS:
+    "astro" => "astro", "bash" => "bash", "c" => "c", "c++" => "cpp", "cc" => "cpp", "cjs" => "javascript",
+    "clj" => "clojure", "cljc" => "clojure", "cljs" => "clojure", "cpp" => "cpp", "cs" => "csharp", "css" => "css",
+    "cts" => "typescript", "ctsx" => "typescriptreact", "cxx" => "cpp", "dart" => "dart", "diff" => "diff",
+    "edn" => "clojure", "elm" => "elm", "erl" => "erlang", "ex" => "elixir", "exs" => "elixir", "fs" => "fsharp",
+    "fsharp" => "fsharp", "fsi" => "fsharp", "fsscript" => "fsharp", "fsx" => "fsharp", "gemspec" => "ruby",
+    "go" => "go", "groovy" => "groovy", "h" => "c", "h++" => "cpp", "handlebars" => "handlebars", "hbs" => "handlebars",
+    "hh" => "cpp", "hpp" => "cpp", "hrl" => "erlang", "hs" => "haskell", "htm" => "html", "html" => "html",
+    "hxx" => "cpp", "ini" => "ini", "java" => "java", "jl" => "julia", "js" => "javascript", "json" => "json",
+    "jsx" => "javascriptreact", "ksh" => "bash", "kt" => "kotlin", "kts" => "kotlin", "latex" => "latex",
+    "less" => "less", "lua" => "lua", "markdown" => "markdown", "md" => "markdown", "mdown" => "markdown",
+    "mjs" => "javascript", "mkd" => "markdown", "ml" => "ocaml", "mli" => "ocaml", "mts" => "typescript",
+    "mtsx" => "typescriptreact", "patch" => "diff", "php" => "php", "pl" => "perl", "pm" => "perl",
+    "ps1" => "powershell", "psm1" => "powershell", "py" => "python", "pyi" => "python", "r" => "r", "rake" => "ruby",
+    "rb" => "ruby", "rs" => "rust", "ru" => "ruby", "sass" => "sass", "sc" => "scala", "scala" => "scala",
+    "scss" => "scss", "sh" => "bash", "sql" => "sql", "svelte" => "svelte", "swift" => "swift", "tex" => "latex",
+    "toml" => "toml", "ts" => "typescript", "tsx" => "typescriptreact", "vim" => "vim", "vue" => "vue", "xml" => "xml",
+    "xsl" => "xsl", "yaml" => "yaml", "yml" => "yaml", "zig" => "zig", "zon" => "zig", "zsh" => "bash",
+}
 
-/// Core's filetypes by lowercase file name.
-pub(crate) const FILETYPE_BASENAMES: &[(&str, &str)] = &[
-    (".bash_aliases", "bash"), (".bash_logout", "bash"), (".bash_profile", "bash"), (".bashrc", "bash"),
-    (".kshrc", "bash"), (".profile", "bash"), (".vimrc", "vim"), (".zlogin", "bash"), (".zlogout", "bash"),
-    (".zprofile", "bash"), (".zshenv", "bash"), (".zshrc", "bash"), ("appfile", "ruby"), ("berksfile", "ruby"),
-    ("brewfile", "ruby"), ("cheffile", "ruby"), ("containerfile", "dockerfile"), ("dockerfile", "dockerfile"),
-    ("fastfile", "ruby"), ("gemfile", "ruby"), ("gnumakefile", "make"), ("gvimrc", "vim"), ("guardfile", "ruby"),
-    ("makefile", "make"), ("podfile", "ruby"), ("rakefile", "ruby"), ("thorfile", "ruby"), ("vagrantfile", "ruby"),
-];
+// Core's filetypes by lowercase file name.
+filetypes! {
+    filetype_for_basename, FILETYPE_BASENAMES:
+    ".bash_aliases" => "bash", ".bash_logout" => "bash", ".bash_profile" => "bash", ".bashrc" => "bash",
+    ".kshrc" => "bash", ".profile" => "bash", ".vimrc" => "vim", ".zlogin" => "bash", ".zlogout" => "bash",
+    ".zprofile" => "bash", ".zshenv" => "bash", ".zshrc" => "bash", "appfile" => "ruby", "berksfile" => "ruby",
+    "brewfile" => "ruby", "cheffile" => "ruby", "containerfile" => "dockerfile", "dockerfile" => "dockerfile",
+    "fastfile" => "ruby", "gemfile" => "ruby", "gnumakefile" => "make", "guardfile" => "ruby", "gvimrc" => "vim",
+    "makefile" => "make", "podfile" => "ruby", "rakefile" => "ruby", "thorfile" => "ruby", "vagrantfile" => "ruby",
+}
