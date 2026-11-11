@@ -132,6 +132,16 @@ fn streamAgrees(arena: std.mem.Allocator, name: []const u8, chunks: []const std.
 /// comparison and the live tail check still run.
 const fresh_compare_byte_count_max = 4096;
 
+/// The live leaf's tail writes so far rebuilt what read_leaf shows of that leaf now (B).
+pub fn liveShowsReadLeaf(arena: std.mem.Allocator, doc: *const Doc, sink: *const markdown.TailSink) !bool {
+    const leaf = doc.live.block;
+    if (leaf == markdown.none or !sink.valid or leaf >= doc.blocks.items.len) return true;
+    const expected = (try doc.readLeaf(arena, leaf)).bytes.items;
+    if (std.mem.eql(u8, expected, sink.mirror.items)) return true;
+    std.debug.print("live leaf {d} shows '{s}', read_leaf '{s}'\n", .{ leaf, sink.mirror.items, expected });
+    return false;
+}
+
 fn streamAgreesParts(arena: std.mem.Allocator, name: []const u8, parts: []const []const u8) !bool {
     var total: usize = 0;
     for (parts) |part| total += part.len;
@@ -144,10 +154,18 @@ fn streamAgreesParts(arena: std.mem.Allocator, name: []const u8, parts: []const 
     for (parts) |part| {
         try streamed.doc.append(part);
         if (total > fresh_compare_byte_count_max) continue;
+        if (!try liveShowsReadLeaf(arena, &streamed.doc, &sink)) {
+            std.debug.print("  in {s} after {d} bytes\n", .{ name, streamed.doc.source.items.len });
+            if (environment(arena, "MARKDOWN_PARTS") != null) {
+                for (parts) |p| std.debug.print("  part \"{f}\"\n", .{std.zig.fmtString(p)});
+            }
+            return false;
+        }
         var fresh: Fixture = undefined;
         try fresh.init(rowOptions(name));
         defer fresh.deinit();
-        try fresh.doc.append(try completeLines(arena, &streamed.doc));
+        // The same source in one append: complete lines and the pending line's layout alike.
+        try fresh.doc.append(streamed.doc.source.items);
         if (!try sameDocs(arena, &streamed.doc, &fresh.doc)) return false;
     }
     try streamed.doc.finish();
@@ -159,6 +177,178 @@ fn streamAgreesParts(arena: std.mem.Allocator, name: []const u8, parts: []const 
     try whole.doc.append(streamed.doc.source.items);
     try whole.doc.finish();
     return sameDocs(arena, &streamed.doc, &whole.doc);
+}
+
+/// The text a reader sees of `doc`, as the corpus frames write it (M0: 60 columns, conceal
+/// on, Core's coalesced block mode): blocks apart by a blank line, list items by a line break,
+/// `- ` and right-aligned ` 1. ` markers, box-drawn tables sized to their cells, and a link's
+/// target after its text. Only what the frame rows use; a test instrument, not M3's renderer.
+pub fn renderFrame(arena: std.mem.Allocator, doc: *const Doc) ![]const u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    try frameChildren(arena, doc, markdown.none, "\n\n", &out);
+    // Trailing spaces on each line, and trailing blank lines, are not drawn.
+    var trimmed: std.ArrayListUnmanaged(u8) = .empty;
+    var lines = std.mem.splitScalar(u8, out.items, '\n');
+    var first = true;
+    while (lines.next()) |line| {
+        if (!first) try trimmed.append(arena, '\n');
+        first = false;
+        try trimmed.appendSlice(arena, trimSpaceEnd(line));
+    }
+    return std.mem.trimEnd(u8, trimmed.items, "\n");
+}
+
+/// `line` without trailing white space as JavaScript's `trimEnd` (the frames' runner) sees it:
+/// spaces, tabs, NBSP and the Unicode space separators.
+fn trimSpaceEnd(line: []const u8) []const u8 {
+    var end = line.len;
+    while (end > 0) {
+        if (line[end - 1] == ' ' or line[end - 1] == '\t') {
+            end -= 1;
+            continue;
+        }
+        var start = end - 1;
+        while (start > 0 and (line[start] & 0xc0) == 0x80) start -= 1;
+        const cp = std.unicode.utf8Decode(line[start..end]) catch break;
+        const space = cp == 0xa0 or cp == 0x1680 or (cp >= 0x2000 and cp <= 0x200a) or cp == 0x2028 or cp == 0x2029 or cp == 0x202f or cp == 0x205f or cp == 0x3000 or cp == 0xfeff;
+        if (!space) break;
+        end = start;
+    }
+    return line[0..end];
+}
+
+fn frameChildren(arena: std.mem.Allocator, doc: *const Doc, parent: u32, separator: []const u8, out: *std.ArrayListUnmanaged(u8)) anyerror!void {
+    var number: u32 = 0;
+    for (doc.blocks.items, 0..) |b, i| {
+        if (b.parent_index != parent) continue;
+        const text = try frameBlock(arena, doc, @intCast(i), number);
+        number += 1;
+        if (text.len == 0) continue;
+        if (out.items.len > 0) try out.appendSlice(arena, separator);
+        try out.appendSlice(arena, text);
+    }
+}
+
+fn frameBlock(arena: std.mem.Allocator, doc: *const Doc, index: u32, position: u32) ![]const u8 {
+    const b = doc.blocks.items[index];
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    switch (b.kind) {
+        .paragraph, .heading => try frameLeaf(arena, doc, index, &out),
+        .code, .html => {
+            const leaf = try doc.readLeaf(arena, index);
+            try out.appendSlice(arena, std.mem.trimEnd(u8, leaf.bytes.items, "\n"));
+        },
+        .rule => try out.appendSlice(arena, "───"),
+        .quote => try frameChildren(arena, doc, index, "\n\n", &out),
+        .list => {
+            var tight = b.flags.tight;
+            if (b.flags.open) {
+                tight = true;
+                for (doc.blocks.items) |child| {
+                    if (child.parent_index == index and child.flags.blank_after) tight = false;
+                }
+            }
+            try frameChildren(arena, doc, index, if (tight) "\n" else "\n\n", &out);
+        },
+        .item => {
+            const list = doc.blocks.items[b.parent_index];
+            const marker = if (list.flags.ordered) try std.fmt.allocPrint(arena, "{d: >2}. ", .{list.payload[0] + position}) else "- ";
+            var body: std.ArrayListUnmanaged(u8) = .empty;
+            try frameChildren(arena, doc, index, "\n\n", &body);
+            var lines = std.mem.splitScalar(u8, body.items, '\n');
+            var first = true;
+            while (lines.next()) |line| {
+                if (!first) try out.append(arena, '\n');
+                try out.appendSlice(arena, if (first) marker else try blanks(arena, marker.len));
+                try out.appendSlice(arena, line);
+                first = false;
+            }
+        },
+        .table => try frameTable(arena, doc, index, &out),
+        .table_row, .table_cell => unreachable,
+    }
+    return out.items;
+}
+
+/// A prose leaf's text, each link's target after it.
+fn frameLeaf(arena: std.mem.Allocator, doc: *const Doc, index: u32, out: *std.ArrayListUnmanaged(u8)) !void {
+    const leaf = try doc.readLeaf(arena, index);
+    var at: usize = 0;
+    for (leaf.chunks.items, 0..) |chunk, n| {
+        try out.appendSlice(arena, leaf.bytes.items[at .. at + chunk.byte_count]);
+        at += chunk.byte_count;
+        const url = leaf.urls.items[chunk.link_offset .. chunk.link_offset + chunk.link_byte_count];
+        const next_same = n + 1 < leaf.chunks.items.len and leaf.chunks.items[n + 1].link_byte_count == chunk.link_byte_count and leaf.chunks.items[n + 1].link_offset == chunk.link_offset;
+        if (url.len > 0 and !next_same) try out.print(arena, " ({s})", .{url});
+    }
+}
+
+fn blanks(arena: std.mem.Allocator, count: usize) ![]const u8 {
+    const bytes = try arena.alloc(u8, count);
+    @memset(bytes, ' ');
+    return bytes;
+}
+
+fn frameTable(arena: std.mem.Allocator, doc: *const Doc, index: u32, out: *std.ArrayListUnmanaged(u8)) !void {
+    var rows: std.ArrayListUnmanaged([]const []const u8) = .empty;
+    var widths: std.ArrayListUnmanaged(usize) = .empty;
+    for (doc.blocks.items, 0..) |row, r| {
+        if (row.parent_index != index) continue;
+        var cells: std.ArrayListUnmanaged([]const u8) = .empty;
+        for (doc.blocks.items, 0..) |cell, c| {
+            if (cell.parent_index != r) continue;
+            var cell_text: std.ArrayListUnmanaged(u8) = .empty;
+            try frameLeaf(arena, doc, @intCast(c), &cell_text);
+            const text = cell_text.items;
+            if (cells.items.len >= widths.items.len) try widths.append(arena, 0);
+            widths.items[cells.items.len] = @max(widths.items[cells.items.len], try std.unicode.utf8CountCodepoints(text));
+            try cells.append(arena, text);
+        }
+        try rows.append(arena, cells.items);
+    }
+    if (rows.items.len == 0) return;
+    const Rule = struct { left: []const u8, middle: []const u8, right: []const u8 };
+    const rule = struct {
+        fn write(a: std.mem.Allocator, o: *std.ArrayListUnmanaged(u8), w: []const usize, r: Rule) !void {
+            try o.appendSlice(a, r.left);
+            for (w, 0..) |width, n| {
+                if (n > 0) try o.appendSlice(a, r.middle);
+                for (0..width) |_| try o.appendSlice(a, "─");
+            }
+            try o.appendSlice(a, r.right);
+        }
+    }.write;
+    try rule(arena, out, widths.items, .{ .left = "┌", .middle = "┬", .right = "┐" });
+    for (rows.items, 0..) |cells, n| {
+        try out.appendSlice(arena, "\n│");
+        for (widths.items, 0..) |width, c| {
+            if (c > 0) try out.appendSlice(arena, "│");
+            const text = if (c < cells.len) cells[c] else "";
+            try out.appendSlice(arena, text);
+            try out.appendSlice(arena, try blanks(arena, width - try std.unicode.utf8CountCodepoints(text)));
+        }
+        try out.appendSlice(arena, "│\n");
+        if (n + 1 < rows.items.len) {
+            try rule(arena, out, widths.items, .{ .left = "├", .middle = "┼", .right = "┤" });
+        } else {
+            try rule(arena, out, widths.items, .{ .left = "└", .middle = "┴", .right = "┘" });
+        }
+    }
+}
+
+/// Whether frame `n` (from 1) of the row is what the engine draws: after each chunk, the last
+/// after the stream ends.
+fn framesAgree(arena: std.mem.Allocator, name: []const u8, chunks: []const std.json.Value, frames: []const std.json.Value, results: []bool) !void {
+    var f: Fixture = undefined;
+    try f.init(rowOptions(name));
+    defer f.deinit();
+    for (chunks, frames, 0..) |chunk, frame, n| {
+        try f.doc.append(chunk.string);
+        if (n + 1 == chunks.len) try f.doc.finish();
+        const actual = try renderFrame(arena, &f.doc);
+        results[n] = std.mem.eql(u8, actual, frame.string);
+        if (!results[n] and environment(arena, "MARKDOWN_ROW") != null) std.debug.print("frame {d}: expected '{s}'\n          actual   '{s}'\n", .{ n + 1, frame.string, actual });
+    }
 }
 
 pub fn environment(arena: std.mem.Allocator, key: []const u8) ?[]const u8 {
@@ -196,6 +386,8 @@ test "Markdown corpus: the engine renders and streams each row unless the row li
     var unexpected: std.ArrayListUnmanaged(u8) = .empty;
     var passes = [2]u32{ 0, 0 };
     var rows: u32 = 0;
+    var frame_count: u32 = 0;
+    var frame_passes: u32 = 0;
     for (corpus.object.get("rows").?.array.items) |row_value| {
         const row = row_value.array.items;
         const name = row[0].string;
@@ -222,9 +414,26 @@ test "Markdown corpus: the engine renders and streams each row unless the row li
             try unexpected.print(arena, "|{s}\",\n", .{check[0]});
             if (only != null) std.debug.print("expected {s}\nactual   {s}\n", .{ expected, actual });
         }
+        // The B frames M0 wrote for the row: engine-text:N for frame N.
+        if (row.len > 4) {
+            const frames = row[4].array.items;
+            const results = try ra.alloc(bool, frames.len);
+            try framesAgree(ra, name, chunks, frames, results);
+            for (results, 1..) |ok, n| {
+                frame_count += 1;
+                frame_passes += @intFromBool(ok);
+                const check = try std.fmt.allocPrint(ra, "engine-text:{d}", .{n});
+                if (ok != listed(fails, check)) continue;
+                try unexpected.appendSlice(arena, "    \"");
+                try jsonEscape(arena, &unexpected, name);
+                try unexpected.print(arena, "|{s}\",\n", .{check});
+            }
+        }
+    }
+    if (unexpected.items.len > 0 or environment(arena, "MARKDOWN_GATES") != null) {
+        std.debug.print("rows {d}, engine-html {d}, engine-stream {d}, engine-text {d} of {d} frames; checks that differ from their listing:\n{s}", .{ rows, passes[0], passes[1], frame_passes, frame_count, unexpected.items });
     }
     if (unexpected.items.len > 0) {
-        std.debug.print("rows {d}, engine-html {d}, engine-stream {d}; checks that differ from their listing:\n{s}", .{ rows, passes[0], passes[1], unexpected.items });
         return error.CorpusMismatch;
     }
 }
@@ -298,11 +507,12 @@ const Engine = struct {
         return commands.items;
     }
 
-    pub fn simplify(_: *Engine, _: std.mem.Allocator, command: Command) !?Command {
+    /// An append keeps its first half or its second half; a shared set drops the old source.
+    pub fn simplify(_: *Engine, arena: std.mem.Allocator, command: Command) ![]const Command {
         return switch (command) {
-            .append => |text| if (text.len > 1) .{ .append = text[0 .. text.len / 2] } else null,
-            .set => |s| if (s.shared) .{ .set = .{ .text = s.text, .shared = false } } else null,
-            else => null,
+            .append => |text| if (text.len > 1) try arena.dupe(Command, &.{ .{ .append = text[0 .. text.len / 2] }, .{ .append = text[text.len / 2 ..] } }) else &.{},
+            .set => |s| if (s.shared) try arena.dupe(Command, &.{.{ .set = .{ .text = s.text, .shared = false } }}) else &.{},
+            else => &.{},
         };
     }
 
@@ -332,8 +542,20 @@ const Engine = struct {
         var mirror: std.ArrayListUnmanaged(markdown.Block) = .empty;
         var committed: u32 = 0;
         var closed: std.ArrayListUnmanaged(markdown.Block) = .empty;
+        // P7: the frame drawn after the last append or finish (null after a replace).
+        var frame: ?[]const u8 = null;
         for (commands, 0..) |command, step| {
             const was_finished = f.doc.finished;
+            // B's last exception to P7: a backtick opener drawn as a code span that never closes
+            // reverts to text (its content's escapes and entities then decode).
+            // The check skips a step that starts with an open prose leaf holding a backtick, and
+            // a step that adds a definition (a late definition turns `[a][b]` into `a`).
+            const definition_count = f.doc.definitions.items.len;
+            var code_drawn = false;
+            for (f.doc.blocks.items) |b| {
+                const prose = b.kind == .paragraph or b.kind == .heading or b.kind == .table_cell;
+                if (prose and (b.flags.open or b.source_end_byte > f.doc.line_start_byte) and std.mem.indexOfScalar(u8, f.doc.source.items[b.source_start_byte..@min(f.doc.source.items.len, b.source_end_byte)], '`') != null) code_drawn = true;
+            }
             const read_before = f.doc.read_block_count;
             const before_blocks = try arena.dupe(markdown.Block, f.doc.blocks.items);
             switch (command) {
@@ -357,10 +579,11 @@ const Engine = struct {
                 .read => |capacity_kind| {
                     var count: u32 = 0;
                     for (f.doc.blocks.items) |b| count += @intFromBool(b.flags.unreported);
+                    // A host reads with room for at least one record: a zero capacity only asks.
                     const capacity: u32 = switch (capacity_kind) {
                         0 => 0,
                         1 => count -| 1,
-                        else => count,
+                        else => @max(count, 1),
                     };
                     const out = try arena.alloc(markdown.Doc.Change, capacity);
                     const mirror_len = mirror.items.len;
@@ -368,7 +591,7 @@ const Engine = struct {
                     if (read.count != count) return .{ .property = "P5 change count", .step = step };
                     // Only blocks a read listed can be reported removed.
                     if (read.removed_from_index != markdown.none and read.removed_from_index >= mirror_len) return .{ .property = "P5 removal of an unread block", .step = step };
-                    if (capacity >= count) {
+                    if (capacity > 0 and capacity >= count) {
                         if (read.removed_from_index != markdown.none and read.removed_from_index < mirror.items.len) mirror.items.len = read.removed_from_index;
                         for (out[0..count]) |change| {
                             if (change.index >= mirror.items.len) try mirror.resize(arena, change.index + 1);
@@ -405,7 +628,7 @@ const Engine = struct {
                 try fresh.doc.append(f.doc.source.items);
                 try fresh.doc.finish();
             } else {
-                try fresh.doc.append(try completeLines(arena, &f.doc));
+                try fresh.doc.append(f.doc.source.items);
             }
             if (!try sameDocs(arena, &f.doc, &fresh.doc)) return .{ .property = "P1 streamed equals whole", .step = step };
             // P4: the committed count only grows; P4': every closed top-level prefix block is
@@ -441,12 +664,48 @@ const Engine = struct {
                     if (holds != b.flags.hooked) return .{ .property = "P18 filter latch equals substring", .step = step };
                 }
             }
+            // P7: no frame loses drawn text (B's exceptions aside, see framesGrow).
+            if (reopened or command == .set or command == .toggle_math or command == .swap_filter) frame = null;
+            if (command == .append or command == .finish) {
+                const next = try renderFrame(arena, &f.doc);
+                if (frame) |previous| {
+                    const exempt = code_drawn or f.doc.definitions.items.len != definition_count;
+                    if (!exempt and !framesGrow(previous, next, options.math)) {
+                        if (std.debug.runtime_safety and model.environment(arena, "MODEL_SEED") != null) std.debug.print("frame '{s}' then '{s}'\n", .{ previous, next });
+                        return .{ .property = "P7 no frame loses drawn text", .step = step };
+                    }
+                }
+                frame = next;
+            }
             if (sink.mismatch_count > 0) return .{ .property = "live tail writes equal the leaf's display", .step = step };
+            if (!try liveShowsReadLeaf(arena, &f.doc, &sink)) return .{ .property = "live display equals read_leaf (B)", .step = step };
             if (f.doc.counters.live_mismatch_count > 0) return .{ .property = "live pending line guessed its leaf", .step = step };
         }
         return null;
     }
 };
+
+/// Whether every non-white-space byte `previous` drew is in `next`, in order (P7). B's
+/// exceptions are left out of both: link brackets and an image's `!` (concealed when the link
+/// resolves) and math delimiters (`$`, and with math on `\(` and `\)`, concealed when math
+/// closes).
+fn framesGrow(previous: []const u8, next: []const u8, math: bool) bool {
+    var at: usize = 0;
+    for (previous) |c| {
+        if (frameIgnored(c) or (math and (c == '\\' or c == '(' or c == ')'))) continue;
+        while (at < next.len and next[at] != c) at += 1;
+        if (at == next.len) return false;
+        at += 1;
+    }
+    return true;
+}
+
+fn frameIgnored(c: u8) bool {
+    return switch (c) {
+        ' ', '\t', '\n', '[', ']', '!', '$' => true,
+        else => false,
+    };
+}
 
 /// The fields a host sees (internal bits excluded).
 fn sameRecord(a: markdown.Block, b: markdown.Block) bool {
@@ -687,7 +946,7 @@ test "Markdown limits: each store stays within its limit and a rejection publish
     }
 }
 
-const Work = struct { byte_count: usize, scanned: u64, tail: u64, hooked: bool };
+const Work = struct { byte_count: usize, append_count: usize, counters: markdown.Counters, hooked: bool };
 
 /// Streams `parts` into a fresh doc (with finish) and returns its work counters.
 fn work(options: markdown.Options, parts: []const []const u8) !Work {
@@ -702,7 +961,7 @@ fn work(options: markdown.Options, parts: []const []const u8) !Work {
     try f.doc.finish();
     var hooked = false;
     for (f.doc.blocks.items) |b| hooked = hooked or b.flags.hooked;
-    return .{ .byte_count = byte_count, .scanned = f.doc.counters.bytes_scanned, .tail = f.doc.counters.tail_write_bytes, .hooked = hooked };
+    return .{ .byte_count = byte_count, .append_count = parts.len, .counters = f.doc.counters, .hooked = hooked };
 }
 
 fn split(arena: std.mem.Allocator, text: []const u8, size: usize) ![]const []const u8 {
@@ -725,7 +984,7 @@ fn fixture(arena: std.mem.Allocator, name: []const u8) ![]const u8 {
     return error.NoSuchRow;
 }
 
-test "Markdown work: bytes scanned and tail writes stay linear in the document (invariant 4)" {
+test "Markdown work: every counter stays linear in the document (invariant 4)" {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -734,30 +993,73 @@ test "Markdown work: bytes scanned and tail writes stay linear in the document (
     const line = words.items[0..8192];
     const xs = try arena.alloc(u8, 8192);
     @memset(xs, 'x');
+    const spaces = try arena.alloc(u8, 4096);
+    @memset(spaces, ' ');
+    var label: std.ArrayListUnmanaged(u8) = .empty;
+    try label.appendSlice(arena, "see [a][");
+    while (label.items.len < 900) try label.appendSlice(arena, "label ");
     const verbose = environment(arena, "MARKDOWN_GATES") != null;
-    // Scanned bytes count every byte the line scanner, the hook filter and the inline parser
-    // read, retries included. A stray backtick reads the rest of its leaf a third time: the
-    // closer search, then the tokens once the leaf ends without a closer.
-    const rows = [_]struct { name: []const u8, options: markdown.Options = .{}, parts: []const []const u8, tail_max: ?u64 = null, scanned_factor: u64 = 2 }{
-        .{ .name = "list.md, 30-byte appends", .parts = try split(arena, try fixture(arena, "fixture list"), 30) },
-        .{ .name = "prose.md, 30-byte appends", .parts = try split(arena, try fixture(arena, "fixture prose"), 30) },
+    const Row = struct {
+        name: []const u8,
+        options: markdown.Options = .{},
+        parts: []const []const u8,
+        inline_factor: u64 = 2,
+        /// Display visits: a pending word is drawn, then compared with its tokens' display
+        /// (assembled once) when the word ends; the fixtures stay within 2x.
+        display_factor: u64 = 3,
+        /// Sent bytes: an opener drawn as closed (B) that never closes is drawn again, literal,
+        /// when its leaf closes (the design's gate: at most 2x on this row).
+        sent_factor: u64 = 1,
+    };
+    const rows = [_]Row{
+        .{ .name = "list.md, 30-byte appends", .parts = try split(arena, try fixture(arena, "fixture list"), 30), .display_factor = 2 },
+        .{ .name = "prose.md, 30-byte appends", .parts = try split(arena, try fixture(arena, "fixture prose"), 30), .display_factor = 2 },
         .{ .name = "an 8,192-byte line, 1-byte appends", .parts = try split(arena, line, 1) },
-        .{ .name = "some **x + 8,192 one-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"some **x"}, try split(arena, xs, 1) }) },
-        .{ .name = "a stray backtick, 1-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"a `b "}, try split(arena, line, 1) }), .scanned_factor = 3 },
+        .{ .name = "some **x + 8,192 one-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"some **x"}, try split(arena, xs, 1) }), .sent_factor = 2 },
+        .{ .name = "a stray backtick, 1-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"a `b "}, try split(arena, line, 1) }), .sent_factor = 2 },
+        .{ .name = "a pending line of spaces, 1-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"text\n"}, try split(arena, spaces, 1), &.{"x\n"} }) },
+        .{ .name = "a growing reference label, 1-byte appends", .parts = try split(arena, label.items, 1) },
+        // B's holds read on where they stopped: trailing spaces, an entity, an autolink and a
+        // code span's trailing spaces that stay undecided for 4,096 bytes.
+        .{ .name = "spaces inside a paragraph, 1-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"a"}, try split(arena, spaces, 1), &.{"b\n"} }) },
+        .{ .name = "a long unfinished entity, 1-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"&"}, try split(arena, xs[0..4096], 1), &.{";\n"} }) },
+        .{ .name = "a long unfinished autolink, 1-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"a <"}, try split(arena, xs[0..4096], 1), &.{">\n"} }) },
+        .{ .name = "spaces in a code span, 1-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"`a"}, try split(arena, spaces, 1), &.{"`\n"} }) },
         .{ .name = "se + s_ with the filter", .options = .{ .hook = true, .hook_filter = "ses_" }, .parts = &.{ "see se", "s_abc now\n" } },
     };
     for (rows) |row| {
         const w = try work(row.options, row.parts);
-        if (verbose) std.debug.print("{s}: {d} bytes, scanned {d}, tail writes {d}\n", .{ row.name, w.byte_count, w.scanned, w.tail });
-        // A few bytes of slack per call: the filter overlap and the pending line ending.
-        std.testing.expect(w.scanned <= row.scanned_factor * w.byte_count + 64) catch |err| {
-            std.debug.print("{s}: scanned {d} of {d} bytes\n", .{ row.name, w.scanned, w.byte_count });
-            return err;
+        const c = w.counters;
+        const n = w.byte_count;
+        if (verbose) std.debug.print("{s}: {d} bytes in {d} appends; line {d}, block {d}, hook {d}, inline {d}, display {d}, sent {d}\n", .{ row.name, n, w.append_count, c.line_byte_visits, c.block_byte_visits, c.hook_byte_visits, c.inline_byte_visits, c.display_byte_visits, c.tail_write_bytes });
+        // Each counter, where its bytes are read: the line scanner reads each byte once (and the
+        // last byte again per append, a pending carriage return); the filter search reads new
+        // bytes plus its overlap per append.
+        const bounds = [_]struct { []const u8, u64, u64 }{
+            .{ "line", c.line_byte_visits, n + w.append_count + 1 },
+            // A pending line's first byte is read again per append (its kind, its layout).
+            .{ "block", c.block_byte_visits, 2 * n + 4 * w.append_count + 64 },
+            .{ "hook", c.hook_byte_visits, n + 3 * w.append_count + 8 },
+            .{ "inline", c.inline_byte_visits, row.inline_factor * n + 64 },
+            .{ "display", c.display_byte_visits, row.display_factor * n + 64 },
+            .{ "sent", c.tail_write_bytes, row.sent_factor * n + 64 },
         };
-        // A tail write carries each display byte about once.
-        try std.testing.expect(w.tail <= (row.tail_max orelse w.byte_count + 16));
+        for (bounds) |bound| {
+            std.testing.expect(bound[1] <= bound[2]) catch |err| {
+                std.debug.print("{s}: {s} counter {d} above {d}\n", .{ row.name, bound[0], bound[1], bound[2] });
+                return err;
+            };
+        }
         if (row.options.hook) try std.testing.expect(w.hooked);
     }
+    // Each counter counts: a small document's exact work.
+    const small = try work(.{}, &.{ "ab *c", "d* e\n" });
+    // Each byte once, and the first append's last byte again (it may be a carriage return).
+    try std.testing.expectEqual(@as(u64, 11), small.counters.line_byte_visits);
+    try std.testing.expect(small.counters.inline_byte_visits >= 9);
+    try std.testing.expect(small.counters.block_byte_visits >= 2);
+    // "ab c" (the opener drawn as closed), then "d e": each display byte sent once.
+    try std.testing.expectEqual(@as(u64, 7), small.counters.tail_write_bytes);
 }
 
 /// Counts allocator calls that reach the backing allocator.

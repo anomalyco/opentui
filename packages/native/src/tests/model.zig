@@ -20,7 +20,7 @@ pub const Options = struct {
 ///   Command: type
 ///   generate(self, arena, random, steps) ![]Command
 ///   run(self, arena, commands) !?Failure
-///   simplify(self, arena, command) !?Command   (a smaller command, or null)
+///   simplify(self, arena, command) ![]const Command   (smaller commands to try, or none)
 ///   format(self, command, writer) void       (one trace line)
 pub fn check(comptime Context: type, context: *Context, default: Options) !void {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -70,16 +70,17 @@ fn shrink(comptime Context: type, context: *Context, arena: std.mem.Allocator, i
         if (chunk == 1 and !removed_any) break;
         if (!removed_any) chunk /= 2;
     }
-    // Simplify each command while the failure stays.
+    // Simplify each command while the failure stays: the first smaller command that keeps it.
     const result = try arena.dupe(Context.Command, current);
     for (result) |*command| {
-        while (try context.simplify(arena, command.*)) |simpler| {
+        simpler: while (true) {
             const saved = command.*;
-            command.* = simpler;
-            if (!try failsWith(Context, context, arena, result, property)) {
-                command.* = saved;
-                break;
+            for (try context.simplify(arena, saved)) |candidate| {
+                command.* = candidate;
+                if (try failsWith(Context, context, arena, result, property)) continue :simpler;
             }
+            command.* = saved;
+            break;
         }
     }
     return result;

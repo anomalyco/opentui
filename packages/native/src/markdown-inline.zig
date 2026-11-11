@@ -11,7 +11,8 @@ const tables = @import("markdown-tables.zig");
 pub const token_count_max: u32 = 4096;
 pub const delimiter_count_max: u32 = 1024;
 pub const bracket_count_max: u32 = 64;
-pub const label_byte_count_max: u32 = 999;
+/// CommonMark 4.7: at most 999 characters (code points) between a label's brackets.
+pub const label_codepoint_count_max: u32 = 999;
 const destination_paren_depth_max: u32 = 32;
 const backtick_run_tracked_max: u32 = 80;
 
@@ -171,11 +172,14 @@ pub const Parser = struct {
     /// belongs to and where it stopped, so the next feed continues instead of starting over.
     search_opener: u32 = std.math.maxInt(u32),
     search_position: u32 = 0,
+    search_read_from: u32 = 0,
+    /// A label scan after `]` that ran out of content (its `]` is `search_opener`).
+    label_scan: LabelScan = .{ .at = 0, .position = 0 },
     /// The first token whose display changed since `takeChanged` (none: nothing changed).
     changed_from: u32 = std.math.maxInt(u32),
     extended_from: u32 = std.math.maxInt(u32),
     /// Bytes the tokenizer examined (counters; a construct retried after "need more" counts again).
-    bytes_scanned: u64 = 0,
+    byte_visits: u64 = 0,
 
     pub fn deinit(self: *Parser) void {
         self.tokens.deinit(self.allocator);
@@ -186,9 +190,18 @@ pub const Parser = struct {
         self.emails.deinit(self.allocator);
     }
 
+    /// Frees a store that grew past what one leaf's tail needs.
+    pub fn releaseCapacity(self: *Parser) void {
+        if (self.tokens.capacity > token_count_max) self.tokens.clearAndFree(self.allocator);
+        if (self.delimiters.capacity > delimiter_count_max) self.delimiters.clearAndFree(self.allocator);
+        if (self.matches.capacity > token_count_max) self.matches.clearAndFree(self.allocator);
+        if (self.links.capacity > bracket_count_max) self.links.clearAndFree(self.allocator);
+        if (self.emails.capacity > bracket_count_max) self.emails.clearAndFree(self.allocator);
+    }
+
     /// Back to an empty leaf, keeping capacity.
     pub fn reset(self: *Parser) void {
-        const kept = Parser{ .allocator = self.allocator, .references = self.references, .options = self.options, .tokens = self.tokens, .delimiters = self.delimiters, .matches = self.matches, .links = self.links, .brackets = self.brackets, .emails = self.emails, .bytes_scanned = self.bytes_scanned };
+        const kept = Parser{ .allocator = self.allocator, .references = self.references, .options = self.options, .tokens = self.tokens, .delimiters = self.delimiters, .matches = self.matches, .links = self.links, .brackets = self.brackets, .emails = self.emails, .byte_visits = self.byte_visits };
         self.* = kept;
         self.tokens.clearRetainingCapacity();
         self.delimiters.clearRetainingCapacity();
@@ -217,7 +230,7 @@ pub const Parser = struct {
             self.step() catch |err| switch (err) {
                 error.NeedMore => {
                     // A construct that is not a resumable search reads again from its start.
-                    if (self.search_opener != self.position) self.bytes_scanned += subject.len - self.position;
+                    if (self.search_opener != self.position) self.byte_visits += subject.len - self.position;
                     break;
                 },
                 error.OutOfMemory => return error.OutOfMemory,
@@ -309,7 +322,7 @@ pub const Parser = struct {
     fn step(self: *Parser) StepError!void {
         const c = self.subject[self.position];
         // A resumed search counts the bytes it reads itself.
-        if (self.search_opener != self.position) self.bytes_scanned += 1;
+        if (self.search_opener != self.position) self.byte_visits += 1;
         switch (c) {
             '\n' => try self.newline(),
             '\\' => try self.backslash(),
@@ -344,7 +357,7 @@ pub const Parser = struct {
     fn plainFrom(self: *Parser, at: u32) Error!void {
         var i = at + 1;
         while (i < self.limit and !self.isSpecial(self.subject[i])) i += 1;
-        self.bytes_scanned += i - at - 1;
+        self.byte_visits += i - at - 1;
         try self.text(at, i);
     }
 
@@ -457,7 +470,7 @@ pub const Parser = struct {
         while (i + 1 < s.len) : (i += 1) {
             const c = s[i];
             if (c == '\\' and s[i + 1] == ')') {
-                self.endSearch();
+                self.endSearch(i);
                 return if (i > from) i else null;
             }
             if (c == '\\') i += 1;
@@ -467,18 +480,21 @@ pub const Parser = struct {
 
     fn resumeSearch(self: *Parser, opener: u32, from: u32) u32 {
         const start = if (self.search_opener == opener) self.search_position else from;
-        self.bytes_scanned += self.subject.len -| start;
+        self.search_read_from = start;
         return start;
     }
 
-    fn endSearch(self: *Parser) void {
+    /// The search ended at `at`; it read the bytes from where it started or resumed.
+    fn endSearch(self: *Parser, at: u32) void {
+        self.byte_visits += at -| self.search_read_from;
         self.search_opener = std.math.maxInt(u32);
     }
 
     /// A search reached the end of the content: final, it failed; otherwise wait for more.
     fn searchRanOut(self: *Parser, opener: u32, position: u32) StepError!?u32 {
+        self.byte_visits += self.subject.len -| self.search_read_from;
         if (self.final) {
-            self.endSearch();
+            self.search_opener = std.math.maxInt(u32);
             return null;
         }
         self.search_opener = opener;
@@ -513,7 +529,7 @@ pub const Parser = struct {
             if (i + run_length == n and !self.final) return self.searchRanOut(opener, i);
             if (run_length <= backtick_run_tracked_max) self.backtick_last_start[run_length] = i;
             if (run_length == count) {
-                self.endSearch();
+                self.endSearch(i);
                 return i;
             }
             i += run_length;
@@ -592,8 +608,8 @@ pub const Parser = struct {
         d.next = null;
         d.on_stack = false;
         self.delimiter_stack_count -= 1;
-        // An opener the display concealed (it could still match) is literal now.
-        if (d.can_open and d.count > 0) self.markChanged(d.token_index);
+        // A run the display concealed (it could still open or close) is literal now.
+        if ((d.can_open or d.can_close) and d.count > 0) self.markChanged(d.token_index);
     }
 
     /// CommonMark's "process emphasis" over the delimiters above `bottom`.
@@ -723,7 +739,7 @@ pub const Parser = struct {
             const opener_token = self.tokens.items[bracket.token_index];
             const inner = self.subject[opener_token.end()..start];
             var label: ?[]const u8 = null;
-            const label_len = try scanLinkLabel(self.subject, after, self.final);
+            const label_len = try self.labelAfter(start, after);
             if (label_len > 2) {
                 label = self.subject[after + 1 .. after + label_len - 1];
                 end = after + label_len;
@@ -762,6 +778,24 @@ pub const Parser = struct {
             }
         }
         try self.catchUp();
+    }
+
+    /// The `[label]` after the `]` at `close`: a scan that ran out of content continues where it
+    /// stopped on the next feed instead of starting again at `[`.
+    fn labelAfter(self: *Parser, close: u32, at: u32) StepError!u32 {
+        var scan: LabelScan = if (self.search_opener == close) self.label_scan else .{ .at = at, .position = at + 1 };
+        const from = scan.position;
+        const label_length = scan.run(self.subject, self.final) catch |err| {
+            self.byte_visits += scan.position -| from;
+            self.search_opener = close;
+            self.search_position = scan.position;
+            self.search_read_from = scan.position;
+            self.label_scan = scan;
+            return err;
+        };
+        self.byte_visits += @max(scan.position, at + label_length) -| from;
+        if (self.search_opener == close) self.search_opener = std.math.maxInt(u32);
+        return label_length;
     }
 
     fn literalClose(self: *Parser, start: u32) Error!void {
@@ -814,13 +848,16 @@ pub const Parser = struct {
 
     fn lessThan(self: *Parser) StepError!void {
         const start = self.position;
+        // A construct's bytes after its first, which the step counted.
         if (scanAutolink(self.subject, start)) |a| {
             try self.push(.{ .start = start, .len = a.end - start, .kind = if (a.email) .autolink_email else .autolink });
+            self.byte_visits += a.end - start - 1;
             self.position = a.end;
             return;
         }
         if (try scanHtmlTag(self.subject, start, self.final)) |end| {
             try self.push(.{ .start = start, .len = end - start, .kind = .html });
+            self.byte_visits += end - start - 1;
             self.position = end;
             return;
         }
@@ -831,6 +868,7 @@ pub const Parser = struct {
         const start = self.position;
         if (scanEntity(self.subject, start)) |e| {
             try self.push(.{ .start = start, .len = e.end - start, .kind = .entity });
+            self.byte_visits += e.end - start - 1;
             self.position = e.end;
             return;
         }
@@ -864,7 +902,7 @@ pub const Parser = struct {
                 continue;
             }
             if (c == '`' or (c == '\n' and i + 1 < s.len and s[i + 1] == '\n')) {
-                self.endSearch();
+                self.endSearch(i);
                 break;
             }
             if (c != '$') {
@@ -875,7 +913,7 @@ pub const Parser = struct {
                 _ = try self.searchRanOut(start, i);
                 unreachable;
             }
-            self.endSearch();
+            self.endSearch(i);
             const closes = !isAsciiWhitespace(s[i - 1]) and (i + 1 >= s.len or (!std.ascii.isDigit(s[i + 1]) and s[i + 1] != '$'));
             if (!closes) break;
             try self.push(.{ .start = start, .len = i + 1 - start, .kind = .math, .aux = 1 });
@@ -959,6 +997,7 @@ pub const Parser = struct {
             }
         }
         try self.push(.{ .start = start, .len = end - start, .kind = .extended_autolink, .aux = @backingInt(kind) });
+        self.byte_visits += end -| self.position -| 1;
         self.position = end;
     }
 
@@ -1047,11 +1086,29 @@ pub fn tokenDisplayLength(r: Result, index: u32) u32 {
         .bracket_open => if (t.aux != 0) 0 else t.len,
         .bracket_close => if (t.aux != 0) 0 else 1,
         .delimiter => blk: {
+            // A run that may still open or close is drawn as matched (B) until it is decided.
             const d = r.delimiters[delimiterOf(r, index) orelse break :blk t.len];
-            if (d.on_stack and d.can_open) break :blk 0;
+            if (d.on_stack and (d.can_open or d.can_close)) break :blk 0;
             break :blk d.count;
         },
     };
+}
+
+/// Appends the display of token `index` before content offset `cut` inside it: what B drew of
+/// it while its end was still to come (text bytes, a code span's or math's content so far).
+/// Other tokens draw nothing before their end.
+pub fn appendTokenDisplayBefore(r: Result, index: u32, cut: u32, allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) error{OutOfMemory}!void {
+    const t = r.tokens[index];
+    assert(t.start < cut and cut < t.end());
+    switch (t.kind) {
+        .text, .extended_autolink => try out.appendSlice(allocator, r.content[t.start..cut]),
+        .code => {
+            var scan: PendingScan = .{};
+            try renderPending(r.content[0..cut], t.start, t.start, &scan, allocator, out);
+        },
+        .math => if (cut > t.start + t.aux) try out.appendSlice(allocator, r.content[t.start + t.aux .. cut]),
+        else => {},
+    }
 }
 
 /// Appends the display bytes of token `index` (the bytes `tokenDisplayLength` counts).
@@ -1117,6 +1174,153 @@ pub fn unescapeText(arena: std.mem.Allocator, raw: []const u8) error{OutOfMemory
         i += 1;
     }
     return out.items;
+}
+
+/// The display of the bytes a non-final parse has not tokenized yet, from `from` (D93 Q4 B):
+/// drawn as they are, except what a later byte can still change. Delimiter runs are not drawn
+/// (an opener is drawn as closed; a run that turns out literal is drawn when it is decided, which
+/// only adds text), and drawing stops at a construct the next bytes decide: a trailing backslash,
+/// an unfinished entity, `<` before its `>`, `](` or `][` and what follows, `!` before `[`, and
+/// trailing whitespace. A backtick run is drawn as a code span's opener (concealed) and what
+/// follows as code, up to a run that may close it: a closer of its length that a later byte
+/// decided ends the span, and drawing goes on after it. After a `<` that may start an HTML tag
+/// and before its `>`, drawing stops at an entity (raw HTML would show it undecoded). Appends
+/// display bytes to `out`.
+///
+/// `scan` carries the work between calls: on return, `stop` is where drawing stopped, `scanned`
+/// how far the bytes after it were read, and `code` the opener whose span `stop` is in; the next
+/// call from the same `stop` goes on from there, so the bytes read stay linear in the content
+/// however it is split.
+pub const PendingScan = struct { stop: u32 = 0, scanned: u32 = 0, code: ?u32 = null, tag: bool = false };
+
+pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *PendingScan, allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) error{OutOfMemory}!void {
+    // Bytes [from, resume) were read by the last call and held its stop.
+    const continues = scan.stop == from;
+    const resume_at: u32 = if (continues) @max(from, scan.scanned) else from;
+    var i = from;
+    var code: ?u32 = code_opener orelse if (continues) scan.code else null;
+    var tag = continues and scan.tag;
+    while (i < s.len) {
+        if (code) |opener| {
+            // In a code span from `opener`: drawn raw ('\n' as a space) up to a run that closes
+            // it or may still grow into its closer, and before trailing whitespace (the span
+            // strips one space at each end). Bytes from `i` to `resume_at` are such whitespace.
+            const opener_length = runLength(s, opener, '`');
+            if (i == opener) i += opener_length;
+            const start = out.items.len;
+            var end: u32 = @max(i, if (i == from) resume_at else i);
+            var drawn_end: u32 = i;
+            var closed = false;
+            while (end < s.len) {
+                if (s[end] != '`') {
+                    if (!isAsciiWhitespace(s[end])) drawn_end = end + 1;
+                    end += 1;
+                    continue;
+                }
+                const run = runLength(s, end, '`');
+                if (end + run == s.len) break;
+                if (run == opener_length) {
+                    closed = true;
+                    break;
+                }
+                end += run;
+                drawn_end = end;
+            }
+            try out.appendSlice(allocator, s[i..drawn_end]);
+            for (out.items[start..]) |*c| {
+                if (c.* == '\n') c.* = ' ';
+            }
+            if (!closed) {
+                scan.* = .{ .stop = drawn_end, .scanned = end, .code = opener };
+                return;
+            }
+            i = end + opener_length;
+            code = null;
+            continue;
+        }
+        const c = s[i];
+        // A hold at the first byte reads on where the last call stopped reading.
+        const known = if (i == from) resume_at else i;
+        switch (c) {
+            '*', '_', '~' => i += runLength(s, i, c),
+            '`' => {
+                // A run at the end may still grow: its length is not known yet.
+                if (i + runLength(s, i, c) == s.len) return hold(scan, i, i, tag);
+                code = i;
+            },
+            ' ', '\t', '\n' => {
+                var j = @max(i, known);
+                while (j < s.len and isAsciiWhitespace(s[j])) j += 1;
+                if (j >= s.len) return hold(scan, i, j, tag);
+                try out.appendSlice(allocator, s[i..j]);
+                i = j;
+            },
+            '\\' => {
+                // Before a line ending it may be a hard break, or text at the leaf's end.
+                var j = @max(i + 1, known);
+                while (j < s.len and isAsciiWhitespace(s[j])) j += 1;
+                if (j >= s.len) return hold(scan, i, j, tag);
+                if (isAsciiPunctuation(s[i + 1]) or s[i + 1] == '\n') {
+                    // An escape, or a hard break (drawn as its line break).
+                    try out.append(allocator, s[i + 1]);
+                    i += 2;
+                } else {
+                    try out.append(allocator, c);
+                    i += 1;
+                }
+            },
+            '&' => {
+                if (tag) return hold(scan, i, i, tag);
+                var j = @max(i + 1, known);
+                while (j < s.len and (std.ascii.isAlphanumeric(s[j]) or s[j] == '#')) j += 1;
+                if (j >= s.len) return hold(scan, i, j, tag);
+                if (s[j] == ';' and scanEntity(s, i) != null) {
+                    const cps = decodeEntity(s[i .. j + 1]);
+                    var buffer: [8]u8 = undefined;
+                    var n = std.unicode.utf8Encode(cps[0], &buffer) catch 0;
+                    if (cps[1] != 0) n += std.unicode.utf8Encode(cps[1], buffer[n..]) catch 0;
+                    try out.appendSlice(allocator, buffer[0..n]);
+                    i = j + 1;
+                } else {
+                    try out.append(allocator, c);
+                    i += 1;
+                }
+            },
+            '<' => {
+                var j = @max(i + 1, known);
+                while (j < s.len and s[j] != '>' and !isAsciiWhitespace(s[j])) j += 1;
+                if (j >= s.len) return hold(scan, i, j, tag);
+                if (scanAutolink(s, i)) |a| {
+                    try out.appendSlice(allocator, s[i + 1 .. a.end - 1]);
+                    i = a.end;
+                } else {
+                    tag = std.ascii.isAlphabetic(s[i + 1]) or s[i + 1] == '/' or s[i + 1] == '!' or s[i + 1] == '?';
+                    try out.append(allocator, c);
+                    i += 1;
+                }
+            },
+            ']' => {
+                if (i + 1 >= s.len or s[i + 1] == '(' or s[i + 1] == '[') return hold(scan, i, i, tag);
+                try out.append(allocator, c);
+                i += 1;
+            },
+            '!' => {
+                if (i + 1 >= s.len) return hold(scan, i, i, tag);
+                if (s[i + 1] != '[') try out.append(allocator, c);
+                i += 1;
+            },
+            else => {
+                if (c == '>') tag = false;
+                try out.append(allocator, c);
+                i += 1;
+            },
+        }
+    }
+    return hold(scan, i, i, tag);
+}
+
+fn hold(scan: *PendingScan, stop: u32, scanned: u32, tag: bool) void {
+    scan.* = .{ .stop = stop, .scanned = scanned, .code = null, .tag = tag };
 }
 
 /// A code span's content without the one space stripped from each end (line endings count as
@@ -1293,30 +1497,45 @@ pub fn scanTitle(s: []const u8, at: u32, final: bool) error{NeedMore}!?Scanned {
 
 /// Length of `[label]` at `at` (2 for `[]`), or 0.
 pub fn scanLinkLabel(s: []const u8, at: u32, final: bool) error{NeedMore}!u32 {
-    if (at >= s.len) return if (final) 0 else error.NeedMore;
-    if (s[at] != '[') return 0;
-    var i = at + 1;
-    while (i < s.len) : (i += 1) {
-        const c = s[i];
-        if (i - at - 1 > label_byte_count_max) return 0;
-        if (c == '\\') {
-            if (i + 1 >= s.len) break;
-            if (isAsciiPunctuation(s[i + 1])) {
-                i += 1;
-                continue;
-            }
-        }
-        if (c == '[') return 0;
-        if (c == ']') return i + 1 - at;
-    }
-    return if (final) 0 else error.NeedMore;
+    var state: LabelScan = .{ .at = at, .position = at + 1 };
+    return state.run(s, final);
 }
+
+/// A label scan that can stop where the content ends and continue there.
+pub const LabelScan = struct {
+    at: u32,
+    position: u32,
+    codepoint_count: u32 = 0,
+
+    pub fn run(self: *LabelScan, s: []const u8, final: bool) error{NeedMore}!u32 {
+        if (self.at >= s.len) return if (final) 0 else error.NeedMore;
+        if (s[self.at] != '[') return 0;
+        var i = self.position;
+        while (i < s.len) : (i += 1) {
+            const c = s[i];
+            if (c == '\\') {
+                if (i + 1 >= s.len) break;
+                if (isAsciiPunctuation(s[i + 1])) {
+                    self.codepoint_count += 2;
+                    i += 1;
+                    continue;
+                }
+            }
+            if (c == '[') return 0;
+            if (c == ']') return i + 1 - self.at;
+            if ((c & 0xc0) != 0x80) self.codepoint_count += 1;
+            if (self.codepoint_count > label_codepoint_count_max) return 0;
+        }
+        self.position = i;
+        return if (final) 0 else error.NeedMore;
+    }
+};
 
 /// A label holds at most 999 characters and one that is not whitespace.
 pub fn isValidLabel(label: []const u8) bool {
     if (label.len == 0) return false;
     const count = std.unicode.utf8CountCodepoints(label) catch label.len;
-    if (count > label_byte_count_max) return false;
+    if (count > label_codepoint_count_max) return false;
     for (label) |c| {
         if (!isAsciiWhitespace(c)) return true;
     }

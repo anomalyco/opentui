@@ -140,7 +140,7 @@ function unexpected(check: string, agrees: (row: (typeof rows)[number]) => boole
 test("corpus: marked renders each row's HTML and blocks unless the row lists them", () => {
   // Every listed check exists, and a frame check names one of the row's frames.
   const check =
-    /^(marked-(html|blocks|stream)|rust-(blocks|stream)|engine-(?:html|stream)|(core|rust)-text:([1-9]\d*))$/
+    /^(marked-(html|blocks|stream)|rust-(blocks|stream)|engine-(?:html|stream)|(core|rust|engine)-text:([1-9]\d*))$/
   const unknown = rows.flatMap(([name, , , fails, text]) =>
     fails
       .filter((fail) => !check.test(fail) || Number(fail.match(check)![5] ?? 0) > (text?.length ?? 0))
