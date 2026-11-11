@@ -30,7 +30,6 @@ pub const Flags = packed struct(u16) {
     open: bool = false,
     /// The closing delimiter arrived (fences and math blocks; rule 3).
     closed: bool = false,
-    final: bool = false,
     unresolved: bool = false,
     hooked: bool = false,
     unreported: bool = false,
@@ -44,7 +43,7 @@ pub const Flags = packed struct(u16) {
     math: bool = false,
     /// A table's header row.
     header: bool = false,
-    _unused: bool = false,
+    _unused: u2 = 0,
 };
 
 /// One block, 32 bytes. `small` holds a fence's or math block's opener indent and an HTML
@@ -716,7 +715,6 @@ pub const Doc = struct {
             if (b.flags.open) break;
             const end = self.subtreeEnd(index);
             if (std.debug.runtime_safety) assert(self.subtreeClosed(index, end));
-            self.blocks.items[index].flags.final = true;
             self.committed_top_level_count += 1;
             index = end;
         }
@@ -1692,7 +1690,8 @@ pub const Doc = struct {
     fn closeLeaf(self: *Doc, index: u32) Error!void {
         const live = &self.live;
         const b = self.blocks.items[index];
-        if (live.block == index) self.liveCheckDefinitions(b.content_start_byte);
+        const followed = live.block == index;
+        if (followed) self.liveCheckDefinitions(b.content_start_byte);
         if (live.block == index and live.start_byte == b.content_start_byte) {
             // An ATX heading closes with its line: take its bytes not fed yet; its content ends
             // before a closing sequence.
@@ -1709,7 +1708,7 @@ pub const Doc = struct {
                 live.line_pipe = none;
                 try self.liveFeed(live.content.items[0..end], true);
                 if (b.flags.setext) try self.liveWriteExtra(try self.setextUnderline(self.scratch.allocator(), index));
-                if (live.expired_display != none) try self.liveRewriteExpired(index);
+                if (live.expired_display != none) try self.liveRewrite(index, live.expired_display);
                 const unresolved = live.parser.unresolved;
                 if (self.tail_sink) |sink| try self.checkSink(sink, index);
                 self.liveReset(none, none);
@@ -1717,7 +1716,13 @@ pub const Doc = struct {
                 return;
             }
         }
-        if (live.block == index) self.liveReset(none, none);
+        if (followed) {
+            // The leaf showed a display a whole parse now replaces (definitions left its start,
+            // or it was parsed without them): written again whole, so a bound node stays exact.
+            try self.liveRewrite(index, 0);
+            if (self.tail_sink) |sink| try self.checkSink(sink, index);
+            self.liveReset(none, none);
+        }
         try self.computeUnresolved(index);
     }
 
@@ -2075,11 +2080,11 @@ pub const Doc = struct {
         return start + live.partial_byte_count;
     }
 
-    /// An expired opener whose tokens were folded away shows literal now: the display from it
-    /// on is written again from a whole parse of the closed leaf.
-    fn liveRewriteExpired(self: *Doc, index: u32) Error!void {
+    /// Writes the closed leaf's display again from display offset `from`, from a whole parse:
+    /// an expired opener whose tokens were folded away shows literal now, or the live parse no
+    /// longer applies.
+    fn liveRewrite(self: *Doc, index: u32, from: u32) Error!void {
         const live = &self.live;
-        const from = live.expired_display;
         const whole = (try self.readLeaf(self.scratch.allocator(), index)).bytes.items;
         self.counters.display_byte_visits += whole.len;
         self.counters.tail_write_bytes += whole.len - from;
@@ -2388,6 +2393,34 @@ pub const Doc = struct {
         return inline_parser.parse(arena, try self.leafSubject(arena, index), self.references(), .{ .math = self.options.math });
     }
 
+    /// A table column's alignment, from the table's delimiter row (`:-`, `-:`, `:-:`).
+    pub fn columnAlignment(self: *const Doc, table_index: u32, column: u32) Alignment {
+        const table = self.blocks.items[table_index];
+        assert(table.kind == .table);
+        const s = self.source.items;
+        var i = table.payload[1];
+        const end = lineContentEnd(s, i);
+        var c: u32 = 0;
+        while (i < end and isSpaceOrTab(s[i])) i += 1;
+        if (i < end and s[i] == '|') i += 1;
+        while (i < end) {
+            while (i < end and isSpaceOrTab(s[i])) i += 1;
+            const left = i < end and s[i] == ':';
+            while (i < end and s[i] != '|') i += 1;
+            var j = i;
+            while (j > 0 and isSpaceOrTab(s[j - 1])) j -= 1;
+            const right = s[j - 1] == ':';
+            if (c == column) {
+                if (left and right) return .center;
+                if (left) return .left;
+                return if (right) .right else .none;
+            }
+            c += 1;
+            if (i < end) i += 1;
+        }
+        return .none;
+    }
+
     pub fn references(self: *const Doc) inline_parser.References {
         return .{ .context = self, .lookup_fn = lookupReference };
     }
@@ -2537,25 +2570,11 @@ pub const Doc = struct {
     /// Consumes the continuation markers of `ancestors` on `line`; false when one fails (a lazy
     /// paragraph line).
     fn matchContainers(self: *const Doc, line: *Line, ancestors: []const u32) bool {
-        for (ancestors) |a| {
-            const b = self.blocks.items[a];
+        for (ancestors) |ancestor| {
+            const b = self.blocks.items[ancestor];
             line.findNextNonspace();
-            switch (b.kind) {
-                .quote => {
-                    if (line.indented or line.peek(line.next_nonspace) != '>') return false;
-                    line.advanceNextNonspace();
-                    line.advanceOffset(1, false);
-                    if (isSpaceOrTab(line.peek(line.offset))) line.advanceOffset(1, true);
-                },
-                .item => {
-                    if (line.blank) {
-                        line.advanceNextNonspace();
-                    } else if (line.indent >= b.payload[0]) {
-                        line.advanceOffset(b.payload[0], true);
-                    } else return false;
-                },
-                else => {},
-            }
+            if (b.kind != .quote and b.kind != .item) continue;
+            if (self.continues(line, ancestor, b) != .matches) return false;
         }
         return true;
     }
@@ -2681,6 +2700,8 @@ pub const Chunk = struct {
     link_offset: u32 = 0,
     link_byte_count: u32 = 0,
 };
+
+pub const Alignment = enum { none, left, center, right };
 
 pub const Leaf = struct {
     bytes: std.ArrayListUnmanaged(u8) = .empty,

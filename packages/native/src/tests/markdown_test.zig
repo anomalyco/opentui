@@ -101,6 +101,7 @@ pub fn completeLines(arena: std.mem.Allocator, doc: *const Doc) ![]const u8 {
 }
 
 fn rowOptions(name: []const u8) markdown.Options {
+    if (std.mem.startsWith(u8, name, "hook")) return .{ .hook = true, .hook_filter = "ses_" };
     return .{ .math = std.mem.startsWith(u8, name, "math") };
 }
 
@@ -711,7 +712,7 @@ fn frameIgnored(c: u8) bool {
 fn sameRecord(a: markdown.Block, b: markdown.Block) bool {
     var fa = a.flags;
     var fb = b.flags;
-    inline for (.{ "unreported", "final" }) |name| {
+    inline for (.{"unreported"}) |name| {
         @field(fa, name) = false;
         @field(fb, name) = false;
     }
@@ -1172,6 +1173,25 @@ test "Markdown stream: a leaf that changes kind or loses lines keeps its live di
         try std.testing.expect(try streamAgreesParts(arena, "kinds", try split(arena, text, 1)));
         try std.testing.expect(try streamAgreesParts(arena, "kinds", try split(arena, text, 3)));
     }
+    // opus-4 (a): definitions leave the paragraph the next one's live text would follow; (b) a
+    // pending table row latches each of its cells that holds the filter.
+    try std.testing.expect(try streamAgreesParts(arena, "kinds", &.{ "[x]: /u\n\nnext para\n", "more [x]" }));
+    try std.testing.expect(try streamAgreesParts(arena, "hook kinds", &.{ "| a | b |\n| --- | --- |\n", "| ses_1 | ses_2 |", "\n" }));
+    try std.testing.expect(try streamAgreesParts(arena, "hook kinds", try split(arena, "| a | b |\n| --- | --- |\n| ses_1 | ses_2 |\n", 1)));
+}
+
+test "Markdown changes: a late definition lists again the paragraph it changes" {
+    var f: Fixture = undefined;
+    try f.init(.{});
+    defer f.deinit();
+    try f.doc.append("see [x]\n\nother\n\n");
+    var out: [8]Doc.Change = undefined;
+    _ = f.doc.readChanges(&out);
+    try f.doc.append("[x]: /u\n\n");
+    const read = f.doc.readChanges(&out);
+    try std.testing.expectEqual(@as(u32, 1), read.count);
+    try std.testing.expectEqual(@as(u32, 0), out[0].index);
+    try std.testing.expectEqual(markdown.none, read.removed_from_index);
 }
 
 test "Markdown commits: a block with an unresolved label commits once closed (N1 (a), P4')" {

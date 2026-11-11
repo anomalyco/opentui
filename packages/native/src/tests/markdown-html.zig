@@ -160,28 +160,12 @@ const Writer = struct {
     }
 
     fn alignment(self: *Writer, table_index: u32, column: u32) !void {
-        const doc = self.doc;
-        const table = doc.blocks.items[table_index];
-        const s = doc.source.items;
-        var i = table.payload[1];
-        const end = markdown.lineContentEnd(s, i);
-        var c: u32 = 0;
-        while (i < end and (s[i] == ' ' or s[i] == '\t')) i += 1;
-        if (i < end and s[i] == '|') i += 1;
-        while (i < end) {
-            while (i < end and (s[i] == ' ' or s[i] == '\t')) i += 1;
-            const left = i < end and s[i] == ':';
-            while (i < end and s[i] != '|') i += 1;
-            var j = i;
-            while (j > 0 and (s[j - 1] == ' ' or s[j - 1] == '\t')) j -= 1;
-            const right = s[j - 1] == ':';
-            if (c == column) {
-                if (left and right) try self.put(" align=\"center\"") else if (left) try self.put(" align=\"left\"") else if (right) try self.put(" align=\"right\"");
-                return;
-            }
-            c += 1;
-            if (i < end) i += 1;
-        }
+        try self.put(switch (self.doc.columnAlignment(table_index, column)) {
+            .none => "",
+            .left => " align=\"left\"",
+            .center => " align=\"center\"",
+            .right => " align=\"right\"",
+        });
     }
 
     fn taskBox(self: *Writer, index: u32) !void {

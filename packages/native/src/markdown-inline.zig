@@ -40,7 +40,7 @@ pub const TokenKind = enum(u8) {
     extended_autolink,
 };
 
-pub const ExtendedKind = enum(u16) { www, url, email };
+pub const ExtendedKind = enum(u16) { www, url };
 
 pub const Token = struct {
     start: u32,
@@ -1094,15 +1094,6 @@ pub fn delimiterOf(r: Result, index: u32) ?u32 {
 fn optimisticKind(c: u8, count: u32) MatchKind {
     if (c == '~') return .strikethrough;
     return if (count >= 2) .strong else .emphasis;
-}
-
-/// The start of the trailing word and the whitespace after it: constructs that cannot cross
-/// whitespace are decided for every byte before it.
-fn trailingWordStart(s: []const u8) u32 {
-    var i: usize = s.len;
-    while (i > 0 and isAsciiWhitespace(s[i - 1])) i -= 1;
-    while (i > 0 and !isAsciiWhitespace(s[i - 1])) i -= 1;
-    return @intCast(i);
 }
 
 /// Display bytes of token `index` (read_leaf's text; the live display conceals an opener that
