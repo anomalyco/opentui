@@ -1036,6 +1036,12 @@ ot_status ot_scene_get_text(ot_context *, const ot_handle *node, uint8_t *bytes,
 ot_status ot_scene_get_text_info(ot_context *, const ot_handle *node, ot_scene_text_info *out_info);
 ot_status ot_scene_get_text_lines(ot_context *, const ot_handle *node, uint32_t first_line,
     ot_scene_text_line *lines, uint32_t capacity, uint32_t *out_count);
+/* The byte offset, in the UTF-8 last set on the text node, where the grapheme at screen
+ * cell (x, y) starts, with the node where the latest frame painted it and its view as
+ * that frame prepared it. UINT32_MAX when the node draws no grapheme there: alignment or
+ * wrap padding, outside its lines, or a truncation ellipsis. It does not check what covers
+ * the cell; ot_scene_hit_test does. Follows the text getter rules. */
+ot_status ot_scene_get_text_byte_at(ot_context *, const ot_handle *node, int32_t x, int32_t y, uint32_t *out_byte);
 /* OT_LAYOUT_PUBLIC copies local cell geometry from the node's latest preparation refresh.
  * Below a child that its filtering parent's latest selection culled, which no refresh
  * reaches, it copies the latest solved geometry instead, if Yoga has laid the node out since

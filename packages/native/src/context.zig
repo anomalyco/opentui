@@ -2955,6 +2955,23 @@ pub const Context = struct {
         return count;
     }
 
+    pub fn sceneGetTextByteAt(self: *Context, handle: Handle, x: i32, y: i32) !?u32 {
+        try self.checkSceneRead();
+        const was_mutating = self.mutating;
+        self.mutating = true;
+        defer self.mutating = was_mutating;
+        const node = try self.sceneNode(handle);
+        const text = node.scene_node.?.text orelse return error.WrongKind;
+        try text.prepareView();
+        // Between frames a node keeps the layout it was last painted with; paint draws text at its whole cells.
+        const cells = scene.cellLayout(node.scene_node.?.layout);
+        const origin_x: i64 = @intFromFloat(cells.screenX);
+        const origin_y: i64 = @intFromFloat(cells.screenY);
+        const local_x = std.math.cast(i32, @as(i64, x) - origin_x) orelse return null;
+        const local_y = std.math.cast(i32, @as(i64, y) - origin_y) orelse return null;
+        return text.view.byteAtCell(local_x, local_y);
+    }
+
     pub fn sceneGetLayout(self: *Context, handle: Handle, raw_yoga: bool) !scene.Layout {
         try self.checkSceneRead();
         const node = try self.sceneNode(handle);

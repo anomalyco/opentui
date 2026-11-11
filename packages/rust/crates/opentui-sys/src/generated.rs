@@ -5,7 +5,7 @@ use core::ffi::c_void;
 
 /// FNV-1a 64-bit hash of the `opentui.h` these declarations were generated from.
 /// The build script rejects native artifacts whose header has a different hash.
-pub const OPENTUI_HEADER_FNV1A64: u64 = 0x3afe582f1647625d;
+pub const OPENTUI_HEADER_FNV1A64: u64 = 0x8d16cd514ed18bc4;
 
 pub type ot_status = i32;
 
@@ -4214,6 +4214,7 @@ unsafe extern "C" {
     pub fn ot_scene_get_text(context: *mut ot_context, node: *const ot_handle, bytes: *mut u8, capacity: u32, out_count: *mut u32) -> ot_status;
     pub fn ot_scene_get_text_info(context: *mut ot_context, node: *const ot_handle, out_info: *mut ot_scene_text_info) -> ot_status;
     pub fn ot_scene_get_text_lines(context: *mut ot_context, node: *const ot_handle, first_line: u32, lines: *mut ot_scene_text_line, capacity: u32, out_count: *mut u32) -> ot_status;
+    pub fn ot_scene_get_text_byte_at(context: *mut ot_context, node: *const ot_handle, x: i32, y: i32, out_byte: *mut u32) -> ot_status;
     pub fn ot_scene_get_layout(context: *mut ot_context, node: *const ot_handle, observation: u32, out_layout: *mut ot_scene_layout) -> ot_status;
     pub fn ot_scene_paint(context: *mut ot_context, session: *const ot_handle, background: *const u16, use_mouse: u32, excluded_hit_num: u32, out_frame: *mut ot_scene_frame_request) -> ot_status;
     pub fn ot_scene_hit_test(context: *mut ot_context, session: *const ot_handle, x: i32, y: i32, out_num: *mut u32) -> ot_status;

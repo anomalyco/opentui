@@ -1551,6 +1551,45 @@ pub const UnifiedTextBufferView = struct {
         return result;
     }
 
+    /// The byte, in the UTF-8 the text was set with, where the grapheme drawn at local cell `(x, y)` starts. Null for
+    /// a cell that shows no grapheme: alignment or wrap padding, past the last line, or a truncation ellipsis.
+    pub fn byteAtCell(self: *Self, x: i32, y: i32) ?u32 {
+        self.updateVirtualLines();
+        if (self.truncate and self.viewport != null) {
+            self.ensureTruncation();
+        }
+        const vp_y: i32 = if (self.viewport) |vp| @intCast(vp.y) else 0;
+        const vp_x: i32 = if (self.viewport) |vp| (if (self.wrap_mode == .none) @intCast(vp.x) else 0) else 0;
+        const row = @as(i64, y) + vp_y;
+        if (row < 0 or row >= self.virtual_lines.items.len) return null;
+        const vline_idx: usize = @intCast(row);
+        const vline = &self.virtual_lines.items[vline_idx];
+        const col = @as(i64, x) + vp_x - self.getLineAlignmentPad(vline_idx, vline.width_cols);
+        if (col < 0) return null;
+        // Past the line's chunks lies wrap padding.
+        var start: u32 = 0;
+        for (vline.chunks.items) |vchunk| {
+            const local: u32 = @intCast(col - start);
+            start += vchunk.width_cols;
+            if (local >= vchunk.width_cols) continue;
+            const chunk = vchunk.chunk;
+            if ((chunk.flags & TextChunk.Flags.STATIC_ELLIPSIS) != 0) return null;
+            const bytes = chunk.getBytes(self.text_buffer.memRegistry());
+            const pos = utf8.findGraphemePosByWidth(
+                bytes,
+                vchunk.col_start_in_chunk + local,
+                self.text_buffer.tabWidth(),
+                self.text_buffer.controlDisplay(),
+                chunk.isAsciiOnly(),
+                false,
+                self.text_buffer.widthMethod(),
+            );
+            if (pos.byte_offset >= bytes.len) return null;
+            return chunk.byte_start + pos.byte_offset;
+        }
+        return null;
+    }
+
     /// Pack selection info into u64 for efficient passing
     /// Returns 0xFFFF_FFFF_FFFF_FFFF for no selection or zero-width selection
     pub fn packSelectionInfo(self: *const Self) u64 {

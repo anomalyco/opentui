@@ -655,6 +655,35 @@ test "TextBufferView word wrapping - basic word wrap at space" {
     try std.testing.expectEqual(@as(u32, 2), wrapped_count);
 }
 
+test "TextBufferView byteAtCell names the byte a cell draws, and none for padding" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+    defer tb.deinit();
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+    const Case = struct { text: []const u8, wrap: ?u32, text_align: text_buffer_view.TextAlign, cells: []const [3]i32 };
+    // Each cell is x, y, and the byte or -1. A wide character that does not fit leaves a gap, both cells of one
+    // name its first byte, CRLF counts two bytes, and alignment padding draws nothing.
+    const cases = [_]Case{
+        .{ .text = "a\u{4e2d}b", .wrap = 2, .text_align = .left, .cells = &.{ .{ 0, 0, 0 }, .{ 1, 0, -1 }, .{ 0, 1, 1 }, .{ 1, 1, 1 }, .{ 0, 2, 4 }, .{ 1, 2, -1 }, .{ 0, 3, -1 }, .{ -1, 0, -1 } } },
+        .{ .text = "ab\r\ncd", .wrap = null, .text_align = .left, .cells = &.{ .{ 1, 0, 1 }, .{ 2, 0, -1 }, .{ 0, 1, 4 }, .{ 1, 1, 5 } } },
+        .{ .text = "ab", .wrap = null, .text_align = .center, .cells = &.{ .{ 1, 0, -1 }, .{ 2, 0, 0 }, .{ 3, 0, 1 }, .{ 4, 0, -1 } } },
+    };
+    for (cases) |case| {
+        try tb.setText(case.text);
+        view.setWrapMode(if (case.wrap == null) .none else .char);
+        view.setWrapWidth(case.wrap);
+        view.setTextAlign(case.text_align);
+        view.setViewport(.{ .x = 0, .y = 0, .width = case.wrap orelse 6, .height = 8 });
+        for (case.cells) |cell| {
+            const expected: ?u32 = if (cell[2] < 0) null else @intCast(cell[2]);
+            errdefer std.debug.print("{s}: cell {d}, {d}\n", .{ case.text, cell[0], cell[1] });
+            try std.testing.expectEqual(expected, view.byteAtCell(cell[0], cell[1]));
+        }
+    }
+}
+
 test "TextBufferView word wrapping - overflowing separator whitespace is consumed" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
