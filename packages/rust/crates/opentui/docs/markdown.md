@@ -72,6 +72,50 @@ place; Core gives the renderer only a block id for that, which Mermaid uses to
 keep its last good diagram. `remove_code_block_renderer(language)` removes one.
 Registering or removing a renderer rebuilds the code blocks only.
 
+## Inline hooks
+
+`Markdown::inline_hook(hook)` is the Rust form of Core's per-block chunk
+callback (`_linkifyMarkdownChunks`), which OpenCode replaces to show session IDs
+as titled links. It gets the inline spans of each paragraph and heading, in lists
+and quotes too, and returns the spans to show. Code blocks, code-block renderers
+and table cells never reach it, as in Core.
+
+```rust
+pub struct InlineSpan {
+    pub span: Span<'static>,
+    /// A code span (`markup.raw`).
+    pub code: bool,
+    /// What a click on the span means to the app. Never sent to the terminal.
+    pub target: Option<String>,
+}
+
+pub struct InlineContext<'a> {
+    pub source: &'a str,
+    pub conceal: bool,
+    pub syntax: &'a SyntaxTheme,
+}
+```
+
+The hook runs when a block is built or changes, so a streamed `append` runs it
+only for the blocks the new text changed. `rerun_inline_hook(select)` runs it again
+for the top-level blocks with a paragraph or heading whose source `select`
+accepts, without parsing, for a change only the hook knows about, such as a new
+session title. `target_at(x, y)` returns the target of the span at a screen cell,
+for the app's mouse handler. Selecting and copying take the text the hook returned,
+as Core's do.
+
+Where it differs from Core's callback:
+
+- The spans come after link detection, with `span.link` set. Core's callback
+  replaces `detectLinks`, and OpenCode calls it itself. The Rust widget finds
+  links while it parses inline text, so there is no separate pass to hand over;
+  a hook can still clear `span.link`.
+- A span says whether it is a code span instead of handing over tree-sitter
+  highlights and source ranges, which the Rust widget does not have for prose.
+- Core has no click or re-run API: OpenCode maps clicks through each block's line
+  layout and re-highlights blocks by resetting their callback. Rust apps cannot
+  reach the block widgets, so `target_at` and `rerun_inline_hook` do that work.
+
 ## Streaming
 
 `Markdown::streaming(bool)`, off by default. While it is on, an update reparses

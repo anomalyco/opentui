@@ -410,6 +410,28 @@ impl Node {
         })
     }
 
+    /// The text's lines after wrapping, all of them, not only the visible ones.
+    pub fn text_lines(&self) -> Result<Vec<super::VisualLine>> {
+        let mut count = 0;
+        check("ot_scene_get_text_lines", unsafe {
+            sys::ot_scene_get_text_lines(self.context(), &self.handle, 0, std::ptr::null_mut(), 0, &mut count)
+        })?;
+        let mut lines = vec![sys::ot_scene_text_line::default(); count as usize];
+        check("ot_scene_get_text_lines", unsafe {
+            sys::ot_scene_get_text_lines(self.context(), &self.handle, 0, lines.as_mut_ptr(), count, &mut count)
+        })?;
+        lines.truncate(count as usize);
+        Ok(lines
+            .iter()
+            .map(|line| super::VisualLine {
+                start_column: line.start_cols,
+                width: line.width_cols,
+                source_line: line.source_line,
+                wrap_index: line.wrap_index,
+            })
+            .collect())
+    }
+
     /// Stores this node as the scene's focus target, or clears it if it is the target.
     pub fn set_focus(&self, focused: bool) -> Result<()> {
         check("ot_scene_set_focus", unsafe {
