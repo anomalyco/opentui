@@ -1217,21 +1217,24 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
   // mounted out of view, or moved out by the same tick's layout), it measures as the block grown in view does, never
   // paints raw text, and then shows the same.
   const lines = (count: number, prefix = "") => [1, 2, 3, 4, 5].slice(0, count).map((i) => `${prefix}line ${i}`)
-  // Streamed prose, in quotes and lists too, shows a preview that this test's highlight differs from by design.
   const grownOutOfView: [string, boolean, (count: number) => string][] = [
     ["code", true, (count) => lines(count).join("\n")],
     ["paragraph", false, (count) => lines(count).join("\n")],
     ["fence", true, (count) => ["```ts", ...lines(count), "```"].join("\n")],
-    ["quote", false, (count) => lines(count, "> ").join("\n")],
-    ["list", false, (count) => `- ${lines(count).join("\n")}`],
+    ...[true, false].flatMap((streaming): [string, boolean, (count: number) => string][] => [
+      ["quote", streaming, (count) => lines(count, "> ").join("\n")],
+      ["list", streaming, (count) => `- ${lines(count).join("\n")}`],
+    ]),
   ]
   test.each(grownOutOfView)("a %s block (streaming %p) grown out of view", async (kind, streaming, source) => {
     // In the write's tick, a box inserted above, a last child the view follows, or a shrunk view moves the block out.
     const moved = ["pushed", "followed", "shrunk"]
     const run = async (first: boolean, mode: string) => {
       const client = createMockTreeSitterClient()
-      // The highlight conceals each block's first two characters, so text painted unhighlighted differs.
-      client.setMockResult({ highlights: [[0, 2, "conceal", { conceal: "" }]] })
+      // The highlight conceals each block's first two characters, so text painted unhighlighted differs. Streamed prose
+      // shows a preview, which equals a highlight without captures.
+      const previewed = streaming && (kind === "quote" || kind === "list")
+      client.setMockResult({ highlights: previewed ? [] : [[0, 2, "conceal", { conceal: "" }]] })
       const syntaxStyle = SyntaxStyle.create(testRenderer.nativeScene)
       const scrollbox = new ScrollBoxRenderable(testRenderer, { width: 40, height: 6, stickyStart: "bottom" })
       testRenderer.root.add(scrollbox)
@@ -1275,7 +1278,8 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
       // In view, where the scene runs its hooks, the block shows its last highlight until the next one lands. Accepted
       // cost of the moved modes: an afterLayout callback asked after the write that scrolls the block back in the same
       // frame shows it blank until then, since the block's own check, asked first, saw it culled.
-      if (mode === "shown") expect(captureCharFrame()).toBe(before)
+      // A streamed preview shows the new text at once.
+      if (mode === "shown" && !previewed) expect(captureCharFrame()).toBe(before)
       if (mode === "shown") await settle()
       const height = scrollbox.scrollHeight - (spacer.parent ? 6 : 0)
       // Grown, a first block reaches into the view, where the scene highlights it; a last one stays out of view.
