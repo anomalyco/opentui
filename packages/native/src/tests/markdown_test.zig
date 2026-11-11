@@ -152,9 +152,20 @@ fn streamAgreesParts(arena: std.mem.Allocator, name: []const u8, parts: []const 
     var sink: markdown.TailSink = .{ .allocator = gpa };
     defer sink.deinit();
     streamed.doc.tail_sink = &sink;
+    var frame: ?[]const u8 = null;
     for (parts) |part| {
+        const exempt = p7Exempt(&streamed.doc);
         try streamed.doc.append(part);
         if (total > fresh_compare_byte_count_max) continue;
+        // P7: no frame loses drawn text (B's exceptions aside).
+        const next = try renderFrame(arena, &streamed.doc);
+        if (frame) |previous| {
+            if (!exempt.exempt(&streamed.doc) and !framesGrow(previous, next, streamed.doc.options.math)) {
+                std.debug.print("  {s}: frame '{s}' then '{s}'\n", .{ name, previous, next });
+                return false;
+            }
+        }
+        frame = next;
         if (!try liveShowsReadLeaf(arena, &streamed.doc, &sink)) {
             std.debug.print("  in {s} after {d} bytes\n", .{ name, streamed.doc.source.items.len });
             if (environment(arena, "MARKDOWN_PARTS") != null) {
@@ -169,7 +180,15 @@ fn streamAgreesParts(arena: std.mem.Allocator, name: []const u8, parts: []const 
         try fresh.doc.append(streamed.doc.source.items);
         if (!try sameDocs(arena, &streamed.doc, &fresh.doc)) return false;
     }
+    const exempt = p7Exempt(&streamed.doc);
     try streamed.doc.finish();
+    if (frame) |previous| {
+        const next = try renderFrame(arena, &streamed.doc);
+        if (!exempt.exempt(&streamed.doc) and !framesGrow(previous, next, streamed.doc.options.math)) {
+            std.debug.print("  {s}: frame '{s}' then '{s}' at finish\n", .{ name, previous, next });
+            return false;
+        }
+    }
     // Each live leaf's tail writes rebuilt the display a whole parse gives the leaf.
     if (sink.mismatch_count > 0 or streamed.doc.counters.live_mismatch_count > 0) return false;
     var whole: Fixture = undefined;
@@ -497,7 +516,7 @@ const Engine = struct {
                 at = end;
             } else if (roll < 75) {
                 try commands.append(arena, .finish);
-            } else if (roll < 80) {
+            } else if (roll < 78) {
                 const text = soup[random.uintLessThan(usize, soup.len)];
                 try commands.append(arena, .{ .set = .{ .text = text, .shared = random.boolean() } });
             } else if (roll < 82) {
@@ -557,14 +576,7 @@ const Engine = struct {
             const was_finished = f.doc.finished;
             // B's last exception to P7: a backtick opener drawn as a code span that never closes
             // reverts to text (its content's escapes and entities then decode).
-            // The check skips a step that starts with an open prose leaf holding a backtick, and
-            // a step that adds a definition (a late definition turns `[a][b]` into `a`).
-            const definition_count = f.doc.definitions.items.len;
-            var code_drawn = false;
-            for (f.doc.blocks.items) |b| {
-                const prose = b.kind == .paragraph or b.kind == .heading or b.kind == .table_cell;
-                if (prose and (b.flags.open or b.source_end_byte > f.doc.line_start_byte) and std.mem.indexOfScalar(u8, f.doc.source.items[b.source_start_byte..@min(f.doc.source.items.len, b.source_end_byte)], '`') != null) code_drawn = true;
-            }
+            const p7 = p7Exempt(&f.doc);
             const read_before = f.doc.read_block_count;
             const before_blocks = try arena.dupe(markdown.Block, f.doc.blocks.items);
             switch (command) {
@@ -693,8 +705,7 @@ const Engine = struct {
             if (command == .append or command == .finish) {
                 const next = try renderFrame(arena, &f.doc);
                 if (frame) |previous| {
-                    const exempt = code_drawn or f.doc.definitions.items.len != definition_count;
-                    if (!exempt and !framesGrow(previous, next, options.math)) {
+                    if (!p7.exempt(&f.doc) and !framesGrow(previous, next, options.math)) {
                         if (std.debug.runtime_safety and model.environment(arena, "MODEL_SEED") != null) std.debug.print("frame '{s}' then '{s}'\n", .{ previous, next });
                         return .{ .property = "P7 no frame loses drawn text", .step = step };
                     }
@@ -709,14 +720,36 @@ const Engine = struct {
     }
 };
 
+/// B's last two exceptions to P7, taken before a step: a backtick opener drawn as a code span
+/// that never closes reverts to text (its content's escapes and entities then decode), and a
+/// definition that arrives turns `[a][b]` into `a`. The check skips a step that starts with an
+/// open prose leaf holding a backtick, and a step that adds a definition.
+const P7Exempt = struct {
+    code_drawn: bool,
+    definition_count: usize,
+
+    fn exempt(self: P7Exempt, doc: *const Doc) bool {
+        return self.code_drawn or doc.definitions.items.len != self.definition_count;
+    }
+};
+
+fn p7Exempt(doc: *const Doc) P7Exempt {
+    var code_drawn = false;
+    for (doc.blocks.items) |b| {
+        const prose = b.kind == .paragraph or b.kind == .heading or b.kind == .table_cell;
+        if (prose and (b.flags.open or b.source_end_byte > doc.line_start_byte) and std.mem.indexOfScalar(u8, doc.source.items[b.source_start_byte..@min(doc.source.items.len, b.source_end_byte)], '`') != null) code_drawn = true;
+    }
+    return .{ .code_drawn = code_drawn, .definition_count = doc.definitions.items.len };
+}
+
 /// Whether every non-white-space byte `previous` drew is in `next`, in order (P7). B's
 /// exceptions are left out of both: link brackets and an image's `!` (concealed when the link
 /// resolves) and math delimiters (`$`, and with math on `\(` and `\)`, concealed when math
 /// closes).
 fn framesGrow(previous: []const u8, next: []const u8, math: bool) bool {
     var at: usize = 0;
-    for (previous) |c| {
-        if (frameIgnored(c) or (math and (c == '\\' or c == '(' or c == ')'))) continue;
+    for (previous, 0..) |c, i| {
+        if (frameIgnored(previous, i, math)) continue;
         while (at < next.len and next[at] != c) at += 1;
         if (at == next.len) return false;
         at += 1;
@@ -724,9 +757,12 @@ fn framesGrow(previous: []const u8, next: []const u8, math: bool) bool {
     return true;
 }
 
-fn frameIgnored(c: u8) bool {
-    return switch (c) {
+fn frameIgnored(s: []const u8, i: usize, math: bool) bool {
+    return switch (s[i]) {
         ' ', '\t', '\n', '[', ']', '!', '$' => true,
+        // With math on, `\(` and `\)` are math delimiters (B draws them as escapes, `(` and
+        // `)`, until the span closes).
+        '(', ')' => math,
         else => false,
     };
 }
@@ -1133,10 +1169,11 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
         .{ .name = "a pending line of spaces, 1-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"text\n"}, try split(arena, spaces, 1), &.{"x\n"} }) },
         .{ .name = "a growing reference label, 1-byte appends", .parts = try split(arena, label.items, 1) },
         // B's holds read on where they stopped: trailing spaces, an entity, an autolink and a
-        // code span's trailing spaces that stay undecided for 4,096 bytes.
+        // code span's trailing spaces that stay undecided for 4,096 bytes. A hold that resolves
+        // as text draws its bytes once more (display 4x on those rows).
         .{ .name = "spaces inside a paragraph, 1-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"a"}, try split(arena, spaces, 1), &.{"b\n"} }) },
-        .{ .name = "a long unfinished entity, 1-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"&"}, try split(arena, xs[0..4096], 1), &.{";\n"} }) },
-        .{ .name = "a long unfinished autolink, 1-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"a <"}, try split(arena, xs[0..4096], 1), &.{">\n"} }) },
+        .{ .name = "a long unfinished entity, 1-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"&"}, try split(arena, xs[0..4096], 1), &.{";\n"} }), .display_factor = 4 },
+        .{ .name = "a long unfinished autolink, 1-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"a <"}, try split(arena, xs[0..4096], 1), &.{">\n"} }), .display_factor = 4 },
         .{ .name = "spaces in a code span, 1-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"`a"}, try split(arena, spaces, 1), &.{"`\n"} }) },
         // The leaf's close writes it again from a whole parse (expired openers show literal).
         .{ .name = "openers that never close, 3-byte appends", .parts = try split(arena, openers.items, 3), .display_factor = 4, .sent_factor = 2 },
@@ -1247,11 +1284,14 @@ test "Markdown stream: a leaf that changes kind or loses lines keeps its live di
         "> quote **a\nlazy b**\n\n- item\n  more\n",
         "a\n- b\n10. c\n",
         "x `y\n\nz` w\n",
+        "a\\\nb\n",
     };
     for (rows) |text| {
         try std.testing.expect(try streamAgreesParts(arena, "kinds", try split(arena, text, 1)));
         try std.testing.expect(try streamAgreesParts(arena, "kinds", try split(arena, text, 3)));
     }
+    // An open math span leaves a backslash before a line break untokenized: B draws the break.
+    try std.testing.expect(try streamAgreesParts(arena, "math kinds", try split(arena, "x $\\\n]", 1)));
     // opus-4 (a): definitions leave the paragraph the next one's live text would follow; (b) a
     // pending table row latches each of its cells that holds the filter.
     try std.testing.expect(try streamAgreesParts(arena, "kinds", &.{ "[x]: /u\n\nnext para\n", "more [x]" }));
@@ -1271,6 +1311,11 @@ test "Markdown changes: a late definition lists again the paragraph it changes" 
     try std.testing.expectEqual(@as(u32, 1), read.count);
     try std.testing.expectEqual(@as(u32, 0), out[0].index);
     try std.testing.expectEqual(markdown.none, read.removed_from_index);
+    // A replace that changes only a definition's target lists the leaf that uses it (bigboi-3).
+    try f.doc.set("see [x]\n\nother\n\n[x]: /w\n\n");
+    const replaced = f.doc.readChanges(&out);
+    try std.testing.expectEqual(@as(u32, 1), replaced.count);
+    try std.testing.expectEqual(@as(u32, 0), out[0].index);
 }
 
 test "Markdown commits: a block with an unresolved label commits once closed (N1 (a), P4')" {

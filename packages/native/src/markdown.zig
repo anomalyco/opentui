@@ -1951,14 +1951,13 @@ pub const Doc = struct {
         if (!pending_only) {
             old_pending = try arena.dupe(u8, live.pending_display.items);
             live.pending_display.clearRetainingCapacity();
-            live.pending_scan = .{ .stop = parser.position };
+            live.pending_scan = .{ .stop = parser.position, .visits = live.pending_scan.visits };
         }
         const drawn_before = live.pending_display.items.len;
         if (!final) {
-            // Bytes read: from where the last call stopped reading to where this one did.
-            const read_from = @max(live.pending_scan.stop, live.pending_scan.scanned);
+            const read_before = live.pending_scan.visits;
             try inline_parser.renderPending(content, live.pending_scan.stop, code, &live.pending_scan, self.allocator, &live.pending_display);
-            self.counters.display_byte_visits += @max(live.pending_scan.stop, live.pending_scan.scanned) -| read_from;
+            self.counters.display_byte_visits += live.pending_scan.visits - read_before;
         }
         const full_end = tokens_end + @as(u32, @intCast(live.pending_display.items.len));
         // Where the full display first differs from what it was.

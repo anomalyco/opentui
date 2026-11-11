@@ -1222,7 +1222,14 @@ pub fn unescapeText(arena: std.mem.Allocator, raw: []const u8) error{OutOfMemory
 /// how far the bytes after it were read, and `code` the opener whose span `stop` is in; the next
 /// call from the same `stop` goes on from there, so the bytes read stay linear in the content
 /// however it is split.
-pub const PendingScan = struct { stop: u32 = 0, scanned: u32 = 0, code: ?u32 = null, tag: bool = false };
+pub const PendingScan = struct {
+    stop: u32 = 0,
+    scanned: u32 = 0,
+    code: ?u32 = null,
+    tag: bool = false,
+    /// Bytes read, summed over calls (the display work counter).
+    visits: u64 = 0,
+};
 
 pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *PendingScan, allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) error{OutOfMemory}!void {
     // Bytes [from, resume) were read by the last call and held its stop.
@@ -1240,6 +1247,8 @@ pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *Pending
             if (i == opener) i += opener_length;
             const start = out.items.len;
             var end: u32 = @max(i, if (i == from) resume_at else i);
+            const read_from = end;
+            defer scan.visits += end - read_from;
             var drawn_end: u32 = i;
             var closed = false;
             while (end < s.len) {
@@ -1262,7 +1271,7 @@ pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *Pending
                 if (c.* == '\n') c.* = ' ';
             }
             if (!closed) {
-                scan.* = .{ .stop = drawn_end, .scanned = end, .code = opener };
+                scan.* = .{ .stop = drawn_end, .scanned = end, .code = opener, .visits = scan.visits };
                 return;
             }
             i = end + opener_length;
@@ -1272,6 +1281,9 @@ pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *Pending
         const c = s[i];
         // A hold at the first byte reads on where the last call stopped reading.
         const known = if (i == from) resume_at else i;
+        // Bytes passed, and below each hold's look ahead.
+        const before = i;
+        defer scan.visits += i - before;
         switch (c) {
             '*', '_', '~' => i += runLength(s, i, c),
             '`' => {
@@ -1281,7 +1293,9 @@ pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *Pending
             },
             ' ', '\t', '\n' => {
                 var j = @max(i, known);
+                const look_from = j;
                 while (j < s.len and isAsciiWhitespace(s[j])) j += 1;
+                scan.visits += j - look_from;
                 if (j >= s.len) return hold(scan, i, j, tag);
                 try out.appendSlice(allocator, s[i..j]);
                 i = j;
@@ -1289,7 +1303,9 @@ pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *Pending
             '\\' => {
                 // Before a line ending it may be a hard break, or text at the leaf's end.
                 var j = @max(i + 1, known);
+                const look_from = j;
                 while (j < s.len and isAsciiWhitespace(s[j])) j += 1;
+                scan.visits += j - look_from;
                 if (j >= s.len) return hold(scan, i, j, tag);
                 if (isAsciiPunctuation(s[i + 1]) or s[i + 1] == '\n') {
                     // An escape, or a hard break (drawn as its line break).
@@ -1303,7 +1319,9 @@ pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *Pending
             '&' => {
                 if (tag) return hold(scan, i, i, tag);
                 var j = @max(i + 1, known);
+                const look_from = j;
                 while (j < s.len and (std.ascii.isAlphanumeric(s[j]) or s[j] == '#')) j += 1;
+                scan.visits += j - look_from;
                 if (j >= s.len) return hold(scan, i, j, tag);
                 if (s[j] == ';' and scanEntity(s, i) != null) {
                     const cps = decodeEntity(s[i .. j + 1]);
@@ -1319,7 +1337,9 @@ pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *Pending
             },
             '<' => {
                 var j = @max(i + 1, known);
+                const look_from = j;
                 while (j < s.len and s[j] != '>' and !isAsciiWhitespace(s[j])) j += 1;
+                scan.visits += j - look_from;
                 if (j >= s.len) return hold(scan, i, j, tag);
                 if (scanAutolink(s, i)) |a| {
                     try out.appendSlice(allocator, s[i + 1 .. a.end - 1]);
@@ -1351,7 +1371,7 @@ pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *Pending
 }
 
 fn hold(scan: *PendingScan, stop: u32, scanned: u32, tag: bool) void {
-    scan.* = .{ .stop = stop, .scanned = scanned, .code = null, .tag = tag };
+    scan.* = .{ .stop = stop, .scanned = scanned, .code = null, .tag = tag, .visits = scan.visits };
 }
 
 /// A code span's content without the one space stripped from each end (line endings count as
