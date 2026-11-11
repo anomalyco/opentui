@@ -126,6 +126,7 @@ const BINDINGS: &[(&str, EditorAction)] = &[
     ("super+right", EditorAction::VisualLineEnd),
     ("super+up", EditorAction::BufferHome),
     ("super+down", EditorAction::BufferEnd),
+    ("super+backspace", EditorAction::DeleteToLineStart),
     ("super+shift+left", EditorAction::SelectVisualLineHome),
     ("super+shift+right", EditorAction::SelectVisualLineEnd),
     ("super+shift+up", EditorAction::SelectBufferHome),

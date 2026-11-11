@@ -1,0 +1,60 @@
+name: Set up a package check
+description: >-
+  Prepare the core library this runner tests against: Zig, the caches, bun install and the native host bottle. The
+  package checks shared this sequence, which every one of them repeated on the same commit. Check out the repository
+  before this action, because the action itself lives in it.
+inputs:
+  zig-cache-save:
+    description: This job saves the lib Zig cache on pushes to main
+    required: false
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: Setup Zig
+      uses: ./.github/actions/setup-zig
+
+    - name: Restore Zig cache
+      id: zig-cache
+      uses: ./.github/actions/restore-zig-cache
+      with:
+        zig-version: ${{ env.ZIG_VERSION }}
+        kind: lib
+        save: ${{ inputs.zig-cache-save }}
+
+    - name: Restore Bun install cache
+      uses: ./.github/actions/restore-bun-cache
+
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: 1.4.1
+
+    - name: Setup Node
+      uses: actions/setup-node@v6
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
+    - name: Install dependencies
+      shell: bash
+      run: bun install
+
+    - name: Restore native host bottle
+      id: bottle
+      uses: ./.github/actions/restore-native-host-bottle
+      with:
+        zig-version: ${{ env.ZIG_VERSION }}
+
+    # Builds this runner's native library and the core TypeScript library. A hit installs the cross-compiled
+    # packages; a miss compiles them, which keeps a package check working while a native change has no bottle yet.
+    - name: Build core
+      shell: bash
+      run: bun scripts/native-bottle.ts package --hit "${{ steps.bottle.outputs.cache-hit }}" --zig "$ZIG_VERSION" --skip-symbols --lib
+
+    # Only a run that built the library holds its objects.
+    - name: Save Zig cache
+      if: steps.zig-cache.outputs.save == 'true' && steps.bottle.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v5
+      with:
+        path: .zig-cache
+        key: ${{ steps.zig-cache.outputs.key }}

@@ -1,17 +1,17 @@
 name: Native Benchmark Smoke
 
+# Benchmarks measure a quiet machine, so this runs after merge, not on a pull request.
 on:
-  pull_request:
+  push:
     branches: [main, "[0-9]+.[0-9]+.x"]
-    # Not a required check, so a Rust-only pull request can skip it.
-    paths-ignore: ["packages/rust/**"]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true

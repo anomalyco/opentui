@@ -112,15 +112,15 @@ fn programs_and_apps_release_threads_and_descriptors() {
         });
         assert!(app.wait_until(Duration::from_secs(10), || exited.get()));
         drop(pty);
+        // Windows joins every I/O thread when the handle drops; Unix's reaper can outlive it, holding a descriptor.
+        #[cfg(unix)]
+        assert!(settles(|| pty_threads() == 0), "{} threads remain", pty_threads());
     };
     // Windows keeps a few handles from the first pseudoconsole a process creates.
     run_quick();
     let before = descriptors();
     // A program that exits by itself.
     run_quick();
-    // Windows joins every I/O thread when the handle drops; Unix's reaper can outlive it.
-    #[cfg(unix)]
-    assert!(settles(|| pty_threads() == 0), "{} threads remain", pty_threads());
     assert!(settles(|| descriptors() == before), "{} descriptors, {before} before", descriptors());
 
     // A program that runs until its app ends, held by a handler that captures its own widget.

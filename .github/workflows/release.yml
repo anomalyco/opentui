@@ -231,11 +231,68 @@ jobs:
           echo ""
           echo "✅ All package versions match tag version: $TAG_VERSION"
 
+  # The heavy CI runs after merge. A release waits for the run of its commit instead of repeating it: a release from
+  # main shares its push with Build Core and Build Packages, and a vX.Y.Z tag points at a commit on main that already
+  # passed. Nothing builds or publishes until both runs passed, so a broken commit never reaches npm.
+  ci-gate:
+    name: Verify CI on the release commit
+    if: ${{ needs.prepare.outputs.release == 'true' }}
+    needs: prepare
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ github.sha }}
+    steps:
+      - name: Skip the check for a dry run
+        if: ${{ needs.prepare.outputs.isDryRun == 'true' }}
+        run: echo "A dry run publishes nothing, so it does not wait for CI"
+
+      - name: Wait for the heavy CI of this commit
+        if: ${{ needs.prepare.outputs.isDryRun != 'true' }}
+        run: |
+          set -eu
+          for workflow in build-core.yml build-packages.yml; do
+            echo "Waiting for $workflow on $SHA"
+            start=$SECONDS
+            deadline=$((SECONDS + 2400))
+            while :; do
+              # A tag push has no head_branch, so this selects the run of the branch push that carried the commit.
+              line=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?head_sha=$SHA&per_page=20" \
+                --jq '[.workflow_runs[] | select(.event == "push" and .head_branch != null)] | first | if . == null then "none" else "\(.status) \(.conclusion)" end')
+              case "$line" in
+                "completed success")
+                  echo "$workflow passed"
+                  break
+                  ;;
+                "completed "*)
+                  echo "::error::$workflow finished $line for $SHA"
+                  exit 1
+                  ;;
+                "none")
+                  # A tag can point at a commit that never had CI, such as one from before this workflow existed.
+                  if [ "$((SECONDS - start))" -ge 120 ]; then
+                    echo "::error::$workflow has no push run for $SHA"
+                    exit 1
+                  fi
+                  ;;
+              esac
+              if [ "$SECONDS" -ge "$deadline" ]; then
+                echo "::error::$workflow did not pass for $SHA in time"
+                exit 1
+              fi
+              sleep 20
+            done
+          done
+
   # Build native libraries and packages
   build-native:
     name: Build Native
     if: ${{ needs.prepare.outputs.release == 'true' }}
-    needs: [prepare, validate-version]
+    needs: [prepare, validate-version, ci-gate]
     uses: ./.github/workflows/build-native.yml
     with:
       version: ${{ needs.prepare.outputs.fullTag }}

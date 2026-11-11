@@ -2066,6 +2066,68 @@ test "Scene feedback uses an idle update for the frame of the round that prepare
     }
 }
 
+// Every node has UPDATE, so each frame requests it for exactly the nodes its hooks reach.
+// Under the root: V, one row tall, and P inside it, which V filters, with 17 one-row children
+// X0..X16; G under X0, G5 under X5, a hidden H with HC and N, and a detached D. Each step
+// changes the scene; the query before the frame names the nodes the frame requests, except
+// where the frame lays out what it reads (the first frame, a new view size, the siblings a move
+// shifts), and so does the query after it. Steps: P moves up 2 rows; X2, in view, moves last,
+// with no position until the frame; X15 and X16 go and X3 moves first (15 children: none culled); N moves in last (16: culled again); V stops filtering and P
+// moves up 2 more; V filters again; V shrinks to none, which culls all.
+test "Scene reaches exactly the nodes whose hooks the next frame runs" {
+    const f = try Fixture.init(testing.allocator, 8, 4, .{});
+    defer f.deinit();
+    var nodes: [25]context.Handle = undefined;
+    try feedbackNode(f, &nodes, 0, c.OT_SCENE_BOX, f.root, 0);
+    try f.owner.sceneSetStyle(nodes[0], 0, c.OT_STYLE_ENUM_OVERFLOW, 0, 0, c.OT_OVERFLOW_HIDDEN, 0);
+    try feedbackNode(f, &nodes, 1, c.OT_SCENE_BOX, nodes[0], 0);
+    try f.owner.sceneSetStyle(nodes[1], 4, 1, 0, c.OT_UNIT_AUTO, 0, 1);
+    try f.owner.sceneSetViewport(nodes[1], nodes[0]);
+    for (2..19) |index| try feedbackNode(f, &nodes, index, c.OT_SCENE_BOX, nodes[1], @intCast(index - 2));
+    try feedbackNode(f, &nodes, 19, c.OT_SCENE_BOX, nodes[2], 0);
+    try feedbackNode(f, &nodes, 20, c.OT_SCENE_BOX, nodes[7], 0);
+    try feedbackNode(f, &nodes, 21, c.OT_SCENE_BOX, f.root, 1);
+    try f.owner.sceneSetStyle(nodes[21], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_NONE, 0);
+    try feedbackNode(f, &nodes, 22, c.OT_SCENE_BOX, nodes[21], 0);
+    nodes[23] = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 33);
+    try feedbackNode(f, &nodes, 24, c.OT_SCENE_BOX, nodes[21], 1);
+    for (nodes) |node| try feedbackHook(f, node, c.OT_SCENE_HOOK_UPDATE);
+    var log: std.ArrayListUnmanaged(usize) = .empty;
+    defer log.deinit(testing.allocator);
+    var predicted: [nodes.len]bool = undefined;
+    for (0..8) |step| {
+        switch (step) {
+            1 => try f.owner.scenePatchPaint(nodes[1], c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -2 }),
+            2 => try f.owner.sceneMoveNode(nodes[4], nodes[1], 16),
+            3 => {
+                for (17..19) |index| try f.owner.sceneDestroyNode(nodes[index]);
+                try f.owner.sceneMoveNode(nodes[5], nodes[1], 0);
+            },
+            4 => try f.owner.sceneMoveNode(nodes[24], nodes[1], 15),
+            5 => {
+                try f.owner.sceneSetViewport(nodes[1], null);
+                try f.owner.scenePatchPaint(nodes[1], c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -4 });
+            },
+            6 => try f.owner.sceneSetViewport(nodes[1], nodes[0]),
+            7 => try f.owner.sceneSetStyle(nodes[0], 4, 1, 0, 1, 0, 1),
+            else => {},
+        }
+        const gone = [2]usize{ 17, 18 };
+        for (nodes, &predicted, 0..) |node, *value, index| {
+            if (step < 3 or std.mem.indexOfScalar(usize, &gone, index) == null) value.* = try f.owner.sceneReachesHooks(node);
+        }
+        log.clearRetainingCapacity();
+        try feedbackFrame(f, .{ .reply = .later, .expected = &.{} }, &nodes, false, &log);
+        for (nodes, predicted, 0..) |node, before, index| {
+            if (step >= 3 and std.mem.indexOfScalar(usize, &gone, index) != null) continue;
+            errdefer std.debug.print("step {d} node {d}\n", .{ step, index });
+            const requested = std.mem.indexOfScalar(usize, log.items, index) != null;
+            if (step != 0 and step != 7 and (step != 2 or index == 4)) try testing.expectEqual(requested, before);
+            try testing.expectEqual(requested, try f.owner.sceneReachesHooks(node));
+        }
+    }
+}
+
 // Re-sending a scene text's bytes with styles rebuilds its rope, which leaves the view to
 // prepare again although the text is equal. Feedback must still refresh the node, as today's
 // walk refreshed every member: in a reply to the root's UPDATE, or between frames (VERIFY).

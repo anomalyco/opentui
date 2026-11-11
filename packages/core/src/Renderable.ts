@@ -1771,7 +1771,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public remove(child: BaseRenderable): void {
-    if (!(child instanceof BaseRenderable)) {
+    if (!isRenderable(child)) {
       throw new Error("remove expects a renderable child object")
     }
 

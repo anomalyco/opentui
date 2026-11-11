@@ -12,6 +12,7 @@ use crate::syntax::{SyntaxTheme, filetype_for_info_string};
 use crate::theme::Theme;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// A block of Markdown. Lists and quotes hold blocks of their own.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -119,11 +120,9 @@ fn heading(line: &str) -> Option<(u8, String)> {
 }
 
 fn is_rule(line: &str) -> bool {
-    if indentation(line) > 3 {
-        return false;
-    }
-    let marks: String = line.chars().filter(|c| !c.is_whitespace()).collect();
-    marks.len() >= 3 && ["-", "*", "_"].iter().any(|mark| marks.chars().all(|c| c.to_string() == *mark))
+    let mut marks = line.chars().filter(|c| !c.is_whitespace());
+    let Some(mark @ ('-' | '*' | '_')) = marks.next() else { return false };
+    indentation(line) <= 3 && marks.try_fold(1, |count, c| (c == mark).then_some(count + 1)).is_some_and(|n| n >= 3)
 }
 
 /// A list item's start: whether it is ordered and its number, its delimiter, the column its content starts at, and
@@ -777,7 +776,7 @@ pub(crate) struct MarkdownInner {
     element: Element,
     source: RefCell<String>,
     colors: RefCell<MarkdownColors>,
-    syntax: RefCell<SyntaxTheme>,
+    syntax: RefCell<Arc<SyntaxTheme>>,
     options: RefCell<Rc<Options>>,
     /// The styles from `colors`, `syntax` and `scopes`, built on the first refresh after one of them changes.
     styles: Cell<Option<MarkdownStyles>>,
@@ -850,7 +849,7 @@ struct Renderer<'a> {
     app: &'a App,
     colors: MarkdownColors,
     styles: MarkdownStyles,
-    syntax: &'a SyntaxTheme,
+    syntax: &'a Arc<SyntaxTheme>,
     options: &'a Options,
     /// Whether link text shows URLs: the terminal does not show hyperlinks.
     urls: bool,
@@ -882,9 +881,8 @@ impl Renderer<'_> {
     fn default_code(&self, info: Option<&str>, code: &str) -> Rendered {
         let language = info.and_then(|info| info.split_whitespace().next());
         // It shows all its lines, so it has nothing to scroll and takes no focus: Tab passes over it.
-        let view = Code::new(self.app)
+        let view = Code::themed(self.app, Arc::clone(self.syntax))
             .fg(self.colors.text)
-            .syntax_theme(self.syntax.clone())
             .filetype(language)
             .set_code(code)
             .focusable(false);
@@ -1090,7 +1088,7 @@ impl Markdown {
             element,
             source: RefCell::new(String::new()),
             colors: RefCell::new(colors),
-            syntax: RefCell::new(SyntaxTheme::from_theme(&app.theme())),
+            syntax: RefCell::new(Arc::new(SyntaxTheme::from_theme(&app.theme()))),
             options: RefCell::new(Rc::new(Options { conceal: true, ..Options::default() })),
             styles: Cell::new(None),
             shown: RefCell::new(Vec::new()),
@@ -1119,8 +1117,18 @@ impl Markdown {
         self.clone()
     }
 
+    /// A copy of the content. [`Self::with_markdown`] reads it without one.
     pub fn markdown(&self) -> String {
         self.0.source.borrow().clone()
+    }
+
+    /// Reads the content without copying it, for example to check whether streamed text extends what is shown.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `read` changes the content of this widget through [`Self::set_markdown`] or [`Self::append`].
+    pub fn with_markdown<R>(&self, read: impl FnOnce(&str) -> R) -> R {
+        read(&self.0.source.borrow())
     }
 
     pub fn colors(&self, colors: MarkdownColors) -> Self {
@@ -1133,7 +1141,7 @@ impl Markdown {
     /// The styles for code blocks, which the `tree-sitter` feature highlights as the filetype their fence names:
     /// `rust` in ` ```rust `. It starts as [`SyntaxTheme::from_theme`] for the app's theme.
     pub fn syntax_theme(&self, theme: SyntaxTheme) -> Self {
-        *self.0.syntax.borrow_mut() = theme;
+        *self.0.syntax.borrow_mut() = Arc::new(theme);
         self.0.styles.set(None);
         self.refresh(0, Rebuild::All);
         self.clone()
@@ -1226,7 +1234,7 @@ impl Markdown {
         let syntax = self.0.syntax.borrow();
         let colors = *self.0.colors.borrow();
         let styles =
-            self.0.styles.get().unwrap_or_else(|| MarkdownStyles::new(&colors, options.scopes.then_some(&*syntax)));
+            self.0.styles.get().unwrap_or_else(|| MarkdownStyles::new(&colors, options.scopes.then_some(&**syntax)));
         self.0.styles.set(Some(styles));
         let renderer = Renderer { app: &app, colors, styles, syntax: &syntax, options: &options, urls: !hyperlinks };
         let source = self.0.source.borrow();
@@ -1298,6 +1306,19 @@ mod tests {
                 paragraph("after"),
             ]
         );
+        // A thematic break is three or more of one mark, with spaces or tabs between, indented at most three columns.
+        let rules = ["---", "***", "___", "- - -", " ** * **", "_ _ _ _", "---   ", "---\t", "   ---", "-\t-\t-"];
+        let not_rules =
+            ["--", "**", "*-*-", "_-_", "\t---", "    ---", "---a", "- - - x", "-é", "", "–––", "+++", "==="];
+        for (line, rule) in rules.map(|line| (line, true)).into_iter().chain(not_rules.map(|line| (line, false))) {
+            assert_eq!(is_rule(line), rule, "{line:?}");
+        }
+        // Dashes alone under a paragraph underline a heading; spaced dashes or other marks break after it.
+        assert_eq!(blocks("a\n---"), [Block::Heading(2, "a".into())]);
+        assert_eq!(blocks("a\n--"), [Block::Heading(2, "a".into())]);
+        assert_eq!(blocks("a\n- - -"), [paragraph("a"), Block::Rule]);
+        assert_eq!(blocks("a\n***"), [paragraph("a"), Block::Rule]);
+        assert_eq!(blocks("---\n* * *"), [Block::Rule, Block::Rule]);
     }
 
     #[test]

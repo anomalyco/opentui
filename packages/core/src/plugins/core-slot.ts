@@ -1,4 +1,4 @@
-import { BaseRenderable, Renderable, type RenderableOptions } from "../Renderable.js"
+import { type BaseRenderable, isRenderable, Renderable, type RenderableOptions } from "../Renderable.js"
 import type { CliRenderer } from "../renderer.js"
 import type { RenderContext } from "../types.js"
 import { createSlotRegistry, SlotRegistry, type SlotRegistryOptions } from "./registry.js"
@@ -152,7 +152,7 @@ function ensureValidNode(node: unknown, pluginId: string, mount: BaseRenderable)
     throw new Error(`Plugin "${pluginId}" returned an async value. Core slots require synchronous renderers.`)
   }
 
-  if (!(node instanceof BaseRenderable)) {
+  if (!isRenderable(node)) {
     throw new Error(`Plugin "${pluginId}" must return a BaseRenderable`)
   }
 
