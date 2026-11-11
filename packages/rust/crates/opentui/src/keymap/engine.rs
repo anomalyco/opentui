@@ -353,16 +353,20 @@ struct Capture<T> {
     layer: Rc<LayerState<T>>,
     binding: Rc<BindingState<T>>,
     index: usize,
-    parts: Vec<KeySequencePart>,
 }
 
 impl<T> Clone for Capture<T> {
     fn clone(&self) -> Self {
-        Self { layer: self.layer.clone(), binding: self.binding.clone(), index: self.index, parts: self.parts.clone() }
+        Self { layer: self.layer.clone(), binding: self.binding.clone(), index: self.index }
     }
 }
 
 impl<T> Capture<T> {
+    /// The parts matched so far.
+    fn parts(&self) -> &[KeySequencePart] {
+        &self.binding.sequence[..=self.index]
+    }
+
     fn continues(&self) -> bool {
         self.index + 1 < self.binding.sequence.len()
     }
@@ -372,13 +376,13 @@ impl<T> Capture<T> {
     }
 
     fn same_parts(&self, other: &Capture<T>) -> bool {
-        self.parts.len() == other.parts.len()
-            && self.parts.iter().zip(&other.parts).all(|(left, right)| left.stroke == right.stroke)
+        self.index == other.index
+            && self.parts().iter().zip(other.parts()).all(|(left, right)| left.stroke == right.stroke)
     }
 
     /// Where the capture's last stroke appears among the event's match keys; earlier is better.
     fn priority(&self, keys: &[Stroke]) -> usize {
-        let last = &self.parts.last().expect("captures have parts").stroke;
+        let last = &self.binding.sequence[self.index].stroke;
         keys.iter().position(|key| key == last).unwrap_or(keys.len())
     }
 }
@@ -984,12 +988,7 @@ impl<T: Clone + PartialEq + 'static> Keymap<T> {
                 captures.clear();
             }
             if priority == best {
-                captures.push(Capture {
-                    layer: layer.clone(),
-                    binding: binding.clone(),
-                    index: 0,
-                    parts: vec![first.clone()],
-                });
+                captures.push(Capture { layer: layer.clone(), binding: binding.clone(), index: 0 });
             }
         }
         if captures.iter().any(|capture| view.visible(&capture.binding)) { captures } else { Vec::new() }
@@ -1038,16 +1037,7 @@ impl<T: Clone + PartialEq + 'static> Keymap<T> {
             .iter()
             .filter_map(|capture| {
                 let next = capture.binding.sequence.get(capture.index + 1)?;
-                keys.contains(&next.stroke).then(|| {
-                    let mut parts = capture.parts.clone();
-                    parts.push(next.clone());
-                    Capture {
-                        layer: capture.layer.clone(),
-                        binding: capture.binding.clone(),
-                        index: capture.index + 1,
-                        parts,
-                    }
-                })
+                keys.contains(&next.stroke).then(|| Capture { index: capture.index + 1, ..capture.clone() })
             })
             .collect();
         let best = advanced.iter().map(|capture| capture.priority(keys)).min();
@@ -1248,19 +1238,14 @@ impl<T: Clone + PartialEq + 'static> Keymap<T> {
     pub fn pop_pending_sequence(&self) -> bool {
         self.batch(|| {
             let Some(pending) = self.ensure_valid_pending() else { return false };
-            if pending[0].parts.len() <= 1 {
+            if pending[0].index == 0 {
                 self.set_pending(None);
                 return true;
             }
             let popped: Vec<_> = pending
                 .iter()
-                .filter(|capture| capture.parts.len() > 1)
-                .map(|capture| Capture {
-                    layer: capture.layer.clone(),
-                    binding: capture.binding.clone(),
-                    index: capture.index - 1,
-                    parts: capture.parts[..capture.parts.len() - 1].to_vec(),
-                })
+                .filter(|capture| capture.index > 0)
+                .map(|capture| Capture { index: capture.index - 1, ..capture.clone() })
                 .collect();
             self.set_pending(if popped.is_empty() { None } else { Some(popped) });
             true
@@ -1660,7 +1645,6 @@ fn same_pending<T>(current: Option<&[Capture<T>]>, next: Option<&[Capture<T>]>) 
                     Rc::ptr_eq(&left.layer, &right.layer)
                         && Rc::ptr_eq(&left.binding, &right.binding)
                         && left.index == right.index
-                        && left.same_parts(right)
                 })
         }
         _ => false,
@@ -1670,10 +1654,10 @@ fn same_pending<T>(current: Option<&[Capture<T>]>, next: Option<&[Capture<T>]>) 
 /// The pending sequence's strokes, with a display and token only where every capture agrees.
 fn sequence_parts<T>(captures: &[Capture<T>]) -> Vec<KeySequencePart> {
     let Some(first) = captures.first() else { return Vec::new() };
-    (0..first.parts.len())
+    (0..=first.index)
         .map(|index| {
-            let (display, token) = presentation(captures.iter().filter_map(|capture| capture.parts.get(index)));
-            KeySequencePart { stroke: first.parts[index].stroke.clone(), display, token }
+            let (display, token) = presentation(captures.iter().filter_map(|capture| capture.parts().get(index)));
+            KeySequencePart { stroke: first.parts()[index].stroke.clone(), display, token }
         })
         .collect()
 }

@@ -786,8 +786,12 @@ fn enabled_conditions_gate_layers_and_commands() {
 fn conditions_that_flip_between_and_within_keys_dispatch_as_recorded() {
     // A differential row: the trace was recorded on the keymap that built its view of enabled commands several times
     // per key. Commands of one name chain across layers, reject, and flip the conditions of others while a key runs.
+    // `d` also matches `c`, so a pending leader advances on both and keeps the captures of the better match.
     let keymap = Keymap::new();
     leader(&keymap);
+    keymap
+        .append_event_match_resolver(|event| (event.code == KeyCode::Char('d')).then(|| vec![Stroke::new("c")]))
+        .forget();
     let calls = calls();
     let gates: Rc<[Cell<bool>; 4]> = Rc::new(Default::default());
     for layer in 0..4 {
