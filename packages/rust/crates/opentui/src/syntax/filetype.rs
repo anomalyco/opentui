@@ -1,77 +1,20 @@
-//! Filetype names from paths, extensions, and Markdown info strings, ported from Core's `resolve-ft.ts`.
+//! Filetype names from paths, extensions, and Markdown info strings, by the rules and tables of Core's
+//! `resolve-ft.ts`.
+
+use crate::tables::{FILETYPE_BASENAMES, FILETYPE_EXTENSIONS};
+
+fn lookup(table: &[(&str, &'static str)], key: &str) -> Option<&'static str> {
+    table.iter().find(|(known, _)| *known == key).map(|&(_, filetype)| filetype)
+}
 
 /// The filetype for a file extension, with or without its dot, such as `"rs"` or `".tsx"`.
 pub fn filetype_for_extension(extension: &str) -> Option<&'static str> {
-    let extension = normalize(extension)?;
-    Some(match extension.as_str() {
-        "astro" => "astro",
-        "bash" | "ksh" | "sh" | "zsh" => "bash",
-        "c" | "h" => "c",
-        "cc" | "cpp" | "cxx" | "hpp" | "hxx" | "h++" | "hh" | "c++" => "cpp",
-        "cjs" | "js" | "mjs" => "javascript",
-        "clj" | "cljs" | "cljc" | "edn" => "clojure",
-        "cs" => "csharp",
-        "cts" | "mts" | "ts" => "typescript",
-        "ctsx" | "mtsx" | "tsx" => "typescriptreact",
-        "dart" => "dart",
-        "diff" | "patch" => "diff",
-        "go" => "go",
-        "gemspec" | "rb" | "rake" | "ru" => "ruby",
-        "groovy" => "groovy",
-        "handlebars" | "hbs" => "handlebars",
-        "hrl" | "erl" => "erlang",
-        "hs" => "haskell",
-        "htm" | "html" => "html",
-        "ini" => "ini",
-        "jsx" => "javascriptreact",
-        "jl" => "julia",
-        "json" => "json",
-        "kt" | "kts" => "kotlin",
-        "latex" | "tex" => "latex",
-        "less" => "less",
-        "lua" => "lua",
-        "markdown" | "md" | "mdown" | "mkd" => "markdown",
-        "ml" | "mli" => "ocaml",
-        "php" => "php",
-        "pl" | "pm" => "perl",
-        "ps1" | "psm1" => "powershell",
-        "py" | "pyi" => "python",
-        "r" => "r",
-        "rs" => "rust",
-        "sass" => "sass",
-        "sc" | "scala" => "scala",
-        "scss" => "scss",
-        "sql" => "sql",
-        "svelte" => "svelte",
-        "swift" => "swift",
-        "toml" => "toml",
-        "vue" => "vue",
-        "vim" => "vim",
-        "xml" => "xml",
-        "xsl" => "xsl",
-        "yaml" | "yml" => "yaml",
-        "zig" | "zon" => "zig",
-        "exs" | "ex" => "elixir",
-        "elm" => "elm",
-        "fsharp" | "fs" | "fsx" | "fsscript" | "fsi" => "fsharp",
-        "java" => "java",
-        "css" => "css",
-        _ => return None,
-    })
+    lookup(FILETYPE_EXTENSIONS, &normalize(extension)?)
 }
 
 /// The filetype for a file name with no telling extension, such as `Makefile` or `.bashrc`. Lowercase input only.
 fn filetype_for_basename(basename: &str) -> Option<&'static str> {
-    Some(match basename {
-        ".bash_aliases" | ".bash_logout" | ".bash_profile" | ".bashrc" | ".kshrc" | ".profile" | ".zlogin"
-        | ".zlogout" | ".zprofile" | ".zshenv" | ".zshrc" => "bash",
-        ".vimrc" | "gvimrc" => "vim",
-        "appfile" | "berksfile" | "brewfile" | "cheffile" | "fastfile" | "gemfile" | "guardfile" | "podfile"
-        | "rakefile" | "thorfile" | "vagrantfile" => "ruby",
-        "containerfile" | "dockerfile" => "dockerfile",
-        "gnumakefile" | "makefile" => "make",
-        _ => return None,
-    })
+    lookup(FILETYPE_BASENAMES, basename)
 }
 
 /// Trims, drops a leading dot, and lowercases; `None` when nothing is left.
@@ -123,6 +66,24 @@ mod tests {
         assert_eq!(filetype_for_path("LICENSE"), None);
         assert_eq!(filetype_for_extension(".MJS"), Some("javascript"));
         assert_eq!(filetype_for_extension(""), None);
+        // Every row of Core's tables, as an extension, a path, and an info string.
+        for &(extension, filetype) in FILETYPE_EXTENSIONS {
+            let path = format!("src/file.{}", extension.to_uppercase());
+            let found = [filetype_for_extension(extension), filetype_for_path(&path)];
+            assert_eq!(
+                (found, filetype_for_info_string(extension).as_deref()),
+                ([Some(filetype); 2], Some(filetype)),
+                "{extension}"
+            );
+        }
+        for &(basename, filetype) in FILETYPE_BASENAMES {
+            let found = filetype_for_path(&format!("dir/{basename}"));
+            assert_eq!(
+                (found, filetype_for_info_string(basename).as_deref()),
+                (Some(filetype), Some(filetype)),
+                "{basename}"
+            );
+        }
     }
 
     #[test]

@@ -63,6 +63,11 @@ pub mod testing;
 pub mod theme;
 pub mod widget;
 
+/// Tables that Core and `@opentui/keymap` own, generated from them.
+mod tables {
+    include!("generated.rs");
+}
+
 pub use app::{App, AppOptions};
 pub use error::{Error, Result, Status};
 

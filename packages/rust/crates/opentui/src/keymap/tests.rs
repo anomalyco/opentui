@@ -746,6 +746,24 @@ fn strokes_follow_core_key_names() {
     assert_eq!(stroke(KeyCode::Char('?'), Modifiers::NONE), "?");
     assert_eq!(stroke(KeyCode::F(5), Modifiers::SUPER | Modifiers::HYPER), "super+hyper+f5");
     assert_eq!(stroke(KeyCode::Other(57441), Modifiers::NONE), "leftshift");
+    // Each Kitty key Core names is a key in binding syntax, and both copies of Core's textarea bindings name the
+    // same key and action.
+    let keymap = Keymap::<u32>::new();
+    let parsed = |key: &str| keymap.parse_key_sequence(key).unwrap().remove(0).stroke;
+    for code in 57428..57428 + crate::tables::KITTY_KEY_NAMES.len() as u32 {
+        let name = stroke(KeyCode::Other(code), Modifiers::NONE);
+        assert_eq!(parsed(&name).name, name);
+    }
+    let shortcuts = crate::tables::TEXTAREA_SHORTCUTS;
+    assert_eq!(addons::TEXTAREA_BINDINGS.len(), shortcuts.len());
+    for (&(key, action), &(shortcut, editor_action)) in addons::TEXTAREA_BINDINGS.iter().zip(shortcuts) {
+        let shortcut = crate::input::Shortcut::parse(shortcut).unwrap();
+        // Core's meta is the Alt key; Stroke::from_event would hide Kitty's Meta here.
+        assert!(!shortcut.modifiers().contains(Modifiers::META), "{key}");
+        let event =
+            KeyEvent { keypad: key.ends_with("kpenter"), ..KeyEvent::new(shortcut.code(), shortcut.modifiers()) };
+        assert_eq!((Stroke::from_event(&event), editor_action), (parsed(key), action), "{key}");
+    }
 }
 
 // enabled.test.ts and metadata.test.ts
