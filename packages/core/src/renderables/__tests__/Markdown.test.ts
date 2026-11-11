@@ -2669,33 +2669,36 @@ test("multiple markdown renderables share and clean up one renderer capability l
   expect(renderer.listenerCount("capabilities")).toBe(listenersBefore)
 })
 
-// The Rust crate's tests/markdown.rs renders the same rows: the frame after each chunk, the last after streaming ends.
+// The Rust crate's tests/markdown.rs renders the same rows: the first paint after each streamed chunk, and after the
+// last chunk the settled frame once streaming has ended.
 type CorpusRow = [name: string, chunks: string[], html: string, fails: string[], text?: string[]]
-for (const [name, chunks, , fails, text] of (corpus.rows as unknown as CorpusRow[]).filter((row) => row[4])) {
-  test(`corpus text: ${name}`, async () => {
+test("corpus text: frames match each row unless the row lists them", async () => {
+  const wrong: string[] = []
+  for (const [name, chunks, , fails, text] of (corpus.rows as unknown as CorpusRow[]).filter((row) => row[4])) {
     const md = createMarkdownRenderable({
       syntaxStyle,
       streaming: chunks.length > 1,
       tableOptions: { widthMode: "content" },
     })
     renderer.root.add(md)
-    const frames: string[] = []
     for (const [index, chunk] of chunks.entries()) {
       md.content += chunk
-      if (index === chunks.length - 1) md.streaming = false
-      await renderMarkdownRenderable(md, true)
-      frames.push(
-        captureFrame()
-          .split("\n")
-          .map((line) => line.trimEnd())
-          .join("\n")
-          .trimEnd(),
-      )
+      if (index === chunks.length - 1) {
+        md.streaming = false
+        await renderMarkdownRenderable(md, true)
+      } else await renderOnce()
+      const frame = captureFrame()
+        .split("\n")
+        .map((line) => line.trimEnd())
+        .join("\n")
+        .trimEnd()
+      const check = `core-text:${index + 1}`
+      if ((frame === text![index]) === fails.includes(check)) wrong.push(`${name}|${check}`)
     }
-    if (fails.includes("core-text")) expect(frames).not.toEqual(text!)
-    else expect(frames).toEqual(text!)
-  })
-}
+    md.destroyRecursively()
+  }
+  expect(wrong).toEqual([])
+})
 
 test("links with conceal mode", async () => {
   const markdown = `Check out [OpenTUI](https://github.com/sst/opentui) for more.`

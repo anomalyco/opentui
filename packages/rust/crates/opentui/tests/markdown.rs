@@ -111,7 +111,7 @@ fn corpus_matches_core_one_shot_and_streamed() {
 #[test]
 fn corpus_text_matches_unless_listed() {
     // Core's Markdown test renders the same rows with the same table options: the frame after each chunk, the last
-    // after streaming ends.
+    // after streaming ends. Each frame is its own check.
     let corpus = corpus();
     let mut wrong = Vec::new();
     for row in corpus.iter().filter(|row| row.get(4).is_some()) {
@@ -120,20 +120,17 @@ fn corpus_text_matches_unless_listed() {
         let options = MarkdownTableOptions { width_mode: Some(ColumnWidthMode::Content), ..Default::default() };
         let markdown = Markdown::new(&app).table_options(options).streaming(chunks.len() > 1);
         app.root().add(&markdown);
-        let frames: Vec<String> = chunks
-            .iter()
-            .enumerate()
-            .map(|(index, chunk)| {
-                markdown.append(chunk);
-                if index + 1 == chunks.len() {
-                    markdown.streaming(false);
-                }
-                frame(&app)
-            })
-            .collect();
-        let text: Vec<String> = strings(&row[4]).iter().map(|text| format!("{text}\n")).collect();
-        if (frames == text) == strings(&row[3]).contains(&"rust-text") {
-            wrong.push(row[0].as_str().unwrap());
+        let text = strings(&row[4]);
+        let fails = strings(&row[3]);
+        for (index, chunk) in chunks.iter().enumerate() {
+            markdown.append(chunk);
+            if index + 1 == chunks.len() {
+                markdown.streaming(false);
+            }
+            let check = format!("rust-text:{}", index + 1);
+            if (frame(&app) == format!("{}\n", text[index])) == fails.contains(&check.as_str()) {
+                wrong.push(format!("{}|{check}", row[0].as_str().unwrap()));
+            }
         }
     }
     assert!(wrong.is_empty(), "{wrong:#?}");

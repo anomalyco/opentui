@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test"
-import { Lexer, Parser } from "marked"
+import { getDefaults, Lexer, Parser, Renderer, type Tokens } from "marked"
 import { parseMarkdownIncremental, type ParseState } from "../markdown-parser.js"
 import corpus from "../markdown.conformance.json" with { type: "json" }
 
@@ -97,15 +97,30 @@ test("code blocks are parsed correctly", () => {
 })
 
 // The Rust crate's widget/markdown.rs runs the same rows through its own block parser.
-const rows = corpus.rows as unknown as [name: string, chunks: string[], html: string, fails: string[]][]
-const blockTag = /\s*(<\/?(?:p|h[1-6]|pre|ul|ol|li|blockquote|hr|table|thead|tbody|tr|th|td)\b[^>]*>)\s*/g
-// The corpus' canonical HTML differs from marked's in these spellings only.
-const html = (state: ParseState) =>
-  Parser.parse(state.tokens)
-    .replace(/\s*\/>/g, ">")
-    .replace(blockTag, "$1")
+const rows = corpus.rows as unknown as [
+  name: string,
+  chunks: string[],
+  html: string,
+  fails: string[],
+  text?: string[],
+][]
+const blockTags = "p|h[1-6]|pre|ul|ol|li|blockquote|hr|table|thead|tbody|tr|th|td"
+// The part of the specs' normalize.py that marked's spellings need; text, entities and raw HTML stay as they are.
+const spelling = (html: string) =>
+  html
+    .replace(/<(br|hr|img|input)\b([^>]*?) \/>/g, "<$1$2>")
+    .replace(new RegExp(`\\n*(</?(?:${blockTags})\\b[^>]*>)\\n*`, "g"), "$1")
     .replace(/<br>\n/g, "<br>")
     .replace(/&#39;/g, "'")
+const blocks = (html: string) => html.match(new RegExp(`</?(?:${blockTags})\\b`, "g"))?.join("") ?? ""
+// cmark writes an empty code block without the newline marked's renderer adds after code.
+class SpecRenderer extends Renderer {
+  override code(token: Tokens.Code) {
+    const html = super.code(token)
+    return token.text === "" ? html.replace("\n</code>", "</code>") : html
+  }
+}
+const marked = (state: ParseState) => new Parser({ ...getDefaults(), renderer: new SpecRenderer() }).parse(state.tokens)
 
 /** The row's chunks, or 32 pieces of equal code point count for a one-chunk row. */
 function pieces(chunks: string[]): string[] {
@@ -117,29 +132,40 @@ function pieces(chunks: string[]): string[] {
   )
 }
 
-test("corpus: marked renders each row's HTML unless the row lists it", () => {
-  const runners = ["marked", "marked-stream", "rust", "rust-stream", "core-text", "rust-text"]
-  expect(rows.flatMap(([name, , , fails]) => fails.filter((fail) => !runners.includes(fail)).map(() => name))).toEqual(
-    [],
+/** The checks whose result differs from the row's listing, as `name|check`. */
+function unexpected(check: string, agrees: (row: (typeof rows)[number]) => boolean) {
+  return rows.filter((row) => agrees(row) === row[3].includes(check)).map(([name]) => `${name}|${check}`)
+}
+
+test("corpus: marked renders each row's HTML and blocks unless the row lists them", () => {
+  // Every listed check exists, and a frame check names one of the row's frames.
+  const check = /^(marked-(html|blocks|stream)|rust-(blocks|stream)|(core|rust)-text:([1-9]\d*))$/
+  const unknown = rows.flatMap(([name, , , fails, text]) =>
+    fails
+      .filter((fail) => !check.test(fail) || Number(fail.match(check)![5] ?? 0) > (text?.length ?? 0))
+      .map(() => name),
   )
-  const wrong = rows.filter(([, chunks, expected, fails]) => {
-    return (html(parseMarkdownIncremental(chunks.join(""), null)) === expected) === fails.includes("marked")
-  })
-  expect(wrong.map(([name]) => name)).toEqual([])
+  expect(unknown).toEqual([])
+  const html = new Map(
+    rows.map(([name, chunks]) => [name, spelling(marked(parseMarkdownIncremental(chunks.join(""), null)))]),
+  )
+  expect([
+    ...unexpected("marked-html", ([name, , expected]) => html.get(name) === spelling(expected)),
+    ...unexpected("marked-blocks", ([name, , expected]) => blocks(html.get(name)!) === blocks(expected)),
+  ]).toEqual([])
 })
 
 test("corpus: streamed, marked parses each prefix as fresh text unless the row lists marked-stream", () => {
-  const wrong = rows.filter(([, chunks, , fails]) => {
+  const wrong = unexpected("marked-stream", ([, chunks]) => {
     let state: ParseState | null = null
     let text = ""
-    const same = pieces(chunks).every((piece) => {
+    return pieces(chunks).every((piece) => {
       text += piece
       state = parseMarkdownIncremental(text, state, 2)
-      return html(state) === html(parseMarkdownIncremental(text, null, 0))
+      return marked(state) === marked(parseMarkdownIncremental(text, null, 0))
     })
-    return same === fails.includes("marked-stream")
   })
-  expect(wrong.map(([name]) => name)).toEqual([])
+  expect(wrong).toEqual([])
 })
 
 test("streaming scenario with incremental typing", () => {

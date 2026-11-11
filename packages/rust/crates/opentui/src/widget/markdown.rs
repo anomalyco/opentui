@@ -1319,7 +1319,7 @@ mod tests {
         );
     }
 
-    /// The shared corpus that Core's markdown-parser test runs through marked: name, chunks, HTML, and the runners
+    /// The shared corpus that Core's markdown-parser test runs through marked: name, chunks, HTML, and the checks
     /// that disagree with the row.
     fn corpus() -> Vec<(String, Vec<String>, String, Vec<String>)> {
         let mut corpus: serde_json::Value =
@@ -1334,23 +1334,74 @@ mod tests {
             .collect()
     }
 
-    /// The block tags of an HTML fragment, without attributes or content: `<ul><li><p></p></li></ul>`.
+    /// The rows whose check result differs from their listing, as `name|check`.
+    fn unexpected(check: &str, agrees: impl Fn(&[String], &str) -> bool) -> Vec<String> {
+        corpus()
+            .into_iter()
+            .filter(|(_, chunks, html, fails)| agrees(chunks, html) == fails.iter().any(|f| f == check))
+            .map(|(name, ..)| format!("{name}|{check}"))
+            .collect()
+    }
+
+    /// The block tags of an HTML fragment without attributes, and the text of its table cells:
+    /// `<ul><li><p></p></li></ul><table><thead><tr><th>a</th></tr></thead></table>`.
     fn html_tags(html: &str) -> String {
         let mut tags = String::new();
-        for tag in html.split('<').skip(1) {
+        let mut cell: Option<String> = None;
+        for (index, piece) in html.split('<').enumerate() {
+            let (tag, text) = if index == 0 { ("", piece) } else { piece.split_once('>').unwrap_or((piece, "")) };
             let close = if tag.starts_with('/') { "/" } else { "" };
             let name = tag[close.len()..].split(|c: char| !c.is_ascii_alphanumeric()).next().unwrap_or_default();
-            if ["p", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "ul", "ol", "li", "blockquote", "hr", "table"]
-                .contains(&name)
-            {
+            if name == "th" || name == "td" {
+                if let Some(text) = cell.take() {
+                    tags.push_str(
+                        &text.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&amp;", "&"),
+                    );
+                }
+                cell = close.is_empty().then(String::new);
+            }
+            if TAGS.contains(&name) {
                 tags.push_str(&format!("<{close}{name}>"));
+            }
+            if let Some(cell) = cell.as_mut() {
+                cell.push_str(text);
             }
         }
         tags
     }
 
-    /// The block tags HTML gives these blocks. A tight list's paragraphs have none.
+    const TAGS: [&str; 19] = [
+        "p",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "pre",
+        "ul",
+        "ol",
+        "li",
+        "blockquote",
+        "hr",
+        "table",
+        "thead",
+        "tbody",
+        "tr",
+        "th",
+        "td",
+    ];
+
+    /// The tags `html_tags` reads, for these blocks. A tight list's paragraphs have none; a cell holds its shown text.
     fn block_tags(blocks: &[Block], tight: bool) -> String {
+        let colors = MarkdownColors::from_theme(&Theme::default());
+        let options = Inline { styles: MarkdownStyles::new(&colors, None), conceal: true, urls: false };
+        let row = |cell: &str, cells: &[String]| -> String {
+            let text = |text: &String| {
+                inline(text, Style::new(), &options).iter().map(|span| span.content.to_string()).collect::<String>()
+            };
+            format!("<tr>{}</tr>", cells.iter().map(|c| format!("<{cell}>{}</{cell}>", text(c))).collect::<String>())
+        };
         blocks
             .iter()
             .map(|block| match block {
@@ -1368,7 +1419,11 @@ mod tests {
                 }
                 Block::Quote(blocks) => format!("<blockquote>{}</blockquote>", block_tags(blocks, false)),
                 Block::Code(..) => "<pre></pre>".into(),
-                Block::Table(_) => "<table></table>".into(),
+                Block::Table(table) => {
+                    let body: String = table.rows.iter().map(|cells| row("td", cells)).collect();
+                    let body = if body.is_empty() { body } else { format!("<tbody>{body}</tbody>") };
+                    format!("<table><thead>{}</thead>{body}</table>", row("th", &table.header))
+                }
                 Block::Rule => "<hr>".into(),
             })
             .collect()
@@ -1384,33 +1439,23 @@ mod tests {
 
     #[test]
     fn corpus_blocks_follow_the_spec_unless_listed() {
-        let wrong: Vec<String> = corpus()
-            .into_iter()
-            .filter(|(_, chunks, html, fails)| {
-                (block_tags(&blocks(&chunks.concat()), false) == html_tags(html)) == fails.iter().any(|f| f == "rust")
-            })
-            .map(|(name, ..)| name)
-            .collect();
+        let wrong =
+            unexpected("rust-blocks", |chunks, html| block_tags(&blocks(&chunks.concat()), false) == html_tags(html));
         assert!(wrong.is_empty(), "{wrong:#?}");
     }
 
     #[test]
     fn corpus_streams_parse_as_fresh_text_unless_listed() {
         let app = crate::testing::TestApp::new(60, 10);
-        let wrong: Vec<String> = corpus()
-            .into_iter()
-            .filter(|(_, chunks, _, fails)| {
-                let markdown = Markdown::new(&app).streaming(true);
-                let mut text = String::new();
-                let same = pieces(chunks).into_iter().all(|piece| {
-                    markdown.append(piece);
-                    text.push_str(piece);
-                    markdown.0.shown.borrow().iter().map(|shown| &shown.block).eq(&blocks(&text))
-                });
-                same == fails.iter().any(|f| f == "rust-stream")
+        let wrong = unexpected("rust-stream", |chunks, _| {
+            let markdown = Markdown::new(&app).streaming(true);
+            let mut text = String::new();
+            pieces(chunks).into_iter().all(|piece| {
+                markdown.append(piece);
+                text.push_str(piece);
+                markdown.0.shown.borrow().iter().map(|shown| &shown.block).eq(&blocks(&text))
             })
-            .map(|(name, ..)| name)
-            .collect();
+        });
         assert!(wrong.is_empty(), "{wrong:#?}");
     }
 
