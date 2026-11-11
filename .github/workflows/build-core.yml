@@ -634,10 +634,14 @@ jobs:
       - name: Install dependencies
         run: bun install
 
-      # A Rust-only pull request skips Core's tests, which also run this check.
+      # A Rust-only pull request skips Core's and keymap's tests, which also run these checks.
       - name: Check the generated ABI files
         working-directory: packages/core
         run: bun run check:abi
+
+      - name: Check the generated tables
+        working-directory: packages/keymap
+        run: bun scripts/rust-tables.ts --check
 
       - name: Test
         working-directory: packages/rust

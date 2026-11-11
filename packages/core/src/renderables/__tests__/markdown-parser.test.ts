@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test"
 import { Lexer } from "marked"
 import { parseMarkdownIncremental, type ParseState } from "../markdown-parser.js"
+import blockConformance from "../markdown-blocks.conformance.json" with { type: "json" }
 
 test("first parse returns all tokens", () => {
   const state = parseMarkdownIncremental("# Hello\n\nParagraph", null)
@@ -8,7 +9,7 @@ test("first parse returns all tokens", () => {
   expect(state.content).toBe("# Hello\n\nParagraph")
   expect(state.tokens.length).toBeGreaterThan(0)
   expect(state.tokens[0].type).toBe("heading")
-  expect(state.stableTokenCount).toBe(Math.max(0, state.tokens.length - 2))
+  expect(state.stableTokenCount).toBe(0)
 })
 
 test("an edit with trailingUnstable 0 parses like fresh content", () => {
@@ -28,9 +29,78 @@ test("an edit with trailingUnstable 0 parses like fresh content", () => {
     expect(edited.tokens).toEqual(fresh)
     expect(edited.stableTokenCount).toBe(edited.tokens.length)
     expect(parseMarkdownIncremental(after, edited, 0)).toBe(edited)
-    expect(parseMarkdownIncremental(after, edited, 2).stableTokenCount).toBeLessThan(edited.tokens.length)
+    expect(parseMarkdownIncremental(after, edited, 2).stableTokenCount).toBe(0)
     expect(parseMarkdownIncremental(after, streamed, 0).tokens).toEqual(fresh)
   }
+})
+
+// Apps write stable blocks out once (OpenCode's split-footer scrollback), so a stable token must never change: after
+// each append and at the stream's end, the tokens are those of a fresh lex, and the stable ones are a prefix of the
+// final text's tokens and never fewer. In blocks split by single blank lines (paragraphs, tight lists), the next
+// append after a blank line and the next block's first character makes the block before them stable; the next
+// blocks here never start with what a list holds for.
+test("streamed, the stable tokens are a growing prefix of the final text's tokens", () => {
+  let seed = 1
+  const random = (n: number) => ((seed = (Math.imul(seed, 48271) + 11) % 2147483647) >>> 0) % n
+  const failures: string[] = []
+  const progress = [
+    "a\n\nb\n\nc\n\nd\n\ne\n\nf\n",
+    "Summary.\n\n1\n\n2\n\n3\n\nend\n",
+    "- one\n- two\n- three\n- four\n- five\n- six\n\nDone.\n",
+    "1. a\n2. b\n\nText one.\n\n- c\n- d\n- e\n\nText two.\n\n* f\n* g\n\nend\n",
+  ]
+  for (const doc of [
+    ...progress,
+    "1. a\n\n  2. b\n\n   3. c\n\nafter\n", // CommonMark spec example 311, then a paragraph
+    "1. a\n\n  2. b\n\n    3. c\n\nafter\n", // spec example 313
+    "- a\n\n- b\n\n  c\n\n- d\n\nend\n",
+    "- a\n\n      code\n\n  > quote\n\n  more\n\nend\n",
+    "> a\n>\n> b\nlazy\n\n> c\n\nend\n",
+    "    code\n\n    more\n\ntext\n",
+    "[r]: /u\n  'title'\n\nsee [r]\n\n[s]: /v\n",
+    "| a | b |\n|---|---|\n| 1 | 2 |\n\n| c |\n|---|\n\npara\n",
+    "<pre>\na\n\nb\n</pre>\n\nx\n",
+    "1) a\n\n   b\n\n 100) c\n\nend\n",
+    "- a\n\n- - - x\n\nend\n",
+    "a\r\n\r\nb\r\n\r\n1. c\r\n\r\nd\r\n", // marked's raws hold "\n" for "\r\n"
+    "# Answer\n\nIntro with `code`.\n\n```ts\nconst a = 1\n\nconst b = 2\n```\n\n1. one\n\n   two\n2. three\n\nDone.\n",
+  ]) {
+    const fresh = Lexer.lex(doc, { gfm: true }).map((token) => token.raw)
+    const cuts = () => {
+      const at: number[] = []
+      for (let i = 0; i < doc.length; i += 1 + random(16)) at.push(i)
+      return at.map((cut, i) => doc.slice(cut, at[i + 1]))
+    }
+    const halves = Array.from({ length: doc.length - 1 }, (_, i) => [doc.slice(0, i + 1), doc.slice(i + 1)])
+    // Whole lines, OpenCode-shaped tokens (a word with the white space before it), characters, a first chunk of each
+    // length, random cuts.
+    for (const pieces of [doc.match(/[^\n]*\n/g)!, doc.match(/\s*\S+|\s+$/g)!, [...doc], ...halves, cuts(), cuts()]) {
+      let state: ParseState | null = null
+      let text = ""
+      let stable = 0
+      let due = 0
+      for (const piece of [...pieces, ""]) {
+        text += piece
+        state = parseMarkdownIncremental(text, state, piece ? 2 : 0)
+        const raws = state.tokens.map((token) => token.raw)
+        const lexed = Lexer.lex(text, { gfm: true }).map((token) => token.raw)
+        const wrong = raws.slice(0, state.stableTokenCount).some((raw, i) => raw !== fresh[i])
+        if (
+          state.stableTokenCount! < Math.max(stable, due) ||
+          wrong ||
+          JSON.stringify(raws) !== JSON.stringify(lexed)
+        ) {
+          failures.push(JSON.stringify(text))
+          break
+        }
+        stable = state.stableTokenCount!
+        // Only when the raws spell the text: marked writes "- c\n- " as "- c\n-\n", which the next append cannot match.
+        const tiled = raws.join("") === text
+        due = progress.includes(doc) && tiled ? 2 * (text.match(/\n\n(?=\S)/g)?.length ?? 0) - 1 : 0
+      }
+    }
+  }
+  expect(failures).toEqual([])
 })
 
 test("handles content that diverges from start", () => {
@@ -63,12 +133,9 @@ test("parseMarkdownIncremental reports stableTokenCount for the reused prefix", 
 
   expect(second.stableTokenCount).toBe(1)
   expect(second.tokens[0]).toBe(first.tokens[0])
-})
-
-test("initial parse keeps a conservative unstable tail", () => {
-  const state = parseMarkdownIncremental("# Hello\n\nPara 1\n\nPara 2", null, 2)
-
-  expect(state.stableTokenCount).toBe(Math.max(0, state.tokens.length - 2))
+  let edited: ParseState | null = null
+  for (const text of ["alpha\n\nb", "alpha\n\nbc", "alphaX"]) edited = parseMarkdownIncremental(text, edited, 2)
+  expect(edited!.tokens.map((token) => token.raw)).toEqual(["alphaX"])
 })
 
 test("handles content truncation", () => {
@@ -93,6 +160,20 @@ test("code blocks are parsed correctly", () => {
   const codeToken = state.tokens.find((t) => t.type === "code")
   expect(codeToken).toBeDefined()
   expect((codeToken as any).lang).toBe("js")
+})
+
+// The Rust crate's widget/markdown.rs runs the same rows through its own block parser.
+test.each(blockConformance.rows)("blocks: %s", (_name, markdown, blocks) => {
+  const names = parseMarkdownIncremental(markdown as string, null)
+    .tokens.filter((token) => token.type !== "space")
+    .map((token) => {
+      if (token.type === "paragraph") return "p"
+      if (token.type === "code") return "pre"
+      if (token.type === "heading") return `h${token.depth}`
+      if (token.type === "list") return token.ordered ? "ol" : "ul"
+      return token.type
+    })
+  expect(names).toEqual(blocks as string[])
 })
 
 test("streaming scenario with incremental typing", () => {
@@ -209,6 +290,7 @@ test("returns empty token list when both incremental and full parse fail", () =>
     const state2 = parseMarkdownIncremental(content2, state1, 2)
     expect(state2.tokens).toEqual([])
     expect(state2.stableTokenCount).toBe(0)
+    expect(parseMarkdownIncremental(content2, state1, 0).tokens).toEqual([])
   } finally {
     lexerRef.lex = originalLex
   }

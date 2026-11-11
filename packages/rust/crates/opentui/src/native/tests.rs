@@ -617,7 +617,7 @@ fn frames_pass_scroll_requests_to_the_host() -> Result<()> {
     };
     // The first layout sizes the content, a frame without changes asks nothing, and new content asks again.
     assert_eq!(scrolls(&session)?, [2]);
-    assert_eq!(scrolls(&session)?, []);
+    assert_eq!(scrolls(&session)?, [0; 0]);
     text.set_text("a\nb\nc\nd")?;
     assert_eq!(scrolls(&session)?, [2]);
     Ok(())

@@ -202,6 +202,8 @@ describe("EmbeddedTerminalRenderable", () => {
     )
     expect(new TextDecoder().decode(terminal.encodeKey(keyEvent({ name: "😀", sequence: "😀" })))).toBe("😀")
     expect(new TextDecoder().decode(terminal.encodeKey(keyEvent({ name: "space", sequence: " " })))).toBe(" ")
+    const shiftedLinefeed = keyEvent({ name: "linefeed", sequence: "", shift: true })
+    expect(new TextDecoder().decode(terminal.encodeKey(shiftedLinefeed))).toBe("\x1b[106;6u")
     expect(
       new TextDecoder().decode(terminal.encodeKey(keyEvent({ name: "a", sequence: "A", shift: true, raw: "A" }))),
     ).toBe("A")
@@ -285,7 +287,7 @@ describe("EmbeddedTerminalRenderable", () => {
   })
 
   // Only "menu" encodes to nothing: Ghostty has no encoding for ContextMenu or the Kitty MENU key.
-  test.each([...new Set(nonAlphanumericKeys)])("encodes the parser key name %s", (name) => {
+  test.each([...new Set([...nonAlphanumericKeys, "linefeed"])])("encodes the parser key name %s", (name) => {
     const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
     expect(terminal.encodeKey(keyEvent({ name, sequence: "" })).length > 0).toBe(name !== "menu")
   })
@@ -354,6 +356,10 @@ describe("EmbeddedTerminalRenderable", () => {
     ["Kitty Super+a", 1, "\x1b[97;9u", "\x1b[97;9u"],
     ["Kitty Alt+Super+a", 1, "\x1b[97;11u", "\x1b[97;11u"],
     ["Kitty Meta+a as Alt", 1, "\x1b[97;33u", "\x1b[97;3u"],
+    ["legacy Ctrl+J into a Kitty child", 1, "\n", "\x1b[106;5u"],
+    ["legacy Ctrl+Alt+J into a Kitty child", 1, "\x1b\n", "\x1b[106;7u"],
+    ["legacy Ctrl+J into a modifyOtherKeys child", "\x1b[>4;2m", "\n", "\x1b[27;5;106~"],
+    ["legacy Enter into a Kitty child", 1, "\r", "\r"],
   ])("preserves %s", (_label, flags, raw, expected) => {
     const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
     setup.renderer.root.add(terminal)

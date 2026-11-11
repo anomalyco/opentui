@@ -452,8 +452,8 @@ createRoot(renderer).render(<App />)
 
 React calls the constructor with `{ id, ...props }`. After construction, React applies each prop to the instance again.
 For an ordinary prop, React assigns the value to the instance property of the same name. React assigns each entry of
-the `style` prop as a separate property. On each update, React applies the changed props and sets removed props to
-`null`. Read [Custom renderables](/docs/extend/custom-renderables) to draw custom content and to
+the `style` prop as a separate property. On each update, React applies the changed props and sets removed props and
+removed `style` entries to `undefined`, as Solid does, so a setter restores its default. Read [Custom renderables](/docs/extend/custom-renderables) to draw custom content and to
 compare React and Solid construction.
 
 ## React DevTools

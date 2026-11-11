@@ -2296,6 +2296,17 @@ pub fn ot_scene_get_text_lines(context: ?*ContextHandle, node_ptr: ?*const c.ot_
     return c.OT_OK;
 }
 
+pub fn ot_scene_get_text_byte_at(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, x: i32, y: i32, out_byte_ptr: ?*u32) callconv(.c) c.ot_status {
+    const status = sceneReadStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const node = node_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const out = out_byte_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const byte = owner.core.sceneGetTextByteAt(handleFromC(node.*), x, y) catch |err| return sessionError(owner, err);
+    out.* = byte orelse std.math.maxInt(u32);
+    return c.OT_OK;
+}
+
 pub fn ot_scene_set_hooks(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, options_ptr: ?*const c.ot_scene_hooks) callconv(.c) c.ot_status {
     const status = sessionContextStatus(context);
     if (status != c.OT_OK) return status;
@@ -3693,6 +3704,7 @@ fn expectSceneWrapperRules(comptime wrapper: anytype, comptime read: bool, conte
             } else args[index] = switch (@typeInfo(param.?)) {
                 .optional => null,
                 .float => @floatFromInt(fill),
+                .int => @intCast(fill),
                 else => fill,
             };
         }
@@ -3739,9 +3751,9 @@ test "Scene ABI wrappers share admission handle and record rules and keep output
         try expectSceneWrapperRules(wrapper, false, handle, &nodes, 0);
     }
     inline for (.{
-        ot_scene_has_measure,       ot_scene_get_style, ot_scene_get_layout,    ot_scene_get_text_selection,
-        ot_scene_get_selected_text, ot_scene_get_text,  ot_scene_get_text_info, ot_scene_get_text_lines,
-        ot_scene_reaches_hooks,
+        ot_scene_has_measure,       ot_scene_get_style,        ot_scene_get_layout,    ot_scene_get_text_selection,
+        ot_scene_get_selected_text, ot_scene_get_text,         ot_scene_get_text_info, ot_scene_get_text_lines,
+        ot_scene_reaches_hooks,     ot_scene_get_text_byte_at,
     }) |wrapper| {
         try expectSceneWrapperRules(wrapper, true, handle, &nodes, 0);
     }

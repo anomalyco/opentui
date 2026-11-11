@@ -1,5 +1,5 @@
 import { type RenderableOptions, Renderable, type NativeRenderableIntegration } from "../Renderable.js"
-import type { KeyEvent, PasteEvent } from "../lib/KeyHandler.js"
+import { KeyEvent, type PasteEvent } from "../lib/KeyHandler.js"
 import { RGBA } from "../lib/RGBA.js"
 import type { RenderContext } from "../types.js"
 import type { MouseEvent } from "../renderer.js"
@@ -175,6 +175,8 @@ export class EmbeddedTerminalRenderable extends Renderable {
 
   public encodeKey(key: KeyEvent): Uint8Array {
     if (!this.handle) return new Uint8Array()
+    // Without the Kitty keyboard protocol the parser names Ctrl+J "linefeed", after the byte it sends.
+    if (key.name === "linefeed") key = new KeyEvent({ ...key, name: "j", ctrl: true, sequence: key.shift ? "J" : "j" })
     const text = textualKey(key)
     const physical = physicalKey(key)
     const options: EmbeddedTerminalKey = {

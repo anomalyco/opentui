@@ -399,11 +399,31 @@ pub inline fn isCombiningMark(bytes: []const u8) bool {
     };
 }
 
+/// A C0 control, DEL, or a C1 control: a terminal acts on it instead of drawing it. Any
+/// integer type, so that a u21 caller compares without widening.
+pub inline fn isControl(cp: anytype) bool {
+    return cp < 0x20 or (cp >= 0x7f and cp < 0xa0);
+}
+
+/// The byte form of isControl for UTF-8: U+0080..U+009F encode as C2 80..C2 9F.
+pub inline fn containsControl(bytes: []const u8) bool {
+    for (bytes, 0..) |byte, index| {
+        if (byte < 0x20 or byte == 0x7f) return true;
+        if (byte == 0xc2 and index + 1 < bytes.len and bytes[index + 1] < 0xa0) return true;
+    }
+    return false;
+}
+
+/// A Unicode scalar value: at most U+10FFFF and not a surrogate.
+pub inline fn isScalar(cp: u32) bool {
+    return cp <= 0x10ffff and !(cp >= 0xd800 and cp <= 0xdfff);
+}
+
 /// Calculate width from east asian width property and Unicode properties
 /// Returns -1 for control characters (they don't contribute to width)
 inline fn eawToWidth(cp: u21, eaw: uucode.types.EastAsianWidth) i16 {
     if (cp == 0) return 0;
-    if (cp < 32 or (cp >= 0x7F and cp < 0xA0)) return -1;
+    if (isControl(cp)) return -1;
 
     const gc = uucode.get(.general_category, cp);
     switch (gc) {
