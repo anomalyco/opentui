@@ -61,7 +61,7 @@ jobs:
           path: |
             packages/native/.cache/ffmpeg/prefix
             packages/native/.cache/ffmpeg/downloads
-          key: ffmpeg-v1-${{ runner.os }}-${{ hashFiles('packages/native/scripts/build-ffmpeg.ts') }}
+          key: ffmpeg-v1-${{ runner.os }}-${{ hashFiles('packages/native/scripts/build-ffmpeg.ts', '.zig-version') }}
 
       - name: Build or package native libraries
         run: bun scripts/native-bottle.ts package --hit "${{ steps.bottle.outputs.cache-hit }}" --zig "${{ env.ZIG_VERSION }}" --all
@@ -303,7 +303,7 @@ jobs:
           path: |
             packages/native/.cache/ffmpeg/prefix
             packages/native/.cache/ffmpeg/downloads
-          key: ffmpeg-v1-${{ runner.os }}-${{ hashFiles('packages/native/scripts/build-ffmpeg.ts') }}
+          key: ffmpeg-v1-${{ runner.os }}-${{ hashFiles('packages/native/scripts/build-ffmpeg.ts', '.zig-version') }}
 
       # FFmpeg cannot build on Windows, so a cache miss waits for the build job's cross-built prefix.
       - name: Wait for Windows FFmpeg prefix
