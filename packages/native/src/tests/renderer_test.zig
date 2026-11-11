@@ -12,6 +12,7 @@ const image = @import("../image.zig");
 const ghostty_vt = @import("../ghostty-vt.zig");
 const test_renderer_mod = @import("test-renderer.zig");
 const terminal_image_test = @import("terminal-image_test.zig");
+const terminal_image = @import("../terminal-image.zig");
 const owned_styled = @import("owned-styled-text.zig");
 const utils = @import("../utils.zig");
 const native_span_feed = @import("../native-span-feed.zig");
@@ -176,6 +177,43 @@ test "renderer emits Kitty image once and leaves unchanged frame empty" {
     try std.testing.expectEqual(@as(u32, 0), r.currentImages.items[0].image_handle);
     try std.testing.expectEqual(@as(u32, 0), r.pendingImages.items[0].image_handle);
     try std.testing.expect(r.force_full_repaint);
+}
+
+test "renderer tmux Kitty anchor follows cell diffs and retains image data" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    var test_renderer = try TestRenderer.create(std.testing.allocator, 4, 4, &pools.graphemes, &pools.links);
+    defer test_renderer.deinit();
+    const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255, 0, 255, 0, 255 }, 2, 1, 8);
+    defer value.deinit();
+    const target = test_renderer.renderer;
+    target.terminal.multiplexer = .tmux;
+    target.imageIdSalt = 0x0102_0304;
+
+    const placeholder = "\u{10eeee}";
+    for (0..3) |frame| {
+        const next = target.getNextBuffer();
+        try std.testing.expect(try next.drawImage(value, 1, 1, 0, 2, 2, 0, 0, 0, 0, 2, 1, .kitty));
+        if (frame == 2) try next.drawText("X", 1, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(frame == 0));
+        const output = test_renderer.lastOutput();
+        if (frame == 1) {
+            try std.testing.expectEqual(@as(usize, 0), output.len);
+            continue;
+        }
+        try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, placeholder));
+        try std.testing.expect(std.mem.find(u8, output, if (frame == 0) "P=131844,Q=1,H=0,V=0" else "P=131844,Q=1,H=-1,V=1") != null);
+        if (frame == 0) try std.testing.expect(std.mem.find(u8, output, "\x1bPtmux;\x1b\x1b_Ga=p,U=1,") != null);
+        if (frame == 2) {
+            try std.testing.expect(std.mem.find(u8, output, "X") != null);
+            try std.testing.expect(std.mem.find(u8, output, "a=t") == null);
+        }
+    }
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
+    const output = test_renderer.lastOutput();
+    try std.testing.expect(std.mem.find(u8, output, "a=d,d=I,i=16909061") != null);
+    try std.testing.expect(std.mem.find(u8, output, "a=d,d=I,i=131844") != null);
+    try std.testing.expect(std.mem.find(u8, output, placeholder) == null);
 }
 
 test "renderer emits Sixel only with known pixel dimensions" {
@@ -2919,29 +2957,52 @@ test "renderer - split scrollback materializes image fallback cells" {
 test "renderer - split scrollback uses native Kitty when Kitty is selected" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
-    var test_renderer = try TestRenderer.create(std.testing.allocator, 4, 3, &pools.graphemes, &pools.links);
-    defer test_renderer.deinit();
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
     defer value.deinit();
     const image_handle: u32 = 1;
-    test_renderer.renderer.terminal.processCapabilityResponse("\x1b_Gi=31337;OK\x1b\\");
     var snapshot = try OptimizedBuffer.init(std.testing.allocator, 1, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
     defer snapshot.deinit();
     snapshot.clear(ansi.rgbColor(1, 2, 3, 255), null);
     try std.testing.expect(try snapshot.drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .auto));
-    _ = test_renderer.renderer.resetSplitScrollback(2, 2);
 
-    const result = test_renderer.commitSplit(snapshot, 1, false, true, 2, false);
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, result);
+    for ([_]bool{ false, true }) |tmux| {
+        var test_renderer = try TestRenderer.create(std.testing.allocator, 4, 3, &pools.graphemes, &pools.links);
+        defer test_renderer.deinit();
+        test_renderer.renderer.terminal.processCapabilityResponse("\x1b_Gi=31337;OK\x1b\\");
+        if (tmux) {
+            test_renderer.renderer.terminal.multiplexer = .tmux;
+            test_renderer.renderer.terminal.image_protocol = .kitty;
+            try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
+            try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
+        }
+        _ = test_renderer.renderer.resetSplitScrollback(2, 2);
 
-    const output = test_renderer.memory.lastWrite();
-    try std.testing.expect(std.mem.find(u8, output, "\x1b_Ga=t") != null);
-    try std.testing.expect(std.mem.find(u8, output, "\x1b_Ga=p") != null);
-    try std.testing.expect(std.mem.find(u8, output, "C=1,z=-1073741823") != null);
-    try std.testing.expect(std.mem.find(u8, output, ",U=1,") == null);
-    try std.testing.expect(std.mem.find(u8, output, "\u{10EEEE}") == null);
-    try std.testing.expect(std.mem.find(u8, output, "█") == null);
-    try std.testing.expect(std.mem.find(u8, output, "48;2;1;2;3") == null);
+        const result = test_renderer.commitSplit(snapshot, 1, false, true, 2, false);
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, result);
+
+        const output = test_renderer.memory.lastWrite();
+        try std.testing.expect(std.mem.find(u8, output, "\x1b_Ga=t") != null);
+        try std.testing.expect(std.mem.find(u8, output, "\x1b_Ga=p") != null);
+        try std.testing.expect(std.mem.find(u8, output, "C=1,z=-1073741823") != null);
+        try std.testing.expectEqual(tmux, std.mem.find(u8, output, ",U=1,") != null);
+        try std.testing.expectEqual(tmux, std.mem.find(u8, output, "\u{10EEEE}") != null);
+        if (tmux) {
+            var live_parent: [64]u8 = undefined;
+            const upload = try std.fmt.bufPrint(&live_parent, "a=t,f=32,s=1,v=1,i={d},", .{terminal_image.kittyAnchorId(test_renderer.renderer.imageIdSalt)});
+            try std.testing.expect(std.mem.find(u8, output, upload) == null);
+        }
+        try std.testing.expect(std.mem.find(u8, output, "█") == null);
+        try std.testing.expect(std.mem.find(u8, output, "48;2;1;2;3") == null);
+        if (tmux) {
+            test_renderer.renderer.kittyHistoryNextImageId = test_renderer.renderer.kittyHistoryNextImageId.? | std.math.maxInt(u24);
+            for (0..2) |commit| {
+                try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.commitSplit(snapshot, 1, false, true, 2, false));
+                const history = test_renderer.lastOutput();
+                try std.testing.expectEqual(commit == 0, std.mem.find(u8, history, "\x1b_Ga=t") != null);
+                try std.testing.expectEqual(commit == 1, std.mem.find(u8, history, "█") != null);
+            }
+        }
+    }
 }
 
 test "renderer - split scrollback covered Kitty image uses blocks" {
@@ -4723,9 +4784,6 @@ test "renderer transmits small kitty images at native size" {
 test "renderer reuses the kitty transmit across source rectangle changes" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
-
-    var test_renderer = try TestRenderer.create(std.testing.allocator, 8, 4, &pools.graphemes, &pools.links);
-    defer test_renderer.deinit();
     const pixels = try std.testing.allocator.alloc(u8, 64 * 64 * 4);
     defer std.testing.allocator.free(pixels);
     for (0..64 * 64) |index| {
@@ -4737,33 +4795,41 @@ test "renderer reuses the kitty transmit across source rectangle changes" {
     const value = try image.createFromRgba(std.testing.allocator, pixels, 64, 64, 64 * 4);
     defer value.deinit();
     const value_handle: u32 = 1;
-    test_renderer.renderer.terminal.caps.kitty_graphics = true;
 
-    // A clipped placement transmits the full image once; the placement escape
-    // selects the visible source rectangle.
-    const next = test_renderer.renderer.getNextBuffer();
-    try std.testing.expect(try next.drawImage(value, value_handle, 0, 0, 2, 2, 16, 16, 8, 12, 8, 8, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
-    const output = test_renderer.memory.lastWrite();
+    for ([_]bool{ false, true }) |tmux| {
+        var test_renderer = try TestRenderer.create(std.testing.allocator, 8, 4, &pools.graphemes, &pools.links);
+        defer test_renderer.deinit();
+        test_renderer.renderer.terminal.caps.kitty_graphics = true;
+        test_renderer.renderer.terminal.multiplexer = if (tmux) .tmux else .none;
 
-    try std.testing.expect(std.mem.find(u8, output, "a=t,f=24,s=64,v=64") != null);
-    try std.testing.expect(std.mem.find(u8, output, "x=8,y=12,w=8,h=8,C=1") != null);
-    const transmit_start = std.mem.find(u8, output, "\x1b_Ga=t").?;
-    const transmit_end = std.mem.findPos(u8, output, transmit_start, "\x1b[").?;
-    const transmitted = try terminal_image_test.decodeKittyChunks(output[transmit_start..transmit_end]);
-    defer std.testing.allocator.free(transmitted);
-    try std.testing.expectEqual(@as(usize, 64 * 64 * 3), transmitted.len);
+        // A clipped placement transmits the full image once; the placement escape
+        // selects the visible source rectangle.
+        const next = test_renderer.renderer.getNextBuffer();
+        try std.testing.expect(try next.drawImage(value, value_handle, 0, 0, 2, 2, 16, 16, 8, 12, 8, 8, .kitty));
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
+        const output = test_renderer.memory.lastWrite();
 
-    // A scroll step changes only the source rectangle: no delete-image, no new
-    // transmit, just a re-placement referencing the retained image.
-    const changed = test_renderer.renderer.getNextBuffer();
-    try std.testing.expect(try changed.drawImage(value, value_handle, 0, 0, 2, 2, 16, 16, 16, 12, 8, 8, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
-    const changed_output = test_renderer.memory.lastWrite();
-    try std.testing.expect(std.mem.find(u8, changed_output, "a=d,d=I") == null);
-    try std.testing.expect(std.mem.find(u8, changed_output, "a=t") == null);
-    try std.testing.expect(std.mem.find(u8, changed_output, "a=d,d=i") != null);
-    try std.testing.expect(std.mem.find(u8, changed_output, "x=16,y=12,w=8,h=8,C=1") != null);
+        try std.testing.expect(std.mem.find(u8, output, "a=t,f=24,s=64,v=64") != null);
+        try std.testing.expect(std.mem.find(u8, output, "x=8,y=12,w=8,h=8,C=1") != null);
+        if (!tmux) {
+            const transmit_start = std.mem.find(u8, output, "\x1b_Ga=t").?;
+            const transmit_end = std.mem.findPos(u8, output, transmit_start, "\x1b[").?;
+            const transmitted = try terminal_image_test.decodeKittyChunks(output[transmit_start..transmit_end]);
+            defer std.testing.allocator.free(transmitted);
+            try std.testing.expectEqual(@as(usize, 64 * 64 * 3), transmitted.len);
+        }
+
+        // A scroll step changes only the source rectangle: no delete-image, no new
+        // transmit, just a re-placement referencing the retained image.
+        const changed = test_renderer.renderer.getNextBuffer();
+        try std.testing.expect(try changed.drawImage(value, value_handle, 0, 0, 2, 2, 16, 16, 16, 12, 8, 8, .kitty));
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
+        const changed_output = test_renderer.memory.lastWrite();
+        try std.testing.expect(std.mem.find(u8, changed_output, "a=d,d=I") == null);
+        try std.testing.expect(std.mem.find(u8, changed_output, "a=t") == null);
+        try std.testing.expect(std.mem.find(u8, changed_output, "a=d,d=i") != null);
+        try std.testing.expect(std.mem.find(u8, changed_output, "x=16,y=12,w=8,h=8,C=1") != null);
+    }
 }
 
 test "renderer does not publish a frame when image dirty preparation fails" {

@@ -206,14 +206,21 @@ pub fn writeKittyPlacement(
     source_width: u32,
     source_height: u32,
     z: i32,
-    tmux: bool,
+    anchor: ?KittyAnchor,
 ) !void {
-    try writer.print("\x1b[{d};{d}H", .{ y + 1, x + 1 });
-    if (tmux) try writer.writeAll("\x1bPtmux;\x1b\x1b_G") else try writer.writeAll("\x1b_G");
-    try writer.print("a=p,i={d},p={d},c={d},r={d},x={d},y={d},w={d},h={d},C=1,z={d},q=2", .{
-        id, placement_id, width, height, source_x, source_y, source_width, source_height, z,
+    if (anchor != null) {
+        try writer.writeAll("\x1bPtmux;\x1b\x1b_G");
+    } else {
+        try writer.print("\x1b[{d};{d}H\x1b_G", .{ y + 1, x + 1 });
+    }
+    try writer.print("a=p,i={d},p={d}", .{ id, placement_id });
+    if (anchor) |parent| {
+        try writer.print(",P={d},Q=1,H={d},V={d}", .{ parent.id, @as(i64, x) - parent.x, @as(i64, y) - parent.y });
+    }
+    try writer.print(",c={d},r={d},x={d},y={d},w={d},h={d},C=1,z={d},q=2", .{
+        width, height, source_x, source_y, source_width, source_height, z,
     });
-    if (tmux) try writer.writeAll("\x1b\x1b\\\x1b\\") else try writer.writeAll("\x1b\\");
+    try writer.writeAll(if (anchor != null) "\x1b\x1b\\\x1b\\" else "\x1b\\");
 }
 
 pub fn writeKittyPlacementAtCursor(
@@ -223,11 +230,30 @@ pub fn writeKittyPlacementAtCursor(
     width: u32,
     height: u32,
     z: i32,
-    tmux: bool,
 ) !void {
-    if (tmux) try writer.writeAll("\x1bPtmux;\x1b\x1b_G") else try writer.writeAll("\x1b_G");
+    try writer.writeAll("\x1b_G");
     try writer.print("a=p,i={d},p={d},c={d},r={d},C=1,z={d},q=2", .{ id, placement_id, width, height, z });
-    if (tmux) try writer.writeAll("\x1b\x1b\\\x1b\\") else try writer.writeAll("\x1b\\");
+    try writer.writeAll("\x1b\\");
+}
+
+pub const KittyAnchor = struct {
+    id: u32,
+    x: u32,
+    y: u32,
+};
+
+pub fn kittyAnchorId(id: u32) u32 {
+    return @max(1, id & std.math.maxInt(u24));
+}
+
+pub fn writeKittyAnchor(writer: anytype, id: u32) !void {
+    try writer.print("\x1bPtmux;\x1b\x1b_Ga=t,f=32,s=1,v=1,i={d},q=2;AAAAAA==\x1b\x1b\\\x1b\\", .{id});
+    try writer.print("\x1bPtmux;\x1b\x1b_Ga=p,U=1,i={d},p=1,c=1,r=1,q=2\x1b\x1b\\\x1b\\", .{id});
+}
+
+pub fn writeKittyPlaceholder(writer: anytype, id: u32) !void {
+    try writer.print("\x1b[38;2;{d};{d};{d}m\x1b[58;2;0;0;1m", .{ (id >> 16) & 255, (id >> 8) & 255, id & 255 });
+    try writer.writeAll("\u{10eeee}\u{0305}\u{0305}");
 }
 
 pub fn writeKittyDelete(writer: anytype, id: u32, placement_id: ?u32, free_image: bool, tmux: bool) !void {
