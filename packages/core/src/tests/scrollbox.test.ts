@@ -1231,8 +1231,10 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
     const moved = ["pushed", "followed", "shrunk"]
     const run = async (first: boolean, mode: string) => {
       const client = createMockTreeSitterClient()
-      // The highlight conceals each block's first two characters, so text painted unhighlighted differs.
-      client.setMockResult({ highlights: [[0, 2, "conceal", { conceal: "" }]] })
+      // The highlight conceals each block's first two characters, so text painted unhighlighted differs. Streamed prose
+      // shows a preview, which equals a highlight without captures.
+      const previewed = streaming && (kind === "quote" || kind === "list")
+      client.setMockResult({ highlights: previewed ? [] : [[0, 2, "conceal", { conceal: "" }]] })
       const syntaxStyle = SyntaxStyle.create(testRenderer.nativeScene)
       const scrollbox = new ScrollBoxRenderable(testRenderer, { width: 40, height: 6, stickyStart: "bottom" })
       testRenderer.root.add(scrollbox)
@@ -1276,7 +1278,8 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
       // In view, where the scene runs its hooks, the block shows its last highlight until the next one lands. Accepted
       // cost of the moved modes: an afterLayout callback asked after the write that scrolls the block back in the same
       // frame shows it blank until then, since the block's own check, asked first, saw it culled.
-      if (mode === "shown") expect(captureCharFrame()).toBe(before)
+      // A streamed preview shows the new text at once.
+      if (mode === "shown" && !previewed) expect(captureCharFrame()).toBe(before)
       if (mode === "shown") await settle()
       const height = scrollbox.scrollHeight - (spacer.parent ? 6 : 0)
       // Grown, a first block reaches into the view, where the scene highlights it; a last one stays out of view.
