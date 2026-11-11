@@ -412,7 +412,8 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     return { ...this._cursorStyle, color: this._cursorStyle.color ? RGBA.clone(this._cursorStyle.color) : undefined }
   }
 
-  set cursorStyle(style: CursorStyleOptions) {
+  set cursorStyle(value: CursorStyleOptions | null | undefined) {
+    const style: CursorStyleOptions = value ?? this._defaultOptions.cursorStyle
     const newStyle = { ...style, color: style.color ? RGBA.clone(style.color) : undefined }
     if (
       this._cursorStyle.style !== newStyle.style ||

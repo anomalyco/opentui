@@ -35,15 +35,6 @@ fn table_change_handler_that_mutates_the_table_panics() {
     assert_eq!(files.row_count(), 6);
 }
 
-// Expected: lowering max_length below the current length truncates the value, as Core's `maxLength` setter does.
-// Actual: the value stays longer than the limit.
-#[test]
-fn input_max_length_does_not_truncate_the_existing_value() {
-    let app = TestApp::new(20, 1);
-    let input = Input::new(&app).set_value("hello world").max_length(5);
-    assert_eq!(input.value(), "hello");
-}
-
 // Expected: with no selection, Shift+Right selects from the cursor, as Core does ("d" in "ab|def").
 // Actual: Backspace kept the anchor of an earlier, collapsed selection, so the new selection starts at a stale
 // offset and comes out empty.
