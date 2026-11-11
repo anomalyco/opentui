@@ -2768,6 +2768,10 @@ function recordedPixels(data: Uint8Array | PointerInput, length: number): Uint8A
   return input.subarray(0, count)
 }
 
+function isAttributeByte(value: number | null | undefined): boolean {
+  return Number.isInteger(value) && value! >= 0 && value! <= 0xff
+}
+
 function encodeEditorStyle(style: NativeEditorStyle): Uint32Array {
   const layout = nativeLayouts.ot_editor_style
   const record = new Uint32Array(layout.size / 4)
@@ -2788,6 +2792,10 @@ function encodeEditorStyle(style: NativeEditorStyle): Uint32Array {
     record[layout.fields.attributes.offset / 4] = toSafeFFIU32Length(attributes, "Editor style attributes")
   }
   if (suppliedAttributes != null) {
+    // Both share one word; a value past a byte would become mask bits.
+    if (!isAttributeByte(attributes) || !isAttributeByte(suppliedAttributes)) {
+      throw new RangeError("Masked editor style attributes must be integers from 0 to 255")
+    }
     record[layout.fields.flags.offset / 4] |= nativeConstants.OT_EDITOR_STYLE_ATTRIBUTE_MASK
     record[layout.fields.attributes.offset / 4] |= suppliedAttributes << 16
   }

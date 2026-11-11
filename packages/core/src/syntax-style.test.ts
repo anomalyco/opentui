@@ -3,6 +3,7 @@ import { describe, expect, it, beforeEach, afterEach, spyOn } from "bun:test"
 import { SyntaxStyle } from "./syntax-style.js"
 import { RGBA } from "./lib/RGBA.js"
 import { createTextAttributes } from "./utils.js"
+import { nativeConstants, nativeLayouts } from "./native-abi.generated.js"
 import type { StyleDefinition, StyleDefinitionInput } from "./syntax-style.js"
 
 describe("NativeSyntaxStyle", () => {
@@ -68,7 +69,11 @@ describe("NativeSyntaxStyle", () => {
     const ids = new Map<string, number>()
     const definitions = new Map<string, StyleDefinition>()
     const merged = new Set<string>()
-    const register = spyOn(owner.renderLib, "contextSyntaxStyleRegister")
+    const symbols = (owner.renderLib as unknown as { opentui: { symbols: Record<string, () => number> } }).opentui
+      .symbols
+    const register = spyOn(symbols, "ot_syntax_style_register")
+    const fields = nativeLayouts.ot_editor_style.fields
+    const masked = nativeConstants.OT_EDITOR_STYLE_ATTRIBUTES | nativeConstants.OT_EDITOR_STYLE_ATTRIBUTE_MASK
     const scoped = <T>(get: (name: string) => T | undefined, name: string): T | undefined =>
       get(name) ?? (name.includes(".") ? get(name.split(".")[0]) : undefined)
     const merge = (list: string[]) => {
@@ -92,14 +97,15 @@ describe("NativeSyntaxStyle", () => {
         for (const key of ["bold", "italic", "underline", "dim", "strikethrough"] as const)
           definition[key] = flags[random(3)]
         const id = style.registerStyle(registered, definition)
-        // Native also learns which attributes the style supplies, for group-set composition.
+        // The C record carries the attribute byte and, at bits 16..23, the attributes the style supplies.
         const supplied = Object.fromEntries(
           Object.entries(definition).map(([key, value]) => [key, value !== undefined]),
         )
-        expect(register.mock.calls.at(-1)?.[3]).toMatchObject({
-          attributes: createTextAttributes(definition),
-          suppliedAttributes: createTextAttributes(supplied),
-        })
+        const record = (register.mock.calls.at(-1) as unknown[])[4] as Uint32Array
+        expect(record[fields.flags.offset / 4] & masked).toBe(masked)
+        expect(record[fields.attributes.offset / 4]).toBe(
+          createTextAttributes(definition) | (createTextAttributes(supplied) << 16),
+        )
         expect(id).toBe(ids.get(registered) ?? id)
         expect(id).toBeGreaterThan(0)
         expect([...ids].filter(([key, value]) => value === id && key !== registered)).toEqual([])
@@ -136,6 +142,22 @@ describe("NativeSyntaxStyle", () => {
     style.clearCache()
     expect(style.mergeStyles()).toEqual(merge([]))
     register.mockRestore()
+  })
+
+  // A masked record packs two bytes into one word, so anything but a byte would become mask bits.
+  it.each([
+    [0x10001, 0],
+    [0, 0x100],
+    [0, 1.5],
+    [-1, 0xff],
+    [null, 0],
+  ])("rejects masked attributes %j with supplied attributes %j", (attributes, suppliedAttributes) => {
+    const handle = style._getSceneHandle(owner)
+    const definition = { attributes, suppliedAttributes }
+    expect(() => owner.renderLib.contextSyntaxStyleRegister(handle.context, handle, "x", definition)).toThrow(
+      RangeError,
+    )
+    expect(style.getStyleCount()).toBe(0)
   })
 
   it("rejects every call after destroy, and destroy is idempotent", () => {
