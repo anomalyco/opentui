@@ -396,8 +396,8 @@ export class CodeRenderable extends TextBufferRenderable {
 
     this._isHighlighting = true
 
-    // Text a chunk callback has not seen is never shown: a failed highlight keeps the block's preview, else the
-    // chunk path runs without highlights.
+    // Text a chunk callback has not seen is never shown: a failed highlight keeps what the block shows (its preview
+    // or an earlier highlight), else the chunk path runs without highlights.
     const keepsPreview = () => this._onChunks && this._initialStyledText && this._drawUnstyledText
     try {
       const result = await this._treeSitterClient.highlightOnce(content, filetype).catch((error) => {
@@ -482,8 +482,7 @@ export class CodeRenderable extends TextBufferRenderable {
 
       console.warn("Code highlighting failed, falling back to plain text:", error)
       if (this.isDestroyed) return
-      if (keepsPreview()) this.textBuffer.setStyledText(this._initialStyledText!)
-      else this.textBuffer.setText(content)
+      if (!keepsPreview()) this.textBuffer.setText(content)
       this.setRenderedLineSources(undefined)
       this.setShouldRenderTextBuffer(true)
       this._isHighlighting = false

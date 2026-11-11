@@ -5419,33 +5419,50 @@ class FakeWorker extends TreeSitterClient {
   }
 }
 
-test("a rejected highlight after streaming keeps the hooked text", async () => {
+test("a rejected highlight keeps the hooked text", async () => {
   const worker = new FakeWorker()
+  const titles = new Map<string, string>()
   const md = createMarkdownRenderable({
     content: "see ses_alpha `ses_alpha` `run ses_alpha`",
     syntaxStyle,
     streaming: true,
     internalBlockMode: "top-level",
     treeSitterClient: worker,
-    inlineHook: sessionLinks(new Map([["ses_alpha", "Title"]])),
+    inlineHook: sessionLinks(titles),
   })
   renderer.root.add(md)
   await renderOnce()
-  // The preview links an exact-ID code span only, as the highlight does.
-  expect(frameText()).toBe("see @Title @Title run ses_alpha")
+  expect(frameText()).toBe("see ses_alpha ses_alpha run ses_alpha")
   worker.reply()
   await flushAsync()
+  // The title arrives later; the preview links an exact-ID code span only, as the highlight does.
+  titles.set("ses_alpha", "Title")
+  md.rerunInlineHook(() => true)
+  await renderOnce()
+  worker.reply()
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  await renderOnce()
+  expect(frameText()).toBe("see @Title @Title run ses_alpha")
+  const warn = console.warn
+  console.warn = () => {}
+  const fail = async () => {
+    worker.fail()
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    await renderOnce()
+  }
+  // A rejected rerun keeps the title already drawn, not the preview of an earlier one.
+  titles.set("ses_alpha", "Again")
+  md.rerunInlineHook(() => true)
+  await renderOnce()
+  await fail()
+  expect(frameText()).toBe("see @Title @Title run ses_alpha")
   md.streaming = false
   await renderOnce()
   // No preview is left to keep, so the block draws its text without highlights, through the hook: backticks show and
   // no span is code.
-  const warn = console.warn
-  console.warn = () => {}
-  worker.fail()
-  await new Promise<void>((resolve) => setImmediate(resolve))
+  await fail()
   console.warn = warn
-  await renderOnce()
-  expect(frameText()).toBe("see @Title `@Title` `run @Title`")
+  expect(frameText()).toBe("see @Again `@Again` `run @Again`")
 })
 
 test("an escaped dollar keeps its backslash in the preview, as the highlight shows it", async () => {
