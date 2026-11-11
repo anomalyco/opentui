@@ -618,7 +618,8 @@ fn rerunning_without_a_hook_builds_nothing() {
 #[test]
 fn inline_hooks_keep_source_mode() {
     // A hook that returns its spans leaves every frame as it was, in both modes.
-    let source = fixture("links.md");
+    let corpus = corpus();
+    let source = strings(&corpus.iter().find(|row| row[0] == "fixture links").unwrap()[1])[0];
     for conceal in [true, false] {
         let (plain, hooked) = (TestApp::new(60, 80), TestApp::new(60, 80));
         document(&plain, conceal).set_markdown(source.trim());
