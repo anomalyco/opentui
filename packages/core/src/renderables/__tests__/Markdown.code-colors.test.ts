@@ -258,7 +258,8 @@ test("updating markdown fg/bg rerenders markdown fallback renderables", async ()
   const md = createMarkdownRenderable({
     id: "markdown-paragraph-color-update",
     content: "Plain paragraph text",
-    syntaxStyle,
+    // A failed highlight draws prose as one without captures, so a theme default would color it.
+    syntaxStyle: SyntaxStyle.fromStyles({}, renderer.nativeScene!),
     fg: initialFg,
     bg: initialBg,
     treeSitterClient: mockTreeSitterClient,
