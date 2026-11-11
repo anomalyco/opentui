@@ -1337,6 +1337,7 @@ test "Markdown stream: a leaf that changes kind or loses lines keeps its live di
         "x `y\n\nz` w\n",
         "a\\\nb\n",
         "[x]: /\n---",
+        "[x]: /u\n'a\nb'\n[x]\n",
     };
     for (rows) |text| {
         try std.testing.expect(try streamAgreesParts(arena, "kinds", try split(arena, text, 1)));
