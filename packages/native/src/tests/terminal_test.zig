@@ -1550,46 +1550,6 @@ test "writeNotification - text cannot end or redirect its OSC" {
     }
 }
 
-test "writeNotification - wraps OSC777 in tmux passthrough" {
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("TMUX", "/tmp/tmux-1000/default,12345,0");
-
-    var term = Terminal.init(.{ .env_map = &env });
-    term.caps.notifications = true;
-    term.notification_protocol = .osc777;
-
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-
-    const ok = try term.writeNotification(testing.allocator, &writer, "Body", "Title");
-
-    try testing.expect(ok);
-    try testing.expect(std.mem.startsWith(u8, writer.getWritten(), "\x1bPtmux;"));
-    try testing.expect(std.mem.find(u8, writer.getWritten(), "\x1b\x1b]777;notify;Title;Body") != null);
-    try testing.expect(std.mem.endsWith(u8, writer.getWritten(), "\x1b\\"));
-}
-
-test "writeNotification - wraps OSC99 in tmux passthrough" {
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("TMUX", "/tmp/tmux-1000/default,12345,0");
-
-    var term = Terminal.init(.{ .env_map = &env });
-    term.caps.notifications = true;
-    term.notification_protocol = .osc99;
-
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-
-    const ok = try term.writeNotification(testing.allocator, &writer, "Body", null);
-
-    try testing.expect(ok);
-    try testing.expect(std.mem.startsWith(u8, writer.getWritten(), "\x1bPtmux;"));
-    try testing.expect(std.mem.find(u8, writer.getWritten(), "\x1b\x1b]99;i=opentui-1:p=body:e=1:d=1;Qm9keQ==") != null);
-    try testing.expect(std.mem.endsWith(u8, writer.getWritten(), "\x1b\\"));
-}
-
 test "writeNotification - writes raw OSC99 in Zellij" {
     var env = std.process.Environ.Map.init(testing.allocator);
     defer env.deinit();
@@ -1878,6 +1838,25 @@ test "multiplexer sets clipboard framing, OSC 52, widths and the graphics query,
         writer.reset();
         try term.writeClipboard(&writer, .clipboard, "test");
         try testing.expectEqualStrings(row.clipboard, writer.getWritten());
+        // A notification takes the clipboard's framing and terminator, also past one screen chunk.
+        term.caps.notifications = true;
+        for ([_]struct { Terminal.NotificationProtocol, []const u8, []const u8 }{
+            .{ .osc99, "test", "99;i=opentui-1:p=body:e=1:d=1;dGVzdA==" },
+            .{ .osc777, "dGVzdA==", "777;notify;dGVzdA==;" },
+        }) |case| {
+            term.notification_protocol = case[0];
+            writer.reset();
+            try testing.expect(try term.writeNotification(testing.allocator, &writer, case[1], null));
+            const notification = try std.mem.replaceOwned(u8, testing.allocator, row.clipboard, "52;c;dGVzdA==", case[2]);
+            defer testing.allocator.free(notification);
+            try testing.expectEqualStrings(notification, writer.getWritten());
+        }
+        if (row.mux != .screen) continue;
+        writer.reset();
+        const long: [1000]u8 = @splat('x');
+        try testing.expect(try term.writeNotification(testing.allocator, &writer, &long, null));
+        var forwarded: [1100]u8 = undefined;
+        try testing.expectEqualStrings("\x1b]777;notify;" ++ long ++ ";\x07", try forwardScreenDcs(writer.getWritten(), &forwarded));
     }
 }
 

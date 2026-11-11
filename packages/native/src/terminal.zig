@@ -1656,35 +1656,6 @@ pub fn setKittyKeyboardFlags(self: *Terminal, flags: u8) void {
     self.opts.kitty_keyboard_flags = flags;
 }
 
-fn writePassthroughSequence(self: *Terminal, tty: anytype, sequence: []const u8) !void {
-    const is_tmux = self.isInTmux();
-    if (is_tmux) {
-        try tty.writeAll(ansi.ANSI.tmuxDcsStart);
-        for (sequence) |c| {
-            if (c == '\x1b') try tty.writeByte('\x1b');
-            try tty.writeByte(c);
-        }
-        try tty.writeAll(ansi.ANSI.tmuxDcsEnd);
-        return;
-    }
-
-    if (!self.remote) {
-        if (self.opts.env_map) |map| {
-            if (map.get("STY") != null) {
-                try tty.writeAll(ansi.ANSI.screenDcsStart);
-                for (sequence) |c| {
-                    if (c == '\x1b') try tty.writeByte('\x1b');
-                    try tty.writeByte(c);
-                }
-                try tty.writeAll(ansi.ANSI.screenDcsEnd);
-                return;
-            }
-        }
-    }
-
-    try tty.writeAll(sequence);
-}
-
 /// A C0, DEL, or C1 control in the text can end the OSC and start another one, so each becomes a space.
 fn writeSanitizedNotificationText(writer: anytype, text: []const u8, replace_semicolon: bool) !void {
     var code_points = std.unicode.Utf8View.initUnchecked(text).iterator();
@@ -1698,7 +1669,7 @@ fn writeSanitizedNotificationText(writer: anytype, text: []const u8, replace_sem
     }
 }
 
-fn writeOsc99Payload(allocator: std.mem.Allocator, writer: anytype, id: []const u8, payload_type: []const u8, payload: []const u8, done: bool) !void {
+fn writeOsc99Payload(allocator: std.mem.Allocator, writer: anytype, id: []const u8, payload_type: []const u8, payload: []const u8, done: bool, end: []const u8) !void {
     const encoded_len = std.base64.standard.Encoder.calcSize(payload.len);
     const encoded_buf = try allocator.alloc(u8, encoded_len);
     defer allocator.free(encoded_buf);
@@ -1706,7 +1677,7 @@ fn writeOsc99Payload(allocator: std.mem.Allocator, writer: anytype, id: []const 
 
     try writer.print("\x1b]99;i={s}:p={s}:e=1:d={d};", .{ id, payload_type, @intFromBool(done) });
     try writer.writeAll(encoded);
-    try writer.writeAll("\x1b\\");
+    try writer.writeAll(end);
 }
 
 pub fn writeNotification(self: *Terminal, allocator: std.mem.Allocator, tty: anytype, message: []const u8, title: ?[]const u8) !bool {
@@ -1721,6 +1692,7 @@ pub fn writeNotification(self: *Terminal, allocator: std.mem.Allocator, tty: any
     var buffer: std.Io.Writer.Allocating = .init(allocator);
     defer buffer.deinit();
     const writer = &buffer.writer;
+    const end = oscEnd(self.multiplexer);
 
     switch (self.notification_protocol) {
         .none => return false,
@@ -1728,8 +1700,8 @@ pub fn writeNotification(self: *Terminal, allocator: std.mem.Allocator, tty: any
             const id = try std.fmt.allocPrint(allocator, "opentui-{d}", .{self.notification_id_counter});
             defer allocator.free(id);
 
-            if (notification_title.len > 0) try writeOsc99Payload(allocator, writer, id, "title", notification_title, false);
-            try writeOsc99Payload(allocator, writer, id, "body", message, true);
+            if (notification_title.len > 0) try writeOsc99Payload(allocator, writer, id, "title", notification_title, false, end);
+            try writeOsc99Payload(allocator, writer, id, "body", message, true, end);
         },
         .osc777 => {
             try writer.writeAll("\x1b]777;notify;");
@@ -1741,7 +1713,7 @@ pub fn writeNotification(self: *Terminal, allocator: std.mem.Allocator, tty: any
                 try writeSanitizedNotificationText(writer, message, true);
                 try writer.writeByte(';');
             }
-            try writer.writeAll("\x1b\\");
+            try writer.writeAll(end);
         },
         .osc9 => {
             // OSC 9 parsers (ConEmu, Windows Terminal, Ghostty, iTerm2) read text that starts with a digit as
@@ -1753,11 +1725,13 @@ pub fn writeNotification(self: *Terminal, allocator: std.mem.Allocator, tty: any
                 try writer.writeAll(": ");
             }
             try writeSanitizedNotificationText(writer, message, false);
-            try writer.writeAll("\x1b\\");
+            try writer.writeAll(end);
         },
     }
 
-    try self.writePassthroughSequence(tty, buffer.written());
+    var passthrough = try PassthroughWriter(@TypeOf(tty)).init(tty, self.multiplexer);
+    try passthrough.writeAll(buffer.written());
+    try passthrough.finish();
     return true;
 }
 
@@ -1791,33 +1765,34 @@ pub fn writeClipboard(self: *Terminal, tty: anytype, target: ClipboardTarget, te
     }
     _ = try self.clipboardSequenceSize(text_utf8.len);
 
-    if (self.isInTmux()) {
-        try tty.writeAll(ansi.ANSI.tmuxDcsStart);
-        try writeClipboardSequence(tty, target, text_utf8, true, "\x1b\\");
-        try tty.writeAll(ansi.ANSI.tmuxDcsEnd);
-        return;
-    }
-
-    if (self.isInScreen()) {
-        var screen_writer = ScreenPassthroughWriter(@TypeOf(tty)).init(tty);
-        try writeClipboardSequence(&screen_writer, target, text_utf8, false, "\x07");
-        try screen_writer.finish();
-        return;
-    }
-
-    try writeClipboardSequence(tty, target, text_utf8, false, "\x1b\\");
+    var writer = try PassthroughWriter(@TypeOf(tty)).init(tty, self.multiplexer);
+    try writer.writeAll("\x1b]52;");
+    try writer.writeByte(target.toChar());
+    try writer.writeByte(';');
+    try writeClipboardBase64(&writer, text_utf8);
+    try writer.writeAll(oscEnd(self.multiplexer));
+    try writer.finish();
 }
 
-fn ScreenPassthroughWriter(comptime Writer: type) type {
+/// GNU screen ends its DCS at the first ST, so an OSC that passes through it ends with BEL.
+fn oscEnd(multiplexer: Multiplexer) []const u8 {
+    return if (multiplexer == .screen) "\x07" else "\x1b\\";
+}
+
+/// Writes sequences through the multiplexer around the terminal: tmux takes one DCS with every ESC
+/// doubled, and GNU screen DCS chunks of at most SCREEN_PASSTHROUGH_CHUNK_SIZE bytes.
+fn PassthroughWriter(comptime Writer: type) type {
     return struct {
         writer: Writer,
+        multiplexer: Multiplexer,
         buffer: [SCREEN_PASSTHROUGH_CHUNK_SIZE]u8 = undefined,
         length: usize = 0,
 
         const Self = @This();
 
-        fn init(writer: Writer) Self {
-            return .{ .writer = writer };
+        fn init(writer: Writer, multiplexer: Multiplexer) !Self {
+            if (multiplexer == .tmux) try writer.writeAll(ansi.ANSI.tmuxDcsStart);
+            return .{ .writer = writer, .multiplexer = multiplexer };
         }
 
         pub fn writeAll(self: *Self, bytes: []const u8) !void {
@@ -1825,12 +1800,21 @@ fn ScreenPassthroughWriter(comptime Writer: type) type {
         }
 
         pub fn writeByte(self: *Self, byte: u8) !void {
-            if (self.length == self.buffer.len) try self.flush();
-            self.buffer[self.length] = byte;
-            self.length += 1;
+            switch (self.multiplexer) {
+                .tmux => if (byte == '\x1b') try self.writer.writeByte('\x1b'),
+                .screen => {
+                    if (self.length == self.buffer.len) try self.flush();
+                    self.buffer[self.length] = byte;
+                    self.length += 1;
+                    return;
+                },
+                else => {},
+            }
+            try self.writer.writeByte(byte);
         }
 
         fn finish(self: *Self) !void {
+            if (self.multiplexer == .tmux) try self.writer.writeAll(ansi.ANSI.tmuxDcsEnd);
             try self.flush();
         }
 
@@ -1844,14 +1828,6 @@ fn ScreenPassthroughWriter(comptime Writer: type) type {
     };
 }
 
-fn writeClipboardSequence(writer: anytype, target: ClipboardTarget, text_utf8: []const u8, escape: bool, terminator: []const u8) !void {
-    try writeClipboardBytes(writer, "\x1b]52;", escape);
-    try writer.writeByte(target.toChar());
-    try writer.writeByte(';');
-    try writeClipboardBase64(writer, text_utf8);
-    try writeClipboardBytes(writer, terminator, escape);
-}
-
 fn writeClipboardBase64(writer: anytype, source: []const u8) !void {
     const source_chunk_size = 3 * 1024;
     var encoded_buffer: [4 * 1024]u8 = undefined;
@@ -1863,18 +1839,6 @@ fn writeClipboardBase64(writer: anytype, source: []const u8) !void {
         const encoded = base64Encode(&encoded_buffer, chunk);
         try writer.writeAll(encoded);
         offset += chunk_len;
-    }
-}
-
-fn writeClipboardBytes(writer: anytype, bytes: []const u8, escape: bool) !void {
-    if (!escape) {
-        try writer.writeAll(bytes);
-        return;
-    }
-
-    for (bytes) |byte| {
-        if (byte == '\x1b') try writer.writeByte('\x1b');
-        try writer.writeByte(byte);
     }
 }
 
