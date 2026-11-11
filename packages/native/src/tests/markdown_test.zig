@@ -16,6 +16,14 @@ const std = @import("std");
 const markdown = @import("../markdown.zig");
 const html = @import("markdown-html.zig");
 const Doc = markdown.Doc;
+const inline_parser = @import("../markdown-inline.zig");
+
+/// References that resolve nothing, for inline parses without a doc.
+const f_references: inline_parser.References = .{ .context = undefined, .lookup_fn = struct {
+    fn lookup(_: *const anyopaque, _: []const u8) ?inline_parser.Link {
+        return null;
+    }
+}.lookup };
 const gpa = std.testing.allocator;
 
 pub const Fixture = struct {
@@ -109,6 +117,8 @@ fn wholeHtml(arena: std.mem.Allocator, name: []const u8, text: []const u8) ![]co
         for (leaf.chunks.items) |chunk| covered += chunk.byte_count;
         try std.testing.expectEqual(leaf.bytes.items.len, covered);
         try std.testing.expectEqualStrings(try f.doc.leafDisplay(arena, @intCast(i)), leaf.bytes.items);
+        // UNRESOLVED is what a parse with every definition says (late definitions applied).
+        try std.testing.expectEqual((try f.doc.parseLeaf(arena, @intCast(i))).unresolved, b.flags.unresolved);
     }
     return html.render(arena, &f.doc);
 }
@@ -346,8 +356,11 @@ const Engine = struct {
                         else => count,
                     };
                     const out = try arena.alloc(markdown.Doc.Change, capacity);
+                    const mirror_len = mirror.items.len;
                     const read = f.doc.readChanges(out);
                     if (read.count != count) return .{ .property = "P5 change count", .step = step };
+                    // Only blocks a read listed can be reported removed.
+                    if (read.removed_from_index != markdown.none and read.removed_from_index >= mirror_len) return .{ .property = "P5 removal of an unread block", .step = step };
                     if (capacity >= count) {
                         if (read.removed_from_index != markdown.none and read.removed_from_index < mirror.items.len) mirror.items.len = read.removed_from_index;
                         for (out[0..count]) |change| {
@@ -616,14 +629,16 @@ test "Markdown limits: each store stays within its limit and a rejection publish
         const rendered = try html.render(arena, &whole.doc);
         try std.testing.expect(std.mem.indexOf(u8, rendered, "<em>") == null);
         try std.testing.expect(try streamAgreesParts(arena, "tokens", &.{ text.items[0..3], text.items[3..4000], text.items[4000..] }));
-        // One token short of the limit the opener still matches.
-        const short = try std.mem.concat(arena, u8, &.{ "*a", text.items[2 + 4 * 60 ..] });
-        var near: Fixture = undefined;
-        try near.init(.{});
-        defer near.deinit();
-        try near.doc.append(short);
-        try near.doc.finish();
-        try std.testing.expect(std.mem.indexOf(u8, try html.render(arena, &near.doc), "<em>") != null);
+        // At the boundary: the opener matches exactly when the closer is within 4,096 tokens of
+        // it (an escape shifts the count by one token).
+        for (2044..2050) |n| {
+            for ([_][]const u8{ "", "\\." }) |shift| {
+                const source = try std.mem.concat(arena, u8, &.{ "*a", text.items[2 .. 2 + 4 * n], shift, " c*" });
+                const r = try inline_parser.parse(arena, source, f_references, .{});
+                const closer: u32 = @intCast(r.tokens.len - 1);
+                try std.testing.expectEqual(closer < inline_parser.token_count_max, r.matches.len == 1);
+            }
+        }
     }
     // Filter: at most 256 bytes of items of 1 to 64 bytes.
     {
@@ -787,4 +802,22 @@ test "Markdown work: no allocation per append in steady state, capacity growth c
     const growth = doc.counters.capacity_growth_count - growth_before;
     if (environment(arena, "MARKDOWN_GATES") != null) std.debug.print("steady state: {d} appends, {d} allocator calls, {d} capacity growths\n", .{ parts.len - warm_up, calls, growth });
     try std.testing.expect(calls <= growth);
+}
+
+test "Markdown stream: a leaf that changes kind or loses lines keeps its live display exact" {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const rows = [_][]const u8{
+        "intro **x\na | b\n--- | ---\n1 | 2\n",
+        "Title *a*\n=\n\nnext",
+        "[x]: /u\nsee [x] *y*\n\ntail",
+        "> quote **a\nlazy b**\n\n- item\n  more\n",
+        "a\n- b\n10. c\n",
+        "x `y\n\nz` w\n",
+    };
+    for (rows) |text| {
+        try std.testing.expect(try streamAgreesParts(arena, "kinds", try split(arena, text, 1)));
+        try std.testing.expect(try streamAgreesParts(arena, "kinds", try split(arena, text, 3)));
+    }
 }

@@ -1576,7 +1576,9 @@ pub const Doc = struct {
         const parser = &live.parser;
         const position = parser.position;
         if (!parser.settled() or position != parser.limit or position >= live.content.items.len) return;
-        if (position <= 2 * look_behind_byte_count or !isAsciiWhitespaceByte(live.content.items[position - 1])) return;
+        if (position <= 2 * look_behind_byte_count) return;
+        // The limit is a word start: whitespace precedes it.
+        assert(isAsciiWhitespaceByte(live.content.items[position - 1]));
         const drop = position - look_behind_byte_count;
         const rest = live.content.items.len - drop;
         if (live.display_ends.items.len > 0) live.folded_display_byte_count = live.display_ends.items[live.display_ends.items.len - 1];
