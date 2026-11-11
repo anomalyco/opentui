@@ -208,6 +208,15 @@ pub fn ot_text_buffer_get_highlights(context: ?*Owner, id: ?*const c.ot_handle, 
     return c.OT_OK;
 }
 
+pub fn ot_text_buffer_set_layer(context: ?*Owner, id: ?*const c.ot_handle, layer_id: u32, start_byte: u32, end_byte: u32, runs: ?[*]const c.ot_highlight_run, run_count: u32) callconv(.c) c.ot_status {
+    const owner = admit(context, false) catch |err| return fail(context, err);
+    const value = text(owner, id) catch |err| return fail(owner, err);
+    const decoded = editor.layerRunsFromC(owner, runs, run_count, value.buffer.getByteSize()) catch |err| return fail(owner, err);
+    defer owner.core.allocator.free(decoded);
+    owner.core.textBufferSetLayer(abi.handleFromC(id.?.*), .{ .layer_id = layer_id, .start_byte = start_byte, .end_byte = end_byte, .runs = decoded }) catch |err| return fail(owner, err);
+    return c.OT_OK;
+}
+
 pub fn ot_text_buffer_view_set_viewport(context: ?*Owner, id: ?*const c.ot_handle, options: ?*const c.ot_editor_viewport, size_only: u32) callconv(.c) c.ot_status {
     const owner = admit(context, false) catch |err| return fail(context, err);
     const vp = record(c.ot_editor_viewport, options) catch |err| return fail(owner, err);

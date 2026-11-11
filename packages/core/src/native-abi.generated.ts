@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 21dc1cca1ac8c1fef66446d35dcd267f64178112428df2253c15f80a1d60382d
+// ABI audit SHA-256: ceb921cb8392f7203a075fa6f55fe470b42618ad4fbca7bd5335a5e4f5583cca
 
 export const nativeSymbols = {
   ot_scene_set_hooks: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -110,6 +110,8 @@ export const nativeSymbols = {
   ot_syntax_style_get_count: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_edit_buffer_highlight: { args: ["ptr", "buffer", "u32", "u32", "ptr"], returns: "i32" },
   ot_edit_buffer_get_highlights: { args: ["ptr", "buffer", "u32", "ptr", "u32", "buffer"], returns: "i32" },
+  ot_context_group_set: { args: ["ptr", "buffer", "u32", "buffer", "u32", "buffer"], returns: "i32" },
+  ot_edit_buffer_set_layer: { args: ["ptr", "buffer", "u32", "u32", "u32", "ptr", "u32"], returns: "i32" },
   ot_editor_view_set_viewport: { args: ["ptr", "buffer", "buffer", "u32", "u32"], returns: "i32" },
   ot_editor_view_get_viewport: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_editor_view_set_scroll_margin: { args: ["ptr", "buffer", "f32"], returns: "i32" },
@@ -198,6 +200,7 @@ export const nativeSymbols = {
   ot_text_buffer_set_tab_width: { args: ["ptr", "buffer", "u32"], returns: "i32" },
   ot_text_buffer_highlight: { args: ["ptr", "buffer", "u32", "u32", "ptr"], returns: "i32" },
   ot_text_buffer_get_highlights: { args: ["ptr", "buffer", "u32", "ptr", "u32", "buffer"], returns: "i32" },
+  ot_text_buffer_set_layer: { args: ["ptr", "buffer", "u32", "u32", "u32", "ptr", "u32"], returns: "i32" },
   ot_text_buffer_view_set_viewport: { args: ["ptr", "buffer", "buffer", "u32"], returns: "i32" },
   ot_text_buffer_view_command: { args: ["ptr", "buffer", "u32", "u32"], returns: "i32" },
   ot_text_buffer_view_set_tab_color: { args: ["ptr", "buffer", "ptr"], returns: "i32" },
@@ -974,6 +977,15 @@ export const nativeLayouts = {
       style_id: { offset: 8, size: 4, alignment: 4, type: "u32" },
       priority: { offset: 12, size: 4, alignment: 4, type: "u32" },
       ref: { offset: 16, size: 4, alignment: 4, type: "u32" },
+    },
+  },
+  ot_highlight_run: {
+    size: 12,
+    alignment: 4,
+    fields: {
+      start_byte: { offset: 0, size: 4, alignment: 4, type: "u32" },
+      end_byte: { offset: 4, size: 4, alignment: 4, type: "u32" },
+      group_set: { offset: 8, size: 4, alignment: 4, type: "u32" },
     },
   },
   ot_editor_viewport: {

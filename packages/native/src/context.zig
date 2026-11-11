@@ -404,6 +404,13 @@ pub const TextHighlight = union(enum) {
     clear_all,
 };
 
+pub const LayerReplacement = struct {
+    layer_id: u32,
+    start_byte: u32,
+    end_byte: u32,
+    runs: []const highlight_layers.LayerRun,
+};
+
 pub const TextSelection = struct {
     pub const Operation = enum { set, update, reset, local, local_update, local_reset, cell, occupancy, inclusive, colors };
     operation: Operation,
@@ -3444,6 +3451,23 @@ pub const Context = struct {
         text.invalidate(false);
     }
 
+    pub fn textBufferSetLayer(self: *Context, handle: Handle, layer: LayerReplacement) !void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const text = try self.getTextBuffer(handle);
+        try text.checkMutable();
+        try text.buffer.setLayer(layer.layer_id, layer.start_byte, layer.end_byte, layer.runs);
+        text.invalidate(false);
+    }
+
+    /// Group set ids are Context-wide: a buffer composes them against whatever style it binds.
+    pub fn groupSet(self: *Context, names: []const []const u8) !u32 {
+        try self.beginMutation();
+        defer self.mutating = false;
+        for (names) |name| if (!std.unicode.utf8ValidateSlice(name)) return error.InvalidUnicode;
+        return self.group_sets.intern(names);
+    }
+
     pub fn textViewSetViewport(self: *Context, handle: Handle, viewport: text_buffer_view.Viewport, size_only: bool) !void {
         try self.beginMutation();
         defer self.mutating = false;
@@ -3697,6 +3721,15 @@ pub const Context = struct {
         const edit = try self.getEditBuffer(handle);
         try edit.checkMutable();
         try highlightBuffer(edit.buffer.tb, operation);
+        edit.invalidatePreparation();
+    }
+
+    pub fn editSetLayer(self: *Context, handle: Handle, layer: LayerReplacement) !void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const edit = try self.getEditBuffer(handle);
+        try edit.checkMutable();
+        try edit.buffer.tb.setLayer(layer.layer_id, layer.start_byte, layer.end_byte, layer.runs);
         edit.invalidatePreparation();
     }
 
