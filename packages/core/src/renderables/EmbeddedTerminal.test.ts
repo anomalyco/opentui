@@ -270,7 +270,7 @@ describe("EmbeddedTerminalRenderable", () => {
   })
 
   // Only "menu" encodes to nothing: Ghostty has no encoding for ContextMenu or the Kitty MENU key.
-  test.each([...new Set(nonAlphanumericKeys)])("encodes the parser key name %s", (name) => {
+  test.each([...new Set([...nonAlphanumericKeys, "linefeed"])])("encodes the parser key name %s", (name) => {
     const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
     expect(terminal.encodeKey(keyEvent({ name, sequence: "" })).length > 0).toBe(name !== "menu")
   })
@@ -339,6 +339,9 @@ describe("EmbeddedTerminalRenderable", () => {
     ["Kitty Super+a", 1, "\x1b[97;9u", "\x1b[97;9u"],
     ["Kitty Alt+Super+a", 1, "\x1b[97;11u", "\x1b[97;11u"],
     ["Kitty Meta+a as Alt", 1, "\x1b[97;33u", "\x1b[97;3u"],
+    ["legacy Ctrl+J into a Kitty child", 1, "\n", "\x1b[106;5u"],
+    ["legacy Ctrl+Alt+J into a Kitty child", 1, "\x1b\n", "\x1b[106;7u"],
+    ["legacy Enter into a Kitty child", 1, "\r", "\r"],
   ])("preserves %s", (_label, flags, raw, expected) => {
     const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
     setup.renderer.root.add(terminal)
@@ -364,6 +367,24 @@ describe("EmbeddedTerminalRenderable", () => {
     }
 
     expect(output).toEqual(["\x1b[117;5u", "\x1b[117;5:2u", "\x1b[117;5:3u"])
+  })
+
+  test("forwards Enter, Ctrl+J and Ctrl+M from stdin with and without the Kitty keyboard protocol", () => {
+    const output: string[] = []
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, {
+      width: 20,
+      height: 4,
+      onData: (data) => output.push(new TextDecoder().decode(data)),
+    })
+    setup.renderer.root.add(terminal)
+    terminal.focus()
+
+    for (const raw of ["\r", "\n", "\x1b[13u", "\x1b[106;5u", "\x1b[109;5u"]) {
+      setup.renderer.stdin.emit("data", Buffer.from(raw))
+    }
+
+    // Ghostty sends Ctrl+M as CSI u even in legacy mode (fixterms), so it stays distinct from Enter.
+    expect(output).toEqual(["\r", "\n", "\r", "\n", "\x1b[109;5u"])
   })
 
   test("drains the preserved response prefix after overflow", () => {

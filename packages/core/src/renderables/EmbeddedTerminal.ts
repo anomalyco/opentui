@@ -179,7 +179,8 @@ export class EmbeddedTerminalRenderable extends Renderable {
     const options: EmbeddedTerminalKey = {
       action: key.eventType === "release" ? "release" : key.repeated ? "repeat" : "press",
       key: physical,
-      mods: modifiers(key),
+      // Without the Kitty keyboard protocol the parser names Ctrl+J "linefeed", after the byte it sends.
+      mods: modifiers(key) | (key.name === "linefeed" ? MOD_CTRL : 0),
       text,
       unshiftedCodepoint: unshiftedCodepoint(key, physical),
     }
@@ -481,6 +482,7 @@ function physicalKey(key: KeyEvent) {
       rightsuper: "MetaRight",
       enter: "Enter",
       return: "Enter",
+      linefeed: "KeyJ",
       space: "Space",
       tab: "Tab",
       delete: "Delete",
