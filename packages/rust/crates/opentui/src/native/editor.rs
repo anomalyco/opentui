@@ -356,7 +356,8 @@ impl EditBuffer {
 
     /// Replaces layer `layer_id` inside `range` with `runs`. Both count UTF-8 bytes of [`Self::text`]; runs are sorted,
     /// disjoint, nonempty, and on character boundaries. Runs move with edits, and replacing the whole text empties
-    /// the layer. Layers paint above highlights of priority 0 and below higher ones.
+    /// the layer. Layers paint above highlights of priority 0 and below higher ones. The editor widgets set layer 1
+    /// for filetype syntax; other layers on their buffers need another id.
     pub fn set_layer(&self, layer_id: u32, range: Range<u32>, runs: &[LayerRun]) -> Result<()> {
         let length = count("ot_edit_buffer_set_layer", runs.len())?;
         let (context, handle) = self.raw();
@@ -372,7 +373,8 @@ pub type LayerRun = sys::ot_highlight_run;
 impl Context {
     /// The id of an ordered list of style names, for [`LayerRun`]s. Equal lists give equal ids on this Context. Paint
     /// composes the names against the buffer's style table, later names winning. Ids are never freed: a Context holds
-    /// at most 4,096 lists.
+    /// at most 4,096 lists and 64 KiB of names in them, so 2,621 one-name lists of 25 bytes. Past that, new lists fail
+    /// with [`Status::ObjectLimit`](crate::Status::ObjectLimit).
     pub fn group_set(&self, names: &[&str]) -> Result<u32> {
         let mut ends = Vec::with_capacity(names.len());
         let mut pool = String::new();
