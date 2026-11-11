@@ -5668,9 +5668,10 @@ test("list and quote children keep their text when their kind or the stream chan
   // Only the changed child is highlighted again; the unchanged heading keeps its text.
   expect(worker.pending.map((item) => item.content)).toEqual(["x"])
   await settle()
-  // The end of the stream builds no child again, so no frame waits for a highlight.
+  // The end of the stream builds no child again and highlights none again, so no frame waits for a highlight.
   md.streaming = false
   await renderOnce()
+  expect(worker.pending).toEqual([])
   frames.push(frameText())
   expect(frames).toEqual([`│ Title\n│ ${"─".repeat(58)}`, "│ Title\n│ - - - x", "│ Title\n│ - - - x"])
 })

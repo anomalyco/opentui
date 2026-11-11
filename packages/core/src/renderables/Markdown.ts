@@ -1416,6 +1416,11 @@ export class MarkdownRenderable extends Renderable {
     baseHighlight?: string,
     preview?: StyledText,
   ): void {
+    // The end of a stream changes nothing a prose block shows, so a block with the same text keeps what it draws.
+    if (this._finishing && renderable.content === content) {
+      renderable.marginBottom = marginBottom
+      return
+    }
     const initialStyledText = this.hookPreview(preview, content)
     if (initialStyledText && renderable.streaming && renderable.drawUnstyledText && renderable.isHighlighting) {
       renderable.updateStreamingPreview(content, initialStyledText)
