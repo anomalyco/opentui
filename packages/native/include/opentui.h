@@ -1461,8 +1461,9 @@ ot_status ot_embedded_terminal_encode_paste(ot_context *, const ot_handle *termi
     const uint8_t *input, uint32_t input_count, uint8_t *bytes, uint32_t capacity, uint32_t *out_count);
 ot_status ot_embedded_terminal_encode_focus(ot_context *, const ot_handle *terminal,
     uint32_t focused, uint8_t *bytes, uint32_t capacity, uint32_t *out_count);
+#define OT_EMBEDDED_TERMINAL_RESPONSE_BYTES_MAX UINT32_C(1048576)
 /* Drains at most capacity bytes, not a sizing query. Response overflow returns
- * OT_OUTPUT_BACKPRESSURE once without consuming the retained 1 MiB prefix. */
+ * OT_OUTPUT_BACKPRESSURE once without consuming the retained RESPONSE_BYTES_MAX prefix. */
 ot_status ot_embedded_terminal_drain_responses(ot_context *, const ot_handle *terminal,
     uint8_t *bytes, uint32_t capacity, uint32_t *out_count);
 

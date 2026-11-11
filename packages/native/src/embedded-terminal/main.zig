@@ -31,7 +31,7 @@ pub const Options = struct {
     logger: ?*const log.Logger = null,
 };
 
-pub const response_limit = 1024 * 1024;
+pub const response_limit = @import("context_abi_c").OT_EMBEDDED_TERMINAL_RESPONSE_BYTES_MAX;
 
 const StreamHandler = struct {
     base: ghostty.TerminalStream.Handler,

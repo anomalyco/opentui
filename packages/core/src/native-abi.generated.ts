@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: d06b1a7cd618895d5f3665b19295c8d5e62ebe4a1d831fce907e24060615645b
+// ABI audit SHA-256: d78f48199eedcb2e3baee6abfc4800ed14c8a4fe2c5a4ece623c09da8362a56b
 
 export const OT_CONTEXT_ABI_VERSION = 2
 export const OT_OK = 0
@@ -362,6 +362,7 @@ export const OT_EMBEDDED_TERMINAL_INVALIDATE = 0
 export const OT_EMBEDDED_TERMINAL_SCROLL = 1
 export const OT_EMBEDDED_TERMINAL_CLEAR_SELECTION = 2
 export const OT_EMBEDDED_TERMINAL_SET_TRANSPARENT_BACKGROUND = 3
+export const OT_EMBEDDED_TERMINAL_RESPONSE_BYTES_MAX = 1048576
 export const OT_EDIT_CURSOR_CHANGED = 1
 export const OT_EDIT_CONTENT_CHANGED = 2
 export const OT_EDIT_HISTORY_CURSOR_CHANGED = 4
@@ -2736,6 +2737,7 @@ export const nativeConstants = {
   OT_EMBEDDED_TERMINAL_SCROLL: 1,
   OT_EMBEDDED_TERMINAL_CLEAR_SELECTION: 2,
   OT_EMBEDDED_TERMINAL_SET_TRANSPARENT_BACKGROUND: 3,
+  OT_EMBEDDED_TERMINAL_RESPONSE_BYTES_MAX: 1048576,
   OT_EDIT_CURSOR_CHANGED: 1,
   OT_EDIT_CONTENT_CHANGED: 2,
   OT_EDIT_HISTORY_CURSOR_CHANGED: 4,

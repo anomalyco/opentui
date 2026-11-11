@@ -1743,7 +1743,6 @@ function viewOrNull<T extends ArrayBufferView>(value: T): T | null {
   return value.byteLength === 0 ? null : value
 }
 
-// opentui.h limits each embedded terminal write and the retained replies to 1 MiB.
 const EMBEDDED_TERMINAL_IO_BYTES_MAX = nativeConstants.OT_EMBEDDED_TERMINAL_INPUT_BYTES_MAX
 const EMBEDDED_TERMINAL_KEY_ACTIONS = new Map<string, number>([
   ["release", nativeConstants.OT_EMBEDDED_TERMINAL_KEY_RELEASE],
@@ -4353,7 +4352,9 @@ export class FFIRenderLib {
   ): Uint8Array {
     this.getYogaHost().assertMutable()
     const handle = encodeContextHandle(context, terminal)
-    const output = (this.embeddedTerminalResponses ??= new Uint8Array(EMBEDDED_TERMINAL_IO_BYTES_MAX))
+    const output = (this.embeddedTerminalResponses ??= new Uint8Array(
+      nativeConstants.OT_EMBEDDED_TERMINAL_RESPONSE_BYTES_MAX,
+    ))
     const count = new Uint32Array(1)
     const pointer = this.nativeContextPointer(context, "ot_embedded_terminal_drain_responses")
     let status = this.opentui.symbols.ot_embedded_terminal_drain_responses(
