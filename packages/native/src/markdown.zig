@@ -3563,13 +3563,8 @@ pub fn definitionProse(c: []const u8, from: u32, closed: bool) DefinitionScan {
     if (position >= c.len) return undecided;
     // A title the last definition may still take (it spans lines until it closes).
     if (position > 0 and titleOpen(c, position)) return undecided;
-    if (c[position] == '[') {
-        // An attempt that fails on the last line may succeed with the next one; one whose
-        // label, destination or title is still open waits for it.
-        const body = c[0 .. c.len - 1];
-        const last_line: u32 = if (std.mem.lastIndexOfScalar(u8, body, '\n')) |n| @intCast(n + 1) else 0;
-        if (position >= last_line or definitionOpen(c, position)) return undecided;
-    }
+    // An attempt whose label, destination or title is still open waits for the next line.
+    if (c[position] == '[' and definitionOpen(c, position)) return undecided;
     return .{ .prose = position, .last_start = last };
 }
 
