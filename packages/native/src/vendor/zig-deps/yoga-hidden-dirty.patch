@@ -1,0 +1,23 @@
+diff --git a/yoga/algorithm/CalculateLayout.cpp b/yoga/algorithm/CalculateLayout.cpp
+index 2e016d2..e5883bb 100644
+--- a/yoga/algorithm/CalculateLayout.cpp
++++ b/yoga/algorithm/CalculateLayout.cpp
+@@ -674,7 +674,7 @@ static bool measureNodeWithFixedSize(
+ }
+ 
+ static bool isLayoutZeroedOutRecursively(const yoga::Node* const node) {
+-  if (!node->getHasNewLayout()) {
++  if (!node->getHasNewLayout() || node->isDirty()) {
+     return false;
+   }
+   // `configVersion` only validates the layout cache, which is empty after
+@@ -699,6 +699,9 @@ void zeroOutLayoutRecursively(yoga::Node* const node) {
+   node->setLayoutDimension(0, Dimension::Width);
+   node->setLayoutDimension(0, Dimension::Height);
+   node->setHasNewLayout(true);
++  // A node left dirty would stop the dirty walk of a later change below it,
++  // and its parent's cached layout would never zero that change out.
++  node->setDirty(false);
+ 
+   // A display: none subtree is zeroed out on every layout pass of its parent.
+   // Most of it is usually still zeroed out from an earlier pass, but owned by

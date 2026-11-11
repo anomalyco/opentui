@@ -26,7 +26,7 @@ Both ports change only Zig code, and the update script gives both copies the sam
 generated tables do not change.
 The Yoga archive contains only the `yoga` source directory.
 
-The Yoga source is upstream Yoga `main` at commit `41118bd3a` with ten changes, applied in this order:
+The Yoga source is upstream Yoga `main` at commit `41118bd3a` with eleven changes, applied in this order:
 
 - `yoga-error-boundary.patch` routes every Yoga allocation, including the Grid style storage, through
   `yoga/OTAllocator.h`, so a test build can inject allocation failures. It also makes style updates, child
@@ -46,10 +46,9 @@ The Yoga source is upstream Yoga `main` at commit `41118bd3a` with ten changes, 
   A baseline adds its child's unrounded top on every config, so a box that a cache hit skips aligns as a
   fresh one.
   Rounding then visits only the nodes that the solve laid out, and the subtrees whose parent's unrounded
-  absolute origin moved; it clears the new-layout flag of each node it visits. A move in
-  `src/yoga-bridge.cpp` flags the child's new path, because under `display: none` the moved subtree gets no
-  layout pass. A test build checks on every solve that each skipped subtree already holds the values a full
-  pass would write (except a `display: contents` node's own box, which the scene does not have). Clearing
+  absolute origin moved; it clears the new-layout flag of each node it visits. A test build checks on
+  every solve that each skipped subtree already holds the values a full pass would write (except a
+  `display: contents` node's own box, which the scene does not have). Clearing
   the flags turns off upstream's zero-out skip for `display: none` subtrees: each layout of their parent
   zeroes and rounds them again, which costs less than the skip's compare. Only the scene's config in
   `src/context.zig` sets the option; other configs keep upstream rounding and caching.
@@ -92,6 +91,10 @@ The Yoga source is upstream Yoga `main` at commit `41118bd3a` with ten changes, 
   along the list, and only when an earlier child's size changed. A static child is laid out again in
   each layout pass, as STEP 11 reads its size. A child's layout reset, a forgotten measurement, or a
   change to the list's style or config resets the kept sizes.
+- `yoga-hidden-dirty.patch` clears the dirty flag of each node that a `display: none` parent zeroes out,
+  and zeroes out a dirty node again. Upstream clears it only on the `display: none` node, so a node
+  made under it stays dirty, and a later change below that node stops its dirty walk there: the
+  parent's cached layout never zeroes the change out, and the new node keeps a `NaN` size.
 
 `src/tests/yoga_test.zig` tests each change.
 

@@ -127,6 +127,7 @@ git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-cache-margin.patch"
 git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-measure-cache-bounds.patch"
 git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-cache-owner-size.patch"
 git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-list-layout.patch"
+git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-hidden-dirty.patch"
 
 find "$DEPS_DIR" -type d -exec chmod 0755 {} +
 find "$DEPS_DIR" -type f -exec chmod 0644 {} +
