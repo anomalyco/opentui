@@ -46,10 +46,9 @@ The Yoga source is upstream Yoga `main` at commit `41118bd3a` with eleven change
   A baseline adds its child's unrounded top on every config, so a box that a cache hit skips aligns as a
   fresh one.
   Rounding then visits only the nodes that the solve laid out, and the subtrees whose parent's unrounded
-  absolute origin moved; it clears the new-layout flag of each node it visits. A move in
-  `src/yoga-bridge.cpp` flags the child's new path, because under `display: none` the moved subtree gets no
-  layout pass. A test build checks on every solve that each skipped subtree already holds the values a full
-  pass would write (except a `display: contents` node's own box, which the scene does not have). Clearing
+  absolute origin moved; it clears the new-layout flag of each node it visits. A test build checks on
+  every solve that each skipped subtree already holds the values a full pass would write (except a
+  `display: contents` node's own box, which the scene does not have). Clearing
   the flags turns off upstream's zero-out skip for `display: none` subtrees: each layout of their parent
   zeroes and rounds them again, which costs less than the skip's compare. Only the scene's config in
   `src/context.zig` sets the option; other configs keep upstream rounding and caching.

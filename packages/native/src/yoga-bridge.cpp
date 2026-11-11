@@ -148,12 +148,6 @@ uint32_t otYogaNodeMoveChild(YGNodeRef parent_ref, YGNodeRef child_ref,
     child->setOwner(parent);
     static_assert(std::is_nothrow_copy_assignable_v<LayoutResults>);
     if (previous) child->setLayout({});
-    // Absolute-edge rounding visits only flagged paths, and the child may get no layout pass: under
-    // display: none, descendants stay dirty below the zeroed root, so the dirty walk below stops
-    // there. Flag the child's new path, so the next pass rounds its subtree as a full pass would.
-    for (Node* node = child; node && node->getConfig()->roundsPositionsFromAbsoluteEdges();
-         node = node->getOwner())
-      node->setHasNewLayout(true);
 
     // Both ancestor paths are bounded by managed placement validation. Mark
     // their complete accepted state before any managed callback can inspect it.
