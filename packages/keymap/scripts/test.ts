@@ -8,6 +8,7 @@ const __dirname = dirname(__filename)
 const rootDir = resolve(__dirname, "..")
 
 const testRuns = [
+  { cwd: rootDir, args: ["scripts/rust-tables.ts", "--check"] },
   {
     cwd: rootDir,
     args: ["test", "./src/tests", "./src/extras", "./src/lib", "./src/addons", "./src/react"],

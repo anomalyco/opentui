@@ -67,73 +67,6 @@ pub enum EditorAction {
     Paste,
 }
 
-/// Core's default Textarea bindings. Core's "meta" is the Alt key here.
-const BINDINGS: &[(&str, EditorAction)] = &[
-    ("left", EditorAction::MoveLeft),
-    ("right", EditorAction::MoveRight),
-    ("up", EditorAction::MoveUp),
-    ("down", EditorAction::MoveDown),
-    ("shift+left", EditorAction::SelectLeft),
-    ("shift+right", EditorAction::SelectRight),
-    ("shift+up", EditorAction::SelectUp),
-    ("shift+down", EditorAction::SelectDown),
-    ("home", EditorAction::BufferHome),
-    ("end", EditorAction::BufferEnd),
-    ("shift+home", EditorAction::SelectBufferHome),
-    ("shift+end", EditorAction::SelectBufferEnd),
-    ("ctrl+a", EditorAction::LineHome),
-    ("ctrl+e", EditorAction::LineEnd),
-    ("ctrl+shift+a", EditorAction::SelectLineHome),
-    ("ctrl+shift+e", EditorAction::SelectLineEnd),
-    ("alt+a", EditorAction::VisualLineHome),
-    ("alt+e", EditorAction::VisualLineEnd),
-    ("alt+shift+a", EditorAction::SelectVisualLineHome),
-    ("alt+shift+e", EditorAction::SelectVisualLineEnd),
-    ("ctrl+f", EditorAction::MoveRight),
-    ("ctrl+b", EditorAction::MoveLeft),
-    ("ctrl+w", EditorAction::DeleteWordBackward),
-    ("ctrl+backspace", EditorAction::DeleteWordBackward),
-    ("alt+d", EditorAction::DeleteWordForward),
-    ("alt+delete", EditorAction::DeleteWordForward),
-    ("ctrl+delete", EditorAction::DeleteWordForward),
-    ("ctrl+shift+d", EditorAction::DeleteLine),
-    ("ctrl+k", EditorAction::DeleteToLineEnd),
-    ("ctrl+u", EditorAction::DeleteToLineStart),
-    ("backspace", EditorAction::Backspace),
-    ("shift+backspace", EditorAction::Backspace),
-    ("ctrl+d", EditorAction::Delete),
-    ("delete", EditorAction::Delete),
-    ("shift+delete", EditorAction::Delete),
-    ("enter", EditorAction::Newline),
-    ("linefeed", EditorAction::Newline),
-    ("alt+enter", EditorAction::Submit),
-    ("ctrl+-", EditorAction::Undo),
-    ("ctrl+.", EditorAction::Redo),
-    ("super+z", EditorAction::Undo),
-    ("super+shift+z", EditorAction::Redo),
-    ("alt+f", EditorAction::WordForward),
-    ("alt+b", EditorAction::WordBackward),
-    ("alt+right", EditorAction::WordForward),
-    ("alt+left", EditorAction::WordBackward),
-    ("ctrl+right", EditorAction::WordForward),
-    ("ctrl+left", EditorAction::WordBackward),
-    ("alt+shift+f", EditorAction::SelectWordForward),
-    ("alt+shift+b", EditorAction::SelectWordBackward),
-    ("alt+shift+right", EditorAction::SelectWordForward),
-    ("alt+shift+left", EditorAction::SelectWordBackward),
-    ("alt+backspace", EditorAction::DeleteWordBackward),
-    ("super+left", EditorAction::VisualLineHome),
-    ("super+right", EditorAction::VisualLineEnd),
-    ("super+up", EditorAction::BufferHome),
-    ("super+down", EditorAction::BufferEnd),
-    ("super+backspace", EditorAction::DeleteToLineStart),
-    ("super+shift+left", EditorAction::SelectVisualLineHome),
-    ("super+shift+right", EditorAction::SelectVisualLineEnd),
-    ("super+shift+up", EditorAction::SelectBufferHome),
-    ("super+shift+down", EditorAction::SelectBufferEnd),
-    ("super+a", EditorAction::SelectAll),
-];
-
 /// Adds the extmark methods to an editing widget whose only field is an `Rc<EditorCore>`.
 macro_rules! extmark_methods {
     () => {
@@ -299,7 +232,7 @@ pub(crate) use editor_methods;
 
 /// Core's Textarea bindings.
 pub(crate) fn textarea_keymap() -> Keymap<EditorAction> {
-    BINDINGS.iter().copied().collect()
+    crate::tables::TEXTAREA_SHORTCUTS.iter().copied().collect()
 }
 
 /// Core's Input bindings: the Textarea's, with Enter and line feed submitting.

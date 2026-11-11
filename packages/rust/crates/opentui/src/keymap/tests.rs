@@ -746,6 +746,21 @@ fn strokes_follow_core_key_names() {
     assert_eq!(stroke(KeyCode::Char('?'), Modifiers::NONE), "?");
     assert_eq!(stroke(KeyCode::F(5), Modifiers::SUPER | Modifiers::HYPER), "super+hyper+f5");
     assert_eq!(stroke(KeyCode::Other(57441), Modifiers::NONE), "leftshift");
+    // Each Kitty key Core names is a key in binding syntax, and the Textarea's own keymap runs each of Core's
+    // textarea bindings on the key Core means: its meta is Alt.
+    let keymap = Keymap::<u32>::new();
+    let parsed = |key: &str| keymap.parse_key_sequence(key).unwrap().remove(0).stroke;
+    for code in crate::sys::OT_INPUT_KEY_MEDIA_PLAY..=crate::sys::OT_INPUT_KEY_ISO_LEVEL5_SHIFT {
+        let name = stroke(KeyCode::Other(code), Modifiers::NONE);
+        assert_eq!(parsed(&name).name, name);
+    }
+    let editor = crate::widget::Textarea::default_keymap();
+    assert_eq!(editor.len(), crate::tables::TEXTAREA_SHORTCUTS.len(), "one row per shortcut");
+    for &(key, action) in addons::TEXTAREA_BINDINGS {
+        let alt = key.replace("meta", "alt").replace("kpenter", "return");
+        let event = KeyEvent { keypad: key.ends_with("kpenter"), ..KeyEvent::from_shortcut(&alt).unwrap() };
+        assert_eq!((Stroke::from_event(&event), editor.get(&event)), (parsed(key), Some(action)), "{key}");
+    }
 }
 
 // enabled.test.ts and metadata.test.ts
