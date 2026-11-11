@@ -1270,6 +1270,58 @@ test "layers: priority and ties order records and layers" {
     }
 }
 
+// A layer run whose set supplies no field is absent: the priority-0 record under it shows, through
+// redefinitions and a style swap. A linked run and an empty legacy record still win.
+test "layers: a run whose set supplies nothing shows what lies under it" {
+    var setup: Setup = undefined;
+    try setup.init();
+    defer setup.deinit();
+    const tb = try setup.buffer(.unicode);
+    defer tb.deinit();
+    try tb.setText("abcdefgh");
+    const nothing: ss.StyleDefinition = .{ .fg = null, .bg = null, .attributes = 0, .supplied_attributes = 0 };
+    const blue_fg: ss.StyleDefinition = .{ .fg = blue, .bg = null, .attributes = 0, .supplied_attributes = 0 };
+    const empty = try setup.sets.intern(&.{ "e", "unknown" });
+    try tb.addHighlight(0, 0, 7, 2, 0, 0);
+    const url = try setup.pools.links.acquire("https://example.com");
+    defer setup.pools.links.decref(url) catch unreachable;
+    try tb.setLayer(1, 0, 8, &.{ .{ .start_byte = 0, .end_byte = 4, .group_set = empty }, .{ .start_byte = 5, .end_byte = 6, .group_set = empty, .link_id = url } });
+    const other = try ss.SyntaxStyle.init(gpa);
+    defer other.deinit();
+    // Column 1 under the empty run, against column 7 (no input); a null color is column 7's.
+    for ([_]struct { *ss.SyntaxStyle, ss.StyleDefinition, ?ansi.RGBA }{
+        .{ setup.style, nothing, green },
+        .{ setup.style, blue_fg, blue },
+        // A supplied attribute bit, even one set to 0, is a field: the run wins.
+        .{ setup.style, .{ .fg = null, .bg = null, .attributes = 0, .supplied_attributes = 1 }, null },
+        .{ setup.style, nothing, green },
+        .{ other, blue_fg, blue },
+        .{ setup.style, nothing, green },
+    }) |row| {
+        _ = try row[0].registerStyleDefinition("e", row[1]);
+        tb.setSyntaxStyle(row[0]);
+        const screen = try paint(&setup, tb, 8, 1);
+        defer screen.deinit();
+        try testing.expectEqual(row[2] orelse screen.get(7, 0).?.fg, screen.get(1, 0).?.fg);
+        try testing.expectEqual(url, ansi.TextAttributes.getLinkId(screen.get(5, 0).?.attributes));
+    }
+    // Spans built without a style rebuild once one is bound.
+    tb.setSyntaxStyle(null);
+    for ([_]?*ss.SyntaxStyle{ null, setup.style }, [_]?ansi.RGBA{ null, blue }) |style, want| {
+        if (style) |bound| _ = try bound.registerStyleDefinition("e", blue_fg);
+        tb.setSyntaxStyle(style);
+        const screen = try paint(&setup, tb, 8, 1);
+        defer screen.deinit();
+        try testing.expectEqual(want orelse screen.get(7, 0).?.fg, screen.get(1, 0).?.fg);
+    }
+    _ = try setup.style.registerStyleDefinition("e", nothing);
+    const blank = try setup.style.registerStyleDefinition("z", nothing);
+    try tb.addHighlight(0, 0, 7, blank, 0, 0);
+    const screen = try paint(&setup, tb, 8, 1);
+    defer screen.deinit();
+    try testing.expectEqual(screen.get(7, 0).?.fg, screen.get(1, 0).?.fg);
+}
+
 // A span build that runs out of memory fails the checked paint and leaves the line stale, so
 // the next read builds it again and gets what a clean build gets.
 test "layers: a span build without memory fails and leaves the line to rebuild" {

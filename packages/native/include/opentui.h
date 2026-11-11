@@ -1663,7 +1663,8 @@ typedef struct ot_highlight_run {
  * text is inserted strictly inside it, and deleted bytes clip them. set_text, clear, undo,
  * redo and the CLEAR_ALL highlight operation empty every layer; REMOVE_REF and CLEAR_LINE
  * leave layers alone. Layers paint at priority 0: above highlights of priority 0, below
- * higher priorities; where layers overlap, the higher layer_id wins. At most 4 nonempty
+ * higher priorities; where layers overlap, the higher layer_id wins. A run without a link
+ * whose group set supplies no field (fg, bg or attribute bit) paints as if absent. At most 4 nonempty
  * layers per buffer: a fifth fails with OT_OBJECT_LIMIT, and a layer left empty is dropped. */
 ot_status ot_edit_buffer_set_layer(ot_context *, const ot_handle *, uint32_t layer_id,
     uint32_t start_byte, uint32_t end_byte, const ot_highlight_run *runs, uint32_t run_count);

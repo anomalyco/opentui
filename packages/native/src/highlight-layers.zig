@@ -103,8 +103,9 @@ pub const GroupSets = struct {
 
 /// Later names win per field: fg and bg when set, and each attribute bit the definition supplies.
 /// A missing name falls back to its first dotted component, as Core's `SyntaxStyle.getStyle` does.
+/// The result supplies the bits any name supplied; one that supplies no field paints as no run.
 pub fn compose(style: *const ss.SyntaxStyle, sets: *const GroupSets, id: u32) ss.StyleDefinition {
-    var result: ss.StyleDefinition = .{ .fg = null, .bg = null, .attributes = 0 };
+    var result: ss.StyleDefinition = .{ .fg = null, .bg = null, .attributes = 0, .supplied_attributes = 0 };
     var index: u32 = 0;
     while (index < sets.nameCount(id)) : (index += 1) {
         const value = sets.name(id, index);
@@ -115,8 +116,14 @@ pub fn compose(style: *const ss.SyntaxStyle, sets: *const GroupSets, id: u32) ss
         if (definition.fg) |fg| result.fg = fg;
         if (definition.bg) |bg| result.bg = bg;
         result.attributes = (result.attributes & ~@as(u32, definition.supplied_attributes)) | definition.attributes;
+        result.supplied_attributes |= definition.supplied_attributes;
     }
     return result;
+}
+
+/// Whether a composition supplies no field, so its run lets what lies under it show.
+pub fn suppliesNothing(definition: ss.StyleDefinition) bool {
+    return definition.fg == null and definition.bg == null and definition.supplied_attributes == 0;
 }
 
 pub const LayerRun = extern struct {
