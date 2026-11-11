@@ -700,6 +700,18 @@ fn controls_and_capabilities_follow_terminal_setup() -> Result<()> {
     session.set_debug_overlay(true, Corner::BottomLeft)?;
     session.control(Control::CapabilityResponse(b"\x1b]7501;?\x1b\\"))?;
     assert!(session.capabilities()?.flags.contains(CapabilityFlags::PROGRAM_STATUS));
+    // OSC 9 text loses its C1 controls (U+009C is ST) and a leading digit that would select a ConEmu subcommand.
+    session.pump_until_quiet(&mut now_ns)?;
+    // No title is not an empty one: OSC 777 puts the message in the title field and leaves the body empty.
+    session.control(Control::CapabilityResponse(b"\x1bP>|ghostty 1.3.1\x1b\\"))?;
+    session.pump_until_quiet(&mut now_ns)?;
+    assert!(session.notify("done", None)?);
+    assert!(contains(&session.pump_until_quiet(&mut now_ns)?, b"\x1b]777;notify;done;\x1b\\"));
+    session.control(Control::CapabilityResponse(b"\x1b]1337;Capabilities=No\x1b\\"))?;
+    session.pump_until_quiet(&mut now_ns)?;
+    assert!(session.notify("4;1;50\u{9c}", None)?);
+    let output = session.pump_until_quiet(&mut now_ns)?;
+    assert!(contains(&output, b"\x1b]9; 4;1;50 \x1b\\"), "{:?}", String::from_utf8_lossy(&output));
     Ok(())
 }
 

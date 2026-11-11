@@ -3285,7 +3285,8 @@ ot_status ot_session_set_palette_state(ot_context *, const ot_handle *,
     const uint16_t *background, uint32_t epoch);
 
 /* Notifications reuse terminal protocol selection and ordinary output capacity.
- * Unsupported capability or rejected output returns out_written=0. Message and
+ * Unsupported capability, text that is not UTF-8, or rejected output returns
+ * out_written=0; C0, DEL, and C1 controls in the text become spaces. Message and
  * optional title are consumed only during this call; NULL requires zero length. */
 ot_status ot_session_notification(ot_context *, const ot_handle *,
     const uint8_t *message, uint32_t message_len, const uint8_t *title,

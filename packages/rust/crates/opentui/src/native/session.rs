@@ -870,9 +870,12 @@ impl Session {
     /// Sends a desktop notification. Returns `false` when the terminal lacks support or output was rejected.
     pub fn notify(&self, message: &str, title: Option<&str>) -> Result<bool> {
         let mut written = 0;
-        let title = title.unwrap_or("");
-        let (message_length, title_length) =
-            (count("ot_session_notification", message.len())?, count("ot_session_notification", title.len())?);
+        // A null title means none; OSC 777 lays out an empty title differently.
+        let title_ptr = title.map_or(std::ptr::null(), str::as_ptr);
+        let (message_length, title_length) = (
+            count("ot_session_notification", message.len())?,
+            count("ot_session_notification", title.map_or(0, str::len))?,
+        );
         let (context, session) = self.raw();
         check("ot_session_notification", unsafe {
             sys::ot_session_notification(
@@ -880,7 +883,7 @@ impl Session {
                 session,
                 message.as_ptr(),
                 message_length,
-                title.as_ptr(),
+                title_ptr,
                 title_length,
                 &mut written,
             )
