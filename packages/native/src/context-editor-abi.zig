@@ -69,8 +69,8 @@ pub fn rgba(color: [4]u16) !void {
 
 pub fn styleRecord(ptr: ?*const c.ot_editor_style) !*const c.ot_editor_style {
     const value = try record(c.ot_editor_style, ptr);
-    if (value.flags & ~@as(u32, c.OT_EDITOR_STYLE_FOREGROUND | c.OT_EDITOR_STYLE_BACKGROUND | c.OT_EDITOR_STYLE_ATTRIBUTES) != 0) return error.InvalidOptions;
-    if (value.flags & c.OT_EDITOR_STYLE_ATTRIBUTES == 0 and value.attributes != 0) return error.InvalidOptions;
+    if (value.flags & ~@as(u32, c.OT_EDITOR_STYLE_FOREGROUND | c.OT_EDITOR_STYLE_BACKGROUND | c.OT_EDITOR_STYLE_ATTRIBUTES | c.OT_EDITOR_STYLE_ATTRIBUTE_MASK) != 0) return error.InvalidOptions;
+    if (value.flags & c.OT_EDITOR_STYLE_ATTRIBUTES == 0 and (value.attributes != 0 or value.flags & c.OT_EDITOR_STYLE_ATTRIBUTE_MASK != 0)) return error.InvalidOptions;
     if (value.flags & c.OT_EDITOR_STYLE_FOREGROUND == 0) for (value.foreground) |v| {
         if (v != 0) return error.InvalidOptions;
     };
@@ -186,10 +186,14 @@ pub fn ot_syntax_style_register(context: ?*Owner, id: ?*const c.ot_handle, bytes
     const style = styleRecord(options) catch |err| return fail(owner, err);
     if (id == null or (count != 0 and bytes == null) or out == null) return fail(owner, error.InvalidOptions);
     const name = if (bytes) |p| p[0..count] else &.{};
+    // Without the mask, a definition with attributes supplies all eight bits, as before the mask.
+    const masked = style.flags & c.OT_EDITOR_STYLE_ATTRIBUTE_MASK != 0;
+    const supplied: u32 = if (masked) (style.attributes >> 16) & 0xFF else if (style.flags & c.OT_EDITOR_STYLE_ATTRIBUTES != 0) 0xFF else 0;
     out.?.* = owner.core.syntaxStyleRegister(abi.handleFromC(id.?.*), name, .{
         .fg = if (style.flags & c.OT_EDITOR_STYLE_FOREGROUND != 0) style.foreground else null,
         .bg = if (style.flags & c.OT_EDITOR_STYLE_BACKGROUND != 0) style.background else null,
-        .attributes = style.attributes,
+        .attributes = if (masked) style.attributes & ~@as(u32, 0xFF << 16) else style.attributes,
+        .supplied_attributes = @intCast(supplied),
     }) catch |err| return fail(owner, err);
     return c.OT_OK;
 }

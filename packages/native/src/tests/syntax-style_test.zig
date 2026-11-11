@@ -87,7 +87,7 @@ test "SyntaxStyle - registrations match a name-to-definition model" {
         const definition: StyleDefinition = .{
             .fg = if (random.boolean()) colors[0] else null,
             .bg = if (random.boolean()) colors[1] else null,
-            .attributes = random.int(u32),
+            .attributes = random.int(u8),
         };
         const id = try style.registerStyle(name, definition.fg, definition.bg, definition.attributes);
         const entry = try model.getOrPut(allocator, name);

@@ -1580,6 +1580,9 @@ ot_status ot_edit_measure_text(ot_context *, const uint8_t *bytes, uint32_t byte
 #define OT_EDITOR_STYLE_FOREGROUND UINT32_C(1)
 #define OT_EDITOR_STYLE_BACKGROUND UINT32_C(2)
 #define OT_EDITOR_STYLE_ATTRIBUTES UINT32_C(4)
+/* Syntax styles only, with OT_EDITOR_STYLE_ATTRIBUTES: attributes bits 16..23 say which of bits
+ * 0..7 the style supplies. */
+#define OT_EDITOR_STYLE_ATTRIBUTE_MASK UINT32_C(8)
 typedef struct ot_editor_style {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -1594,7 +1597,10 @@ typedef struct ot_editor_style {
 ot_status ot_edit_buffer_set_defaults(ot_context *, const ot_handle *, uint32_t mask, const ot_editor_style *);
 /* Names are copied UTF-8; registering an existing name replaces its definition.
  * Empty names are valid; name may be NULL only when byte_count is zero. Ids are
- * below OT_STYLE_RUN_FLAG. */
+ * below OT_STYLE_RUN_FLAG. A group set composes its names in order: each later name
+ * replaces fg, bg, and the attribute bits it supplies. Without
+ * OT_EDITOR_STYLE_ATTRIBUTE_MASK, a style with OT_EDITOR_STYLE_ATTRIBUTES supplies all
+ * eight bits and one without supplies none. Set bits 0..7 outside the supplied bits fail. */
 ot_status ot_syntax_style_register(ot_context *, const ot_handle *, const uint8_t *name,
     uint32_t byte_count, const ot_editor_style *, uint32_t *out_id);
 /* Unknown names return id=0. Names are borrowed only for the query. */

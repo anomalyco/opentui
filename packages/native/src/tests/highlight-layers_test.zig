@@ -127,32 +127,145 @@ test "group sets: interning without memory changes nothing" {
     try testing.expect(succeeded);
 }
 
-test "group sets: later names win per field, a missing name falls back to its first component" {
-    var sets = hl.GroupSets.init(gpa);
-    defer sets.deinit();
-    const style = try ss.SyntaxStyle.init(gpa);
-    defer style.deinit();
-    _ = try style.registerStyle("keyword", red, null, 1);
-    _ = try style.registerStyle("markup", green, null, 2);
-    _ = try style.registerStyle("string", null, blue, 0);
-    _ = try style.registerStyle("panel", null, green, 4);
-    const D = ss.StyleDefinition;
-    for ([_]struct { []const []const u8, D }{
-        .{ &.{"keyword"}, .{ .fg = red, .bg = null, .attributes = 1 } },
-        .{ &.{ "keyword", "markup.bold" }, .{ .fg = green, .bg = null, .attributes = 3 } },
-        .{ &.{ "markup", "keyword" }, .{ .fg = red, .bg = null, .attributes = 3 } },
-        .{ &.{ "string", "keyword" }, .{ .fg = red, .bg = blue, .attributes = 1 } },
-        .{ &.{ "string", "panel" }, .{ .fg = null, .bg = green, .attributes = 4 } },
-        .{ &.{ "panel", "string" }, .{ .fg = null, .bg = blue, .attributes = 4 } },
-        // Only the first dotted component is a fallback; an undotted miss adds nothing.
-        .{ &.{ "keyword", "missing", "missing.keyword", "other.markup" }, .{ .fg = red, .bg = null, .attributes = 1 } },
-        .{ &.{"keyword.control.flow"}, .{ .fg = red, .bg = null, .attributes = 1 } },
-        .{ &.{"missing"}, .{ .fg = null, .bg = null, .attributes = 0 } },
-    }) |row| {
-        const id = try sets.intern(row[0]);
-        try testing.expectEqualDeep(row[1], hl.compose(style, &sets, id));
-        try testing.expectEqualDeep(row[1], style.resolveGroupSet(&sets, id));
+/// What a registration supplies to composition, decoded by the ABI's rule, not by its code.
+const Supplied = struct { fg: ?ss.RGBA = null, bg: ?ss.RGBA = null, value: u8 = 0, mask: u8 = 0 };
+
+/// Fills a random registration record. Returns what it supplies, or null when the ABI must reject
+/// it: a mask without attributes, an unknown flag, a set bit outside the mask, or a bit outside
+/// both bytes.
+fn randomStyleRecord(random: std.Random, record: *c.ot_editor_style) ?Supplied {
+    const colors = [_]ss.RGBA{ red, green, blue };
+    const attributes_flag = c.OT_EDITOR_STYLE_ATTRIBUTES;
+    const mask_flag = c.OT_EDITOR_STYLE_ATTRIBUTE_MASK;
+    record.* = .{ .struct_size = @sizeOf(c.ot_editor_style), .abi_version = c.OT_CONTEXT_ABI_VERSION, .flags = 0, .attributes = 0, .foreground = @splat(0), .background = @splat(0) };
+    var supplied: Supplied = .{};
+    if (random.boolean()) {
+        supplied.fg = colors[random.uintLessThan(usize, colors.len)];
+        record.flags |= c.OT_EDITOR_STYLE_FOREGROUND;
+        record.foreground = supplied.fg.?;
     }
+    if (random.boolean()) {
+        supplied.bg = colors[random.uintLessThan(usize, colors.len)];
+        record.flags |= c.OT_EDITOR_STYLE_BACKGROUND;
+        record.background = supplied.bg.?;
+    }
+    switch (random.uintLessThan(u32, 3)) {
+        0 => {},
+        // An old caller: no mask, so all eight bits are supplied.
+        1 => {
+            supplied.mask = 0xFF;
+            supplied.value = random.int(u8);
+            record.flags |= attributes_flag;
+            record.attributes = supplied.value;
+        },
+        else => {
+            supplied.mask = random.int(u8);
+            supplied.value = random.int(u8) & supplied.mask;
+            record.flags |= attributes_flag | mask_flag;
+            record.attributes = supplied.value | (@as(u32, supplied.mask) << 16);
+        },
+    }
+    if (random.uintLessThan(u32, 8) != 0) return supplied;
+    switch (random.uintLessThan(u32, 4)) {
+        0 => record.flags = (record.flags & ~@as(u32, attributes_flag)) | mask_flag,
+        1 => record.flags |= @as(u32, 1) << random.intRangeAtMost(u5, 4, 31),
+        2 => {
+            const bit = @as(u32, 1) << random.int(u3);
+            record.flags |= attributes_flag | mask_flag;
+            record.attributes = bit | ((random.int(u32) & ~bit & 0xFF) << 16);
+        },
+        else => {
+            var shift = random.intRangeAtMost(u5, 8, 31);
+            if (record.flags & mask_flag != 0 and shift >= 16 and shift < 24) shift += 8;
+            record.attributes |= @as(u32, 1) << shift;
+        },
+    }
+    return null;
+}
+
+const FoldCounts = struct { kept: u32 = 0, cleared: u32 = 0 };
+
+/// Design rule: later names win per supplied field; a missing name falls back to its first
+/// dotted component; a name without either adds nothing.
+fn foldGroupSet(names: []const []const u8, model: []const ?Supplied, set: []const []const u8, counts: *FoldCounts) Supplied {
+    var out: Supplied = .{};
+    for (set) |name| {
+        const first = name[0 .. std.mem.indexOfScalar(u8, name, '.') orelse name.len];
+        const definition = findSupplied(names, model, name) orelse findSupplied(names, model, first) orelse continue;
+        if (definition.fg) |fg| out.fg = fg;
+        if (definition.bg) |bg| out.bg = bg;
+        for (0..8) |bit| {
+            const flag = @as(u8, 1) << @intCast(bit);
+            if (definition.mask & flag == 0) {
+                counts.kept += @intFromBool(out.value & flag != 0);
+                continue;
+            }
+            counts.cleared += @intFromBool(out.value & flag != 0 and definition.value & flag == 0);
+            out.value = (out.value & ~flag) | (definition.value & flag);
+        }
+    }
+    return out;
+}
+
+fn findSupplied(names: []const []const u8, model: []const ?Supplied, name: []const u8) ?Supplied {
+    for (names, model) |candidate, definition| if (std.mem.eql(u8, candidate, name)) return definition;
+    return null;
+}
+
+// Invariant 7: random themes of partial definitions, registered through the C ABI by masked and
+// old callers, compose every group set of up to eight names like the fold, over all eight bits.
+test "group sets: composition equals a per-field fold over random themes and callers" {
+    var owner: abi.ContextHandle = .{ .gpa = .init, .io_threaded = .init_single_threaded, .core = undefined, .owner_thread = std.Thread.getCurrentId() };
+    defer owner.io_threaded.deinit();
+    owner.core = try context_mod.Context.init(gpa, owner.io_threaded.io(), .{});
+    defer owner.core.deinit() catch unreachable;
+    const names = [_][]const u8{ "a", "b", "b.x", "c", "a.x" };
+    // "b.x.q" falls back to "b", not to the longer "b.x"; "m" and "m.a" never resolve.
+    const lookups = names ++ [_][]const u8{ "a.q", "b.x.q", "c.r.s", "m", "m.a" };
+    var counts: FoldCounts = .{};
+    var rejected: u32 = 0;
+    for (0..1_250) |seed| {
+        var prng = std.Random.DefaultPrng.init(seed);
+        const random = prng.random();
+        const handle = try owner.core.createSyntaxStyle();
+        defer owner.core.destroy(handle) catch unreachable;
+        const id = abi.handleToC(handle);
+        var model: [names.len]?Supplied = @splat(null);
+        for (0..random.uintAtMost(usize, 2 * names.len)) |_| {
+            const index = random.uintLessThan(usize, names.len);
+            var record: c.ot_editor_style = undefined;
+            const supplied = randomStyleRecord(random, &record);
+            var style_id: u32 = 0;
+            const status = editor_abi.ot_syntax_style_register(&owner, &id, names[index].ptr, @intCast(names[index].len), &record, &style_id);
+            try testing.expectEqual(if (supplied == null) c.OT_INVALID_ARGUMENT else c.OT_OK, status);
+            if (supplied) |value| model[index] = value else rejected += 1;
+        }
+        // Stored definitions are what each caller sent, so legacy paint by style id is unchanged.
+        const style = try owner.core.raw().getSyntaxStyle(handle);
+        for (names, model) |name, expected| {
+            const stored = style.getStyleByName(name) orelse {
+                try testing.expectEqual(null, expected);
+                continue;
+            };
+            try testing.expectEqualDeep(ss.StyleDefinition{ .fg = expected.?.fg, .bg = expected.?.bg, .attributes = expected.?.value, .supplied_attributes = expected.?.mask }, stored);
+        }
+        // Eight sets per theme: 10,000 compositions in all.
+        var sets = hl.GroupSets.init(gpa);
+        defer sets.deinit();
+        for (0..8) |_| {
+            var set: [hl.group_set_name_count_max][]const u8 = undefined;
+            const set_names = set[0 .. 1 + random.uintLessThan(usize, set.len)];
+            for (set_names) |*name| name.* = lookups[random.uintLessThan(usize, lookups.len)];
+            const set_id = try sets.intern(set_names);
+            const expected = foldGroupSet(&names, &model, set_names, &counts);
+            // The first resolution of a set composes; later ones read the cache.
+            for (0..2) |_| {
+                const composed = style.resolveGroupSet(&sets, set_id);
+                try testing.expectEqualDeep(.{ expected.fg, expected.bg, @as(u32, expected.value) }, .{ composed.fg, composed.bg, composed.attributes });
+            }
+        }
+    }
+    try testing.expect(counts.kept >= 1000 and counts.cleared >= 1000 and rejected >= 500);
 }
 
 test "group sets: every registration clears the composition cache" {
@@ -1283,8 +1396,8 @@ test "layers: span kinds keep group sets, style ids and run styles apart" {
     for ([_]ansi.RGBA{ blue, blue, blue, red, red, red, green, green, green }, 0..) |want, x| {
         try testing.expectEqual(want, screen.get(@intCast(x), 0).?.fg);
     }
-    // Attributes OR across a set: s3 is 3, s2 is 2.
-    try testing.expectEqual(@as(u32, 3), screen.get(6, 0).?.attributes & ansi.TextAttributes.ATTRIBUTE_BASE_MASK);
+    // s2 (2) supplies all attribute bits, so it replaces s3's (3).
+    try testing.expectEqual(@as(u32, 2), screen.get(6, 0).?.attributes & ansi.TextAttributes.ATTRIBUTE_BASE_MASK);
 }
 
 // Invariant 8 at paint: a run's link reaches the drawn cell. A run across a line break paints
@@ -1366,7 +1479,8 @@ const SpanModel = struct {
             const def = self.nameDef(name) orelse self.nameDef(name[0 .. std.mem.indexOfScalar(u8, name, '.') orelse continue]) orelse continue;
             if (def.fg) |fg| result.fg = fg;
             if (def.bg) |bg| result.bg = bg;
-            result.attributes |= def.attributes;
+            // Registered without a mask, a definition supplies all eight attribute bits.
+            result.attributes = def.attributes;
         }
         return result;
     }
