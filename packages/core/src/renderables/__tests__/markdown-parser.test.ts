@@ -35,15 +35,21 @@ test("an edit with trailingUnstable 0 parses like fresh content", () => {
 
 // Apps write stable blocks out once (OpenCode's split-footer scrollback), so a stable token must never change: after
 // each append and at the stream's end, the tokens are those of a fresh lex, and the stable ones are a prefix of the
-// final text's tokens and never fewer. In prose, the next append after a blank line and the next paragraph's first
-// character makes the paragraph before them stable.
+// final text's tokens and never fewer. In blocks split by single blank lines (paragraphs, tight lists), the next
+// append after a blank line and the next block's first character makes the block before them stable; the next
+// blocks here never start with what a list holds for.
 test("streamed, the stable tokens are a growing prefix of the final text's tokens", () => {
   let seed = 1
   const random = (n: number) => ((seed = (Math.imul(seed, 48271) + 11) % 2147483647) >>> 0) % n
   const failures: string[] = []
-  const prose = ["a\n\nb\n\nc\n\nd\n\ne\n\nf\n", "Summary.\n\n1\n\n2\n\n3\n\nend\n"]
+  const progress = [
+    "a\n\nb\n\nc\n\nd\n\ne\n\nf\n",
+    "Summary.\n\n1\n\n2\n\n3\n\nend\n",
+    "- one\n- two\n- three\n- four\n- five\n- six\n\nDone.\n",
+    "1. a\n2. b\n\nText one.\n\n- c\n- d\n- e\n\nText two.\n\n* f\n* g\n\nend\n",
+  ]
   for (const doc of [
-    ...prose,
+    ...progress,
     "1. a\n\n  2. b\n\n   3. c\n\nafter\n", // CommonMark spec example 311, then a paragraph
     "1. a\n\n  2. b\n\n    3. c\n\nafter\n", // spec example 313
     "- a\n\n- b\n\n  c\n\n- d\n\nend\n",
@@ -87,7 +93,9 @@ test("streamed, the stable tokens are a growing prefix of the final text's token
           break
         }
         stable = state.stableTokenCount!
-        due = prose.includes(doc) ? 2 * (text.match(/\n\n(?=\S)/g)?.length ?? 0) - 1 : 0
+        // Only when the raws spell the text: marked writes "- c\n- " as "- c\n-\n", which the next append cannot match.
+        const tiled = raws.join("") === text
+        due = progress.includes(doc) && tiled ? 2 * (text.match(/\n\n(?=\S)/g)?.length ?? 0) - 1 : 0
       }
     }
   }
