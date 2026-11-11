@@ -54,16 +54,17 @@ impl SyntaxStyle {
             return Ok(false);
         }
         self.1.borrow_mut().theme = theme.clone();
-        let names: Vec<&str> = self.1.borrow().names.iter().copied().collect();
-        names.into_iter().try_for_each(|name| self.register_capture(name).map(drop))?;
+        self.1.borrow().names.iter().try_for_each(|name| self.register_capture(name).map(drop))?;
         Ok(true)
     }
 
-    /// Registers capture names as `opentui.<name>` with the table's palette, which later palettes restyle.
+    /// Registers the capture names the table has not seen as `opentui.<name>`, with its palette's style.
     pub(crate) fn register_captures(&self, names: &[&'static str]) -> Result<()> {
         for &name in names {
-            self.register_capture(name)?;
-            self.1.borrow_mut().names.insert(name);
+            if !self.1.borrow().names.contains(name) {
+                self.register_capture(name)?;
+                self.1.borrow_mut().names.insert(name);
+            }
         }
         Ok(())
     }

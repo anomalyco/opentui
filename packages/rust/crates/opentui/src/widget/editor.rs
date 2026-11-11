@@ -1349,7 +1349,8 @@ mod tests {
     }
 
     // A theme set on a shared table restyles every editor on it, and an edit registers only names the table has
-    // not seen, with its palette: typing in one editor leaves the other's colors alone.
+    // not seen, with its palette: typing in one editor leaves the other's colors alone, even a name the app
+    // redefined in the table.
     #[test]
     fn editors_sharing_a_table_paint_the_theme_set_last() {
         let app = TestApp::new(24, 2);
@@ -1370,8 +1371,9 @@ mod tests {
         assert_eq!(colors(&app), [Color::RED; 3]);
         areas[0].syntax_theme(theme(Color::BLUE));
         assert_eq!(colors(&app), [Color::BLUE; 3]);
+        table.register("opentui.string", Style::new().fg(Color::GREEN)).unwrap();
         areas[1].set_text("let s = \"b\\n\"; // c");
-        assert_eq!(colors(&app)[0], Color::BLUE);
+        assert_eq!(colors(&app)[0], Color::GREEN);
     }
 
     // Without a filetype, a theme change neither makes nor binds a table: one the app bound on the buffer stays.
