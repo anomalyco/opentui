@@ -1,8 +1,10 @@
 # OpenTUI Mono. Iosevka build plan.
 #
 # Iosevka v34.4.0. Static instances. Not an OpenType variable font.
-# Ligatures are off. One web-subset family.
+# Ligatures are off. One web-subset family: Latin, Cyrillic, and the
+# symbol blocks in subset.include.
 #
+#   use Node 26 (see packages/web/src/font/README.md)
 #   cp this file to Iosevka/private-build-plans.toml
 #   npm install
 #   npm run build -- --jCmd=4 webfont-unhinted::OpenTUIMono
@@ -201,6 +203,10 @@ ranges = [
   [
     768,
     879,
+  ],
+  [
+    1024,
+    1327,
   ],
   [
     8192,
