@@ -12,6 +12,8 @@
 //! register("python", Grammar::new(tree_sitter_python::LANGUAGE, tree_sitter_python::HIGHLIGHTS_QUERY))?;
 //! ```
 //!
+//! `prewarm` compiles a grammar before it is first shown, from any thread, so the frame that shows it does not compile it.
+//!
 //! Without the feature, widgets show plain text and the filetypes they are given have no effect.
 //!
 //! Capture names come from each grammar's own queries, so they follow tree-sitter's conventions. Core uses
@@ -26,7 +28,7 @@ mod highlight;
 pub use filetype::{filetype_for_extension, filetype_for_info_string, filetype_for_path};
 #[cfg(feature = "tree-sitter")]
 pub use highlight::{
-    Capture, CompiledGrammar, Grammar, GrammarError, filetypes, has_grammar, highlight, highlights, register,
+    Capture, CompiledGrammar, Grammar, GrammarError, filetypes, has_grammar, highlight, highlights, prewarm, register,
     register_alias, register_lazy, spans, tree_sitter,
 };
 
