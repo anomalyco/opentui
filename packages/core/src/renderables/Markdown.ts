@@ -683,7 +683,8 @@ export class MarkdownRenderable extends Renderable {
   }
 
   private hooks(source: string): boolean {
-    if (!this._inlineHook) return false
+    // Solid can set content before syntaxStyle; the style refresh runs the hook again.
+    if (!this._inlineHook || !this._syntaxStyle) return false
     return !this._inlineHookFilter || this._inlineHookFilter.some((text) => source.includes(text))
   }
 
@@ -729,7 +730,7 @@ export class MarkdownRenderable extends Renderable {
   }
 
   private createStyledChunk(text: string, group: string, link?: { url: string }): TextChunk {
-    if (this._previewBase) {
+    if (this._previewBase && this._syntaxStyle) {
       // A block's base highlight lies under its groups, as the highlighted text has it.
       const style = this._syntaxStyle.mergeStyles(this._previewBase, ...(group === "default" ? [] : [group]))
       return { __isChunk: true, text, fg: style.fg, bg: style.bg, attributes: style.attributes, link }

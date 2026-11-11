@@ -1954,16 +1954,20 @@ test("streamed quote text shows in the quote style before it highlights", async 
     { default: { fg: RGBA.fromValues(1, 1, 1, 1) }, "markup.quote": { fg: quoteColor, italic: true } },
     renderer.nativeScene,
   )
-  const md = createMarkdownRenderable({
-    content: "> quoted *text*",
-    syntaxStyle: style,
-    streaming: true,
-    internalBlockMode: "top-level",
-    treeSitterClient: createMockTreeSitterClient(),
-  })
+  const contexts: MarkdownInlineContext[] = []
+  // Solid sets props in JSX order, so the content can arrive before the style.
+  const inlineHook: MarkdownInlineHook = (spans, context) => (contexts.push(context), spans)
+  const options = { internalBlockMode: "top-level", treeSitterClient: createMockTreeSitterClient(), inlineHook }
+  const md = new MarkdownRenderable(renderer, options as Omit<MarkdownOptions, "syntaxStyle"> as MarkdownOptions)
+  md.streaming = true
+  md.content = "> quoted *text*"
+  md.syntaxStyle = style
   renderer.root.add(md)
   await renderOnce()
 
+  // The hook never sees a document without a style.
+  expect(contexts.length).toBeGreaterThan(0)
+  expect(contexts.every((context) => context.syntaxStyle === style)).toBe(true)
   const spans = captureSpans()
   expect(captureFrame()).toContain("│ quoted text")
   const span = findSpanContaining(spans, "quoted")
