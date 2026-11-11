@@ -1366,7 +1366,7 @@ test("CodeRenderable - onChunks callback can transform chunks when highlights ar
     filetype: "plaintext",
     syntaxStyle,
     treeSitterClient: mockClient,
-    onChunks: (chunks) => {
+    onChunks: async (chunks) => {
       callbackInvoked = true
       return chunks.map((chunk) => ({
         ...chunk,
@@ -2354,18 +2354,26 @@ test("CodeRenderable - textLength is correct with drawUnstyledText=false", async
 
 // Streamed content set before the first highlight lands is measured at once, and nothing paints until a highlight lands
 // (#1853, `code.mdx`): blocks that start empty or with text, OpenCode's reasoning block (Solid sets its props after
-// construction) and a fence in streaming Markdown. Steps: `n` sets n lines (in the fence for Markdown) and renders a
-// frame, `!` lets the highlight land. The trace is the height and the painted first line ("-" for none) per frame.
+// construction; `concealed` hides its first line), a fence in streaming Markdown and prose in completed Markdown.
+// Steps: `n` sets n lines (in the fence for Markdown) and renders a frame, `!` lets the highlights land, `.` only the
+// one in flight. `r` mounts a new block with the same content, as a tab switch does, and `rn` one with n lines. The
+// trace is the height and the painted first line ("-" for none) per frame.
 const lines = (count: number) => Array.from({ length: count }, (_, i) => `line${i + 1}`).join("\n")
 const earlyBlocks: Record<string, (client: MockTreeSitterClient) => CodeRenderable | MarkdownRenderable> = {
   empty: (client) => code(client, ""),
   text: (client) => code(client, lines(2)),
+  unstyled: (client) => Object.assign(code(client, ""), { drawUnstyledText: true }),
   reasoning: (client) => {
     const block = new CodeRenderable(currentRenderer, { syntaxStyle, treeSitterClient: client, width: "100%" })
     return Object.assign(block, { filetype: "markdown", drawUnstyledText: false, streaming: true, conceal: true })
   },
+  concealed: (client) => {
+    client.setMockResult({ highlights: [[0, 6, "conceal", { conceal: "" }]] })
+    return earlyBlocks.reasoning(client)
+  },
   fence: (client) =>
     new MarkdownRenderable(currentRenderer, { streaming: true, syntaxStyle, treeSitterClient: client, width: "100%" }),
+  prose: (client) => new MarkdownRenderable(currentRenderer, { syntaxStyle, treeSitterClient: client, width: "100%" }),
 }
 function code(client: MockTreeSitterClient, content: string): CodeRenderable {
   return new CodeRenderable(currentRenderer, {
@@ -2379,21 +2387,37 @@ test.each([
   ["text", "f 3! 6!", "2 - 3 - 3 line1 6"],
   ["reasoning", "f 3 4 5! 6!", "1 - 3 - 4 - 5 - 5 line1 6"],
   ["fence", "3 4 5! 6!", "3 - 4 - 5 - 5 line1 6"],
+  // Mounted again, a block shows its last highlight in its first frame, at its height; never another block's, and not
+  // one longer than the bound (2^18 characters).
+  ["concealed", "3! r", "3 - 2 line2 2"],
+  ["prose", "3! r", "3 - 3 line1 3"],
+  ["text", "3! r4", "3 - 4 - 4"],
+  ["text", "30000! r", "24 - 24 - 24"],
+  // Deltas faster than the highlight: each result shows when it lands, for a prefix of the content, unless the block
+  // shows all of its text unstyled.
+  ["concealed", "3 4. 5. 6!", "3 - 4 - 2 line2 3 line2 5"],
+  ["unstyled", "3 4. .", "3 line1 4 line1 4 line1 4"],
 ])(
   "CodeRenderable - streaming without unstyled text measures early content (%s, %s)",
   async (kind, steps, expected) => {
     const mockClient = new MockTreeSitterClient()
     mockClient.setMockResult({ highlights: [] })
-    const block = earlyBlocks[kind](mockClient)
+    let block = earlyBlocks[kind](mockClient)
     currentRenderer.root.add(block)
     const trace: (number | string)[] = []
     for (const step of steps.split(" ")) {
-      const count = parseInt(step)
+      if (step.startsWith("r")) {
+        const content = block.content
+        block.destroyRecursively()
+        currentRenderer.root.add((block = earlyBlocks[kind](mockClient)))
+        block.content = content
+      }
+      const count = parseInt(step.replace("r", ""))
       if (count) block.content = kind === "fence" ? "```ts\n" + lines(count) : lines(count)
       await renderOnce()
       trace.push(block.height, captureFrame().split("\n")[0].trim() || "-")
       // A highlight that started before the set is stale; its rerun is the second request.
-      for (let pass = 0; step.endsWith("!") && pass < 4 && mockClient.isHighlighting(); pass++) {
+      for (let pass = 0; pass < (step.endsWith("!") ? 4 : +step.endsWith(".")) && mockClient.isHighlighting(); pass++) {
         mockClient.resolveAllHighlightOnce()
         await new Promise<void>((resolve) => setImmediate(resolve))
       }
