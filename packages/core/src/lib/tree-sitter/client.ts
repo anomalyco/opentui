@@ -178,6 +178,8 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
     this.rejectPendingRequests(error)
     this.resetVersions.clear()
     this.buffers.clear()
+    // The next worker starts with the default parsers.
+    this.emit("parsers:changed")
 
     try {
       void Promise.resolve(worker.terminate()).catch(() => {})
@@ -802,6 +804,7 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
           if (response.error) {
             reject(new Error(response.error))
           } else {
+            this.emit("parsers:changed")
             resolve()
           }
         },

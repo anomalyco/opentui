@@ -49,9 +49,9 @@ type ConcealLineRange = [start: number, end: number]
 
 // The worker's last results per client by exact filetype and content, oldest first, so that a block mounted again
 // (a tab switch) paints in its first frame. Only worker output is kept; style, conceal and callbacks apply when it
-// shows. Each block owns at most one entry; each ownership costs its key's length against the bound.
+// shows. Each block owns at most one entry; the keys' total length is bounded.
 const REMEMBERED_LENGTH_MAX = 1 << 18
-type Remembered = { highlights: SimpleHighlight[]; owners: Set<number> }
+type Remembered = { highlights: SimpleHighlight[]; owners: Set<number>; kept: boolean }
 type Memory = { length: number; results: Map<string, Remembered>; owners: Map<number, string> }
 const remembered = new WeakMap<TreeSitterClient, Memory>()
 let rememberOwners = 0
@@ -87,28 +87,40 @@ function memoryOf(client: TreeSitterClient): Memory {
   return memory
 }
 
-function release(memory: Memory, owner: number): void {
+// Ends a live block's claim on its entry. A destroyed block's entry stays for its next mount (`kept`) until evicted; a
+// live block's earlier result goes once no live block holds it.
+function release(memory: Memory, owner: number, destroyed = false): void {
   const key = memory.owners.get(owner)
   if (key === undefined) return
   memory.owners.delete(owner)
-  memory.length -= key.length
   const entry = memory.results.get(key)!
   entry.owners.delete(owner)
-  if (entry.owners.size === 0) memory.results.delete(key)
+  entry.kept ||= destroyed
+  if (entry.owners.size === 0 && !entry.kept) evict(memory, key)
+}
+
+function evict(memory: Memory, key: string): void {
+  for (const owner of memory.results.get(key)!.owners) memory.owners.delete(owner)
+  memory.results.delete(key)
+  memory.length -= key.length
 }
 
 function remember(memory: Memory, owner: number, key: string, highlights: SimpleHighlight[]): void {
   release(memory, owner)
   if (key.length > REMEMBERED_LENGTH_MAX) return
-  for (const entry of memory.results.values()) {
-    if (memory.length + key.length <= REMEMBERED_LENGTH_MAX) break
-    for (const other of entry.owners) release(memory, other)
+  const entry = memory.results.get(key)
+  if (entry) {
+    memory.results.delete(key)
+  } else {
+    for (const oldest of memory.results.keys()) {
+      if (memory.length + key.length <= REMEMBERED_LENGTH_MAX) break
+      evict(memory, oldest)
+    }
+    memory.length += key.length
   }
-  const owners = memory.results.get(key)?.owners ?? new Set<number>()
-  memory.results.delete(key)
-  memory.results.set(key, { highlights, owners: owners.add(owner) })
+  const owners = (entry?.owners ?? new Set<number>()).add(owner)
+  memory.results.set(key, { highlights, owners, kept: entry?.kept ?? false })
   memory.owners.set(owner, key)
-  memory.length += key.length
 }
 
 export class CodeRenderable extends TextBufferRenderable {
@@ -142,6 +154,7 @@ export class CodeRenderable extends TextBufferRenderable {
   private _initialStyledText?: StyledText
   private _hadInitialContent: boolean = false
   private readonly _rememberOwner = ++rememberOwners
+  private _rememberedIn?: Memory
   // A remembered result for the current state is painted; the next change of state ends it.
   private _restored = false
   private _restorePending = true
@@ -205,6 +218,11 @@ export class CodeRenderable extends TextBufferRenderable {
     this._ctx.nativeScene.lifecyclePasses.refresh(this)
   }
 
+  // The callbacks and a transformChunks override see the highlights; a remembered result must not change with them.
+  private exposesHighlights(): boolean {
+    return !!(this._onHighlight || this._onChunks) || this.transformChunks !== CodeRenderable.prototype.transformChunks
+  }
+
   override _needsLifecyclePass(): boolean {
     if (this.onLifecyclePass !== this.restoreHighlights) return super._needsLifecyclePass()
     return this._restorePending
@@ -220,23 +238,28 @@ export class CodeRenderable extends TextBufferRenderable {
     if (!this._highlightsDirty || this._drawUnstyledText || !filetype || !content) return
     const last = remembered.get(this._treeSitterClient)?.results.get(rememberKey(filetype, content))
     if (!last) return
+    const snapshot = this._highlightSnapshotId
+    let text: StyledText | undefined
+    let lineSources: number[] | undefined
     try {
-      const own = this._onHighlight || this._onChunks ? copyHighlights(last.highlights) : last.highlights
+      const own = this.exposesHighlights() ? copyHighlights(last.highlights) : last.highlights
       const modified = this._onHighlight?.(own, { content, filetype, syntaxStyle: this._syntaxStyle })
       if (!answeredNow(modified)) return
       const highlights = modified ?? own
       if (highlights.length > 0 || this._onChunks || this._baseHighlight) {
         const styled = this.styleHighlights(content, filetype, highlights)
         if (!answeredNow(styled.chunks)) return
-        this.textBuffer.setStyledText(new StyledText(styled.chunks ?? []))
-        this.setRenderedLineSources(styled.lineSources)
-      } else {
-        this.textBuffer.setText(content)
-        this.setRenderedLineSources(undefined)
+        text = new StyledText(styled.chunks ?? [])
+        lineSources = styled.lineSources
       }
     } catch {
       return
     }
+    // A callback may have changed the block (its content, filetype, ...) or destroyed it.
+    if (snapshot !== this._highlightSnapshotId || this.isDestroyed) return
+    if (text) this.textBuffer.setStyledText(text)
+    else this.textBuffer.setText(content)
+    this.setRenderedLineSources(lineSources)
     this._restored = true
     this.setShouldRenderTextBuffer(true)
     this.updateTextInfo()
@@ -533,8 +556,9 @@ export class CodeRenderable extends TextBufferRenderable {
       let highlights = result.highlights ?? []
       // Into the memory it was asked of; after a parser change or a destroyed worker, nothing reads that one.
       if (memory && !result.error) {
-        const copy = this._onHighlight || this._onChunks ? copyHighlights(highlights) : highlights
+        const copy = this.exposesHighlights() ? copyHighlights(highlights) : highlights
         remember(memory, this._rememberOwner, rememberKey(filetype, content), copy)
+        this._rememberedIn = memory
       }
 
       if (this._onHighlight && highlights.length >= 0) {
@@ -775,6 +799,8 @@ export class CodeRenderable extends TextBufferRenderable {
   protected override destroyOwnedResources(): void {
     this.runCleanup((run) => {
       run(() => this.clearPendingHighlight())
+      // Its last result stays for the block mounted in its place.
+      run(() => this._rememberedIn && release(this._rememberedIn, this._rememberOwner, true))
       run(() => super.destroyOwnedResources())
     })
   }

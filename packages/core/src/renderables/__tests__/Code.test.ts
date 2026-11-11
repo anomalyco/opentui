@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test"
 import { createTestRenderer } from "../../testing/test-renderer.js"
-import { CodeRenderable, type CodeOptions } from "../Code.js"
+import { CodeRenderable, type ChunkRenderContext, type CodeOptions } from "../Code.js"
 import { SyntaxStyle } from "../../syntax-style.js"
 import { MockTreeSitterClient } from "../../testing/mock-tree-sitter-client.js"
 import { TreeSitterClient } from "../../lib/tree-sitter/client.js"
@@ -336,6 +336,90 @@ describe("CodeRenderable", () => {
       ["shared block"],
     ],
     [
+      "mounted again after the parser cache was cleared",
+      async (t) => {
+        await t.settle(t.mount("A **cache**"))
+        t.clear()
+        await t.client.clearCache()
+        return [await t.again("A **cache**", {}, {}, false), await t.settle(t.last())]
+      },
+      ["", "A cache"],
+    ],
+    [
+      "mounted again after the worker failed",
+      async (t) => {
+        await t.settle(t.mount("A **failed**"))
+        t.clear()
+        const worker = (t.client as unknown as { worker: { onerror?: (event: { message: string }) => void } }).worker
+        worker.onerror?.({ message: "synthetic failure" })
+        return [await t.again("A **failed**", {}, {}, false), await t.settle(t.last())]
+      },
+      ["", "A failed"],
+    ],
+    [
+      "mounted again with a callback that changes the content",
+      async (t) => {
+        await t.settle(t.mount("**old**"))
+        t.clear()
+        let changed = false
+        const onChunks = (chunks: TextChunk[]) => {
+          if (!changed) t.last().content = "**new**"
+          changed = true
+          return chunks
+        }
+        const b = t.mount("**old**", { onChunks })
+        return [await t.frame(), await t.settle(b)]
+      },
+      ["", "new"],
+    ],
+    [
+      "mounted again after a transformChunks override changed its highlights",
+      async (t) => {
+        class Marking extends CodeRenderable {
+          protected override transformChunks(chunks: TextChunk[], context: ChunkRenderContext) {
+            for (const highlight of context.highlights) if (highlight[3]?.conceal === "") highlight[3].conceal = "X"
+            return super.transformChunks(chunks, context)
+          }
+        }
+        const own = await t.settle(t.mount("A **special**", {}, Marking))
+        return [own, await t.again("A **special**", {}, {}, false)]
+      },
+      ["A special", "A special"],
+    ],
+    [
+      "mounted again, unchanged, then written while it shows a remembered result",
+      async (t) => {
+        const first = await t.again("A **name**", { streaming: false })
+        t.last().content = "New **raw**"
+        return [first, await t.frame()]
+      },
+      ["A name", ""],
+    ],
+    [
+      "three tabs of 50,000 characters mounted again in turn",
+      async (t) => {
+        const tab = (i: number) => `T${i} ${"word ".repeat(10_000)}`
+        for (const i of [1, 2, 3, 1, 2, 1]) {
+          await t.settle(t.mount(tab(i)))
+          t.clear()
+        }
+        return [(await t.again(tab(3), {}, {}, false)).slice(0, 2)]
+      },
+      ["T3"],
+    ],
+    [
+      "two blocks of 150,000 characters: the older goes",
+      async (t) => {
+        const block = (name: string) => `${name} ${"word ".repeat(30_000)}`
+        await t.settle(t.mount(block("A")))
+        t.clear()
+        await t.settle(t.mount(block("B")))
+        const older = (await t.again(block("A"), {}, {}, false)).slice(0, 1)
+        return [older, (await t.again(block("B"), {}, {}, false)).slice(0, 1)]
+      },
+      ["", "B"],
+    ],
+    [
       "mounted again after a block over the bound",
       async (t) => {
         await t.settle(t.mount("bound"))
@@ -391,8 +475,8 @@ describe("CodeRenderable", () => {
       await next?.reply.catch(() => undefined)
       await tick()
     }
-    const mount = (content: string, options: Partial<CodeOptions> = {}) => {
-      const block = new CodeRenderable(setup.renderer, {
+    const mount = (content: string, options: Partial<CodeOptions> = {}, Kind = CodeRenderable) => {
+      const block = new Kind(setup.renderer, {
         ...{ content, syntaxStyle, treeSitterClient: client, filetype: "markdown", width: "100%" },
         ...{ streaming: true, drawUnstyledText: false, ...options },
       })
