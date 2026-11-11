@@ -99,10 +99,13 @@ pub struct InlineContext<'a> {
 The hook runs when a block is built or changes, so a streamed `append` runs it
 only for the blocks the new text changed. `rerun_inline_hook(select)` runs it again
 for the top-level blocks with a paragraph or heading whose source `select`
-accepts, without parsing, for a change only the hook knows about, such as a new
-session title. `target_at(x, y)` returns the target of the span at a screen cell,
-for the app's mouse handler. Selecting and copying take the text the hook returned,
-as Core's do.
+accepts, without parsing the document again, for a change only the hook knows
+about, such as a new session title; it does nothing without a hook.
+`target_at(x, y)` returns the target of the span the last frame drew at a screen
+cell, for the app's mouse handler. Native code answers where: the hit grid names
+the text at the cell, and `ot_scene_get_text_byte_at` names the byte of the
+grapheme drawn there, so padding, covered cells and text not yet painted have no
+target. Selecting and copying take the text the hook returned, as Core's do.
 
 Where it differs from Core's callback:
 

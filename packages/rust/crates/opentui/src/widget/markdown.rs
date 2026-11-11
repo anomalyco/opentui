@@ -1333,35 +1333,27 @@ impl Markdown {
     /// are left alone, and nothing is parsed again. A paragraph or heading updates in place; a list or quote is built
     /// again whole.
     pub fn rerun_inline_hook(&self, select: impl Fn(&str) -> bool) -> Self {
-        self.refresh(0, Rebuild::Hook(&select));
+        if self.0.options.borrow().inline_hook.is_some() {
+            self.refresh(0, Rebuild::Hook(&select));
+        }
         self.clone()
     }
 
-    /// The [`InlineSpan::target`] of the span the inline hook returned for the screen cell `(x, y)`, as of the last
-    /// frame. Call it from a mouse handler to make those spans clickable.
+    /// The [`InlineSpan::target`] of the span the last frame drew at the screen cell `(x, y)`, as native hit testing
+    /// and text layout place it: `None` on padding, on cells something else covers, and on text that changed since
+    /// that frame. Call it from a mouse handler to make those spans clickable; hold the `Markdown` weakly there, so
+    /// the handler does not keep a removed document alive.
     pub fn target_at(&self, x: u16, y: u16) -> Option<String> {
-        let app = self.0.element.app()?;
-        let (x, y) = (f64::from(x), f64::from(y));
+        // Native code answers both questions: which text the last frame drew at the cell, and which byte of it.
+        let hit = self.0.element.app()?.widget_at(x, y)?;
         let shown = self.0.shown.borrow();
-        let targets =
-            shown.iter().flat_map(|shown| &shown.targets).find(|targets| targets.text.rect().contains(x, y))?;
-        let rect = targets.text.rect();
-        // As OpenCode does, find the column in the logical line through the wrapped rows, then the span there.
-        let lines = targets.text.element().query(|node| node.text_lines())?;
-        let line = lines.get((y - rect.screen_y) as usize)?;
-        let first = lines.get(((y - rect.screen_y) as usize).checked_sub(line.wrap_index as usize)?)?;
-        let column = line.start_column - first.start_column + (x - rect.screen_x) as u32;
-        let text = targets.text.text();
-        let start: usize = text.split('\n').take(line.source_line as usize).map(|line| line.len() + 1).sum();
-        let end = text[start..].find('\n').map_or(text.len(), |end| start + end);
-        let width = |text: &str| app.session().context().text_width(text, app.width_method()).unwrap_or(0);
-        let (_, target) = targets.ranges.iter().find(|(range, _)| {
-            let (Some(before), Some(span)) = (text.get(start..range.start), text.get(range.clone())) else {
-                return false;
-            };
-            let left = width(before);
-            range.end <= end && (left..left + width(span)).contains(&column)
-        })?;
+        let targets = shown.iter().flat_map(|shown| &shown.targets).find(|targets| targets.text.id() == hit.id())?;
+        // Text that changed after that frame is not what the cell shows.
+        if !targets.text.painted() {
+            return None;
+        }
+        let byte = targets.text.element().query(|node| node.text_byte_at(i32::from(x), i32::from(y)))?? as usize;
+        let (_, target) = targets.ranges.iter().find(|(range, _)| range.contains(&byte))?;
         Some(target.clone())
     }
 

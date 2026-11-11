@@ -2,9 +2,12 @@
 //! (`render.ts` there writes them).
 
 use opentui::input::{MouseButton, MouseEventKind};
-use opentui::style::{Attributes, Span, Style};
+use opentui::native::Capture;
+use opentui::style::{Attributes, Color, Span, Style};
 use opentui::testing::TestApp;
-use opentui::widget::{AnyWidget, Container, InlineContext, InlineSpan, Markdown, MarkdownTableOptions, Text, Widget};
+use opentui::widget::{
+    AnyWidget, Container, InlineContext, InlineSpan, Markdown, MarkdownTableOptions, ScrollBox, Text, View, Widget,
+};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -316,9 +319,13 @@ fn clicks_on_hook_targets_reach_the_app_without_hyperlinks() {
     app.root().add(&markdown);
     markdown.set_markdown("**中文** see ses_known now <https://x.test>");
     let clicked: Rc<RefCell<Option<String>>> = Rc::default();
-    let (seen, doc) = (clicked.clone(), markdown.clone());
+    // The app owns the document; its own handler holds it weakly, so a removed message does not outlive the screen.
+    let owner = Rc::new(markdown.clone());
+    let (seen, doc) = (clicked.clone(), Rc::downgrade(&owner));
     markdown.on_mouse(move |_, event| {
-        if event.kind == MouseEventKind::Up(MouseButton::Left) {
+        if event.kind == MouseEventKind::Up(MouseButton::Left)
+            && let Some(doc) = doc.upgrade()
+        {
             *seen.borrow_mut() = doc.target_at(event.x, event.y);
         }
     });
@@ -336,24 +343,154 @@ fn clicks_on_hook_targets_reach_the_app_without_hyperlinks() {
     // Selection copies the text shown.
     app.drag((column(&app, 0, "see"), 0), (head + 3, 0));
     assert_eq!(app.app().selected_text().as_deref(), Some("see @Fix"));
+    drop(owner);
+}
+
+/// Checks [`Markdown::target_at`] at every cell of `capture`: a cell answers exactly when it draws an underlined
+/// grapheme, which the hooks here give only target spans, and then with `id` of the cell's row.
+fn assert_targets(capture: &Capture, markdown: &Markdown, id: impl Fn(&str) -> &'static str) {
+    for (y, x) in (0..capture.height).flat_map(|y| (0..capture.width).map(move |x| (y, x))) {
+        let linked = capture.cell(x, y).unwrap().attributes.contains(Attributes::UNDERLINE);
+        let expected = linked.then(|| id(&capture.row(y)));
+        assert_eq!(markdown.target_at(x as u16, y as u16).as_deref(), expected, "cell {x}, {y}\n{}", capture.text());
+    }
+}
+
+#[test]
+fn targets_answer_only_where_the_last_frame_drew_them() {
+    let titles: Titles = Rc::new(RefCell::new(HashMap::from([
+        ("ses_a", "LongSessionTitle"),
+        ("ses_b", "SecondLink"),
+        ("ses_cjk", "中文タイトル"),
+        ("ses_top", "TopLink"),
+        ("ses_mid", "MidLink"),
+        ("ses_bot", "BotLink"),
+    ])));
+    let hooked = |app: &TestApp| Markdown::new(app).inline_hook(session_links(&titles, &Calls::default()));
+    // Wrap padding before and after a wrapped title, and the gap a wide character leaves, have no target, and the
+    // padding at the end of one title's row does not reach the next title.
+    let app = TestApp::new(12, 6);
+    let markdown = hooked(&app).set_markdown("hi ses_a ses_b");
+    app.root().add(&markdown);
+    let capture = app.render();
+    assert_eq!(capture.text(), "hi\n@LongSession\nTitle\n@SecondLink\n\n");
+    assert_targets(&capture, &markdown, |row| if row.contains("Second") { "ses_b" } else { "ses_a" });
+    let app = TestApp::new(10, 4);
+    let markdown = hooked(&app).set_markdown("1234567:ses_cjk");
+    app.root().add(&markdown);
+    let capture = app.render();
+    assert_eq!(capture.text(), "1234567:\n@中文タイ\nトル\n");
+    assert_targets(&capture, &markdown, |_| "ses_cjk");
+
+    // Rows a scroll box clips, cells an overlay covers, and moves not painted yet answer as the screen shows.
+    let app = TestApp::new(24, 8);
+    let markdown = hooked(&app).set_markdown("ses_top\n\nplain\n\nses_mid\n\nses_bot");
+    let scroll = ScrollBox::new(&app).height(4).child(&markdown);
+    app.root()
+        .add(&Text::new(&app, "HEADER ROW 0\nHEADER ROW 1"))
+        .add(&scroll)
+        .add(&Text::new(&app, "FOOTER ROW 6\nFOOTER ROW 7"));
+    scroll.scroll_to(0.0, 1.0);
+    let capture = app.render();
+    let row = |row: &str| match row.trim_end() {
+        "@MidLink" => "ses_mid",
+        "@BotLink" => "ses_bot",
+        _ => "ses_top",
+    };
+    assert_targets(&capture, &markdown, row);
+    scroll.scroll_to(0.0, 3.0);
+    assert_targets(&capture, &markdown, row);
+    let overlay = View::new(&app).absolute().width(24).height(8).bg(Color::BLACK);
+    app.root().add(&overlay);
+    let covered = app.render();
+    assert_targets(&covered, &markdown, |_| "none");
+
+    // A fractional translation moves text by whole cells, as native code paints it.
+    let app = TestApp::new(12, 4);
+    let markdown = hooked(&app).set_markdown("ses_top\nses_mid");
+    app.root().add(&View::new(&app).translate(0.6, 0.6).child(&markdown));
+    let capture = app.render();
+    assert_targets(&capture, &markdown, |row| if row.contains("@Top") { "ses_top" } else { "ses_mid" });
+
+    // Until a frame shows replaced text, its new targets do not answer.
+    let app = TestApp::new(12, 2);
+    let markdown = hooked(&app).set_markdown("ses_top");
+    app.root().add(&markdown);
+    let shown = app.render();
+    markdown.set_markdown("ses_bot");
+    assert_eq!(markdown.target_at(0, 0), None, "{}", shown.text());
+    let capture = app.render();
+    assert_targets(&capture, &markdown, |_| "ses_bot");
+}
+
+#[test]
+fn targets_count_bytes_as_the_hook_returned_them() {
+    // A hook's CRLF stays in the text native code holds, so the target after it lines up.
+    let app = TestApp::new(20, 3);
+    let markdown = Markdown::new(&app).inline_hook(|_, _| {
+        let target = InlineSpan {
+            span: Span::styled("@Known", Style::new().underline()),
+            code: false,
+            target: Some("ses_a".to_owned()),
+        };
+        vec![Span::raw("hi\r\n").into(), target, Span::raw(" plain").into()]
+    });
+    markdown.set_markdown("anything");
+    app.root().add(&markdown);
+    let capture = app.render();
+    assert_eq!(capture.text(), "hi\n@Known plain\n");
+    assert_targets(&capture, &markdown, |_| "ses_a");
 }
 
 #[test]
 fn rerunning_the_inline_hook_touches_only_selected_blocks() {
-    let app = TestApp::new(30, 8);
+    let app = TestApp::new(30, 14);
     let titles: Titles = Rc::new(RefCell::new(HashMap::from([("ses_a", "A"), ("ses_b", "B")])));
     let calls = Calls::default();
-    let markdown = Markdown::new(&app).inline_hook(session_links(&titles, &calls));
+    // The hook arrives after the content, and the quote's link sits on its second line, indented.
+    let markdown = Markdown::new(&app).set_markdown(
+        "## Head ses_a\n\nFirst ses_a\n\nSecond ses_b\n\n> first\n> ses_a\n\n- item ses_a\n\n```\nses_a\n```",
+    );
     app.root().add(&markdown);
-    markdown.set_markdown("First ses_a\n\nSecond ses_b\n\n- item ses_a\n\n```\nses_a\n```");
-    assert_eq!(frame(&app), "First @A\n\nSecond @B\n\n- item @A\n\nses_a\n");
+    markdown.inline_hook(session_links(&titles, &calls));
+    let id = |row: &str| if row.contains("@B") { "ses_b" } else { "ses_a" };
+    let capture = app.render();
+    assert_eq!(capture.text().trim_end(), "Head @A\n\nFirst @A\n\nSecond @B\n\n│ first\n│ @A\n\n- item @A\n\nses_a");
+    assert_targets(&capture, &markdown, id);
     calls.borrow_mut().clear();
     titles.borrow_mut().insert("ses_a", "Renamed");
     markdown.rerun_inline_hook(|source| source.contains("ses_a"));
-    assert_eq!(*calls.borrow(), ["First ses_a", "item ses_a"]);
-    assert_eq!(frame(&app), "First @Renamed\n\nSecond @B\n\n- item @Renamed\n\nses_a\n");
-    // The rebuilt list item keeps its click target.
-    assert_eq!(markdown.target_at(column(&app, 4, "@Renamed"), 4).as_deref(), Some("ses_a"));
+    assert_eq!(*calls.borrow(), ["Head ses_a", "First ses_a", "first\nses_a", "item ses_a"]);
+    let capture = app.render();
+    assert_eq!(
+        capture.text().trim_end(),
+        "Head @Renamed\n\nFirst @Renamed\n\nSecond @B\n\n│ first\n│ @Renamed\n\n- item @Renamed\n\nses_a"
+    );
+    assert_targets(&capture, &markdown, id);
+    // Without the hook, the blocks show their own text again and nothing answers.
+    markdown.remove_inline_hook();
+    let capture = app.render();
+    assert_eq!(capture.row(0).trim_end(), "Head ses_a");
+    assert_targets(&capture, &markdown, |_| "none");
+}
+
+#[test]
+fn rerunning_without_a_hook_builds_nothing() {
+    let app = TestApp::new(30, 6);
+    let built = Rc::new(Cell::new(0));
+    let count = built.clone();
+    let markdown = Markdown::new(&app).code_block_renderer("mermaid", move |block| {
+        count.set(count.get() + 1);
+        Some(Text::new(block.app, "diagram").as_any())
+    });
+    app.root().add(&markdown);
+    markdown.set_markdown("- item ses_a\n\n  ```mermaid\n  g\n  ```");
+    assert_eq!(built.get(), 1);
+    markdown.rerun_inline_hook(|_| true);
+    assert_eq!(built.get(), 1);
+    // With a hook, the list holding a selected paragraph is built again, with its code block.
+    markdown.inline_hook(|spans, _| spans).rerun_inline_hook(|_| true);
+    assert_eq!(built.get(), 3);
 }
 
 #[test]

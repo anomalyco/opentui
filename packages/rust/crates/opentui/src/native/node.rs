@@ -410,26 +410,15 @@ impl Node {
         })
     }
 
-    /// The text's lines after wrapping, all of them, not only the visible ones.
-    pub fn text_lines(&self) -> Result<Vec<super::VisualLine>> {
-        let mut count = 0;
-        check("ot_scene_get_text_lines", unsafe {
-            sys::ot_scene_get_text_lines(self.context(), &self.handle, 0, std::ptr::null_mut(), 0, &mut count)
+    /// The byte, in the text last set, where the grapheme at screen cell `(x, y)` starts, with the node where the
+    /// latest frame painted it, or `None` where it draws none, such as wrap padding. It does not check what covers
+    /// the cell; [`Session::hit_test`](super::Session::hit_test) does.
+    pub fn text_byte_at(&self, x: i32, y: i32) -> Result<Option<u32>> {
+        let mut byte = 0;
+        check("ot_scene_get_text_byte_at", unsafe {
+            sys::ot_scene_get_text_byte_at(self.context(), &self.handle, x, y, &mut byte)
         })?;
-        let mut lines = vec![sys::ot_scene_text_line::default(); count as usize];
-        check("ot_scene_get_text_lines", unsafe {
-            sys::ot_scene_get_text_lines(self.context(), &self.handle, 0, lines.as_mut_ptr(), count, &mut count)
-        })?;
-        lines.truncate(count as usize);
-        Ok(lines
-            .iter()
-            .map(|line| super::VisualLine {
-                start_column: line.start_cols,
-                width: line.width_cols,
-                source_line: line.source_line,
-                wrap_index: line.wrap_index,
-            })
-            .collect())
+        Ok((byte != u32::MAX).then_some(byte))
     }
 
     /// Stores this node as the scene's focus target, or clears it if it is the target.

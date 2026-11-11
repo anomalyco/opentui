@@ -12,6 +12,8 @@ pub(crate) struct TextInner {
     selection_colors: Cell<SelectionColors>,
     /// A hash of the content last set, so setting equal content again skips the native rebuild.
     content: Cell<Option<u64>>,
+    /// The app's frame number when the content last changed: frames after it show the content.
+    changed: Cell<u64>,
 }
 
 impl Behavior for TextInner {
@@ -62,6 +64,7 @@ impl Text {
             selectable: Cell::new(true),
             selection_colors: Cell::new(SelectionColors { fg: Some(theme.selection_fg), bg: Some(theme.selection_bg) }),
             content: Cell::new(None),
+            changed: Cell::new(0),
         }));
         text.0.element.update_text_options(|options| options.fg = theme.foreground);
         text.set_text(content)
@@ -84,7 +87,13 @@ impl Text {
         } else {
             self.0.element.apply(|node| node.set_spans(&content.0));
         }
+        self.0.changed.set(self.0.element.app().map_or(0, |app| app.frame_number()));
         self.clone()
+    }
+
+    /// Whether the last frame painted the current content.
+    pub(crate) fn painted(&self) -> bool {
+        self.0.element.app().is_some_and(|app| app.frame_number() > self.0.changed.get())
     }
 
     /// The plain text, with line endings normalized to `\n`.
