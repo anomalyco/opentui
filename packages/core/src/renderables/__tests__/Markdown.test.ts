@@ -5463,13 +5463,18 @@ test("a rejected highlight keeps the hooked text", async () => {
   await renderOnce()
   await fail()
   expect(frameText()).toBe("see @Title @Title run ses_alpha")
+  // The end of the stream keeps what is drawn too.
   md.streaming = false
   await renderOnce()
-  // No preview is left to keep, so the block draws its text without highlights, through the hook: backticks show and
-  // no span is code.
+  await fail()
+  expect(frameText()).toBe("see @Title @Title run ses_alpha")
+  // A finished block has no preview, so it draws its text without highlights, through the hook: backticks show and no
+  // span is code.
+  md.content += "!"
+  await renderOnce()
   await fail()
   console.warn = warn
-  expect(frameText()).toBe("see @Again `@Again` `run @Again`")
+  expect(frameText()).toBe("see @Again `@Again` `run @Again`!")
 })
 
 // Seeded model of a hooked, streamed Markdown answer against the fake worker. Each seed appends pieces (prose, quotes,
@@ -5762,3 +5767,34 @@ test("every Markdown on a client highlights prose through one shared masking cli
   expect(code(first!, "typescript").treeSitterClient).toBe(client)
   expect(code(first!, "markdown").treeSitterClient).not.toBe(client)
 })
+
+// The setext heading becomes a paragraph and a list when the last text arrives with the end of the stream.
+test.each(["top-level", "coalesced"] as const)(
+  "a block that changes kind as the stream ends draws at once (%s)",
+  async (internalBlockMode) => {
+    const worker = new FakeWorker()
+    const md = createMarkdownRenderable({
+      content: "Intro.\n\nword word\nsee it\n-",
+      syntaxStyle,
+      streaming: true,
+      internalBlockMode,
+      treeSitterClient: worker,
+    })
+    renderer.root.add(md)
+    const settle = async () => {
+      for (let pass = 0; pass < 4; pass++) {
+        await renderOnce()
+        while (worker.pending.length > 0) worker.reply()
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
+      await renderOnce()
+    }
+    await settle()
+    md.content += " word"
+    md.streaming = false
+    await renderOnce()
+    const finished = frameText()
+    await settle()
+    expect(finished).toBe(frameText())
+  },
+)

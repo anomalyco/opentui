@@ -343,6 +343,7 @@ export class MarkdownRenderable extends Renderable {
   // The base highlight of the block whose preview is being built (quote text), and whether one is.
   private _previewBase?: string
   private _preview = false
+  private _finishing = false
   private _inlineHook?: MarkdownInlineHook
   private _inlineHookFilter?: readonly string[]
   // Preview and table chunks drawn as code spans.
@@ -573,7 +574,13 @@ export class MarkdownRenderable extends Renderable {
       this.assertMutable()
       this._streaming = value
       this._parseState = parseMarkdownIncremental(this._content, this._parseState, value ? 2 : 0)
-      this.updateBlocks(true)
+      // The blocks the end of a stream refreshes keep a preview, so a block not highlighted yet never draws blank.
+      this._finishing = !value
+      try {
+        this.updateBlocks(true)
+      } finally {
+        this._finishing = false
+      }
     }
   }
 
@@ -760,7 +767,7 @@ export class MarkdownRenderable extends Renderable {
   }
 
   private createInitialStyledText(token: MarkedToken, baseHighlight?: string): StyledText | undefined {
-    if (!this._streaming) return undefined
+    if (!this._streaming && !this._finishing) return undefined
 
     const chunks: TextChunk[] = []
     this._previewBase = baseHighlight
