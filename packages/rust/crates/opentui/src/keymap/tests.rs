@@ -180,6 +180,14 @@ fn duplicate_command_names_across_layers_dedupe_by_name() {
     assert_eq!(reachable[0].title.as_deref(), Some("New"));
     assert_eq!(keymap.commands(&CommandQuery::visibility(Visibility::Active)).len(), 2);
     assert_eq!(keymap.commands(&CommandQuery::visibility(Visibility::Registered)).len(), 2);
+    // Past 20 entries, where an unstable sort stops keeping equal names in their order.
+    for index in 0..12 {
+        let commands = [record(&calls, "save").title(index.to_string()), record(&calls, &format!("z{}", index % 3))];
+        keymap.register_layer(Layer::new().commands(commands)).forget();
+    }
+    let reachable = keymap.commands(&CommandQuery::default());
+    let names: Vec<_> = reachable.iter().map(|command| format!("{}:{:?}", command.name, command.title)).collect();
+    assert_eq!(names, ["save:Some(\"11\")", "z2:None", "z1:None", "z0:None"]);
 }
 
 #[test]
@@ -748,12 +756,13 @@ fn enabled_conditions_gate_layers_and_commands() {
     let calls = calls();
     let layer_on = Rc::new(Cell::new(true));
     let command_on = Rc::new(Cell::new(true));
-    let (layer_gate, command_gate) = (layer_on.clone(), command_on.clone());
-    keymap
-        .register_layer(
-            Layer::new().command(record(&calls, "run").enabled(Condition::when(move || command_gate.get()))),
-        )
-        .forget();
+    let checks = Rc::new(Cell::new(0));
+    let (layer_gate, command_gate, counter) = (layer_on.clone(), command_on.clone(), checks.clone());
+    let gate = Condition::when(move || {
+        counter.set(counter.get() + 1);
+        command_gate.get()
+    });
+    keymap.register_layer(Layer::new().command(record(&calls, "run").enabled(gate))).forget();
     keymap
         .register_layer(
             Layer::new().enabled(Condition::when(move || layer_gate.get())).binding(Binding::new("r").cmd("run")),
@@ -761,6 +770,8 @@ fn enabled_conditions_gate_layers_and_commands() {
         .forget();
     keymap.register_layer(Layer::new().enabled(false).binding(Binding::new("s").cmd("run"))).forget();
     assert!(press(&keymap, "r").handled);
+    // One view per key: the command's condition runs once, not again before the command runs.
+    assert_eq!(checks.get(), 1);
     assert!(!press(&keymap, "s").handled);
     command_on.set(false);
     assert!(!press(&keymap, "r").stop_propagation);
@@ -769,6 +780,71 @@ fn enabled_conditions_gate_layers_and_commands() {
     layer_on.set(false);
     assert!(!press(&keymap, "r").handled);
     assert_eq!(taken(&calls), ["run"]);
+}
+
+#[test]
+fn conditions_that_flip_between_and_within_keys_dispatch_as_recorded() {
+    // A differential row: the trace was recorded on the keymap that built its view of enabled commands several times
+    // per key. Commands of one name chain across layers, reject, and flip the conditions of others while a key runs.
+    // `d` also matches `c`, so a pending leader advances on both and keeps the captures of the better match.
+    let keymap = Keymap::new();
+    leader(&keymap);
+    keymap
+        .append_event_match_resolver(|event| (event.code == KeyCode::Char('d')).then(|| vec![Stroke::new("c")]))
+        .forget();
+    let calls = calls();
+    let gates: Rc<[Cell<bool>; 4]> = Rc::new(Default::default());
+    for layer in 0..4 {
+        let commands = (0..4).map(|index| {
+            let (calls, gates, gate) = (calls.clone(), gates.clone(), gates.clone());
+            Command::new(format!("c{index}"), move |_| {
+                calls.borrow_mut().push(format!("{layer}.{index}"));
+                let flip = &gates[(layer + index) % 4];
+                flip.set(!flip.get());
+                (layer + index) % 3 != 0
+            })
+            .enabled(Condition::when(move || gate[layer * index % 4].get()))
+        });
+        let (gate, flip) = (gates.clone(), gates.clone());
+        keymap
+            .register_layer(
+                Layer::new()
+                    .enabled(Condition::when(move || layer != 3 || gate[3].get()))
+                    .commands(commands.collect::<Vec<_>>())
+                    .bindings([
+                        Binding::new("a").cmd(format!("c{layer}")).fallthrough(layer % 2 == 0),
+                        Binding::new("b").cmd("c1").fallthrough(true),
+                        Binding::new("e").cmd(format!("c{}", (4 - layer) % 4)).fallthrough(true),
+                        Binding::new("f").run(move |_| flip[layer].set(!flip[layer].get())).fallthrough(true),
+                        Binding::new("f").cmd(format!("c{layer}")),
+                        Binding::new(["<leader>c", "<leader>d"][layer % 2]).cmd(format!("c{}", 3 - layer)),
+                    ]),
+            )
+            .forget();
+    }
+    let keys =
+        "a b e f a ctrl+x c e f a ctrl+x d b e !c2 ctrl+x c f c e a b e f b !c0 a e ctrl+x d a e f b ctrl+x x a e f";
+    let mut trace = Vec::new();
+    for (step, key) in keys.split(' ').enumerate() {
+        gates[step % 4].set(step % 3 != 0);
+        let reason = match key.strip_prefix('!') {
+            Some(name) => format!("{:?}", keymap.dispatch_command(name)),
+            None => format!("{:?}", press(&keymap, key).reason),
+        };
+        trace.push(format!("{key}:{reason}:{}", taken(&calls).join(",")));
+    }
+    let recorded = "a:NoMatch: b:BindingHandled:1.1,2.1,1.1,3.1 e:BindingHandled:3.1,3.2,2.3 f:BindingHandled:2.0 \
+         a:BindingHandled:2.2,2.1 ctrl+x:SequencePending: c:BindingHandled:3.1 \
+         e:BindingHandled:3.1,3.3,1.3,3.0,2.0 f:BindingHandled:2.2 a:BindingHandled:1.2,3.1 \
+         ctrl+x:SequencePending: d:BindingHandled:3.0,2.0 b:NoMatch: e:NoMatch: !c2:Disabled:1.2 \
+         ctrl+x:SequencePending: c:BindingHandled:2.1,1.1 f:BindingHandled:0.3,3.2 c:NoMatch: \
+         e:BindingHandled:3.1,1.3,3.0,2.0 a:BindingHandled:2.2,2.1 b:BindingHandled:3.1,3.1,3.1,3.1 \
+         e:BindingHandled:3.1,3.2,3.3,2.3 f:BindingHandled:0.3,3.2 b:BindingHandled:3.1,3.1,3.1,3.1 \
+         !c0:Disabled: a:BindingHandled:3.3,2.3 e:NoMatch: ctrl+x:SequencePending: d:BindingHandled:2.2 \
+         a:BindingHandled:1.1 e:BindingHandled:3.1,3.2,2.3 f:BindingHandled:2.3 \
+         b:BindingHandled:2.1,0.1,3.1,3.1 ctrl+x:SequencePending: x:SequenceMiss: a:BindingHandled:3.3,2.3 \
+         e:BindingHandled:3.1,3.3,1.3 f:BindingHandled:2.3";
+    assert_eq!(trace.join(" "), recorded);
 }
 
 #[test]
