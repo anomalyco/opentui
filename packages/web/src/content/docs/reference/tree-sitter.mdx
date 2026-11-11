@@ -466,7 +466,7 @@ The renderables manage incremental buffers for normal display. These public meth
 | `highlightOnce(content, filetype)`                               | Returns `SimpleHighlight[]`, a warning, or an error without retaining a buffer      |
 | `createBuffer(id, content, filetype, version?, autoInitialize?)` | Creates a retained parser buffer and returns whether it has a parser                |
 | `updateBuffer(id, edits, newContent, version): Promise<void>`    | Queues incremental edits for an existing parsed buffer                              |
-| `resetBuffer(id, version, content): Promise<void>`               | Debounces a full parse reset for an existing parsed buffer                          |
+| `resetBuffer(id, version, content): Promise<void>`               | Queues a full parse reset for an existing parsed buffer                             |
 | `removeBuffer(id): Promise<void>`                                | Removes local state and asks the worker to dispose the parser buffer                |
 | `getBuffer(id): BufferState \| undefined`                        | Returns one local buffer state                                                      |
 | `getAllBuffers(): BufferState[]`                                 | Returns all local buffer states                                                     |

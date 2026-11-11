@@ -1214,7 +1214,8 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
 
   // A block first or last of 16 children highlights in view, grows from 1 line to 5, and scrolls back into view. Grown
   // where the scene runs none of its hooks (culled with an edge on the view's edge, hidden, or detached, then shown or
-  // mounted out of view), it measures as the block grown in view does, never paints raw text, and then shows the same.
+  // mounted out of view, or moved out by the same tick's layout), it measures as the block grown in view does, never
+  // paints raw text, and then shows the same.
   const lines = (count: number, prefix = "") => [1, 2, 3, 4, 5].slice(0, count).map((i) => `${prefix}line ${i}`)
   const grownOutOfView: [string, boolean, (count: number) => string][] = [
     ["code", true, (count) => lines(count).join("\n")],
@@ -1226,12 +1227,14 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
     ]),
   ]
   test.each(grownOutOfView)("a %s block (streaming %p) grown out of view", async (kind, streaming, source) => {
-    const run = async (first: boolean, mode: "shown" | "culled" | "hidden" | "detached") => {
+    // In the write's tick, a box inserted above, a last child the view follows, or a shrunk view moves the block out.
+    const moved = ["pushed", "followed", "shrunk"]
+    const run = async (first: boolean, mode: string) => {
       const client = createMockTreeSitterClient()
       // The highlight conceals each block's first two characters, so text painted unhighlighted differs.
       client.setMockResult({ highlights: [[0, 2, "conceal", { conceal: "" }]] })
       const syntaxStyle = SyntaxStyle.create(testRenderer.nativeScene)
-      const scrollbox = new ScrollBoxRenderable(testRenderer, { width: 40, height: 6 })
+      const scrollbox = new ScrollBoxRenderable(testRenderer, { width: 40, height: 6, stickyStart: "bottom" })
       testRenderer.root.add(scrollbox)
       for (let i = 0; i < 15; i++) scrollbox.add(new BoxRenderable(testRenderer, { height: 2, flexShrink: 0 }))
       const text = (count: number) => (kind === "code" ? source(count) : `Intro\n\n${source(count)}`)
@@ -1264,13 +1267,23 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
       if (mode === "hidden") target.visible = true
       if (mode === "hidden") scrollbox.scrollTo(away)
       if (mode === "detached") mount()
+      const spacer = new BoxRenderable(testRenderer, { height: 6, flexShrink: 0 })
+      if (mode === "pushed") scrollbox.insertBefore(spacer, target)
+      if (mode === "followed") scrollbox.stickyScroll = true
+      if (mode === "followed") scrollbox.add(spacer)
+      if (mode === "shrunk") scrollbox.height = 2
       await renderOnce()
-      // In view, where the scene runs its hooks, the block shows its last highlight until the next one lands.
+      // In view, where the scene runs its hooks, the block shows its last highlight until the next one lands. Accepted
+      // cost of the moved modes: an afterLayout callback asked after the write that scrolls the block back in the same
+      // frame shows it blank until then, since the block's own check, asked first, saw it culled.
       if (mode === "shown") expect(captureCharFrame()).toBe(before)
       if (mode === "shown") await settle()
-      const height = scrollbox.scrollHeight
+      const height = scrollbox.scrollHeight - (spacer.parent ? 6 : 0)
       // Grown, a first block reaches into the view, where the scene highlights it; a last one stays out of view.
-      if (mode !== "shown") expect(client.isHighlighting()).toBe(first)
+      if (mode !== "shown") expect(client.isHighlighting()).toBe(first && !moved.includes(mode))
+      spacer.destroy()
+      scrollbox.stickyScroll = false
+      scrollbox.height = 6
       scrollbox.scrollTo(shown)
       await renderOnce()
       const reveal = captureCharFrame().split("\n")
@@ -1284,8 +1297,42 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
     }
     for (const first of [true, false]) {
       const shown = await run(first, "shown")
-      for (const mode of ["culled", "hidden", "detached"] as const) expect(await run(first, mode)).toEqual(shown)
+      // A first block is in view only at the top, where a new last child or a two-row view keeps it.
+      const modes = ["culled", "hidden", "detached", ...moved.slice(0, first ? 1 : 3)]
+      for (const mode of modes) expect(await run(first, mode)).toEqual(shown)
     }
+  })
+
+  // OpenCode's grouped entries: an entry in a group box mounted or grown out of view reads its layout as in view, also
+  // in afterLayout, where OpenCode reads its anchors.
+  test.each(["mounted", "grown"])("an entry in a culled group %s out of view reads its layout", async (when) => {
+    const scrollbox = new ScrollBoxRenderable(testRenderer, { width: 40, height: 10 })
+    testRenderer.root.add(scrollbox)
+    for (let i = 0; i < 15; i++) scrollbox.add(new BoxRenderable(testRenderer, { height: 2, flexShrink: 0 }))
+    // An empty entry has no rows, and reads one cell, as public layout does in view.
+    const heights = ["auto", "auto", 1, 1, "auto"] as const
+    const [group, entry, leaf, after, empty] = heights.map(
+      (height) => new BoxRenderable(testRenderer, { height, flexShrink: 0 }),
+    )
+    entry.add(leaf)
+    group.add(entry)
+    group.add(after)
+    group.add(empty)
+    scrollbox.add(group)
+    await renderOnce()
+    for (const top of when === "grown" ? [Infinity, 0] : []) {
+      scrollbox.scrollTo(top)
+      await renderOnce()
+    }
+    if (when === "grown") leaf.height = 5
+    const read = () => [entry.height, after.y - group.y, empty.height, scrollbox.scrollHeight]
+    let culled: number[] = []
+    scrollbox.afterLayout(() => (culled = read()))
+    await renderOnce()
+    scrollbox.scrollTo(Infinity)
+    await renderOnce()
+    expect(culled).toEqual(read())
+    scrollbox.destroyRecursively()
   })
 
   test("maintains visibility when scrolling with many Code elements", async () => {

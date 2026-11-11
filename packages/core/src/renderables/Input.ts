@@ -113,8 +113,8 @@ export class InputRenderable extends TextareaRenderable {
     const sanitized = text.replace(/[\n\r]/g, "")
     if (!sanitized) return
 
-    const currentLength = this.plainText.length
-    const remaining = this._maxLength - currentLength
+    // The insert replaces the selection, so the selected text frees its length.
+    const remaining = this._maxLength - this.plainText.length + this.getSelectedText().length
     if (remaining <= 0) return
 
     const toInsert = sanitized.substring(0, remaining)

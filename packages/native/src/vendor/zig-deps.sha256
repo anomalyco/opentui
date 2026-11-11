@@ -1,5 +1,5 @@
-3d251c54ceb7b151383511d3e76555572895ffe5fc9160020c465dfb81ab8da1  zig-deps.tar.gz
-e0ac4254201b3f89b56cd67ff0dae2014837436df877476e868726f6a9a1a7dc  update-zig-deps.sh
+ac7c507f3f6bc55efbace760af99710acb8727790a0372a998f5e3b453383693  zig-deps.tar.gz
+21eb65ef2e55e9c726d1bf65d97debcdf75db68993045d9d275ea58797bb6bda  update-zig-deps.sh
 7ca5be7c38dd7fd8cdbe886d54c92b7a123dd83d1f23bf77fb6383342e7c2058  zig-deps/ghostty-build.zig
 51d286e9b6388e344ee2a3adbba953f96e937bca586a99d5c2069d33e6779862  zig-deps/ghostty-build.zig.zon
 2116b6cfc3b1100737e2c89cf73a61633256a6f3984ef86e281cf4288923ff99  zig-deps/ghostty-shared-deps.patch
@@ -10,6 +10,7 @@ d32a49ba953a77977f7a3655922f0a0b31e70600800d514261867de94b6c3760  zig-deps/yoga-
 f9177cf82543c38686d454ac0d5b81c0bd80af10335d7a2181fd1c882e6d1458  zig-deps/yoga-cache-rounding.patch
 ed37ddf26ea634fab1e8e8d3aa2482c4e45745360eda4cbd91fb15f22ad78b25  zig-deps/yoga-error-boundary.patch
 a6bccef0af5f142d6575dbd10d6287fc040f096bfa8371c0af375412e1824789  zig-deps/yoga-finite-percent.patch
+5f749ba6119010ce07a48e2c039087d01abfadb53d5ebe9f8a380354f0958bf6  zig-deps/yoga-hidden-dirty.patch
 ef48e75ed8e0314bd91457772319d2d63ac2cfe07458004128e226dc0cf27301  zig-deps/yoga-list-layout.patch
 61620921e00f6bac303af5cf5656d421ee2a8f48d9033d4a35b43375e4986037  zig-deps/yoga-measure-cache-bounds.patch
 ac3a2bf67ab87174bab72e2e87bad78c3a9d0bb288250052359647e1fb99476f  zig-deps/yoga-measure-height-cap.patch

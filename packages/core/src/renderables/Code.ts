@@ -3,6 +3,7 @@ import { StyledText } from "../lib/styled-text.js"
 import { SyntaxStyle } from "../syntax-style.js"
 import { getTreeSitterClient, TreeSitterClient } from "../lib/tree-sitter/index.js"
 import { TextBufferRenderable, type TextBufferOptions } from "./TextBufferRenderable.js"
+import { ScrollBoxRenderable } from "./ScrollBox.js"
 import type { NativeRenderableIntegration } from "../Renderable.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import type { SimpleHighlight } from "../lib/tree-sitter/types.js"
@@ -146,29 +147,38 @@ export class CodeRenderable extends TextBufferRenderable {
 
   set content(value: string) {
     if (this._content === value) return
-    this.runMutation(() => {
-      // Streaming keeps the shown highlight until the next one lands (_hadInitialContent implies _streaming).
-      if (this._hadInitialContent && this._shouldRenderTextBuffer && this._filetype && !this._drawUnstyledText) {
-        if (this._ctx.nativeScene.reachesHooks(this)) {
-          this._content = value
-          this.invalidateHighlights()
-          this.requestRender()
-          return
-        }
-        // No update hook runs here to start the highlight, so layout measures the plain text, unpainted until it lands.
-        this.setShouldRenderTextBuffer(false)
-      }
+    this.runMutation(() => this.writeContent(value))
+  }
 
-      if (value && this._initialStyledText && this._drawUnstyledText) {
-        this.textBuffer.setStyledText(this._initialStyledText)
-      } else {
-        this.textBuffer.setText(value)
+  private writeContent(value: string): void {
+    // Streaming keeps the shown highlight until the next one lands (_hadInitialContent implies _streaming).
+    if (this._hadInitialContent && this._shouldRenderTextBuffer && this._filetype && !this._drawUnstyledText) {
+      if (this._ctx.nativeScene.reachesHooks(this)) {
+        this._content = value
+        this.invalidateHighlights()
+        this.requestRender()
+        // The frame's layout can still cull the block before its update hook runs (a sibling above grows, the view
+        // shrinks or follows a new last child); then layout measures the plain text, as below.
+        let box: ScrollBoxRenderable | undefined
+        for (let node = this.parent; node; node = node.parent) if (node instanceof ScrollBoxRenderable) box ??= node
+        box?.afterLayout(() => {
+          if (this._highlightsDirty) this.runMutation(() => this.writeContent(this._content))
+        })
+        return
       }
-      this._content = value
-      this.invalidateHighlights()
-      this.setRenderedLineSources(undefined)
-      this.updateTextInfo()
-    })
+      // No update hook runs here to start the highlight, so layout measures the plain text, unpainted until it lands.
+      this.setShouldRenderTextBuffer(false)
+    }
+
+    if (value && this._initialStyledText && this._drawUnstyledText) {
+      this.textBuffer.setStyledText(this._initialStyledText)
+    } else {
+      this.textBuffer.setText(value)
+    }
+    this._content = value
+    this.invalidateHighlights()
+    this.setRenderedLineSources(undefined)
+    this.updateTextInfo()
   }
 
   public updateStreamingPreview(content: string, initialStyledText: StyledText): void {

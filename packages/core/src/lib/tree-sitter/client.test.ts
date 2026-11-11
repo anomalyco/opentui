@@ -2,8 +2,9 @@ import { test, expect, beforeEach, afterEach, beforeAll, describe } from "bun:te
 import { TreeSitterClient } from "./client.js"
 import { tmpdir } from "os"
 import { join } from "path"
+import { fileURLToPath } from "url"
 import { existsSync } from "fs"
-import { mkdir, writeFile, unlink } from "fs/promises"
+import { mkdir, readFile, writeFile, unlink } from "fs/promises"
 import { getDataPaths } from "../data-paths.js"
 import { clearEnvCache } from "../env.js"
 import { destroySingleton } from "../singleton.js"
@@ -281,9 +282,24 @@ describeClient("TreeSitterClient", () => {
       newEndPosition: end(to),
     },
   ]
+  // Markdown list items after a fence: an edit applied to a tree of an earlier text traps in the markdown scanner.
+  const stream = ["# Streaming Summary\n\n", "```typescript\n", "export const ready = true;\n", "```\n\n"].concat(
+    Array.from({ length: 132 }, (_, i) => `- Step ${i + 1}: check \`item_${i + 1}\` and **status**\n`),
+  )
+  const streamed = (chunks: number) => stream.slice(0, chunks).join("")
+  const append = (from: string, to: string) => [
+    { ...replace(from, to)[0]!, startIndex: from.length, oldEndIndex: from.length, startPosition: end(from) },
+  ]
+  const within3s = <T>(promise: Promise<T>) =>
+    Promise.race([promise, new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 3000))])
   // Each row ends with removeBuffer. The markdown rows edit or remove while the worker loads the injected typescript
-  // or zig grammar, which a new worker has not loaded yet.
-  test.each<[string, (c: TreeSitterClient, highlighted: (version: number) => Promise<void>) => Promise<void>]>([
+  // or zig grammar, which a new worker has not loaded yet. A row returns the errors and warnings it expects.
+  test.each<
+    [
+      string,
+      (c: TreeSitterClient, highlighted: (version: number, line?: number) => Promise<void>) => Promise<string[] | void>,
+    ]
+  >([
     [
       "resetBuffer",
       async (c, highlighted) => {
@@ -310,9 +326,81 @@ describeClient("TreeSitterClient", () => {
         await highlighted(2)
       },
     ],
+    [
+      "updateBuffer before the first reply",
+      async (c, highlighted) => {
+        // The first reply is stale, so the client resets: a version 2 reply then has line 0, not only the edit's line.
+        // A removed buffer of the same id, reset at a later version, must not suppress that reset.
+        await c.createBuffer(1, js(1), "javascript", 1)
+        await c.resetBuffer(1, 9, js(9))
+        await highlighted(9)
+        await c.removeBuffer(1)
+        const ts = Array.from({ length: 20 }, (_, i) => `export const item${i}: number = ${i};`).join("\n")
+        await c.createBuffer(1, ts, "typescript", 1)
+        await c.updateBuffer(1, append(ts, `${ts}\nlet b = 2;`), `${ts}\nlet b = 2;`, 2)
+        await highlighted(2, 0)
+      },
+    ],
+    [
+      "updateBuffer right after resetBuffer",
+      async (c, highlighted) => {
+        await c.createBuffer(1, streamed(6), "markdown", 1)
+        await highlighted(1)
+        await c.resetBuffer(1, 2, streamed(10))
+        await c.updateBuffer(1, append(streamed(10), streamed(11)), streamed(11), 3)
+        await highlighted(3)
+      },
+    ],
+    [
+      "updateBuffer with no highlights right after resetBuffer",
+      async (c, highlighted) => {
+        // The edit's reply is empty, so only a reset at version 3 shows the number that version 2 added.
+        await writeFile(join(dataPath, "number.scm"), "(number) @number\n")
+        const wasm = fileURLToPath(new URL("./assets/javascript/tree-sitter-javascript.wasm", import.meta.url))
+        c.addFiletypeParser({ filetype: "number", wasm, queries: { highlights: [join(dataPath, "number.scm")] } })
+        const text = `let a = 1 + 2;\n${"x;\n".repeat(600)}`
+        expect(await c.createBuffer(1, text.replace(" + 2", ""), "number", 1)).toBe(true)
+        await c.resetBuffer(1, 2, text)
+        await c.updateBuffer(1, append(text, `${text}y;\n`), `${text}y;\n`, 3)
+        await highlighted(3)
+      },
+    ],
+    [
+      "updateBuffer streaming list items",
+      async (c, highlighted) => {
+        // Stale replies reset once per round trip, not once per reply: without the check this posts over 100.
+        const internals = c as unknown as { sendWorkerMessage(message: { type: string }): void }
+        const send = internals.sendWorkerMessage.bind(c)
+        let resets = 0
+        internals.sendWorkerMessage = (message) => {
+          if (message.type === "RESET_BUFFER") resets++
+          send(message)
+        }
+        await c.createBuffer(1, streamed(1), "markdown", 1)
+        for (let n = 2; n <= stream.length; n++) {
+          await c.updateBuffer(1, append(streamed(n - 1), streamed(n)), streamed(n), n)
+          if (n % 7 === 0) await new Promise((resolve) => setTimeout(resolve, 5))
+        }
+        await highlighted(stream.length)
+        // Replies arrive only during the 19 pauses and the final wait, so at most one reset per gap: 20.
+        expect(resets).toBeLessThanOrEqual(20)
+      },
+    ],
+    [
+      "resetBuffer while another client is destroyed",
+      async (c, highlighted) => {
+        const other = new TreeSitterClient({ dataPath })
+        await other.initialize()
+        await c.createBuffer(1, js(1), "javascript", 1)
+        await highlighted(1)
+        await c.resetBuffer(1, 2, js(2))
+        await other.destroy()
+        await highlighted(2)
+      },
+    ],
     ["removeBuffer during the first injection load", async (c) => void (await c.createBuffer(1, md, "markdown", 1))],
     [
-      "removeBuffer with a reset still debounced",
+      "removeBuffer right after resetBuffer",
       async (c) => {
         await c.createBuffer(1, md, "markdown", 1)
         await c.resetBuffer(1, 2, mdZig)
@@ -343,8 +431,51 @@ describeClient("TreeSitterClient", () => {
         await c.createBuffer(1, md, "markdown", 1)
       },
     ],
+    [
+      "removeBuffer three times at once",
+      async (c) => {
+        await c.createBuffer(1, js(1), "javascript", 1)
+        const removals = Promise.all([c.removeBuffer(1), c.removeBuffer(1), c.removeBuffer(1)])
+        expect(await within3s(removals)).toEqual([undefined, undefined, undefined])
+      },
+    ],
+    [
+      "clearCache after highlighting",
+      async (c) => {
+        await c.highlightOnce(mdZig, "markdown")
+        await c.clearCache()
+      },
+    ],
+    [
+      "a grammar with an unsupported ABI version",
+      async (c) => {
+        // The zig language struct starts with its ABI version, 14, then its symbol and alias counts.
+        const wasm = await readFile(new URL("./assets/zig/tree-sitter-zig.wasm", import.meta.url))
+        const at = wasm.findIndex((_, i) => {
+          if (i + 12 > wasm.length || wasm.readUInt32LE(i) !== 14) return false
+          const symbols = wasm.readUInt32LE(i + 4)
+          return symbols > 50 && symbols < 2000 && wasm.readUInt32LE(i + 8) < 500
+        })
+        wasm[at] = 16
+        await writeFile(join(dataPath, "abi16.wasm"), wasm)
+        await writeFile(join(dataPath, "abi16.scm"), "(identifier) @variable\n")
+        const queries = { highlights: [join(dataPath, "abi16.scm")] }
+        c.addFiletypeParser({ filetype: "abi16", wasm: join(dataPath, "abi16.wasm"), queries })
+        const abi = "Error: Incompatible language version 16. Compatibility range 13 through 15."
+        await expect(c.createBuffer(1, "const a = 1;", "abi16", 1)).rejects.toThrow(abi)
+        await expect(c.highlightOnce("const a = 1;", "abi16")).rejects.toThrow(abi)
+        return [abi, abi]
+      },
+    ],
+    [
+      "createBuffer whose first parse returns null",
+      async (c) => {
+        expect(await c.createBuffer(1, "null-parse", "javascript", 1)).toBe(false)
+        return ["Failed to parse buffer"]
+      },
+    ],
   ])(
-    "should delete every replaced tree once no message reads it: %s",
+    "should delete every replaced tree and parser once no message reads it: %s",
     async (_name, run) => {
       const workerPath = new URL(
         existsSync(new URL("./tree-count-worker.fixture.js", import.meta.url))
@@ -353,9 +484,11 @@ describeClient("TreeSitterClient", () => {
         import.meta.url,
       )
       const c = new TreeSitterClient({ dataPath, workerPath })
-      const versions: number[] = []
+      const replies: { version: number; lines: number[] }[] = []
       const errors: string[] = []
-      c.on("highlights:response", (id, version) => id === 1 && versions.push(version))
+      c.on("highlights:response", (id, version, highlights) => {
+        if (id === 1) replies.push({ version, lines: highlights.map((highlight) => highlight.line) })
+      })
       c.on("error", (error) => errors.push(error.split("\n")[0]!))
       c.on("warning", (warning) => errors.push(warning))
       const treeCount = new Promise<unknown>((resolve) =>
@@ -363,26 +496,27 @@ describeClient("TreeSitterClient", () => {
           if (message.startsWith("tree-count ")) resolve(JSON.parse(message.slice("tree-count ".length)))
         }),
       )
-      const highlighted = async (version: number) => {
-        for (let waited = 0; !versions.includes(version); waited += 5) {
+      // Waits for a reply of this version, with a highlight on this line if one is given.
+      const highlighted = async (version: number, line?: number) => {
+        const seen = (reply: (typeof replies)[number]) =>
+          reply.version === version && (line === undefined || reply.lines.includes(line))
+        for (let waited = 0; !replies.some(seen); waited += 5) {
           if (waited >= 3000) throw new Error(`no highlights for version ${version}`)
           await new Promise((resolve) => setTimeout(resolve, 5))
         }
       }
-      const within3s = <T>(promise: Promise<T>) =>
-        Promise.race([promise, new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 3000))])
-
       try {
         await c.initialize()
-        await run(c, highlighted)
+        const expectedErrors = (await run(c, highlighted)) ?? []
         const removed = await within3s(c.removeBuffer(1))
-        // Waits on the same grammar loads, so a buffer pass suspended on them has resumed before the count.
+        // Waits on the same grammar loads, so a buffer pass suspended on them has resumed before the count. It also
+        // leaves the four cached parsers: markdown, markdown_inline, typescript and zig.
         await within3s(c.highlightOnce(mdZig, "markdown"))
         const trees = await within3s(Promise.all([c.getPerformance(), treeCount]).then(([, count]) => count))
         expect({ removed, errors, trees }).toEqual({
           removed: undefined,
-          errors: [],
-          trees: { live: 0, freedReads: 0 },
+          errors: expectedErrors,
+          trees: { live: 0, freedReads: 0, parsers: 4 },
         })
       } finally {
         await within3s(c.destroy())
@@ -453,7 +587,11 @@ describeClient("TreeSitterClient", () => {
 
     expect(client.getAllBuffers()).toHaveLength(1)
 
+    // Overlapping removals still waiting for the worker settle too.
+    const removals = Promise.allSettled([client.removeBuffer(1), client.removeBuffer(1)])
     await client.destroy()
+    const settled = await within3s(removals)
+    expect(settled === "timeout" ? settled : settled.map((result) => result.status)).toEqual(["rejected", "rejected"])
 
     expect(client.isInitialized()).toBe(false)
     expect(client.getAllBuffers()).toHaveLength(0)

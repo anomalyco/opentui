@@ -1428,7 +1428,7 @@ describe("Renderable - Layout with Viewport Filtering", () => {
 describe("Renderable - tree model", () => {
   // Seeded add, insertBefore, remove, destroy, visibility, live, and focus sequences over a small column tree.
   // After each operation the tree, live counts, focus paths, lifecycle registrations, and native nodes match a
-  // model; after each frame every shown node sits right below its shown earlier siblings.
+  // model; after each frame every shown node sits right below its shown earlier siblings, and every hidden one is 0 × 0.
   const width = 40
 
   interface Entry {
@@ -1603,7 +1603,15 @@ describe("Renderable - tree model", () => {
     }
     const layout = (entry: Entry, y: number, actual: string[], expected: string[]): number => {
       let bottom = y + (entry.height ?? 0)
-      for (const child of entry.children) if (child.visible) bottom += layout(child, bottom, actual, expected)
+      for (const child of entry.children) {
+        if (child.visible) bottom += layout(child, bottom, actual, expected)
+        else
+          for (const { node } of subtree(child)) {
+            const { width, height } = node.getComputedLayout()
+            actual.push(`${node.id} hidden ${width}x${height}`)
+            expected.push(`${node.id} hidden 0x0`)
+          }
+      }
       const height = entry.height ?? bottom - y
       actual.push(`${entry.node.id} y=${entry.node.y} h=${entry.node.height} w=${entry.node.width}`)
       // Like `main`, public sizes are at least one cell, even for an empty container that takes no rows.
