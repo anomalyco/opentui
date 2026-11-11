@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test"
 import { Lexer } from "marked"
 import { parseMarkdownIncremental, type ParseState } from "../markdown-parser.js"
+import blockConformance from "../markdown-blocks.conformance.json" with { type: "json" }
 
 test("first parse returns all tokens", () => {
   const state = parseMarkdownIncremental("# Hello\n\nParagraph", null)
@@ -93,6 +94,20 @@ test("code blocks are parsed correctly", () => {
   const codeToken = state.tokens.find((t) => t.type === "code")
   expect(codeToken).toBeDefined()
   expect((codeToken as any).lang).toBe("js")
+})
+
+// The Rust crate's widget/markdown.rs runs the same rows through its own block parser.
+test.each(blockConformance.rows)("blocks: %s", (_name, markdown, blocks) => {
+  const names = parseMarkdownIncremental(markdown as string, null)
+    .tokens.filter((token) => token.type !== "space")
+    .map((token) => {
+      if (token.type === "paragraph") return "p"
+      if (token.type === "code") return "pre"
+      if (token.type === "heading") return `h${token.depth}`
+      if (token.type === "list") return token.ordered ? "ol" : "ul"
+      return token.type
+    })
+  expect(names).toEqual(blocks as string[])
 })
 
 test("streaming scenario with incremental typing", () => {

@@ -63,6 +63,9 @@ struct Table {
     rows: Vec<Vec<String>>,
 }
 
+/// The whitespace of block structure. CommonMark treats other spaces, such as U+00A0, as text.
+const SPACE: [char; 2] = [' ', '\t'];
+
 /// Spaces of indentation, counting a tab as four.
 fn indentation(line: &str) -> usize {
     line.chars().take_while(|c| *c == ' ' || *c == '\t').map(|c| if c == '\t' { 4 } else { 1 }).sum()
@@ -85,7 +88,7 @@ fn dedent(line: &str, columns: usize) -> &str {
 }
 
 fn is_blank(line: &str) -> bool {
-    line.trim().is_empty()
+    line.trim_matches(SPACE).is_empty()
 }
 
 /// An opening code fence: its character, length, and info string.
@@ -93,10 +96,10 @@ fn fence(line: &str) -> Option<(char, usize, &str)> {
     if indentation(line) > 3 {
         return None;
     }
-    let trimmed = line.trim_start();
+    let trimmed = line.trim_start_matches(SPACE);
     let character = trimmed.chars().next().filter(|c| *c == '`' || *c == '~')?;
     let length = trimmed.chars().take_while(|c| *c == character).count();
-    let info = trimmed[length..].trim();
+    let info = trimmed[length..].trim_matches(SPACE);
     (length >= 3 && !(character == '`' && info.contains('`'))).then_some((character, length, info))
 }
 
@@ -104,23 +107,23 @@ fn heading(line: &str) -> Option<(u8, String)> {
     if indentation(line) > 3 {
         return None;
     }
-    let trimmed = line.trim_start();
+    let trimmed = line.trim_start_matches(SPACE);
     let level = trimmed.bytes().take_while(|byte| *byte == b'#').count();
     let rest = &trimmed[level..];
-    if !(1..=6).contains(&level) || !(rest.is_empty() || rest.starts_with([' ', '\t'])) {
+    if !(1..=6).contains(&level) || !(rest.is_empty() || rest.starts_with(SPACE)) {
         return None;
     }
-    let text = rest.trim();
+    let text = rest.trim_matches(SPACE);
     // A closing run of #s goes, unless it is the whole text or glued to it.
     let text = match text.trim_end_matches('#') {
-        stripped if stripped.is_empty() || stripped.ends_with([' ', '\t']) => stripped.trim_end(),
+        stripped if stripped.is_empty() || stripped.ends_with(SPACE) => stripped.trim_end_matches(SPACE),
         _ => text,
     };
     Some((level as u8, text.to_owned()))
 }
 
 fn is_rule(line: &str) -> bool {
-    let mut marks = line.chars().filter(|c| !c.is_whitespace());
+    let mut marks = line.chars().filter(|c| !SPACE.contains(c));
     let Some(mark @ ('-' | '*' | '_')) = marks.next() else { return false };
     indentation(line) <= 3 && marks.try_fold(1, |count, c| (c == mark).then_some(count + 1)).is_some_and(|n| n >= 3)
 }
@@ -132,7 +135,7 @@ fn list_marker(line: &str) -> Option<(Option<u64>, char, usize, &str)> {
     if indent > 3 {
         return None;
     }
-    let trimmed = line.trim_start();
+    let trimmed = line.trim_start_matches(SPACE);
     let (number, delimiter, marker_width) = match trimmed.chars().next()? {
         marker @ ('-' | '*' | '+') => (None, marker, 1),
         _ => {
@@ -159,7 +162,7 @@ fn list_marker(line: &str) -> Option<(Option<u64>, char, usize, &str)> {
 
 /// Splits a table row into cells at unescaped pipes, without the outer pipes.
 fn cells(line: &str) -> Vec<String> {
-    let line = line.trim();
+    let line = line.trim_matches(SPACE);
     let line = line.strip_prefix('|').unwrap_or(line);
     let line = if line.ends_with('|') && !line.ends_with("\\|") { &line[..line.len() - 1] } else { line };
     let mut cells = vec![String::new()];
@@ -174,12 +177,12 @@ fn cells(line: &str) -> Vec<String> {
             _ => cells.last_mut().expect("cells is never empty").push(character),
         }
     }
-    cells.into_iter().map(|cell| cell.trim().to_owned()).collect()
+    cells.into_iter().map(|cell| cell.trim_matches(SPACE).to_owned()).collect()
 }
 
 /// A table's delimiter row, such as `| :--- | ---: |`, as alignments.
 fn delimiter_row(line: &str) -> Option<Vec<Alignment>> {
-    if !line.contains('-') || !line.contains(['|', ':']) && !line.trim_start().starts_with('-') {
+    if !line.contains('-') || !line.contains(['|', ':']) && !line.trim_start_matches(SPACE).starts_with('-') {
         return None;
     }
     cells(line)
@@ -202,7 +205,7 @@ fn interrupts(line: &str) -> bool {
     fence(line).is_some()
         || heading(line).is_some()
         || is_rule(line)
-        || line.trim_start().starts_with('>')
+        || line.trim_start_matches(SPACE).starts_with('>')
         || list_marker(line).is_some_and(|(number, _, _, content)| !content.is_empty() && number.is_none_or(|n| n == 1))
 }
 
@@ -240,7 +243,7 @@ fn parse_lines(lines: &[&str]) -> Vec<(usize, Block)> {
         if paragraph.is_empty() {
             return;
         }
-        let text = paragraph.iter().map(|line| line.trim()).collect::<Vec<_>>().join("\n");
+        let text = paragraph.iter().map(|line| line.trim_matches(SPACE)).collect::<Vec<_>>().join("\n");
         blocks.push((index - paragraph.len(), Block::Paragraph(text)));
         paragraph.clear();
     };
@@ -283,12 +286,12 @@ fn parse_lines(lines: &[&str]) -> Vec<(usize, Block)> {
             blocks.push((first, Block::Heading(level, text)));
             index += 1;
         } else if !paragraph.is_empty() && indentation(line) <= 3 && {
-            let marks = line.trim();
+            let marks = line.trim_matches(SPACE);
             !marks.is_empty() && (marks.bytes().all(|byte| byte == b'=') || marks.bytes().all(|byte| byte == b'-'))
         } {
             // A setext underline turns the paragraph above into a heading.
-            let level = if line.trim().starts_with('=') { 1 } else { 2 };
-            let text = paragraph.iter().map(|line| line.trim()).collect::<Vec<_>>().join(" ");
+            let level = if line.trim_start_matches(SPACE).starts_with('=') { 1 } else { 2 };
+            let text = paragraph.iter().map(|line| line.trim_matches(SPACE)).collect::<Vec<_>>().join(" ");
             blocks.push((index - paragraph.len(), Block::Heading(level, text)));
             paragraph.clear();
             index += 1;
@@ -296,11 +299,11 @@ fn parse_lines(lines: &[&str]) -> Vec<(usize, Block)> {
             flush(&mut paragraph, &mut blocks, index);
             blocks.push((first, Block::Rule));
             index += 1;
-        } else if line.trim_start().starts_with('>') && indentation(line) <= 3 {
+        } else if line.trim_start_matches(SPACE).starts_with('>') && indentation(line) <= 3 {
             flush(&mut paragraph, &mut blocks, index);
             let mut quoted = Vec::new();
             while let Some(line) = lines.get(index) {
-                let trimmed = line.trim_start();
+                let trimmed = line.trim_start_matches(SPACE);
                 if let Some(rest) = trimmed.strip_prefix('>').filter(|_| indentation(line) <= 3) {
                     quoted.push(rest.strip_prefix(' ').unwrap_or(rest));
                 } else if !is_blank(line) && quoted.last().is_some_and(|last| !is_blank(last)) && !interrupts(line) {
@@ -319,7 +322,10 @@ fn parse_lines(lines: &[&str]) -> Vec<(usize, Block)> {
             let _ = content;
             let mut list = List { start, tight: true, items: Vec::new() };
             let mut blank_between = false;
-            while let Some((number, item_delimiter, width, content)) = lines.get(index).and_then(|l| list_marker(l)) {
+            // A line that could be an item or a thematic break is a break.
+            while let Some((number, item_delimiter, width, content)) =
+                lines.get(index).filter(|l| !is_rule(l)).and_then(|l| list_marker(l))
+            {
                 if item_delimiter != delimiter || number.is_some() != start.is_some() {
                     break;
                 }
@@ -338,7 +344,7 @@ fn parse_lines(lines: &[&str]) -> Vec<(usize, Block)> {
                         && list_marker(line).is_none()
                     {
                         // A lazy continuation of the item's paragraph.
-                        item_lines.push(line.trim_start());
+                        item_lines.push(line.trim_start_matches(SPACE));
                     } else {
                         break;
                     }
@@ -1306,19 +1312,29 @@ mod tests {
                 paragraph("after"),
             ]
         );
-        // A thematic break is three or more of one mark, with spaces or tabs between, indented at most three columns.
-        let rules = ["---", "***", "___", "- - -", " ** * **", "_ _ _ _", "---   ", "---\t", "   ---", "-\t-\t-"];
-        let not_rules =
-            ["--", "**", "*-*-", "_-_", "\t---", "    ---", "---a", "- - - x", "-é", "", "–––", "+++", "==="];
-        for (line, rule) in rules.map(|line| (line, true)).into_iter().chain(not_rules.map(|line| (line, false))) {
-            assert_eq!(is_rule(line), rule, "{line:?}");
+    }
+
+    #[test]
+    fn blocks_follow_cores_vectors() {
+        // CommonMark's examples and the rows Core's markdown-parser test runs through marked.
+        let corpus: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../../core/src/renderables/markdown-blocks.conformance.json"))
+                .unwrap();
+        for row in corpus["rows"].as_array().unwrap() {
+            let names: Vec<String> = blocks(row[1].as_str().unwrap())
+                .iter()
+                .map(|block| match block {
+                    Block::Heading(level, _) => format!("h{level}"),
+                    Block::Paragraph(_) => "p".into(),
+                    Block::List(list) => if list.start.is_some() { "ol" } else { "ul" }.into(),
+                    Block::Quote(_) => "blockquote".into(),
+                    Block::Code(..) => "pre".into(),
+                    Block::Table(_) => "table".into(),
+                    Block::Rule => "hr".into(),
+                })
+                .collect();
+            assert_eq!(serde_json::json!(names), row[2], "{}", row[0]);
         }
-        // Dashes alone under a paragraph underline a heading; spaced dashes or other marks break after it.
-        assert_eq!(blocks("a\n---"), [Block::Heading(2, "a".into())]);
-        assert_eq!(blocks("a\n--"), [Block::Heading(2, "a".into())]);
-        assert_eq!(blocks("a\n- - -"), [paragraph("a"), Block::Rule]);
-        assert_eq!(blocks("a\n***"), [paragraph("a"), Block::Rule]);
-        assert_eq!(blocks("---\n* * *"), [Block::Rule, Block::Rule]);
     }
 
     #[test]
