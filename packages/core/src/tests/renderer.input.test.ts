@@ -1,6 +1,6 @@
 import { test, expect, beforeEach, afterEach, describe, spyOn } from "bun:test"
 import { decodePasteBytes } from "../lib/paste.js"
-import { nonAlphanumericKeys, type KeyEventType, type ParsedKey } from "../lib/parse.keypress.js"
+import type { KeyEventType, ParsedKey } from "../lib/parse.keypress.js"
 import { type KeyEvent } from "../lib/KeyHandler.js"
 import { Buffer } from "node:buffer"
 import { Renderable, type RenderableOptions } from "../Renderable.js"
@@ -1448,18 +1448,6 @@ test("regular parsing always defaults to press event type via keyInput events", 
     currentRenderer.stdin.emit("data", Buffer.from("x"))
   })
   expect(bufResult.eventType).toBe("press")
-})
-
-test("nonAlphanumericKeys export validation", async () => {
-  expect(Array.isArray(nonAlphanumericKeys)).toBe(true)
-  expect(nonAlphanumericKeys.length).toBeGreaterThan(0)
-  expect(nonAlphanumericKeys).toContain("up")
-  expect(nonAlphanumericKeys).toContain("down")
-  expect(nonAlphanumericKeys).toContain("f1")
-  expect(nonAlphanumericKeys).toContain("backspace")
-  expect(nonAlphanumericKeys).toContain("tab")
-  expect(nonAlphanumericKeys).toContain("left")
-  expect(nonAlphanumericKeys).toContain("right")
 })
 
 test("ParsedKey type structure validation", async () => {

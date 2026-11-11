@@ -42,7 +42,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.1
+          bun-version-file: package.json
 
       - name: Setup Zig
         if: steps.changes.outputs.build_native == 'true'
@@ -69,7 +69,7 @@ jobs:
           path: |
             packages/native/.cache/ffmpeg/prefix
             packages/native/.cache/ffmpeg/downloads
-          key: ffmpeg-v1-${{ runner.os }}-${{ hashFiles('packages/native/scripts/build-ffmpeg.ts') }}
+          key: ffmpeg-v1-${{ runner.os }}-${{ hashFiles('packages/native/scripts/build-ffmpeg.ts', '.zig-version') }}
 
       - name: Build native library
         if: steps.changes.outputs.build_native == 'true'

@@ -2,6 +2,7 @@ const std = @import("std");
 const buffer = @import("../buffer.zig");
 const gp = @import("../grapheme.zig");
 const ansi = @import("../ansi.zig");
+const utf8 = @import("../utf8.zig");
 
 /// Checks the cell, tracker, and pool invariants that every buffer write must keep:
 /// - each continuation cell belongs to a grapheme start with the same ID on its row;
@@ -34,8 +35,7 @@ pub fn expectBufferInvariants(target: *const buffer.OptimizedBuffer) !void {
             (try starts.getOrPutValue(std.testing.allocator, id, 0)).value_ptr.* += 1;
             const bytes = try target.pool.get(id);
             try std.testing.expect(bytes.len <= buffer.grapheme_bytes_max);
-            var codepoints = (try std.unicode.Utf8View.init(bytes)).iterator();
-            while (codepoints.nextCodepoint()) |codepoint| try std.testing.expect(!buffer.isControlCodepoint(codepoint));
+            try std.testing.expect(std.unicode.utf8ValidateSlice(bytes) and !utf8.containsControl(bytes));
             continue;
         }
         // Zero is an empty cell that no draw has written.

@@ -1,3 +1,5 @@
+import { nativeConstants } from "../native-abi.generated.js"
+
 export type RGBTriplet = readonly [number, number, number]
 export type ColorIntent = "rgb" | "indexed" | "default"
 export type ColorInput = string | RGBA
@@ -5,31 +7,20 @@ export type ColorInput = string | RGBA
 export const DEFAULT_FOREGROUND_RGB: RGBTriplet = [255, 255, 255]
 export const DEFAULT_BACKGROUND_RGB: RGBTriplet = [0, 0, 0]
 
-const INTENT_RGB = 0
-const INTENT_INDEXED = 1
-const INTENT_DEFAULT = 2
+const INTENT_RGB = nativeConstants.OT_COLOR_RGB
+const INTENT_INDEXED = nativeConstants.OT_COLOR_INDEXED
+const INTENT_DEFAULT = nativeConstants.OT_COLOR_DEFAULT
 const ZERO_RGBA_BUFFER = new Uint16Array(4)
 
-const ANSI16_RGB: readonly RGBTriplet[] = [
-  [0x00, 0x00, 0x00],
-  [0x80, 0x00, 0x00],
-  [0x00, 0x80, 0x00],
-  [0x80, 0x80, 0x00],
-  [0x00, 0x00, 0x80],
-  [0x80, 0x00, 0x80],
-  [0x00, 0x80, 0x80],
-  [0xc0, 0xc0, 0xc0],
-  [0x80, 0x80, 0x80],
-  [0xff, 0x00, 0x00],
-  [0x00, 0xff, 0x00],
-  [0xff, 0xff, 0x00],
-  [0x00, 0x00, 0xff],
-  [0xff, 0x00, 0xff],
-  [0x00, 0xff, 0xff],
-  [0xff, 0xff, 0xff],
-]
+// The palette snapshots opentui.h defines: OT_COLOR_ANSI_n is 0xRRGGBB.
+const ANSI16_RGB: readonly RGBTriplet[] = Array.from({ length: 16 }, (_, slot) => {
+  const rgb = nativeConstants[`OT_COLOR_ANSI_${slot}` as keyof typeof nativeConstants]
+  return [rgb >>> 16, (rgb >>> 8) & 0xff, rgb & 0xff] as const
+})
 
-const ANSI_256_CUBE_LEVELS = [0, 95, 135, 175, 215, 255] as const
+const ANSI_256_CUBE_LEVELS = [0, 1, 2, 3, 4, 5].map((level) =>
+  level === 0 ? 0 : nativeConstants.OT_COLOR_CUBE_BASE + nativeConstants.OT_COLOR_CUBE_STEP * level,
+)
 
 export interface NormalizedColorValue {
   rgba: RGBA
@@ -84,7 +75,7 @@ export function ansi256IndexToRgb(index: number): RGBTriplet {
     return [ANSI_256_CUBE_LEVELS[r], ANSI_256_CUBE_LEVELS[g], ANSI_256_CUBE_LEVELS[b]]
   }
 
-  const value = 8 + (normalizedIndex - 232) * 10
+  const value = nativeConstants.OT_COLOR_GRAY_BASE + (normalizedIndex - 232) * nativeConstants.OT_COLOR_GRAY_STEP
   return [value, value, value]
 }
 

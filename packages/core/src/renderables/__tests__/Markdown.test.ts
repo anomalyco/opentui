@@ -2,11 +2,19 @@ import type { Renderable } from "../../Renderable.js"
 import { test, expect, beforeAll, beforeEach, afterEach, afterAll } from "bun:test"
 import { Edge } from "../../yoga.js"
 import { Lexer } from "marked"
-import { createMarkdownCodeBlockRenderer, MarkdownRenderable, type MarkdownOptions } from "../Markdown.js"
+import {
+  createMarkdownCodeBlockRenderer,
+  MarkdownRenderable,
+  type MarkdownInlineContext,
+  type MarkdownInlineHook,
+  type MarkdownInlineSpan,
+  type MarkdownOptions,
+} from "../Markdown.js"
 import { CodeRenderable } from "../Code.js"
 import { BoxRenderable } from "../Box.js"
 import { TextRenderable } from "../Text.js"
 import { TextTableRenderable } from "../TextTable.js"
+import { ScrollBoxRenderable } from "../ScrollBox.js"
 import { SyntaxStyle } from "../../syntax-style.js"
 import { RGBA } from "../../lib/RGBA.js"
 import { TreeSitterClient } from "../../lib/tree-sitter/index.js"
@@ -27,6 +35,7 @@ import { NativeSession } from "../../NativeSession.js"
 import { TextAttributes, type CapturedFrame } from "../../types.js"
 import type { SimpleHighlight } from "../../lib/tree-sitter/types.js"
 import { stringWidth } from "../../platform/runtime.js"
+import corpus from "../markdown.conformance.json" with { type: "json" }
 
 let renderer: TestRenderer
 let mockMouse: MockMouse
@@ -137,13 +146,13 @@ async function waitForHighlight(codeRenderable: CodeRenderable): Promise<void> {
   await flushAsync()
 }
 
-function getPendingMarkdownParagraphHighlights(md: MarkdownRenderable): CodeRenderable[] {
+function getPendingMarkdownParagraphHighlights(md: MarkdownRenderable, fences = false): CodeRenderable[] {
   const children = [...md.getChildren()]
   const pending: CodeRenderable[] = []
 
   while (children.length > 0) {
     const child = children.pop()!
-    if (child instanceof CodeRenderable && child.filetype === "markdown" && child.isHighlighting) {
+    if (child instanceof CodeRenderable && (fences || child.filetype === "markdown") && child.isHighlighting) {
       pending.push(child)
     }
     children.push(...child.getChildren())
@@ -152,11 +161,11 @@ function getPendingMarkdownParagraphHighlights(md: MarkdownRenderable): CodeRend
   return pending
 }
 
-async function renderMarkdownRenderable(md: MarkdownRenderable): Promise<void> {
+async function renderMarkdownRenderable(md: MarkdownRenderable, fences = false): Promise<void> {
   await renderOnce()
 
   for (let attempt = 0; attempt < 20; attempt++) {
-    const pendingHighlights = getPendingMarkdownParagraphHighlights(md)
+    const pendingHighlights = getPendingMarkdownParagraphHighlights(md, fences)
     if (pendingHighlights.length === 0) {
       await renderOnce()
       return
@@ -842,7 +851,8 @@ test("table with escaped pipe character", async () => {
   const markdown = `| Command | Output |
 |---|---|
 | echo | Hello |
-| ls \\| grep | Filtered |`
+| ls \\| grep | Filtered |
+| \\$rate | \\*x\\* |`
 
   expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
     "
@@ -852,6 +862,8 @@ test("table with escaped pipe character", async () => {
     │echo     │Hello   │
     ├─────────┼────────┤
     │ls | grep│Filtered│
+    ├─────────┼────────┤
+    │$rate    │*x*     │
     └─────────┴────────┘"
   `)
 })
@@ -1638,7 +1650,7 @@ test("streaming structured list updates keep previous item text visible while hi
   expect(finalFrame).toContain("- gamma")
 })
 
-test("streaming nested structured list updates keep previous nested text visible while highlighting", async () => {
+test("streaming nested structured list updates show the new nested text while highlighting", async () => {
   const mockTreeSitterClient = new MockTreeSitterClient()
   const initialContent = `1. First ordered item with \`inline code\`.
 2. Second ordered item before a nested list:
@@ -1693,8 +1705,9 @@ test("streaming nested structured list updates keep previous nested text visible
   expect(framesBeforeHighlight.length).toBeGreaterThan(0)
   for (const frame of framesBeforeHighlight) {
     expect(frame).toContain("2. Second ordered item before a nested list:")
-    expect(frame).toContain("- Nested bullet with a long phrase.")
-    expect(frame).toContain("- Nested bullet before fenced co")
+    // An updated item shows its preview, not its last highlight.
+    expect(frame).toContain("- Nested bullet with a long phrase that should wrap")
+    expect(frame).toContain("- Nested bullet before fenced code:")
   }
 
   expect(mockTreeSitterClient.isHighlighting()).toBe(true)
@@ -1883,6 +1896,89 @@ test("simple blockquote", async () => {
     │ This is a quote
     │ spanning multiple lines"
   `)
+})
+
+// A quote shows its blocks: prose stays prose, a fence is a code block.
+test.each([
+  ["> a\n>\n> b", "│ a\n│\n│ b"],
+  [">", "│"],
+  ["> # Title\n> text\n> ```\n> **raw**\n> ```", "│ Title\n│ text\n│ **raw**"],
+  ["> - one\n> - two", "│ - one\n│ - two"],
+  ["> outer\n>\n> > inner", "│ outer\n│\n│ │ inner"],
+  ["> a\n>\n> b\n> ```\n> c\n> ```", "│ a\n│\n│ b\n│ c"],
+])("blockquote %j renders its child blocks", async (markdown, expected) => {
+  expect(await renderMarkdown(markdown)).toBe("\n" + expected)
+})
+
+test.each(["coalesced", "top-level"] as const)(
+  "code-block renderers reach fences inside quotes and top-level lists (%s)",
+  async (internalBlockMode) => {
+    const seen: string[] = []
+    const md = createMarkdownRenderable({
+      // The quoted fence names no renderer's language until the first update.
+      content:
+        "> quoted\n> ```mermai\n> in quote\n> ```\n> ```text\n> as code\n> ```\n\n- item\n\n  ```mermaid\n  in list\n  ```",
+      syntaxStyle,
+      internalBlockMode,
+      renderNode: createMarkdownCodeBlockRenderer({
+        mermaid: (token) => {
+          seen.push(token.text)
+          return new TextRenderable(renderer, { content: `diagram ${token.text}` })
+        },
+        // A renderer may change the default code block it returns, as at the top level.
+        text: (token, context) => {
+          const code = context.defaultRender() as CodeRenderable
+          code.content = `custom ${token.text}`
+          return code
+        },
+      }),
+    })
+    renderer.root.add(md)
+    await renderMarkdownRenderable(md)
+
+    expect(captureFrame()).toContain("│ custom as code")
+    // Coalesced lists are prose, so only top-level lists hold code blocks.
+    expect(captureFrame().includes("diagram in list")).toBe(internalBlockMode === "top-level")
+
+    // A code block becomes the renderer's, and the renderer's result is replaced, as the fence changes.
+    for (const [from, to, shown] of [
+      ["mermai\n", "mermaid\n", "in quote"],
+      ["in quote", "in quote 2", "in quote 2"],
+    ]) {
+      seen.length = 0
+      md.content = md.content.replace(from, to)
+      await renderMarkdownRenderable(md)
+      expect(captureFrame()).toContain(`│ diagram ${shown}`)
+      expect(seen).toEqual([shown])
+    }
+  },
+)
+
+test("streamed quote text shows in the quote style before it highlights", async () => {
+  const quoteColor = RGBA.fromValues(0.25, 0.5, 0.75, 1)
+  const style = SyntaxStyle.fromStyles(
+    { default: { fg: RGBA.fromValues(1, 1, 1, 1) }, "markup.quote": { fg: quoteColor, italic: true } },
+    renderer.nativeScene,
+  )
+  const contexts: MarkdownInlineContext[] = []
+  // Solid sets props in JSX order, so the content can arrive before the style.
+  const inlineHook: MarkdownInlineHook = (spans, context) => (contexts.push(context), spans)
+  const options = { internalBlockMode: "top-level", treeSitterClient: createMockTreeSitterClient(), inlineHook }
+  const md = new MarkdownRenderable(renderer, options as Omit<MarkdownOptions, "syntaxStyle"> as MarkdownOptions)
+  md.streaming = true
+  md.content = "> quoted *text*"
+  md.syntaxStyle = style
+  renderer.root.add(md)
+  await renderOnce()
+
+  // The hook never sees a document without a style.
+  expect(contexts.length).toBeGreaterThan(0)
+  expect(contexts.every((context) => context.syntaxStyle === style)).toBe(true)
+  const spans = captureSpans()
+  expect(captureFrame()).toContain("│ quoted text")
+  const span = findSpanContaining(spans, "quoted")
+  expect(span?.fg?.toInts()).toEqual(quoteColor.toInts())
+  expect((span?.attributes ?? 0) & TextAttributes.ITALIC).toBe(TextAttributes.ITALIC)
 })
 
 test("blockquote uses markup.quote style for text and conceal style for bar", async () => {
@@ -2555,13 +2651,25 @@ test("hyperlink capability changes preserve custom table content", async () => {
   }
 })
 
-for (const wrapped of [false, true]) {
-  test(`hyperlink capability changes refresh nested prose and tables in ${wrapped ? "wrapped " : ""}top-level lists`, async () => {
+for (const [container, wrapped] of [
+  ["list", false],
+  ["list", true],
+  ["quote", false],
+] as const) {
+  test(`hyperlink capability changes refresh nested prose and tables in ${wrapped ? "wrapped " : ""}top-level ${container}s`, async () => {
     setRendererCapabilities(renderer, { hyperlinks: false })
+    const prefix = container === "list" ? ["- ", "  "] : ["> ", "> "]
     const md = createMarkdownRenderable({
       id: "markdown-capability-nested-table",
-      content:
-        "- [Before](https://example.com/prose)\n\n  | Link |\n  |---|\n  | [Nested](https://example.com/nested) |",
+      content: [
+        "[Before](https://example.com/prose)",
+        "",
+        "| Link |",
+        "|---|",
+        "| [Nested](https://example.com/nested) |",
+      ]
+        .map((line, index) => (index === 0 ? prefix[0] : line ? prefix[1] : prefix[1].trimEnd()) + line)
+        .join("\n"),
       syntaxStyle,
       internalBlockMode: "top-level",
       tableOptions: { widthMode: "content" },
@@ -2580,7 +2688,7 @@ for (const wrapped of [false, true]) {
 
     const block = md._blockStates[0]!.renderable
     const list = wrapped ? block.getChildren()[0]! : block
-    const content = list.getChildren()[0]!.getChildren()[1]!
+    const content = container === "list" ? list.getChildren()[0]!.getChildren()[1]! : list
     const prose = content.getChildren()[0]!
     const table = content.getChildren()[1]!
     expect(prose).toBeInstanceOf(CodeRenderable)
@@ -2593,7 +2701,7 @@ for (const wrapped of [false, true]) {
 
     expect(md._blockStates[0]!.renderable).toBe(block)
     expect(wrapped ? block.getChildren()[0] : block).toBe(list)
-    expect(list.getChildren()[0]!.getChildren()[1]).toBe(content)
+    if (container === "list") expect(list.getChildren()[0]!.getChildren()[1]).toBe(content)
     expect(content.getChildren()[0]).toBe(prose)
     expect(content.getChildren()[1]).toBe(table)
     expect(captureFrame()).not.toContain("https://example.com/")
@@ -2610,7 +2718,7 @@ for (const wrapped of [false, true]) {
 
     expect(md._blockStates[0]!.renderable).toBe(block)
     expect(wrapped ? block.getChildren()[0] : block).toBe(list)
-    expect(list.getChildren()[0]!.getChildren()[1]).toBe(content)
+    if (container === "list") expect(list.getChildren()[0]!.getChildren()[1]).toBe(content)
     expect(content.getChildren()[0]).toBe(prose)
     expect(content.getChildren()[1]).toBe(table)
     expect(captureFrame()).toContain("Before (https://example.com/prose)")
@@ -2666,6 +2774,37 @@ test("multiple markdown renderables share and clean up one renderer capability l
   expect(renderer.listenerCount("capabilities")).toBe(listenersBefore + 1)
   for (const renderable of renderables) renderable.destroyRecursively()
   expect(renderer.listenerCount("capabilities")).toBe(listenersBefore)
+})
+
+// The Rust crate's tests/markdown.rs renders the same rows: the first paint after each streamed chunk, and after the
+// last chunk the settled frame once streaming has ended.
+type CorpusRow = [name: string, chunks: string[], html: string, fails: string[], text?: string[]]
+test("corpus text: frames match each row unless the row lists them", async () => {
+  const wrong: string[] = []
+  for (const [name, chunks, , fails, text] of (corpus.rows as unknown as CorpusRow[]).filter((row) => row[4])) {
+    const md = createMarkdownRenderable({
+      syntaxStyle,
+      streaming: chunks.length > 1,
+      tableOptions: { widthMode: "content" },
+    })
+    renderer.root.add(md)
+    for (const [index, chunk] of chunks.entries()) {
+      md.content += chunk
+      if (index === chunks.length - 1) {
+        md.streaming = false
+        await renderMarkdownRenderable(md, true)
+      } else await renderOnce()
+      const frame = captureFrame()
+        .split("\n")
+        .map((line) => line.trimEnd())
+        .join("\n")
+        .trimEnd()
+      const check = `core-text:${index + 1}`
+      if ((frame === text![index]) === fails.includes(check)) wrong.push(`${name}|${check}`)
+    }
+    md.destroyRecursively()
+  }
+  expect(wrong).toEqual([])
 })
 
 test("links with conceal mode", async () => {
@@ -4722,6 +4861,9 @@ test("streaming table transitions from raw text to table once first row appears"
   expect(frame).not.toMatch(/[┌│└]/)
 
   md.content = "| Header |\n|---|"
+  // The raw text shows before its highlight lands.
+  await renderOnce()
+  expect(frameText()).toBe("| Header |\n|---|")
   await renderMarkdownRenderable(md)
 
   frame = captureFrame()
@@ -5093,3 +5235,681 @@ test("top-level lists keep tight multi-level nesting compact", async () => {
         - Explanation below the lead-in"
   `)
 })
+
+// Inline hook
+
+// Like OpenCode's session links: a known ID, alone or after `@session:`, shows as `@title`, or as written without
+// conceal; a code span takes part only when it is exactly an ID. `calls` gets each context the hook sees.
+function sessionLinks(titles: Map<string, string>, calls: MarkdownInlineContext[] = []): MarkdownInlineHook {
+  return (spans, context) => {
+    calls.push(context)
+    return spans.flatMap((span) => {
+      if (span.link || (span.code && !/^`*\s?ses_\w+\s?`*$/.test(span.text))) return [span]
+      const out = []
+      let last = 0
+      for (const match of span.text.matchAll(/(?:@session:)?(ses_[a-z0-9]+)/g)) {
+        const title = titles.get(match[1]!)
+        if (!title) continue
+        out.push({ ...span, text: span.text.slice(last, match.index) })
+        out.push({ ...span, text: context.conceal ? `@${title}` : match[0], target: match[1] })
+        last = match.index + match[0].length
+      }
+      out.push({ ...span, text: span.text.slice(last) })
+      return out.filter((part) => part.text)
+    })
+  }
+}
+
+const frameText = () =>
+  captureFrame()
+    .split("\n")
+    .map((row) => row.trimEnd())
+    .join("\n")
+    .trimEnd()
+
+test.each(["coalesced", "top-level"] as const)(
+  "inline hooks rewrite prose and table cells but not code or renderers (%s)",
+  async (internalBlockMode) => {
+    const calls: MarkdownInlineContext[] = []
+    const md = createMarkdownRenderable({
+      content: [
+        "# Plan ses_known",
+        "",
+        "See ses_known, @session:ses_known and ses_other.",
+        "",
+        "- run `opencode -s ses_known` or `ses_known`",
+        "",
+        "> ses_known",
+        "",
+        "```",
+        "ses_known",
+        "```",
+        "",
+        "```mermaid",
+        "ses_known",
+        "```",
+        "",
+        "| `run ses_known` |",
+        "| -- |",
+        "| ses_known |",
+      ].join("\n"),
+      syntaxStyle,
+      internalBlockMode,
+      tableOptions: { style: "columns" },
+      renderNode: createMarkdownCodeBlockRenderer({
+        mermaid: (token) => new TextRenderable(renderer, { content: `diagram ${token.text}` }),
+      }),
+      inlineHook: sessionLinks(new Map([["ses_known", "Known"]]), calls),
+    })
+    renderer.root.add(md)
+    await renderMarkdownRenderable(md)
+    // Spacing around renderer results differs by mode on main too.
+    const [afterFence, afterDiagram] = internalBlockMode === "top-level" ? ["\n", "\n\n"] : ["\n\n", "\n"]
+    expect(frameText()).toBe(
+      "Plan @Known\n\nSee @Known, @Known and ses_other.\n\n- run opencode -s ses_known or @Known\n\n│ @Known\n\n" +
+        `ses_known${afterFence}diagram ses_known${afterDiagram}run ses_known\n@Known`,
+    )
+    const prose = ["run `opencode -s ses_known` or `ses_known`", "ses_known"]
+    // As in Rust: one call per block in both modes, and a heading's source is its text.
+    const top = ["Plan ses_known", "See ses_known, @session:ses_known and ses_other."]
+    expect(new Set(calls.map((call) => `${call.tableCell} ${call.source}`))).toEqual(
+      new Set([...[...top, ...prose].map((source) => `false ${source}`), "true `run ses_known`", "true ses_known"]),
+    )
+  },
+)
+
+test("rerunning the inline hook reaches only selected blocks and cells, and removing it restores them", async () => {
+  const titles = new Map([
+    ["ses_a", "A"],
+    ["ses_b", "B"],
+  ])
+  const calls: MarkdownInlineContext[] = []
+  const md = createMarkdownRenderable({
+    content:
+      "First ses_a\n\n## Head ses_a\n\nOther ses_b\n\n```\nses_a\n```\n\n- item ses_a\n\n| id |\n| -- |\n| ses_a |",
+    syntaxStyle,
+    streaming: true,
+    internalBlockMode: "top-level",
+  })
+  renderer.root.add(md)
+  await renderMarkdownRenderable(md)
+  const plain = frameText()
+  // Without a hook a rerun marks no block for a new highlight.
+  const dirty = (node: Renderable): boolean => Reflect.get(node, "_highlightsDirty") || node.getChildren().some(dirty)
+  md.rerunInlineHook(() => true)
+  expect(dirty(md)).toBe(false)
+
+  md.inlineHook = sessionLinks(titles, calls)
+  await renderMarkdownRenderable(md)
+  const shown = (a: string, b = "@B") => [`First ${a}`, `Head ${a}`, `Other ${b}`, "ses_a", `- item ${a}`, `id\n${a}`]
+  expect(plain).toBe(shown("ses_a", "ses_b").join("\n\n"))
+  expect(frameText()).toBe(shown("@A").join("\n\n"))
+  // A streamed row's cells go through the hook as they arrive.
+  md.content += "\n| ses_a too |"
+  await renderMarkdownRenderable(md)
+  expect(frameText()).toBe(shown("@A").join("\n\n") + "\n@A too")
+
+  titles.set("ses_a", "Z")
+  calls.length = 0
+  md.rerunInlineHook((source) => source.includes("ses_a"))
+  await renderMarkdownRenderable(md)
+  expect(frameText()).toBe(shown("@Z").join("\n\n") + "\n@Z too")
+  expect(calls.map((call) => `${call.tableCell} ${call.source}`).sort()).toEqual([
+    "false First ses_a",
+    "false Head ses_a",
+    "false item ses_a",
+    "true id",
+    "true ses_a",
+    "true ses_a too",
+  ])
+  // The predicate sees a heading's text, as the hook does.
+  calls.length = 0
+  md.rerunInlineHook((source) => source === "Head ses_a")
+  await renderMarkdownRenderable(md)
+  expect(calls.map((call) => call.source)).toEqual(["Head ses_a"])
+
+  md.inlineHook = undefined
+  await renderMarkdownRenderable(md)
+  expect(frameText()).toBe(plain + "\nses_a too")
+})
+
+test.each([
+  [true, "top-level"],
+  [false, "top-level"],
+  [true, "coalesced"],
+  [false, "coalesced"],
+] as const)(
+  "inline hooks keep the frames and see the mode with conceal %p (%s)",
+  async (conceal, internalBlockMode) => {
+    // Coalesced mode renders each block on its own while a hook is set; the spacing must not change.
+    const content = [
+      "# Head *em* `code` ses_known ##",
+      "See [docs](https://e.x) and https://bare.example/x, **bold** \\*esc\\* `ses_known` ses_known.",
+      "",
+      "Second paragraph",
+      "Setext ses_known",
+      "---",
+      "Tight after heading",
+      "",
+      "",
+      "Two blank lines above",
+      "",
+      "> quote [l](https://q.x)",
+      "",
+      "- item `x`",
+      "",
+      "| a | b |",
+      "| - | - |",
+      "| `c` | [d](https://d.x) |",
+    ].join("\n")
+    const frames: string[] = []
+    const calls: MarkdownInlineContext[] = []
+    for (const inlineHook of [
+      undefined,
+      (spans: MarkdownInlineSpan[]) => spans,
+      sessionLinks(new Map([["ses_known", "K"]]), calls),
+    ]) {
+      const md = createMarkdownRenderable({ content, syntaxStyle, conceal, internalBlockMode, inlineHook })
+      renderer.root.add(md)
+      await renderMarkdownRenderable(md)
+      frames.push(frameText())
+      md.destroyRecursively()
+    }
+    // An identity hook changes nothing; without conceal the session hook keeps the source text.
+    expect(frames[1]).toBe(frames[0])
+    expect(frames[2]).toBe(conceal ? frames[0].replaceAll("ses_known", "@K") : frames[0])
+    expect(calls.every((call) => call.conceal === conceal && call.syntaxStyle === syntaxStyle)).toBe(true)
+    // A heading's source is its text, without its markers or a setext underline.
+    const sources = calls.map((call) => call.source)
+    expect(sources).toContain("Head *em* `code` ses_known")
+    expect(sources).toContain("Second paragraph\nSetext ses_known")
+  },
+)
+
+test("inlineHookFilter limits the hook to blocks and cells that hold one of its strings", async () => {
+  const calls: MarkdownInlineContext[] = []
+  const md = createMarkdownRenderable({
+    content: "plain\n\nsee ses_a\n\n| id | x |\n| -- | - |\n| ses_a | y |",
+    syntaxStyle,
+    internalBlockMode: "top-level",
+    inlineHook: sessionLinks(new Map([["ses_a", "A"]]), calls),
+    inlineHookFilter: ["ses_"],
+  })
+  renderer.root.add(md)
+  await renderMarkdownRenderable(md)
+  expect(calls.map((call) => call.source).sort()).toEqual(["see ses_a", "ses_a"])
+  expect(frameText()).toContain("see @A")
+
+  md.inlineHookFilter = ["plain"]
+  calls.length = 0
+  await renderMarkdownRenderable(md)
+  expect(calls.map((call) => call.source)).toEqual(["plain"])
+  expect(frameText()).toContain("see ses_a")
+})
+
+// A worker whose replies a test releases one by one, in any order. Its grammar conceals heading markers and the
+// delimiters of `*x*` and code spans, as the Markdown grammar does, so previews and highlights draw the same text.
+class FakeWorker extends TreeSitterClient {
+  pending: { content: string; resolve: (result: { highlights: SimpleHighlight[] }) => void; reject: () => void }[] = []
+
+  constructor() {
+    super({ dataPath: join(tmpdir(), "markdown-fake-worker") }, { autoStartWorker: false })
+  }
+
+  override async highlightOnce(content: string) {
+    const { promise, resolve, reject } = Promise.withResolvers<{ highlights: SimpleHighlight[] }>()
+    this.pending.push({ content, resolve, reject: () => reject(new Error("worker failed")) })
+    return promise
+  }
+
+  reply(index = 0) {
+    const [item] = this.pending.splice(index, 1)
+    if (!item) return
+    const highlights: SimpleHighlight[] = []
+    // Heading markers take their space with them; inline delimiters come from the injected inline grammar.
+    for (const match of item.content.matchAll(/^#{1,6}(?= )|\*(?=\w+\*)|(?<=\*\w+)\*|`(?=[^`\n]+`)|(?<=`[^`\n]+)`/gm)) {
+      const meta = { conceal: "", isInjection: match[0][0] !== "#" }
+      highlights.push([match.index, match.index + match[0].length, "conceal", meta])
+    }
+    for (const match of item.content.matchAll(/`[^`\n]+`/g)) {
+      highlights.push([match.index, match.index + match[0].length, "markup.raw", {}])
+    }
+    item.resolve({ highlights })
+  }
+
+  fail(index = 0) {
+    this.pending.splice(index, 1)[0]?.reject()
+  }
+}
+
+test("a rejected highlight keeps the hooked text", async () => {
+  const worker = new FakeWorker()
+  const titles = new Map<string, string>()
+  const md = createMarkdownRenderable({
+    content: "see ses_alpha `ses_alpha` `run ses_alpha`",
+    syntaxStyle,
+    streaming: true,
+    internalBlockMode: "top-level",
+    treeSitterClient: worker,
+    inlineHook: sessionLinks(titles),
+  })
+  renderer.root.add(md)
+  await renderOnce()
+  expect(frameText()).toBe("see ses_alpha ses_alpha run ses_alpha")
+  worker.reply()
+  await flushAsync()
+  // The title arrives later; the preview links an exact-ID code span only, as the highlight does.
+  titles.set("ses_alpha", "Title")
+  md.rerunInlineHook(() => true)
+  await renderOnce()
+  worker.reply()
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  await renderOnce()
+  expect(frameText()).toBe("see @Title @Title run ses_alpha")
+  const warn = console.warn
+  console.warn = () => {}
+  const fail = async () => {
+    worker.fail()
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    await renderOnce()
+  }
+  // A rejected rerun keeps the title already drawn, not the preview of an earlier one.
+  titles.set("ses_alpha", "Again")
+  md.rerunInlineHook(() => true)
+  await renderOnce()
+  await fail()
+  expect(frameText()).toBe("see @Title @Title run ses_alpha")
+  // The end of the stream keeps what is drawn too.
+  md.streaming = false
+  await renderOnce()
+  await fail()
+  expect(frameText()).toBe("see @Title @Title run ses_alpha")
+  // A finished block has no preview, so it draws its text without highlights, through the hook: backticks show and no
+  // span is code.
+  md.content += "!"
+  await renderOnce()
+  await fail()
+  console.warn = warn
+  expect(frameText()).toBe("see @Again `@Again` `run @Again`!")
+})
+
+// Seeded model of a hooked, streamed Markdown answer against the fake worker. Each seed appends pieces (prose, quotes,
+// lists, code spans, a table's header, delimiter and row), draws frames, answers highlights in any order (even seeds
+// also reject some), renames the linked sessions, reruns the hook, swaps the theme, scrolls the Markdown out of view
+// (culled) and back, remounts it with the same content (as a tab switch does) and ends the stream. Every frame must
+// show no ID the hook links (no unhooked frame); while streaming and in view, it must show a label for every ID the
+// content holds and lose no drawn row or text; in top-level mode, a row of a stable block that showed text must not
+// change (no flicker above the streamed block). The settled frame must equal a fresh render, colors included.
+test("hooked streaming Markdown never shows unhooked text or changes settled rows", async () => {
+  // A second theme for the style command: other colors and attributes for the groups prose uses.
+  const otherStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(0.8, 0.8, 0.6, 1) },
+      conceal: { fg: RGBA.fromValues(0.3, 0.3, 0.3, 1) },
+      "markup.raw": { fg: RGBA.fromValues(1, 0.5, 0, 1), bold: true },
+      "markup.italic": { italic: true, fg: RGBA.fromValues(0.5, 1, 0.5, 1) },
+      "markup.heading": { bold: true, fg: RGBA.fromValues(0, 0.6, 1, 1) },
+      "markup.quote": { italic: true },
+      "markup.list": { fg: RGBA.fromValues(1, 0, 1, 1) },
+    },
+    renderer.nativeScene,
+  )
+  const pieces = ["see ", "ses_a ", "ses_b\n", "word ", "\n\n", "# ", "> ", "- ", "*x* ", "`ses_a` ", "`run x` ", "\n"]
+  // Three columns: a line holds at most one table piece, so only a delimiter's "--" cells can fall beyond the header.
+  pieces.push("| ses_a | | |\n", "|--|--|--|\n", "| x ses_b |\n")
+  // MARKDOWN_MODEL_SEED=<s> replays one seed; MARKDOWN_MODEL_SEEDS=<n> runs more. Seeds 449 and 3638 found the
+  // child-kind defects.
+  const one = process.env.MARKDOWN_MODEL_SEED
+  // 500 seeds run in about 2 s under Bun; 1000 took 5 s.
+  const count = Number(process.env.MARKDOWN_MODEL_SEEDS ?? 500)
+  const seeds = one ? [Number(one)] : [449, 3638, ...Array.from({ length: count }, (_, i) => i + 1)]
+  for (const seed of seeds) {
+    let state = seed * 2654435761
+    const random = () => {
+      state ^= state << 13
+      state ^= state >>> 17
+      state ^= state << 5
+      return (state >>> 0) / 4294967296
+    }
+    const pick = (count: number) => Math.floor(random() * count)
+    const internalBlockMode = random() < 0.7 ? "top-level" : "coalesced"
+    const titles = new Map([
+      ["ses_a", "A"],
+      ["ses_b", "B"],
+    ])
+    let style = syntaxStyle
+    // The Markdown is the first of 17 children of a scroll box (the scene culls only parents with 16 or more), so
+    // scrolling to the end culls it. A remount builds both again, as a tab switch does.
+    const mount = (worker: FakeWorker, content: string, streaming: boolean) => {
+      const box = new ScrollBoxRenderable(renderer, { width: "100%", height: renderer.height })
+      box.verticalScrollBar.visible = false
+      const md = createMarkdownRenderable({
+        content,
+        syntaxStyle: style,
+        streaming,
+        internalBlockMode,
+        treeSitterClient: worker,
+        inlineHook: sessionLinks(titles),
+      })
+      box.add(md)
+      for (let i = 0; i < 16; i++) box.add(new BoxRenderable(renderer, { height: 3, flexShrink: 0 }))
+      renderer.root.add(box)
+      return { box, md }
+    }
+    const worker = new FakeWorker()
+    let { box, md } = mount(worker, "", true)
+    let inView = true
+    const trace: string[] = []
+    const rows = () =>
+      captureFrame()
+        .split("\n")
+        .map((row) => row.trimEnd().replace(/@[AB]\b/g, "@?"))
+    // Before a frame: the blocks the frame draws in their final form, up to the first one not stable yet or still to
+    // highlight its current text.
+    const waiting = (node: Renderable): boolean =>
+      (node instanceof CodeRenderable && (node.isHighlighting || Reflect.get(node, "_highlightsDirty"))) ||
+      node.getChildren().some(waiting)
+    const settledBlocks = () => {
+      const end = md._blockStates.slice(0, md._stableBlockCount).findIndex((state) => waiting(state.renderable))
+      return end === -1 ? md._stableBlockCount : end
+    }
+    const stableRows = (count: number) => {
+      const block = md._blockStates[count]?.renderable
+      return rows().slice(0, block ? block.y - md.y : md._blockStates.length > 0 ? md.height : 0)
+    }
+    let previous: string[] = []
+    let drawn = { rows: 0, text: 0 }
+    const frame = async () => {
+      const settledCount = settledBlocks()
+      await renderOnce()
+      if (!inView) return
+      const frame = captureFrame()
+      const fail = (what: string) => {
+        throw new Error(`seed ${seed}: ${what} after ${trace.join(" | ")}\n${JSON.stringify(md.content)}\n${frame}`)
+      }
+      if (/ses_[ab]/.test(frame)) fail("unhooked ID")
+      if (md.streaming) {
+        // Every ID shows as a label, so a blank or half-drawn block fails too.
+        const labels = rows().join("\n").match(/@\?/g)?.length ?? 0
+        if (md.height <= renderer.height && labels !== (md.content.match(/ses_[ab]/g)?.length ?? 0))
+          fail("missing label")
+        const now = { rows: rows().filter((row) => /[^│\s#]/.test(row)).length, text: 0 }
+        // Markers are not text: a header line drops its pipes when the delimiter makes it a table.
+        now.text = rows()
+          .join("")
+          .replace(/[\s│#─|-]/g, "").length
+        if (now.rows < drawn.rows || now.text < drawn.text - 2) fail("drawn text lost")
+        drawn = now
+      }
+      if (internalBlockMode !== "top-level") return
+      const stable = stableRows(settledCount)
+      const kept = rows().slice(0, previous.length)
+      // A block not yet drawn (blank, or only a quote's bar) may draw; drawn text may not change.
+      if (previous.some((row, index) => /[^│\s]/.test(row) && row !== kept[index])) {
+        throw new Error(
+          `seed ${seed}: settled rows changed after ${trace.join(" | ")}\n${JSON.stringify(previous)}\n${JSON.stringify(kept)} stable ${md._stableBlockCount}`,
+        )
+      }
+      previous = stable
+    }
+    const warn = console.warn
+    console.warn = () => {}
+    try {
+      for (let step = 0; step < 40; step++) {
+        const roll = random()
+        if (roll < 0.35 && md.streaming) {
+          const piece = pieces[pick(pieces.length)]!
+          trace.push(`append ${JSON.stringify(piece)}`)
+          md.content += piece
+        } else if (roll < 0.55) {
+          trace.push("frame")
+          await frame()
+        } else if (roll < 0.75) {
+          trace.push("reply")
+          worker.reply(pick(worker.pending.length))
+          await flushAsync()
+        } else if (roll < 0.82 && seed % 2 === 0 && md.streaming) {
+          // Only while streaming: after the end, a theme swap or rerun asks the worker again with no preview to keep,
+          // and Code's lifecycle (code-highlight-model) owns that case.
+          trace.push("fail")
+          worker.fail(pick(worker.pending.length))
+          await flushAsync()
+        } else if (roll < 0.88) {
+          // Titles keep their width, so a rename moves no row.
+          const title = titles.get("ses_a") === "A" ? "B" : "A"
+          trace.push(`rename ${title}`)
+          titles.set("ses_a", title)
+          md.rerunInlineHook((source) => source.includes("ses_a"))
+        } else if (roll < 0.9) {
+          trace.push("finish")
+          md.streaming = false
+        } else if (roll < 0.92) {
+          trace.push("style")
+          style = style === syntaxStyle ? otherStyle : syntaxStyle
+          md.syntaxStyle = style
+        } else if (roll < 0.94) {
+          inView = !inView
+          trace.push(inView ? "scroll in" : "scroll out")
+          box.scrollTo(inView ? 0 : renderer.height * 2)
+        } else if (roll < 0.96) {
+          trace.push("remount")
+          const content = md.content
+          const streaming = md.streaming
+          box.destroyRecursively()
+          ;({ box, md } = mount(worker, content, streaming))
+          inView = true
+          // The new mount starts from its own first frame.
+          previous = []
+          drawn = { rows: 0, text: 0 }
+        } else {
+          trace.push("tick")
+          await new Promise<void>((resolve) => setImmediate(resolve))
+        }
+      }
+      trace.push("settle")
+      inView = true
+      box.scrollTo(0)
+      md.streaming = false
+      // Highlights rejected on the way are asked again, as a later change would.
+      md.rerunInlineHook(() => true)
+      for (let pass = 0; pass < 6; pass++) {
+        await frame()
+        while (worker.pending.length > 0) worker.reply()
+        await flushAsync()
+      }
+      await renderOnce()
+      // Text, colors and attributes of every cell.
+      const cells = () =>
+        captureSpans()
+          .lines.map((line) =>
+            line.spans.map((span) => [span.text, span.fg.toInts(), span.bg.toInts(), span.attributes]),
+          )
+          .map((line) => JSON.stringify(line))
+      const settled = { text: frameText(), cells: cells() }
+      const content = md.content
+      box.destroyRecursively()
+
+      const twinWorker = new FakeWorker()
+      const twin = mount(twinWorker, content, false)
+      for (let pass = 0; pass < 4; pass++) {
+        await renderOnce()
+        while (twinWorker.pending.length > 0) twinWorker.reply()
+        await flushAsync()
+      }
+      await renderOnce()
+      const fresh = { text: frameText(), cells: cells() }
+      const row = fresh.cells.findIndex((line, index) => line !== settled.cells[index])
+      if (fresh.text !== settled.text || row !== -1) {
+        throw new Error(`seed ${seed}: settled frame differs from a fresh render after ${trace.join(" | ")}
+${settled.text}
+--- fresh
+${fresh.text}
+--- first differing row ${row}
+${settled.cells[row]}
+${fresh.cells[row]}`)
+      }
+      twin.box.destroyRecursively()
+    } finally {
+      console.warn = warn
+    }
+  }
+  otherStyle.destroy()
+}, 600_000)
+
+test("list and quote children keep their text when their kind or the stream changes", async () => {
+  const worker = new FakeWorker()
+  const md = createMarkdownRenderable({
+    content: "> # Title\n> - - -",
+    syntaxStyle,
+    streaming: true,
+    internalBlockMode: "top-level",
+    treeSitterClient: worker,
+  })
+  renderer.root.add(md)
+  const frames: string[] = []
+  const settle = async () => {
+    await renderOnce()
+    while (worker.pending.length > 0) worker.reply()
+    await flushAsync()
+    await renderOnce()
+    frames.push(frameText())
+  }
+  await settle()
+  // The rule becomes a list.
+  md.content += " x"
+  await renderOnce()
+  // Only the changed child is highlighted again; the unchanged heading keeps its text.
+  expect(worker.pending.map((item) => item.content)).toEqual(["x"])
+  await settle()
+  // The end of the stream builds no child again and highlights none again, so no frame waits for a highlight.
+  md.streaming = false
+  await renderOnce()
+  expect(worker.pending).toEqual([])
+  frames.push(frameText())
+  expect(frames).toEqual([`│ Title\n│ ${"─".repeat(58)}`, "│ Title\n│ - - - x", "│ Title\n│ - - - x"])
+})
+
+// A streamed block's preview and its highlight draw the same text, so every frame equals the settled one. Two dollars
+// make tree-sitter-markdown read a LaTeX span, which drops every style between them; the preview has no such span.
+const sameHook = { inlineHook: sessionLinks(new Map([["ses_known", "K"]])) }
+test.each([
+  ["Pay _now_$5X", 10],
+  ["$x$_ok_ tail", 20],
+  ["price $5 and *important* or [docs](https://e.x) for $6 today", 40],
+  ["a *b*$5 and _c_ $6_d_ end", 20],
+  ["see **$x$** here", 20],
+  ["\\$5 and *x* and \\$6 and $7", 40],
+  ["Costs $5; check `$PATH/$HOME` *now*", 40],
+  ["a $1 b $2 *c* d $3 e", 40],
+  ["Pay *\\$5 now*", 40],
+  ["Pay \\$5 and \\*x\\*", 40, {}, "Pay \\$5 and \\*x\\*"],
+  ["see `` ses_known `` and ` x ` tail", 40, sameHook, "see  @K  and  x  tail"],
+  ["see `` ses_known `` and ` x ` tail", 40, { ...sameHook, conceal: false }, "see `` ses_known `` and ` x ` tail"],
+  ["# Head *x*\n\ntext", 40, { conceal: false }],
+  ["# Notes\n\ntext *x*", 40, { internalBlockMode: "coalesced" }, "Notes\n\ntext x"],
+  ["# A ses_known\nB\n\nC\nD\n\n\nE", 40, { internalBlockMode: "coalesced", ...sameHook }, "A @K\nB\n\nC\nD\n\n\nE"],
+] as [string, number, Partial<MarkdownOptions>?, string?][])(
+  "streamed %j draws the same before and after highlighting",
+  // A rest parameter: Bun passes a done callback to a callback with more parameters than a row has values.
+  async (...[content, width, options, expected]) => {
+    const recorder = new TestRecorder(renderer)
+    recorder.rec()
+    const md = createMarkdownRenderable({
+      content,
+      syntaxStyle,
+      streaming: true,
+      width,
+      internalBlockMode: "top-level",
+      ...options,
+    })
+    renderer.root.add(md)
+    await renderMarkdownRenderable(md)
+    recorder.stop()
+    const rows = (frame: string) =>
+      frame
+        .split("\n")
+        .map((row) => row.trimEnd())
+        .join("\n")
+        .trimEnd()
+    expect(new Set(recorder.recordedFrames.map((recorded) => rows(recorded.frame)))).toEqual(new Set([frameText()]))
+    if (expected !== undefined) expect(frameText()).toBe(expected)
+  },
+)
+
+test.each([
+  ["coalesced", ""],
+  ["top-level", ""],
+  ["top-level", "> "],
+] as const)(
+  "with a hook, a header-only table is a table and its empty cells reach the hook (%s %j)",
+  async (mode, quote) => {
+    const hook: MarkdownInlineHook = (spans, context) => {
+      if (!context.tableCell) return spans
+      if (context.source === "") return [{ text: "EMPTY", code: false }]
+      return spans.map((span) => ({ ...span, text: span.text.toUpperCase() }))
+    }
+    const md = createMarkdownRenderable({
+      content: `${quote}| key |  |`,
+      syntaxStyle,
+      streaming: true,
+      internalBlockMode: mode,
+      tableOptions: { style: "columns" },
+      treeSitterClient: new FakeWorker(),
+      inlineHook: hook,
+    })
+    renderer.root.add(md)
+    await renderOnce()
+    const bar = quote ? "│ " : ""
+    md.content += `\n${quote}|--|--|`
+    await renderOnce()
+    expect(frameText()).toBe(`${bar}KEY  EMPTY`)
+    md.content += `\n${quote}| x | |`
+    await renderOnce()
+    expect(frameText()).toBe(`${bar}KEY  EMPTY\n${bar}X    EMPTY`)
+  },
+)
+
+// Remembered highlights are kept per client, so a remounted Markdown must ask through the same client as before.
+test("every Markdown on a client highlights prose through one shared masking client", async () => {
+  const client = createMockTreeSitterClient()
+  const code = (md: MarkdownRenderable, filetype: string | undefined) =>
+    md.getChildren().find((child) => child instanceof CodeRenderable && child.filetype === filetype) as CodeRenderable
+  const [first, second] = [0, 1].map(() =>
+    createMarkdownRenderable({ content: "text\n\n```ts\nx\n```", syntaxStyle, treeSitterClient: client }),
+  )
+  expect(code(first!, "markdown").treeSitterClient).toBe(code(second!, "markdown").treeSitterClient)
+  // Fences are not masked.
+  expect(code(first!, "typescript").treeSitterClient).toBe(client)
+  expect(code(first!, "markdown").treeSitterClient).not.toBe(client)
+})
+
+// The setext heading becomes a paragraph and a list when the last text arrives with the end of the stream.
+test.each(["top-level", "coalesced"] as const)(
+  "a block that changes kind as the stream ends draws at once (%s)",
+  async (internalBlockMode) => {
+    const worker = new FakeWorker()
+    const md = createMarkdownRenderable({
+      content: "Intro.\n\nword word\nsee it\n-",
+      syntaxStyle,
+      streaming: true,
+      internalBlockMode,
+      treeSitterClient: worker,
+    })
+    renderer.root.add(md)
+    const settle = async () => {
+      for (let pass = 0; pass < 4; pass++) {
+        await renderOnce()
+        while (worker.pending.length > 0) worker.reply()
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
+      await renderOnce()
+    }
+    await settle()
+    md.content += " word"
+    md.streaming = false
+    await renderOnce()
+    const finished = frameText()
+    await settle()
+    expect(finished).toBe(frameText())
+  },
+)

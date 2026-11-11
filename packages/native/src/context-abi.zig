@@ -1209,7 +1209,7 @@ pub fn ot_session_setup_terminal(
     const known_flags: u32 = c.OT_TERMINAL_ALTERNATE_SCREEN | c.OT_TERMINAL_MOUSE |
         c.OT_TERMINAL_MOUSE_MOVEMENT | c.OT_TERMINAL_CLEAR_ON_CLOSE | c.OT_TERMINAL_REPLY_SENTINEL | sync_flags |
         c.OT_TERMINAL_HOST_MULTIPLEXER;
-    if (options.flags & ~known_flags != 0 or options.kitty_keyboard_flags > 31) {
+    if (options.flags & ~known_flags != 0 or options.kitty_keyboard_flags & ~@as(u32, c.OT_KITTY_KEYBOARD_ALL) != 0) {
         return sessionError(owner, error.InvalidOptions);
     }
     owner.core.setupSessionTerminal(handleFromC(id.*), .{
@@ -1347,7 +1347,7 @@ pub fn ot_session_control(
         options.kind == c.OT_CONTROL_PROGRAM_STATUS;
     const argument_max: u32 = switch (options.kind) {
         c.OT_CONTROL_MOUSE => @backingInt(@import("session.zig").MouseMode.motion),
-        c.OT_CONTROL_KITTY_KEYBOARD_FLAGS => 31,
+        c.OT_CONTROL_KITTY_KEYBOARD_FLAGS => c.OT_KITTY_KEYBOARD_ALL,
         c.OT_CONTROL_QUERY_PIXEL_RESOLUTION, c.OT_CONTROL_QUERY_THEME_COLORS, c.OT_CONTROL_PALETTE_QUERY => 1,
         else => 0,
     };
@@ -1368,7 +1368,7 @@ pub fn ot_session_control(
             if (bytes.len != @sizeOf(c.ot_session_cursor_update)) return sessionError(owner, error.InvalidOptions);
             var update: c.ot_session_cursor_update = undefined;
             @memcpy(std.mem.asBytes(&update), bytes);
-            if (update.fields & ~@as(u32, c.OT_CURSOR_POSITION | c.OT_CURSOR_STYLE | c.OT_CURSOR_BLINKING | c.OT_CURSOR_COLOR | c.OT_CURSOR_MOUSE_POINTER) != 0 or update.visible > 1 or update.style > 3 or
+            if (update.fields & ~@as(u32, c.OT_CURSOR_POSITION | c.OT_CURSOR_STYLE | c.OT_CURSOR_BLINKING | c.OT_CURSOR_COLOR | c.OT_CURSOR_MOUSE_POINTER) != 0 or update.visible > 1 or update.style > c.OT_CURSOR_STYLE_DEFAULT or
                 update.blinking > 1 or update.mouse_pointer > c.OT_MOUSE_POINTER_MAX) return sessionError(owner, error.InvalidOptions);
             if (update.fields & c.OT_CURSOR_POSITION == 0 and (update.x != 0 or update.y != 0 or update.visible != 0)) {
                 return sessionError(owner, error.InvalidOptions);
@@ -2319,6 +2319,17 @@ pub fn ot_scene_get_text_lines(context: ?*ContextHandle, node_ptr: ?*const c.ot_
     const lines: []@import("scene.zig").TextLine = if (lines_ptr) |ptr| @as([*]@import("scene.zig").TextLine, @ptrCast(ptr))[0..capacity] else &.{};
     const count = owner.core.sceneGetTextLines(handleFromC(node.*), first_line, lines) catch |err| return sessionError(owner, err);
     out.* = count;
+    return c.OT_OK;
+}
+
+pub fn ot_scene_get_text_byte_at(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, x: i32, y: i32, out_byte_ptr: ?*u32) callconv(.c) c.ot_status {
+    const status = sceneReadStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const node = node_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const out = out_byte_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const byte = owner.core.sceneGetTextByteAt(handleFromC(node.*), x, y) catch |err| return sessionError(owner, err);
+    out.* = byte orelse std.math.maxInt(u32);
     return c.OT_OK;
 }
 
@@ -3719,6 +3730,7 @@ fn expectSceneWrapperRules(comptime wrapper: anytype, comptime read: bool, conte
             } else args[index] = switch (@typeInfo(param.?)) {
                 .optional => null,
                 .float => @floatFromInt(fill),
+                .int => @intCast(fill),
                 else => fill,
             };
         }
@@ -3765,9 +3777,9 @@ test "Scene ABI wrappers share admission handle and record rules and keep output
         try expectSceneWrapperRules(wrapper, false, handle, &nodes, 0);
     }
     inline for (.{
-        ot_scene_has_measure,       ot_scene_get_style, ot_scene_get_layout,    ot_scene_get_text_selection,
-        ot_scene_get_selected_text, ot_scene_get_text,  ot_scene_get_text_info, ot_scene_get_text_lines,
-        ot_scene_reaches_hooks,
+        ot_scene_has_measure,       ot_scene_get_style,        ot_scene_get_layout,    ot_scene_get_text_selection,
+        ot_scene_get_selected_text, ot_scene_get_text,         ot_scene_get_text_info, ot_scene_get_text_lines,
+        ot_scene_reaches_hooks,     ot_scene_get_text_byte_at,
     }) |wrapper| {
         try expectSceneWrapperRules(wrapper, true, handle, &nodes, 0);
     }
@@ -5278,4 +5290,9 @@ comptime {
             @compileError("ot_scene_text_line differs from scene.TextLine: " ++ name);
     }
     if (@import("link.zig").MAX_URL_LENGTH != 512) @compileError("opentui.h documents 512-byte URLs");
+    const session = @import("session.zig");
+    if (session.program_status_id_bytes_max != 128 or session.program_status_id_segment_bytes_max != 32 or
+        session.program_status_id_segments_max != 8 or session.program_status_app_bytes_max != 32 or
+        session.program_status_title_bytes_max != 192 or session.program_status_message_bytes_max != 2048)
+        @compileError("opentui.h and program-status.mdx document the program status limits");
 }

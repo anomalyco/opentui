@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer"
 import type { CliRenderer } from "../renderer.js"
 import { ANSI } from "../ansi.js"
+import { kittyKeyMap } from "../lib/parse.keypress-kitty.js"
 
 export function pasteBytes(text: string): Uint8Array {
   return Uint8Array.from(Buffer.from(text))
@@ -46,35 +47,12 @@ export interface MockKeysOptions {
   otherModifiersMode?: boolean
 }
 
-// Kitty keyboard protocol key mappings
-const kittyKeyCodeMap: Record<string, number> = {
-  escape: 27,
-  tab: 9,
-  return: 13,
-  backspace: 127,
-  insert: 57348,
-  delete: 57349,
-  left: 57350,
-  right: 57351,
-  up: 57352,
-  down: 57353,
-  pageup: 57354,
-  pagedown: 57355,
-  home: 57356,
-  end: 57357,
-  f1: 57364,
-  f2: 57365,
-  f3: 57366,
-  f4: 57367,
-  f5: 57368,
-  f6: 57369,
-  f7: 57370,
-  f8: 57371,
-  f9: 57372,
-  f10: 57373,
-  f11: 57374,
-  f12: 57375,
-}
+// Kitty key codes by name; a name with two codes (escape, return, tab, backspace) takes the lower, legacy one.
+const kittyKeyCodeMap: Record<string, number> = Object.fromEntries(
+  Object.entries(kittyKeyMap)
+    .reverse()
+    .map(([code, name]) => [name, Number(code)]),
+)
 
 function encodeKittySequence(
   codepoint: number,

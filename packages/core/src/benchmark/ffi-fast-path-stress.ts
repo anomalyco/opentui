@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, 
 import { availableParallelism, cpus, hostname, release } from "node:os"
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
+import { isSupportedNode26Version, NODE26_MIN_VERSION } from "../../../../scripts/node26.mjs"
 
 interface ChildPayload {
   schemaVersion: number
@@ -84,7 +85,7 @@ mkdirSync(reportsDir, { recursive: true })
 
 const nodeRuntime = readNodeRuntime()
 if (!isSupportedNode26Version(nodeRuntime.version)) {
-  throw new Error(`Node v26.4.0 or later is required, got ${nodeRuntime.version}`)
+  throw new Error(`Node ${NODE26_MIN_VERSION} or later is required, got ${nodeRuntime.version}`)
 }
 if (nodeRuntime.arch !== "x64") throw new Error(`Node x64 is required, got ${nodeRuntime.arch}`)
 
@@ -246,18 +247,6 @@ if (
   (!allowCrashes && (manifest.summary.targetCrashes > 0 || manifest.summary.otherCrashes > 0))
 )
   process.exit(1)
-
-function isSupportedNode26Version(version: string): boolean {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version)
-  if (match === null) return false
-
-  const major = Number(match[1])
-  const minor = Number(match[2])
-  const patch = Number(match[3])
-  if (major !== 26) return major > 26
-  if (minor !== 4) return minor > 4
-  return patch >= 0
-}
 
 function readNodeRuntime(): {
   version: string

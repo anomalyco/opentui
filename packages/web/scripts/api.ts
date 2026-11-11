@@ -16,7 +16,10 @@ import {
   isApiVersion,
   loadApiHistory,
   parseApiFile,
+  parseFeature,
 } from "../src/lib/api-history"
+import { exportName } from "../src/lib/api-docs"
+import { documentedSymbols } from "../src/lib/api-index-symbols"
 import { extractPackage } from "./api/extract"
 import { headerFeaturesAt, headerFeaturesIn } from "./api/header"
 import { CACHE_DIR, PACKAGES, packageDir, packageVersionFor, publishedVersions, type PublishedVersion } from "./api/npm"
@@ -39,6 +42,8 @@ const USAGE = `Usage: bun packages/web/scripts/api.ts <command> [options]
       Compare the API that the files record for a release with its packages on npm.
   check [--dir <dir>]
       Validate the API files.
+  index [--root <dir>]
+      Check that reference/api-index.mdx indexes every export of the source tree, and only exports.
 
 <dir> defaults to api/ at the repository root.`
 
@@ -320,6 +325,35 @@ async function check(options: Options): Promise<void> {
   console.error(`${files.length} API files in ${dir} are valid`)
 }
 
+// The index names each export of an npm entry point under its module. A row "Every root export" or "Every export from
+// `<module>`" names every export of that module under its own. C declarations need not be indexed.
+async function index(options: Options): Promise<void> {
+  const exported = new Set(
+    (await currentFeatures(options)).map(parseFeature).map((f) => `${f.module} ${exportName(f.name)}`),
+  )
+  const file = join(
+    resolve(options.values.get("root") ?? repoRoot),
+    "packages/web/src/content/docs/reference/api-index.mdx",
+  )
+  const text = await readFile(file, "utf8")
+  const indexed = new Set(documentedSymbols(text).map((s) => `${s.module} ${s.name}`))
+  for (const [, module, name, from] of text.matchAll(
+    /^\| `(@opentui\/([^/`]+)\/[^`]+)` +\| Every (?:root export|export from `(@opentui\/[^`]+)`)/gm,
+  )) {
+    const source = `${from ?? `@opentui/${name}`} `
+    for (const key of exported) if (key.startsWith(source)) indexed.add(`${module} ${key.slice(source.length)}`)
+  }
+  const problems = [
+    ...[...indexed].filter((key) => !exported.has(key)).map((key) => `indexes ${key}, which is not exported`),
+    ...[...exported]
+      .filter((key) => !key.startsWith(`${C_MODULE} `) && !indexed.has(key))
+      .map((key) => `does not index ${key}`),
+  ]
+  for (const problem of problems) console.error(`api-index.mdx ${problem}`)
+  if (problems.length > 0) throw new Error(`${problems.length} problems in ${file}`)
+  console.error(`${file} indexes ${indexed.size} exports`)
+}
+
 const commands: Record<string, { options: string[]; run: (options: Options) => Promise<void> }> = {
   backfill: { options: ["from", "to", "dir"], run: backfill },
   current: { options: ["out", "root"], run: current },
@@ -328,6 +362,7 @@ const commands: Record<string, { options: string[]; run: (options: Options) => P
   verify: { options: ["dir"], run: verify },
   squash: { options: ["dir"], run: squash },
   check: { options: ["dir"], run: check },
+  index: { options: ["root"], run: index },
 }
 
 async function main(): Promise<void> {

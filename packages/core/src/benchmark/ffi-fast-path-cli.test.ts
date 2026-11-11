@@ -13,7 +13,8 @@ afterEach(() => {
 })
 
 test.each(["", "."])("stress output %p does not remove its package directory", (output) => {
-  const root = mkdtempSync(join(tmpdir(), "opentui-ffi-stress-test-"))
+  // The long path: Windows' TEMP is an 8.3 short path, and the script compares cwd with its own long path.
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "opentui-ffi-stress-test-")))
   temporaryDirectories.push(root)
   const packageRoot = join(root, "packages/core")
   const benchmarkDir = join(packageRoot, "src/benchmark")
@@ -21,6 +22,7 @@ test.each(["", "."])("stress output %p does not remove its package directory", (
   const sentinel = join(packageRoot, "sentinel.txt")
   mkdirSync(benchmarkDir, { recursive: true })
   cpSync(join(import.meta.dir, "ffi-fast-path-stress.ts"), script)
+  cpSync(join(import.meta.dir, "../../../../scripts/node26.mjs"), join(root, "scripts/node26.mjs"))
   writeFileSync(sentinel, "keep")
 
   const child = spawnSync(process.execPath, [script, `--output=${output}`], {
@@ -30,6 +32,7 @@ test.each(["", "."])("stress output %p does not remove its package directory", (
   })
 
   expect(child.status).not.toBe(0)
+  expect(child.stderr).toContain("--output must not be")
   expect(existsSync(sentinel)).toBe(true)
 })
 
@@ -41,6 +44,7 @@ test("stress output cannot be nested under its runtime build directory", () => {
   const copiedScript = join(benchmarkDir, "ffi-fast-path-stress.ts")
   mkdirSync(benchmarkDir, { recursive: true })
   cpSync(join(import.meta.dir, "ffi-fast-path-stress.ts"), copiedScript)
+  cpSync(join(import.meta.dir, "../../../../scripts/node26.mjs"), join(root, "scripts/node26.mjs"))
   const canonicalBenchmarkDir = realpathSync(benchmarkDir)
   const script = join(canonicalBenchmarkDir, "ffi-fast-path-stress.ts")
 

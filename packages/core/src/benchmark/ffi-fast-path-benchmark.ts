@@ -5,7 +5,7 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs"
 import { availableParallelism, tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { isSupportedNode26Version } from "../../../../scripts/node26.mjs"
+import { isSupportedNode26Version, NODE26_MIN_VERSION } from "../../../../scripts/node26.mjs"
 
 type RuntimeName = "bun" | "node"
 type SuiteName = "quick" | "default" | "long"
@@ -86,7 +86,7 @@ if (selectedNames.length === 0) throw new Error("no benchmark scenarios selected
 
 const nodeVersion = readNodeVersion()
 if (!isSupportedNode26Version(nodeVersion)) {
-  throw new Error(`Node v26.4.0 or later is required, got ${nodeVersion}`)
+  throw new Error(`Node ${NODE26_MIN_VERSION} or later is required, got ${nodeVersion}`)
 }
 
 const raw = new Map<string, ProcessRoundSample[]>()

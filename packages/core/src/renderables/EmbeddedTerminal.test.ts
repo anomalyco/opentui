@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { createTestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
 import { KeyEvent } from "../lib/KeyHandler.js"
-import { nonAlphanumericKeys, parseKeypress } from "../lib/parse.keypress.js"
+import { parseKeypress, terminalNamedSingleStrokeKeys } from "../lib/parse.keypress.js"
 import { RGBA } from "../lib/RGBA.js"
 import { resolveRenderLib } from "../zig.js"
 import { nativeSymbols, withStubbedSymbols } from "../tests/native-symbol-stubs.js"
@@ -202,6 +202,8 @@ describe("EmbeddedTerminalRenderable", () => {
     )
     expect(new TextDecoder().decode(terminal.encodeKey(keyEvent({ name: "😀", sequence: "😀" })))).toBe("😀")
     expect(new TextDecoder().decode(terminal.encodeKey(keyEvent({ name: "space", sequence: " " })))).toBe(" ")
+    const shiftedLinefeed = keyEvent({ name: "linefeed", sequence: "", shift: true })
+    expect(new TextDecoder().decode(terminal.encodeKey(shiftedLinefeed))).toBe("\x1b[106;6u")
     expect(
       new TextDecoder().decode(terminal.encodeKey(keyEvent({ name: "a", sequence: "A", shift: true, raw: "A" }))),
     ).toBe("A")
@@ -255,6 +257,21 @@ describe("EmbeddedTerminalRenderable", () => {
         y: 1,
       })
       expect(new TextDecoder().decode(motion)).toBe("\x1b[<35;2;2M")
+      const events = [
+        ["press", "left"],
+        ["release", "right"],
+        ["press", "middle"],
+        ["press", "five"],
+      ] as const
+      const encoded = events.map(([action, button]) =>
+        lib.contextEmbeddedTerminalEncodeMouse(context, handle, { action, button, x: 1, y: 1 }),
+      )
+      expect(encoded.map((bytes) => new TextDecoder().decode(bytes))).toEqual([
+        "\x1b[<0;2;2M",
+        "\x1b[<2;2;2m",
+        "\x1b[<1;2;2M",
+        "\x1b[<65;2;2M",
+      ])
 
       lib.contextEmbeddedTerminalWrite(context, handle, "\x1b[?1016h")
       expect(
@@ -269,10 +286,21 @@ describe("EmbeddedTerminalRenderable", () => {
     }
   })
 
-  // Only "menu" encodes to nothing: Ghostty has no encoding for ContextMenu or the Kitty MENU key.
-  test.each([...new Set(nonAlphanumericKeys)])("encodes the parser key name %s", (name) => {
+  // Legacy encoding has no bytes for these names: Ghostty has no ContextMenu, F26-F35, media, or volume key, and no
+  // legacy form for the lock, modifier, keypad = and separator keys.
+  test("encodes every parser key name that legacy encoding has", () => {
     const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
-    expect(terminal.encodeKey(keyEvent({ name, sequence: "" })).length > 0).toBe(name !== "menu")
+    expect(terminalNamedSingleStrokeKeys).toHaveLength(130)
+    expect(terminalNamedSingleStrokeKeys.filter((name) => name.length === 1).join("")).toBe("0123456789./*-+=,")
+    const silent = terminalNamedSingleStrokeKeys.filter(
+      (name) => terminal.encodeKey(keyEvent({ name, sequence: "" })).length === 0,
+    )
+    expect(silent.join(" ")).toBe(
+      "capslock scrolllock numlock printscreen pause menu f26 f27 f28 f29 f30 f31 f32 f33 f34 f35 kpequal " +
+        "kpseparator mediaplay mediapause mediaplaypause mediareverse mediastop mediafastforward mediarewind medianext " +
+        "mediaprev mediarecord volumedown volumeup mute leftshift leftctrl leftalt leftsuper lefthyper leftmeta " +
+        "rightshift rightctrl rightalt rightsuper righthyper rightmeta iso_level3_shift iso_level5_shift",
+    )
   })
 
   // Ghostty has no key or no Kitty encoding for 30 of the 111 Kitty functional keys: menu, F26-F35, the 10 media
@@ -339,6 +367,10 @@ describe("EmbeddedTerminalRenderable", () => {
     ["Kitty Super+a", 1, "\x1b[97;9u", "\x1b[97;9u"],
     ["Kitty Alt+Super+a", 1, "\x1b[97;11u", "\x1b[97;11u"],
     ["Kitty Meta+a as Alt", 1, "\x1b[97;33u", "\x1b[97;3u"],
+    ["legacy Ctrl+J into a Kitty child", 1, "\n", "\x1b[106;5u"],
+    ["legacy Ctrl+Alt+J into a Kitty child", 1, "\x1b\n", "\x1b[106;7u"],
+    ["legacy Ctrl+J into a modifyOtherKeys child", "\x1b[>4;2m", "\n", "\x1b[27;5;106~"],
+    ["legacy Enter into a Kitty child", 1, "\r", "\r"],
   ])("preserves %s", (_label, flags, raw, expected) => {
     const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
     setup.renderer.root.add(terminal)

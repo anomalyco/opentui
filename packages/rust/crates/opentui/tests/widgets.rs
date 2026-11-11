@@ -1271,6 +1271,31 @@ fn measurement_panics_resume_after_native_layout() {
 }
 
 #[test]
+fn input_max_length_follows_cores_vectors() {
+    // Core's Input test runs the same rows.
+    let corpus: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../core/src/renderables/input-max-length.conformance.json"))
+            .unwrap();
+    let app = TestApp::new(20, 1);
+    for row in corpus["rows"].as_array().unwrap() {
+        let (value, max) = (row[1].as_str().unwrap(), row[2].as_u64().unwrap() as usize);
+        for input in
+            [Input::new(&app).max_length(max).set_value(value), Input::new(&app).set_value(value).max_length(max)]
+        {
+            app.root().add(&input);
+            input.focus();
+            for _ in 0..row[3].as_u64().unwrap() {
+                app.press("shift+left");
+            }
+            input.insert(row[4].as_str().unwrap());
+            assert_eq!(input.value(), row[5], "{}", row[0]);
+        }
+    }
+    // Not shared: Core's Textarea has no maxLength, and Rust's counts characters.
+    assert_eq!(Textarea::new(&app).max_length(2).set_text("😀\n😀").text(), "😀\n");
+}
+
+#[test]
 fn replacing_an_input_value_respects_the_limit_of_the_new_text_only() {
     let app = TestApp::new(20, 1);
     let input = Input::new(&app).max_length(8).set_value("abc");

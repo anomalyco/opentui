@@ -1,15 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const SupportedZigVersion = struct {
-    major: u32,
-    minor: u32,
-    patch: u32,
-};
-
-const SUPPORTED_ZIG_VERSIONS = [_]SupportedZigVersion{
-    .{ .major = 0, .minor = 17, .patch = 0 },
-};
+// build.zig.zon's minimum_zig_version names the one Zig version this package builds with. CI's setup-zig reads it too.
+const ZIG_VERSION = std.SemanticVersion.parse(@import("build.zig.zon").minimum_zig_version) catch unreachable;
 
 const SupportedTarget = struct {
     zig_target: []const u8,
@@ -589,35 +582,18 @@ fn applyDependencies(
 
 fn checkZigVersion() void {
     const current_version = builtin.zig_version;
-    var is_supported = false;
+    if (current_version.major == ZIG_VERSION.major and
+        current_version.minor == ZIG_VERSION.minor and
+        current_version.patch == ZIG_VERSION.patch) return;
 
-    for (SUPPORTED_ZIG_VERSIONS) |supported| {
-        if (current_version.major == supported.major and
-            current_version.minor == supported.minor and
-            current_version.patch == supported.patch)
-        {
-            is_supported = true;
-            break;
-        }
-    }
-
-    if (!is_supported) {
-        std.debug.print("\x1b[31mError: Unsupported Zig version {}.{}.{}\x1b[0m\n", .{
-            current_version.major,
-            current_version.minor,
-            current_version.patch,
-        });
-        std.debug.print("Supported Zig versions:\n", .{});
-        for (SUPPORTED_ZIG_VERSIONS) |supported| {
-            std.debug.print("  - {}.{}.{}\n", .{
-                supported.major,
-                supported.minor,
-                supported.patch,
-            });
-        }
-        std.debug.print("\nPlease install a supported Zig version to continue.\n", .{});
-        std.process.exit(1);
-    }
+    std.debug.print("\x1b[31mError: Unsupported Zig version {}.{}.{}\x1b[0m\n", .{
+        current_version.major,
+        current_version.minor,
+        current_version.patch,
+    });
+    std.debug.print("Supported Zig versions:\n  - {}.{}.{}\n", .{ ZIG_VERSION.major, ZIG_VERSION.minor, ZIG_VERSION.patch });
+    std.debug.print("\nPlease install a supported Zig version to continue.\n", .{});
+    std.process.exit(1);
 }
 
 pub fn build(b: *std.Build) void {

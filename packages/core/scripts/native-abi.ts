@@ -286,6 +286,11 @@ export async function generateNativeABI(
     "// Run `bun run generate:abi` in packages/core. Do not edit.\n" +
     "// Inspect audit input: bun scripts/native-abi.ts --audit\n" +
     `// ABI audit SHA-256: ${fingerprint}\n\n` +
+    // Enum initializers that name these scalars stay constant, so declarations keep literal member types.
+    Object.entries(abi.constants)
+      .map(([name, value]) => `export const ${name} = ${value}\n`)
+      .join("") +
+    "\n" +
     Object.entries(exports)
       .map(([name, value]) => `export const ${name} = ${JSON.stringify(value)} as const\n`)
       .join("\n")
