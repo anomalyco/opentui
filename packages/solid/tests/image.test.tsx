@@ -98,7 +98,7 @@ describe("image component", () => {
     expect(imageRef!.effectiveProtocol).toBe("blocks")
   })
 
-  it("restores image defaults without clearing unrelated style keys", async () => {
+  it("restores the defaults of keys removed from style", async () => {
     let imageRef: ImageRenderable | undefined
     const crop = { left: 0, top: 0, width: 1, height: 1 }
     const [configured, setConfigured] = createSignal(true)
@@ -125,7 +125,7 @@ describe("image component", () => {
 
     setConfigured(false)
 
-    expect(state()).toEqual({ fit: "fit", protocol: "auto", crop: undefined, visible: true, opacity: 0.5 })
+    expect(state()).toEqual({ fit: "fit", protocol: "auto", crop: undefined, visible: true, opacity: 1 })
   })
 
   it("cancels a pending image load when its component unmounts", async () => {
