@@ -129,6 +129,35 @@ describe("createClipboard", () => {
     await service.clipboard.dispose()
   })
 
+  it("writes the terminal after all-available host work settles", async () => {
+    let markStarted = () => {}
+    let release = () => {}
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve
+    })
+    const service = createServices({
+      backend: {
+        async writeText() {
+          markStarted()
+          await new Promise<void>((resolve) => {
+            release = resolve
+          })
+          return { status: "written" }
+        },
+      },
+    })
+    const pending = service.clipboard.writeText("text", { destination: "all-available" })
+    await started
+    expect(service.events).toEqual([])
+    release()
+    expect(await pending).toEqual({
+      host: { status: "written" },
+      terminal: { status: "attempted", capability: "supported" },
+    })
+    expect(service.events).toEqual(["terminal-write"])
+    await service.clipboard.dispose()
+  })
+
   it("preserves terminal dispatch when all-available host work is later cancelled", async () => {
     const service = createServices({
       backend: {
@@ -141,12 +170,27 @@ describe("createClipboard", () => {
     })
     const controller = new AbortController()
     const pending = service.clipboard.writeText("text", { destination: "all-available", signal: controller.signal })
-    expect(service.events).toEqual(["terminal-write"])
+    expect(service.events).toEqual([])
     controller.abort()
     expect(await pending).toEqual({
       host: { status: "cancelled" },
       terminal: { status: "attempted", capability: "supported" },
     })
+    expect(service.events).toEqual(["terminal-write"])
+    await service.clipboard.dispose()
+  })
+
+  it("preserves terminal dispatch when all-available host work rejects", async () => {
+    const service = createServices({
+      backend: {
+        async writeText() {
+          throw new Error("host failed")
+        },
+      },
+    })
+
+    await expect(service.clipboard.writeText("text", { destination: "all-available" })).rejects.toThrow("host failed")
+    expect(service.events).toEqual(["terminal-write"])
     await service.clipboard.dispose()
   })
 

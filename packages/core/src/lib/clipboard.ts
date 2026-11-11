@@ -217,11 +217,19 @@ export const createClipboard = ({ host, terminal }: ClipboardOptions): Clipboard
           : NOT_ATTEMPTED_TERMINAL
       return { host: hostResult, terminal: terminalResult }
     }
-    const hostPromise = canUseRemoteHost(options)
-      ? hostOperation()
-      : Promise.resolve({ status: "not-attempted" as const })
-    const terminalResult = terminalOperation()
-    return { host: await hostPromise, terminal: terminalResult }
+    // Write the terminal last: on Wayland/X11 the last writer owns the
+    // selection. A rejected host write must not suppress it.
+    if (!canUseRemoteHost(options)) {
+      return { host: { status: "not-attempted" }, terminal: terminalOperation() }
+    }
+    let hostResult: Result
+    try {
+      hostResult = await hostOperation()
+    } catch (error) {
+      terminalOperation()
+      throw error
+    }
+    return { host: hostResult, terminal: terminalOperation() }
   }
   return {
     read(options) {
