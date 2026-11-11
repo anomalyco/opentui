@@ -3,9 +3,31 @@
 
 use opentui::testing::TestApp;
 use opentui::widget::{AnyWidget, Container, Markdown, MarkdownTableOptions, Text, Widget};
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::Rc;
+
+thread_local! {
+    /// Allocations made on this thread, so a test can check that a read allocates nothing.
+    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+struct Counting;
+
+#[global_allocator]
+static ALLOCATOR: Counting = Counting;
+
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        ALLOCATIONS.with(|count| count.set(count.get() + 1));
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) }
+    }
+}
 
 const CASES: [&str; 6] = ["code", "emphasis", "headings", "links", "lists", "tables"];
 
@@ -48,8 +70,9 @@ fn corpus_matches_core_one_shot_and_streamed() {
                 .filter(|(name, deviation_mode, ..)| *name == case && *deviation_mode == mode)
                 .fold(fixture(&format!("{case}.{mode}.txt")), |frame, (.., core, rust)| frame.replace(core, rust));
             let app = TestApp::new(60, 80);
-            document(&app, conceal).set_markdown(source);
+            let oneshot = document(&app, conceal).set_markdown(source);
             assert_eq!(frame(&app), expected, "{case} ({mode}), one shot");
+            assert!(oneshot.with_markdown(|shown| shown == source) && oneshot.markdown() == source);
 
             // Streamed in chunks, each frame equals a one-shot render of the source so far.
             let streamed_app = TestApp::new(60, 80);
@@ -59,6 +82,10 @@ fn corpus_matches_core_one_shot_and_streamed() {
                 let next = (end + 7..=source.len()).find(|&next| source.is_char_boundary(next)).unwrap_or(source.len());
                 streamed.append(&source[end..next]);
                 end = next;
+                let allocations = ALLOCATIONS.with(Cell::get);
+                assert!(streamed.with_markdown(|shown| shown == &source[..end]), "{case} ({mode}), read at byte {end}");
+                assert_eq!(ALLOCATIONS.with(Cell::get), allocations, "{case} ({mode}), read allocates");
+                assert_eq!(streamed.markdown(), &source[..end]);
                 let oneshot_app = TestApp::new(60, 80);
                 document(&oneshot_app, conceal).set_markdown(&source[..end]);
                 assert_eq!(frame(&streamed_app), frame(&oneshot_app), "{case} ({mode}), streamed to byte {end}");
