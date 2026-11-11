@@ -1,9 +1,9 @@
 //! A fixture for terminal lifecycle checks: `scripts/pty-smoke.py` and `tests/lifecycle.rs` drive it under a
 //! pseudo-terminal.
 //!
-//! Keys: p panics, e returns an error, w writes to stderr (captured with `--app`), Ctrl+Z suspends, r (with `--app`)
-//! releases the terminal to read one line in cooked mode, as an external editor would (the line "quit" quits), q
-//! quits. Every exit path must restore the terminal. With `--app`, the same fixture runs on the framework's [`App::run`] instead
+//! Keys: p panics, e returns an error, w writes to stderr (captured with `--app`), c (with `--app`) copies to the
+//! clipboard, Ctrl+Z suspends, r (with `--app`) releases the terminal to read one line in cooked mode, as an external
+//! editor would (the line "quit" quits), q quits. Every exit path must restore the terminal. With `--app`, the same fixture runs on the framework's [`App::run`] instead
 //! of a hand-written host loop, and shows the terminal's theme mode. With `--modes`, it only prints the console's
 //! input and output modes, on Windows, so a check can compare them before and after a run.
 
@@ -49,6 +49,8 @@ fn run_app() -> Result<()> {
             cx.fail(Error::Usage("lifecycle fixture error"));
         } else if key.matches("w") {
             eprintln!("lifecycle stderr line");
+        } else if key.matches("c") {
+            cx.app().copy_to_clipboard("lifecycle copy");
         } else if key.matches("r") {
             cx.app().release_terminal(|cx| {
                 println!("lifecycle released");

@@ -137,6 +137,49 @@ fn captured_stderr_stays_off_the_screen() {
     assert!(after.contains(line), "{text:?}");
 }
 
+/// On X11 and Wayland the last writer owns the clipboard and the terminal outlives the app, so a copy reaches the
+/// terminal only once the host write ends: here when it times out, or when the app quits during it. The host is a
+/// compositor that accepts the connection and never answers.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_copy_reaches_the_terminal_after_the_host_clipboard() {
+    const COPY: &str = "\x1b]52;c;bGlmZWN5Y2xlIGNvcHk=";
+    for quit in [false, true] {
+        let socket = std::env::temp_dir().join(format!("opentui-lifecycle-{}-{quit}", std::process::id()));
+        let _ = std::fs::remove_file(&socket);
+        let compositor = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        compositor.set_nonblocking(true).unwrap();
+        let mut command = Command::new(fixture());
+        command.arg("--app").env("WAYLAND_DISPLAY", &socket);
+        for name in ["DISPLAY", "WAYLAND_SOCKET", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "MOSH_CONNECTION"] {
+            command.env_remove(name);
+        }
+        let run = Run::start(command);
+        run.wait_for(DRAWN);
+        run.press("c");
+        let mut client = None;
+        run.app.wait_until(Duration::from_secs(10), || {
+            client = compositor.accept().ok();
+            client.is_some()
+        });
+        let _ = std::fs::remove_file(&socket);
+        if client.is_none() {
+            eprintln!("SKIP: no host clipboard connection, as without libwayland-client: {:?}", run.text());
+            return;
+        }
+        run.app.wait_until(Duration::from_millis(300), || false);
+        assert!(!run.text().contains(COPY), "quit {quit}: the terminal got the copy first: {:?}", run.text());
+        if quit {
+            run.press("q");
+        }
+        run.wait_for(COPY);
+        if !quit {
+            run.press("q");
+        }
+        assert_eq!(run.code(), Some(0), "quit {quit}");
+    }
+}
+
 /// A released terminal is the program's to read in cooked mode, and the app draws again afterwards.
 #[cfg(unix)]
 #[test]

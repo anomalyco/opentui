@@ -49,10 +49,12 @@ impl App {
     }
 
     /// Copies text to the user's clipboard through every destination available, as Core's `all-available` policy
-    /// does: the terminal (OSC 52), which works over SSH and keeps the text after the app exits, and, when the
-    /// session is local, the system clipboard too. Returns `false` when neither took the text, for empty text, or
-    /// without a running terminal, as in tests. A system clipboard write is asynchronous: `true` means it started. A
-    /// running [headless](App::headless) app hands the text to its [`App::on_headless_write`] handlers instead.
+    /// does: when the session is local, the system clipboard, and then the terminal (OSC 52), which works over SSH. On
+    /// X11 and Wayland the last writer owns the clipboard, so the terminal, which keeps the text after the app exits,
+    /// writes once the system clipboard write ends, or when the app exits. Returns `false` when neither took the text,
+    /// for empty text, or without a running terminal, as in tests. A system clipboard write is asynchronous: `true`
+    /// means it started. A running [headless](App::headless) app hands the text to its [`App::on_headless_write`]
+    /// handlers instead.
     pub fn copy_to_clipboard(&self, text: &str) -> bool {
         if self.is_headless() {
             return !text.is_empty() && self.headless_write(super::HeadlessWrite::Clipboard(text.to_owned()));
@@ -60,10 +62,20 @@ impl App {
         if !self.0.terminal_active.get() || text.is_empty() {
             return false;
         }
-        let terminal =
-            self.report(self.0.session.set_clipboard(ClipboardSelection::Clipboard, text.as_bytes())).unwrap_or(false);
-        let host = self.copy_to_host_clipboard(text);
-        terminal || host
+        let remote = self.is_remote()
+            || self
+                .report(self.0.session.capabilities())
+                .is_none_or(|capabilities| capabilities.flags.contains(CapabilityFlags::REMOTE));
+        let write = |service: &ClipboardService| service.write_text(text, ClipboardSelection::Clipboard, TIMEOUT);
+        let owned = text.to_owned();
+        let terminal: Done = Box::new(move |cx, _| {
+            cx.app().copy_to_terminal(&owned);
+        });
+        (!remote && self.start_clipboard(write, terminal).is_ok()) || self.copy_to_terminal(text)
+    }
+
+    fn copy_to_terminal(&self, text: &str) -> bool {
+        self.report(self.0.session.set_clipboard(ClipboardSelection::Clipboard, text.as_bytes())).unwrap_or(false)
     }
 
     /// Reads the system clipboard of the machine the app runs on as the first available of `mime_types`, such as
@@ -112,20 +124,6 @@ impl App {
         });
     }
 
-    /// Puts text on the host clipboard when the session is local. Returns whether the write started.
-    fn copy_to_host_clipboard(&self, text: &str) -> bool {
-        let remote = self.is_remote()
-            || self
-                .report(self.0.session.capabilities())
-                .is_none_or(|capabilities| capabilities.flags.contains(CapabilityFlags::REMOTE));
-        if remote {
-            return false;
-        }
-        let text = text.to_owned();
-        let write = move |service: &ClipboardService| service.write_text(&text, ClipboardSelection::Clipboard, TIMEOUT);
-        self.start_clipboard(write, Box::new(|_, _| {})).is_ok()
-    }
-
     /// Advances host clipboard operations and runs the handlers of finished ones. Returns when it needs to run
     /// again, in real time.
     pub(crate) fn pump_clipboard(&self) -> Option<Instant> {
@@ -157,12 +155,13 @@ impl App {
         wait.and_then(|wait| Instant::now().checked_add(wait))
     }
 
-    /// Cancels pending operations and shuts the service down.
+    /// Cancels pending operations, runs their handlers, and shuts the service down.
     pub(super) fn close_clipboard(&self) {
         let clipboard = std::mem::take(&mut *self.0.clipboard.borrow_mut());
         if let Some(service) = &clipboard.service {
-            for (operation, _) in &clipboard.pending {
-                service.cancel(*operation);
+            for (operation, done) in clipboard.pending {
+                service.cancel(operation);
+                done(&mut Cx::new(self), ClipboardOutcome::Cancelled);
             }
         }
     }
