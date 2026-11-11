@@ -498,12 +498,14 @@ test "Scene viewport late reveal settles Slider refresh and resize feedback befo
     try f.owner.sceneSetHooks(slider, 3, 1, 2, 1);
     try f.owner.sceneFrameCancel(f.id, f.state.last_frame_id);
     var request = try f.step(null, frame_options, 1, children[0]);
-    try testing.expectEqual(@as(f32, 2), (try f.owner.sceneGetLayout(slider, false)).width);
+    // A culled row's descendant, which no refresh observes, reads its solved layout.
+    try testing.expectEqual(@as(f32, 8), (try f.owner.sceneGetLayout(slider, false)).width);
     try testing.expectEqual(@as(f32, 8), (try f.owner.sceneGetLayout(slider, true)).width);
     try f.owner.sceneSetPaint(content, .{ .translateY = -20 });
     for ([_]context.Handle{ children[1], children[10], slider }) |child| {
         request = try f.step(request, frame_options, 1, child);
     }
+    // Taken, it holds its observed layout until its refresh.
     try testing.expectEqual(@as(f32, 2), (try f.owner.sceneGetLayout(slider, false)).width);
     request = try f.step(request, frame_options, 2, slider);
     try testing.expectEqual(@as(u32, 8), request.width);
