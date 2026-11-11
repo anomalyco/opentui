@@ -255,7 +255,7 @@ pub const program_status_bytes_max: u32 = "\x1b]7501;state=blocked:id=:kind=perm
     program_status_id_bytes_max + program_status_app_bytes_max + std.base64.standard.Encoder.calcSize(program_status_title_bytes_max) +
     std.base64.standard.Encoder.calcSize(program_status_message_bytes_max);
 pub const cursor_settle_ns: u64 = 10 * std.time.ns_per_ms;
-pub const split_snapshots_max: u32 = 64;
+pub const split_snapshots_max: u32 = api.OT_SPLIT_SNAPSHOTS_MAX;
 
 pub const SplitControl = union(enum) {
     reset: struct { seed_rows: u32, pinned_render_offset: u32 },

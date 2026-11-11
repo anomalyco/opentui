@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const api = @import("context_abi_c");
 const Allocator = std.mem.Allocator;
 
 /// Packed color with embedded metadata.
@@ -24,9 +25,9 @@ pub const RGBA = [4]u16;
 /// sequence: literal RGB (38;2;r;g;b), indexed palette (38;5;n), or terminal
 /// default (39/49).
 pub const ColorIntent = enum(u8) {
-    rgb = 0,
-    indexed = 1,
-    default = 2,
+    rgb = api.OT_COLOR_RGB,
+    indexed = api.OT_COLOR_INDEXED,
+    default = api.OT_COLOR_DEFAULT,
 };
 
 pub const AnsiError = error{
@@ -34,28 +35,22 @@ pub const AnsiError = error{
     WriteFailed,
 };
 
-/// Standard ANSI 16-color palette RGB values (colors 0-15).
-pub const ANSI16_RGB = [_][3]u8{
-    .{ 0x00, 0x00, 0x00 },
-    .{ 0x80, 0x00, 0x00 },
-    .{ 0x00, 0x80, 0x00 },
-    .{ 0x80, 0x80, 0x00 },
-    .{ 0x00, 0x00, 0x80 },
-    .{ 0x80, 0x00, 0x80 },
-    .{ 0x00, 0x80, 0x80 },
-    .{ 0xc0, 0xc0, 0xc0 },
-    .{ 0x80, 0x80, 0x80 },
-    .{ 0xff, 0x00, 0x00 },
-    .{ 0x00, 0xff, 0x00 },
-    .{ 0xff, 0xff, 0x00 },
-    .{ 0x00, 0x00, 0xff },
-    .{ 0xff, 0x00, 0xff },
-    .{ 0x00, 0xff, 0xff },
-    .{ 0xff, 0xff, 0xff },
+/// Standard ANSI 16-color palette RGB values (colors 0-15), from opentui.h's OT_COLOR_ANSI_n.
+pub const ANSI16_RGB = blk: {
+    var table: [16][3]u8 = undefined;
+    for (&table, 0..) |*rgb, index| {
+        const value: u32 = @field(api, std.fmt.comptimePrint("OT_COLOR_ANSI_{d}", .{index}));
+        rgb.* = .{ @truncate(value >> 16), @truncate(value >> 8), @truncate(value) };
+    }
+    break :blk table;
 };
 
 /// The six intensity levels used by ANSI 256-color cube (indices 16-231).
-pub const ANSI_256_CUBE_LEVELS = [_]u8{ 0, 95, 135, 175, 215, 255 };
+pub const ANSI_256_CUBE_LEVELS = blk: {
+    var levels: [6]u8 = undefined;
+    for (&levels, 0..) |*level, n| level.* = if (n == 0) 0 else api.OT_COLOR_CUBE_BASE + api.OT_COLOR_CUBE_STEP * n;
+    break :blk levels;
+};
 
 /// Quantize a 0.0-1.0 float channel to a 0-255 byte. Clamps out-of-range
 /// and non-finite inputs.
@@ -218,7 +213,7 @@ pub fn fallbackAnsi256Color(index: usize) RGBA {
         return u8RgbToRgba(r, g, b);
     }
 
-    const gray_value: u8 = @intCast(8 + (index - 232) * 10);
+    const gray_value: u8 = @intCast(api.OT_COLOR_GRAY_BASE + (index - 232) * api.OT_COLOR_GRAY_STEP);
     return u8RgbToRgba(gray_value, gray_value, gray_value);
 }
 
@@ -419,25 +414,21 @@ pub const ANSI = struct {
     }
 };
 
+/// Attribute bits and link-id packing, as opentui.h defines them.
 pub const TextAttributes = struct {
     pub const NONE: u8 = 0;
-    pub const BOLD: u8 = 1 << 0;
-    pub const DIM: u8 = 1 << 1;
-    pub const ITALIC: u8 = 1 << 2;
-    pub const UNDERLINE: u8 = 1 << 3;
-    pub const BLINK: u8 = 1 << 4;
-    pub const INVERSE: u8 = 1 << 5;
-    pub const HIDDEN: u8 = 1 << 6;
-    pub const STRIKETHROUGH: u8 = 1 << 7;
+    pub const BOLD: u8 = api.OT_ATTR_BOLD;
+    pub const DIM: u8 = api.OT_ATTR_DIM;
+    pub const ITALIC: u8 = api.OT_ATTR_ITALIC;
+    pub const UNDERLINE: u8 = api.OT_ATTR_UNDERLINE;
+    pub const BLINK: u8 = api.OT_ATTR_BLINK;
+    pub const INVERSE: u8 = api.OT_ATTR_INVERSE;
+    pub const HIDDEN: u8 = api.OT_ATTR_HIDDEN;
+    pub const STRIKETHROUGH: u8 = api.OT_ATTR_STRIKETHROUGH;
 
-    // Constants for attribute bit packing
-    pub const ATTRIBUTE_BASE_BITS: u5 = 8;
-    pub const ATTRIBUTE_BASE_MASK: u32 = 0xFF;
-
-    // Constants for link_id packing (bits 8-31)
-    pub const LINK_ID_BITS: u8 = 24;
-    pub const LINK_ID_SHIFT: u5 = ATTRIBUTE_BASE_BITS;
-    pub const LINK_ID_PAYLOAD_MASK: u32 = ((@as(u32, 1) << LINK_ID_BITS) - 1);
+    pub const ATTRIBUTE_BASE_MASK: u32 = api.OT_ATTR_BASE_MASK;
+    pub const LINK_ID_SHIFT: u5 = api.OT_ATTR_LINK_SHIFT;
+    pub const LINK_ID_PAYLOAD_MASK: u32 = api.OT_ATTR_LINK_MASK;
     pub const LINK_ID_MASK: u32 = LINK_ID_PAYLOAD_MASK << LINK_ID_SHIFT;
 
     /// Extract the base 8 bits of attributes from a u32 attribute value

@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const atomic = std.atomic;
 const assert = std.debug.assert;
+const api = @import("context_abi_c");
 const ansi = @import("ansi.zig");
 const base64Encode = @import("utils.zig").base64Encode;
 const utf8 = @import("utf8.zig");
@@ -13,7 +14,7 @@ pub const Terminal = @This();
 
 const kitty_queries_max = 4;
 /// Kitty keyboard flags that stop raw ESC: disambiguate and report all keys.
-const kitty_escape_flags: u8 = 0b1001;
+const kitty_escape_flags: u8 = api.OT_KITTY_KEYBOARD_DISAMBIGUATE | api.OT_KITTY_KEYBOARD_ALL_KEYS_AS_ESCAPES;
 
 pub const Capabilities = struct {
     kitty_keyboard: bool = false,
@@ -192,16 +193,10 @@ pub const ClipboardTarget = enum(u8) {
 };
 
 pub const Options = struct {
-    // Kitty keyboard protocol flags (progressive enhancement):
+    // Kitty keyboard protocol flags (progressive enhancement), opentui.h's OT_KITTY_KEYBOARD_*:
     // See: https://sw.kovidgoyal.net/kitty/keyboard-protocol/#progressive-enhancement
-    // Bit 0 (0b1):     Disambiguate escape codes (fixes ESC timing, alt+key ambiguity, ctrl+c as event)
-    // Bit 1 (0b10):    Report event types (press/repeat/release)
-    // Bit 2 (0b100):   Report alternate keys (e.g., numpad vs regular, shifted, base layout)
-    // Bit 3 (0b1000):  Report all keys as escape codes
-    // Bit 4 (0b10000): Report text associated with key events
-    // Default 0b00101 (5) = disambiguate + alternate keys
-    // Use 0b00111 (7) to also enable event types for key release detection
-    kitty_keyboard_flags: u8 = 0b00101,
+    // Add EVENT_TYPES for key release detection.
+    kitty_keyboard_flags: u8 = api.OT_KITTY_KEYBOARD_DISAMBIGUATE | api.OT_KITTY_KEYBOARD_ALTERNATE_KEYS,
     remote_mode: RemoteMode = .local,
     // Optional forwarded environment values. Caller owns the map.
     env_map: ?*const std.process.Environ.Map = null,

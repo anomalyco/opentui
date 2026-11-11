@@ -36,9 +36,25 @@ else
 pub const EncodedChar = encoded_unicode.EncodedChar;
 pub const EncodedUnicode = encoded_unicode.EncodedUnicode;
 
-pub const terminal_input_bytes_max: u32 = 1024 * 1024;
+pub const terminal_input_bytes_max: u32 = api.OT_EMBEDDED_TERMINAL_INPUT_BYTES_MAX;
+const terminal_mods: u32 = api.OT_EMBEDDED_TERMINAL_MOD_SHIFT | api.OT_EMBEDDED_TERMINAL_MOD_CTRL | api.OT_EMBEDDED_TERMINAL_MOD_ALT |
+    api.OT_EMBEDDED_TERMINAL_MOD_SUPER | api.OT_EMBEDDED_TERMINAL_MOD_CAPS_LOCK | api.OT_EMBEDDED_TERMINAL_MOD_NUM_LOCK;
+
+/// Encode calls bit-cast the header's modifier bits to Ghostty's KeyMods.
+fn assertTerminalMods(comptime Mods: type) void {
+    inline for (.{
+        .{ "shift", api.OT_EMBEDDED_TERMINAL_MOD_SHIFT },         .{ "ctrl", api.OT_EMBEDDED_TERMINAL_MOD_CTRL },
+        .{ "alt", api.OT_EMBEDDED_TERMINAL_MOD_ALT },             .{ "super", api.OT_EMBEDDED_TERMINAL_MOD_SUPER },
+        .{ "caps_lock", api.OT_EMBEDDED_TERMINAL_MOD_CAPS_LOCK }, .{ "num_lock", api.OT_EMBEDDED_TERMINAL_MOD_NUM_LOCK },
+    }) |pair| {
+        var mods: Mods = .{};
+        @field(mods, pair[0]) = true;
+        if (@as(u16, @bitCast(mods)) != pair[1]) @compileError("Embedded terminal modifier differs from Ghostty: " ++ pair[0]);
+    }
+}
+
 pub const EmbeddedTerminalKey = struct {
-    action: u32 = 1,
+    action: u32 = api.OT_EMBEDDED_TERMINAL_KEY_PRESS,
     composing: bool = false,
     mods: u32 = 0,
     consumed_mods: u32 = 0,
@@ -48,7 +64,7 @@ pub const EmbeddedTerminalKey = struct {
 };
 pub const EmbeddedTerminalMouse = struct {
     action: u32,
-    button: i32 = -1,
+    button: i32 = api.OT_EMBEDDED_TERMINAL_BUTTON_NONE,
     mods: u32 = 0,
     any_button_pressed: bool = false,
     x: f32,
@@ -443,7 +459,7 @@ pub const Options = struct {
     lease_bytes_max: u64 = buf.BufferLease.bytes_max_default,
     /// Each entry holds at most Diagnostic.message_bytes_max bytes. Zero keeps
     /// only the cumulative drop count. Diagnostics are drained by the idle owner.
-    diagnostic_capacity: u32 = 64,
+    diagnostic_capacity: u32 = api.OT_DIAGNOSTIC_QUEUE_MAX,
     yoga_callbacks: yoga.Callbacks = .{},
 };
 
@@ -1478,16 +1494,17 @@ pub const Context = struct {
         defer self.mutating = false;
         const value = try self.getEmbeddedTerminal(handle);
         if (comptime !@import("ghostty_vt_options").available) return error.Unsupported;
-        if (options.action > 2 or options.mods & ~@as(u32, 0x3f) != 0 or options.consumed_mods & ~@as(u32, 0x3f) != 0 or
+        if (options.action > api.OT_EMBEDDED_TERMINAL_KEY_REPEAT or options.mods & ~terminal_mods != 0 or options.consumed_mods & ~terminal_mods != 0 or
             options.unshifted_codepoint > 0x10ffff or (options.unshifted_codepoint >= 0xd800 and options.unshifted_codepoint <= 0xdfff)) return error.InvalidOptions;
         if (options.key.len > terminal_input_bytes_max or options.text.len > terminal_input_bytes_max) return error.TextLimit;
         if (!std.unicode.utf8ValidateSlice(options.text)) return error.InvalidUnicode;
         const vt = @import("ghostty-vt.zig").vt;
+        comptime assertTerminalMods(vt.input.KeyMods);
         const encoded = try value.encodeKey(.{
             .action = switch (options.action) {
-                0 => .release,
-                1 => .press,
-                2 => .repeat,
+                api.OT_EMBEDDED_TERMINAL_KEY_RELEASE => .release,
+                api.OT_EMBEDDED_TERMINAL_KEY_PRESS => .press,
+                api.OT_EMBEDDED_TERMINAL_KEY_REPEAT => .repeat,
                 else => unreachable,
             },
             .key = vt.input.Key.fromW3C(options.key) orelse .unidentified,
@@ -1506,26 +1523,27 @@ pub const Context = struct {
         defer self.mutating = false;
         const value = try self.getEmbeddedTerminal(handle);
         if (comptime !@import("ghostty_vt_options").available) return error.Unsupported;
-        if (options.action > 2 or options.button < -1 or options.button > 7 or options.mods & ~@as(u32, 0x3f) != 0) return error.InvalidOptions;
+        if (options.action > api.OT_EMBEDDED_TERMINAL_MOUSE_MOTION or options.button < api.OT_EMBEDDED_TERMINAL_BUTTON_NONE or
+            options.button > api.OT_EMBEDDED_TERMINAL_BUTTON_SEVEN or options.mods & ~terminal_mods != 0) return error.InvalidOptions;
         const previous = value.mouse_last_cell;
         errdefer value.mouse_last_cell = previous;
         const encoded = try value.encodeMouse(.{
             .action = switch (options.action) {
-                0 => .press,
-                1 => .release,
-                2 => .motion,
+                api.OT_EMBEDDED_TERMINAL_MOUSE_PRESS => .press,
+                api.OT_EMBEDDED_TERMINAL_MOUSE_RELEASE => .release,
+                api.OT_EMBEDDED_TERMINAL_MOUSE_MOTION => .motion,
                 else => unreachable,
             },
             .button = switch (options.button) {
-                -1 => null,
-                0 => .unknown,
-                1 => .left,
-                2 => .right,
-                3 => .middle,
-                4 => .four,
-                5 => .five,
-                6 => .six,
-                7 => .seven,
+                api.OT_EMBEDDED_TERMINAL_BUTTON_NONE => null,
+                api.OT_EMBEDDED_TERMINAL_BUTTON_UNKNOWN => .unknown,
+                api.OT_EMBEDDED_TERMINAL_BUTTON_LEFT => .left,
+                api.OT_EMBEDDED_TERMINAL_BUTTON_RIGHT => .right,
+                api.OT_EMBEDDED_TERMINAL_BUTTON_MIDDLE => .middle,
+                api.OT_EMBEDDED_TERMINAL_BUTTON_FOUR => .four,
+                api.OT_EMBEDDED_TERMINAL_BUTTON_FIVE => .five,
+                api.OT_EMBEDDED_TERMINAL_BUTTON_SIX => .six,
+                api.OT_EMBEDDED_TERMINAL_BUTTON_SEVEN => .seven,
                 else => unreachable,
             },
             .mods = @bitCast(@as(u16, @intCast(options.mods))),
