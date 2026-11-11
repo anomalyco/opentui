@@ -103,11 +103,17 @@ pub const MouseLevel = enum {
     pixels, // pixel coordinates
 };
 
+/// Ordinals are opentui.h's OT_CURSOR_STYLE_* values.
 pub const CursorStyle = enum {
     block,
     line,
     underline,
     default,
+
+    comptime {
+        for (.{ .{ .block, api.OT_CURSOR_STYLE_BLOCK }, .{ .line, api.OT_CURSOR_STYLE_LINE }, .{ .underline, api.OT_CURSOR_STYLE_UNDERLINE }, .{ .default, api.OT_CURSOR_STYLE_DEFAULT } }) |pair|
+            if (@backingInt(@as(CursorStyle, pair[0])) != pair[1]) @compileError("CursorStyle differs from opentui.h");
+    }
 };
 
 pub const MousePointerStyle = enum(u8) {

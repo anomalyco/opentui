@@ -545,6 +545,11 @@ typedef struct ot_scene_stats {
     uint32_t damage_rows;
 } ot_scene_stats;
 
+/* Cursor styles of the session cursor, the scene cursor state and editors. */
+#define OT_CURSOR_STYLE_BLOCK UINT32_C(0)
+#define OT_CURSOR_STYLE_LINE UINT32_C(1)
+#define OT_CURSOR_STYLE_UNDERLINE UINT32_C(2)
+#define OT_CURSOR_STYLE_DEFAULT UINT32_C(3)
 typedef struct ot_scene_cursor_state {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -1147,7 +1152,7 @@ ot_status ot_scene_get_stats(ot_context *, const ot_handle *session, ot_scene_st
  * repainted frame. A mismatch fails the frame step
  * with OT_INTERNAL_ERROR; VERIFY changes no other state or count. */
 ot_status ot_scene_set_debug_flags(ot_context *, const ot_handle *session, uint32_t flags);
-/* Copied renderer cursor state. Style: block=0 line=1 underline=2 default=3.
+/* Copied renderer cursor state. style is an OT_CURSOR_STYLE_* value.
  * Colors use normalized float channels. Output requires exact size/version. */
 ot_status ot_scene_get_cursor_state(ot_context *, const ot_handle *session, ot_scene_cursor_state *out_state);
 
@@ -1365,6 +1370,11 @@ typedef struct ot_embedded_terminal_cursor {
     uint32_t color_b;
     uint32_t reserved;
 } ot_embedded_terminal_cursor;
+/* The emulator's cursor styles for style above; not the OT_CURSOR_STYLE_* order. */
+#define OT_EMBEDDED_TERMINAL_CURSOR_BAR UINT32_C(0)
+#define OT_EMBEDDED_TERMINAL_CURSOR_BLOCK UINT32_C(1)
+#define OT_EMBEDDED_TERMINAL_CURSOR_UNDERLINE UINT32_C(2)
+#define OT_EMBEDDED_TERMINAL_CURSOR_BLOCK_HOLLOW UINT32_C(3)
 
 /* The active screen's viewport, in rows. offset is the distance from the live
  * screen (0 there; total - visible at the top of history). total includes the
@@ -1542,7 +1552,7 @@ typedef struct ot_edit_buffer_info {
 #define OT_MOUSE_POINTER_UNCHANGED UINT32_C(0xFFFFFFFF)
 
 /* Complete cursor options, not a patch. Exact size/version and zero reserved.
- * show_cursor and blinking are 0 or 1. style is block=0, line=1, underline=2, default=3.
+ * show_cursor and blinking are 0 or 1. style is an OT_CURSOR_STYLE_* value.
  * color retains packed intent for capture; cursor output uses its RGB snapshot.
  * mouse_pointer is an OT_MOUSE_POINTER_* shape or OT_MOUSE_POINTER_UNCHANGED. */
 typedef struct ot_scene_editor_options {
@@ -2523,7 +2533,7 @@ typedef struct ot_session_control_options {
 /* CURSOR payload is exactly one copied ot_session_cursor_update, with native
  * byte order and no alignment requirement. fields selects updated properties;
  * other bits must be zero. x/y clamp to 1 and must not exceed 65536. visible and
- * blinking are 0/1. style is 0=block, 1=line, 2=underline, 3=default. mouse_pointer
+ * blinking are 0/1. style is an OT_CURSOR_STYLE_* value. mouse_pointer
  * is an OT_MOUSE_POINTER_* shape. Color uses the packed RGBA lanes. Unselected
  * fields must be zero. */
 typedef struct ot_session_cursor_update {

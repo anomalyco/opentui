@@ -304,9 +304,9 @@ impl EmbeddedTerminal {
             blinking: raw.blinking != 0,
             wide_tail: raw.wide_tail != 0,
             shape: match raw.style {
-                0 => TerminalCursorShape::Bar,
-                2 => TerminalCursorShape::Underline,
-                3 => TerminalCursorShape::HollowBlock,
+                sys::OT_EMBEDDED_TERMINAL_CURSOR_BAR => TerminalCursorShape::Bar,
+                sys::OT_EMBEDDED_TERMINAL_CURSOR_UNDERLINE => TerminalCursorShape::Underline,
+                sys::OT_EMBEDDED_TERMINAL_CURSOR_BLOCK_HOLLOW => TerminalCursorShape::HollowBlock,
                 _ => TerminalCursorShape::Block,
             },
             color: (raw.color_has_value != 0)

@@ -2276,7 +2276,7 @@ pub const Context = struct {
         const value = try self.scenePaintNode(handle);
         const node = value.scene_node.?;
         if (node.kind != api.OT_SCENE_EDITOR) return error.WrongKind;
-        if (options.style > 3 or (options.mouse_pointer > api.OT_MOUSE_POINTER_MAX and
+        if (options.style > api.OT_CURSOR_STYLE_DEFAULT or (options.mouse_pointer > api.OT_MOUSE_POINTER_MAX and
             options.mouse_pointer != api.OT_MOUSE_POINTER_UNCHANGED)) return error.InvalidOptions;
         try buf.validateColor(options.color);
         node.control = .{ .editor = options };

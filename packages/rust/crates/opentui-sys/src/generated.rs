@@ -5,7 +5,7 @@ use core::ffi::c_void;
 
 /// FNV-1a 64-bit hash of the `opentui.h` these declarations were generated from.
 /// The build script rejects native artifacts whose header has a different hash.
-pub const OPENTUI_HEADER_FNV1A64: u64 = 0x0ac05e9d6e521551;
+pub const OPENTUI_HEADER_FNV1A64: u64 = 0x32b84a5c16c60887;
 
 pub type ot_status = i32;
 
@@ -264,6 +264,10 @@ pub const OT_SCENE_FULL_PATH_TAINTED: u32 = 8;
 pub const OT_SCENE_FULL_PATH_UNRETAINED: u32 = 16;
 pub const OT_SCENE_FULL_PATH_OPTIONS: u32 = 32;
 pub const OT_SCENE_FULL_PATH_NON_LOCAL: u32 = 64;
+pub const OT_CURSOR_STYLE_BLOCK: u32 = 0;
+pub const OT_CURSOR_STYLE_LINE: u32 = 1;
+pub const OT_CURSOR_STYLE_UNDERLINE: u32 = 2;
+pub const OT_CURSOR_STYLE_DEFAULT: u32 = 3;
 pub const OT_SCENE_HOOK_UPDATE: u32 = 1;
 pub const OT_SCENE_HOOK_RESIZE: u32 = 2;
 pub const OT_SCENE_HOOK_LAYOUT_CHANGED: u32 = 4;
@@ -349,6 +353,10 @@ pub const OT_WIDTH_METHOD_UNICODE: u32 = 1;
 pub const OT_WIDTH_METHOD_NO_ZWJ: u32 = 2;
 pub const OT_WIDTH_METHOD_UNICODE_WIDE: u32 = 3;
 pub const OT_BUFFER_RESPECT_ALPHA: u32 = 1;
+pub const OT_EMBEDDED_TERMINAL_CURSOR_BAR: u32 = 0;
+pub const OT_EMBEDDED_TERMINAL_CURSOR_BLOCK: u32 = 1;
+pub const OT_EMBEDDED_TERMINAL_CURSOR_UNDERLINE: u32 = 2;
+pub const OT_EMBEDDED_TERMINAL_CURSOR_BLOCK_HOLLOW: u32 = 3;
 pub const OT_EMBEDDED_TERMINAL_MOD_SHIFT: u32 = 1;
 pub const OT_EMBEDDED_TERMINAL_MOD_CTRL: u32 = 2;
 pub const OT_EMBEDDED_TERMINAL_MOD_ALT: u32 = 4;

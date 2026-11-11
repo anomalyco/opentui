@@ -212,10 +212,10 @@ pub enum CursorStyle {
 impl CursorStyle {
     pub(crate) fn raw(self) -> u8 {
         match self {
-            Self::Block => 0,
-            Self::Line => 1,
-            Self::Underline => 2,
-            Self::Default => 3,
+            Self::Block => sys::OT_CURSOR_STYLE_BLOCK as u8,
+            Self::Line => sys::OT_CURSOR_STYLE_LINE as u8,
+            Self::Underline => sys::OT_CURSOR_STYLE_UNDERLINE as u8,
+            Self::Default => sys::OT_CURSOR_STYLE_DEFAULT as u8,
         }
     }
 }

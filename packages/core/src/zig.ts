@@ -1083,8 +1083,14 @@ registerEnvVar({
 })
 
 // Cursor & mouse pointer style mappings (avoid recreation on each call)
-const CURSOR_STYLE_TO_ID = { block: 0, line: 1, underline: 2, default: 3 } as const
-const CURSOR_ID_TO_STYLE = ["block", "line", "underline", "default"] as const
+const CURSOR_STYLE_TO_ID = {
+  block: nativeConstants.OT_CURSOR_STYLE_BLOCK,
+  line: nativeConstants.OT_CURSOR_STYLE_LINE,
+  underline: nativeConstants.OT_CURSOR_STYLE_UNDERLINE,
+  default: nativeConstants.OT_CURSOR_STYLE_DEFAULT,
+} as const
+const CURSOR_ID_TO_STYLE: CursorStyle[] = []
+for (const [style, id] of Object.entries(CURSOR_STYLE_TO_ID)) CURSOR_ID_TO_STYLE[id] = style as CursorStyle
 const PROGRAM_STATE_TO_ID: Record<string, number | undefined> = {
   idle: nativeConstants.OT_PROGRAM_STATE_IDLE,
   working: nativeConstants.OT_PROGRAM_STATE_WORKING,

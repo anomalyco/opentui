@@ -31,7 +31,9 @@ pub const Options = struct {
     logger: ?*const log.Logger = null,
 };
 
-pub const response_limit = @import("context_abi_c").OT_EMBEDDED_TERMINAL_RESPONSE_BYTES_MAX;
+const abi = @import("context_abi_c");
+
+pub const response_limit = abi.OT_EMBEDDED_TERMINAL_RESPONSE_BYTES_MAX;
 
 const StreamHandler = struct {
     base: ghostty.TerminalStream.Handler,
@@ -219,10 +221,10 @@ pub const EmbeddedTerminal = struct {
             .blinking = state.blinking,
             .wide_tail = viewport.wide_tail,
             .style = switch (state.visual_style) {
-                .bar => 0,
-                .block => 1,
-                .underline => 2,
-                .block_hollow => 3,
+                .bar => abi.OT_EMBEDDED_TERMINAL_CURSOR_BAR,
+                .block => abi.OT_EMBEDDED_TERMINAL_CURSOR_BLOCK,
+                .underline => abi.OT_EMBEDDED_TERMINAL_CURSOR_UNDERLINE,
+                .block_hollow => abi.OT_EMBEDDED_TERMINAL_CURSOR_BLOCK_HOLLOW,
             },
             .color = .{ .r = cursor_color.r, .g = cursor_color.g, .b = cursor_color.b },
         };
