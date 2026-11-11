@@ -2668,6 +2668,18 @@ pub const Scene = struct {
         return value.scene_node;
     }
 
+    /// Where the latest finished frame painted a member: its top-left cell and the cells it could draw. Null when
+    /// that frame did not paint it.
+    pub fn paintedArea(self: *const Scene, node: *const Node) ?struct { x: i64, y: i64, clip: buffer.ClipRect } {
+        if (self.finished_frame == 0 or self.records_frame != self.finished_frame) return null;
+        const found = self.recordOf(node, self.records_frame, self.records.items) orelse return null;
+        const cells = cellLayout(found.inputs.layout);
+        const x: i32 = @intFromFloat(cells.screenX);
+        const y: i32 = @intFromFloat(cells.screenY);
+        const clip = intersection(.{ .x = x, .y = y, .width = @intFromFloat(cells.width), .height = @intFromFloat(cells.height) }, found.inputs.clip);
+        return .{ .x = x, .y = y, .clip = clip };
+    }
+
     fn recordOf(_: *const Scene, node: *const Node, frame: u64, records: []const Record) ?Record {
         std.debug.assert(frame != 0);
         for (node.records) |slot| {
@@ -3027,7 +3039,10 @@ pub const Scene = struct {
         try self.prepareMember(entry);
         if (node.text) |text| {
             const hit = intersection(.{ .x = x, .y = y, .width = width, .height = height }, entry.clip);
-            if (hit.width != 0 and hit.height != 0) try target.drawTextBufferChecked(text.view, x, y);
+            if (hit.width != 0 and hit.height != 0) {
+                try target.drawTextBufferChecked(text.view, x, y);
+                text.painted = text.mapping();
+            }
         } else if (node.kind == api.OT_SCENE_TEXT_VIEW) {
             const view = node.control.text_view.view orelse return;
             if (!node.control.text_view.paint) return;
