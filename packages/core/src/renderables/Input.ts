@@ -16,9 +16,9 @@ export interface InputRenderableOptions extends Omit<
 > {
   /** Initial text value (newlines are stripped) */
   value?: string
-  /** Minimum number of characters allowed */
+  /** Minimum length in UTF-16 code units required for submit */
   minLength?: number
-  /** Maximum number of characters allowed */
+  /** Maximum length in UTF-16 code units */
   maxLength?: number
   /** Placeholder text (Input only supports string, not StyledText) */
   placeholder?: string

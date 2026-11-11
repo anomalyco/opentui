@@ -148,7 +148,7 @@ return, and line feed show as `^@` to `^_` in two cells, DEL as `^?` in two cell
 `<80>` to `<9f>` in four cells. The cursor stops before each control and deletes it as one unit, wrapping never splits
 its notation, and `getText()`, history, and selected text return the original characters. Tab, carriage return, and
 line feed keep their meaning. The same rule applies to editor placeholders, `Textarea.initialValue`, and `Input.value`.
-`Input.maxLength` counts the characters of the value, controls included. Read-only text, such as `TextRenderable`,
+`Input.maxLength` counts the UTF-16 code units of the value, controls included. Read-only text, such as `TextRenderable`,
 still gives controls no cells. `Textarea` and `Input` ignore key sequences that contain control characters.
 
 Pasted text keeps its controls, but `Textarea` and `Input` remove terminal escape sequences from it with
