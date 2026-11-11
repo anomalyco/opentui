@@ -229,9 +229,6 @@ pub const Doc = struct {
     undo_base_block_count: u32 = 0,
     /// Block count at the last successful read: a removal at or past it was never reported.
     read_block_count: u32 = 0,
-    /// The definition whose arrival is being applied, and whether a re-inline used it.
-    watch_definition: u32 = none,
-    watch_hit: bool = false,
     /// The provisional layout of the pending line: blocks at index >= `provisional_from` (none:
     /// no layout), and the real blocks it extended with their values before.
     provisional_from: u32 = none,
@@ -1533,13 +1530,29 @@ pub const Doc = struct {
             const b = self.blocks.items[i];
             if (!b.flags.unresolved or b.flags.open) continue;
             self.counters.bytes_reinlined += b.content_end_byte - b.content_start_byte;
-            self.watch_definition = definition;
-            self.watch_hit = false;
-            defer self.watch_definition = none;
-            try self.computeUnresolved(i);
-            if (self.watch_hit) (try self.blockMut(i)).flags.unreported = true;
+            var watch: Watch = .{ .doc = self, .definition = definition };
+            const arena = self.scratch.allocator();
+            const result = try inline_parser.parse(arena, try self.leafSubject(arena, i), .{ .context = &watch, .lookup_fn = Watch.lookup }, .{ .math = self.options.math });
+            if (b.flags.unresolved != result.unresolved) (try self.blockMut(i)).flags.unresolved = result.unresolved;
+            if (watch.hit) (try self.blockMut(i)).flags.unreported = true;
         }
     }
+
+    /// The doc's references, noting whether a lookup found `definition`.
+    const Watch = struct {
+        doc: *const Doc,
+        definition: u32,
+        hit: bool = false,
+
+        fn lookup(context: *const anyopaque, label: []const u8) ?inline_parser.Link {
+            // The context is this call's own `Watch` (a mutable local), passed as the parser's
+            // const context.
+            const watch: *Watch = @ptrCast(@alignCast(@constCast(context)));
+            const index = watch.doc.lookupIndex(label) orelse return null;
+            if (index == watch.definition) watch.hit = true;
+            return watch.doc.definitionLink(index);
+        }
+    };
 
     // ---- The pending line's provisional layout (D93 Q4 B) ----
 
@@ -2427,13 +2440,19 @@ pub const Doc = struct {
 
     fn lookupReference(context: *const anyopaque, label: []const u8) ?inline_parser.Link {
         const self: *const Doc = @ptrCast(@alignCast(context));
+        return self.definitionLink(self.lookupIndex(label) orelse return null);
+    }
+
+    fn lookupIndex(self: *const Doc, label: []const u8) ?u32 {
         const arena = self.scratch.allocator();
         const normalized = normalizeLabel(arena, label) catch return null;
         if (normalized.len == 0) return null;
         const hash: u32 = @truncate(std.hash.Wyhash.hash(0, normalized));
-        const index = self.findDefinition(arena, normalized, hash) orelse return null;
-        // The inline parser sees the doc as const; the watch flag is the one write it causes.
-        if (index == self.watch_definition) @constCast(self).watch_hit = true;
+        return self.findDefinition(arena, normalized, hash);
+    }
+
+    fn definitionLink(self: *const Doc, index: u32) ?inline_parser.Link {
+        const arena = self.scratch.allocator();
         const d = self.definitions.items[index];
         const s = self.source.items;
         const title = if (d.title_start_byte == none) null else self.spanText(arena, d.parent_index, d.title_start_byte, d.title_end_byte) catch return null;
