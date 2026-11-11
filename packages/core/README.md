@@ -11,7 +11,7 @@
     <a href="https://github.com/anomalyco/opentui/actions/workflows/build-core.yml"><img alt="Core build status" src="https://img.shields.io/github/actions/workflow/status/anomalyco/opentui/build-core.yml?style=flat-square&branch=main" /></a>
 </div>
 
-OpenTUI is a library to build terminal user interfaces.
+OpenTUI is a library for building terminal user interfaces.
 
 - It is written in Zig.
 - You write TypeScript directly or through React and Solid.
