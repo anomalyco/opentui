@@ -14,6 +14,7 @@ import { CodeRenderable } from "../Code.js"
 import { BoxRenderable } from "../Box.js"
 import { TextRenderable } from "../Text.js"
 import { TextTableRenderable } from "../TextTable.js"
+import { ScrollBoxRenderable } from "../ScrollBox.js"
 import { SyntaxStyle } from "../../syntax-style.js"
 import { RGBA } from "../../lib/RGBA.js"
 import { TreeSitterClient } from "../../lib/tree-sitter/index.js"
@@ -5502,18 +5503,33 @@ test("a rejected highlight keeps the hooked text", async () => {
 
 // Seeded model of a hooked, streamed Markdown answer against the fake worker. Each seed appends pieces (prose, quotes,
 // lists, code spans, a table's header, delimiter and row), draws frames, answers highlights in any order (even seeds
-// also reject some), renames the linked sessions, reruns the hook and ends the stream. Every frame must show no ID the
-// hook links (no unhooked frame); while streaming, it must show a label for every ID the content holds and lose no
-// drawn row or text; in top-level mode, a row of a stable block that showed text must not change (no flicker above
-// the streamed block). The settled frame must equal a fresh render.
+// also reject some), renames the linked sessions, reruns the hook, swaps the theme, scrolls the Markdown out of view
+// (culled) and back, remounts it with the same content (as a tab switch does) and ends the stream. Every frame must
+// show no ID the hook links (no unhooked frame); while streaming and in view, it must show a label for every ID the
+// content holds and lose no drawn row or text; in top-level mode, a row of a stable block that showed text must not
+// change (no flicker above the streamed block). The settled frame must equal a fresh render, colors included.
 test("hooked streaming Markdown never shows unhooked text or changes settled rows", async () => {
+  // A second theme for the style command: other colors and attributes for the groups prose uses.
+  const otherStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(0.8, 0.8, 0.6, 1) },
+      conceal: { fg: RGBA.fromValues(0.3, 0.3, 0.3, 1) },
+      "markup.raw": { fg: RGBA.fromValues(1, 0.5, 0, 1), bold: true },
+      "markup.italic": { italic: true, fg: RGBA.fromValues(0.5, 1, 0.5, 1) },
+      "markup.heading": { bold: true, fg: RGBA.fromValues(0, 0.6, 1, 1) },
+      "markup.quote": { italic: true },
+      "markup.list": { fg: RGBA.fromValues(1, 0, 1, 1) },
+    },
+    renderer.nativeScene,
+  )
   const pieces = ["see ", "ses_a ", "ses_b\n", "word ", "\n\n", "# ", "> ", "- ", "*x* ", "`ses_a` ", "`run x` ", "\n"]
   // Three columns: a line holds at most one table piece, so only a delimiter's "--" cells can fall beyond the header.
   pieces.push("| ses_a | | |\n", "|--|--|--|\n", "| x ses_b |\n")
   // MARKDOWN_MODEL_SEED=<s> replays one seed; MARKDOWN_MODEL_SEEDS=<n> runs more. Seeds 449 and 3638 found the
   // child-kind defects.
   const one = process.env.MARKDOWN_MODEL_SEED
-  const count = Number(process.env.MARKDOWN_MODEL_SEEDS ?? 40)
+  // 500 seeds run in about 2 s under Bun; 1000 took 5 s.
+  const count = Number(process.env.MARKDOWN_MODEL_SEEDS ?? 500)
   const seeds = one ? [Number(one)] : [449, 3638, ...Array.from({ length: count }, (_, i) => i + 1)]
   for (const seed of seeds) {
     let state = seed * 2654435761
@@ -5529,16 +5545,28 @@ test("hooked streaming Markdown never shows unhooked text or changes settled row
       ["ses_a", "A"],
       ["ses_b", "B"],
     ])
+    let style = syntaxStyle
+    // The Markdown is the first of 17 children of a scroll box (the scene culls only parents with 16 or more), so
+    // scrolling to the end culls it. A remount builds both again, as a tab switch does.
+    const mount = (worker: FakeWorker, content: string, streaming: boolean) => {
+      const box = new ScrollBoxRenderable(renderer, { width: "100%", height: renderer.height })
+      box.verticalScrollBar.visible = false
+      const md = createMarkdownRenderable({
+        content,
+        syntaxStyle: style,
+        streaming,
+        internalBlockMode,
+        treeSitterClient: worker,
+        inlineHook: sessionLinks(titles),
+      })
+      box.add(md)
+      for (let i = 0; i < 16; i++) box.add(new BoxRenderable(renderer, { height: 3, flexShrink: 0 }))
+      renderer.root.add(box)
+      return { box, md }
+    }
     const worker = new FakeWorker()
-    const md = createMarkdownRenderable({
-      content: "",
-      syntaxStyle,
-      streaming: true,
-      internalBlockMode,
-      treeSitterClient: worker,
-      inlineHook: sessionLinks(titles),
-    })
-    renderer.root.add(md)
+    let { box, md } = mount(worker, "", true)
+    let inView = true
     const trace: string[] = []
     const rows = () =>
       captureFrame()
@@ -5562,6 +5590,7 @@ test("hooked streaming Markdown never shows unhooked text or changes settled row
     const frame = async () => {
       const settledCount = settledBlocks()
       await renderOnce()
+      if (!inView) return
       const frame = captureFrame()
       const fail = (what: string) => {
         throw new Error(`seed ${seed}: ${what} after ${trace.join(" | ")}\n${JSON.stringify(md.content)}\n${frame}`)
@@ -5607,7 +5636,9 @@ test("hooked streaming Markdown never shows unhooked text or changes settled row
           trace.push("reply")
           worker.reply(pick(worker.pending.length))
           await flushAsync()
-        } else if (roll < 0.82 && seed % 2 === 0) {
+        } else if (roll < 0.82 && seed % 2 === 0 && md.streaming) {
+          // Only while streaming: after the end, a theme swap or rerun asks the worker again with no preview to keep,
+          // and Code's lifecycle (code-highlight-model) owns that case.
           trace.push("fail")
           worker.fail(pick(worker.pending.length))
           await flushAsync()
@@ -5620,12 +5651,32 @@ test("hooked streaming Markdown never shows unhooked text or changes settled row
         } else if (roll < 0.9) {
           trace.push("finish")
           md.streaming = false
+        } else if (roll < 0.92) {
+          trace.push("style")
+          style = style === syntaxStyle ? otherStyle : syntaxStyle
+          md.syntaxStyle = style
+        } else if (roll < 0.94) {
+          inView = !inView
+          trace.push(inView ? "scroll in" : "scroll out")
+          box.scrollTo(inView ? 0 : renderer.height * 2)
+        } else if (roll < 0.96) {
+          trace.push("remount")
+          const content = md.content
+          const streaming = md.streaming
+          box.destroyRecursively()
+          ;({ box, md } = mount(worker, content, streaming))
+          inView = true
+          // The new mount starts from its own first frame.
+          previous = []
+          drawn = { rows: 0, text: 0 }
         } else {
           trace.push("tick")
           await new Promise<void>((resolve) => setImmediate(resolve))
         }
       }
       trace.push("settle")
+      inView = true
+      box.scrollTo(0)
       md.streaming = false
       // Highlights rejected on the way are asked again, as a later change would.
       md.rerunInlineHook(() => true)
@@ -5635,35 +5686,42 @@ test("hooked streaming Markdown never shows unhooked text or changes settled row
         await flushAsync()
       }
       await renderOnce()
-      const settled = frameText()
-      md.destroyRecursively()
+      // Text, colors and attributes of every cell.
+      const cells = () =>
+        captureSpans()
+          .lines.map((line) =>
+            line.spans.map((span) => [span.text, span.fg.toInts(), span.bg.toInts(), span.attributes]),
+          )
+          .map((line) => JSON.stringify(line))
+      const settled = { text: frameText(), cells: cells() }
+      const content = md.content
+      box.destroyRecursively()
 
       const twinWorker = new FakeWorker()
-      const twin = createMarkdownRenderable({
-        content: md.content,
-        syntaxStyle,
-        internalBlockMode,
-        treeSitterClient: twinWorker,
-        inlineHook: sessionLinks(titles),
-      })
-      renderer.root.add(twin)
+      const twin = mount(twinWorker, content, false)
       for (let pass = 0; pass < 4; pass++) {
         await renderOnce()
         while (twinWorker.pending.length > 0) twinWorker.reply()
         await flushAsync()
       }
       await renderOnce()
-      if (frameText() !== settled) {
+      const fresh = { text: frameText(), cells: cells() }
+      const row = fresh.cells.findIndex((line, index) => line !== settled.cells[index])
+      if (fresh.text !== settled.text || row !== -1) {
         throw new Error(`seed ${seed}: settled frame differs from a fresh render after ${trace.join(" | ")}
-${settled}
+${settled.text}
 --- fresh
-${frameText()}`)
+${fresh.text}
+--- first differing row ${row}
+${settled.cells[row]}
+${fresh.cells[row]}`)
       }
-      twin.destroyRecursively()
+      twin.box.destroyRecursively()
     } finally {
       console.warn = warn
     }
   }
+  otherStyle.destroy()
 }, 600_000)
 
 test("list and quote children keep their text when their kind or the stream changes", async () => {

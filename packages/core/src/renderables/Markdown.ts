@@ -654,8 +654,9 @@ export class MarkdownRenderable extends Renderable {
 
   /**
    * Runs the inline hook again on the shown blocks and table cells whose source `select` accepts, for a change only
-   * the hook knows about, such as a new title for an ID it links. Nothing is parsed again; a block keeps its text
-   * until its new text is ready. Does nothing without a hook.
+   * the hook knows about, such as a new title for an ID it links. The Markdown is not parsed again, and table cells
+   * are rewritten at once, but each selected prose block is highlighted again, a round trip to the highlighter; it
+   * keeps its text until the new text is ready. Does nothing without a hook.
    */
   public rerunInlineHook(select: (source: string) => boolean): void {
     if (!this._inlineHook) return
