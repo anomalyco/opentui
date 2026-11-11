@@ -5729,3 +5729,17 @@ test.each([
     expect(frameText()).toBe(`${bar}KEY  EMPTY\n${bar}X    EMPTY`)
   },
 )
+
+// Remembered highlights are kept per client, so a remounted Markdown must ask through the same client as before.
+test("every Markdown on a client highlights prose through one shared masking client", async () => {
+  const client = createMockTreeSitterClient()
+  const code = (md: MarkdownRenderable, filetype: string | undefined) =>
+    md.getChildren().find((child) => child instanceof CodeRenderable && child.filetype === filetype) as CodeRenderable
+  const [first, second] = [0, 1].map(() =>
+    createMarkdownRenderable({ content: "text\n\n```ts\nx\n```", syntaxStyle, treeSitterClient: client }),
+  )
+  expect(code(first!, "markdown").treeSitterClient).toBe(code(second!, "markdown").treeSitterClient)
+  // Fences are not masked.
+  expect(code(first!, "typescript").treeSitterClient).toBe(client)
+  expect(code(first!, "markdown").treeSitterClient).not.toBe(client)
+})

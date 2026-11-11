@@ -263,6 +263,7 @@ interface ResolvedTableRenderableOptions {
 const TRAILING_MARKDOWN_BLOCK_BREAKS_RE = /(?:\r?\n){2,}$/
 const TRAILING_MARKDOWN_BLOCK_NEWLINES_RE = /(?:\r?\n)+$/
 const markdownLinkEncoder = new TextEncoder()
+const proseClients = new WeakMap<TreeSitterClient, TreeSitterClient>()
 const ATX_HEADING_MARKER_RE = /^ {0,3}#{1,6}(?:[ \t]+|$)/gm
 
 function isSupportedLinkTarget(url: string): boolean {
@@ -346,7 +347,6 @@ export class MarkdownRenderable extends Renderable {
   private _inlineHookFilter?: readonly string[]
   // Preview and table chunks drawn as code spans.
   private _codeChunks = new WeakSet<TextChunk>()
-  private _proseClient?: TreeSitterClient
   // The kind of block each list item or quote child shows, so a child is updated only for a block of its kind.
   private _childKinds = new WeakMap<Renderable, string>()
 
@@ -1064,16 +1064,22 @@ export class MarkdownRenderable extends Renderable {
    * does.
    */
   private getProseClient(): TreeSitterClient {
-    this._proseClient ??= new Proxy(this._treeSitterClient ?? getTreeSitterClient(), {
-      get: (target, property) => {
-        if (property === "highlightOnce") {
-          return (content: string, filetype: string) => target.highlightOnce(content.replaceAll("$", "%"), filetype)
-        }
-        const value = Reflect.get(target, property, target)
-        return typeof value === "function" ? value.bind(target) : value
-      },
-    })
-    return this._proseClient
+    // One per client, so whatever a client keeps per caller (remembered highlights) holds across Markdowns.
+    const client = this._treeSitterClient ?? getTreeSitterClient()
+    let prose = proseClients.get(client)
+    if (!prose) {
+      prose = new Proxy(client, {
+        get: (target, property) => {
+          if (property === "highlightOnce") {
+            return (content: string, filetype: string) => target.highlightOnce(content.replaceAll("$", "%"), filetype)
+          }
+          const value = Reflect.get(target, property, target)
+          return typeof value === "function" ? value.bind(target) : value
+        },
+      })
+      proseClients.set(client, prose)
+    }
+    return prose
   }
 
   private getBlockquoteBorderColor(): ColorInput {
