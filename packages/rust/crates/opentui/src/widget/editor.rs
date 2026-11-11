@@ -1277,13 +1277,16 @@ mod tests {
     fn theme_switches_intern_no_group_sets_and_highlight_nothing() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static LOADS: AtomicUsize = AtomicUsize::new(0);
-        let grammar = || syntax::Grammar::new(tree_sitter_rust::LANGUAGE, "\"let\" @keyword");
+        let grammar = || syntax::Grammar::new(tree_sitter_rust::LANGUAGE, "\"let\" @keyword (string_literal) @string");
         syntax::register("g7-churn", grammar()).unwrap();
         let app = TestApp::new(20, 2);
         let area = Textarea::new(&app).filetype("g7-churn").grow(1.0);
         area.set_text("let a = 1;");
         app.root().add(&area);
-        let keyword = |r: u8| SyntaxTheme::new().style("keyword", Style::new().fg(Color::rgb(r, 0, 0)));
+        let keyword = |r: u8| {
+            let theme = SyntaxTheme::new().style("string", Style::new().fg(Color::GREEN));
+            theme.style("keyword", Style::new().fg(Color::rgb(r, 0, 0)))
+        };
         let fg = |app: &TestApp| app.try_render().expect("a frame past the bound").cell(0, 0).unwrap().fg;
         area.syntax_theme(keyword(1));
         assert_eq!(fg(&app), Color::rgb(1, 0, 0));
@@ -1313,8 +1316,10 @@ mod tests {
         assert_eq!(fg(&app), Color::rgb(79, 0, 0));
         assert_eq!(LOADS.load(Ordering::SeqCst), 0, "a theme or table switch parsed");
         area.focus();
-        app.type_text(" x");
+        // The first string needs a new set, which the full pool refuses: it paints plain.
+        app.type_text(" \"s\"");
         assert_eq!(fg(&app), Color::rgb(79, 0, 0));
+        assert_eq!(app.render().cell(12, 0).unwrap().fg, app.theme().foreground);
         assert_eq!(LOADS.load(Ordering::SeqCst), 1);
         area.buffer().clear_highlights().unwrap();
         area.syntax_theme(keyword(1));
