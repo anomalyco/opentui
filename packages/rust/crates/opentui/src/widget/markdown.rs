@@ -11,6 +11,7 @@ use crate::style::{Alignment, BorderStyle, Color, Sides, Span, Style};
 use crate::syntax::{SyntaxTheme, filetype_for_info_string};
 use crate::theme::Theme;
 use std::cell::{Cell, RefCell};
+use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -549,19 +550,19 @@ pub(crate) struct Inline {
 /// Parses inline Markdown: `**strong**`, `*emphasis*`, `` `code` ``, `~~strike~~`, `[links](url)`, `<autolinks>`,
 /// bare URLs, images (as their alt text), escapes, and hard breaks. Without conceal, the markers stay, styled as
 /// what they mark.
-pub(crate) fn inline(text: &str, base: Style, options: &Inline) -> Vec<Span<'static>> {
+pub(crate) fn inline(text: &str, base: Style, options: &Inline) -> Vec<InlineSpan> {
     let styles = &options.styles;
-    let mut spans = Vec::new();
+    let mut spans: Vec<InlineSpan> = Vec::new();
     let mut plain = String::new();
     let mut rest = text;
-    let flush = |plain: &mut String, spans: &mut Vec<Span<'static>>, style: Style| {
+    let flush = |plain: &mut String, spans: &mut Vec<InlineSpan>, style: Style| {
         if !plain.is_empty() {
-            spans.push(Span::styled(std::mem::take(plain), style));
+            spans.push(Span::styled(std::mem::take(plain), style).into());
         }
     };
-    let marker = |spans: &mut Vec<Span<'static>>, marker: &'static str, style: Style| {
+    let marker = |spans: &mut Vec<InlineSpan>, marker: &'static str, style: Style| {
         if !options.conceal {
-            spans.push(Span::styled(marker, style));
+            spans.push(Span::styled(marker, style).into());
         }
     };
     let (link, link_url, link_gap) =
@@ -609,7 +610,7 @@ pub(crate) fn inline(text: &str, base: Style, options: &Inline) -> Vec<Span<'sta
             let next = rest[1..].chars().next().expect("checked above");
             flush(&mut plain, &mut spans, base);
             let escape = if options.conceal { next.to_string() } else { format!("\\{next}") };
-            spans.push(Span::styled(escape, base.patch(styles.escape)));
+            spans.push(Span::styled(escape, base.patch(styles.escape)).into());
             rest = &rest[1 + next.len_utf8()..];
             previous = Some(next);
             continue;
@@ -623,7 +624,8 @@ pub(crate) fn inline(text: &str, base: Style, options: &Inline) -> Vec<Span<'sta
                 _ if code.len() > 2 && code.starts_with(' ') && code.ends_with(' ') => &code[1..code.len() - 1],
                 _ => code,
             };
-            spans.push(Span::styled(code.replace('\n', " "), base.patch(styles.code)));
+            let span = Span::styled(code.replace('\n', " "), base.patch(styles.code));
+            spans.push(InlineSpan { code: true, ..span.into() });
             rest = &rest[2 * ticks + end..];
         } else if let Some((open, (inner, after))) = delimited("**", "**")
             .map(|found| ("**", found))
@@ -663,20 +665,21 @@ pub(crate) fn inline(text: &str, base: Style, options: &Inline) -> Vec<Span<'sta
             let image = rest.starts_with('!');
             let url = destination.split_whitespace().next().unwrap_or_default().to_owned();
             let label_style = base.patch(styles.link_label);
+            let linked = |span: InlineSpan| InlineSpan { span: span.span.link(url.clone()), ..span };
             let parts = |parts: [(&str, Style); 4]| {
-                parts.map(|(text, style)| Span::styled(text.to_owned(), style).link(url.clone()))
+                parts.map(|(text, style)| linked(Span::styled(text.to_owned(), style).into()))
             };
             if options.conceal {
                 let label = inline(if image && label.is_empty() { "image" } else { label }, label_style, options);
-                let text: String = label.iter().map(|span| span.content.as_ref()).collect();
-                spans.extend(label.into_iter().map(|span| span.link(url.clone())));
+                let text: String = label.iter().map(|span| span.span.content.as_ref()).collect();
+                spans.extend(label.into_iter().map(linked));
                 // As in Core, a terminal without hyperlinks shows where the link goes.
                 if options.urls && !image && text != url {
                     spans.extend(parts([(" ", link_gap), ("(", link), (&url, link_url), (")", link)]));
                 }
             } else {
-                spans.push(Span::styled(if image { "![" } else { "[" }, link).link(url.clone()));
-                spans.extend(inline(label, label_style, options).into_iter().map(|span| span.link(url.clone())));
+                spans.push(linked(Span::styled(if image { "![" } else { "[" }, link).into()));
+                spans.extend(inline(label, label_style, options).into_iter().map(linked));
                 // An image's `]` is part of the link in Core's query; a link's is not.
                 spans.extend(parts([
                     ("]", if image { link } else { link_gap }),
@@ -690,7 +693,8 @@ pub(crate) fn inline(text: &str, base: Style, options: &Inline) -> Vec<Span<'sta
             (url.contains("://") || url.starts_with("mailto:")) && !url.contains(char::is_whitespace)
         }) {
             flush(&mut plain, &mut spans, base);
-            let link = |text: &str, style: Style| Span::styled(text.to_owned(), style).link(url.to_owned());
+            let link =
+                |text: &str, style: Style| InlineSpan::from(Span::styled(text.to_owned(), style).link(url.to_owned()));
             if options.conceal {
                 spans.push(link(url, link_url));
             } else {
@@ -701,7 +705,7 @@ pub(crate) fn inline(text: &str, base: Style, options: &Inline) -> Vec<Span<'sta
             flush(&mut plain, &mut spans, base);
             let url = &rest[..length];
             let target = if url.starts_with("www.") { format!("http://{url}") } else { url.to_owned() };
-            spans.push(Span::styled(url.to_owned(), base.patch(styles.bare_url)).link(target));
+            spans.push(Span::styled(url.to_owned(), base.patch(styles.bare_url)).link(target).into());
             rest = &rest[length..];
         } else {
             plain.push(character);
@@ -735,6 +739,51 @@ pub struct CodeBlock<'a> {
 }
 
 type CodeBlockRenderer = Rc<dyn Fn(&CodeBlock<'_>) -> Option<AnyWidget>>;
+
+/// A piece of a paragraph's or heading's inline text, as a hook registered with [`Markdown::inline_hook`] gets and
+/// returns it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InlineSpan {
+    /// The text and its style. `span.link` is a hyperlink the widget found: a Markdown link, an autolink, or a bare
+    /// URL. Terminals that support hyperlinks get it through OSC 8, so set it only to a URL.
+    pub span: Span<'static>,
+    /// Whether this is a code span, styled as `markup.raw`. Without conceal, its text keeps the backticks.
+    pub code: bool,
+    /// What a click on this span means to the app, such as an ID; [`Markdown::target_at`] returns it. It never
+    /// reaches the terminal.
+    pub target: Option<String>,
+}
+
+impl From<Span<'static>> for InlineSpan {
+    fn from(span: Span<'static>) -> Self {
+        Self { span, code: false, target: None }
+    }
+}
+
+/// The block an inline hook rewrites.
+pub struct InlineContext<'a> {
+    /// The block's inline Markdown source.
+    pub source: &'a str,
+    /// Whether the document conceals Markdown markers. See [`Markdown::conceal`].
+    pub conceal: bool,
+    /// The document's syntax theme, for styles such as `markup.link.url`.
+    pub syntax: &'a SyntaxTheme,
+    /// Whether the spans are one table cell's content. A cell shows the spans the hook returns but takes no click
+    /// targets.
+    pub table_cell: bool,
+}
+
+type InlineHook = Rc<dyn Fn(Vec<InlineSpan>, &InlineContext<'_>) -> Vec<InlineSpan>>;
+
+/// The click targets of a paragraph or heading: byte ranges of its text, and what each means to the app.
+struct Targets {
+    text: Text,
+    ranges: Vec<(Range<usize>, String)>,
+    /// The app's frame number when `ranges` arrived: later frames paint them.
+    since: u64,
+    /// The ranges the frames up to `since` painted.
+    painted: Vec<(Range<usize>, String)>,
+}
 
 /// The look of Markdown tables. See [`MarkdownTableOptions`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -781,6 +830,7 @@ struct Options {
     table: MarkdownTableOptions,
     /// Renderers by the filetype they render.
     code_blocks: Vec<(String, CodeBlockRenderer)>,
+    inline_hook: Option<InlineHook>,
 }
 
 pub(crate) struct MarkdownInner {
@@ -807,6 +857,8 @@ struct Shown {
     start: usize,
     block: Block,
     rendered: Rendered,
+    /// The click targets the inline hook gave the block's paragraphs and headings.
+    targets: Vec<Targets>,
 }
 
 /// A block's widget, typed where it can change in place.
@@ -832,8 +884,8 @@ impl Rendered {
 }
 
 /// Which blocks an update builds again even when their source is unchanged.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Rebuild {
+#[derive(Clone, Copy)]
+enum Rebuild<'a> {
     None,
     All,
     Code,
@@ -841,15 +893,23 @@ enum Rebuild {
     /// Runs the code-block renderers again with the widgets they returned, for a change they read, such as the end
     /// of streaming.
     Renderers,
+    /// Runs the inline hook again on the blocks with a paragraph, heading or table cell whose source matches, without
+    /// parsing.
+    Hook(&'a dyn Fn(&str) -> bool),
 }
 
-impl Rebuild {
+impl Rebuild<'_> {
     fn matches(self, block: &Block) -> bool {
         match self {
             Self::None | Self::Renderers => false,
             Self::All => true,
             Self::Code => block.any(&|block| matches!(block, Block::Code(..))),
             Self::Tables => block.any(&|block| matches!(block, Block::Table(_))),
+            Self::Hook(select) => block.any(&|block| match block {
+                Block::Paragraph(text) | Block::Heading(_, text) => select(text),
+                Block::Table(table) => table.header.iter().chain(table.rows.iter().flatten()).any(|cell| select(cell)),
+                _ => false,
+            }),
         }
     }
 }
@@ -864,6 +924,10 @@ struct Renderer<'a> {
     options: &'a Options,
     /// Whether link text shows URLs: the terminal does not show hyperlinks.
     urls: bool,
+    /// The click targets of the paragraphs and headings built since the caller last took them.
+    targets: &'a RefCell<Vec<Targets>>,
+    /// The targets of the block being built again, before it changed.
+    previous: &'a RefCell<Vec<Targets>>,
 }
 
 impl Renderer<'_> {
@@ -871,14 +935,59 @@ impl Renderer<'_> {
         self.styles.text
     }
 
-    fn inline(&self, text: &str, style: Style) -> Vec<Span<'static>> {
+    fn inline(&self, text: &str, style: Style) -> Vec<InlineSpan> {
         inline(text, style, &Inline { styles: self.styles, conceal: self.options.conceal, urls: self.urls })
     }
 
-    fn heading(&self, level: u8, text: &str) -> Vec<Span<'static>> {
+    fn heading(&self, level: u8, text: &str) -> Vec<InlineSpan> {
         let style = self.base().patch(self.styles.headings[usize::from(level.clamp(1, 6)) - 1]);
         let marker = (!self.options.conceal).then(|| Span::styled(format!("{} ", "#".repeat(level.into())), style));
-        marker.into_iter().chain(self.inline(text, style)).collect()
+        marker.map(InlineSpan::from).into_iter().chain(self.inline(text, style)).collect()
+    }
+
+    /// `spans` of the inline `source`, a table cell's when `table_cell`, as the inline hook rewrites them, if there is
+    /// one.
+    fn hook(&self, spans: Vec<InlineSpan>, source: &str, table_cell: bool) -> Vec<InlineSpan> {
+        let Some(hook) = &self.options.inline_hook else { return spans };
+        hook(spans, &InlineContext { source, conceal: self.options.conceal, syntax: self.syntax, table_cell })
+    }
+
+    /// A paragraph's or heading's text: `spans` of the inline `source`, passed through the inline hook, in `widget`
+    /// or a new one. Records the spans' click targets.
+    fn prose(&self, widget: Option<&Text>, spans: Vec<InlineSpan>, source: &str) -> Text {
+        let spans = self.hook(spans, source, false);
+        let (mut ranges, mut end) = (Vec::new(), 0);
+        let content: Vec<Span<'static>> = spans
+            .into_iter()
+            .map(|InlineSpan { span, target, .. }| {
+                let start = end;
+                end += span.content.len();
+                ranges.extend(target.map(|target| (start..end, target)));
+                span
+            })
+            .collect();
+        let text = match widget {
+            Some(widget) => widget.set_text(content),
+            None => Text::new(self.app, content),
+        };
+        // Until a frame paints the new ranges, clicks keep reaching the ones on screen.
+        // Only a widget updated in place had targets before: a new one has none.
+        let mut previous = self.previous.borrow_mut();
+        let old = widget.and_then(|_| {
+            let index = previous.iter().position(|old| {
+                #[cfg(test)]
+                tests::LOOKUPS.with(|lookups| lookups.set(lookups.get() + 1));
+                old.text.id() == text.id()
+            })?;
+            Some(previous.swap_remove(index))
+        });
+        let since = self.app.painted_frames();
+        let painted = old.map_or_else(Vec::new, |old| if old.since < since { old.ranges } else { old.painted });
+        if !ranges.is_empty() || !painted.is_empty() {
+            self.targets.borrow_mut().push(Targets { text: text.clone(), ranges, since, painted });
+            self.app.request_redraw();
+        }
+        text
     }
 
     /// A code block: from a registered renderer, or highlighted as the filetype its fence names.
@@ -943,8 +1052,8 @@ impl Renderer<'_> {
     fn unsized_block(&self, block: &Block) -> Rendered {
         let (app, colors, base) = (self.app, &self.colors, self.base());
         Rendered::Other(match block {
-            Block::Heading(level, text) => return Rendered::Text(Text::new(app, self.heading(*level, text))),
-            Block::Paragraph(text) => return Rendered::Text(Text::new(app, self.inline(text, base))),
+            Block::Heading(level, text) => return Rendered::Text(self.prose(None, self.heading(*level, text), text)),
+            Block::Paragraph(text) => return Rendered::Text(self.prose(None, self.inline(text, base), text)),
             Block::List(list) => {
                 let container = View::new(app).gap(if list.tight { 0 } else { 1 });
                 // As in Core, bullets are dashes at every depth, and numbers align on their right.
@@ -1028,7 +1137,13 @@ impl Renderer<'_> {
     /// alignment.
     fn fill_table(&self, widget: &TextTable, table: &Table) {
         let row = |cells: &[String], style: Style| -> Vec<Content> {
-            cells.iter().map(|cell| Content(self.inline(cell, style))).collect()
+            // Cells go through the inline hook too, but keep no click targets.
+            cells
+                .iter()
+                .map(|cell| {
+                    Content(self.hook(self.inline(cell, style), cell, true).into_iter().map(|span| span.span).collect())
+                })
+                .collect()
         };
         let header = self.base().patch(self.styles.table_header);
         let rows =
@@ -1041,12 +1156,12 @@ impl Renderer<'_> {
     fn update(&self, rendered: &Rendered, old: &Block, new: &Block) -> Option<Rendered> {
         match (rendered, old, new) {
             (Rendered::Text(widget), Block::Paragraph(_), Block::Paragraph(text)) => {
-                widget.set_text(self.inline(text, self.base()));
+                self.prose(Some(widget), self.inline(text, self.base()), text);
             }
             (Rendered::Text(widget), Block::Heading(old_level, _), Block::Heading(level, text))
                 if old_level == level =>
             {
-                widget.set_text(self.heading(*level, text));
+                self.prose(Some(widget), self.heading(*level, text), text);
             }
             (_, Block::Code(old_info, ..), Block::Code(info, code, closed)) => {
                 let previous = match rendered {
@@ -1233,6 +1348,57 @@ impl Markdown {
         self.clone()
     }
 
+    /// Passes the inline text of every paragraph, heading and table cell, in lists and quotes too, through `hook`
+    /// before it is shown, as Core's Markdown passes each prose block's chunks through its chunk callback: to show IDs
+    /// as titled links, for example. Code blocks and code-block renderers never reach it.
+    ///
+    /// `hook` gets the spans in order, each marked when it is a code span or already a link, and returns the spans to
+    /// show. A span's [`InlineSpan::target`] makes it clickable for the app through [`Self::target_at`], without a
+    /// hyperlink; in a table cell it is ignored. It runs when a block is built or changes, so [`Self::append`] runs it only for the blocks the new
+    /// text changes; [`Self::rerun_inline_hook`] runs it again for chosen blocks. Selecting and copying take the
+    /// text it returns.
+    pub fn inline_hook(&self, hook: impl Fn(Vec<InlineSpan>, &InlineContext<'_>) -> Vec<InlineSpan> + 'static) -> Self {
+        Rc::make_mut(&mut self.0.options.borrow_mut()).inline_hook = Some(Rc::new(hook));
+        self.refresh(0, Rebuild::All);
+        self.clone()
+    }
+
+    /// Removes the hook [`Self::inline_hook`] registered.
+    pub fn remove_inline_hook(&self) -> Self {
+        if Rc::make_mut(&mut self.0.options.borrow_mut()).inline_hook.take().is_some() {
+            self.refresh(0, Rebuild::All);
+        }
+        self.clone()
+    }
+
+    /// Runs the inline hook again for the top-level blocks holding a paragraph, heading or table cell whose inline
+    /// source `select` accepts, for a change only the hook knows about, such as a new title for an ID it links. Other
+    /// blocks are left alone, and nothing is parsed again. A paragraph, heading or table updates in place; a list or
+    /// quote is built again whole.
+    pub fn rerun_inline_hook(&self, select: impl Fn(&str) -> bool) -> Self {
+        if self.0.options.borrow().inline_hook.is_some() {
+            self.refresh(0, Rebuild::Hook(&select));
+        }
+        self.clone()
+    }
+
+    /// The [`InlineSpan::target`] of the span the last frame drew at the screen cell `(x, y)`, as native hit testing
+    /// and text layout place it: `None` on padding, on cells something else covers, and on text that changed since
+    /// that frame. Call it from a mouse handler to make those spans clickable; hold the `Markdown` weakly there, so
+    /// the handler does not keep a removed document alive.
+    pub fn target_at(&self, x: u16, y: u16) -> Option<String> {
+        // Native code answers both questions: which text the last frame drew at the cell, and which byte of it.
+        let hit = self.0.element.app()?.widget_at(x, y)?;
+        let shown = self.0.shown.borrow();
+        let targets = shown.iter().flat_map(|shown| &shown.targets).find(|targets| targets.text.id() == hit.id())?;
+        let byte = targets.text.element().query(|node| node.text_byte_at(i32::from(x), i32::from(y)))?? as usize;
+        // The ranges that frame painted, which the newest are once a frame has followed them.
+        let app = self.0.element.app()?;
+        let ranges = if app.painted_frames() > targets.since { &targets.ranges } else { &targets.painted };
+        let (_, target) = ranges.iter().find(|(range, _)| range.contains(&byte))?;
+        Some(target.clone())
+    }
+
     /// Shows the source, of which the first `unchanged` bytes are as last shown: keeps the widgets of unchanged
     /// blocks, updates changed ones in place when it can, and builds the rest, along with the blocks `rebuild`
     /// names.
@@ -1247,9 +1413,28 @@ impl Markdown {
         let styles =
             self.0.styles.get().unwrap_or_else(|| MarkdownStyles::new(&colors, options.scopes.then_some(&**syntax)));
         self.0.styles.set(Some(styles));
-        let renderer = Renderer { app: &app, colors, styles, syntax: &syntax, options: &options, urls: !hyperlinks };
+        let (targets, previous) = (RefCell::new(Vec::new()), RefCell::new(Vec::new()));
+        let renderer = Renderer {
+            app: &app,
+            colors,
+            styles,
+            syntax: &syntax,
+            options: &options,
+            urls: !hyperlinks,
+            targets: &targets,
+            previous: &previous,
+        };
         let source = self.0.source.borrow();
         let mut shown = self.0.shown.borrow_mut();
+        if let Rebuild::Hook(_) = rebuild {
+            for (index, old) in shown.iter_mut().enumerate().filter(|(_, old)| rebuild.matches(&old.block)) {
+                previous.replace(std::mem::take(&mut old.targets));
+                let rendered = renderer.render(&old.block, Some((&old.block, &old.rendered)));
+                self.replace(index, &old.rendered, &rendered);
+                (old.rendered, old.targets) = (rendered, targets.take());
+            }
+            return;
+        }
         // While streaming, a block is complete once the next one starts in unchanged source. As Core does, the
         // last complete block is parsed again too, in case the end of the source changes how it reads.
         let stable = match rebuild {
@@ -1265,26 +1450,32 @@ impl Markdown {
             let Some(old) = shown.get_mut(index) else {
                 let rendered = renderer.render(&block, None);
                 self.0.element.insert(rendered.widget().element(), None);
-                shown.push(Shown { start, block, rendered });
+                shown.push(Shown { start, block, rendered, targets: targets.take() });
                 continue;
             };
             let rebuilt = rebuild.matches(&old.block) || rebuild.matches(&block);
             // Also the code blocks in a list or quote, which are built again with their block.
-            let rerun = rebuild == Rebuild::Renderers && old.block.any(&|block| renderer.claims(block));
+            let rerun = matches!(rebuild, Rebuild::Renderers) && old.block.any(&|block| renderer.claims(block));
             if old.block == block && !rebuilt && !rerun {
                 old.start = start;
                 continue;
             }
+            previous.replace(std::mem::take(&mut old.targets));
             let rendered = renderer.render(&block, (!rebuilt).then_some((&old.block, &old.rendered)));
-            if rendered.widget() != old.rendered.widget() {
-                old.rendered.widget().detach();
-                self.0.element.insert(rendered.widget().element(), Some(index));
-            }
-            *old = Shown { start, block, rendered };
+            self.replace(index, &old.rendered, &rendered);
+            *old = Shown { start, block, rendered, targets: targets.take() };
         }
         let end = end.min(shown.len());
         for removed in shown.drain(end..) {
             removed.rendered.widget().detach();
+        }
+    }
+
+    /// Puts the widget of the top-level block at `index` in place of the one shown, when it is another.
+    fn replace(&self, index: usize, old: &Rendered, new: &Rendered) {
+        if new.widget() != old.widget() {
+            old.widget().detach();
+            self.0.element.insert(new.widget().element(), Some(index));
         }
     }
 }
@@ -1292,6 +1483,35 @@ impl Markdown {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        /// Targets compared while matching new targets to old ones.
+        pub(super) static LOOKUPS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    #[test]
+    fn rebuilt_lists_do_not_look_up_targets_their_new_texts_cannot_have() {
+        let app = crate::testing::TestApp::new(20, 10);
+        let markdown = Markdown::new(&app).inline_hook(|spans, _| {
+            spans.into_iter().map(|span| InlineSpan { target: Some("id".to_owned()), ..span }).collect()
+        });
+        app.root().add(&markdown);
+        markdown.set_markdown((1..=8).map(|item| format!("- item {item}\n")).collect::<String>());
+        app.render();
+        LOOKUPS.with(|lookups| lookups.set(0));
+        markdown.rerun_inline_hook(|_| true);
+        assert_eq!(LOOKUPS.with(Cell::get), 0);
+        // A paragraph updated in place finds its own targets.
+        markdown.set_markdown("one\n\ntwo");
+        app.render();
+        LOOKUPS.with(|lookups| lookups.set(0));
+        markdown.rerun_inline_hook(|_| true);
+        assert_eq!(LOOKUPS.with(Cell::get), 2);
+    }
+
+    fn inline(text: &str, base: Style, options: &Inline) -> Vec<Span<'static>> {
+        super::inline(text, base, options).into_iter().map(|span| span.span).collect()
+    }
 
     fn paragraph(text: &str) -> Block {
         Block::Paragraph(text.into())
