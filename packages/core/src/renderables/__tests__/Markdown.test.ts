@@ -4950,6 +4950,8 @@ The table alignment uses:
     [theme1, texts],
     [theme2, []],
     [theme3, ["gone", "head", "cell", "nested"]],
+    // No markup.strikethrough entry: struck by default, as in Rust.
+    [syntaxStyle, ["gone", "head", "cell", "nested"]],
   ] as const) {
     md.syntaxStyle = theme
     await renderMarkdownRenderable(md)

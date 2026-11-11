@@ -220,16 +220,13 @@ export class SyntaxStyle {
   public getStyle(name: string): StyleDefinition | undefined {
     this.guard()
 
-    const style = this.styleDefs.get(name)
-    if (style) return cloneStyle(style)
-
-    if (name.includes(".")) {
-      const baseName = name.split(".")[0]
-      const base = this.styleDefs.get(baseName)
-      return base ? cloneStyle(base) : undefined
+    const style = this.styleDefs.get(name) ?? (name.includes(".") ? this.styleDefs.get(name.split(".")[0]) : undefined)
+    // ~~x~~ is struck through unless the theme sets strikethrough for it, as in Rust's Markdown.
+    // Without any style it keeps the default colors it was drawn with before.
+    if (name === "markup.strikethrough" && style?.strikethrough === undefined) {
+      return { ...cloneStyle(style ?? this.styleDefs.get("default") ?? {}), strikethrough: true }
     }
-
-    return undefined
+    return style ? cloneStyle(style) : undefined
   }
 
   public mergeStyles(...styleNames: string[]): MergedStyle {

@@ -160,6 +160,19 @@ describe("NativeSyntaxStyle", () => {
     expect(style.getStyleCount()).toBe(0)
   })
 
+  it("strikes markup.strikethrough through unless the theme sets it", () => {
+    const red = RGBA.fromValues(1, 0, 0, 1)
+    style.registerStyle("default", { fg: red })
+    const strike = createTextAttributes({ strikethrough: true })
+    expect(style.getStyle("markup.strikethrough")).toMatchObject({ fg: red, strikethrough: true })
+    expect(style.mergeStyles("markup.strikethrough")).toEqual({ fg: red, bg: undefined, attributes: strike })
+    style.registerStyle("markup", { italic: true })
+    expect(style.mergeStyles("markup.strikethrough").attributes).toBe(strike | createTextAttributes({ italic: true }))
+    style.registerStyle("markup.strikethrough", { strikethrough: false })
+    expect(style.mergeStyles("markup.strikethrough").attributes).toBe(0)
+    expect(style.getStyle("markup.list")?.strikethrough).toBeUndefined()
+  })
+
   it("rejects every call after destroy, and destroy is idempotent", () => {
     const destroyed = SyntaxStyle.create(owner)
     destroyed.registerStyle("keyword", { fg: RGBA.fromValues(1, 0, 0, 1) })
