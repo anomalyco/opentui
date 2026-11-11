@@ -26,8 +26,8 @@ export function parseMarkdownIncremental(
     }
   }
 
-  // Find how many tokens from start are unchanged
-  const prevTokens = prevState?.tokens ?? []
+  // Find how many tokens from start are unchanged by an append; any other edit parses afresh
+  const prevTokens = prevState && newContent.startsWith(prevState.content) ? prevState.tokens : []
   let offset = 0
   let reuseCount = 0
 
@@ -37,30 +37,24 @@ export function parseMarkdownIncremental(
     offset += token.raw.length
   }
 
-  // A streamed parse keeps its stable tokens while they match; a parse that did not stream has none. Tokens with N
-  // after them (e.g. "# Hello" might become "# Hello World") become stable, but the last is lexed again with the tail,
-  // which can still continue it (a list item after a blank line). It stays only if it comes back unchanged and the
-  // last line is not digits that can still become an item's marker ("1. a\n\n10").
+  // A streamed parse keeps its stable tokens; a parse that did not stream has none. Tokens with N after them (e.g.
+  // "# Hello" might become "# Hello World") become stable, but the last is lexed again with the tail, which can still
+  // continue it (a list item after a blank line). It stays only if it comes back unchanged and, for a list, the last
+  // line cannot still become its item ("1. a\n\n10", "- a\n\n- - -").
   const stable = prevState?.stableTokenCount ?? 0
-  const keptCount =
-    stable < prevTokens.length ? Math.max(0, reuseCount - trailingUnstable, stable <= reuseCount ? stable : 0) : 0
+  const keptCount = stable < prevTokens.length ? Math.max(reuseCount - trailingUnstable, stable) : 0
   reuseCount = keptCount > stable ? keptCount - 1 : keptCount
-  const confirm = reuseCount < keptCount && !/(^|\n)[ \t]*\d{1,9}$/.test(newContent)
+  const confirm =
+    reuseCount < keptCount &&
+    (prevTokens[reuseCount].type !== "list" || !/(^|\n)[ \t]*(\d{1,9}|[-*][-* \t]*)$/.test(newContent))
 
   const stableTokens = prevTokens.slice(0, reuseCount)
   const remainingContent = newContent.slice(stableTokens.reduce((length, token) => length + token.raw.length, 0))
 
   try {
     const newTokens = Lexer.lex(remainingContent, { gfm: true }) as MarkedToken[]
-    if (confirm && newTokens[0]?.raw === prevTokens[reuseCount].raw) {
-      newTokens.shift()
-      stableTokens.push(prevTokens[reuseCount])
-    }
-    return {
-      content: newContent,
-      tokens: [...stableTokens, ...newTokens],
-      stableTokenCount: stableTokens.length,
-    }
+    if (confirm && newTokens[0]?.raw === prevTokens[reuseCount].raw) newTokens[0] = prevTokens[reuseCount++]
+    return { content: newContent, tokens: [...stableTokens, ...newTokens], stableTokenCount: reuseCount }
   } catch {
     try {
       const fullTokens = Lexer.lex(newContent, { gfm: true }) as MarkedToken[]

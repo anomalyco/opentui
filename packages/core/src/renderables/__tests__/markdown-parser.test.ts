@@ -35,12 +35,15 @@ test("an edit with trailingUnstable 0 parses like fresh content", () => {
 
 // Apps write stable blocks out once (OpenCode's split-footer scrollback), so a stable token must never change: after
 // each append and at the stream's end, the tokens are those of a fresh lex, and the stable ones are a prefix of the
-// final text's tokens and never fewer.
+// final text's tokens and never fewer. In prose, the next append after a blank line and the next paragraph's first
+// character makes the paragraph before them stable.
 test("streamed, the stable tokens are a growing prefix of the final text's tokens", () => {
   let seed = 1
   const random = (n: number) => ((seed = (Math.imul(seed, 48271) + 11) % 2147483647) >>> 0) % n
   const failures: string[] = []
+  const prose = ["a\n\nb\n\nc\n\nd\n\ne\n\nf\n", "Summary.\n\n1\n\n2\n\n3\n\nend\n"]
   for (const doc of [
+    ...prose,
     "1. a\n\n  2. b\n\n   3. c\n\nafter\n", // CommonMark spec example 311, then a paragraph
     "1. a\n\n  2. b\n\n    3. c\n\nafter\n", // spec example 313
     "- a\n\n- b\n\n  c\n\n- d\n\nend\n",
@@ -50,7 +53,9 @@ test("streamed, the stable tokens are a growing prefix of the final text's token
     "[r]: /u\n  'title'\n\nsee [r]\n\n[s]: /v\n",
     "| a | b |\n|---|---|\n| 1 | 2 |\n\n| c |\n|---|\n\npara\n",
     "<pre>\na\n\nb\n</pre>\n\nx\n",
-    "1) a\n\n   b\n\n 10) c\n\nend\n",
+    "1) a\n\n   b\n\n 100) c\n\nend\n",
+    "- a\n\n- - - x\n\nend\n",
+    "a\r\n\r\nb\r\n\r\n1. c\r\n\r\nd\r\n", // marked's raws hold "\n" for "\r\n"
     "# Answer\n\nIntro with `code`.\n\n```ts\nconst a = 1\n\nconst b = 2\n```\n\n1. one\n\n   two\n2. three\n\nDone.\n",
   ]) {
     const fresh = Lexer.lex(doc, { gfm: true }).map((token) => token.raw)
@@ -66,17 +71,23 @@ test("streamed, the stable tokens are a growing prefix of the final text's token
       let state: ParseState | null = null
       let text = ""
       let stable = 0
+      let due = 0
       for (const piece of [...pieces, ""]) {
         text += piece
         state = parseMarkdownIncremental(text, state, piece ? 2 : 0)
         const raws = state.tokens.map((token) => token.raw)
         const lexed = Lexer.lex(text, { gfm: true }).map((token) => token.raw)
         const wrong = raws.slice(0, state.stableTokenCount).some((raw, i) => raw !== fresh[i])
-        if (state.stableTokenCount! < stable || wrong || JSON.stringify(raws) !== JSON.stringify(lexed)) {
+        if (
+          state.stableTokenCount! < Math.max(stable, due) ||
+          wrong ||
+          JSON.stringify(raws) !== JSON.stringify(lexed)
+        ) {
           failures.push(JSON.stringify(text))
           break
         }
         stable = state.stableTokenCount!
+        due = prose.includes(doc) ? 2 * (text.match(/\n\n(?=\S)/g)?.length ?? 0) - 1 : 0
       }
     }
   }
@@ -113,7 +124,9 @@ test("parseMarkdownIncremental reports stableTokenCount for the reused prefix", 
 
   expect(second.stableTokenCount).toBe(1)
   expect(second.tokens[0]).toBe(first.tokens[0])
-  expect(parseMarkdownIncremental("# Hi", second, 2).tokens.map((token) => token.raw)).toEqual(["# Hi"])
+  let edited: ParseState | null = null
+  for (const text of ["alpha\n\nb", "alpha\n\nbc", "alphaX"]) edited = parseMarkdownIncremental(text, edited, 2)
+  expect(edited!.tokens.map((token) => token.raw)).toEqual(["alphaX"])
 })
 
 test("handles content truncation", () => {
