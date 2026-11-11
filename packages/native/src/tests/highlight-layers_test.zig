@@ -1325,6 +1325,18 @@ test "layers: a run whose set supplies nothing shows what lies under it" {
     const screen = try paint(&setup, tb, 8, 1);
     defer screen.deinit();
     try testing.expectEqual(screen.get(7, 0).?.fg, screen.get(1, 0).?.fg);
+    // Without records: a higher layer's run shows the lower layer's while it supplies nothing.
+    const layered = try setup.buffer(.unicode);
+    defer layered.deinit();
+    try layered.setText("abcdefgh");
+    try layered.setLayer(1, 0, 8, &.{.{ .start_byte = 0, .end_byte = 4, .group_set = 1 }});
+    try layered.setLayer(2, 0, 8, &.{.{ .start_byte = 0, .end_byte = 4, .group_set = empty }});
+    for ([_]struct { ss.StyleDefinition, ansi.RGBA }{ .{ nothing, red }, .{ blue_fg, blue }, .{ nothing, red } }) |row| {
+        _ = try setup.style.registerStyleDefinition("e", row[0]);
+        const top = try paint(&setup, layered, 8, 1);
+        defer top.deinit();
+        try testing.expectEqual(row[1], top.get(1, 0).?.fg);
+    }
 }
 
 // A span build that runs out of memory fails the checked paint and leaves the line stale, so
@@ -1385,6 +1397,8 @@ test "layers: theme changes rebuild no spans and unpainted lines stay unbuilt" {
     defer screen.deinit();
     try screen.drawTextBufferChecked(view, 0, 0);
     try tb.setLayer(1, 0, tb.getByteSize(), &.{ .{ .start_byte = 0, .end_byte = 2, .group_set = 1 }, .{ .start_byte = 200, .end_byte = 202, .group_set = 2 } });
+    // A second layer off the painted lines makes no painted line depend on definitions.
+    try tb.setLayer(2, 0, tb.getByteSize(), &.{.{ .start_byte = 204, .end_byte = 206, .group_set = 3 }});
     _ = text_work.take();
     try screen.drawTextBufferChecked(view, 0, 0);
     try testing.expectEqual(@as(u64, 10), text_work.take().line_span_builds);

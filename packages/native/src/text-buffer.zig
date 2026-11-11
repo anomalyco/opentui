@@ -1458,13 +1458,11 @@ pub const UnifiedTextBuffer = struct {
             .link_id_and_kind = 0,
             .priority = record.priority,
         });
-        // Over nothing, a run that supplies nothing paints as no run, so only then is it kept.
-        const stacked = records.len > 0 or self.layers.slice().len > 1;
-        if (!self.layers.isEmpty()) try self.appendLayerInputs(@intCast(line_idx), stacked);
+        const restylable = !self.layers.isEmpty() and try self.appendLayerInputs(@intCast(line_idx));
         text_work.add(.line_span_builds, 1);
         text_work.add(.line_span_highlights, scratch.inputs.items.len);
         try sweepSpans(allocator, scratch, out);
-        return if (stacked and !self.layers.isEmpty()) self.style_binding.changes else null;
+        return if (restylable) self.style_binding.changes else null;
     }
 
     fn sweepSpans(allocator: Allocator, scratch: *SpanScratch, out: *std.ArrayListUnmanaged(StyleSpan)) TextBufferError!void {
@@ -1554,15 +1552,19 @@ pub const UnifiedTextBuffer = struct {
     }
 
     /// Adds the layer runs that cover line `row`, converted from bytes to columns in one forward
-    /// walk of the line's chunks per layer.
-    fn appendLayerInputs(self: *Self, row: u32, skip_empty: bool) TextBufferError!void {
-        const line_start_byte = iter_mod.lineStartByte(&self._rope, row) orelse return;
+    /// walk of the line's chunks per layer. Over nothing, a run that supplies nothing paints as no
+    /// run, so it is left out only over earlier inputs of the line. Returns whether such a run could
+    /// be left out, so that the line's spans depend on definitions.
+    fn appendLayerInputs(self: *Self, row: u32) TextBufferError!bool {
+        const line_start_byte = iter_mod.lineStartByte(&self._rope, row) orelse return false;
         try self.collectLineChunks(row);
         const chunks = self.span_scratch.chunks.items;
         const line_byte_count: u32 = if (chunks.len == 0) 0 else chunks[chunks.len - 1].start_byte + chunks[chunks.len - 1].chunk.byte_end - chunks[chunks.len - 1].chunk.byte_start;
         const line_end_byte = line_start_byte + line_byte_count;
         const group_set_kind = @as(u32, @backingInt(StyleSpan.Kind.group_set)) << 24;
+        var restylable = false;
         for (self.layers.slice()) |layer| {
+            const lower = self.span_scratch.inputs.items.len != 0;
             var cursor: ColumnCursor = .{ .buffer = self, .chunks = chunks };
             const runs = layer.runs.items;
             var index = hl.Layers.firstEndingAfter(runs, line_start_byte);
@@ -1572,7 +1574,10 @@ pub const UnifiedTextBuffer = struct {
                 // A run past the line ends at its last column.
                 const col_end = cursor.colAt(run.end_byte - line_start_byte);
                 if (col_start >= col_end) continue;
-                if (skip_empty and run.link_id == 0 and self.suppliesNothing(run.group_set)) continue;
+                if (lower and run.link_id == 0) {
+                    restylable = true;
+                    if (self.suppliesNothing(run.group_set)) continue;
+                }
                 std.debug.assert(run.link_id & ~StyleSpan.link_id_mask == 0);
                 try self.span_scratch.inputs.append(self.global_allocator, .{
                     .col_start = col_start,
@@ -1583,6 +1588,7 @@ pub const UnifiedTextBuffer = struct {
                 });
             }
         }
+        return restylable;
     }
 
     /// Fills the scratch with the text chunks of line `row`, with line-relative bytes and columns.
