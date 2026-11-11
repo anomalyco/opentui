@@ -30,7 +30,6 @@ import {
   type SceneNodeHandle,
 } from "../zig.js"
 import type { BoxOptions } from "./Box.js"
-import type { VNode } from "./composition/vnode.js"
 import { ScrollBarRenderable, scrollUnitSize, type ArrowOptions, type ScrollUnit } from "./ScrollBar.js"
 import type { ScrollBoxRenderable } from "./ScrollBox.js"
 
@@ -326,11 +325,11 @@ export class ScrollBoxContent extends ScrollBoxSizedPart {
     this.box.viewportCulling = value
   }
 
-  add(obj: Renderable | VNode<any, any[]>, index?: number): number {
+  add(obj: Renderable, index?: number): number {
     return this.box.add(obj, index)
   }
 
-  insertBefore(obj: Renderable | VNode<any, any[]> | unknown, anchor?: Renderable | unknown): number {
+  insertBefore(obj: Renderable, anchor?: Renderable): number {
     return this.box.insertBefore(obj, anchor)
   }
 

@@ -1,5 +1,6 @@
 import { test, expect, beforeEach, afterEach, spyOn } from "bun:test"
 import { DiffRenderable, type DiffRenderableOptions } from "./Diff.js"
+import diffConformance from "./diff.conformance.json" with { type: "json" }
 import { Renderable } from "../Renderable.js"
 import { SyntaxStyle } from "../syntax-style.js"
 import { RGBA, parseColor } from "../lib/RGBA.js"
@@ -1379,6 +1380,42 @@ test("DiffRenderable - invalid diff format shows error with raw diff", async () 
   // Should show the raw diff content
   expect(frame).toContain("@@ -a,b +c,d @@")
   expect(frame).toContain("function hello")
+})
+
+// The unified view's rows, read back as sign and content per hunk. The Rust crate's widget/diff.rs runs the same rows;
+// a row that names a Core defect is a todo until it is fixed.
+for (const [name, diff, shown, coreDefect] of diffConformance.rows) {
+  ;(coreDefect ? test.todo : test)(`DiffRenderable - parses ${name}`, async () => {
+    if (typeof diff !== "string") throw new Error(`a row's diff must be a string: ${diff}`)
+    const view = new DiffRenderable(currentRenderer, {
+      diff,
+      view: "unified",
+      syntaxStyle,
+      width: "100%",
+      height: "100%",
+    })
+    currentRenderer.root.add(view)
+    await renderOnce()
+    const rows = captureFrame()
+      .split("\n")
+      .map((row) => row.trimEnd())
+      .filter(Boolean)
+    if (rows[0]?.startsWith("Error parsing diff")) return expect<unknown>("error").toEqual(shown)
+    const lines = rows.map((row) => {
+      const [, sign = " ", content = ""] = /^ *\d+(?: ([ +-]) (.*))?$/.exec(row) ?? [, "?", row]
+      return sign + content
+    })
+    const starts = [...view.getHunkRowOffsets(), lines.length]
+    expect<unknown>(starts.slice(0, -1).map((start, i) => lines.slice(start, starts[i + 1]))).toEqual(shown)
+  })
+}
+
+test("DiffRenderable - split view counts a blank context line without its space", async () => {
+  const diff = "@@ -1,5 +1,5 @@\n a\n\n-b\n+c\n\n d\n"
+  currentRenderer.root.add(new DiffRenderable(currentRenderer, { diff, view: "split", syntaxStyle, width: "100%" }))
+  await renderOnce()
+  const rows = captureFrame().split("\n").slice(0, 5)
+  expect(rows.map((row) => row.replace(/ +/g, " ").trim())).toEqual(["1 a 1 a", "2 2", "3 - b 3 + c", "4 4", "5 d 5 d"])
 })
 
 test("DiffRenderable - diff with only context lines (no changes)", async () => {

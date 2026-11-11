@@ -9,6 +9,12 @@ import {
 export type InputAction = TextareaAction
 export type InputKeyBinding = TextareaKeyBinding
 
+/** Cuts `text` to at most `max` UTF-16 code units, leaving out a character that does not fit whole. */
+function fit(text: string, max: number): string {
+  const cut = text.substring(0, max)
+  return (text.codePointAt(cut.length - 1) ?? 0) > 0xffff ? cut.slice(0, -1) : cut
+}
+
 export interface InputRenderableOptions extends Omit<
   TextareaOptions,
   // onSubmit omitted: submit() emits the ENTER event and never calls the inherited listener
@@ -63,7 +69,7 @@ export class InputRenderable extends TextareaRenderable {
     const minLength = options.minLength ?? defaults.minLength
     // Sanitize initial value: strip newlines and enforce maxLength
     const rawValue = options.value ?? defaults.value
-    const initialValue = rawValue.replace(/[\n\r]/g, "").substring(0, maxLength)
+    const initialValue = fit(rawValue.replace(/[\n\r]/g, ""), maxLength)
 
     if (minLength > maxLength) {
       throw new Error(`InputRenderable: minLength (${minLength}) cannot be greater than maxLength (${maxLength})`)
@@ -114,10 +120,9 @@ export class InputRenderable extends TextareaRenderable {
     if (!sanitized) return
 
     // The insert replaces the selection, so the selected text frees its length.
-    const remaining = this._maxLength - this.plainText.length + this.getSelectedText().length
-    if (remaining <= 0) return
+    const toInsert = fit(sanitized, this._maxLength - this.plainText.length + this.getSelectedText().length)
+    if (!toInsert) return
 
-    const toInsert = sanitized.substring(0, remaining)
     this.runMutation(() => {
       super.insertText(toInsert)
       this.emit(InputRenderableEvents.INPUT, this.plainText)
@@ -133,7 +138,7 @@ export class InputRenderable extends TextareaRenderable {
   }
 
   public set value(value: string) {
-    const newValue = value.substring(0, this._maxLength).replace(/[\n\r]/g, "")
+    const newValue = fit(value.replace(/[\n\r]/g, ""), this._maxLength)
     const currentValue = this.plainText
     if (currentValue !== newValue) {
       this.runMutation(() => {
@@ -240,7 +245,7 @@ export class InputRenderable extends TextareaRenderable {
     const currentValue = this.plainText
     if (currentValue.length > maxLength) {
       this.runMutation(() => {
-        this.setText(currentValue.substring(0, maxLength))
+        this.setText(fit(currentValue, maxLength))
         this._maxLength = maxLength
       })
     } else {
