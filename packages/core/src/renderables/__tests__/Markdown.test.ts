@@ -5277,9 +5277,8 @@ test.each(["coalesced", "top-level"] as const)(
         `ses_known${afterFence}diagram ses_known${afterDiagram}run ses_known\n@Known`,
     )
     const prose = ["run `opencode -s ses_known` or `ses_known`", "ses_known"]
-    const top = ["# Plan ses_known", "See ses_known, @session:ses_known and ses_other."]
-    // Coalesced mode joins the heading and the paragraph into one block.
-    if (internalBlockMode === "coalesced") top.splice(0, 2, top.join("\n\n"))
+    // As in Rust: one call per block in both modes, and a heading's source is its text.
+    const top = ["Plan ses_known", "See ses_known, @session:ses_known and ses_other."]
     expect(new Set(calls.map((call) => `${call.tableCell} ${call.source}`))).toEqual(
       new Set([...[...top, ...prose].map((source) => `false ${source}`), "true `run ses_known`", "true ses_known"]),
     )
@@ -5323,52 +5322,76 @@ test("rerunning the inline hook reaches only selected blocks and cells, and remo
   await renderMarkdownRenderable(md)
   expect(frameText()).toBe(shown("@Z").join("\n\n") + "\n@Z too")
   expect(calls.map((call) => `${call.tableCell} ${call.source}`).sort()).toEqual([
-    "false ## Head ses_a",
     "false First ses_a",
+    "false Head ses_a",
     "false item ses_a",
     "true id",
     "true ses_a",
     "true ses_a too",
   ])
+  // The predicate sees a heading's text, as the hook does.
+  calls.length = 0
+  md.rerunInlineHook((source) => source === "Head ses_a")
+  await renderMarkdownRenderable(md)
+  expect(calls.map((call) => call.source)).toEqual(["Head ses_a"])
 
   md.inlineHook = undefined
   await renderMarkdownRenderable(md)
   expect(frameText()).toBe(plain + "\nses_a too")
 })
 
-test.each([true, false])("inline hooks keep the frames and see the mode with conceal %p", async (conceal) => {
-  const content = [
-    "# Head *em* `code` ses_known",
-    "",
-    "See [docs](https://e.x) and https://bare.example/x, **bold** \\*esc\\* `ses_known` ses_known.",
-    "",
-    "> quote [l](https://q.x)",
-    "",
-    "- item `x`",
-    "",
-    "| a | b |",
-    "| - | - |",
-    "| `c` | [d](https://d.x) |",
-  ].join("\n")
-  const frames: string[] = []
-  const calls: MarkdownInlineContext[] = []
-  for (const inlineHook of [
-    undefined,
-    (spans: MarkdownInlineSpan[]) => spans,
-    sessionLinks(new Map([["ses_known", "K"]]), calls),
-  ]) {
-    const md = createMarkdownRenderable({ content, syntaxStyle, conceal, internalBlockMode: "top-level", inlineHook })
-    renderer.root.add(md)
-    await renderMarkdownRenderable(md)
-    frames.push(frameText())
-    md.destroyRecursively()
-  }
-  // An identity hook changes nothing; without conceal the session hook keeps the source text.
-  expect(frames[1]).toBe(frames[0])
-  expect(frames[2]).toBe(conceal ? frames[0].replaceAll("ses_known", "@K") : frames[0])
-  expect(calls.length).toBeGreaterThan(0)
-  expect(calls.every((call) => call.conceal === conceal && call.syntaxStyle === syntaxStyle)).toBe(true)
-})
+test.each([
+  [true, "top-level"],
+  [false, "top-level"],
+  [true, "coalesced"],
+  [false, "coalesced"],
+] as const)(
+  "inline hooks keep the frames and see the mode with conceal %p (%s)",
+  async (conceal, internalBlockMode) => {
+    // Coalesced mode renders each block on its own while a hook is set; the spacing must not change.
+    const content = [
+      "# Head *em* `code` ses_known ##",
+      "See [docs](https://e.x) and https://bare.example/x, **bold** \\*esc\\* `ses_known` ses_known.",
+      "",
+      "Second paragraph",
+      "Setext ses_known",
+      "---",
+      "Tight after heading",
+      "",
+      "",
+      "Two blank lines above",
+      "",
+      "> quote [l](https://q.x)",
+      "",
+      "- item `x`",
+      "",
+      "| a | b |",
+      "| - | - |",
+      "| `c` | [d](https://d.x) |",
+    ].join("\n")
+    const frames: string[] = []
+    const calls: MarkdownInlineContext[] = []
+    for (const inlineHook of [
+      undefined,
+      (spans: MarkdownInlineSpan[]) => spans,
+      sessionLinks(new Map([["ses_known", "K"]]), calls),
+    ]) {
+      const md = createMarkdownRenderable({ content, syntaxStyle, conceal, internalBlockMode, inlineHook })
+      renderer.root.add(md)
+      await renderMarkdownRenderable(md)
+      frames.push(frameText())
+      md.destroyRecursively()
+    }
+    // An identity hook changes nothing; without conceal the session hook keeps the source text.
+    expect(frames[1]).toBe(frames[0])
+    expect(frames[2]).toBe(conceal ? frames[0].replaceAll("ses_known", "@K") : frames[0])
+    expect(calls.every((call) => call.conceal === conceal && call.syntaxStyle === syntaxStyle)).toBe(true)
+    // A heading's source is its text, without its markers or a setext underline.
+    const sources = calls.map((call) => call.source)
+    expect(sources).toContain("Head *em* `code` ses_known")
+    expect(sources).toContain("Second paragraph\nSetext ses_known")
+  },
+)
 
 test("inlineHookFilter limits the hook to blocks and cells that hold one of its strings", async () => {
   const calls: MarkdownInlineContext[] = []
@@ -5694,6 +5717,7 @@ test.each([
   ["see `` ses_known `` and ` x ` tail", 40, { ...sameHook, conceal: false }, "see `` ses_known `` and ` x ` tail"],
   ["# Head *x*\n\ntext", 40, { conceal: false }],
   ["# Notes\n\ntext *x*", 40, { internalBlockMode: "coalesced" }, "Notes\n\ntext x"],
+  ["# A ses_known\nB\n\nC\nD\n\n\nE", 40, { internalBlockMode: "coalesced", ...sameHook }, "A @K\nB\n\nC\nD\n\n\nE"],
 ] as [string, number, Partial<MarkdownOptions>?, string?][])(
   "streamed %j draws the same before and after highlighting",
   // A rest parameter: Bun passes a done callback to a callback with more parameters than a row has values.

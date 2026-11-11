@@ -265,6 +265,19 @@ const TRAILING_MARKDOWN_BLOCK_NEWLINES_RE = /(?:\r?\n)+$/
 const markdownLinkEncoder = new TextEncoder()
 const proseClients = new WeakMap<TreeSitterClient, TreeSitterClient>()
 const ATX_HEADING_MARKER_RE = /^ {0,3}#{1,6}(?:[ \t]+|$)/gm
+const ATX_HEADING_RE = /^ {0,3}#{1,6}(?:[ \t]+|$)/
+const SETEXT_UNDERLINE_RE = /\n {0,3}(?:=+|-+)[ \t]*$/
+
+// The source an inline hook gets for a prose block: a heading's text, without its markers, as Rust gives it.
+function hookSource(content: string): string {
+  const atx = ATX_HEADING_RE.exec(content)
+  if (!atx) return content.replace(SETEXT_UNDERLINE_RE, "")
+  // A closing run of #s goes, unless it is glued to the text.
+  return content
+    .slice(atx[0].length)
+    .replace(/(?:^|[ \t]+)#+[ \t]*$/, "")
+    .trim()
+}
 
 function isSupportedLinkTarget(url: string): boolean {
   if (url.length > MAX_LINK_URL_BYTES || /[\x00-\x1f\x7f-\x9f]/.test(url)) return false
@@ -655,7 +668,7 @@ export class MarkdownRenderable extends Renderable {
       if (
         renderable instanceof CodeRenderable &&
         renderable.onChunks === this._linkifyMarkdownChunks &&
-        select(renderable.content)
+        select(hookSource(renderable.content))
       ) {
         // A new callback marks the block for a new highlight; it keeps its text until that lands.
         renderable.onChunks = undefined
@@ -681,14 +694,15 @@ export class MarkdownRenderable extends Renderable {
 
   private hookHighlightedChunks(chunks: TextChunk[], context: ChunkRenderContext): TextChunk[] {
     const linked = detectLinks(chunks, context)
-    if (!this.hooks(context.content)) return linked
+    const source = hookSource(context.content)
+    if (!this.hooks(source)) return linked
     const raw = context.highlights.filter(([, , group]) => group === "markup.raw" || group.startsWith("markup.raw."))
     const code = new Set<TextChunk>()
     chunks.forEach((chunk, index) => {
       const source = context.sourceRanges?.[index]
       if (source && raw.some(([start, end]) => start <= source.start && source.end <= end)) code.add(chunk)
     })
-    return this.runInlineHook(linked, context.content, false, (chunk) => code.has(chunk))
+    return this.runInlineHook(linked, source, false, (chunk) => code.has(chunk))
   }
 
   private hooks(source: string): boolean {
@@ -715,7 +729,8 @@ export class MarkdownRenderable extends Renderable {
     })
   }
 
-  private hookPreview(preview: StyledText | undefined, source: string): StyledText | undefined {
+  private hookPreview(preview: StyledText | undefined, content: string): StyledText | undefined {
+    const source = hookSource(content)
     return preview && this.hooks(source) ? new StyledText(this.runInlineHook(preview.chunks, source, false)) : preview
   }
 
@@ -1550,6 +1565,12 @@ export class MarkdownRenderable extends Renderable {
         continue
       }
 
+      // While a hook is set each block is its own prose block, so one hook call never spans several blocks, as in
+      // Rust. A block keeps its blank lines and leaves its last line break to the next one, which starts a row below.
+      if (this._inlineHook && markdownRaw.length > 0) {
+        renderTokens.push(this.createMarkdownBlockToken(markdownRaw.replace(/\r?\n$/, "")))
+        markdownRaw = ""
+      }
       markdownRaw += token.raw
     }
 
