@@ -1269,6 +1269,7 @@ export class MarkdownRenderable extends Renderable {
     baseHighlight?: string,
   ): Renderable | undefined {
     if (this._childKinds.get(renderable) !== this.getBlockKind(token)) return undefined
+    if (previousToken?.raw === token.raw) return renderable
 
     // The kind says what the child is: prose is a CodeRenderable, a list or quote a box.
     if (this.getBlockKind(token) === "prose") {
@@ -1299,7 +1300,7 @@ export class MarkdownRenderable extends Renderable {
       return renderable
     }
 
-    return previousToken?.raw === token.raw ? renderable : undefined
+    return undefined
   }
 
   private createChildBlock(token: MarkedToken, id: string, baseHighlight?: string): Renderable | null {

@@ -5621,6 +5621,9 @@ test("list and quote children keep their text when their kind or the stream chan
   await settle()
   // The rule becomes a list.
   md.content += " x"
+  await renderOnce()
+  // Only the changed child is highlighted again; the unchanged heading keeps its text.
+  expect(worker.pending.map((item) => item.content)).toEqual(["x"])
   await settle()
   // The end of the stream builds no child again, so no frame waits for a highlight.
   md.streaming = false
