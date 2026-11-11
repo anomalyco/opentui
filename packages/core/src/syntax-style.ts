@@ -156,6 +156,10 @@ export class SyntaxStyle {
       bg: background ? RGBA.clone(parseColor(background)) : undefined,
     }
     const attributes = createTextAttributes(definition)
+    // An attribute left undefined lets an earlier name in a group set show through.
+    const suppliedAttributes = createTextAttributes(
+      Object.fromEntries(attributeNames.map((key) => [key, definition[key] !== undefined])),
+    )
     const fg = definition.fg ?? null
     const bg = definition.bg ?? null
     return this.lib.getYogaHost().runMutation(() => {
@@ -163,6 +167,7 @@ export class SyntaxStyle {
         fg,
         bg,
         attributes,
+        suppliedAttributes,
       })
       this.nameCache.set(name, id)
       this.styleDefs.set(name, definition)

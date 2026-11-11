@@ -234,6 +234,8 @@ export interface NativeEditorStyle {
   fg?: RGBA | null
   bg?: RGBA | null
   attributes?: number | null
+  /** Syntax styles only: the attribute bits the style sets or clears when a group set composes it. */
+  suppliedAttributes?: number | null
 }
 
 export enum NativeEditHighlightOperation {
@@ -2770,7 +2772,7 @@ function encodeEditorStyle(style: NativeEditorStyle): Uint32Array {
   const layout = nativeLayouts.ot_editor_style
   const record = new Uint32Array(layout.size / 4)
   const colors = new Uint16Array(record.buffer)
-  const { fg, bg, attributes } = style
+  const { fg, bg, attributes, suppliedAttributes } = style
   record[layout.fields.struct_size.offset / 4] = layout.size
   record[layout.fields.abi_version.offset / 4] = nativeConstants.OT_CONTEXT_ABI_VERSION
   if (fg != null) {
@@ -2784,6 +2786,10 @@ function encodeEditorStyle(style: NativeEditorStyle): Uint32Array {
   if (attributes != null) {
     record[layout.fields.flags.offset / 4] |= NativeEditorStyleMask.Attributes
     record[layout.fields.attributes.offset / 4] = toSafeFFIU32Length(attributes, "Editor style attributes")
+  }
+  if (suppliedAttributes != null) {
+    record[layout.fields.flags.offset / 4] |= nativeConstants.OT_EDITOR_STYLE_ATTRIBUTE_MASK
+    record[layout.fields.attributes.offset / 4] |= suppliedAttributes << 16
   }
   return record
 }

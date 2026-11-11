@@ -1,5 +1,5 @@
 import { ResourceContext } from "./buffer.js"
-import { describe, expect, it, beforeEach, afterEach } from "bun:test"
+import { describe, expect, it, beforeEach, afterEach, spyOn } from "bun:test"
 import { SyntaxStyle } from "./syntax-style.js"
 import { RGBA } from "./lib/RGBA.js"
 import { createTextAttributes } from "./utils.js"
@@ -68,6 +68,7 @@ describe("NativeSyntaxStyle", () => {
     const ids = new Map<string, number>()
     const definitions = new Map<string, StyleDefinition>()
     const merged = new Set<string>()
+    const register = spyOn(owner.renderLib, "contextSyntaxStyleRegister")
     const scoped = <T>(get: (name: string) => T | undefined, name: string): T | undefined =>
       get(name) ?? (name.includes(".") ? get(name.split(".")[0]) : undefined)
     const merge = (list: string[]) => {
@@ -91,6 +92,14 @@ describe("NativeSyntaxStyle", () => {
         for (const key of ["bold", "italic", "underline", "dim", "strikethrough"] as const)
           definition[key] = flags[random(3)]
         const id = style.registerStyle(registered, definition)
+        // Native also learns which attributes the style supplies, for group-set composition.
+        const supplied = Object.fromEntries(
+          Object.entries(definition).map(([key, value]) => [key, value !== undefined]),
+        )
+        expect(register.mock.calls.at(-1)?.[3]).toMatchObject({
+          attributes: createTextAttributes(definition),
+          suppliedAttributes: createTextAttributes(supplied),
+        })
         expect(id).toBe(ids.get(registered) ?? id)
         expect(id).toBeGreaterThan(0)
         expect([...ids].filter(([key, value]) => value === id && key !== registered)).toEqual([])
@@ -126,6 +135,7 @@ describe("NativeSyntaxStyle", () => {
     expect(style.getAllStyles()).toEqual(definitions)
     style.clearCache()
     expect(style.mergeStyles()).toEqual(merge([]))
+    register.mockRestore()
   })
 
   it("rejects every call after destroy, and destroy is idempotent", () => {
