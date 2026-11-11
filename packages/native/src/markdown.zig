@@ -394,10 +394,11 @@ pub const Doc = struct {
         var equal: u32 = 0;
         const count = @min(self.blocks.items.len, fresh.blocks.items.len);
         while (equal < count and self.sameBlock(fresh, equal)) equal += 1;
-        const definitions_changed = !try self.sameDefinitions(fresh);
+        // A leaf with the same bytes shows otherwise when a definition or the math option did.
+        const outputs_may_change = fresh.options.math != self.options.math or !try self.sameDefinitions(fresh);
         for (fresh.blocks.items[0..equal], self.blocks.items[0..equal], 0..) |*new, old, i| {
             new.flags.unreported = old.flags.unreported;
-            if (definitions_changed and isInlineLeaf(old) and !try self.sameLeafOutput(fresh, @intCast(i))) new.flags.unreported = true;
+            if (outputs_may_change and isInlineLeaf(old) and !try self.sameLeafOutput(fresh, @intCast(i))) new.flags.unreported = true;
         }
         const removed = if (equal < self.read_block_count) @min(self.removed_from_index, equal) else self.removed_from_index;
         fresh.removed_from_index = removed;

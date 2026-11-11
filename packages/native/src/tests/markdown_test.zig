@@ -463,6 +463,9 @@ const EngineCommand = union(enum) {
     toggle_math,
     /// set_options with the other hook filter (latches again).
     swap_filter,
+    /// set of the same source with every `/u` and `/w` swapped: definitions change their
+    /// targets while their users' bytes stay.
+    redefine,
 };
 
 const Engine = struct {
@@ -494,9 +497,11 @@ const Engine = struct {
                 at = end;
             } else if (roll < 75) {
                 try commands.append(arena, .finish);
-            } else if (roll < 82) {
+            } else if (roll < 80) {
                 const text = soup[random.uintLessThan(usize, soup.len)];
                 try commands.append(arena, .{ .set = .{ .text = text, .shared = random.boolean() } });
+            } else if (roll < 82) {
+                try commands.append(arena, .redefine);
             } else if (roll < 97) {
                 try commands.append(arena, .{ .read = random.uintLessThan(u8, 3) });
             } else if (roll < 99) {
@@ -529,6 +534,7 @@ const Engine = struct {
             }}) catch {},
             .toggle_math => writer.writeAll("set_options math toggled") catch {},
             .swap_filter => writer.writeAll("set_options filter swapped") catch {},
+            .redefine => writer.writeAll("set source with /u and /w swapped") catch {},
         }
     }
 
@@ -541,6 +547,8 @@ const Engine = struct {
         defer sink.deinit();
         f.doc.tail_sink = &sink;
         var mirror: std.ArrayListUnmanaged(markdown.Block) = .empty;
+        // The read_leaf output the host read for each listed prose leaf (null: none read).
+        var outputs: std.ArrayListUnmanaged(?[]const u8) = .empty;
         var committed: u32 = 0;
         var closed: std.ArrayListUnmanaged(markdown.Block) = .empty;
         // P7: the frame drawn after the last append or finish (null after a replace).
@@ -562,8 +570,11 @@ const Engine = struct {
             switch (command) {
                 .append => |text| try f.doc.append(text),
                 .finish => try f.doc.finish(),
-                .set => |s| {
-                    const text = if (s.shared) try std.mem.concat(arena, u8, &.{ f.doc.source.items, s.text }) else s.text;
+                .set, .redefine => {
+                    const text = switch (command) {
+                        .set => |s| if (s.shared) try std.mem.concat(arena, u8, &.{ f.doc.source.items, s.text }) else s.text,
+                        else => try swapTargets(arena, f.doc.source.items),
+                    };
                     try f.doc.set(text);
                     // P2: replace equals fresh; the blocks before the removal are the old ones.
                     var fresh: Fixture = undefined;
@@ -598,6 +609,18 @@ const Engine = struct {
                             if (change.index >= mirror.items.len) try mirror.resize(arena, change.index + 1);
                             mirror.items[change.index] = change.block;
                         }
+                        // The host reads each listed prose leaf; a closed leaf it read must not
+                        // change its output without being listed again.
+                        if (outputs.items.len > mirror.items.len) outputs.items.len = mirror.items.len;
+                        while (outputs.items.len < mirror.items.len) try outputs.append(arena, null);
+                        for (out[0..count]) |change| {
+                            outputs.items[change.index] = if (markdown.Doc.isInlineLeaf(change.block)) try leafOutput(arena, &f.doc, change.index) else null;
+                        }
+                        for (outputs.items, 0..) |output, index| {
+                            const known = output orelse continue;
+                            if (f.doc.blocks.items[index].flags.open) continue;
+                            if (!std.mem.eql(u8, known, try leafOutput(arena, &f.doc, @intCast(index)))) return .{ .property = "P5 host mirror of leaf output", .step = step };
+                        }
                         // P5: the host mirror equals the engine's blocks.
                         if (mirror.items.len != f.doc.blocks.items.len) return .{ .property = "P5 host mirror", .step = step };
                         for (mirror.items, f.doc.blocks.items) |a, b| {
@@ -616,7 +639,7 @@ const Engine = struct {
             }
             // A replace, a math change and an append after finish (N2) parse afresh.
             const reopened = command == .append and was_finished;
-            if (reopened or command == .set or command == .toggle_math) {
+            if (reopened or command == .set or command == .redefine or command == .toggle_math) {
                 committed = 0;
                 closed.clearRetainingCapacity();
             }
@@ -666,7 +689,7 @@ const Engine = struct {
                 }
             }
             // P7: no frame loses drawn text (B's exceptions aside, see framesGrow).
-            if (reopened or command == .set or command == .toggle_math or command == .swap_filter) frame = null;
+            if (reopened or command == .set or command == .redefine or command == .toggle_math or command == .swap_filter) frame = null;
             if (command == .append or command == .finish) {
                 const next = try renderFrame(arena, &f.doc);
                 if (frame) |previous| {
@@ -706,6 +729,26 @@ fn frameIgnored(c: u8) bool {
         ' ', '\t', '\n', '[', ']', '!', '$' => true,
         else => false,
     };
+}
+
+/// A prose leaf's read_leaf bytes and URLs, as a host keeps them.
+fn leafOutput(arena: std.mem.Allocator, doc: *const Doc, index: u32) ![]const u8 {
+    const leaf = try doc.readLeaf(arena, index);
+    return std.mem.concat(arena, u8, &.{ leaf.bytes.items, "\x00", leaf.urls.items });
+}
+
+/// `source` with `/u` and `/w` swapped.
+fn swapTargets(arena: std.mem.Allocator, source: []const u8) ![]const u8 {
+    const copy = try arena.dupe(u8, source);
+    for (copy[0..copy.len -| 1], 0..) |c, i| {
+        if (c != '/') continue;
+        if (copy[i + 1] == 'u') {
+            copy[i + 1] = 'w';
+        } else if (copy[i + 1] == 'w') {
+            copy[i + 1] = 'u';
+        }
+    }
+    return copy;
 }
 
 /// The fields a host sees (internal bits excluded).
@@ -956,6 +999,42 @@ test "Markdown limits: each store stays within its limit and a rejection publish
         try std.testing.expectError(error.InvalidOptions, Doc.init(gpa, &scratch, .{ .hook = true, .hook_filter = items }));
         var doc = try Doc.init(gpa, &scratch, .{ .hook = true, .hook_filter = items[0 .. items.len - 2] });
         doc.deinit();
+        // Exactly 64 and 256 bytes are accepted and match; the doc keeps its own copy of the
+        // filter, so the caller's buffer may change after the call.
+        const pool = repeat("q", 64) ++ "\x00" ++ repeat("r", 64) ++ "\x00" ++ repeat("s", 64) ++ "\x00" ++ repeat("k", 61);
+        comptime std.debug.assert(pool.len == 256);
+        var buffer: [256]u8 = pool.*;
+        var f: Fixture = undefined;
+        try f.init(.{ .hook = true, .hook_filter = &buffer });
+        defer f.deinit();
+        @memset(&buffer, 'w');
+        try f.doc.append("a " ++ repeat("q", 64) ++ "\n\n" ++ repeat("k", 61) ++ "\n\nw\n\n");
+        try f.doc.finish();
+        const hooked = [_]bool{ f.doc.blocks.items[0].flags.hooked, f.doc.blocks.items[1].flags.hooked, f.doc.blocks.items[2].flags.hooked };
+        try std.testing.expectEqual([3]bool{ true, true, false }, hooked);
+    }
+    // Options: a rejected set_options changes nothing (blocks, finished, options, changes).
+    {
+        var f: Fixture = undefined;
+        try f.init(.{});
+        defer f.deinit();
+        try f.doc.append("# one\n\nsecond");
+        try f.doc.finish();
+        var out: [4]Doc.Change = undefined;
+        _ = f.doc.readChanges(&out);
+        const blocks = try arena.dupe(markdown.Block, f.doc.blocks.items);
+        try std.testing.expectError(error.BlockLimit, f.doc.setOptions(.{ .limits = .{ .block_count = 1 } }));
+        try expectUnchanged("# one\n\nsecond", blocks, &f.doc);
+        try std.testing.expect(f.doc.finished);
+        try std.testing.expectEqual(markdown.block_count_max, f.doc.options.limits.block_count);
+        try std.testing.expectEqual(@as(u32, 0), f.doc.readChanges(&out).count);
+        var g: Fixture = undefined;
+        try g.init(.{ .limits = .{ .block_count = 1 } });
+        defer g.deinit();
+        try g.doc.append("x\n$$");
+        try g.doc.finish();
+        try std.testing.expectError(error.BlockLimit, g.doc.setOptions(.{ .math = true, .limits = .{ .block_count = 1 } }));
+        try std.testing.expect(g.doc.finished and !g.doc.options.math);
     }
     // Depth: nesting stops at the limit; deeper markers are text in the innermost leaf.
     {
