@@ -879,7 +879,8 @@ enum Rebuild<'a> {
     /// Runs the code-block renderers again with the widgets they returned, for a change they read, such as the end
     /// of streaming.
     Renderers,
-    /// Runs the inline hook again on the blocks with a paragraph or heading whose source matches, without parsing.
+    /// Runs the inline hook again on the blocks with a paragraph, heading or table cell whose source matches, without
+    /// parsing.
     Hook(&'a dyn Fn(&str) -> bool),
 }
 
@@ -890,9 +891,11 @@ impl Rebuild<'_> {
             Self::All => true,
             Self::Code => block.any(&|block| matches!(block, Block::Code(..))),
             Self::Tables => block.any(&|block| matches!(block, Block::Table(_))),
-            Self::Hook(select) => {
-                block.any(&|block| matches!(block, Block::Paragraph(text) | Block::Heading(_, text) if select(text)))
-            }
+            Self::Hook(select) => block.any(&|block| match block {
+                Block::Paragraph(text) | Block::Heading(_, text) => select(text),
+                Block::Table(table) => table.header.iter().chain(table.rows.iter().flatten()).any(|cell| select(cell)),
+                _ => false,
+            }),
         }
     }
 }
@@ -928,13 +931,18 @@ impl Renderer<'_> {
         marker.map(InlineSpan::from).into_iter().chain(self.inline(text, style)).collect()
     }
 
+    /// `spans` of the inline `source` as the inline hook rewrites them, if there is one.
+    fn hook(&self, spans: Vec<InlineSpan>, source: &str) -> Vec<InlineSpan> {
+        match &self.options.inline_hook {
+            Some(hook) => hook(spans, &InlineContext { source, conceal: self.options.conceal, syntax: self.syntax }),
+            None => spans,
+        }
+    }
+
     /// A paragraph's or heading's text: `spans` of the inline `source`, passed through the inline hook, in `widget`
     /// or a new one. Records the spans' click targets.
     fn prose(&self, widget: Option<&Text>, spans: Vec<InlineSpan>, source: &str) -> Text {
-        let spans = match &self.options.inline_hook {
-            Some(hook) => hook(spans, &InlineContext { source, conceal: self.options.conceal, syntax: self.syntax }),
-            None => spans,
-        };
+        let spans = self.hook(spans, source);
         let (mut ranges, mut end) = (Vec::new(), 0);
         let content: Vec<Span<'static>> = spans
             .into_iter()
@@ -1116,10 +1124,12 @@ impl Renderer<'_> {
     /// alignment.
     fn fill_table(&self, widget: &TextTable, table: &Table) {
         let row = |cells: &[String], style: Style| -> Vec<Content> {
-            // As in Core, table cells do not go through the inline hook.
+            // Cells go through the inline hook too, but keep no click targets.
             cells
                 .iter()
-                .map(|cell| Content(self.inline(cell, style).into_iter().map(|span| span.span).collect()))
+                .map(|cell| {
+                    Content(self.hook(self.inline(cell, style), cell).into_iter().map(|span| span.span).collect())
+                })
                 .collect()
         };
         let header = self.base().patch(self.styles.table_header);
@@ -1325,13 +1335,13 @@ impl Markdown {
         self.clone()
     }
 
-    /// Passes the inline text of every paragraph and heading, in lists and quotes too, through `hook` before it is
-    /// shown, as Core's Markdown passes each prose block's chunks through its chunk callback: to show IDs as titled
-    /// links, for example. Code blocks, code-block renderers and table cells never reach it.
+    /// Passes the inline text of every paragraph, heading and table cell, in lists and quotes too, through `hook`
+    /// before it is shown, as Core's Markdown passes each prose block's chunks through its chunk callback: to show IDs
+    /// as titled links, for example. Code blocks and code-block renderers never reach it.
     ///
     /// `hook` gets the spans in order, each marked when it is a code span or already a link, and returns the spans to
     /// show. A span's [`InlineSpan::target`] makes it clickable for the app through [`Self::target_at`], without a
-    /// hyperlink. It runs when a block is built or changes, so [`Self::append`] runs it only for the blocks the new
+    /// hyperlink; in a table cell it is ignored. It runs when a block is built or changes, so [`Self::append`] runs it only for the blocks the new
     /// text changes; [`Self::rerun_inline_hook`] runs it again for chosen blocks. Selecting and copying take the
     /// text it returns.
     pub fn inline_hook(&self, hook: impl Fn(Vec<InlineSpan>, &InlineContext<'_>) -> Vec<InlineSpan> + 'static) -> Self {
@@ -1348,10 +1358,10 @@ impl Markdown {
         self.clone()
     }
 
-    /// Runs the inline hook again for the top-level blocks holding a paragraph or heading whose inline source
-    /// `select` accepts, for a change only the hook knows about, such as a new title for an ID it links. Other blocks
-    /// are left alone, and nothing is parsed again. A paragraph or heading updates in place; a list or quote is built
-    /// again whole.
+    /// Runs the inline hook again for the top-level blocks holding a paragraph, heading or table cell whose inline
+    /// source `select` accepts, for a change only the hook knows about, such as a new title for an ID it links. Other
+    /// blocks are left alone, and nothing is parsed again. A paragraph, heading or table updates in place; a list or
+    /// quote is built again whole.
     pub fn rerun_inline_hook(&self, select: impl Fn(&str) -> bool) -> Self {
         if self.0.options.borrow().inline_hook.is_some() {
             self.refresh(0, Rebuild::Hook(&select));

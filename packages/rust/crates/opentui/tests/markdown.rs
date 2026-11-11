@@ -252,7 +252,7 @@ fn column(app: &TestApp, y: u16, needle: &str) -> u16 {
 }
 
 #[test]
-fn inline_hooks_rewrite_prose_but_not_code_tables_or_renderers() {
+fn inline_hooks_rewrite_prose_but_not_code_or_renderers() {
     let app = TestApp::new(50, 24);
     let titles: Titles = Rc::new(RefCell::new(HashMap::from([("ses_known", "Known")])));
     let calls = Calls::default();
@@ -266,22 +266,12 @@ fn inline_hooks_rewrite_prose_but_not_code_tables_or_renderers() {
         "- run `opencode -s ses_known` or `ses_known`\n\n",
         "> ses_known\n\n",
         "```\nses_known\n```\n\n",
-        "```mermaid\nses_known\n```\n\n",
-        "| id |\n| -- |\n| ses_known |",
+        "```mermaid\nses_known\n```",
     ));
-    let table = concat!(
-        "┌────────────────────────────────────────────────┐\n",
-        "│id                                              │\n",
-        "├────────────────────────────────────────────────┤\n",
-        "│ses_known                                       │\n",
-        "└────────────────────────────────────────────────┘\n",
-    );
     assert_eq!(
         frame(&app),
         "Plan @Known\n\nSee @Known, @Known and ses_other.\n\n- run opencode -s ses_known or @Known\n\n│ @Known\n\n\
-         ses_known\n\ndiagram ses_known\n\n"
-            .to_owned()
-            + table
+         ses_known\n\ndiagram ses_known\n"
     );
     assert_eq!(
         *calls.borrow(),
@@ -292,6 +282,35 @@ fn inline_hooks_rewrite_prose_but_not_code_tables_or_renderers() {
             "ses_known"
         ]
     );
+}
+
+#[test]
+fn inline_hooks_rewrite_table_cells_without_targets() {
+    let app = TestApp::new(20, 8);
+    let titles: Titles = Rc::new(RefCell::new(HashMap::from([("ses_a", "A")])));
+    let calls = Calls::default();
+    let markdown = Markdown::new(&app).streaming(true).inline_hook(session_links(&titles, &calls));
+    app.root().add(&markdown);
+    markdown.append("| id |\n| -- |\n| ses_a |");
+    let table = |rows: &[&str]| {
+        let rows: Vec<String> = ["id"].iter().chain(rows).map(|row| format!("│{row:<18}│\n")).collect();
+        format!("┌──────────────────┐\n{}└──────────────────┘\n", rows.join("├──────────────────┤\n"))
+    };
+    assert_eq!(frame(&app), table(&["@A"]));
+    // A cell draws the hook's text but gives no click target.
+    assert_eq!(markdown.target_at(1, 3), None);
+    // A streamed row's cells go through the hook as they arrive.
+    markdown.append("\n| ses_a too |");
+    assert_eq!(frame(&app), table(&["@A", "@A too"]));
+    // A re-run reaches the cells whose source it selects.
+    titles.borrow_mut().insert("ses_a", "B");
+    calls.borrow_mut().clear();
+    markdown.rerun_inline_hook(|source| source.contains("ses_a"));
+    assert_eq!(frame(&app), table(&["@B", "@B too"]));
+    assert_eq!(*calls.borrow(), ["id", "ses_a", "ses_a too"]);
+    // Without the hook, cells show their own text again.
+    markdown.remove_inline_hook();
+    assert_eq!(frame(&app), table(&["ses_a", "ses_a too"]));
 }
 
 #[test]
