@@ -836,3 +836,16 @@ test "Markdown stream: a leaf that changes kind or loses lines keeps its live di
         try std.testing.expect(try streamAgreesParts(arena, "kinds", try split(arena, text, 3)));
     }
 }
+
+test "Markdown commits: a block with an unresolved label commits once closed (N1 (a), P4')" {
+    var f: Fixture = undefined;
+    try f.init(.{});
+    defer f.deinit();
+    const chunks = [_][]const u8{ "p [1] and a[i]\n\n", "q\n\n", "r\n", "\ns", "" };
+    const committed = [_]u32{ 1, 2, 2, 3, 4 };
+    for (chunks, committed) |chunk, expected| {
+        if (chunk.len == 0) try f.doc.finish() else try f.doc.append(chunk);
+        try std.testing.expectEqual(expected, f.doc.committed_top_level_count);
+    }
+    try std.testing.expect(f.doc.blocks.items[0].flags.unresolved);
+}
