@@ -52,7 +52,13 @@ pub const grapheme_bytes_max = 128;
 /// Checked draws write any other cluster as blank cells of its width instead of failing. Text
 /// layout gives a lone control zero width.
 pub fn isPrintableGlyph(bytes: []const u8, width: u32) bool {
-    return bytes.len <= grapheme_bytes_max and width <= gp.glyph_width_max and !utf8.containsControl(bytes);
+    if (bytes.len > grapheme_bytes_max or width > gp.glyph_width_max) return false;
+    return !utf8.containsControl(bytes);
+}
+
+/// The code point form of the control rule in isPrintableGlyph, kept for Zig callers of this module.
+pub fn isControlCodepoint(codepoint: u32) bool {
+    return utf8.isControl(codepoint);
 }
 
 const MAX_UNICODE_CODEPOINT: u32 = 0x10FFFF;
@@ -3770,7 +3776,7 @@ pub const OptimizedBuffer = struct {
                     const bg = ansi.rgbaFromFloats(colors[0], colors[1], colors[2], colors[3]);
                     const fg = ansi.rgbaFromFloats(colors[4], colors[5], colors[6], colors[7]);
                     var char = @as(*align(1) const u32, @ptrCast(data.ptr + offset + 32)).*;
-                    if (char == 0 or !utf8.isScalar(char)) {
+                    if (!utf8.isScalar(char) or char == 0) {
                         char = DEFAULT_SPACE_CHAR;
                     } else if (char < 32 or (char > 126 and char < 0x2580) or !isSingleWidthBorderChar(char)) {
                         char = BLOCK_CHAR;

@@ -39,7 +39,7 @@ pub fn expectBufferInvariants(target: *const buffer.OptimizedBuffer) !void {
             continue;
         }
         // Zero is an empty cell that no draw has written.
-        if (char != 0 and utf8.isControl(char)) {
+        if (char != 0 and buffer.isControlCodepoint(char)) {
             std.debug.print("cell {d} holds control U+{X:0>4}\n", .{ index, char });
             return error.TestUnexpectedResult;
         }

@@ -80,10 +80,10 @@ test "GPU primitive packed offsets describe a source rectangle not destination b
     const id = try owner.createBuffer(4, 3, .{});
     const target = try owner.raw().getBuffer(id);
     target.clear(black, null);
-    const cells = [_]PackedCell{ .{ .char = 'A' }, .{ .char = 'B' }, .{ .char = 'C' }, .{ .char = 'D' } };
+    const cells = [_]PackedCell{ .{ .char = 'A' }, .{ .char = 'B' }, .{ .char = 0 }, .{ .char = 0xd800 } };
     const bytes = std.mem.asBytes(&cells);
     target.drawPackedBuffer(bytes.ptr, bytes.len, 1, 1, 2, 2);
-    try testing.expectEqualSlices(u32, &.{ ' ', ' ', ' ', ' ', ' ', 'A', 'B', ' ', ' ', 'C', 'D', ' ' }, target.buffer.char);
+    try testing.expectEqualSlices(u32, &.{ ' ', ' ', ' ', ' ', ' ', 'A', 'B', ' ', ' ', ' ', ' ', ' ' }, target.buffer.char);
 }
 
 test "Context checked grid and pixel draws reject invalid input before any write" {

@@ -416,7 +416,7 @@ pub inline fn containsControl(bytes: []const u8) bool {
 
 /// A Unicode scalar value: at most U+10FFFF and not a surrogate.
 pub inline fn isScalar(cp: u32) bool {
-    return !(cp > 0x10ffff or (cp >= 0xd800 and cp <= 0xdfff));
+    return cp <= 0x10ffff and !(cp >= 0xd800 and cp <= 0xdfff);
 }
 
 /// Calculate width from east asian width property and Unicode properties

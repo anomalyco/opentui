@@ -656,7 +656,7 @@ test "Scene selected text copies exact bytes without allocating" {
     defer f.deinit();
     const node = try f.owner.sceneCreateNode(f.id, 2, 2);
     try dimensions(f.owner, node, 8, 2);
-    try testing.expectError(error.InvalidOptions, f.owner.sceneSetTextOptions(node, .{ .tab_indicator = 0x85 }));
+    for ([_]u32{ 0x85, 0xd800 }) |bad| try testing.expectError(error.InvalidOptions, f.owner.sceneSetTextOptions(node, .{ .tab_indicator = bad }));
     try f.owner.sceneSetTextOptions(node, .{ .wrap_mode = .none });
     try f.owner.sceneSetText(node, "\xe4\xb8\xad tail\n" ++ utils.repeat(u8, "x", 65536));
     _ = try f.owner.sceneSetTextSelection(node, .{ .operation = 1, .focus_x = 1 });
