@@ -1168,6 +1168,9 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
     const piped = try std.mem.concat(arena, u8, &.{ xs[0..1024], "|", xs[0..1024] });
     const digits = try arena.alloc(u8, 8192);
     @memset(digits, '7');
+    // A held line: its decision is kept while the bytes that keep it arrive.
+    const dashes = try arena.alloc(u8, 8192);
+    @memset(dashes, '-');
     const held_openers = try std.mem.concat(arena, u8, &.{ "text | ", openers.items });
     var table: std.ArrayListUnmanaged(u8) = .empty;
     for ([_][]const u8{ "a", "-", "b", "c" }) |cell| {
@@ -1218,6 +1221,7 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
         .{ .name = "a pipe between two words, 1-byte appends", .parts = try split(arena, piped, 1), .display_factor = 4 },
         .{ .name = "8,192 digits, 1-byte appends", .parts = try split(arena, digits, 1) },
         .{ .name = "8,192 digits, 30-byte appends", .parts = try split(arena, digits, 30) },
+        .{ .name = "8,192 dashes, 1-byte appends", .parts = try split(arena, dashes, 1) },
         .{ .name = "a held pipe before openers that never close, 30-byte appends", .parts = try split(arena, held_openers, 30), .display_factor = 4, .sent_factor = 2 },
         .{ .name = "128-column table rows, 1-byte appends", .parts = try split(arena, table.items, 1) },
         // No run closes: each opener drawn as a code span reverts when the leaf closes.
@@ -1391,6 +1395,10 @@ test "Markdown stream: a leaf that changes kind or loses lines keeps its live di
         try std.testing.expectEqualStrings(row[1], (try f.doc.readLeaf(arena, last)).bytes.items);
         try std.testing.expect(try streamAgreesParts(arena, "kinds", row[0]));
     }
+    // Shrunk model traces: a pending row's escaped space trims; a paragraph's own definition
+    // arrives as the paragraph the layout ended closes.
+    try std.testing.expect(try streamAgreesParts(arena, "kinds", &.{ "-", "|", "-", "\n", "- | -", "\n", "\\", " " }));
+    try std.testing.expect(try streamAgreesParts(arena, "kinds", &.{ "[x]: /u\n", " [x]\n*", "\r", "#", " ", "]", "\n" }));
     // opus-4 (a): definitions leave the paragraph the next one's live text would follow; (b) a
     // pending table row latches each of its cells that holds the filter.
     try std.testing.expect(try streamAgreesParts(arena, "kinds", &.{ "[x]: /u\n\nnext para\n", "more [x]" }));
