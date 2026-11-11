@@ -757,6 +757,9 @@ pub struct InlineContext<'a> {
     pub conceal: bool,
     /// The document's syntax theme, for styles such as `markup.link.url`.
     pub syntax: &'a SyntaxTheme,
+    /// Whether the spans are one table cell's content. A cell shows the spans the hook returns but takes no click
+    /// targets.
+    pub table_cell: bool,
 }
 
 type InlineHook = Rc<dyn Fn(Vec<InlineSpan>, &InlineContext<'_>) -> Vec<InlineSpan>>;
@@ -931,18 +934,17 @@ impl Renderer<'_> {
         marker.map(InlineSpan::from).into_iter().chain(self.inline(text, style)).collect()
     }
 
-    /// `spans` of the inline `source` as the inline hook rewrites them, if there is one.
-    fn hook(&self, spans: Vec<InlineSpan>, source: &str) -> Vec<InlineSpan> {
-        match &self.options.inline_hook {
-            Some(hook) => hook(spans, &InlineContext { source, conceal: self.options.conceal, syntax: self.syntax }),
-            None => spans,
-        }
+    /// `spans` of the inline `source`, a table cell's when `table_cell`, as the inline hook rewrites them, if there is
+    /// one.
+    fn hook(&self, spans: Vec<InlineSpan>, source: &str, table_cell: bool) -> Vec<InlineSpan> {
+        let Some(hook) = &self.options.inline_hook else { return spans };
+        hook(spans, &InlineContext { source, conceal: self.options.conceal, syntax: self.syntax, table_cell })
     }
 
     /// A paragraph's or heading's text: `spans` of the inline `source`, passed through the inline hook, in `widget`
     /// or a new one. Records the spans' click targets.
     fn prose(&self, widget: Option<&Text>, spans: Vec<InlineSpan>, source: &str) -> Text {
-        let spans = self.hook(spans, source);
+        let spans = self.hook(spans, source, false);
         let (mut ranges, mut end) = (Vec::new(), 0);
         let content: Vec<Span<'static>> = spans
             .into_iter()
@@ -1128,7 +1130,7 @@ impl Renderer<'_> {
             cells
                 .iter()
                 .map(|cell| {
-                    Content(self.hook(self.inline(cell, style), cell).into_iter().map(|span| span.span).collect())
+                    Content(self.hook(self.inline(cell, style), cell, true).into_iter().map(|span| span.span).collect())
                 })
                 .collect()
         };

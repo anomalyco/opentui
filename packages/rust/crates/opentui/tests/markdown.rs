@@ -314,6 +314,39 @@ fn inline_hooks_rewrite_table_cells_without_targets() {
 }
 
 #[test]
+fn the_inline_context_says_which_spans_are_table_cells() {
+    let app = TestApp::new(20, 16);
+    let seen: Rc<RefCell<Vec<(String, bool)>>> = Rc::default();
+    let record = seen.clone();
+    let markdown = Markdown::new(&app).streaming(true).inline_hook(move |spans, context| {
+        record.borrow_mut().push((context.source.to_owned(), context.table_cell));
+        spans
+    });
+    app.root().add(&markdown);
+    markdown.append("# Title\n\nText\n\n- item\n\n> quote\n\n| id |\n| -- |\n| cell |");
+    // A streamed row refills the table; a re-run reaches a quote and a table.
+    markdown.append("\n| more |");
+    markdown.rerun_inline_hook(|source| source == "quote" || source == "more");
+    let (prose, cell) = (false, true);
+    let expected = [
+        ("Title", prose),
+        ("Text", prose),
+        ("item", prose),
+        ("quote", prose),
+        ("id", cell),
+        ("cell", cell),
+        ("id", cell),
+        ("cell", cell),
+        ("more", cell),
+        ("quote", prose),
+        ("id", cell),
+        ("cell", cell),
+        ("more", cell),
+    ];
+    assert_eq!(*seen.borrow(), expected.map(|(source, cell)| (source.to_owned(), cell)));
+}
+
+#[test]
 fn streamed_text_runs_the_inline_hook_once_per_changed_block() {
     let app = TestApp::new(40, 8);
     let titles: Titles = Rc::new(RefCell::new(HashMap::from([("ses_a", "A"), ("ses_b", "B")])));

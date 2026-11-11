@@ -79,7 +79,8 @@ callback (`_linkifyMarkdownChunks`), which OpenCode replaces to show session IDs
 as titled links. It gets the inline spans of each paragraph, heading and table
 cell, in lists and quotes too, and returns the spans to show. Code blocks and
 code-block renderers never reach it, as in Core. Table cells show the spans the
-hook returns but take no click targets.
+hook returns but take no click targets; `InlineContext::table_cell` is true when
+the spans are one table cell's content, and false for every other block.
 
 ```rust
 pub struct InlineSpan {
@@ -94,6 +95,8 @@ pub struct InlineContext<'a> {
     pub source: &'a str,
     pub conceal: bool,
     pub syntax: &'a SyntaxTheme,
+    /// The spans are one table cell's content.
+    pub table_cell: bool,
 }
 ```
 
