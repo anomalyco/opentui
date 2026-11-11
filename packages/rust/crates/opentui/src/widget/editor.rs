@@ -68,73 +68,6 @@ pub enum EditorAction {
     Paste,
 }
 
-/// Core's default Textarea bindings. Core's "meta" is the Alt key here.
-const BINDINGS: &[(&str, EditorAction)] = &[
-    ("left", EditorAction::MoveLeft),
-    ("right", EditorAction::MoveRight),
-    ("up", EditorAction::MoveUp),
-    ("down", EditorAction::MoveDown),
-    ("shift+left", EditorAction::SelectLeft),
-    ("shift+right", EditorAction::SelectRight),
-    ("shift+up", EditorAction::SelectUp),
-    ("shift+down", EditorAction::SelectDown),
-    ("home", EditorAction::BufferHome),
-    ("end", EditorAction::BufferEnd),
-    ("shift+home", EditorAction::SelectBufferHome),
-    ("shift+end", EditorAction::SelectBufferEnd),
-    ("ctrl+a", EditorAction::LineHome),
-    ("ctrl+e", EditorAction::LineEnd),
-    ("ctrl+shift+a", EditorAction::SelectLineHome),
-    ("ctrl+shift+e", EditorAction::SelectLineEnd),
-    ("alt+a", EditorAction::VisualLineHome),
-    ("alt+e", EditorAction::VisualLineEnd),
-    ("alt+shift+a", EditorAction::SelectVisualLineHome),
-    ("alt+shift+e", EditorAction::SelectVisualLineEnd),
-    ("ctrl+f", EditorAction::MoveRight),
-    ("ctrl+b", EditorAction::MoveLeft),
-    ("ctrl+w", EditorAction::DeleteWordBackward),
-    ("ctrl+backspace", EditorAction::DeleteWordBackward),
-    ("alt+d", EditorAction::DeleteWordForward),
-    ("alt+delete", EditorAction::DeleteWordForward),
-    ("ctrl+delete", EditorAction::DeleteWordForward),
-    ("ctrl+shift+d", EditorAction::DeleteLine),
-    ("ctrl+k", EditorAction::DeleteToLineEnd),
-    ("ctrl+u", EditorAction::DeleteToLineStart),
-    ("backspace", EditorAction::Backspace),
-    ("shift+backspace", EditorAction::Backspace),
-    ("ctrl+d", EditorAction::Delete),
-    ("delete", EditorAction::Delete),
-    ("shift+delete", EditorAction::Delete),
-    ("enter", EditorAction::Newline),
-    ("linefeed", EditorAction::Newline),
-    ("alt+enter", EditorAction::Submit),
-    ("ctrl+-", EditorAction::Undo),
-    ("ctrl+.", EditorAction::Redo),
-    ("super+z", EditorAction::Undo),
-    ("super+shift+z", EditorAction::Redo),
-    ("alt+f", EditorAction::WordForward),
-    ("alt+b", EditorAction::WordBackward),
-    ("alt+right", EditorAction::WordForward),
-    ("alt+left", EditorAction::WordBackward),
-    ("ctrl+right", EditorAction::WordForward),
-    ("ctrl+left", EditorAction::WordBackward),
-    ("alt+shift+f", EditorAction::SelectWordForward),
-    ("alt+shift+b", EditorAction::SelectWordBackward),
-    ("alt+shift+right", EditorAction::SelectWordForward),
-    ("alt+shift+left", EditorAction::SelectWordBackward),
-    ("alt+backspace", EditorAction::DeleteWordBackward),
-    ("super+left", EditorAction::VisualLineHome),
-    ("super+right", EditorAction::VisualLineEnd),
-    ("super+up", EditorAction::BufferHome),
-    ("super+down", EditorAction::BufferEnd),
-    ("super+backspace", EditorAction::DeleteToLineStart),
-    ("super+shift+left", EditorAction::SelectVisualLineHome),
-    ("super+shift+right", EditorAction::SelectVisualLineEnd),
-    ("super+shift+up", EditorAction::SelectBufferHome),
-    ("super+shift+down", EditorAction::SelectBufferEnd),
-    ("super+a", EditorAction::SelectAll),
-];
-
 /// Adds the extmark methods to an editing widget whose only field is an `Rc<EditorCore>`.
 macro_rules! extmark_methods {
     () => {
@@ -240,13 +173,14 @@ macro_rules! editor_methods {
             self.clone()
         }
 
-        /// The most characters the text may hold, counted as Unicode scalar values: 1000 by default for an `Input`,
-        /// unlimited for a `Textarea`. Longer text is cut to fit.
+        /// The longest text it may hold: in UTF-16 code units for an `Input`, as Core counts `maxLength`, 1000 by
+        /// default; in characters (Unicode scalar values) for a `Textarea`, unlimited by default. Longer text is cut
+        /// to fit, leaving out a character that does not fit whole.
         pub fn max_length(&self, max: usize) -> Self {
             self.0.max_length.set(max);
             let text = self.0.text();
-            if text.chars().count() > max {
-                self.0.set_text(&text.chars().take(max).collect::<String>());
+            if self.0.length(&text) > max {
+                self.0.set_text(&text);
             }
             self.clone()
         }
@@ -299,7 +233,7 @@ pub(crate) use editor_methods;
 
 /// Core's Textarea bindings.
 pub(crate) fn textarea_keymap() -> Keymap<EditorAction> {
-    BINDINGS.iter().copied().collect()
+    crate::tables::TEXTAREA_SHORTCUTS.iter().copied().collect()
 }
 
 /// Core's Input bindings: the Textarea's, with Enter and line feed submitting.
@@ -488,15 +422,24 @@ impl EditorCore {
         }
     }
 
-    /// Cuts `text` so the document stays within the maximum length, given `removed` characters being replaced.
+    /// The units `max_length` counts a character in: UTF-16 code units in an `Input`, one per character in a `Textarea`.
+    fn units(&self, character: char) -> usize {
+        if self.single_line { character.len_utf16() } else { 1 }
+    }
+
+    pub(crate) fn length(&self, text: &str) -> usize {
+        text.chars().map(|character| self.units(character)).sum()
+    }
+
+    /// Cuts `text` so the document stays within the maximum length, given `removed` units being replaced.
     fn limit(&self, text: &str, removed: usize) -> String {
         let max = self.max_length.get();
         if max == usize::MAX {
             return text.to_owned();
         }
-        let current = if text.is_empty() { 0 } else { self.text().chars().count() };
-        let room = max.saturating_sub(current.saturating_sub(removed));
-        text.chars().take(room).collect()
+        let current = if text.is_empty() { 0 } else { self.length(&self.text()) };
+        let mut room = max.saturating_sub(current.saturating_sub(removed));
+        text.chars().take_while(|c| room.checked_sub(self.units(*c)).map(|left| room = left).is_some()).collect()
     }
 
     fn clear_selection_state(&self) {
@@ -512,7 +455,7 @@ impl EditorCore {
     pub fn insert(&self, text: &str) {
         let text = sanitize(text, !self.single_line);
         let removed =
-            self.selection().map_or(0, |_| self.report(self.view.selected_text()).unwrap_or_default().chars().count());
+            self.selection().map_or(0, |_| self.length(&self.report(self.view.selected_text()).unwrap_or_default()));
         let text = self.limit(&text, removed);
         if text.is_empty() {
             return;

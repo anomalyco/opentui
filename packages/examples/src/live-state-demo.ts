@@ -15,7 +15,6 @@ import {
   blue,
   fg,
   parseColor,
-  Box,
 } from "@opentui/core"
 import type { BoxOptions } from "@opentui/core"
 import { setupCommonDemoKeys } from "./lib/standalone-keys.js"
@@ -26,14 +25,15 @@ let instructionsText: TextRenderable | null = null
 let statusText: TextRenderable | null = null
 let rendererStateText: TextRenderable | null = null
 let renderableStateText: TextRenderable | null = null
-let liveButtons: ReturnType<typeof LiveButton>[] = []
+let liveButtons: BoxRenderable[] = []
 let demoRenderable: BoxRenderable | null = null
 let currentRenderer: CliRenderer | null = null
 let frameCounter = 0
 let animationCounter = 0
 let frameCallback: ((deltaTime: number) => Promise<void>) | null = null
 
-function LiveButton(options: BoxOptions & { label: string }) {
+function LiveButton(renderer: CliRenderer, options: BoxOptions & { label: string }): BoxRenderable {
+  const { label, ...boxOptions } = options
   const base = parseColor(options.backgroundColor ?? "transparent")
   const hoverBg = RGBA.fromValues(
     Math.min(1.0, base.r * 1.4),
@@ -43,14 +43,14 @@ function LiveButton(options: BoxOptions & { label: string }) {
   )
   const pressBg = RGBA.fromValues(base.r * 0.6, base.g * 0.6, base.b * 0.6, base.a)
 
-  return Box({
-    ...options,
+  return new BoxRenderable(renderer, {
+    ...boxOptions,
     renderAfter(buffer, deltaTime) {
       const textColor = RGBA.fromValues(1, 1, 1, 1)
       const centerY = this.y + Math.floor(this.height / 2)
-      const startX = this.x + Math.floor((this.width - options.label.length) / 2)
+      const startX = this.x + Math.floor((this.width - label.length) / 2)
 
-      buffer.drawText(options.label, startX, centerY, textColor)
+      buffer.drawText(label, startX, centerY, textColor)
     },
     onMouse(event: MouseEvent) {
       switch (event.type) {
@@ -227,7 +227,7 @@ export function run(renderer: CliRenderer): void {
 
   // Renderer control buttons
   liveButtons = [
-    LiveButton({
+    LiveButton(renderer, {
       id: "request-live-btn",
       position: "absolute",
       left: 2,
@@ -244,7 +244,7 @@ export function run(renderer: CliRenderer): void {
         updateRenderableState()
       },
     }),
-    LiveButton({
+    LiveButton(renderer, {
       id: "drop-live-btn",
       position: "absolute",
       left: 2 + spacing,
@@ -263,7 +263,7 @@ export function run(renderer: CliRenderer): void {
     }),
 
     // Renderable management buttons
-    LiveButton({
+    LiveButton(renderer, {
       id: "add-renderable-btn",
       position: "absolute",
       left: 2,
@@ -279,7 +279,7 @@ export function run(renderer: CliRenderer): void {
         updateRenderableState()
       },
     }),
-    LiveButton({
+    LiveButton(renderer, {
       id: "remove-renderable-btn",
       position: "absolute",
       left: 2 + spacing,
@@ -297,7 +297,7 @@ export function run(renderer: CliRenderer): void {
     }),
 
     // Live state buttons
-    LiveButton({
+    LiveButton(renderer, {
       id: "set-live-true-btn",
       position: "absolute",
       left: 2,
@@ -319,7 +319,7 @@ export function run(renderer: CliRenderer): void {
         updateRenderableState()
       },
     }),
-    LiveButton({
+    LiveButton(renderer, {
       id: "set-live-false-btn",
       position: "absolute",
       left: 2 + spacing,
@@ -343,7 +343,7 @@ export function run(renderer: CliRenderer): void {
     }),
 
     // Visibility state buttons
-    LiveButton({
+    LiveButton(renderer, {
       id: "set-visible-true-btn",
       position: "absolute",
       left: 2,
@@ -365,7 +365,7 @@ export function run(renderer: CliRenderer): void {
         updateRenderableState()
       },
     }),
-    LiveButton({
+    LiveButton(renderer, {
       id: "set-visible-false-btn",
       position: "absolute",
       left: 2 + spacing,

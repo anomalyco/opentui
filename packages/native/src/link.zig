@@ -1,5 +1,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
+const utf8 = @import("utf8.zig");
 
 pub const LinkPoolError = error{
     OutOfMemory,
@@ -23,12 +24,7 @@ pub const IdPayload = u32;
 /// there can end the sequence and start another one. So a pooled target is
 /// non-empty UTF-8 that fits a slot and holds none of them.
 pub fn isWritableUrl(url: []const u8) bool {
-    if (url.len == 0 or url.len > MAX_URL_LENGTH) return false;
-    var code_points = (std.unicode.Utf8View.init(url) catch return false).iterator();
-    while (code_points.nextCodepoint()) |code_point| {
-        if (code_point < 0x20 or (code_point >= 0x7f and code_point < 0xa0)) return false;
-    }
-    return true;
+    return url.len != 0 and url.len <= MAX_URL_LENGTH and std.unicode.utf8ValidateSlice(url) and !utf8.containsControl(url);
 }
 
 const SlotHeader = extern struct {

@@ -36,9 +36,6 @@ permissions:
   contents: read
   id-token: write
 
-env:
-  NODE_VERSION: 26.13.0
-
 jobs:
   publish:
     # npm Trusted Publishing rejects third-party/self-hosted runners.
@@ -53,7 +50,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           registry-url: https://registry.npmjs.org
 
       - name: Setup npm with Trusted Publishing support
@@ -62,7 +59,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.1
+          bun-version-file: package.json
 
       - name: Prepare release versions
         if: ${{ inputs.prepareVersion != '' }}

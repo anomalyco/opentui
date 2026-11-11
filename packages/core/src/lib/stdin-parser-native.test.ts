@@ -1,8 +1,9 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 import { Buffer } from "node:buffer"
 import { ManualClock } from "../testing/manual-clock.js"
 import { resolveRenderLib } from "../zig.js"
-import { kittyKeyMap } from "./parse.keypress-kitty.js"
+import { kittyKeyMap } from "./kitty-keys.js"
+import { parseKeypress } from "./parse.keypress.js"
 import { NativeStdinParser, type NativeStdinParserOptions, type StdinEvent } from "./stdin-parser-native.js"
 
 function events(parser: NativeStdinParser): StdinEvent[] {
@@ -232,6 +233,35 @@ describe("native stdin parser: replay", () => {
 })
 
 describe("native stdin parser: adapter", () => {
+  test.each([
+    ["a lone ESC as Escape", "\x1b", false, { name: "escape" }],
+    ["a lone ESC again", "\x1b", false, { name: "escape" }],
+    ["a character outside the BMP", "👍", false, { name: "👍", sequence: "👍" }],
+    ["the first of several keys", "ab", false, { name: "a" }],
+    ["modified F3 in legacy mode", "\x1b[1;2R", false, { name: "f3", shift: true }],
+    ["CSI R as a reply under Kitty", "\x1b[1;2R", true, null],
+    ["Kitty Ctrl+Delete", "\x1b[57349;5u", true, { name: "delete", ctrl: true, source: "kitty" }],
+    ["no input", undefined, false, null],
+    ["a mouse event first", "\x1b[<0;1;1Ma", false, null],
+    ["a paste", "\x1b[200~a\x1b[201~", false, null],
+  ] as const)("parseKeypress returns %s", (_label, input, useKittyKeyboard, expected) => {
+    const key = parseKeypress(input as string | Buffer | undefined, { useKittyKeyboard })
+    if (expected === null) expect(key).toBeNull()
+    else expect(key).toMatchObject(expected)
+  })
+
+  test("parseKeypress leaves the caller's Buffer as it was and destroys its native Context", () => {
+    const destroy = spyOn(resolveRenderLib(), "destroyContext")
+    try {
+      const input = Buffer.from([0xe1, 0x78])
+      expect(parseKeypress(input)).toMatchObject({ name: "a", meta: true })
+      expect([...input]).toEqual([0xe1, 0x78])
+      expect(destroy).toHaveBeenCalledTimes(1)
+    } finally {
+      destroy.mockRestore()
+    }
+  })
+
   test("names every Kitty functional key like Core", () => {
     const codes = [27, 13, 9, 127, ...Array.from({ length: 57454 - 57348 + 1 }, (_, index) => 57348 + index)]
     const parser = new NativeStdinParser({ armTimeouts: false, clock: new ManualClock() })
@@ -239,6 +269,7 @@ describe("native stdin parser: adapter", () => {
       for (const code of codes) parser.push(Buffer.from(`\x1b[${code}u`))
       const names = events(parser).map((event) => (event.type === "key" ? event.key.name : event.type))
       expect(names).toEqual(codes.map((code) => kittyKeyMap[code]))
+      expect(names.filter((name) => /^f\d+$/.test(name))).toEqual(Array.from({ length: 35 }, (_, i) => `f${i + 1}`))
       expect(codes).toHaveLength(111)
     } finally {
       parser.destroy()
@@ -258,6 +289,7 @@ describe("native stdin parser: adapter", () => {
     expect(kittyA).toMatchObject({ name: "a", shift: true, sequence: "A", source: "kitty" })
     expect(parse(["\x1b"])[0]).toMatchObject({ key: { name: "", meta: true, sequence: "\x1b" } })
     expect(keypad).toMatchObject({ name: "0", sequence: "0", number: true, code: "Op" })
+    expect(parse(["\x1bOj"])[0]).toMatchObject({ key: { name: "*", sequence: "*", number: false, code: "Oj" } })
     expect(repeat).toMatchObject({ name: "a", eventType: "press", repeated: true })
     expect(base).toMatchObject({ name: "с", ctrl: true, baseCode: 99 })
     expect(f5).toMatchObject({ name: "f5", ctrl: true, code: "[15~", option: false })

@@ -37,9 +37,25 @@ else
 pub const EncodedChar = encoded_unicode.EncodedChar;
 pub const EncodedUnicode = encoded_unicode.EncodedUnicode;
 
-pub const terminal_input_bytes_max: u32 = 1024 * 1024;
+pub const terminal_input_bytes_max: u32 = api.OT_EMBEDDED_TERMINAL_INPUT_BYTES_MAX;
+const terminal_mods: u32 = api.OT_EMBEDDED_TERMINAL_MOD_SHIFT | api.OT_EMBEDDED_TERMINAL_MOD_CTRL | api.OT_EMBEDDED_TERMINAL_MOD_ALT |
+    api.OT_EMBEDDED_TERMINAL_MOD_SUPER | api.OT_EMBEDDED_TERMINAL_MOD_CAPS_LOCK | api.OT_EMBEDDED_TERMINAL_MOD_NUM_LOCK;
+
+/// Encode calls bit-cast the header's modifier bits to Ghostty's KeyMods.
+fn assertTerminalMods(comptime Mods: type) void {
+    inline for (.{
+        .{ "shift", api.OT_EMBEDDED_TERMINAL_MOD_SHIFT },         .{ "ctrl", api.OT_EMBEDDED_TERMINAL_MOD_CTRL },
+        .{ "alt", api.OT_EMBEDDED_TERMINAL_MOD_ALT },             .{ "super", api.OT_EMBEDDED_TERMINAL_MOD_SUPER },
+        .{ "caps_lock", api.OT_EMBEDDED_TERMINAL_MOD_CAPS_LOCK }, .{ "num_lock", api.OT_EMBEDDED_TERMINAL_MOD_NUM_LOCK },
+    }) |pair| {
+        var mods: Mods = .{};
+        @field(mods, pair[0]) = true;
+        if (@as(u16, @bitCast(mods)) != pair[1]) @compileError("Embedded terminal modifier differs from Ghostty: " ++ pair[0]);
+    }
+}
+
 pub const EmbeddedTerminalKey = struct {
-    action: u32 = 1,
+    action: u32 = api.OT_EMBEDDED_TERMINAL_KEY_PRESS,
     composing: bool = false,
     mods: u32 = 0,
     consumed_mods: u32 = 0,
@@ -49,7 +65,7 @@ pub const EmbeddedTerminalKey = struct {
 };
 pub const EmbeddedTerminalMouse = struct {
     action: u32,
-    button: i32 = -1,
+    button: i32 = api.OT_EMBEDDED_TERMINAL_BUTTON_NONE,
     mods: u32 = 0,
     any_button_pressed: bool = false,
     x: f32,
@@ -457,7 +473,7 @@ pub const Options = struct {
     lease_bytes_max: u64 = buf.BufferLease.bytes_max_default,
     /// Each entry holds at most Diagnostic.message_bytes_max bytes. Zero keeps
     /// only the cumulative drop count. Diagnostics are drained by the idle owner.
-    diagnostic_capacity: u32 = 64,
+    diagnostic_capacity: u32 = api.OT_DIAGNOSTIC_QUEUE_MAX,
     yoga_callbacks: yoga.Callbacks = .{},
 };
 
@@ -472,6 +488,33 @@ pub const Text = struct {
     scroll_x: f64 = 0,
     scroll_y: f64 = 0,
     pool_next: ?*Text = null,
+    /// How the view mapped cells to text when paint last drew it, and the frame that drew it.
+    painted: ?Mapping = null,
+    painted_frame: u64 = 0,
+
+    /// What decides which grapheme a cell of the view shows, besides the node's place on screen.
+    pub const Mapping = struct {
+        content_epoch: u64,
+        viewport: ?text_buffer_view.Viewport,
+        wrap_width: ?u32,
+        wrap_mode: text_buffer_view.WrapMode,
+        text_align: text_buffer_view.TextAlign,
+        truncate: bool,
+        first_line_offset: u32,
+    };
+
+    pub fn mapping(self: *const Text) Mapping {
+        const view = self.view;
+        return .{
+            .content_epoch = self.buffer.getContentEpoch(),
+            .viewport = view.viewport,
+            .wrap_width = view.wrap_width,
+            .wrap_mode = view.wrap_mode,
+            .text_align = view.text_align,
+            .truncate = view.truncate,
+            .first_line_offset = view.first_line_offset,
+        };
+    }
 
     pub fn prepareView(self: *Text) !void {
         try self.view.prepare();
@@ -1496,16 +1539,17 @@ pub const Context = struct {
         defer self.mutating = false;
         const value = try self.getEmbeddedTerminal(handle);
         if (comptime !@import("ghostty_vt_options").available) return error.Unsupported;
-        if (options.action > 2 or options.mods & ~@as(u32, 0x3f) != 0 or options.consumed_mods & ~@as(u32, 0x3f) != 0 or
-            options.unshifted_codepoint > 0x10ffff or (options.unshifted_codepoint >= 0xd800 and options.unshifted_codepoint <= 0xdfff)) return error.InvalidOptions;
+        if (options.action > api.OT_EMBEDDED_TERMINAL_KEY_REPEAT or options.mods & ~terminal_mods != 0 or options.consumed_mods & ~terminal_mods != 0 or
+            !utf8.isScalar(options.unshifted_codepoint)) return error.InvalidOptions;
         if (options.key.len > terminal_input_bytes_max or options.text.len > terminal_input_bytes_max) return error.TextLimit;
         if (!std.unicode.utf8ValidateSlice(options.text)) return error.InvalidUnicode;
         const vt = @import("ghostty-vt.zig").vt;
+        comptime assertTerminalMods(vt.input.KeyMods);
         const encoded = try value.encodeKey(.{
             .action = switch (options.action) {
-                0 => .release,
-                1 => .press,
-                2 => .repeat,
+                api.OT_EMBEDDED_TERMINAL_KEY_RELEASE => .release,
+                api.OT_EMBEDDED_TERMINAL_KEY_PRESS => .press,
+                api.OT_EMBEDDED_TERMINAL_KEY_REPEAT => .repeat,
                 else => unreachable,
             },
             .key = vt.input.Key.fromW3C(options.key) orelse .unidentified,
@@ -1524,26 +1568,27 @@ pub const Context = struct {
         defer self.mutating = false;
         const value = try self.getEmbeddedTerminal(handle);
         if (comptime !@import("ghostty_vt_options").available) return error.Unsupported;
-        if (options.action > 2 or options.button < -1 or options.button > 7 or options.mods & ~@as(u32, 0x3f) != 0) return error.InvalidOptions;
+        if (options.action > api.OT_EMBEDDED_TERMINAL_MOUSE_MOTION or options.button < api.OT_EMBEDDED_TERMINAL_BUTTON_NONE or
+            options.button > api.OT_EMBEDDED_TERMINAL_BUTTON_SEVEN or options.mods & ~terminal_mods != 0) return error.InvalidOptions;
         const previous = value.mouse_last_cell;
         errdefer value.mouse_last_cell = previous;
         const encoded = try value.encodeMouse(.{
             .action = switch (options.action) {
-                0 => .press,
-                1 => .release,
-                2 => .motion,
+                api.OT_EMBEDDED_TERMINAL_MOUSE_PRESS => .press,
+                api.OT_EMBEDDED_TERMINAL_MOUSE_RELEASE => .release,
+                api.OT_EMBEDDED_TERMINAL_MOUSE_MOTION => .motion,
                 else => unreachable,
             },
             .button = switch (options.button) {
-                -1 => null,
-                0 => .unknown,
-                1 => .left,
-                2 => .right,
-                3 => .middle,
-                4 => .four,
-                5 => .five,
-                6 => .six,
-                7 => .seven,
+                api.OT_EMBEDDED_TERMINAL_BUTTON_NONE => null,
+                api.OT_EMBEDDED_TERMINAL_BUTTON_UNKNOWN => .unknown,
+                api.OT_EMBEDDED_TERMINAL_BUTTON_LEFT => .left,
+                api.OT_EMBEDDED_TERMINAL_BUTTON_RIGHT => .right,
+                api.OT_EMBEDDED_TERMINAL_BUTTON_MIDDLE => .middle,
+                api.OT_EMBEDDED_TERMINAL_BUTTON_FOUR => .four,
+                api.OT_EMBEDDED_TERMINAL_BUTTON_FIVE => .five,
+                api.OT_EMBEDDED_TERMINAL_BUTTON_SIX => .six,
+                api.OT_EMBEDDED_TERMINAL_BUTTON_SEVEN => .seven,
                 else => unreachable,
             },
             .mods = @bitCast(@as(u16, @intCast(options.mods))),
@@ -1736,9 +1781,9 @@ pub const Context = struct {
                 if (options.packed_options & ~@as(u32, 0x1ff) != 0 or
                     (options.packed_options >> 5) & 3 > 2 or (options.packed_options >> 7) & 3 > 2) return error.InvalidOptions;
                 if (options.width == 0 or options.height == 0) return;
+                // Zero keeps the default border character.
                 for (options.border_chars) |char| {
-                    if (char > 0x10ffff or (char >= 0xd800 and char <= 0xdfff) or
-                        (char != 0 and (char < 32 or (char >= 127 and char <= 159)))) return error.InvalidOptions;
+                    if (!utf8.isScalar(char) or (char != 0 and utf8.isControl(char))) return error.InvalidOptions;
                 }
                 try buf.validateTextInput(text);
                 try buf.validateTextInput(bottom_title);
@@ -1753,8 +1798,8 @@ pub const Context = struct {
             .text => try target.drawTextFitted(text, options.x, options.y, options.foreground, options.background, options.attributes, options.fit),
             .fill => target.fillRectClipped(options.x, options.y, options.width, options.height, background),
             .cell, .cell_blend, .char => {
-                if (options.char > 0x10ffff or (options.char >= 0xd800 and options.char <= 0xdfff)) return error.InvalidOptions;
-                const char = if (buf.isControlCodepoint(options.char)) buf.DEFAULT_SPACE_CHAR else options.char;
+                if (!utf8.isScalar(options.char)) return error.InvalidOptions;
+                const char = if (utf8.isControl(options.char)) buf.DEFAULT_SPACE_CHAR else options.char;
                 if (options.x < 0 or options.y < 0) return;
                 const x: u32 = @intCast(options.x);
                 const y: u32 = @intCast(options.y);
@@ -1816,8 +1861,7 @@ pub const Context = struct {
         try buf.validateColor(options.foreground);
         try buf.validateColor(options.background);
         for (options.border_chars) |char| {
-            if (char > 0x10ffff or (char >= 0xd800 and char <= 0xdfff) or
-                (char != 0 and utf8.eastAsianWidth(@intCast(char)) != 1)) return error.InvalidOptions;
+            if (!utf8.isScalar(char) or (char != 0 and utf8.eastAsianWidth(@intCast(char)) != 1)) return error.InvalidOptions;
         }
         for ([_][]const i32{ columns, rows }) |offsets| {
             if (offsets.len > @as(u64, self.render_cells_max) + 1) return error.InvalidOptions;
@@ -2276,7 +2320,7 @@ pub const Context = struct {
         const value = try self.scenePaintNode(handle);
         const node = value.scene_node.?;
         if (node.kind != api.OT_SCENE_EDITOR) return error.WrongKind;
-        if (options.style > 3 or (options.mouse_pointer > api.OT_MOUSE_POINTER_MAX and
+        if (options.style > api.OT_CURSOR_STYLE_DEFAULT or (options.mouse_pointer > api.OT_MOUSE_POINTER_MAX and
             options.mouse_pointer != api.OT_MOUSE_POINTER_UNCHANGED)) return error.InvalidOptions;
         try buf.validateColor(options.color);
         node.control = .{ .editor = options };
@@ -2726,10 +2770,7 @@ pub const Context = struct {
         try buf.validateColor(options.foreground);
         try buf.validateColor(options.background);
         if (options.tab_color) |rgba| try buf.validateColor(rgba);
-        if (options.tab_indicator) |indicator| {
-            if (indicator < 0x20 or (indicator >= 0x7f and indicator <= 0x9f) or
-                indicator > 0x10ffff or (indicator >= 0xd800 and indicator <= 0xdfff)) return error.InvalidOptions;
-        }
+        try validateTabIndicator(options.tab_indicator);
         var dirty: u32 = 0;
         try yoga.check(yoga.yogaNodeIsDirtyChecked(node.yoga_node, &dirty));
         const previous_viewport = text.view.getViewport();
@@ -2971,6 +3012,23 @@ pub const Context = struct {
             };
         }
         return count;
+    }
+
+    pub fn sceneGetTextByteAt(self: *Context, handle: Handle, x: i32, y: i32) !?u32 {
+        try self.checkSceneRead();
+        const node = (try self.sceneNode(handle)).scene_node.?;
+        const text = node.text orelse return error.WrongKind;
+        // Only what the latest frame painted: the node's cells in that frame, and its view as drawn then.
+        const area = node.owner.paintedArea(node) orelse return null;
+        // A stamp from an attempt that did not finish describes cells that frame never showed.
+        if (text.painted_frame > area.frame or !std.meta.eql(text.painted, text.mapping())) return null;
+        const clip = area.clip;
+        if (x < clip.x or y < clip.y or x - @as(i64, clip.x) >= clip.width or y - @as(i64, clip.y) >= clip.height) return null;
+        const hit = text.view.graphemeAtCell(@intCast(@as(i64, x) - area.x), @intCast(@as(i64, y) - area.y)) orelse return null;
+        // An edge that cuts a wide grapheme leaves its cells blank.
+        const left = area.x + hit.x;
+        if (left < clip.x or left + hit.width > @as(i64, clip.x) + clip.width) return null;
+        return hit.byte;
     }
 
     pub fn sceneGetLayout(self: *Context, handle: Handle, raw_yoga: bool) !scene.Layout {
@@ -3872,8 +3930,7 @@ pub const Context = struct {
 
     fn validateTabIndicator(indicator: ?u32) !void {
         if (indicator) |value| {
-            if (value < 0x20 or (value >= 0x7f and value <= 0x9f) or
-                value > 0x10ffff or (value >= 0xd800 and value <= 0xdfff)) return error.InvalidOptions;
+            if (utf8.isControl(value) or !utf8.isScalar(value)) return error.InvalidOptions;
         }
     }
 

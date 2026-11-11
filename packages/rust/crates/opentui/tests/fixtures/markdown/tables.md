@@ -1,7 +1,0 @@
-| Name | Size | Note |
-| :--- | ---: | --- |
-| alpha | 1 | first row |
-| beta | 22 | `code` cell |
-| gamma | 333 | **bold** |
-
-After the table.

@@ -617,7 +617,7 @@ fn frames_pass_scroll_requests_to_the_host() -> Result<()> {
     };
     // The first layout sizes the content, a frame without changes asks nothing, and new content asks again.
     assert_eq!(scrolls(&session)?, [2]);
-    assert_eq!(scrolls(&session)?, []);
+    assert_eq!(scrolls(&session)?, [0; 0]);
     text.set_text("a\nb\nc\nd")?;
     assert_eq!(scrolls(&session)?, [2]);
     Ok(())
@@ -1049,9 +1049,11 @@ fn embedded_terminals_encode_input_as_programs_ask() -> Result<()> {
     assert_eq!(key("Enter", "", Modifiers::NONE)?, b"\r");
     assert_eq!(key("KeyC", "c", Modifiers::CTRL)?, b"\x03");
     assert_eq!(key("KeyA", "a", Modifiers::ALT)?, b"\x1ba");
+    // The emulator has no Meta: Kitty Meta goes as Alt, not as Super.
+    assert_eq!(key("KeyA", "a", Modifiers::META)?, b"\x1ba");
     assert_eq!(key("ArrowUp", "", Modifiers::NONE)?, b"\x1b[A");
     terminal.write(b"\x1b[>3u")?;
-    assert_eq!(key("KeyA", "a", Modifiers::META)?, b"\x1b[97;9u");
+    assert_eq!(key("KeyA", "a", Modifiers::META)?, b"\x1b[97;3u");
     let release = TerminalKey {
         kind: KeyEventKind::Release,
         code: "KeyA",

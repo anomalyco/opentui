@@ -51,7 +51,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.1
+          bun-version-file: package.json
 
       # Drafts the release notes in the pull request (packages/web/scripts/release-notes.ts).
       - name: Install opencode

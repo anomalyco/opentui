@@ -1,11 +1,12 @@
 import { type RenderableOptions, Renderable, type NativeRenderableIntegration } from "../Renderable.js"
-import type { KeyEvent, PasteEvent } from "../lib/KeyHandler.js"
+import { KeyEvent, type PasteEvent } from "../lib/KeyHandler.js"
 import { RGBA } from "../lib/RGBA.js"
 import type { RenderContext } from "../types.js"
 import type { MouseEvent } from "../renderer.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import type { ContextEmbeddedTerminalHandle, EmbeddedTerminalKey, EmbeddedTerminalMouse, RenderLib } from "../zig.js"
 import { convertGlobalToLocalSelection, type Selection } from "../lib/selection.js"
+import { nativeConstants } from "../native-abi.generated.js"
 
 export type EmbeddedTerminalDataSource = "input" | "response"
 
@@ -32,12 +33,12 @@ export type EmbeddedTerminalScreen = {
   }
 }
 
-const MOD_SHIFT = 1 << 0
-const MOD_CTRL = 1 << 1
-const MOD_ALT = 1 << 2
-const MOD_SUPER = 1 << 3
-const MOD_CAPS_LOCK = 1 << 4
-const MOD_NUM_LOCK = 1 << 5
+const MOD_SHIFT = nativeConstants.OT_EMBEDDED_TERMINAL_MOD_SHIFT
+const MOD_CTRL = nativeConstants.OT_EMBEDDED_TERMINAL_MOD_CTRL
+const MOD_ALT = nativeConstants.OT_EMBEDDED_TERMINAL_MOD_ALT
+const MOD_SUPER = nativeConstants.OT_EMBEDDED_TERMINAL_MOD_SUPER
+const MOD_CAPS_LOCK = nativeConstants.OT_EMBEDDED_TERMINAL_MOD_CAPS_LOCK
+const MOD_NUM_LOCK = nativeConstants.OT_EMBEDDED_TERMINAL_MOD_NUM_LOCK
 
 export class EmbeddedTerminalRenderable extends Renderable {
   static override readonly nativeIntegration: NativeRenderableIntegration = {
@@ -174,6 +175,8 @@ export class EmbeddedTerminalRenderable extends Renderable {
 
   public encodeKey(key: KeyEvent): Uint8Array {
     if (!this.handle) return new Uint8Array()
+    // Without the Kitty keyboard protocol the parser names Ctrl+J "linefeed", after the byte it sends.
+    if (key.name === "linefeed") key = new KeyEvent({ ...key, name: "j", ctrl: true, sequence: key.shift ? "J" : "j" })
     const text = textualKey(key)
     const physical = physicalKey(key)
     const options: EmbeddedTerminalKey = {
