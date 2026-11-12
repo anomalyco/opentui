@@ -297,7 +297,8 @@ fn console_modes_are_restored() {
     let fixture = fixture();
     assert!(!fixture.to_string_lossy().contains(' '), "the script below does not quote {}", fixture.display());
     for arguments in MODES {
-        for key in ["q", "e", "p"] {
+        // With --app, P panics in a task that changed the modes while the app had released the console.
+        for key in ["q", "e", "p", "P"].into_iter().filter(|key| *key != "P" || !arguments.is_empty()) {
             let script = format!("{0} --modes & {0} {1} & {0} --modes", fixture.display(), arguments.join(" "));
             let mut command = Command::new("cmd.exe");
             command.args(["/d", "/s", "/c", &script]);
