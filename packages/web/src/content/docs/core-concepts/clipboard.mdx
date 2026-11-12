@@ -208,8 +208,8 @@ write.
 ## Cancellation
 
 Every operation accepts an `AbortSignal`. Cancellation is cooperative. On Windows and macOS, a cancelled or timed-out
-operation settles at once. A platform call already in progress keeps running, so a timed-out write can still land,
-and later operations wait for it.
+operation settles at once. A platform call already in progress keeps running, so a timed-out write or clear can still
+take effect, and later operations wait for it.
 
 ```typescript
 import { createHostClipboard } from "@opentui/core"
