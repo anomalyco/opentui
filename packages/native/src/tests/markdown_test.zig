@@ -2134,6 +2134,20 @@ test "Markdown stream: a leaf that changes kind or loses lines keeps its live di
     // An entity or escape in a word that may be an extended autolink waits for the word's end:
     // the link shows its source raw, so drawing it decoded took text back (model seeds 4,860
     // and 63, over every option set).
+    // The wait uses the parse's own start rule (bigboi round 6: after `(`, and `ftp://`): the
+    // pending display never shows an entity the finished link shows raw.
+    for ([_][]const u8{ "(www.a.b/&copy;x", "ftp://a.b/&copy;x", "x (https://a.b/\\*y" }) |text| {
+        var f: Fixture = undefined;
+        try f.init(.{});
+        defer f.deinit();
+        for (0..text.len) |i| {
+            try f.doc.append(text[i .. i + 1]);
+            try std.testing.expect(std.mem.indexOf(u8, (try f.doc.readLeaf(arena, 0)).bytes.items, "\u{a9}") == null);
+        }
+        try f.doc.finish();
+        try std.testing.expect(std.mem.indexOf(u8, (try f.doc.readLeaf(arena, 0)).bytes.items, "\u{a9}") == null);
+        for ([_]usize{ 1, 3 }) |width| try std.testing.expect(try streamAgreesParts(arena, "kinds", try split(arena, try std.mem.concat(arena, u8, &.{ text, "\n" }), width)));
+    }
     for ([_][]const u8{ "www.a&mp;b\n", "www.a.b de&mp; \n", "x https://a\\.b y\n" }) |text| {
         for ([_]usize{ 1, 3 }) |width| try std.testing.expect(try streamAgreesParts(arena, "kinds", try split(arena, text, width)));
     }

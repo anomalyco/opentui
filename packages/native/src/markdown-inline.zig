@@ -1053,9 +1053,7 @@ pub const Parser = struct {
         const s = self.subject;
         if (at - last.start < name.len) return null;
         const start = at - @as(u32, @intCast(name.len));
-        if (!std.ascii.eqlIgnoreCase(s[start..at], name)) return null;
-        if (start > 0 and !isExtendedBoundary(s[start - 1])) return null;
-        if (at + 3 > s.len or !std.mem.eql(u8, s[at .. at + 3], "://")) return null;
+        if (!std.ascii.eqlIgnoreCase(s[start..at], name) or !extendedLinkStart(s, start)) return null;
         return scanExtendedUrl(s, at + 3);
     }
 
@@ -1087,8 +1085,7 @@ pub const Parser = struct {
     fn www(self: *Parser) Error!void {
         const at = self.position;
         const s = self.subject;
-        const boundary = at == 0 or isExtendedBoundary(s[at - 1]);
-        if (boundary and at + 4 <= s.len and std.mem.eql(u8, s[at .. at + 4], "www.")) {
+        if (std.mem.startsWith(u8, s[at..], "www.") and extendedLinkStart(s, at)) {
             if (scanExtendedUrl(s, at)) |end| return self.extended(at, end, .www);
         }
         try self.plainFrom(at);
@@ -1298,6 +1295,8 @@ pub const PendingScan = struct {
     code: ?u32 = null,
     tag: bool = false,
     word_start: u32 = 0,
+    link: bool = false,
+    link_scanned: u32 = 0,
     /// The code span's opener length, and the end of a backtick run that touched the end.
     code_length: u32 = 0,
     run_end: u32 = 0,
@@ -1317,6 +1316,9 @@ pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *Pending
     // Where the word being drawn starts: an entity or escape in a possible extended autolink
     // waits for the word to end (the link shows its source raw).
     var word_start = if (continues) scan.word_start else from;
+    // Whether the word may be an extended autolink, read up to `link_scanned` (each byte once).
+    var link = continues and scan.link;
+    var link_scanned = if (continues) scan.link_scanned else from;
     while (i < s.len) {
         if (code) |opener| {
             // In a code span from `opener`: drawn raw ('\n' as a space) up to a run that closes
@@ -1379,7 +1381,7 @@ pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *Pending
             '*', '_', '~' => i += runLength(s, i, c),
             '`' => {
                 // A run at the end may still grow: its length is not known yet.
-                if (i + runLength(s, i, c) == s.len) return hold(scan, i, i, tag, word_start);
+                if (i + runLength(s, i, c) == s.len) return hold(scan, i, i, tag, .{ word_start, link, link_scanned });
                 code = i;
             },
             ' ', '\t', '\n' => {
@@ -1387,10 +1389,12 @@ pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *Pending
                 const look_from = j;
                 while (j < s.len and isAsciiWhitespace(s[j])) j += 1;
                 scan.visits += j - look_from;
-                if (j >= s.len) return hold(scan, i, j, tag, word_start);
+                if (j >= s.len) return hold(scan, i, j, tag, .{ word_start, link, link_scanned });
                 try out.appendSlice(allocator, s[i..j]);
                 i = j;
                 word_start = j;
+                link = false;
+                link_scanned = j;
             },
             '\\' => {
                 // Before a line ending it may be a hard break, or text at the leaf's end.
@@ -1398,8 +1402,8 @@ pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *Pending
                 const look_from = j;
                 while (j < s.len and isAsciiWhitespace(s[j])) j += 1;
                 scan.visits += j - look_from;
-                if (j >= s.len) return hold(scan, i, j, tag, word_start);
-                if (isAsciiPunctuation(s[i + 1]) and autolinkWord(s[word_start..i])) return hold(scan, i, i, tag, word_start);
+                if (j >= s.len) return hold(scan, i, j, tag, .{ word_start, link, link_scanned });
+                if (isAsciiPunctuation(s[i + 1]) and linkBefore(s, i, &link, &link_scanned)) return hold(scan, i, i, tag, .{ word_start, link, link_scanned });
                 if (isAsciiPunctuation(s[i + 1]) or s[i + 1] == '\n') {
                     // An escape, or a hard break (drawn as its line break).
                     try out.append(allocator, s[i + 1]);
@@ -1410,12 +1414,12 @@ pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *Pending
                 }
             },
             '&' => {
-                if (tag or autolinkWord(s[word_start..i])) return hold(scan, i, i, tag, word_start);
+                if (tag or linkBefore(s, i, &link, &link_scanned)) return hold(scan, i, i, tag, .{ word_start, link, link_scanned });
                 var j = @max(i + 1, known);
                 const look_from = j;
                 while (j < s.len and (std.ascii.isAlphanumeric(s[j]) or s[j] == '#')) j += 1;
                 scan.visits += j - look_from;
-                if (j >= s.len) return hold(scan, i, j, tag, word_start);
+                if (j >= s.len) return hold(scan, i, j, tag, .{ word_start, link, link_scanned });
                 if (s[j] == ';' and scanEntity(s, i) != null) {
                     const cps = decodeEntity(s[i .. j + 1]);
                     var buffer: [8]u8 = undefined;
@@ -1433,7 +1437,7 @@ pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *Pending
                 const look_from = j;
                 while (j < s.len and s[j] != '>' and !isAsciiWhitespace(s[j])) j += 1;
                 scan.visits += j - look_from;
-                if (j >= s.len) return hold(scan, i, j, tag, word_start);
+                if (j >= s.len) return hold(scan, i, j, tag, .{ word_start, link, link_scanned });
                 if (scanAutolink(s, i)) |a| {
                     try out.appendSlice(allocator, s[i + 1 .. a.end - 1]);
                     i = a.end;
@@ -1444,12 +1448,12 @@ pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *Pending
                 }
             },
             ']' => {
-                if (i + 1 >= s.len or s[i + 1] == '(' or s[i + 1] == '[') return hold(scan, i, i, tag, word_start);
+                if (i + 1 >= s.len or s[i + 1] == '(' or s[i + 1] == '[') return hold(scan, i, i, tag, .{ word_start, link, link_scanned });
                 try out.append(allocator, c);
                 i += 1;
             },
             '!' => {
-                if (i + 1 >= s.len) return hold(scan, i, i, tag, word_start);
+                if (i + 1 >= s.len) return hold(scan, i, i, tag, .{ word_start, link, link_scanned });
                 if (s[i + 1] != '[') try out.append(allocator, c);
                 i += 1;
             },
@@ -1460,20 +1464,18 @@ pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *Pending
             },
         }
     }
-    return hold(scan, i, i, tag, word_start);
+    return hold(scan, i, i, tag, .{ word_start, link, link_scanned });
 }
 
-fn hold(scan: *PendingScan, stop: u32, scanned: u32, tag: bool, word_start: u32) void {
-    scan.* = .{ .stop = stop, .scanned = scanned, .code = null, .tag = tag, .word_start = word_start, .visits = scan.visits };
+fn hold(scan: *PendingScan, stop: u32, scanned: u32, tag: bool, word: struct { u32, bool, u32 }) void {
+    scan.* = .{ .stop = stop, .scanned = scanned, .code = null, .tag = tag, .word_start = word[0], .link = word[1], .link_scanned = word[2], .visits = scan.visits };
 }
 
-/// Whether a word that starts so may still be an extended autolink (GFM: `www.`, `http://`,
-/// `https://`), whose display is its source.
-fn autolinkWord(word: []const u8) bool {
-    for ([_][]const u8{ "www.", "http://", "https://" }) |prefix| {
-        if (word.len >= prefix.len and std.ascii.eqlIgnoreCase(word[0..prefix.len], prefix)) return true;
-    }
-    return false;
+/// Whether an extended autolink may start in the word before `at` (whose display would be its
+/// source): reads on from `scanned`.
+fn linkBefore(s: []const u8, at: u32, link: *bool, scanned: *u32) bool {
+    while (!link.* and scanned.* < at) : (scanned.* += 1) link.* = extendedLinkStart(s, scanned.*);
+    return link.*;
 }
 
 /// A code span's content without the one space stripped from each end (line endings count as
@@ -1971,6 +1973,18 @@ fn lookupEntity(name: []const u8) ?[2]u21 {
         start = end + 1;
     }
     return null;
+}
+
+/// Whether a GFM extended www or URL autolink may start at `at`: after a boundary, `www.` or a
+/// scheme and `://`. The one rule for both the parse and the pending display's wait.
+pub fn extendedLinkStart(s: []const u8, at: u32) bool {
+    if (at > 0 and !isExtendedBoundary(s[at - 1])) return false;
+    const rest = s[at..];
+    if (std.mem.startsWith(u8, rest, "www.")) return true;
+    inline for (.{ "https", "http", "ftp" }) |name| {
+        if (rest.len >= name.len + 3 and std.ascii.eqlIgnoreCase(rest[0..name.len], name) and std.mem.eql(u8, rest[name.len .. name.len + 3], "://")) return true;
+    }
+    return false;
 }
 
 fn isExtendedBoundary(c: u8) bool {
