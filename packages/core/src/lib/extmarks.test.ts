@@ -330,28 +330,40 @@ describe("ExtmarksController", () => {
   })
 
   describe("Virtual Extmark - Mouse, Wheel and Offset Setter", () => {
-    // One row, so the wheel scrolls; then a selection left is cleared. Marks in both orders where they overlap. A pointer
-    // leaves the cursor at the nearer edge; the wheel and the setter at the one they moved toward, as the Rust editor's.
-    for (const [text, marks, from, gesture, to] of [
-      ["x @file y", "2..7", 9, "click 2", 2],
-      ["x @file y", "2..7", 9, "click 3", 2],
-      ["x @file y", "2..7", 9, "click 5", 7],
-      ["x @file y", "2..7", 9, "double-click 4", 2],
-      ["x @file y", "2..7", 9, "drag 0 4", 2],
-      ["x @file y", "2..7", 9, "drag 8 6", 7],
-      ["x @file y", "2..7", 9, "drag 3 5 3", 2],
-      ["x @file y", "2..7", 9, "drag 0 4, right", 7],
-      ["b ca", "0..3 0..4", 4, "click 2", 4],
-      ["b ca", "0..4 0..3", 4, "click 2", 4],
-      ["b ca", "0..3 0..4", 0, "offset 2", 4],
-      ["b ca", "0..4 0..3", 4, "offset 2", 0],
-      ["ab\n@file\nc", "3..8", 2, "wheel down", 8],
-      ["ab\n@file\nc", "3..8", 10, "wheel up", 3],
+    // One row of 24 columns. While a selection is left the cursor and the selection are `held`; then it is cleared. A
+    // press's handlers see the pressed cell; then a pointer leaves the cursor at the nearer outer edge of the marks
+    // around it, a cleared drag at the side it came from, the wheel and the setter at the edge they moved toward.
+    // After ", " comes a key, a wheel step, an offset or a selection. The rows match the Rust editor's but Shift+Left,
+    // which extends a selection into a mark here.
+    const pasted = "x [Pasted ~20 lines] y"
+    for (const [text, marks, from, gesture, held, to] of [
+      ["x @file y", "2..7", 9, "click 2", null, 2],
+      ["x @file y", "2..7", 9, "click 3", null, 2],
+      ["x @file y", "2..7", 9, "click 5", null, 7],
+      [pasted, "2..20", 22, "click 15", null, 20],
+      ["x @file y", "2..7", 9, "double-click 4", "4 2..7", 2],
+      ["x @file y", "2..7", 9, "double-click 4, offset 3", null, 2],
+      ["x @file y", "2..7", 9, "double-click 4, select 2 7", "4 2..7", 2],
+      ["x @file y", "2..7", 9, "drag 0 4", "4 0..5", 2],
+      ["x @file y", "2..7", 9, "drag 8 4", "4 4..9", 7],
+      ["x @file y", "2..7", 9, "drag 8 6", "6 6..9", 7],
+      ["x @file y", "2..7", 9, "drag 3 5 3", null, 2],
+      ["x @file y", "2..7", 9, "drag 0 4, right", null, 7],
+      ["b ca", "0..3 0..4", 4, "click 2", null, 4],
+      ["b ca", "0..4 0..3", 4, "click 2", null, 4],
+      ["abcdefgh", "0..6 2..8", 8, "click 3", null, 0],
+      ["abcdefgh", "2..8 0..6", 8, "click 3", null, 0],
+      ["b ca", "0..3 0..4", 0, "offset 2", null, 4],
+      ["b ca", "0..4 0..3", 4, "offset 2", null, 0],
+      ["abcd", "2..4 1..3 0..2", 0, "offset 1", null, 4],
+      ["ab\n@file\nc", "3..8", 2, "wheel down", null, 8],
+      ["ab\n@file\nc", "3..8", 10, "wheel up", null, 3],
+      ["abcd\n@file\nc", "5..10", 0, "double-click 2, wheel down", "7 0..4", 5],
     ] as const) {
       it(`${gesture} from ${from} in ${JSON.stringify(text)} with ${marks} → ${to}`, async () => {
-        const result = await createTestRenderer({ width: 12, height: 2 })
+        const result = await createTestRenderer({ width: 24, height: 2 })
         currentRenderer = result.renderer
-        textarea = new TextareaRenderable(currentRenderer, { width: 12, height: 1, initialValue: text })
+        textarea = new TextareaRenderable(currentRenderer, { width: 24, height: 1, initialValue: text })
         currentRenderer.root.add(textarea)
         textarea.focus()
         extmarks = textarea.extmarks
@@ -360,11 +372,15 @@ describe("ExtmarksController", () => {
         }
         textarea.cursorOffset = from
         await result.renderOnce()
-        const [kind, a, b, c] = gesture.split(/[ ,]+/)
+        // As OpenCode's prompt: a press looks up the mark under the cursor.
+        let pressed: number | undefined
+        textarea.onMouseDown = () => (pressed = textarea.cursorOffset)
+        const [first, then = ""] = gesture.split(", ")
+        const [kind, a, b, c] = first.split(" ")
         const mouse = result.mockMouse
         if (kind === "click") await mouse.click(Number(a), 0)
         else if (kind === "double-click") await mouse.doubleClick(Number(a), 0)
-        else if (kind === "drag" && Number(c) >= 0) {
+        else if (kind === "drag" && c) {
           await mouse.pressDown(Number(a), 0)
           await mouse.moveTo(Number(b), 0)
           await mouse.moveTo(Number(c), 0)
@@ -372,8 +388,15 @@ describe("ExtmarksController", () => {
         } else if (kind === "drag") await mouse.drag(Number(a), 0, Number(b), 0)
         else if (kind === "offset") textarea.cursorOffset = Number(a)
         else await mouse.scroll(0, 0, a as "up" | "down")
-        if (gesture.endsWith("right")) result.mockInput.pressArrow("right")
-        if (textarea.hasSelection()) textarea.clearSelection()
+        if (kind === "click") expect(pressed).toBe(Number(a))
+        const [step, x, y] = then.split(" ")
+        if (step === "wheel") await mouse.scroll(0, 0, x as "up" | "down")
+        else if (step === "offset") textarea.cursorOffset = Number(x)
+        else if (step === "select") textarea.setSelection(Number(x), Number(y))
+        else if (step) result.mockInput.pressArrow(step as "right")
+        const selection = textarea.getSelection()
+        expect(selection && `${textarea.cursorOffset} ${selection.start}..${selection.end}`).toBe(held)
+        textarea.clearSelection()
         expect(textarea.cursorOffset).toBe(to)
       })
     }

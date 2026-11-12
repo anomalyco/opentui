@@ -24,14 +24,6 @@ export interface ExtmarkOptions {
   metadata?: any
 }
 
-const viewCursorWrites = [
-  "setViewport",
-  "setLocalSelection",
-  "updateLocalSelection",
-  "resetLocalSelection",
-  "setCursorByOffset",
-] as const
-
 /**
  * WARNING: This is simulating extmarks in the edit buffer
  * and will move to a real native implementation in the future.
@@ -98,7 +90,6 @@ export class ExtmarksController {
     this.originalRedo = editBuffer.redo.bind(editBuffer)
 
     this.wrapCursorMovement()
-    this.wrapViewCursorWrites()
     this.wrapDeletion()
     this.wrapInsertion()
     this.wrapEditorViewDeleteSelectedText()
@@ -237,36 +228,36 @@ export class ExtmarksController {
       this.moveBefore(extmark)
       if (this.editBuffer.getCursorPosition().offset > from) return
     }
-    this.originalSetCursorByOffset(extmark.end)
-    this.keepCursorOutside(-1)
+    this.originalSetCursorByOffset(this.outside(extmark.end, 1))
   }
 
-  // A wheel step, a mouse selection, a cleared selection and the view's offset setter move the cursor without the
-  // moves above. Each is followed by the rule below. A pointer puts the cursor on its cell, so the selections go to
-  // the nearer edge, not the one they moved toward.
-  private wrapViewCursorWrites(): void {
-    const view = this.editorView as any
-    for (const name of viewCursorWrites) {
-      const original = view[name]
-      view[name] = (...args: unknown[]) => {
-        const from = this.editBuffer.getCursorPosition().offset
-        const result = original.apply(view, args)
-        this.keepCursorOutside(name.endsWith("Selection") ? this.editBuffer.getCursorPosition().offset : from)
-        return result
+  /**
+   * @internal A cursor that a wheel step, a pointer or the offset setter left inside virtual extmarks goes to the
+   * outer edge of the marks around it: toward the end for a positive `direction`, the start for a negative one, or the
+   * nearer edge, as the Rust editor's. Not while a selection is left: it holds the cursor at its focus.
+   */
+  public _keepCursorOutside(direction: number): void {
+    if (this.extmarks.size === 0 || this.editorView.hasSelection()) return
+    const offset = this.editBuffer.getCursorPosition().offset
+    const start = this.outside(offset, -1)
+    if (start === offset) return
+    const end = this.outside(offset, 1)
+    const toEnd = direction === 0 ? end - offset <= offset - start : direction > 0
+    this.originalSetCursorByOffset(toEnd ? end : start)
+  }
+
+  // The first offset from `offset` toward `direction` that no virtual extmark strictly contains.
+  private outside(offset: number, direction: number): number {
+    for (let inside = true; inside; ) {
+      inside = false
+      for (const extmark of this.extmarks.values()) {
+        if (extmark.virtual && extmark.start < offset && offset < extmark.end) {
+          offset = direction > 0 ? extmark.end : extmark.start
+          inside = true
+        }
       }
     }
-  }
-
-  // A cursor inside virtual extmarks goes to the edge it moved toward from `from`, or the nearer one, past every mark
-  // that overlaps it, as the Rust editor's. Not while a selection is left: it holds the cursor at its focus.
-  private keepCursorOutside(from: number): void {
-    if (this.editorView.hasSelection()) return
-    const offset = this.editBuffer.getCursorPosition().offset
-    const extmark = [...this.extmarks.values()].find((m) => m.virtual && m.start < offset && offset < m.end)
-    if (!extmark) return
-    const toEnd = offset === from ? extmark.end - offset <= offset - extmark.start : offset > from
-    this.originalSetCursorByOffset(toEnd ? extmark.end : extmark.start)
-    this.keepCursorOutside(toEnd ? -1 : Infinity)
+    return offset
   }
 
   private wrapDeletion(): void {
@@ -829,7 +820,6 @@ export class ExtmarksController {
     this.editorView._replaceSelectedText = this.originalEditorViewReplaceSelectedText
     this.editBuffer.undo = this.originalUndo
     this.editBuffer.redo = this.originalRedo
-    for (const name of viewCursorWrites) delete (this.editorView as any)[name]
 
     this.extmarks.clear()
     this.extmarksByTypeId.clear()

@@ -124,6 +124,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   private _autoScrollAccumulator: number = 0
   private _scrollSpeed: number = 16
   private _keyboardSelectionActive: boolean = false
+  private cursorRuleDepth = 0
 
   public readonly editBuffer: EditBuffer
   public readonly editorView: EditorView
@@ -271,9 +272,28 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   }
 
   set cursorOffset(offset: number) {
-    this.clearSelection()
-    this.editorView.setCursorByOffset(offset ?? 0)
+    this.keepingCursorOutside(Math.sign((offset ?? 0) - this.cursorOffset), () => {
+      this.clearSelection()
+      this.editorView.setCursorByOffset(offset ?? 0)
+    })
     this.requestRender()
+  }
+
+  // Runs `op`, then moves a cursor it left inside virtual extmarks to an edge (`ExtmarksController`): toward
+  // `direction`, or the nearer one for 0. Only the outermost operation does, so the steps of one don't.
+  private keepingCursorOutside<T>(direction: number, op: () => T): T {
+    this.cursorRuleDepth++
+    const result = op()
+    if (--this.cursorRuleDepth === 0) this.editorView._keepCursorOutside(direction)
+    return result
+  }
+
+  // A cursor a cleared drag left in a mark leaves by the side the drag came from; after a click, a double-click or no
+  // selection, by the nearer edge.
+  private selectionSide(): number {
+    const selection = this.lastLocalSelection
+    if (!selection?.isActive) return 0
+    return Math.sign(selection.anchorY - selection.focusY || selection.anchorX - selection.focusX)
   }
 
   get cursorCharacterOffset(): number | undefined {
@@ -485,7 +505,10 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     if (event.type === "scroll") {
       scrollOnce(event, this, () => {
         const before = this.editorView.getViewport()
-        this.handleScroll(event)
+        const direction = wheelDirection(event)
+        this.keepingCursorOutside(direction === "down" || direction === "right" ? 1 : -1, () =>
+          this.handleScroll(event),
+        )
         const after = this.editorView.getViewport()
         return after.offsetX !== before.offsetX || after.offsetY !== before.offsetY
       })
@@ -565,6 +588,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
 
   onSelectionChanged(selection: Selection | null): boolean {
     const localSelection = convertGlobalToLocalSelection(selection, Math.trunc(this.x), Math.trunc(this.y))
+    const side = localSelection?.isActive ? 0 : this.selectionSide()
     this.lastLocalSelection = localSelection
 
     const updateCursor = true
@@ -637,6 +661,8 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     if (changed) {
       this.requestRender()
     }
+    // Not until the gesture ends, so the press's handlers see where the cursor landed.
+    if (!selection?.isDragging && this.cursorRuleDepth === 0) this.editorView._keepCursorOutside(side)
 
     return this.hasSelection()
   }
@@ -691,30 +717,36 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   }
 
   setSelection(start: number, end: number): void {
-    this.lastLocalSelection = null
-    this.editorView.resetLocalSelection()
-    this._ctx.clearSelection()
-    this.editorView.setSelection(start, end, this._selectionBg, this._selectionFg)
+    this.keepingCursorOutside(0, () => {
+      this.lastLocalSelection = null
+      this.editorView.resetLocalSelection()
+      this._ctx.clearSelection()
+      this.editorView.setSelection(start, end, this._selectionBg, this._selectionFg)
+    })
     this.requestRender()
   }
 
   setSelectionInclusive(start: number, end: number): void {
-    this.lastLocalSelection = null
-    this.editorView.resetLocalSelection()
-    this._ctx.clearSelection()
-    this.editorView.setSelectionInclusive(start, end, this._selectionBg, this._selectionFg)
+    this.keepingCursorOutside(0, () => {
+      this.lastLocalSelection = null
+      this.editorView.resetLocalSelection()
+      this._ctx.clearSelection()
+      this.editorView.setSelectionInclusive(start, end, this._selectionBg, this._selectionFg)
+    })
     this.requestRender()
   }
 
   clearSelection(): boolean {
-    const had = this.hasSelection()
-    this.lastLocalSelection = null
-    this.editorView.resetLocalSelection()
-    this._ctx.clearSelection()
-    if (had) {
-      this.requestRender()
-    }
-    return had
+    return this.keepingCursorOutside(this.selectionSide(), () => {
+      const had = this.hasSelection()
+      this.lastLocalSelection = null
+      this.editorView.resetLocalSelection()
+      this._ctx.clearSelection()
+      if (had) {
+        this.requestRender()
+      }
+      return had
+    })
   }
 
   deleteSelection(): boolean {
@@ -794,8 +826,10 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   private collapseSelectionToEdge(edge: "start" | "end"): boolean {
     const selection = this.getSelection()
     if (!selection) return false
-    this.editBuffer.setCursorByOffset(edge === "start" ? selection.start : selection.end)
-    this.clearSelection()
+    this.keepingCursorOutside(edge === "start" ? -1 : 1, () => {
+      this.editBuffer.setCursorByOffset(edge === "start" ? selection.start : selection.end)
+      this.clearSelection()
+    })
     return true
   }
 
