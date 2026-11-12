@@ -705,6 +705,56 @@ test "Scene text bytes answer only for glyphs a finished frame drew" {
     try testing.expectEqual(@as(?u32, null), try f.owner.sceneGetTextByteAt(text, 1, 0));
 }
 
+// A 6-column text in a bordered box takes each row's padding (left, top, right, bottom) in turn:
+// it paints, wraps, answers byte hits and selects inside it. Rows 2-4 keep row 1's border box and
+// change only where the content sits or how it wraps; VERIFY fails a frame that kept stale rows.
+test "Scene text paints inside its padding" {
+    const Row = struct { padding: [4]f32, height: f32, lines: []const []const u8, fixed: bool = false };
+    const rows = [_]Row{
+        .{ .padding = .{ 0, 0, 0, 0 }, .height = 2, .lines = &.{ "ab cd ", "ef    " } },
+        .{ .padding = .{ 2, 0, 0, 0 }, .height = 3, .lines = &.{ "  ab  ", "  cd  ", "  ef  " } },
+        .{ .padding = .{ 1, 0, 1, 0 }, .height = 3, .lines = &.{ " ab   ", " cd   ", " ef   " } },
+        .{ .padding = .{ 0, 1, 0, 0 }, .height = 3, .lines = &.{ "      ", "ab cd ", "ef    " } },
+        .{ .padding = .{ 0, 0, 0, 1 }, .height = 3, .lines = &.{ "ab cd ", "ef    ", "      " } },
+        .{ .padding = .{ 1, 1, 1, 1 }, .height = 5, .lines = &.{ "      ", " ab   ", " cd   ", " ef   ", "      " } },
+        // A fixed height cuts the third line at the bottom padding.
+        .{ .padding = .{ 1, 0, 1, 1 }, .height = 3, .lines = &.{ " ab   ", " cd   ", "      " }, .fixed = true },
+    };
+    const f = try Fixture.init(testing.allocator, 8, 8, .{});
+    defer f.deinit();
+    try f.owner.sceneSetDebugFlags(f.id, c.OT_SCENE_DEBUG_VERIFY);
+    const box = try placedAt(f, f.root, c.OT_SCENE_BOX, 2, 0, 0, 8, 8);
+    try f.owner.sceneSetPaint(box, .{ .borderSides = c.OT_BORDER_ALL });
+    const text = try placedAt(f, box, c.OT_SCENE_TEXT, 3, 0, 0, 6, 1);
+    try f.owner.sceneSetText(text, "ab cd ef");
+    const blue = ansi.rgbColor(0, 0, 255, 255);
+    const body = try f.owner.createBuffer(8, 8, .{});
+    for (rows) |row| {
+        try f.owner.sceneSetStyle(text, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_HEIGHT, 0, if (row.fixed) c.OT_UNIT_POINT else c.OT_UNIT_AUTO, row.height, 1);
+        for (row.padding, c.OT_EDGE_LEFT..) |padding, edge| try f.owner.sceneSetStyle(text, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, @intCast(edge), c.OT_UNIT_POINT, padding, 0);
+        _ = try presentWork(f, .{});
+        try testing.expectEqual(row.height, (try f.owner.sceneGetLayout(text, false)).height);
+        const left: i32 = @intFromFloat(row.padding[0]);
+        const top: i32 = @intFromFloat(row.padding[1]);
+        try testing.expectEqual(@as(?u32, 0), try f.owner.sceneGetTextByteAt(text, 1 + left, 1 + top));
+        try testing.expectEqual(if (left == 0 and top == 0) @as(?u32, 0) else null, try f.owner.sceneGetTextByteAt(text, 1, 1));
+        // A host's body draw at the node's cell starts at the content too.
+        try f.owner.drawSceneBody(body, null, text, 0, 0);
+        try testing.expectEqual(@as(u32, 'a'), (try f.owner.raw().getBuffer(body)).get(@intCast(left), @intCast(top)).?.char);
+        // Selection takes the border box's local cells, as hosts pass them.
+        _ = try f.owner.sceneSetTextSelection(text, .{ .operation = c.OT_SCENE_TEXT_SELECTION_SET, .anchor_x = left, .anchor_y = top, .focus_x = left + 1, .focus_y = top, .background = blue });
+        var selected: [8]u8 = undefined;
+        try testing.expectEqualStrings("ab", selected[0..try f.owner.sceneGetSelectedText(text, &selected)]);
+        _ = try presentWork(f, .{});
+        const frame = f.cli.currentRenderBuffer;
+        try testing.expectEqual(blue, frame.get(@intCast(1 + left), @intCast(1 + top)).?.bg);
+        for (0..6) |y| for (0..6) |x| {
+            const line = if (y < row.lines.len) row.lines[y] else "      ";
+            try testing.expectEqual(@as(u32, line[x]), frame.get(@intCast(1 + x), @intCast(1 + y)).?.char);
+        };
+    }
+}
+
 const BandCase = enum { space_border_tall, space_border_tracker, hooked_body, hooked_after, surface, offscreen_view, offscreen_view_self };
 
 /// Paints a 6 x 4 scene twice, changing one text in between, and returns the hash of the

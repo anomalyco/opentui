@@ -314,6 +314,8 @@ pub const Layout = struct {
     height: f32 = 0,
     screenX: f64 = 0,
     screenY: f64 = 0,
+    // A text node's computed padding (left, top, right, bottom), which its view leaves empty.
+    padding: [4]f32 = @splat(0),
 };
 
 pub const Paint = struct {
@@ -2666,7 +2668,7 @@ pub const Scene = struct {
         return value.scene_node;
     }
 
-    /// Where the latest finished frame painted a member: its top-left cell and the cells it could draw. Null when
+    /// Where the latest finished frame painted a member: its content's top-left cell and the cells it could draw. Null when
     /// that frame did not paint it.
     pub fn paintedArea(self: *const Scene, node: *const Node) ?struct { x: i64, y: i64, clip: buffer.ClipRect, frame: u64 } {
         if (self.finished_frame == 0) return null;
@@ -2677,11 +2679,8 @@ pub const Scene = struct {
             self.recordOf(node, self.presented_records_frame, self.presented_records.items)
         else
             null) orelse return null;
-        const cells = cellLayout(found.inputs.layout);
-        const x: i32 = @intFromFloat(cells.screenX);
-        const y: i32 = @intFromFloat(cells.screenY);
-        const clip = intersection(.{ .x = x, .y = y, .width = @intFromFloat(cells.width), .height = @intFromFloat(cells.height) }, found.inputs.clip);
-        return .{ .x = x, .y = y, .clip = clip, .frame = self.finished_frame };
+        const content = cellClip(contentLayout(found.inputs.layout));
+        return .{ .x = content.x, .y = content.y, .clip = intersection(content, found.inputs.clip), .frame = self.finished_frame };
     }
 
     fn recordOf(_: *const Scene, node: *const Node, frame: u64, records: []const Record) ?Record {
@@ -3044,9 +3043,10 @@ pub const Scene = struct {
         const height: u32 = @intFromFloat(cells.height);
         try self.prepareMember(entry);
         if (node.text) |text| {
-            const hit = intersection(.{ .x = x, .y = y, .width = width, .height = height }, entry.clip);
+            const content = cellClip(contentLayout(entry.layout));
+            const hit = intersection(content, entry.clip);
             if (hit.width != 0 and hit.height != 0) {
-                try target.drawTextBufferChecked(text.view, x, y);
+                try target.drawTextBufferChecked(text.view, content.x, content.y);
                 // Fully transparent text draws no glyph. A redraw of the same mapping keeps the frame it was
                 // first drawn in, which a failed attempt's redraw must not move.
                 const painted = if (entry.opacity > 0) text.mapping() else null;
@@ -3415,17 +3415,8 @@ pub const Scene = struct {
                 }
                 var layout = node.layout;
                 if (refresh_layout) {
-                    var computed: yoga.ExternalYogaLayout = undefined;
                     self.frame_work.geometry_reads += 1;
-                    try yoga.check(yoga.yogaNodeGetComputedLayoutChecked(value.yoga_node, &computed));
-                    layout = .{
-                        .left = computed.left,
-                        .top = computed.top,
-                        .right = computed.right,
-                        .bottom = computed.bottom,
-                        .width = computed.width,
-                        .height = computed.height,
-                    };
+                    layout = try localLayout(value, .solved);
                 } else if (mode == .paint) {
                     // Final paint follows settled preparation, but transforms remain live.
                     std.debug.assert(node.prepared_gen == self.candidates_gen);
@@ -3612,7 +3603,7 @@ fn sameBox(a: Layout, b: Layout) bool {
     inline for (.{ "left", "top", "right", "bottom", "width", "height" }) |name| {
         if (@as(u32, @bitCast(@field(a, name))) != @as(u32, @bitCast(@field(b, name)))) return false;
     }
-    return true;
+    return std.mem.eql(u8, std.mem.asBytes(&a.padding), std.mem.asBytes(&b.padding));
 }
 
 /// Public geometry keeps at least one cell per dimension; paint geometry keeps Yoga's zero. Culling
@@ -3726,7 +3717,29 @@ fn localLayout(value: *const native.NativeRenderable, comptime source: anytype) 
     if (source == .prepared) return node.layout;
     var computed: yoga.ExternalYogaLayout = undefined;
     try yoga.check(yoga.yogaNodeGetComputedLayoutChecked(value.yoga_node, &computed));
-    return .{ .left = computed.left, .top = computed.top, .right = computed.right, .bottom = computed.bottom, .width = computed.width, .height = computed.height };
+    var layout: Layout = .{ .left = computed.left, .top = computed.top, .right = computed.right, .bottom = computed.bottom, .width = computed.width, .height = computed.height };
+    // Edge kind 1 is padding. Only text nodes paint inside theirs; boxes place children there.
+    if (node.text != null) for (&layout.padding, api.OT_EDGE_LEFT..) |*padding, edge| {
+        try yoga.check(yoga.yogaNodeLayoutGetEdgeChecked(value.yoga_node, 1, @intCast(edge), padding));
+    };
+    return layout;
+}
+
+/// The rect a text node's view fills: its layout without its padding.
+pub fn contentLayout(layout: Layout) Layout {
+    var content = layout;
+    content.screenX += layout.padding[0];
+    content.screenY += layout.padding[1];
+    content.width = @max(0, layout.width - layout.padding[0] - layout.padding[2]);
+    content.height = @max(0, layout.height - layout.padding[1] - layout.padding[3]);
+    return content;
+}
+
+/// Where a text node's content starts, in cells from the node's own cell.
+pub fn contentOffset(layout: Layout) [2]i32 {
+    const box = cellClip(layout);
+    const content = cellClip(contentLayout(layout));
+    return .{ content.x - box.x, content.y - box.y };
 }
 
 /// Where a parent's children compose from: its screen position, plus a scroll node's viewport
@@ -3779,9 +3792,10 @@ fn prepareView(work: *renderer.FrameWork, node: *Node, layout: Layout) !void {
         return;
     }
     const text = node.text orelse return;
+    const content = contentLayout(layout);
     var viewport: text_buffer_view.Viewport = text.view.getViewport() orelse text.initial_viewport orelse .{ .x = 0, .y = 0, .width = 0, .height = 0 };
-    viewport.width = cellSize(layout.width);
-    viewport.height = cellSize(layout.height);
+    viewport.width = cellSize(content.width);
+    viewport.height = cellSize(content.height);
     text.view.setViewport(viewport);
     try text.prepareView();
     text.initial_viewport = null;
@@ -3791,7 +3805,8 @@ fn prepareView(work: *renderer.FrameWork, node: *Node, layout: Layout) !void {
 fn viewNeedsPrepare(node: *const Node, layout: Layout) bool {
     const view = if (node.kind == api.OT_SCENE_TEXT_VIEW) (node.control.text_view.view orelse return false).view else (node.text orelse return false).view;
     const viewport = view.getViewport() orelse return true;
-    return viewport.width != cellSize(layout.width) or viewport.height != cellSize(layout.height) or view.needsPrepare();
+    const content = contentLayout(layout);
+    return viewport.width != cellSize(content.width) or viewport.height != cellSize(content.height) or view.needsPrepare();
 }
 
 /// Whether a culling parent whose children compose from `origin` selects the child.
@@ -3857,7 +3872,7 @@ fn sortChildren(node: *Node) bool {
 /// culling node that moved left its own and its subtree's positions and clips behind, which only
 /// paint layout reads, again (getPaintLayout); a scroll node's stay exact for its report.
 fn sameEntries(first: []const Work, second: []const Work, comptime kept: bool) bool {
-    comptime std.debug.assert(@sizeOf(Layout) == 6 * @sizeOf(f32) + 2 * @sizeOf(f64));
+    comptime std.debug.assert(@sizeOf(Layout) == 10 * @sizeOf(f32) + 2 * @sizeOf(f64));
     if (first.len != second.len) return false;
     for (first, second) |a, b| {
         var rest = [2]Work{ a, b };
