@@ -969,3 +969,39 @@ test "Markdown ABI: an option change leaves text the host wrote to a node the do
     try expectOk(abi.ot_scene_get_text(f.context, &node, &shown, shown.len, &count));
     try std.testing.expectEqualStrings("host", shown[0..count]);
 }
+
+test "Markdown ABI: an append rejected for memory lists no block again" {
+    // bigboi-r5-3: the pending line's layout was rebuilt after the failure, and its blocks (read
+    // already) were listed again: a list, its item and paragraph; a quote and its paragraph.
+    const Context = context_mod.Context;
+    for ([_]bool{ false, true }) |sustained| for ([_][]const u8{ "- item", "> quote" }, [_]u32{ 2, 1 }) |line, paragraph| {
+        var failure: OneFailure = .{ .inner = std.testing.allocator, .sustained = sustained };
+        var countdown: usize = 0;
+        while (true) : (countdown += 1) {
+            failure.countdown = std.math.maxInt(usize);
+            failure.failed = false;
+            const owner = try Context.init(failure.allocator(), std.testing.io, .{});
+            defer owner.deinit() catch unreachable;
+            const session = try owner.createSession(.{});
+            try owner.attachSessionRenderer(session, 40, 10, .{ .remote_mode = .remote });
+            _ = try owner.sceneCreateNode(session, c.OT_SCENE_ROOT, 1);
+            const doc = try owner.createMarkdown(.{});
+            _ = try owner.markdownCall(doc, .{ .append = line });
+            _ = try owner.markdownReadChanges(doc, 64);
+            try owner.markdownBind(doc, paragraph, try owner.sceneCreateNode(session, c.OT_SCENE_TEXT, 2));
+            try std.testing.expectEqual(@as(u32, 0), (try owner.markdownReadChanges(doc, 0)).count);
+            failure.countdown = countdown;
+            const rejected = if (owner.markdownCall(doc, .{ .append = " c* [x](https://new-link.test) " })) |_| false else |err| switch (err) {
+                error.OutOfMemory => true,
+                else => return err,
+            };
+            const failed = failure.failed;
+            failure.countdown = std.math.maxInt(usize);
+            failure.failed = false;
+            if (!failed) break;
+            if (!rejected) continue;
+            errdefer std.debug.print("{s}: append, failing allocation {d} (sustained {})\n", .{ line, countdown, sustained });
+            try std.testing.expectEqual(@as(u32, 0), (try owner.markdownReadChanges(doc, 0)).count);
+        }
+    };
+}

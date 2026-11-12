@@ -607,19 +607,20 @@ pub const Doc = struct {
         // A carriage return ends a line unless "\n" follows; the layout left it out.
         if (old_len > 0 and self.source.items[old_len - 1] == '\r') return false;
         if (std.mem.indexOfAny(u8, bytes, "\n\r") != null) return false;
-        // Counters as before the call, if a new layout takes the bytes after all.
+        // As before the call, if a new layout takes the bytes after all, or the call is rejected:
+        // every block write is logged, and the layout's own state is restored as it was (a
+        // rebuilt layout would need memory, and would list its blocks again).
+        var snapshot = self.beginMutation();
         const counters = self.counters;
         self.counters.line_byte_visits += bytes.len;
-        const hook_pending_byte = self.hook_pending_byte;
+        const extension = self.extension;
+        const provisional_undo_len = self.provisional_undo.items.len;
+        const pending = .{ self.pending_content_start, self.pending_row_line, self.pending_blank_line, self.pending_hold };
         errdefer {
-            // As before the call: the old layout again, the live leaf dropped.
-            self.dropProvisional();
-            self.source.shrinkRetainingCapacity(old_len);
-            self.counters = counters;
-            self.hook_pending_byte = hook_pending_byte;
-            self.liveReset(none, none);
-            self.finished_block = none;
-            self.restoreProvisional();
+            self.rollback(&snapshot);
+            self.extension = extension;
+            self.provisional_undo.items.len = provisional_undo_len;
+            self.pending_content_start, self.pending_row_line, self.pending_blank_line, self.pending_hold = pending;
         }
         try self.reserveSource(@intCast(old_len + bytes.len));
         self.source.appendSliceAssumeCapacity(bytes);
@@ -912,7 +913,8 @@ pub const Doc = struct {
             for (self.provisional_undo.items) |entry| {
                 if (entry.index == index) break;
             } else try self.provisional_undo.append(self.allocator, .{ .index = index, .block = self.blocks.items[index] });
-        } else if (index < self.undo_base_block_count) {
+        }
+        if (index < self.undo_base_block_count) {
             // Duplicates are harmless: rollback restores in reverse, so the oldest copy wins.
             try self.undo.append(self.scratch.allocator(), .{ .index = index, .block = self.blocks.items[index] });
         }
@@ -2075,8 +2077,7 @@ pub const Doc = struct {
         defer self.provisional = false;
         // The layout wrote (and saved) each block on the path: it ends at the line's end.
         for (ext.path[0..ext.path_len]) |index| {
-            const block = &self.blocks.items[index];
-            block.flags.unreported = true;
+            const block = try self.blockMut(index);
             if (block.content_end_byte == old and !(ext.kind == .heading and index == ext.heading.block)) block.content_end_byte = end;
             if (block.source_end_byte == old) block.source_end_byte = end;
         }
@@ -2121,7 +2122,7 @@ pub const Doc = struct {
                     const range = trimRange(s, r.cell_start, i);
                     _ = try self.rowCell(r, range[0], range[1]);
                 } else if (self.blocks.items[r.open_cell].content_start_byte == self.blocks.items[r.open_cell].content_end_byte) {
-                    self.moveCell(r.open_cell, i);
+                    try self.moveCell(r.open_cell, i);
                 }
                 r.open_cell = none;
                 if (r.column == r.columns) r.full = true;
@@ -2133,13 +2134,11 @@ pub const Doc = struct {
         }
         if (r.column == 0) r.open_cell = try self.rowCell(r, to, to);
         // An empty cell sits at the line end (trimRange of blanks).
-        if (r.open_cell != none and self.blocks.items[r.open_cell].content_start_byte == self.blocks.items[r.open_cell].content_end_byte) self.moveCell(r.open_cell, to);
+        if (r.open_cell != none and self.blocks.items[r.open_cell].content_start_byte == self.blocks.items[r.open_cell].content_end_byte) try self.moveCell(r.open_cell, to);
     }
 
-    fn moveCell(self: *Doc, index: u32, at: u32) void {
-        // A cell of the line being laid out: no undo (it goes with the layout or the call).
-        const cell = &self.blocks.items[index];
-        cell.flags.unreported = true;
+    fn moveCell(self: *Doc, index: u32, at: u32) Error!void {
+        const cell = try self.blockMut(index);
         cell.source_start_byte = at;
         cell.source_end_byte = at;
         cell.content_start_byte = at;
@@ -2151,8 +2150,7 @@ pub const Doc = struct {
             r.open_cell = try self.rowCell(r, i, i + 1);
             return;
         }
-        const cell = &self.blocks.items[r.open_cell];
-        cell.flags.unreported = true;
+        const cell = try self.blockMut(r.open_cell);
         if (cell.content_start_byte == cell.content_end_byte) {
             cell.content_start_byte = i;
             cell.source_start_byte = i;
