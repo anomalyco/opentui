@@ -417,6 +417,7 @@ test "EditorView - vertical moves keep the desired column and land on cursor-uni
         // 606: without wrapping, the visual line end is the line end, however wide the line.
         .{ .text = "ab\nabcd\nabcdefgh", .width = 4, .start = .{ 0, 1 }, .moves = "EDEDEUU", .ends = &.{ .{ 0, 2 }, .{ 1, 2 }, .{ 1, 4 }, .{ 2, 4 }, .{ 2, 8 }, .{ 1, 4 }, .{ 0, 2 } } },
         .{ .text = "日本語ab", .width = 3, .start = .{ 0, 0 }, .moves = "EE", .ends = &.{ .{ 0, 8 }, .{ 0, 8 } } },
+        .{ .text = "", .width = 4, .placeholder = &.{.{ .text = "abcde" }}, .start = .{ 0, 0 }, .moves = "Ex", .ends = &.{ .{ 0, 0 }, .{ 0, 1 } } },
     };
     for ([_]utf8.WidthMethod{ .unicode, .wcwidth }) |method| {
         const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method, null);
@@ -444,6 +445,12 @@ test "EditorView - vertical moves keep the desired column and land on cursor-uni
                 const cursor = ev.getPrimaryCursor();
                 try std.testing.expectEqual(end, [2]u32{ cursor.row, cursor.col });
                 try std.testing.expectEqual(ev.logicalToVisualCursor(cursor.row, cursor.col).offset, cursor.offset);
+                // 184: a placeholder's rows are not the buffer's, and without wrapping a visual line is the logical one.
+                if (ev.placeholder_active or case.wrap == .none) {
+                    const eol = ev.getEOL();
+                    const visual_eol = ev.getVisualEOL();
+                    try std.testing.expectEqual([3]u32{ eol.logical_row, eol.logical_col, eol.offset }, [3]u32{ visual_eol.logical_row, visual_eol.logical_col, visual_eol.offset });
+                }
             }
         }
     }

@@ -855,6 +855,7 @@ pub const EditorView = struct {
     /// insertion gap after it. The latter needs visual affinity at soft wraps.
     pub fn getVisualEOL(self: *EditorView) VisualCursor {
         const vcursor = self.getPrimaryVisualCursorAbsolute();
+        if (self.placeholder_active) return vcursor;
 
         const vlines = self.text_buffer_view.virtual_lines.items;
 
