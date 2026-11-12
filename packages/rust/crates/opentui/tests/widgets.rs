@@ -2122,6 +2122,8 @@ fn mouse_and_wheel_leave_the_cursor_outside_atomic_extmarks() {
         ("x @file y", one, 9, "drag 8 6", Some((6, (6, 9))), 7),
         ("x @file y", one, 9, "drag 0 4, right", None, 7),
         ("x @file y", one, 9, "drag 8 6, shift+left", Some((2, (2, 9))), 2),
+        ("x @file y", one, 9, "offset 1, shift+right", Some((7, (1, 8))), 7),
+        ("x @file y", one, 9, "drag 0 1, shift+right", Some((2, (0, 3))), 2),
         ("b ca", &[(0, 3), (0, 4)], 4, "click 2", None, 4),
         ("b ca", &[(0, 4), (0, 3)], 4, "click 2", None, 4),
         ("abcdefgh", &[(0, 6), (2, 8)], 8, "click 3", None, 0),

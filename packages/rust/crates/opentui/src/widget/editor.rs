@@ -518,11 +518,14 @@ impl EditorCore {
     }
 
     /// Moves the cursor one column, past atomic marks as Core moves past virtual ones (`extmarks.ts`): left from a
-    /// mark's end goes to the start of the character before it, and right from at most its start goes to its end.
+    /// mark's end goes to the start of the character before it, and right from at most its start goes to its end. A live
+    /// selection moves one character, as Core's does.
     fn step_horizontal(&self, forward: bool) {
         let before = self.cursor().2;
         let marks = self.extmarks.borrow();
-        let edge = if forward {
+        let edge = if self.selection().is_some() {
+            None
+        } else if forward {
             marks.atomic_containing(before + 1).filter(|mark| before <= mark.start).map(|mark| mark.end)
         } else {
             before
@@ -626,12 +629,8 @@ impl EditorCore {
             A::MoveRight => self.movement(false, Some(true), |s| s.step_horizontal(true)),
             A::MoveUp => self.movement(false, None, |s| s.step_vertical(false)),
             A::MoveDown => self.movement(false, None, |s| s.step_vertical(true)),
-            A::SelectLeft => self.movement(true, None, |s| {
-                s.report(s.buffer.command(EditCommand::MoveLeft));
-            }),
-            A::SelectRight => self.movement(true, None, |s| {
-                s.report(s.buffer.command(EditCommand::MoveRight));
-            }),
+            A::SelectLeft => self.movement(true, None, |s| s.step_horizontal(false)),
+            A::SelectRight => self.movement(true, None, |s| s.step_horizontal(true)),
             A::SelectUp => self.movement(true, None, |s| {
                 s.report(s.view.move_up());
             }),
