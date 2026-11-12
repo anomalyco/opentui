@@ -162,6 +162,13 @@ pub const UnifiedTextBuffer = struct {
     // chunk and branch metrics, so only stale history roots are rescanned.
     tab_metrics_generation: u64,
 
+    /// The whole text after the last `replaceTail`, in one growable slot the buffer owns, valid
+    /// while `content_epoch` is still `tail_epoch`: a tail write copies only its new bytes and
+    /// takes no registry slot.
+    tail_slot: ?u8,
+    tail_bytes: std.ArrayListUnmanaged(u8),
+    tail_epoch: u64,
+
     pub const Defaults = struct {
         fg: ?RGBA,
         bg: ?RGBA,
@@ -389,6 +396,9 @@ pub const UnifiedTextBuffer = struct {
             .group_sets = options.group_sets,
             .tab_width = 2,
             .tab_metrics_generation = 1,
+            .tail_slot = null,
+            .tail_bytes = .empty,
+            .tail_epoch = 0,
         };
     }
 
@@ -433,8 +443,16 @@ pub const UnifiedTextBuffer = struct {
 
         self.layout_cache.clear();
         self.mem_registry.clear();
+        self.dropTail();
         // The next owned replacement discards the empty rope, so do not consolidate its old backing.
         _ = self.arena.reset(.free_all);
+    }
+
+    /// Forgets the tail slot after the registry was cleared.
+    fn dropTail(self: *Self) void {
+        self.tail_bytes.deinit(self.global_allocator);
+        self.tail_bytes = .empty;
+        self.tail_slot = null;
     }
 
     pub fn reinitStorage(self: *Self, width_method: utf8.WidthMethod) TextBufferError!void {
@@ -607,6 +625,7 @@ pub const UnifiedTextBuffer = struct {
         self._rope.allocator = self.allocator;
 
         self.mem_registry.clear();
+        self.dropTail();
 
         self.markAllViewsDirty();
     }
@@ -1091,6 +1110,7 @@ pub const UnifiedTextBuffer = struct {
         self._rope = candidate;
         self._rope.allocator = self.allocator;
         self.mem_registry.clear();
+        self.dropTail();
         self.mem_registry.buffers.appendAssumeCapacity(.{ .data = bytes, .owned = true, .active = true });
         self.markAllViewsDirty();
     }
@@ -1099,6 +1119,143 @@ pub const UnifiedTextBuffer = struct {
     pub fn appendFromMemId(self: *Self, mem_id: u8) TextBufferError!void {
         const text = self.mem_registry.get(mem_id) orelse return TextBufferError.InvalidMemId;
         try self.appendBytes(text, .{ .slot = mem_id });
+    }
+
+    /// Replaces the text from byte `from` (bytes of the text as `getPlainText` returns it) to
+    /// the end with `bytes` (C4's internal tail primitive). The head's rope and bytes stay: the
+    /// buffer keeps the whole text in one growable slot it owns, so a tail write copies only its
+    /// new bytes, takes no registry slot, and drops only the rope leaves past `from`. Layers clip
+    /// at `from`. A write from 0, or after any other change to the text, replaces it whole (and
+    /// resets layers and styles). The rope's arena is rebuilt when it outgrows the live rope.
+    /// The caller validates UTF-8 and the text limit.
+    pub fn replaceTail(self: *Self, from: u32, bytes: []const u8) TextBufferError!void {
+        std.debug.assert(!self._rope.hasHistory());
+        const current = self.tail_slot != null and self.tail_epoch == self.content_epoch;
+        if (!current or from == 0) return self.replaceWhole(from, bytes);
+        std.debug.assert(from <= self.tail_bytes.items.len and self.tail_bytes.items.len == self.getByteSize());
+        if (std.mem.indexOfScalar(u8, bytes, '\r') != null) return self.replaceWhole(from, bytes);
+        // A write that starts inside a code point rewrites it whole.
+        var start = from;
+        while (start > 0 and start < self.tail_bytes.items.len and self.tail_bytes.items[start] & 0xC0 == 0x80) start -= 1;
+        const slot = self.tail_slot.?;
+        const end = from + @as(u32, @intCast(bytes.len));
+        // Grow first: the old rope reads its bytes through the registry, which follows the move.
+        if (end > self.tail_bytes.capacity) {
+            self.tail_bytes.ensureTotalCapacity(self.global_allocator, @max(end, self.tail_bytes.capacity * 2)) catch return TextBufferError.OutOfMemory;
+            self.mem_registry.buffers.items[slot].data = self.tail_bytes.items;
+        }
+        const head = self.tail_bytes.items;
+        var candidate = self._rope;
+        // Leaves past `start` go; a text leaf that crosses it keeps its head.
+        if (self._rope.seekKey(iter_mod.textBytes, start)) |found| {
+            var first = found.leaf_index;
+            if (found.leaf.asText()) |chunk| if (found.before < start) {
+                try candidate.replace(first, .{ .text = self.createChunkFromBytes(slot, head[chunk.byte_start .. chunk.byte_start + (start - found.before)], chunk.byte_start) });
+                first += 1;
+            };
+            if (first < candidate.count()) try candidate.delete_range(first, candidate.count());
+        }
+        // A grapheme the kept text and the new bytes share is laid out again from its start
+        // (its bytes are already in the slot, before `start`).
+        var joined = start;
+        const piece = if (from > start) try std.mem.concat(self.global_allocator, u8, &.{ head[start..from], bytes }) else bytes;
+        defer if (from > start) self.global_allocator.free(piece);
+        if (piece.len > 0) {
+            const last_index = candidate.count() -| 1;
+            if (candidate.get(last_index)) |last| if (last.asText()) |chunk| {
+                if (Segment.findJunction(head[chunk.byte_start..chunk.byte_end], piece, self.width_method)) |at| {
+                    joined = chunk.byte_start + at.tail;
+                    text_work.add(.grapheme_joins, 1);
+                    if (at.tail == 0) try candidate.delete(last_index) else try candidate.replace(last_index, .{ .text = self.createChunkFromBytes(slot, head[chunk.byte_start..joined], chunk.byte_start) });
+                }
+            };
+            const laid = if (joined < start) try std.mem.concat(self.global_allocator, u8, &.{ head[joined..start], piece }) else piece;
+            defer if (joined < start) self.global_allocator.free(laid);
+            var result = try self.textToSegments(self.global_allocator, laid, slot, joined, false);
+            defer result.segments.deinit(result.allocator);
+            try candidate.insert_slice(candidate.count(), result.segments.items);
+        }
+        // Publish: the rope, then the bytes it reads, then the layers and caches.
+        const old_len: u32 = @intCast(head.len);
+        self._rope.root = candidate.root;
+        self.tail_bytes.items.len = start;
+        self.tail_bytes.appendSliceAssumeCapacity(piece);
+        self.mem_registry.buffers.items[slot].data = self.tail_bytes.items;
+        self.layers.deleteBytes(self.global_allocator, self.link_pool, start, old_len);
+        self.dropLinesFrom(self._rope.root.metrics().custom.linestart_count);
+        self.markAllViewsDirty();
+        self.tail_epoch = self.content_epoch;
+        text_work.add(.tail_writes, 1);
+        text_work.add(.tail_write_bytes, piece.len);
+        self.reclaimRopeArena() catch {};
+    }
+
+    /// The whole text replaced by `head[0..from] ++ bytes` in a new tail slot.
+    fn replaceWhole(self: *Self, from: u32, bytes: []const u8) TextBufferError!void {
+        var next: std.ArrayListUnmanaged(u8) = .empty;
+        errdefer next.deinit(self.global_allocator);
+        if (from > 0) {
+            // The head as the text holds it now (another write may have replaced the tail slot).
+            const size = self.getByteSize();
+            std.debug.assert(from <= size);
+            next.ensureTotalCapacity(self.global_allocator, @max(size, from + bytes.len)) catch return TextBufferError.OutOfMemory;
+            next.items.len = size;
+            _ = self.getPlainTextIntoBuffer(next.items);
+            next.items.len = from;
+        }
+        next.appendSlice(self.global_allocator, bytes) catch return TextBufferError.OutOfMemory;
+        const new_slot = self.tail_slot == null;
+        const previous_buffer_count = self.mem_registry.buffers.items.len;
+        const slot = self.tail_slot orelse try self.mem_registry.register(next.items, false);
+        errdefer if (new_slot) self.mem_registry.cancelLastRegistration(slot, previous_buffer_count);
+        var replacement_arena = std.heap.ArenaAllocator.init(self.global_allocator);
+        defer replacement_arena.deinit();
+        try self.setPlainText(slot, next.items, 0, null, false, &replacement_arena);
+        self.tail_bytes.deinit(self.global_allocator);
+        self.tail_bytes = next;
+        self.tail_slot = slot;
+        // Text with a carriage return counts a CRLF as one byte, so its slot offsets are not the
+        // text's: the next tail write replaces it whole.
+        self.tail_epoch = if (std.mem.indexOfScalar(u8, next.items, '\r') == null) self.content_epoch else self.content_epoch -% 1;
+        text_work.add(.tail_writes, 1);
+        text_work.add(.tail_write_bytes, next.items.len);
+    }
+
+    /// Legacy records and span caches of lines the text no longer has go.
+    fn dropLinesFrom(self: *Self, line_count: usize) void {
+        if (self.line_highlights.items.len > line_count) {
+            for (self.line_highlights.items[line_count..]) |*list| {
+                for (list.items) |record| self.internal_highlight_count -= @intFromBool(record.internal);
+                list.deinit(self.global_allocator);
+            }
+            self.line_highlights.items.len = line_count;
+        }
+        self.trimLineSpans(line_count);
+    }
+
+    /// Old rope paths stay in the arena until it resets. Past twice the live rope plus 64 KiB,
+    /// the rope is rebuilt from its leaves into a new arena and the old one is released.
+    fn reclaimRopeArena(self: *Self) TextBufferError!void {
+        const live = @as(usize, self._rope.count()) * 2 * @sizeOf(UnifiedRope.Node);
+        if (self.arena.queryCapacity() <= 2 * live + (64 << 10)) return;
+        const segments = self._rope.to_array(self.global_allocator) catch return TextBufferError.OutOfMemory;
+        defer self.global_allocator.free(segments);
+        // Cold layout state lives in the arena that goes.
+        for (segments) |*segment| switch (segment.*) {
+            .text => |*chunk| chunk.cold = null,
+            else => {},
+        };
+        var replacement_arena = std.heap.ArenaAllocator.init(self.global_allocator);
+        defer replacement_arena.deinit();
+        const candidate = UnifiedRope.from_sliceWithConfig(replacement_arena.allocator(), segments, self._rope.config) catch
+            return TextBufferError.OutOfMemory;
+        self.layout_cache.clear();
+        std.mem.swap(std.heap.ArenaAllocator, self.arena, &replacement_arena);
+        self._rope = candidate;
+        self._rope.allocator = self.allocator;
+        text_work.add(.rope_rebuilds, 1);
+        self.markAllViewsDirty();
+        self.tail_epoch = self.content_epoch;
     }
 
     /// Internal append that doesn't register memory
@@ -1237,6 +1394,7 @@ pub const UnifiedTextBuffer = struct {
 
     pub fn clearMemRegistry(self: *Self) void {
         self.mem_registry.clear();
+        self.dropTail();
     }
 
     pub fn getMemBuffer(self: *const Self, mem_id: u8) ?[]const u8 {
