@@ -1160,6 +1160,9 @@ impl App {
                 | MouseEventKind::ScrollLeft
                 | MouseEventKind::ScrollRight
         );
+        if event.kind == MouseEventKind::Down(MouseButton::Left) {
+            self.drag_and_drop(event, None, None, false);
+        }
         let selecting = self.selection_mouse(event, hit.as_ref());
         let target = match event.kind {
             // As in Core, a selection drag goes to the widget under the pointer, so scroll boxes it passes over can
@@ -1218,7 +1221,8 @@ impl App {
     }
 
     /// Tracks a left-button drag from the captured widget: drag-over changes for the widgets under the pointer, then a
-    /// drop where it ends. A press during a drag means the drag's release was lost: the press ends it without a drop.
+    /// drop where it ends. A press during a drag means the drag's release was lost: the press ends it, before its own
+    /// handlers run and without a drop.
     fn drag_and_drop(
         &self,
         event: &MouseEvent,
@@ -1260,8 +1264,7 @@ impl App {
                 for widget in over.iter().filter_map(Weak::upgrade) {
                     widget.element().handlers.drag_over.emit(&mut Cx::new(self), &(dragged.clone(), false));
                 }
-                let up = matches!(event.kind, MouseEventKind::Up(_));
-                let Some(hit) = hit.filter(|hit| up && !hit.element().is_within(source.element())) else { return };
+                let Some(hit) = hit.filter(|hit| !hit.element().is_within(source.element())) else { return };
                 let mut cx = Cx::new(self);
                 for widget in Self::path(Rc::clone(hit)) {
                     widget.element().handlers.drop.emit(&mut cx, &(dragged.clone(), *event));
