@@ -613,7 +613,7 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
       return false
     }
 
-    this.buffers.set(id, { ...created, hasParser: true })
+    this.buffers.set(id, { id, content, filetype, version, hasParser: true })
 
     this.emit("buffer:initialized", id, true)
     return true

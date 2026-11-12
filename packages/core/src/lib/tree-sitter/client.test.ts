@@ -189,7 +189,10 @@ describeClient("TreeSitterClient", () => {
     await client.initialize()
 
     const jsCode = 'const hello = "world";'
-    const hasParser = await client.createBuffer(1, jsCode, "javascript")
+    const creating = client.createBuffer(1, jsCode, "javascript")
+    // The buffer holds what the worker parsed, even if a caller changed the pending record.
+    Object.assign(client.getBuffer(1)!, { content: "changed", filetype: "plaintext", version: 7 })
+    const hasParser = await creating
 
     expect(hasParser).toBe(true)
 
