@@ -4,6 +4,7 @@ const api = @import("context_abi_c");
 const handles = @import("context-handles.zig");
 const grapheme = @import("grapheme.zig");
 const link = @import("link.zig");
+const highlight_layers = @import("highlight-layers.zig");
 const yoga = @import("yoga.zig");
 const renderer = @import("renderer.zig");
 const session = @import("session.zig");
@@ -244,6 +245,12 @@ pub const Edit = struct {
         var next = self.views;
         while (next) |view| : (next = view.next) view.invalidate();
     }
+
+    /// For changes that cannot change a size, such as highlights: views repaint, Yoga keeps the measure.
+    pub fn invalidatePreparation(self: *Edit) void {
+        var next = self.views;
+        while (next) |view| : (next = view.next) view.invalidatePreparation();
+    }
 };
 
 pub const Editor = struct {
@@ -413,6 +420,13 @@ pub const TextHighlight = union(enum) {
     clear_all,
 };
 
+pub const LayerReplacement = struct {
+    layer_id: u32,
+    start_byte: u32,
+    end_byte: u32,
+    runs: []const highlight_layers.LayerRun,
+};
+
 pub const TextSelection = struct {
     pub const Operation = enum { set, update, reset, local, local_update, local_reset, cell, occupancy, inclusive, colors };
     operation: Operation,
@@ -562,6 +576,8 @@ pub const Context = struct {
     last_image_id: u32 = 0,
     graphemes: grapheme.GraphemePool,
     links: link.LinkPool,
+    /// Group sets that highlight layer runs name; every buffer of this Context borrows it.
+    group_sets: highlight_layers.GroupSets,
     diagnostics: logger.Diagnostics,
     logger: logger.Logger,
     yoga_config: yoga.Config,
@@ -675,6 +691,7 @@ pub const Context = struct {
             .objects = objects,
             .graphemes = grapheme.GraphemePool.init(allocator),
             .links = link.LinkPool.init(allocator),
+            .group_sets = highlight_layers.GroupSets.init(allocator),
             .diagnostics = diagnostics,
             .logger = .{ .diagnostics = &self.diagnostics },
             .yoga_config = undefined,
@@ -749,6 +766,7 @@ pub const Context = struct {
         self.yoga_config.deinit();
         self.graphemes.deinit();
         self.links.deinit();
+        self.group_sets.deinit();
         self.diagnostics.deinit();
         self.allocator.destroy(self);
     }
@@ -3246,6 +3264,7 @@ pub const Context = struct {
         const buffer = try text_buffer.UnifiedTextBuffer.initWithOptions(self.allocator, &self.graphemes, &self.links, width_method, .{
             .io = self.io,
             .logger = &self.logger,
+            .group_sets = &self.group_sets,
         });
         errdefer buffer.deinit();
         const view = try text_buffer_view.UnifiedTextBufferView.init(self.allocator, buffer);
@@ -3280,6 +3299,7 @@ pub const Context = struct {
         const buffer = try text_buffer.UnifiedTextBuffer.initWithOptions(self.allocator, &self.graphemes, &self.links, width_method, .{
             .io = self.io,
             .logger = &self.logger,
+            .group_sets = &self.group_sets,
         });
         value.* = .{ .handle = undefined, .buffer = buffer, .input_mem_id = 0 };
         return value;
@@ -3489,6 +3509,13 @@ pub const Context = struct {
         text.invalidate(false);
     }
 
+    /// Group set ids are Context-wide: a buffer composes them against whatever style it binds.
+    pub fn groupSet(self: *Context, names: []const []const u8) !u32 {
+        try self.beginMutation();
+        defer self.mutating = false;
+        return self.group_sets.intern(names);
+    }
+
     pub fn textViewSetViewport(self: *Context, handle: Handle, viewport: text_buffer_view.Viewport, size_only: bool) !void {
         try self.beginMutation();
         defer self.mutating = false;
@@ -3571,6 +3598,7 @@ pub const Context = struct {
         }, .{
             .io = self.io,
             .logger = &self.logger,
+            .group_sets = &self.group_sets,
         });
         errdefer value.buffer.deinit();
         value.handle = try self.objects.insert(.edit_buffer, value);
@@ -3622,7 +3650,7 @@ pub const Context = struct {
         try self.beginMutation();
         defer self.mutating = false;
         if (!std.unicode.utf8ValidateSlice(name)) return error.InvalidUnicode;
-        if (definition.attributes & ~ansi.TextAttributes.ATTRIBUTE_BASE_MASK != 0) return error.InvalidOptions;
+        if (definition.attributes & ~@as(u32, definition.supplied_attributes) != 0) return error.InvalidOptions;
         if (definition.fg) |color| try buf.validateColor(color);
         if (definition.bg) |color| try buf.validateColor(color);
         const style = try self.getSyntaxStyle(handle);
@@ -3741,7 +3769,16 @@ pub const Context = struct {
         const edit = try self.getEditBuffer(handle);
         try edit.checkMutable();
         try highlightBuffer(edit.buffer.tb, operation);
-        edit.invalidate();
+        edit.invalidatePreparation();
+    }
+
+    pub fn editSetLayer(self: *Context, handle: Handle, layer: LayerReplacement) !void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const edit = try self.getEditBuffer(handle);
+        try edit.checkMutable();
+        try edit.buffer.tb.setLayer(layer.layer_id, layer.start_byte, layer.end_byte, layer.runs);
+        edit.invalidatePreparation();
     }
 
     pub fn editorSetViewport(self: *Context, handle: Handle, viewport: text_buffer_view.Viewport, size_only: bool, move_cursor: bool) !void {

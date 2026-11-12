@@ -5,7 +5,7 @@ use core::ffi::c_void;
 
 /// FNV-1a 64-bit hash of the `opentui.h` these declarations were generated from.
 /// The build script rejects native artifacts whose header has a different hash.
-pub const OPENTUI_HEADER_FNV1A64: u64 = 0x445d542293e34dd3;
+pub const OPENTUI_HEADER_FNV1A64: u64 = 0xaab2bfb1a14c9db4;
 
 pub type ot_status = i32;
 
@@ -450,12 +450,15 @@ pub const OT_EDIT_POSITION_PREV_CHAR: u32 = 8;
 pub const OT_EDITOR_STYLE_FOREGROUND: u32 = 1;
 pub const OT_EDITOR_STYLE_BACKGROUND: u32 = 2;
 pub const OT_EDITOR_STYLE_ATTRIBUTES: u32 = 4;
+pub const OT_EDITOR_STYLE_ATTRIBUTE_MASK: u32 = 8;
 pub const OT_EDIT_HIGHLIGHT_ADD_LINE: u32 = 0;
 pub const OT_EDIT_HIGHLIGHT_ADD_RANGE: u32 = 1;
 pub const OT_EDIT_HIGHLIGHT_REMOVE_REF: u32 = 2;
 pub const OT_EDIT_HIGHLIGHT_CLEAR_LINE: u32 = 3;
 pub const OT_EDIT_HIGHLIGHT_CLEAR_ALL: u32 = 4;
 pub const OT_STYLE_RUN_FLAG: u32 = 2147483648;
+pub const OT_GROUP_SET_NAME_COUNT_MAX: u32 = 16;
+pub const OT_GROUP_SET_NAME_BYTE_COUNT_MAX: u32 = 64;
 pub const OT_EDITOR_MOVE_UP: u32 = 0;
 pub const OT_EDITOR_MOVE_DOWN: u32 = 1;
 pub const OT_EDITOR_GOTO_LINE_END: u32 = 2;
@@ -2599,6 +2602,32 @@ const _: () = {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ot_highlight_run {
+    pub start_byte: u32,
+    pub end_byte: u32,
+    pub group_set: u32,
+}
+
+// SAFETY: the record has no padding and only integer or float fields.
+unsafe impl Pod for ot_highlight_run {}
+
+impl Default for ot_highlight_run {
+    fn default() -> Self {
+        // SAFETY: every field is an integer, a float, or an array or record of them; all-zero is valid.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<ot_highlight_run>() == 12);
+    assert!(core::mem::align_of::<ot_highlight_run>() == 4);
+    assert!(core::mem::offset_of!(ot_highlight_run, start_byte) == 0);
+    assert!(core::mem::offset_of!(ot_highlight_run, end_byte) == 4);
+    assert!(core::mem::offset_of!(ot_highlight_run, group_set) == 8);
+};
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ot_editor_viewport {
     pub struct_size: u32,
     pub abi_version: u32,
@@ -4364,6 +4393,8 @@ unsafe extern "C" {
     pub fn ot_syntax_style_get_count(context: *mut ot_context, handle: *const ot_handle, out_count: *mut u32) -> ot_status;
     pub fn ot_edit_buffer_highlight(context: *mut ot_context, handle: *const ot_handle, operation: u32, argument: u32, highlight: *const ot_edit_highlight) -> ot_status;
     pub fn ot_edit_buffer_get_highlights(context: *mut ot_context, handle: *const ot_handle, line: u32, highlights: *mut ot_edit_highlight, capacity: u32, out_count: *mut u32) -> ot_status;
+    pub fn ot_context_group_set(context: *mut ot_context, names: *const u8, name_byte_count: u32, name_end_bytes: *const u32, name_count: u32, out_group_set: *mut u32) -> ot_status;
+    pub fn ot_edit_buffer_set_layer(context: *mut ot_context, handle: *const ot_handle, layer_id: u32, start_byte: u32, end_byte: u32, runs: *const ot_highlight_run, run_count: u32) -> ot_status;
     pub fn ot_editor_view_set_viewport(context: *mut ot_context, handle: *const ot_handle, editor_viewport: *const ot_editor_viewport, size_only: u32, move_cursor: u32) -> ot_status;
     pub fn ot_editor_view_get_viewport(context: *mut ot_context, handle: *const ot_handle, out_viewport: *mut ot_editor_viewport) -> ot_status;
     pub fn ot_editor_view_set_scroll_margin(context: *mut ot_context, handle: *const ot_handle, margin: f32) -> ot_status;

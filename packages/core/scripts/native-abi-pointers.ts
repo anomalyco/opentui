@@ -173,6 +173,8 @@ export const nativePointerPolicies = {
   ot_syntax_style_get_count: { 0: context, 1: buffer, 2: buffer },
   ot_edit_buffer_highlight: { 0: context, 1: buffer, 4: optional },
   ot_edit_buffer_get_highlights: { 0: context, 1: buffer, 3: empty, 5: buffer },
+  ot_context_group_set: { 0: context, 1: buffer, 3: buffer, 5: buffer },
+  ot_edit_buffer_set_layer: { 0: context, 1: buffer, 5: empty },
   ot_editor_view_set_viewport: { 0: context, 1: buffer, 2: buffer },
   ot_editor_view_get_viewport: { 0: context, 1: buffer, 2: buffer },
   ot_editor_view_set_scroll_margin: { 0: context, 1: buffer },

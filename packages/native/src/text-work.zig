@@ -48,9 +48,11 @@ pub const Counts = struct {
     /// Graphemes rejoined across a chunk boundary, and the bytes copied to rejoin them.
     grapheme_joins: u64 = 0,
     grapheme_join_bytes: u64 = 0,
-    /// `buildLineSpans` calls and the highlights they sort.
+    /// `buildLineSpans` calls and the inputs (legacy records and layer runs) they sort.
     line_span_builds: u64 = 0,
     line_span_highlights: u64 = 0,
+    /// Sift steps of the span builder's priority heap: its active-set work.
+    span_heap_steps: u64 = 0,
 };
 
 const enabled = builtin.is_test;

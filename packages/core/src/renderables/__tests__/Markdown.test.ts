@@ -4946,6 +4946,9 @@ test("theme switching (syntaxStyle change)", async () => {
     {
       default: { fg: RGBA.fromValues(1, 0, 0, 1) }, // Red
       "markup.heading.1": { fg: RGBA.fromValues(0, 1, 0, 1), bold: true }, // Green
+      "markup.strikethrough": { strikethrough: true },
+      "markup.heading": { strikethrough: true },
+      "markup.raw": { strikethrough: true },
     },
     renderer.nativeScene,
   )
@@ -4954,6 +4957,7 @@ test("theme switching (syntaxStyle change)", async () => {
     {
       default: { fg: RGBA.fromValues(0, 0, 1, 1) }, // Blue
       "markup.heading.1": { fg: RGBA.fromValues(1, 1, 0, 1), bold: true }, // Yellow
+      "markup.strikethrough": { strikethrough: false },
     },
     renderer.nativeScene,
   )
@@ -5075,6 +5079,33 @@ The table alignment uses:
   expect(headingSpan2!.fg.g).toBe(1)
   expect(headingSpan2!.fg.b).toBe(0)
   expect(headingSpan2!.attributes & TextAttributes.BOLD).toBeTruthy()
+
+  // `~~x~~` in prose (tree-sitter) and in table cells (marked). A header cell takes the heading's
+  // strikethrough when it sets one and keeps the inline one otherwise; nested styles keep the strike.
+  const theme3 = SyntaxStyle.fromStyles(
+    { default: { fg: RGBA.fromValues(1, 1, 1, 1) }, "markup.strikethrough": { strikethrough: true } },
+    renderer.nativeScene,
+  )
+  md.content = "~~gone~~ text\n\n| ~~head~~ | plain | more |\n|---|---|---|\n| ~~cell~~ | ~~**nested**~~ | `code` |\n"
+  const texts = ["gone", "head", "plain", "cell", "nested", "code"]
+  for (const [theme, struck] of [
+    [theme1, texts],
+    [theme2, []],
+    [theme3, ["gone", "head", "cell", "nested"]],
+    // No markup.strikethrough entry: struck by default, as in Rust.
+    [syntaxStyle, ["gone", "head", "cell", "nested"]],
+  ] as const) {
+    md.syntaxStyle = theme
+    await renderMarkdownRenderable(md)
+    const frame = captureSpans()
+    for (const text of texts) {
+      const attributes = findSpanContaining(frame, text)!.attributes & TextAttributes.STRIKETHROUGH
+      expect([text, attributes]).toEqual([
+        text,
+        (struck as readonly string[]).includes(text) ? TextAttributes.STRIKETHROUGH : 0,
+      ])
+    }
+  }
 })
 
 // Paragraph rendering tests

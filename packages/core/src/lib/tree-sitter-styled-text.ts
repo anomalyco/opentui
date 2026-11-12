@@ -111,14 +111,7 @@ export function treeSitterToTextChunks(
             text: replacementText,
             fg: defaultStyle?.fg,
             bg: defaultStyle?.bg,
-            attributes: defaultStyle
-              ? createTextAttributes({
-                  bold: defaultStyle.bold,
-                  italic: defaultStyle.italic,
-                  underline: defaultStyle.underline,
-                  dim: defaultStyle.dim,
-                })
-              : 0,
+            attributes: createTextAttributes(defaultStyle),
           })
           ranges?.push({ start: currentOffset, end: boundary.offset })
         }
@@ -162,12 +155,9 @@ export function treeSitterToTextChunks(
 
           if (styleForGroup) {
             // Merge properties - later styles override earlier ones
-            if (styleForGroup.fg !== undefined) mergedStyle.fg = styleForGroup.fg
-            if (styleForGroup.bg !== undefined) mergedStyle.bg = styleForGroup.bg
-            if (styleForGroup.bold !== undefined) mergedStyle.bold = styleForGroup.bold
-            if (styleForGroup.italic !== undefined) mergedStyle.italic = styleForGroup.italic
-            if (styleForGroup.underline !== undefined) mergedStyle.underline = styleForGroup.underline
-            if (styleForGroup.dim !== undefined) mergedStyle.dim = styleForGroup.dim
+            for (const [field, value] of Object.entries(styleForGroup)) {
+              if (value !== undefined) Reflect.set(mergedStyle, field, value)
+            }
           } else {
             if (group.includes(".")) {
               const baseName = group.split(".")[0]
@@ -192,14 +182,7 @@ export function treeSitterToTextChunks(
           text: segmentText,
           fg: finalStyle?.fg,
           bg: finalStyle?.bg,
-          attributes: finalStyle
-            ? createTextAttributes({
-                bold: finalStyle.bold,
-                italic: finalStyle.italic,
-                underline: finalStyle.underline,
-                dim: finalStyle.dim,
-              })
-            : 0,
+          attributes: createTextAttributes(finalStyle),
         })
         ranges?.push({ start: currentOffset, end: boundary.offset })
       }
@@ -211,14 +194,7 @@ export function treeSitterToTextChunks(
         text,
         fg: style?.fg,
         bg: style?.bg,
-        attributes: style
-          ? createTextAttributes({
-              bold: style.bold,
-              italic: style.italic,
-              underline: style.underline,
-              dim: style.dim,
-            })
-          : 0,
+        attributes: createTextAttributes(style),
       })
       ranges?.push({ start: currentOffset, end: boundary.offset })
     }
@@ -270,14 +246,7 @@ export function treeSitterToTextChunks(
       text,
       fg: style?.fg,
       bg: style?.bg,
-      attributes: style
-        ? createTextAttributes({
-            bold: style.bold,
-            italic: style.italic,
-            underline: style.underline,
-            dim: style.dim,
-          })
-        : 0,
+      attributes: createTextAttributes(style),
     })
     ranges?.push({ start: currentOffset, end: content.length })
   }

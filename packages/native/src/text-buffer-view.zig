@@ -13,6 +13,7 @@ const TextSelection = tb.TextSelection;
 pub const WrapMode = tb.WrapMode;
 const TextChunk = seg_mod.TextChunk;
 const StyleSpan = tb.StyleSpan;
+const TextBufferError = tb.TextBufferError;
 
 pub const TextBufferViewError = error{
     OutOfMemory,
@@ -1628,13 +1629,14 @@ pub const UnifiedTextBufferView = struct {
         return self.text_buffer.copyTextRange(selection.start, selection.end, out);
     }
 
-    pub fn getVirtualLineSpans(self: *const Self, vline_idx: usize) VirtualLineSpanInfo {
+    /// Rebuilding a stale line's spans can need memory, so this can fail.
+    pub fn getVirtualLineSpans(self: *const Self, vline_idx: usize) TextBufferError!VirtualLineSpanInfo {
         if (vline_idx >= self.virtual_lines.items.len) {
             return .{ .spans = &[_]StyleSpan{}, .source_line = 0, .source_col_start = 0 };
         }
 
         const vline = &self.virtual_lines.items[vline_idx];
-        const spans = self.text_buffer.getLineSpans(vline.source_line);
+        const spans = try self.text_buffer.getLineSpans(vline.source_line);
 
         return .{
             .spans = spans,

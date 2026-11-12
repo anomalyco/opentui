@@ -3,7 +3,11 @@ use super::{Context, MousePointer, Node, WidthMethod, WrapMode};
 use crate::error::{Result, check, count};
 use crate::native::CursorStyle;
 use crate::style::{Color, EncodedSpans, Span, Style};
+use crate::syntax::SyntaxTheme;
 use crate::sys;
+use std::cell::RefCell;
+use std::collections::BTreeSet;
+use std::ops::Range;
 use std::rc::Rc;
 
 /// Default colors and attributes for text without a highlight. `None` fields stay unset.
@@ -23,7 +27,14 @@ fn encode_style(style: Style) -> sys::ot_editor_style {
 
 /// A named-style table for edit buffer highlights, which several buffers can share.
 #[derive(Clone)]
-pub struct SyntaxStyle(Rc<Resource>);
+pub struct SyntaxStyle(Rc<Resource>, Rc<RefCell<CapturePalette>>);
+
+/// The syntax theme an editor last set on a table, and the capture names registered from it.
+#[derive(Default)]
+struct CapturePalette {
+    theme: SyntaxTheme,
+    names: BTreeSet<&'static str>,
+}
 
 impl SyntaxStyle {
     pub fn new(context: &Context) -> Result<Self> {
@@ -33,16 +44,46 @@ impl SyntaxStyle {
             ("ot_syntax_style_destroy", sys::ot_syntax_style_destroy),
             |context, handle| unsafe { sys::ot_syntax_style_create(context, handle) },
         )?;
-        Ok(Self(Rc::new(resource)))
+        Ok(Self(Rc::new(resource), Rc::default()))
+    }
+
+    /// Makes `theme` the table's capture palette, registering every capture name seen on the table again; the
+    /// last theme set wins for all editors sharing the table. Returns whether the palette changed.
+    pub(crate) fn set_capture_theme(&self, theme: &SyntaxTheme) -> Result<bool> {
+        if self.1.borrow().theme == *theme {
+            return Ok(false);
+        }
+        self.1.borrow_mut().theme = theme.clone();
+        self.1.borrow().names.iter().try_for_each(|name| self.register_capture(name).map(drop))?;
+        Ok(true)
+    }
+
+    /// Registers the capture names the table has not seen as `opentui.<name>`, with its palette's style.
+    pub(crate) fn register_captures(&self, names: &[&'static str]) -> Result<()> {
+        for &name in names {
+            if !self.1.borrow().names.contains(name) {
+                self.register_capture(name)?;
+                self.1.borrow_mut().names.insert(name);
+            }
+        }
+        Ok(())
+    }
+
+    fn register_capture(&self, name: &str) -> Result<u32> {
+        let style = self.1.borrow().theme.get(name).unwrap_or_default();
+        self.register(&format!("opentui.{name}"), style)
     }
 
     pub(crate) fn handle(&self) -> sys::ot_handle {
         self.0.handle()
     }
 
-    /// Defines or replaces a named style and returns its id for highlights.
+    /// Defines or replaces a named style and returns its id for highlights. In a group set it adds its attributes to
+    /// earlier names' (a [`Style`] has no attribute that says "off"), as [`Style::patch`] does.
     pub fn register(&self, name: &str, style: Style) -> Result<u32> {
-        let raw = encode_style(style);
+        let mut raw = encode_style(style);
+        raw.flags |= sys::OT_EDITOR_STYLE_ATTRIBUTE_MASK;
+        raw.attributes |= raw.attributes << 16;
         let length = count("ot_syntax_style_register", name.len())?;
         let (context, handle) = self.0.raw();
         let mut id = 0;
@@ -345,11 +386,52 @@ impl EditBuffer {
         })
     }
 
+    /// Removes every highlight and empties every layer.
     pub fn clear_highlights(&self) -> Result<()> {
         let (context, handle) = self.raw();
         check("ot_edit_buffer_highlight", unsafe {
             sys::ot_edit_buffer_highlight(context, handle, sys::OT_EDIT_HIGHLIGHT_CLEAR_ALL, 0, std::ptr::null())
         })
+    }
+
+    /// Replaces layer `layer_id` inside `range` with `runs`. Both count UTF-8 bytes of [`Self::text`]; runs are sorted,
+    /// disjoint, nonempty, and on character boundaries. Runs move with edits, and replacing the whole text empties
+    /// the layer. Layers paint above highlights of priority 0 and below higher ones; a run without a link whose group
+    /// set supplies no field (no fg, bg or attribute) paints as if absent. The editor widgets set layer 1 for filetype
+    /// syntax; other layers on their buffers need another id.
+    pub fn set_layer(&self, layer_id: u32, range: Range<u32>, runs: &[LayerRun]) -> Result<()> {
+        let length = count("ot_edit_buffer_set_layer", runs.len())?;
+        let (context, handle) = self.raw();
+        check("ot_edit_buffer_set_layer", unsafe {
+            sys::ot_edit_buffer_set_layer(context, handle, layer_id, range.start, range.end, runs.as_ptr(), length)
+        })
+    }
+}
+
+/// One run of a highlight layer: UTF-8 bytes `start_byte..end_byte`, painted with the group set `group_set`.
+pub type LayerRun = sys::ot_highlight_run;
+
+impl Context {
+    /// The id of an ordered list of style names, for [`LayerRun`]s. Equal lists give equal ids on this Context. Paint
+    /// composes the names against the buffer's style table, later names winning. A list holds at most
+    /// [`OT_GROUP_SET_NAME_COUNT_MAX`](sys::OT_GROUP_SET_NAME_COUNT_MAX) (16) names of at most
+    /// [`OT_GROUP_SET_NAME_BYTE_COUNT_MAX`](sys::OT_GROUP_SET_NAME_BYTE_COUNT_MAX) (64) bytes. Ids are never freed: a
+    /// Context holds at most 4,096 lists and 64 KiB of names in them, so 2,621 one-name lists of 25 bytes. Past a
+    /// bound, new lists fail with [`Status::ObjectLimit`](crate::Status::ObjectLimit).
+    pub fn group_set(&self, names: &[&str]) -> Result<u32> {
+        let mut ends = Vec::with_capacity(names.len());
+        let mut pool = String::new();
+        for name in names {
+            pool.push_str(name);
+            ends.push(count("ot_context_group_set", pool.len())?);
+        }
+        let (byte_count, name_count) =
+            (count("ot_context_group_set", pool.len())?, count("ot_context_group_set", ends.len())?);
+        let mut id = 0;
+        check("ot_context_group_set", unsafe {
+            sys::ot_context_group_set(self.as_raw(), pool.as_ptr(), byte_count, ends.as_ptr(), name_count, &mut id)
+        })?;
+        Ok(id)
     }
 }
 

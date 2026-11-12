@@ -1684,6 +1684,9 @@ ot_status ot_edit_measure_text(ot_context *, const uint8_t *bytes, uint32_t byte
 #define OT_EDITOR_STYLE_FOREGROUND UINT32_C(1)
 #define OT_EDITOR_STYLE_BACKGROUND UINT32_C(2)
 #define OT_EDITOR_STYLE_ATTRIBUTES UINT32_C(4)
+/* Syntax styles only, with OT_EDITOR_STYLE_ATTRIBUTES: attributes bits 16..23 say which of bits
+ * 0..7 the style supplies. */
+#define OT_EDITOR_STYLE_ATTRIBUTE_MASK UINT32_C(8)
 typedef struct ot_editor_style {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -1698,7 +1701,10 @@ typedef struct ot_editor_style {
 ot_status ot_edit_buffer_set_defaults(ot_context *, const ot_handle *, uint32_t mask, const ot_editor_style *);
 /* Names are copied UTF-8; registering an existing name replaces its definition.
  * Empty names are valid; name may be NULL only when byte_count is zero. Ids are
- * below OT_STYLE_RUN_FLAG. */
+ * below OT_STYLE_RUN_FLAG. A group set composes its names in order: each later name
+ * replaces fg, bg, and the attribute bits it supplies. Without
+ * OT_EDITOR_STYLE_ATTRIBUTE_MASK, a style with OT_EDITOR_STYLE_ATTRIBUTES supplies all
+ * eight bits and one without supplies none. Set bits 0..7 outside the supplied bits fail. */
 ot_status ot_syntax_style_register(ot_context *, const ot_handle *, const uint8_t *name,
     uint32_t byte_count, const ot_editor_style *, uint32_t *out_id);
 /* Unknown names return id=0. Names are borrowed only for the query. */
@@ -1735,6 +1741,40 @@ ot_status ot_edit_buffer_highlight(ot_context *, const ot_handle *, uint32_t ope
  * must fit, and undersized calls preserve both outputs. */
 ot_status ot_edit_buffer_get_highlights(ot_context *, const ot_handle *, uint32_t line,
     ot_edit_highlight *highlights, uint32_t capacity, uint32_t *out_count);
+
+/* Interns an ordered list of SyntaxStyle names as a group set. names is a pool of UTF-8
+ * names; name_end_bytes[i] is the exclusive end of name i, and the last end is
+ * name_byte_count. Equal lists give equal ids on this Context, whatever style a buffer binds;
+ * ids are never freed. Paint composes the names against the buffer's bound style, later names
+ * winning, and a missing name falls back to its first dotted component. Names must be
+ * nonempty. More than OT_GROUP_SET_NAME_COUNT_MAX names, a name over
+ * OT_GROUP_SET_NAME_BYTE_COUNT_MAX bytes, or a new set past 4,096 sets or 64 KiB of names fails
+ * with OT_OBJECT_LIMIT. Failures preserve out_group_set. */
+#define OT_GROUP_SET_NAME_COUNT_MAX UINT32_C(16)
+#define OT_GROUP_SET_NAME_BYTE_COUNT_MAX UINT32_C(64)
+ot_status ot_context_group_set(ot_context *, const uint8_t *names, uint32_t name_byte_count,
+    const uint32_t *name_end_bytes, uint32_t name_count, uint32_t *out_group_set);
+
+typedef struct ot_highlight_run {
+    uint32_t start_byte;
+    uint32_t end_byte;
+    uint32_t group_set; /* id from ot_context_group_set */
+} ot_highlight_run;
+/* Replaces layer layer_id of the buffer inside [start_byte, end_byte), start_byte <= end_byte,
+ * with runs, in UTF-8 bytes of the text as get_text returns it (one byte per line break);
+ * runs may be NULL only when run_count is zero. Runs are nonempty,
+ * sorted, non-overlapping, inside the range and inside the text, and start and end on code
+ * point boundaries; so must range edges inside the text. A range end past the text reaches
+ * its end. Runs that cross the range edges keep their outside parts. One transaction: a
+ * rejection leaves the layer unchanged. Runs move with edits: they shift, a run grows when
+ * text is inserted strictly inside it, and deleted bytes clip them. set_text, clear, undo,
+ * redo and the CLEAR_ALL highlight operation empty every layer; REMOVE_REF and CLEAR_LINE
+ * leave layers alone. Layers paint at priority 0: above highlights of priority 0, below
+ * higher priorities; where layers overlap, the higher layer_id wins. A run without a link
+ * whose group set supplies no field (fg, bg or attribute bit) paints as if absent. At most 4 nonempty
+ * layers per buffer: a fifth fails with OT_OBJECT_LIMIT, and a layer left empty is dropped. */
+ot_status ot_edit_buffer_set_layer(ot_context *, const ot_handle *, uint32_t layer_id,
+    uint32_t start_byte, uint32_t end_byte, const ot_highlight_run *runs, uint32_t run_count);
 
 typedef struct ot_editor_viewport {
     uint32_t struct_size;

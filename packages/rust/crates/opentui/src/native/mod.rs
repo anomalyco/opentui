@@ -37,7 +37,7 @@ pub use clipboard::{ClipboardOperation, ClipboardOptions, ClipboardOutcome, Clip
 pub use context::{Context, ContextOptions, Diagnostic, DiagnosticLevel};
 pub use editor::{
     EditBuffer, EditCommand, EditInfo, EditPosition, EditQuery, EditorInfo, EditorOptions, EditorPosition, EditorQuery,
-    EditorView, Highlight, SelectionColors, SelectionUnit, SyntaxStyle, Viewport,
+    EditorView, Highlight, LayerRun, SelectionColors, SelectionUnit, SyntaxStyle, Viewport,
 };
 pub use frame::{Capture, Cell, Draft, FrameOptions, Hooks, HostRequest, PaintSlot, RenderOutcome};
 pub(crate) use frame::{Lease, Planes};

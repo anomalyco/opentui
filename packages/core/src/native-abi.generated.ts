@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: b102a685da7f4784d6b6b0acca1233adb287a3dad0060c260edeeb51e45d39df
+// ABI audit SHA-256: e0ea10e00fc142ea3ed042a3d219c3c7e7c3b1c95ff951918b3998e13d75ee3e
 
 export const OT_CONTEXT_ABI_VERSION = 2
 export const OT_OK = 0
@@ -437,12 +437,15 @@ export const OT_EDIT_POSITION_PREV_CHAR = 8
 export const OT_EDITOR_STYLE_FOREGROUND = 1
 export const OT_EDITOR_STYLE_BACKGROUND = 2
 export const OT_EDITOR_STYLE_ATTRIBUTES = 4
+export const OT_EDITOR_STYLE_ATTRIBUTE_MASK = 8
 export const OT_EDIT_HIGHLIGHT_ADD_LINE = 0
 export const OT_EDIT_HIGHLIGHT_ADD_RANGE = 1
 export const OT_EDIT_HIGHLIGHT_REMOVE_REF = 2
 export const OT_EDIT_HIGHLIGHT_CLEAR_LINE = 3
 export const OT_EDIT_HIGHLIGHT_CLEAR_ALL = 4
 export const OT_STYLE_RUN_FLAG = 2147483648
+export const OT_GROUP_SET_NAME_COUNT_MAX = 16
+export const OT_GROUP_SET_NAME_BYTE_COUNT_MAX = 64
 export const OT_EDITOR_MOVE_UP = 0
 export const OT_EDITOR_MOVE_DOWN = 1
 export const OT_EDITOR_GOTO_LINE_END = 2
@@ -915,6 +918,8 @@ export const nativeSymbols = {
   ot_syntax_style_get_count: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_edit_buffer_highlight: { args: ["ptr", "buffer", "u32", "u32", "ptr"], returns: "i32" },
   ot_edit_buffer_get_highlights: { args: ["ptr", "buffer", "u32", "ptr", "u32", "buffer"], returns: "i32" },
+  ot_context_group_set: { args: ["ptr", "buffer", "u32", "buffer", "u32", "buffer"], returns: "i32" },
+  ot_edit_buffer_set_layer: { args: ["ptr", "buffer", "u32", "u32", "u32", "ptr", "u32"], returns: "i32" },
   ot_editor_view_set_viewport: { args: ["ptr", "buffer", "buffer", "u32", "u32"], returns: "i32" },
   ot_editor_view_get_viewport: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_editor_view_set_scroll_margin: { args: ["ptr", "buffer", "f32"], returns: "i32" },
@@ -1779,6 +1784,15 @@ export const nativeLayouts = {
       style_id: { offset: 8, size: 4, alignment: 4, type: "u32" },
       priority: { offset: 12, size: 4, alignment: 4, type: "u32" },
       ref: { offset: 16, size: 4, alignment: 4, type: "u32" },
+    },
+  },
+  ot_highlight_run: {
+    size: 12,
+    alignment: 4,
+    fields: {
+      start_byte: { offset: 0, size: 4, alignment: 4, type: "u32" },
+      end_byte: { offset: 4, size: 4, alignment: 4, type: "u32" },
+      group_set: { offset: 8, size: 4, alignment: 4, type: "u32" },
     },
   },
   ot_editor_viewport: {
@@ -2821,12 +2835,15 @@ export const nativeConstants = {
   OT_EDITOR_STYLE_FOREGROUND: 1,
   OT_EDITOR_STYLE_BACKGROUND: 2,
   OT_EDITOR_STYLE_ATTRIBUTES: 4,
+  OT_EDITOR_STYLE_ATTRIBUTE_MASK: 8,
   OT_EDIT_HIGHLIGHT_ADD_LINE: 0,
   OT_EDIT_HIGHLIGHT_ADD_RANGE: 1,
   OT_EDIT_HIGHLIGHT_REMOVE_REF: 2,
   OT_EDIT_HIGHLIGHT_CLEAR_LINE: 3,
   OT_EDIT_HIGHLIGHT_CLEAR_ALL: 4,
   OT_STYLE_RUN_FLAG: 2147483648,
+  OT_GROUP_SET_NAME_COUNT_MAX: 16,
+  OT_GROUP_SET_NAME_BYTE_COUNT_MAX: 64,
   OT_EDITOR_MOVE_UP: 0,
   OT_EDITOR_MOVE_DOWN: 1,
   OT_EDITOR_GOTO_LINE_END: 2,
