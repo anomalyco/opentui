@@ -3450,7 +3450,8 @@ ot_status ot_session_pump(
  * at least OT_INPUT_EVENTS_MIN and payload_capacity at least
  * OT_INPUT_PAYLOAD_BYTES_MIN; the call consumes input until either runs low and
  * reports consumed. A bracketed paste arrives as one or more PASTE records from
- * START to END. Records and payload are borrowed for the call and never retained.
+ * START to END; a start marker cut by the timeout waits for a feed that begins with its
+ * rest and more bytes. Records and payload are borrowed for the call and never retained.
  * bytes, records, payload, and out_drain must not overlap.
  * Accepted in any open session state; closing, closed, failed, and cancelled
  * sessions reject. A rejected call leaves out_drain, the records, and parser
@@ -3486,9 +3487,11 @@ ot_status ot_session_input_feed(
  * cut before it matches a reply, its introducer is typed. KEEP_REPLY also keeps such a CSI.
  * ESCAPE_PREFIX, which implies KITTY_KEYBOARD, means the terminal confirmed
  * Kitty disambiguate or report-all keys, so no unit has a deadline. A raw ESC and the byte after it in the same
- * feed are Alt and that key as without the flag; a raw ESC that ends a feed is the Escape key at once, and a
- * sequence that begins the next feed is kept whole (a CSI then is never a key). With SENTINEL, a lone
- * introducer after that Escape waits as after a timeout, and is typed once SENTINEL is cleared.
+ * feed are Alt and that key as without the flag; a raw ESC that ends a feed is the Escape key at once. If the next
+ * feed, however late, begins with [ and a byte that begins a CSI such a terminal sends (a digit, ?, >, <, or one of
+ * ABCDEFHIOPQS), the CSI is kept whole and is never a key; _G begins a Kitty graphics reply, kept whole once that
+ * feed matches its key= prefix and typed otherwise; other bytes are typed. With SENTINEL, an OSC, DCS, or APC
+ * introducer or a lone [ after that Escape is recovered as after a timeout until SENTINEL is cleared.
  * A session with a renderer sets it itself once the terminal answers the CSI ? u
  * query that follows its current push (only with OT_TERMINAL_REPLY_SENTINEL).
  * Changing flags emits nothing; the next feed resolves a unit that may no longer wait. */
