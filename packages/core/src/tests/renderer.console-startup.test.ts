@@ -737,11 +737,12 @@ test("CliRenderer preserves split render offset when switching to passthrough", 
 })
 
 // After the round trip the footer sits below the history rows, and the next write starts where the history ends.
-// Before capture resumes, "frame" draws a frame.
+// Before capture resumes, "frame" draws a frame and "narrow" also narrows the terminal.
 test.each([
   ["one", "", 1, 4],
   ["one\ntwo\nthree", "", 3, 6],
   ["one\ntwo\nthree", "frame", 3, 6],
+  ["one\ntwo\nthree", "narrow", 3, 6],
 ] as const)("CliRenderer keeps split history %j across an alternate-screen trip %j", async (text, step, rows, col) => {
   const result = await createTestRenderer({
     width: 30,
@@ -764,6 +765,7 @@ test.each([
   renderer.screenMode = "alternate-screen"
   renderer.screenMode = "split-footer"
   if (step) await result.renderOnce()
+  if (step === "narrow") result.resize(20, 8)
   await renderer.nativeScene.driver.idle()
   result.writes.length = 0
   renderer.externalOutputMode = "capture-stdout"

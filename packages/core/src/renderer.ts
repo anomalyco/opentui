@@ -4364,8 +4364,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this._footerHeight,
     )
 
-    //resize invalidates any parked split scrollback
-    this.parkedSplitScrollback = false
+    // The normal screen behind the alternate screen reflows out of sight.
+    if (this._screenMode === "alternate-screen") this.parkedSplitScrollback = false
     const prevWidth = this._terminalWidth
     const previousTerminalHeight = this._terminalHeight
     const visiblePreviousSplitHeight =
