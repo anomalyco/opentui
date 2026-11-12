@@ -12,6 +12,7 @@ use crate::syntax::{SyntaxTheme, filetype_for_info_string};
 use crate::sys;
 use crate::theme::Theme;
 use std::cell::{Cell, RefCell};
+use std::fmt::Write as _;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
 use std::rc::Rc;
@@ -310,6 +311,8 @@ enum Rendered {
         row: View,
         marker: Text,
         body: View,
+        /// The marker's text as last set, so an update that keeps it sets nothing.
+        label: Rc<RefCell<String>>,
     },
 }
 
@@ -869,7 +872,8 @@ impl Markdown {
             sys::OT_MD_ITEM => {
                 let marker = Text::new(app, "").shrink(0.0);
                 let body = View::new(app).grow(1.0);
-                Rendered::Item { row: View::new(app).row().child(&marker).child(&body), marker, body }
+                let row = View::new(app).row().child(&marker).child(&body);
+                Rendered::Item { row, marker, body, label: Rc::default() }
             }
             _ => return None,
         };
@@ -1103,13 +1107,19 @@ impl Markdown {
                     .get(a.block.source.end as usize..b.block.source.start as usize)
                     .is_some_and(|gap| gap.matches('\n').count() > 1)
             };
+            // One pass in preorder: an item's blocks come together, each after the one before it.
+            let mut last: Option<&Shown> = None;
             !items.iter().any(|item| item.block.has(sys::OT_MD_BLOCK_BLANK_AFTER))
-                && !items.iter().any(|item| {
-                    let children: Vec<&Shown> = blocks[item.block.index as usize + 1..end]
-                        .iter()
-                        .filter(|child| child.block.parent == Some(item.block.index))
-                        .collect();
-                    children.windows(2).any(|pair| separated(pair[0], pair[1]))
+                && !blocks[list as usize + 1..end].iter().any(|child| {
+                    let Some(parent) = child.block.parent else { return false };
+                    if parent == list {
+                        last = None;
+                        return false;
+                    }
+                    if blocks[parent as usize].block.parent != Some(list) {
+                        return false;
+                    }
+                    last.replace(child).is_some_and(|previous| separated(previous, child))
                 })
         } else {
             block.has(sys::OT_MD_BLOCK_TIGHT)
@@ -1117,14 +1127,14 @@ impl Markdown {
         let gap = if tight { 0 } else { 1 };
         view.gap(gap);
         let ordered = block.has(sys::OT_MD_BLOCK_ORDERED);
-        let numbers: Vec<String> = (0..items.len() as u64)
-            .map(|n| if ordered { format!("{}.", u64::from(block.number) + n) } else { "-".to_owned() })
-            .collect();
-        let width = numbers.iter().map(String::len).max().unwrap_or(1);
+        let last = u64::from(block.number) + (items.len() as u64).saturating_sub(1);
+        let digits = |number: u64| number.checked_ilog10().unwrap_or(0) as usize + 1;
+        let width = if ordered { digits(last) + 1 } else { 1 };
         let marker = self.base(Some(list)).patch(self.0.styles.get().list);
         let conceal = self.0.options.borrow().conceal;
-        for (item, number) in items.iter().zip(&numbers) {
-            let Some(Rendered::Item { marker: text, body, .. }) = &item.rendered else { continue };
+        let mut text = String::new();
+        for (n, item) in items.iter().enumerate() {
+            let Some(Rendered::Item { marker: widget, body, label, .. }) = &item.rendered else { continue };
             let task = match (item.block.has(sys::OT_MD_BLOCK_TASK), item.block.has(sys::OT_MD_BLOCK_CHECKED), conceal)
             {
                 (false, ..) => "",
@@ -1133,7 +1143,18 @@ impl Markdown {
                 (true, true, false) => " [x]",
                 (true, false, false) => " [ ]",
             };
-            text.set_text(vec![Span::styled(format!("{number:>width$}{task} "), marker)]);
+            text.clear();
+            if ordered {
+                let number = u64::from(block.number) + n as u64;
+                text.extend(std::iter::repeat_n(' ', width - digits(number) - 1));
+                let _ = write!(text, "{number}.{task} ");
+            } else {
+                let _ = write!(text, "-{task} ");
+            }
+            if *label.borrow() != text {
+                widget.set_text(vec![Span::styled(text.clone(), marker)]);
+                label.replace(text.clone());
+            }
             body.gap(gap);
         }
     }
