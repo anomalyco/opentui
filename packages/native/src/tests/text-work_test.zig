@@ -47,6 +47,40 @@ fn repeatText(allocator: std.mem.Allocator, unit: []const u8, bytes: usize) ![]u
     return text;
 }
 
+test "text work: panning across wrapped rows reuses the layout" {
+    const allocator = std.testing.allocator;
+    var pools = TestPools.init(allocator);
+    defer pools.deinit();
+    // Two visual rows per logical line. Changing the window must not lay out or allocate,
+    // even when successive windows are at opposite ends of the document.
+    for ([_]u32{ 32, 64, 128, 256 }) |lines| {
+        const text = try repeatLines(allocator, "abcdef", lines);
+        defer allocator.free(text);
+        var counted = std.testing.FailingAllocator.init(allocator, .{});
+        const tb = try TextBuffer.init(counted.allocator(), &pools.graphemes, &pools.links, .unicode);
+        defer tb.deinit();
+        const view = try TextBufferView.init(counted.allocator(), tb);
+        defer view.deinit();
+        try tb.setText(text);
+        view.setWrapMode(.char);
+        view.setWrapWidth(3);
+        try std.testing.expectEqual(2 * lines, view.getVirtualLineCount());
+        const allocated = counted.allocated_bytes;
+        _ = text_work.take();
+        for ([_]u32{ 2 * lines - 3, 1, lines - 1, 0 }) |first| {
+            view.setViewport(.{ .x = 0, .y = first, .width = 3, .height = 3 });
+            const info = view.getCachedLineInfo();
+            try std.testing.expectEqual(3, info.line_sources.len);
+            for (info.line_sources, info.line_wraps, first..) |source, wrap, row| {
+                try std.testing.expectEqual(row / 2, source);
+                try std.testing.expectEqual(row % 2, wrap);
+            }
+        }
+        try std.testing.expectEqual(allocated, counted.allocated_bytes);
+        try std.testing.expectEqual(0, text_work.take().layouts);
+    }
+}
+
 test "text work: edits in a 10,000-line editor lay out the edited line at the next frame" {
     const allocator = std.testing.allocator;
     var pools = TestPools.init(allocator);
