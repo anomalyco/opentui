@@ -408,9 +408,8 @@ pub const MarkdownDoc = struct {
 
     /// Bindings whose node a failed write left behind.
     stale_count: u32 = 0,
-    /// The writes of the call in progress (`writeNode`), in `stage`.
+    /// The writes of the call in progress (`writeNode`), in the Markdown scratch.
     staged: std.ArrayListUnmanaged(markdown.NodeWrite) = .empty,
-    stage: std.heap.ArenaAllocator,
 
     /// `skipped`: a write to the node was skipped (hooked, or not live), or its text changed
     /// since the doc's last write (`epoch`, the buffer's content epoch then: the host wrote
@@ -426,7 +425,6 @@ pub const MarkdownDoc = struct {
     fn deinit(self: *MarkdownDoc) void {
         const allocator = self.owner.allocator;
         self.doc.deinit();
-        self.stage.deinit();
         self.bindings.deinit(allocator);
         self.scope_sets.deinit(allocator);
         allocator.destroy(self);
@@ -525,19 +523,12 @@ pub const MarkdownDoc = struct {
         const id = (try self.scopeSet(scope)) orelse return none_style;
         return style.resolveGroupSet(&self.owner.group_sets, id);
     }
-    /// The engine's write to a bound leaf, inside a call: copied and kept until the call is
-    /// accepted (`applyStaged`), so a rejected call writes no node.
+    /// The engine's write to a bound leaf, inside a call: kept (its slices are in the Markdown
+    /// scratch, which the call resets after) until the call is accepted (`applyStaged`), so a
+    /// rejected call writes no node.
     fn writeNode(context: *anyopaque, _: *const markdown.Doc, w: markdown.NodeWrite) markdown.Error!void {
         const self: *MarkdownDoc = @ptrCast(@alignCast(context));
-        const arena = self.stage.allocator();
-        var copy = w;
-        copy.bytes = try arena.dupe(u8, w.bytes);
-        copy.ranges = try arena.dupe(markdown.RunRange, w.ranges);
-        for (@constCast(copy.ranges)) |*range| {
-            range.chunks = try arena.dupe(markdown.Chunk, range.chunks);
-            range.urls = try arena.dupe(u8, range.urls);
-        }
-        try self.staged.append(arena, copy);
+        try self.staged.append(self.owner.markdown_scratch.allocator(), w);
     }
 
     /// After an accepted call: its writes, in order. A write that fails leaves its node stale
@@ -546,12 +537,7 @@ pub const MarkdownDoc = struct {
         for (self.staged.items) |w| {
             if (w.block < self.writer.unbound_from) self.write(w) catch {};
         }
-        self.dropStaged();
-    }
-
-    fn dropStaged(self: *MarkdownDoc) void {
         self.staged = .empty;
-        _ = self.stage.reset(.{ .retain_with_limit = markdown.scratch_retained_byte_count_max });
     }
 
     /// Writes a bound leaf's node: its text tail and its Markdown runs. Leaves the host writes
@@ -632,19 +618,16 @@ pub const MarkdownDoc = struct {
         const buffer = text.buffer;
         try Context.validateTextBytes(buffer.tabWidth(), w.bytes, w.from);
         const arena = owner.markdown_scratch.allocator();
-        // Each range's runs, then storage for every layer set: once the text changes, nothing
-        // here may fail.
-        const runs = try arena.alloc([]highlight_layers.LayerRun, w.ranges.len);
-        var run_total: usize = 0;
-        for (runs, w.ranges) |*list, range| {
-            list.* = try arena.alloc(highlight_layers.LayerRun, range.chunks.len);
-            run_total += range.chunks.len;
-        }
-        const counts = try arena.alloc(usize, w.ranges.len);
-        @memset(counts, 0);
+        // The ranges' runs, one after another (`ends`), then storage for the layer sets: once the
+        // text changes, nothing here may fail.
+        var chunk_total: usize = 0;
+        for (w.ranges) |range| chunk_total += range.chunks.len;
+        const runs = try arena.alloc(highlight_layers.LayerRun, chunk_total);
+        const ends = try arena.alloc(usize, w.ranges.len);
+        var count: usize = 0;
         // Each run holds a link reference while it is set; the layer takes its own.
-        defer for (runs, counts) |list, count| for (list[0..count]) |run| if (run.link_id != 0) owner.links.decref(run.link_id) catch unreachable;
-        for (w.ranges, runs, counts) |range, list, *count| {
+        defer for (runs[0..count]) |run| if (run.link_id != 0) owner.links.decref(run.link_id) catch unreachable;
+        for (w.ranges, ends) |range, *range_end| {
             var at = range.from;
             for (range.chunks) |chunk| {
                 defer at += chunk.byte_count;
@@ -658,25 +641,27 @@ pub const MarkdownDoc = struct {
                     if (link_id != 0) owner.links.decref(link_id) catch unreachable;
                     continue;
                 };
-                list[count.*] = .{ .start_byte = at, .end_byte = at + chunk.byte_count, .group_set = group_set, .link_id = link_id };
-                count.* += 1;
+                runs[count] = .{ .start_byte = at, .end_byte = at + chunk.byte_count, .group_set = group_set, .link_id = link_id };
+                count += 1;
             }
+            range_end.* = count;
         }
-        const spares = try arena.alloc(std.ArrayListUnmanaged(highlight_layers.LayerRun), w.ranges.len);
-        var reserved: usize = 0;
-        defer for (spares[0..reserved]) |*spare| buffer.freeLayerSpare(spare);
-        // Each set may split one run the earlier ones left.
-        for (spares) |*spare| {
-            spare.* = try buffer.reserveLayer(layer_id, run_total + 2 * w.ranges.len);
-            reserved += 1;
-        }
+        // Two spares in turn: a set takes one and gives the layer's old storage back in it, so
+        // after the first set the old storage is as large (each set may split one run).
+        var spares: [2]std.ArrayListUnmanaged(highlight_layers.LayerRun) = .{ .empty, .empty };
+        defer for (&spares) |*spare| buffer.freeLayerSpare(spare);
+        for (&spares) |*spare| spare.* = try buffer.reserveLayer(layer_id, count + 2 * w.ranges.len);
+        const room = @min(spares[0].capacity, spares[1].capacity);
         const changed = w.bytes.len > 0 or w.from != buffer.getByteSize();
         if (changed) try buffer.replaceTail(w.from, w.bytes);
         node.scene_node.?.paint_epoch = nextPaintEpoch();
         const end = buffer.getByteSize();
-        for (w.ranges, runs, counts, spares) |range, list, count, *spare| {
-            const range_end = if (range.end == markdown.none) end else @min(range.end, end);
-            buffer.setLayerWithSpare(layer_id, @min(range.from, range_end), range_end, list[0..count], spare) catch |err| switch (err) {
+        var start: usize = 0;
+        for (w.ranges, ends) |range, range_end| {
+            defer start = range_end;
+            const to = if (range.end == markdown.none) end else @min(range.end, end);
+            const spare = if (spares[0].capacity >= room) &spares[0] else &spares[1];
+            buffer.setLayerWithSpare(layer_id, @min(range.from, to), to, runs[start..range_end], spare) catch |err| switch (err) {
                 error.OutOfMemory => unreachable,
                 else => return err,
             };
@@ -4024,7 +4009,6 @@ pub const Context = struct {
             .doc = markdown.Doc.init(self.allocator, &self.markdown_scratch, try options.engine()) catch |err| return markdownError(err),
             .writer = .{ .context = value, .write_fn = MarkdownDoc.writeNode },
             .syntax_style = options.syntax_style,
-            .stage = std.heap.ArenaAllocator.init(self.allocator),
         };
         value.doc.writer = &value.writer;
         errdefer value.doc.deinit();
@@ -4055,7 +4039,7 @@ pub const Context = struct {
         }
         // The doc's writes wait for the call to be accepted: a rejected one writes no node.
         errdefer value.writer.unbound_from = markdown.none;
-        errdefer value.dropStaged();
+        errdefer value.staged = .empty;
         switch (call) {
             .append => |bytes| value.doc.append(bytes) catch |err| return markdownError(err),
             .set => |bytes| value.doc.set(bytes) catch |err| return markdownError(err),

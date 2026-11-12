@@ -258,7 +258,12 @@ pub const Layers = struct {
         }
 
         if (found.exists) {
-            self.items[found.index].runs.deinit(allocator);
+            // The old storage goes back in an empty spare (the caller frees it or sets with it).
+            var old_runs = self.items[found.index].runs;
+            if (spare != null and spare.?.capacity == 0) {
+                old_runs.clearRetainingCapacity();
+                spare.?.* = old_runs;
+            } else old_runs.deinit(allocator);
             self.items[found.index].runs = next;
             if (result_len == 0) self.remove(allocator, found.index);
         } else {

@@ -1071,6 +1071,7 @@ const Families = struct {
                     else => {
                         // Spans inside one word, after an opener that may never close.
                         try out.appendSlice(arena, pick(random, &.{ "", "~~x", "(*x" }));
+                        if (random.boolean()) try out.appendNTimes(arena, '*', 2 * count + 1);
                         for (0..count) |_| try out.appendSlice(arena, pick(random, &.{ "*a*b", "**a**b", "*`c`*b", "_a_b" }));
                     },
                 }
@@ -1407,6 +1408,8 @@ test "Markdown model: streams the reviewers found quadratic keep work linear" {
         // D102's limit), and the same nested inside one word.
         &.{ .{ "begin ", 1 }, .{ "~~a *b ", 128 }, .{ "c~~ ", 128 } },
         &.{ .{ "(*a", 128 }, .{ "a*)", 128 } },
+        // carbon-r2-2: one undecided word whose long run every `**` closer shares (8,385 visits).
+        &.{ .{ repeat("*", 257) ++ "x", 1 }, .{ "_a_b", 128 }, .{ "**c", 128 } },
     };
     var families: Families = .{};
     var arena_state = std.heap.ArenaAllocator.init(gpa);
@@ -1421,6 +1424,20 @@ test "Markdown model: streams the reviewers found quadratic keep work linear" {
             return error.ModelFailure;
         }
     }
+}
+
+test "Markdown: spans that close in one word leave the waiting-run limit to the runs that wait" {
+    // carbon-r2-1: each closed `*a*` left a spent opener behind, and the 33rd evicted `~~`.
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    var f: Fixture = undefined;
+    try f.init(.{});
+    defer f.deinit();
+    try f.doc.append("~~x");
+    for (0..32) |_| try f.doc.append("*a*b");
+    try f.doc.append("y~~.");
+    const leaf = try f.doc.readLeaf(arena_state.allocator(), 0);
+    try std.testing.expect(leaf.chunks.items[0].scope.strikethrough);
 }
 
 test "Markdown: past delimiter_count_max waiting runs, the oldest never matches" {

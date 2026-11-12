@@ -917,9 +917,10 @@ pub const Doc = struct {
         return &self.blocks.items[index];
     }
 
+    /// With a writer, its owner resets the scratch after the call: the writes wait in it.
     fn resetScratch(self: *Doc) void {
         self.undo = .empty;
-        _ = self.scratch.reset(.{ .retain_with_limit = scratch_retained_byte_count_max });
+        if (self.writer == null) _ = self.scratch.reset(.{ .retain_with_limit = scratch_retained_byte_count_max });
     }
 
     fn reserveSource(self: *Doc, byte_count: u32) Error!void {
@@ -2598,7 +2599,7 @@ pub const Doc = struct {
         if (live.token_styles.capacity > inline_parser.token_count_max) live.token_styles.clearAndFree(self.allocator);
         if (live.pending_display.capacity > live_retained_byte_count_max) live.pending_display.clearAndFree(self.allocator);
         if (live.pending_runs.capacity > inline_parser.token_count_max) live.pending_runs.clearAndFree(self.allocator);
-        if (live.pending_spans.spans.capacity > inline_parser.token_count_max) {
+        if (live.pending_spans.kinds.capacity > live_retained_byte_count_max) {
             live.pending_spans.deinit(self.allocator);
             live.pending_spans = .{};
         }
@@ -3052,14 +3053,15 @@ pub const Doc = struct {
             var shown_runs = live.pending_runs.items;
             const pipe = if (b.kind == .paragraph) self.liveHoldPipe() else none;
             while (pipe != none and shown_runs.len > 0 and shown_runs[shown_runs.len - 1].end >= pipe) shown_runs.len -= 1;
-            // The runs' spans so far, and this call's: the bytes before the first span it made, and
-            // before the written bytes, keep their styles (a new span only adds its kind).
+            // The runs' spans so far, and this call's: the bytes before the first byte this call
+            // marked, and before the written bytes, keep their styles (a span only adds its kind).
             const spans = &live.pending_spans;
             if (spans.resolved > shown_runs.len) spans.clear();
-            // Runs read by an earlier call: the drawing only grew since (a new one reads anew).
-            const extends = spans.resolved > 0;
+            // Not cleared since an earlier call: the drawing only grew since.
+            const extends = !spans.fresh;
+            spans.fresh = false;
             self.counters.run_token_visits += shown_runs.len - spans.resolved;
-            const first_span = try spans.add(shown_runs, self.allocator);
+            const first_span = try spans.add(shown_runs, self.allocator, &self.counters.run_token_visits);
             const keep_end = pending_start + @min(first_span, skip.before_display -| pending_start);
             if (extends and keep_end > at) {
                 try segments.append(arena, .{ .from = segment_from, .end = at, .chunks = leaf.chunks.items, .urls = leaf.urls.items });
@@ -3070,9 +3072,8 @@ pub const Doc = struct {
                 at = @min(keep_end, to);
                 segment_from = at;
             }
-            const shown = spans.after(at - pending_start);
-            self.counters.run_token_visits += shown.len;
-            try writer.writePending(null, at - pending_start, to - pending_start, shown, .{ .code = code });
+            self.counters.run_token_visits += to - at;
+            try writer.writePending(null, at - pending_start, to - pending_start, spans.kinds.items, .{ .code = code });
         }
         assert(writer.byte_count == to - segment_from);
         try segments.append(arena, .{ .from = segment_from, .chunks = leaf.chunks.items, .urls = leaf.urls.items });
@@ -3270,7 +3271,8 @@ pub const Doc = struct {
         const b = self.blocks.items[self.live.block];
         const chunk: Chunk = .{ .byte_count = @intCast(bytes.len), .scope = .{ .heading_level = @intCast(b.payload[0]) }, .span = .{} };
         const at = self.live.shown_byte_count;
-        const ranges = try self.scratch.allocator().dupe(RunRange, &.{.{ .from = at, .chunks = if (bytes.len > 0) &.{chunk} else &.{}, .urls = "" }});
+        const arena = self.scratch.allocator();
+        const ranges = try arena.dupe(RunRange, &.{.{ .from = at, .chunks = if (bytes.len > 0) try arena.dupe(Chunk, &.{chunk}) else &.{}, .urls = "" }});
         try self.emit(.{ .block = self.live.block, .from = at, .bytes = bytes, .ranges = ranges });
         self.live.shown_byte_count += @intCast(bytes.len);
     }
@@ -3495,9 +3497,10 @@ pub const Doc = struct {
                 var runs: std.ArrayListUnmanaged(inline_parser.PendingRun) = .empty;
                 try inline_parser.renderPendingRuns(content, parser.position, if (code) parser.position else null, &scan, arena, &pending, &runs);
                 var spans: inline_parser.PendingSpans = .{};
-                _ = try spans.add(runs.items, arena);
+                var marked: u64 = 0;
+                _ = try spans.add(runs.items, arena, &marked);
                 writer.base.raw = code;
-                try writer.writePending(pending.items, 0, @intCast(pending.items.len), spans.spans.items, .{ .code = code });
+                try writer.writePending(pending.items, 0, @intCast(pending.items.len), spans.kinds.items, .{ .code = code });
                 writer.base.raw = false;
             }
         }
@@ -3951,32 +3954,19 @@ const LeafWriter = struct {
         return self.write(bytes, .{});
     }
 
-    /// B's drawn bytes [start, end) (`bytes`, or only their count), styled by the spans their runs
-    /// make: each piece between span edges takes the spans over it.
-    fn writePending(self: *LeafWriter, bytes: ?[]const u8, start: u32, end: u32, spans: []const inline_parser.PendingSpan, span: Span) Error!void {
+    /// B's drawn bytes [start, end) (`bytes`, or only their count), styled by the kinds of the
+    /// spans over each (`kinds`, a bit per MatchKind per drawn byte; none past its end).
+    fn writePending(self: *LeafWriter, bytes: ?[]const u8, start: u32, end: u32, kinds: []const u8, span: Span) Error!void {
         const saved = self.base;
         defer self.base = saved;
-        // The spans' edges in order: a span counts its kind from `from` until `to`.
-        const Edge = struct { at: u32, kind: inline_parser.MatchKind, delta: i32 };
-        const edges = try self.arena.alloc(Edge, 2 * spans.len);
-        for (spans, 0..) |s, i| {
-            edges[2 * i] = .{ .at = s.from, .kind = s.kind, .delta = 1 };
-            edges[2 * i + 1] = .{ .at = s.to, .kind = s.kind, .delta = -1 };
-        }
-        std.mem.sort(Edge, edges, {}, struct {
-            fn lessThan(_: void, a: Edge, b: Edge) bool {
-                return a.at < b.at;
-            }
-        }.lessThan);
-        var counts = [_]i32{ 0, 0, 0 };
-        var e: usize = 0;
         var at = start;
         while (at < end) {
-            while (e < edges.len and edges[e].at <= at) : (e += 1) counts[@backingInt(edges[e].kind)] += edges[e].delta;
-            const next = if (e < edges.len) @min(end, edges[e].at) else end;
-            self.base.italic = saved.italic or counts[@backingInt(inline_parser.MatchKind.emphasis)] > 0;
-            self.base.strong = saved.strong or counts[@backingInt(inline_parser.MatchKind.strong)] > 0;
-            self.base.strikethrough = saved.strikethrough or counts[@backingInt(inline_parser.MatchKind.strikethrough)] > 0;
+            const bits = if (at < kinds.len) kinds[at] else 0;
+            var next = at + 1;
+            while (next < end and (if (next < kinds.len) kinds[next] else 0) == bits) next += 1;
+            self.base.italic = saved.italic or bits & inline_parser.kindBit(.emphasis) != 0;
+            self.base.strong = saved.strong or bits & inline_parser.kindBit(.strong) != 0;
+            self.base.strikethrough = saved.strikethrough or bits & inline_parser.kindBit(.strikethrough) != 0;
             if (bytes) |b| try self.write(b[at - start .. next - start], span) else try self.writeLength(next - at, span);
             at = next;
         }

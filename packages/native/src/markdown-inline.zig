@@ -1314,78 +1314,86 @@ pub const PendingScan = struct {
 /// content offset `end`.
 pub const PendingRun = struct { at: u32, end: u32, char: u8, count: u32, open: bool, close: bool };
 
-/// A styled range of the drawn bytes, from the runs that close one another (B draws them as the
-/// spans they are; an opener that waits is concealed and styles nothing until its closer).
-pub const PendingSpan = struct { from: u32, to: u32, kind: MatchKind };
-
 /// The spans drawn runs make, as process emphasis matches them (each closer with the nearest
 /// opener of its character before it; a strikethrough's runs of equal length), resolved as the
-/// runs come: a live leaf's runs grow at the end, and each is read once.
+/// runs come: a live leaf's runs grow at the end, and each is read once. B draws each span's
+/// kind on the bytes between its runs; an opener that waits styles nothing until its closer.
+pub fn kindBit(kind: MatchKind) u8 {
+    return @as(u8, 1) << @intCast(@backingInt(kind));
+}
+
 pub const PendingSpans = struct {
-    openers: std.ArrayListUnmanaged(struct { at: u32, char: u8, count: u32, original: u32, close: bool }) = .empty,
-    /// In closer order, so `to` never decreases.
-    spans: std.ArrayListUnmanaged(PendingSpan) = .empty,
+    /// The openers that wait, oldest first (the parser's limit, and one more just read).
+    openers: [delimiter_count_max + 1]Opener = undefined,
+    opener_count: u32 = 0,
+    /// Per drawn byte, a bit per MatchKind of the spans over it.
+    kinds: std.ArrayListUnmanaged(u8) = .empty,
     /// The runs read so far.
     resolved: u32 = 0,
     /// The most openers that waited at once.
     openers_max: u32 = 0,
+    /// Cleared since a write read it: the drawing may differ, not only grow.
+    fresh: bool = true,
+
+    /// An opener's spans of a kind reach `styled_to[kind]`: a later span of the kind from it
+    /// marks only the bytes after.
+    const Opener = struct { at: u32, char: u8, count: u32, original: u32, close: bool, styled_to: [3]u32 };
 
     pub fn clear(self: *PendingSpans) void {
-        self.openers.clearRetainingCapacity();
-        self.spans.clearRetainingCapacity();
+        self.opener_count = 0;
+        self.kinds.clearRetainingCapacity();
         self.resolved = 0;
+        self.fresh = true;
     }
 
     pub fn deinit(self: *PendingSpans, allocator: std.mem.Allocator) void {
-        self.openers.deinit(allocator);
-        self.spans.deinit(allocator);
+        self.kinds.deinit(allocator);
     }
 
-    /// Reads `runs` past the ones read (the same runs, more of them); returns where the first span
-    /// it makes starts (maxInt: it makes none).
-    pub fn add(self: *PendingSpans, runs: []const PendingRun, allocator: std.mem.Allocator) error{OutOfMemory}!u32 {
+    /// Reads `runs` past the ones read (the same runs, more of them); returns the first drawn
+    /// byte whose kinds changed (maxInt: none), and adds the bytes marked to `marked`.
+    pub fn add(self: *PendingSpans, runs: []const PendingRun, allocator: std.mem.Allocator, marked: *u64) error{OutOfMemory}!u32 {
         var first: u32 = std.math.maxInt(u32);
         for (runs[self.resolved..]) |run| {
             var count = run.count;
-            if (run.close) {
-                var i = self.openers.items.len;
-                while (count > 0 and i > 0) {
-                    i -= 1;
-                    const opener = &self.openers.items[i];
-                    if (opener.char != run.char or opener.count == 0) continue;
-                    if (run.char == '~' and opener.original != run.count) continue;
-                    // The rule of three: a run that can both open and close.
-                    if (run.char != '~' and (run.open or opener.close) and run.count % 3 != 0 and (opener.original + run.count) % 3 == 0) continue;
-                    const used: u32 = if (run.char == '~') count else if (count >= 2 and opener.count >= 2) 2 else 1;
-                    const kind: MatchKind = if (run.char == '~') .strikethrough else if (used == 2) .strong else .emphasis;
-                    try self.spans.append(allocator, .{ .from = opener.at, .to = run.at, .kind = kind });
-                    first = @min(first, opener.at);
-                    opener.count -= used;
-                    count -= used;
-                    // Openers between the two are text now.
-                    self.openers.items.len = i + 1;
-                    if (opener.count > 0) i += 1;
+            var i = self.opener_count;
+            while (run.close and count > 0 and i > 0) {
+                i -= 1;
+                const opener = &self.openers[i];
+                if (opener.char != run.char) continue;
+                if (run.char == '~' and opener.original != run.count) continue;
+                // The rule of three: a run that can both open and close.
+                if (run.char != '~' and (run.open or opener.close) and run.count % 3 != 0 and (opener.original + run.count) % 3 == 0) continue;
+                const used: u32 = if (run.char == '~') count else if (count >= 2 and opener.count >= 2) 2 else 1;
+                const kind: MatchKind = if (run.char == '~') .strikethrough else if (used == 2) .strong else .emphasis;
+                const from = @max(opener.at, opener.styled_to[@backingInt(kind)]);
+                if (from < run.at) {
+                    if (self.kinds.items.len < run.at) try self.kinds.appendNTimes(allocator, 0, run.at - self.kinds.items.len);
+                    for (self.kinds.items[from..run.at]) |*bits| bits.* |= kindBit(kind);
+                    marked.* += run.at - from;
+                    first = @min(first, from);
+                    opener.styled_to[@backingInt(kind)] = run.at;
                 }
+                opener.count -= used;
+                count -= used;
+                // Openers between the two are text now, and a spent one goes.
+                self.opener_count = i + @intFromBool(opener.count > 0);
+                if (opener.count > 0) i += 1;
             }
-            if (run.open and count > 0) try self.openers.append(allocator, .{ .at = run.at, .char = run.char, .count = count, .original = run.count, .close = run.close });
+            if (run.open and count > 0) {
+                self.openers[self.opener_count] = .{ .at = run.at, .char = run.char, .count = count, .original = run.count, .close = run.close, .styled_to = .{ 0, 0, 0 } };
+                self.opener_count += 1;
+            }
             // The parser's limit: past it, the oldest opener never matches (it stays concealed
             // in the drawing; the parse of the word shows it).
-            if (self.openers.items.len > delimiter_count_max) _ = self.openers.orderedRemove(0);
-            self.openers_max = @max(self.openers_max, @as(u32, @intCast(self.openers.items.len)));
+            if (self.opener_count > delimiter_count_max) {
+                std.mem.copyForwards(Opener, self.openers[0..delimiter_count_max], self.openers[1..self.opener_count]);
+                self.opener_count -= 1;
+            }
+            self.openers_max = @max(self.openers_max, self.opener_count);
         }
         self.resolved = @intCast(runs.len);
         return first;
-    }
-
-    /// The spans that end after drawn offset `at` (the others style nothing from it on).
-    pub fn after(self: *const PendingSpans, at: u32) []const PendingSpan {
-        var low: usize = 0;
-        var high: usize = self.spans.items.len;
-        while (low < high) {
-            const mid = (low + high) / 2;
-            if (self.spans.items[mid].to <= at) low = mid + 1 else high = mid;
-        }
-        return self.spans.items[low..];
     }
 };
 
