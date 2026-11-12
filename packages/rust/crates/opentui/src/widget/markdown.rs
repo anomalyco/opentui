@@ -66,6 +66,8 @@ pub(crate) struct MarkdownStyles {
     pub(crate) link: Style,
     /// A link's URL shown as text.
     pub(crate) link_url: Style,
+    /// Inline math's TeX.
+    pub(crate) math: Style,
     pub(crate) list: Style,
     pub(crate) quote: Style,
     pub(crate) quote_border: Color,
@@ -97,6 +99,7 @@ impl MarkdownStyles {
             link_label: link,
             link,
             link_url: link,
+            math: Style::new(),
             list: Style::new().fg(colors.marker),
             quote: Style::new().fg(colors.quote),
             quote_border: colors.quote,
@@ -118,6 +121,7 @@ impl MarkdownStyles {
             link_label: scope("markup.link.label", fallback.link_label),
             link: scope("markup.link", fallback.link),
             link_url: scope("markup.link.url", fallback.link_url),
+            math: scope("markup.math", fallback.math),
             list: scope("markup.list", fallback.list),
             quote: scope("markup.quote", fallback.quote),
             quote_border: fg("conceal").or_else(|| fg("default")).unwrap_or(fallback.quote_border),
@@ -139,6 +143,7 @@ impl MarkdownStyles {
             ("markup.link.label", self.link_label),
             ("markup.link.url", self.link_url),
             ("markup.raw", self.code),
+            ("markup.math", self.math),
             ("string.escape", self.escape),
         ] {
             style.register(name, part)?;
@@ -152,10 +157,12 @@ pub struct CodeBlock<'a> {
     pub app: &'a App,
     /// The filetype the fence's info string resolves to: the language the renderer was registered for.
     pub language: &'a str,
-    /// The fence's info string, such as `mermaid` or `rust,no_run`.
+    /// The fence's info string, such as `mermaid` or `rust,no_run`, and `math` for display math
+    /// ([`MarkdownExtension::Math`]).
     pub info: &'a str,
     pub code: &'a str,
-    /// Whether the closing fence has arrived. While a document streams, an open fence may still grow.
+    /// Whether the closing fence (or display math's closing line) has arrived. While a document streams, an open
+    /// block may still grow.
     pub closed: bool,
     /// Whether the document conceals Markdown markers. See [`Markdown::conceal`].
     pub conceal: bool,
@@ -171,6 +178,7 @@ type CodeBlockRenderer = Rc<dyn Fn(&CodeBlock<'_>) -> Option<AnyWidget>>;
 /// A piece of a paragraph's or heading's inline text, as a hook registered with [`Markdown::inline_hook`] gets and
 /// returns it.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct InlineSpan {
     /// The text and its style. `span.link` is a hyperlink the widget found: a Markdown link, an autolink, or a bare
     /// URL. Terminals that support hyperlinks get it through OSC 8, so set it only to a URL.
@@ -180,12 +188,24 @@ pub struct InlineSpan {
     /// What a click on this span means to the app, such as an ID; [`Markdown::target_at`] returns it. It never
     /// reaches the terminal.
     pub target: Option<String>,
+    /// Inline math, `$…$` or `\(…\)`: its TeX without the delimiters. Only with [`MarkdownExtension::Math`].
+    pub math: Option<String>,
 }
 
 impl From<Span<'static>> for InlineSpan {
     fn from(span: Span<'static>) -> Self {
-        Self { span, code: false, target: None }
+        Self { span, code: false, target: None, math: None }
     }
+}
+
+/// A syntax the [`Markdown`] parser reads beyond CommonMark and GFM, as Core's `MarkdownOptions.extensions`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum MarkdownExtension {
+    /// `$…$` and `\(…\)` inline math ([`InlineSpan::math`]), and `$$` or `\[` display blocks, which show as code of
+    /// the language `math`, so a [`Markdown::code_block_renderer`] for `math` draws them. A `$` that can still turn
+    /// out to be text, such as currency, shows as text until it is decided.
+    Math,
 }
 
 /// The block an inline hook rewrites.
@@ -258,6 +278,7 @@ struct Options {
     /// Renderers by the filetype they render.
     code_blocks: Vec<(String, CodeBlockRenderer)>,
     inline_hook: Option<InlineHook>,
+    math: bool,
 }
 
 pub(crate) struct MarkdownInner {
@@ -350,8 +371,9 @@ fn is_prose(block: &MarkdownBlock) -> bool {
     block.kind == PARAGRAPH || block.kind == HEADING
 }
 
-/// The spans of a leaf's parser output, styles and links as native code resolved them.
-fn leaf_spans(leaf: &MarkdownLeaf) -> Vec<InlineSpan> {
+/// The spans of a leaf's parser output, styles and links as native code resolved them. Without `conceal`, math shows
+/// its delimiters.
+fn leaf_spans(leaf: &MarkdownLeaf, conceal: bool) -> Vec<InlineSpan> {
     let mut at = 0;
     leaf.chunks
         .iter()
@@ -371,7 +393,11 @@ fn leaf_spans(leaf: &MarkdownLeaf) -> Vec<InlineSpan> {
                 let url = &leaf.urls[chunk.link_offset as usize..][..chunk.link_byte_count as usize];
                 text = text.link(String::from_utf8_lossy(url).into_owned());
             }
-            InlineSpan { span: text, code: span & sys::OT_MD_SPAN_CODE != 0, target: None }
+            let math = (span & sys::OT_MD_SPAN_MATH != 0).then(|| {
+                let delimiter = if conceal { 0 } else { 2 - usize::from(text.content.starts_with('$')) };
+                text.content[delimiter..text.content.len() - delimiter].to_owned()
+            });
+            InlineSpan { span: text, code: span & sys::OT_MD_SPAN_CODE != 0, target: None, math }
         })
         .collect()
 }
@@ -382,7 +408,7 @@ fn leaf_spans(leaf: &MarkdownLeaf) -> Vec<InlineSpan> {
 /// It builds native widgets, so text wraps and selects like any [`Text`]. OpenTUI's native Markdown engine parses
 /// the document as it streams in with [`Self::append`]: it reads each byte once, updates only the blocks the new text
 /// changes, and writes streamed paragraphs and headings to their widgets itself. It follows CommonMark and GitHub's
-/// tables, strikethrough, task lists and autolinks; HTML shows as its source.
+/// tables, strikethrough, task lists and autolinks, and math with [`Self::extensions`]; HTML shows as its source.
 ///
 /// ```no_run
 /// # use opentui::prelude::*;
@@ -490,9 +516,10 @@ impl Markdown {
 
     /// Whether to style text through the [`Self::syntax_theme`] scopes Core's Markdown uses, so one theme styles
     /// both prose and code: `markup.heading.1` to `markup.heading.6`, `markup.strong`, `markup.italic`,
-    /// `markup.strikethrough`, `markup.raw`, `markup.link`, `markup.link.label`, `markup.link.url`, `markup.list`,
-    /// `markup.quote`, `string.escape`, `default` for plain text, and the `conceal` color for rules and quote bars. A scope the theme
-    /// does not style takes its color from [`Self::colors`]. Off by default: text takes the colors alone.
+    /// `markup.strikethrough`, `markup.raw`, `markup.link`, `markup.link.label`, `markup.link.url`, `markup.math`,
+    /// `markup.list`, `markup.quote`, `string.escape`, `default` for plain text, and the `conceal` color for rules and
+    /// quote bars. A scope the theme does not style takes its color from [`Self::colors`]. Off by default: text takes
+    /// the colors alone.
     pub fn scope_styles(&self, on: bool) -> Self {
         if self.0.options.borrow().scopes != on {
             Rc::make_mut(&mut self.0.options.borrow_mut()).scopes = on;
@@ -590,6 +617,16 @@ impl Markdown {
         self.clone()
     }
 
+    /// The syntax extensions to parse. None by default, so `$` is always text.
+    pub fn extensions(&self, extensions: &[MarkdownExtension]) -> Self {
+        let math = extensions.contains(&MarkdownExtension::Math);
+        if self.0.options.borrow().math != math {
+            Rc::make_mut(&mut self.0.options.borrow_mut()).math = math;
+            self.change_options();
+        }
+        self.clone()
+    }
+
     /// Removes the hook [`Self::inline_hook`] registered.
     pub fn remove_inline_hook(&self) -> Self {
         if Rc::make_mut(&mut self.0.options.borrow_mut()).inline_hook.take().is_some() {
@@ -652,12 +689,15 @@ impl Markdown {
         self.0.element.app()
     }
 
-    /// The engine flags: conceal, the terminal's hyperlinks, and a hook on every prose leaf (empty filter).
+    /// The engine flags: conceal, the terminal's hyperlinks, math, and a hook on every prose leaf (empty filter).
     fn flags(&self) -> u32 {
         let options = self.0.options.borrow();
         let mut flags = 0;
         if options.conceal {
             flags |= sys::OT_MD_CONCEAL;
+        }
+        if options.math {
+            flags |= sys::OT_MD_MATH;
         }
         if self.0.hyperlinks.get() {
             flags |= sys::OT_MD_HYPERLINKS;
@@ -671,7 +711,7 @@ impl Markdown {
     /// Whether the widget writes prose leaves itself: with a hook, without conceal, or without hyperlinks the parser's
     /// display is not what shows.
     fn host_writes(&self) -> bool {
-        self.flags() != sys::OT_MD_CONCEAL | sys::OT_MD_HYPERLINKS
+        self.flags() & !sys::OT_MD_MATH != sys::OT_MD_CONCEAL | sys::OT_MD_HYPERLINKS
     }
 
     /// Runs a change on the document and shows what it changed. `finish` says the document does not stream.
@@ -957,7 +997,8 @@ impl Markdown {
         if !force && self.0.blocks.borrow()[index].written.as_ref() == Some(&written) {
             return;
         }
-        let spans = self.hook(doc, block, leaf_spans(&written.0), false, written.1.as_deref());
+        let conceal = self.0.options.borrow().conceal;
+        let spans = self.hook(doc, block, leaf_spans(&written.0, conceal), false, written.1.as_deref());
         let (mut ranges, mut end) = (Vec::new(), 0);
         let content: Vec<Span<'static>> = spans
             .into_iter()
@@ -1029,6 +1070,8 @@ impl Markdown {
         // Read without the borrow guard: a change holds it, and nothing changes the source here.
         let source = app.report(doc.source())?;
         let info = source[block.info.start as usize..block.info.end as usize].to_owned();
+        // Display math is code of the language `math`, as Core's `lang: "math"`.
+        let info = if block.has(sys::OT_MD_BLOCK_MATH) { "math".to_owned() } else { info };
         let info = (!info.is_empty()).then_some(info);
         let options = Rc::clone(&self.0.options.borrow());
         let custom = info.as_deref().and_then(|info| {
@@ -1114,6 +1157,7 @@ impl Markdown {
             (widget, columns, rows)
         };
         let header = self.0.styles.get().table_header;
+        let conceal = self.0.options.borrow().conceal;
         let content: Vec<Vec<Content>> = rows
             .into_iter()
             .map(|(is_header, cells)| {
@@ -1121,7 +1165,7 @@ impl Markdown {
                     .into_iter()
                     .map(|cell| {
                         let leaf = app.report(doc.read_leaf(cell)).unwrap_or_default();
-                        let spans = self.hook(doc, cell, leaf_spans(&leaf), true, None);
+                        let spans = self.hook(doc, cell, leaf_spans(&leaf, conceal), true, None);
                         Content(
                             spans
                                 .into_iter()
