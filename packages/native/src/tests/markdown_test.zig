@@ -809,7 +809,7 @@ fn genericProperties(arena: std.mem.Allocator, doc: *const Doc, fed: Fed, option
         // Each filter item searches the new bytes and the filter's overlap (its longest item less
         // one), plus the pending line again wherever a new layout reads it (the block counter's
         // term): k = 6 per item, as the block counter.
-        .{ "(a) work: hook visits <= items x (6n + longest x calls)", c.hook_byte_visits, filterItems(options) * (6 * n + filterLongest(options) * calls) + 64 },
+        .{ "(a) work: hook visits <= items x (6n + overlap x calls)", c.hook_byte_visits, filterItems(options) * (6 * n + (filterOverlap(options) + 1) * calls) + 64 },
         .{ "(a) work: inline visits <= 4n", c.inline_byte_visits, 4 * n + 64 },
         .{ "(a) work: display visits <= 6n", c.display_byte_visits, 6 * n + 64 },
         // A display byte is assembled when it is drawn pending, drawn up to a hold's cut, and
@@ -859,11 +859,13 @@ fn filterItems(options: markdown.Options) u64 {
     return std.mem.count(u8, options.hook_filter, "\x00") + 1;
 }
 
-fn filterLongest(options: markdown.Options) u64 {
-    var longest: u64 = 8;
+/// The filter's overlap: its longest item less one (0 with no filter).
+fn filterOverlap(options: markdown.Options) u64 {
+    if (!options.hook) return 0;
+    var longest: u64 = 1;
     var it = std.mem.splitScalar(u8, options.hook_filter, 0);
     while (it.next()) |item| longest = @max(longest, item.len);
-    return longest;
+    return longest - 1;
 }
 
 /// (c) across calls for display math (D102: shown as it streams, never hidden): a math block
@@ -1916,6 +1918,9 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
         .{ .name = "a 64-byte filter, 1-byte appends", .options = .{ .hook = true, .hook_filter = "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq" }, .parts = try split(arena, try std.mem.concat(arena, u8, &.{ xs[0..1024], "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq" }), 1) },
         // An inline link's title over 1,024 words, resumed (bigboi round 4: 2.1M inline visits).
         .{ .name = "16 filter items, 1-byte appends", .options = .{ .hook = true, .hook_filter = "q\x00r\x00s\x00t\x00u\x00v\x00w\x00x\x00y\x00z\x00b\x00c\x00d\x00e\x00f\x00g" }, .parts = try split(arena, try std.mem.concat(arena, u8, &.{ digits[0..1024], " g" }), 1) },
+        // bigboi round 6: a match early on a long line, which then completes (32,816 visits; the
+        // bound without the completing pass allowed 16,408).
+        .{ .name = "16 filter items, an early match, then the line ends", .options = .{ .hook = true, .hook_filter = "a\x00b\x00c\x00d\x00e\x00f\x00g\x00h\x00i\x00j\x00k\x00l\x00m\x00n\x00o\x00w" }, .parts = try std.mem.concat(arena, []const u8, &.{ try split(arena, word[0..1024], 1), &.{"\n"} }) },
         .{ .name = "an inline link title, 1-byte appends", .parts = try split(arena, try std.mem.concat(arena, u8, &.{ "> see [ref](url \"", line[0..2048], "\") done" }), 1) },
         // ... and 1,024 spaces between the closed title and its `)` (bigboi round 5: 661,783
         // inline visits at half this length).
@@ -1935,8 +1940,11 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
             .{ "line", c.line_byte_visits, n + w.append_count + 1 },
             // A pending line's first byte is read again per append (its kind, its layout).
             .{ "block", c.block_byte_visits, row.block_factor * n + 4 * w.append_count + 64 },
-            // Each item reads the new bytes and the filter's overlap (its longest item less one).
-            .{ "hook", c.hook_byte_visits, filterItems(row.options) * (n + filterLongest(row.options) * w.append_count) + 8 },
+            // Each item reads the new bytes and the filter's overlap (its longest item less one),
+            // and a line that held a pending match once more from it when the line completes (its
+            // layout may then put the match in other leaves): items x (2(n + 1) + overlap x
+            // appends) + 8, the design's bound.
+            .{ "hook", c.hook_byte_visits, filterItems(row.options) * (2 * (n + 1) + filterOverlap(row.options) * w.append_count) + 8 },
             .{ "inline", c.inline_byte_visits, row.inline_factor * n + 64 },
             .{ "display", c.display_byte_visits, row.display_factor * n + 64 },
             .{ "sent", c.tail_write_bytes, row.sent_factor * n + 64 },
@@ -2168,6 +2176,20 @@ test "Markdown stream: a leaf that changes kind or loses lines keeps its live di
     // An entity or escape in a word that may be an extended autolink waits for the word's end:
     // the link shows its source raw, so drawing it decoded took text back (model seeds 4,860
     // and 63, over every option set).
+    // The wait uses the parse's own start rule (bigboi round 6: after `(`, and `ftp://`): the
+    // pending display never shows an entity the finished link shows raw.
+    for ([_][]const u8{ "(www.a.b/&copy;x", "ftp://a.b/&copy;x", "x (https://a.b/\\*y" }) |text| {
+        var f: Fixture = undefined;
+        try f.init(.{});
+        defer f.deinit();
+        for (0..text.len) |i| {
+            try f.doc.append(text[i .. i + 1]);
+            try std.testing.expect(std.mem.indexOf(u8, (try f.doc.readLeaf(arena, 0)).bytes.items, "\u{a9}") == null);
+        }
+        try f.doc.finish();
+        try std.testing.expect(std.mem.indexOf(u8, (try f.doc.readLeaf(arena, 0)).bytes.items, "\u{a9}") == null);
+        for ([_]usize{ 1, 3 }) |width| try std.testing.expect(try streamAgreesParts(arena, "kinds", try split(arena, try std.mem.concat(arena, u8, &.{ text, "\n" }), width)));
+    }
     for ([_][]const u8{ "www.a&mp;b\n", "www.a.b de&mp; \n", "x https://a\\.b y\n" }) |text| {
         for ([_]usize{ 1, 3 }) |width| try std.testing.expect(try streamAgreesParts(arena, "kinds", try split(arena, text, width)));
     }
