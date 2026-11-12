@@ -39,6 +39,7 @@ export type {
 import type { ExtractOptions } from "./image.js"
 import { RGBA } from "./lib/RGBA.js"
 import { isStyledText, type StyledText } from "./lib/styled-text.js"
+import type { TextChunk } from "./text-buffer.js"
 import { YogaError, YogaStatus, type MeasureFunction } from "./yoga.js"
 import { YogaHost, rejectAsyncCallback } from "./yoga.internal.js"
 import { env, registerEnvVar } from "./lib/env.js"
@@ -151,6 +152,42 @@ export type ContextTextBufferViewHandle = ContextObjectHandle & { readonly [cont
 export type ContextImageHandle = ContextObjectHandle & { readonly [contextResourceBrand]: "image" }
 export type ContextImagePixelsHandle = ContextObjectHandle & { readonly [contextResourceBrand]: "image_pixels" }
 export type ContextUnicodeHandle = ContextObjectHandle & { readonly [contextResourceBrand]: "unicode" }
+export type ContextMarkdownHandle = ContextObjectHandle & { readonly [contextResourceBrand]: "markdown" }
+
+/** `ot_markdown_options`: OT_MD_* flags, the style bound nodes draw with, and the hook filter's substrings. */
+export interface NativeMarkdownOptions {
+  flags: number
+  syntaxStyle: ContextSyntaxStyleHandle | null
+  hookFilter?: readonly string[]
+  /** Lowers the 64 MiB source limit; 0 or absent keeps it. */
+  sourceByteLimit?: number
+}
+
+/** `ot_markdown_result`; `removedFrom` is undefined when nothing was removed. */
+export interface NativeMarkdownResult {
+  changed: number
+  committed: number
+  removedFrom: number | undefined
+}
+
+/** `ot_markdown_block`; `parent` is undefined at top level. */
+export interface NativeMarkdownBlock {
+  index: number
+  parent: number | undefined
+  kind: number
+  flags: number
+  sourceStart: number
+  sourceEnd: number
+  infoStart: number
+  infoEnd: number
+  number: number
+}
+
+/** A leaf's parser output: its display text as chunks, and OT_MD_SPAN_* flags per chunk. */
+export interface NativeMarkdownLeaf {
+  chunks: TextChunk[]
+  spans: Uint32Array
+}
 export type ContextEmbeddedTerminalHandle = ContextObjectHandle & {
   readonly [contextResourceBrand]: "embedded_terminal"
 }
@@ -3509,6 +3546,7 @@ type ContextObjectDestroySymbol =
   | "ot_editor_view_destroy"
   | "ot_embedded_terminal_destroy"
   | "ot_image_destroy"
+  | "ot_markdown_destroy"
   | "ot_session_destroy"
   | "ot_syntax_style_destroy"
   | "ot_text_buffer_destroy"
@@ -7629,6 +7667,214 @@ export class FFIRenderLib {
         urlBytes.length,
       ),
     )
+  }
+
+  /** The byte the latest finished frame drew at cell (x, y) of a text node, or undefined. */
+  public sceneGetTextByteAt(context: NativeContextHandle, node: SceneNodeHandle, x: number, y: number): number | undefined {
+    const output = new Uint32Array(1)
+    const pointer = this.nativeContextPointer(context, "ot_scene_get_text_byte_at")
+    nativeResult(
+      "ot_scene_get_text_byte_at",
+      this.opentui.symbols.ot_scene_get_text_byte_at(pointer, encodeContextHandle(context, node), x, y, output),
+    )
+    return output[0] === 0xffff_ffff ? undefined : output[0]
+  }
+
+  private markdownOptions(context: NativeContextHandle, options: NativeMarkdownOptions): Uint32Array {
+    const { fields } = nativeLayouts.ot_markdown_options
+    const record = createContextRecord(nativeLayouts.ot_markdown_options)
+    record[fields.flags.offset / 4] = options.flags
+    record[fields.source_byte_limit.offset / 4] = options.sourceByteLimit ?? 0
+    if (options.syntaxStyle) record.set(encodeContextHandle(context, options.syntaxStyle), fields.syntax_style.offset / 4)
+    const filter = this.encoder.encode((options.hookFilter ?? []).join("\0"))
+    if (filter.length > fields.hook_filter.size) throw new RangeError("Markdown hook filter is too long")
+    new Uint8Array(record.buffer, fields.hook_filter.offset).set(filter)
+    record[fields.hook_filter_byte_count.offset / 4] = filter.length
+    return record
+  }
+
+  private markdownCall(
+    context: NativeContextHandle,
+    operation: string,
+    call: (pointer: Pointer, output: Uint32Array) => NativeStatus,
+  ): NativeMarkdownResult {
+    const output = new Uint32Array(3)
+    this.getYogaHost().runMutation(() => nativeResult(operation, call(this.nativeContextPointer(context, operation), output)))
+    const removed = output[2]
+    return { changed: output[0], committed: output[1], removedFrom: removed === 0xffff_ffff ? undefined : removed }
+  }
+
+  public markdownCreate(context: NativeContextHandle, options: NativeMarkdownOptions): ContextMarkdownHandle {
+    const record = this.markdownOptions(context, options)
+    const output = new Uint32Array(handleWords)
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_markdown_create")
+      nativeResult("ot_markdown_create", this.opentui.symbols.ot_markdown_create(pointer, record, output))
+    })
+    return decodeContextHandle(context, output) as ContextMarkdownHandle
+  }
+
+  public markdownDestroy(context: NativeContextHandle, doc: ContextMarkdownHandle): void {
+    this.destroyContextObject(context, doc, "ot_markdown_destroy")
+  }
+
+  public markdownSetOptions(
+    context: NativeContextHandle,
+    doc: ContextMarkdownHandle,
+    options: NativeMarkdownOptions,
+  ): NativeMarkdownResult {
+    const record = this.markdownOptions(context, options)
+    const handle = encodeContextHandle(context, doc)
+    return this.markdownCall(context, "ot_markdown_set_options", (pointer, output) =>
+      this.opentui.symbols.ot_markdown_set_options(pointer, handle, record, output),
+    )
+  }
+
+  /** Appends `bytes`, or with `replace` parses them as the whole document. */
+  public markdownWrite(
+    context: NativeContextHandle,
+    doc: ContextMarkdownHandle,
+    bytes: Uint8Array,
+    replace: boolean,
+  ): NativeMarkdownResult {
+    const handle = encodeContextHandle(context, doc)
+    const input = sessionBytes(bytes, "Markdown byte count")
+    const operation = replace ? "ot_markdown_set" : "ot_markdown_append"
+    return this.markdownCall(context, operation, (pointer, output) =>
+      this.opentui.symbols[operation](pointer, handle, viewOrNull(input), input.length, output),
+    )
+  }
+
+  public markdownFinish(context: NativeContextHandle, doc: ContextMarkdownHandle): NativeMarkdownResult {
+    const handle = encodeContextHandle(context, doc)
+    return this.markdownCall(context, "ot_markdown_finish", (pointer, output) =>
+      this.opentui.symbols.ot_markdown_finish(pointer, handle, output),
+    )
+  }
+
+  public markdownGetSource(context: NativeContextHandle, doc: ContextMarkdownHandle): string {
+    const bytes = new BigUint64Array(1)
+    const count = new Uint32Array(1)
+    const pointer = this.nativeContextPointer(context, "ot_markdown_get_source")
+    nativeResult(
+      "ot_markdown_get_source",
+      this.opentui.symbols.ot_markdown_get_source(pointer, encodeContextHandle(context, doc), bytes, count),
+    )
+    if (count[0] === 0) return ""
+    return this.decoder.decode(new Uint8Array(toArrayBuffer(Number(bytes[0]) as Pointer, 0, count[0])))
+  }
+
+  /** The blocks changed since the last read, in document order; reading acknowledges them. */
+  public markdownReadChanges(context: NativeContextHandle, doc: ContextMarkdownHandle, count: number): NativeMarkdownBlock[] {
+    const layout = nativeLayouts.ot_markdown_block
+    const words = new Uint32Array((count * layout.size) / 4)
+    const halves = new Uint16Array(words.buffer)
+    const output = new Uint32Array(1)
+    const handle = encodeContextHandle(context, doc)
+    const pointer = this.nativeContextPointer(context, "ot_markdown_read_changes")
+    nativeResult(
+      "ot_markdown_read_changes",
+      this.opentui.symbols.ot_markdown_read_changes(pointer, handle, viewOrNull(words), count, output),
+    )
+    if (output[0] > count) throw new NativeError("ot_markdown_read_changes", NativeStatus.InvalidArgument)
+    const { fields: f } = layout
+    const blocks: NativeMarkdownBlock[] = []
+    for (let at = 0; at < output[0] * (layout.size / 4); at += layout.size / 4) {
+      const parent = words[at + f.parent_index.offset / 4]
+      blocks.push({
+        index: words[at + f.index.offset / 4],
+        parent: parent === 0xffff_ffff ? undefined : parent,
+        kind: halves[at * 2 + f.kind.offset / 2],
+        flags: halves[at * 2 + f.flags.offset / 2],
+        sourceStart: words[at + f.source_start_byte.offset / 4],
+        sourceEnd: words[at + f.source_end_byte.offset / 4],
+        infoStart: words[at + f.info_start_byte.offset / 4],
+        infoEnd: words[at + f.info_end_byte.offset / 4],
+        number: words[at + f.number.offset / 4],
+      })
+    }
+    return blocks
+  }
+
+  /** A paragraph's, heading's or cell's inline source, as an inline hook gets it. */
+  public markdownReadSource(context: NativeContextHandle, doc: ContextMarkdownHandle, block: number): string {
+    const handle = encodeContextHandle(context, doc)
+    const count = new Uint32Array(1)
+    const pointer = this.nativeContextPointer(context, "ot_markdown_read_source")
+    nativeResult("ot_markdown_read_source", this.opentui.symbols.ot_markdown_read_source(pointer, handle, block, null, 0, count))
+    if (count[0] === 0) return ""
+    const bytes = new Uint8Array(count[0])
+    nativeResult(
+      "ot_markdown_read_source",
+      this.opentui.symbols.ot_markdown_read_source(pointer, handle, block, bytes, bytes.length, count),
+    )
+    return this.decoder.decode(bytes)
+  }
+
+  /** A leaf's parser output with its styles resolved through the doc's style. */
+  public markdownReadLeaf(context: NativeContextHandle, doc: ContextMarkdownHandle, block: number): NativeMarkdownLeaf {
+    const handle = encodeContextHandle(context, doc)
+    const counts = new Uint32Array(3)
+    const [byteCount, chunkCount, urlCount] = [counts.subarray(0, 1), counts.subarray(1, 2), counts.subarray(2, 3)]
+    const pointer = this.nativeContextPointer(context, "ot_markdown_read_leaf")
+    const read = (bytes: Uint8Array | null, chunks: Uint32Array | null, spans: Uint32Array | null, urls: Uint8Array | null) =>
+      nativeResult(
+        "ot_markdown_read_leaf",
+        this.opentui.symbols.ot_markdown_read_leaf(
+          pointer,
+          handle,
+          block,
+          bytes,
+          bytes?.length ?? 0,
+          byteCount,
+          chunks,
+          spans,
+          spans?.length ?? 0,
+          chunkCount,
+          urls,
+          urls?.length ?? 0,
+          urlCount,
+        ),
+      )
+    read(null, null, null, null)
+    const layout = nativeLayouts.ot_styled_text_chunk
+    const stride = layout.size / 4
+    const bytes = new Uint8Array(byteCount[0])
+    const records = new Uint32Array(chunkCount[0] * stride)
+    const spans = new Uint32Array(chunkCount[0])
+    const urls = new Uint8Array(urlCount[0])
+    if (chunkCount[0] > 0) read(viewOrNull(bytes), records, spans, viewOrNull(urls))
+    const colors = new Uint16Array(records.buffer)
+    const chunks: TextChunk[] = []
+    let at = 0
+    for (let index = 0; index < chunkCount[0]; index++) {
+      const base = index * stride
+      const flags = records[base + layout.fields.flags.offset / 4]
+      const end = at + records[base + layout.fields.byte_count.offset / 4]
+      const color = (offset: number) => RGBA.fromArray(colors.slice(base * 2 + offset / 2, base * 2 + offset / 2 + 4))
+      const chunk: TextChunk = { __isChunk: true, text: this.decoder.decode(bytes.subarray(at, end)) }
+      if (flags & nativeConstants.OT_SCENE_TEXT_FOREGROUND) chunk.fg = color(layout.fields.foreground.offset)
+      if (flags & nativeConstants.OT_SCENE_TEXT_BACKGROUND) chunk.bg = color(layout.fields.background.offset)
+      chunk.attributes = records[base + layout.fields.attributes.offset / 4]
+      if (flags & nativeConstants.OT_SCENE_TEXT_LINK) {
+        const offset = records[base + layout.fields.link_offset.offset / 4]
+        const url = urls.subarray(offset, offset + records[base + layout.fields.link_byte_count.offset / 4])
+        chunk.link = { url: this.decoder.decode(url) }
+      }
+      chunks.push(chunk)
+      at = end
+    }
+    return { chunks, spans }
+  }
+
+  /** Binds a scene text node to a paragraph or heading, which the doc then writes. */
+  public markdownBind(context: NativeContextHandle, doc: ContextMarkdownHandle, block: number, node: SceneNodeHandle): void {
+    const handle = encodeContextHandle(context, doc)
+    const target = encodeContextHandle(context, node)
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_markdown_bind")
+      nativeResult("ot_markdown_bind", this.opentui.symbols.ot_markdown_bind(pointer, handle, block, target))
+    })
   }
 
   private encodeStyledText(content: StyledText, allowLinks = true, preserveChunkOrdinals = false) {
