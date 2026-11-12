@@ -33,6 +33,7 @@ import { NativeSession } from "../../NativeSession.js"
 import { TextAttributes, type CapturedFrame } from "../../types.js"
 import type { SimpleHighlight } from "../../lib/tree-sitter/types.js"
 import { stringWidth } from "../../platform/runtime.js"
+import { resolveRenderLib } from "../../zig.js"
 import corpus from "../markdown.conformance.json" with { type: "json" }
 
 let renderer: TestRenderer
@@ -1797,6 +1798,44 @@ test("streamed quote text shows in the quote style before it highlights", async 
   const span = findSpanContaining(spans, "quoted")
   expect(span?.fg?.toInts()).toEqual(quoteColor.toInts())
   expect((span?.attributes ?? 0) & TextAttributes.ITALIC).toBe(TextAttributes.ITALIC)
+})
+
+// Native calls each `content` assignment makes while the stream only grows one bound paragraph.
+async function growCalls(): Promise<string[][]> {
+  const symbols = (resolveRenderLib() as unknown as { opentui: { symbols: Record<string, (...args: any[]) => any> } })
+    .opentui.symbols
+  setRendererCapabilities(renderer, { hyperlinks: true })
+  const md = createMarkdownRenderable({ content: "Intro.\n\nThe", syntaxStyle, streaming: true })
+  renderer.root.add(md)
+  await renderOnce()
+  const calls: string[][] = []
+  const originals = { ...symbols }
+  for (const [name, original] of Object.entries(originals)) {
+    if (typeof original === "function") symbols[name] = (...args) => (calls.at(-1)?.push(name), original(...args))
+  }
+  try {
+    for (const word of [" renderer", " *writes*", " each", " **delta**", " natively."]) {
+      calls.push([])
+      md.content += word
+    }
+  } finally {
+    Object.assign(symbols, originals)
+  }
+  await renderOnce()
+  expect(frameText()).toBe("Intro.\n\nThe renderer writes each delta natively.")
+  return calls
+}
+
+// Gate: JavaScript does no text work when a stream only grows bound prose. The engine lists the grown paragraph (its
+// source range moved), so each delta costs the append and a read of that one record.
+test("a delta that only grows bound prose costs the append and one record read", async () => {
+  expect(await growCalls()).toEqual(Array(5).fill(["ot_markdown_append", "ot_markdown_read_changes"]))
+})
+
+// New defect M3-e (engine): the design's fast path is one call (`changed_block_count = 0`), but M1 lists a grown pending
+// paragraph so the host's ranges stay current.
+test.todo("a delta that only grows bound prose is one native call", async () => {
+  expect(await growCalls()).toEqual(Array(5).fill(["ot_markdown_append"]))
 })
 
 test("prose that waited for the style shows when the engine takes it over first", async () => {
