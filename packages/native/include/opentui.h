@@ -1740,6 +1740,36 @@ ot_status ot_edit_buffer_highlight(ot_context *, const ot_handle *, uint32_t ope
 ot_status ot_edit_buffer_get_highlights(ot_context *, const ot_handle *, uint32_t line,
     ot_edit_highlight *highlights, uint32_t capacity, uint32_t *out_count);
 
+/* Interns an ordered list of SyntaxStyle names as a group set. names is a pool of UTF-8
+ * names; name_end_bytes[i] is the exclusive end of name i, and the last end is
+ * name_byte_count. Equal lists give equal ids on this Context, whatever style a buffer binds;
+ * ids are never freed. Paint composes the names against the buffer's bound style, later names
+ * winning, and a missing name falls back to its first dotted component. Names must be
+ * nonempty. More than 8 names, a name over 64 bytes, or a new set past 4,096 sets or 64 KiB of
+ * names fails with OT_OBJECT_LIMIT. Failures preserve out_group_set. */
+ot_status ot_context_group_set(ot_context *, const uint8_t *names, uint32_t name_byte_count,
+    const uint32_t *name_end_bytes, uint32_t name_count, uint32_t *out_group_set);
+
+typedef struct ot_highlight_run {
+    uint32_t start_byte;
+    uint32_t end_byte;
+    uint32_t group_set; /* id from ot_context_group_set */
+} ot_highlight_run;
+/* Replaces layer layer_id of the buffer inside [start_byte, end_byte), start_byte <= end_byte,
+ * with runs, in UTF-8 bytes of the text as get_text returns it (one byte per line break);
+ * runs may be NULL only when run_count is zero. Runs are nonempty,
+ * sorted, non-overlapping, inside the range and inside the text, and start and end on code
+ * point boundaries; so must range edges inside the text. A range end past the text reaches
+ * its end. Runs that cross the range edges keep their outside parts. One transaction: a
+ * rejection leaves the layer unchanged. Runs move with edits: they shift, a run grows when
+ * text is inserted strictly inside it, and deleted bytes clip them. set_text, clear, undo,
+ * redo and the CLEAR_ALL highlight operation empty every layer; REMOVE_REF and CLEAR_LINE
+ * leave layers alone. Layers paint at priority 0: above highlights of priority 0, below
+ * higher priorities; where layers overlap, the higher layer_id wins. At most 4 nonempty
+ * layers per buffer: a fifth fails with OT_OBJECT_LIMIT, and a layer left empty is dropped. */
+ot_status ot_edit_buffer_set_layer(ot_context *, const ot_handle *, uint32_t layer_id,
+    uint32_t start_byte, uint32_t end_byte, const ot_highlight_run *runs, uint32_t run_count);
+
 typedef struct ot_editor_viewport {
     uint32_t struct_size;
     uint32_t abi_version;

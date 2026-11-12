@@ -7,7 +7,7 @@ use crate::app::{App, Cx};
 use crate::error::Result;
 use crate::input::{KeyEvent, Keymap, MouseEvent, MouseEventKind};
 use crate::native::{
-    EditBuffer, EditCommand, EditQuery, EditorOptions, EditorQuery, EditorView, Highlight, Hooks, NodeKind,
+    EditBuffer, EditCommand, EditQuery, EditorOptions, EditorQuery, EditorView, Highlight, Hooks, LayerRun, NodeKind,
     SelectionColors, SyntaxStyle, Viewport, WrapMode,
 };
 use crate::style::{Color, Span, Style};
@@ -906,9 +906,20 @@ impl EditorCore {
             self.extmarks.borrow_mut().syntax = Some(table);
         }
         let mut extmarks = self.extmarks.borrow_mut();
-        // Named for the style itself, so editors that share a table never redefine each other's names.
-        let id = self.report(extmarks.syntax.as_ref()?.register(&format!("opentui.{style:?}"), style))?;
+        let id = self.report(extmarks.syntax.as_ref()?.register(&style_name(style), style))?;
         extmarks.styles.insert(style, id);
+        Some(id)
+    }
+
+    /// The group set of `style`'s one name, registered in the buffer's style table. Past the Context's group-set
+    /// bound there is none, and the style paints plain rather than ending the app.
+    fn group_set(&self, style: Style) -> Option<u32> {
+        if let Some(&id) = self.extmarks.borrow().group_sets.get(&style) {
+            return Some(id);
+        }
+        self.style_id(style)?;
+        let id = self.buffer.context().group_set(&[&style_name(style)]).ok()?;
+        self.extmarks.borrow_mut().group_sets.insert(style, id);
         Some(id)
     }
 
@@ -919,6 +930,7 @@ impl EditorCore {
             let mut extmarks = self.extmarks.borrow_mut();
             extmarks.syntax = Some(style.clone());
             extmarks.styles.clear();
+            extmarks.group_sets.clear();
         }
         self.refresh_extmarks();
         self.highlighted.set(None);
@@ -982,7 +994,7 @@ impl EditorCore {
             self.element.add_hooks(Hooks::UPDATE);
             self.element.app().inspect(App::request_redraw);
         } else {
-            self.report(self.buffer.remove_highlights(extmarks::SYNTAX_TAG));
+            self.report(self.buffer.set_layer(extmarks::SYNTAX_LAYER, 0..u32::MAX, &[]));
         }
     }
 
@@ -995,7 +1007,7 @@ impl EditorCore {
     }
 
     /// Highlights the text as its filetype when it changed since the last highlight, or the filetype or styles did.
-    /// Captures become one highlight per styled piece, their styles merged as `Code` merges them, below extmarks.
+    /// Captures become one layer run per styled piece, their styles merged as `Code` merges them, below extmarks.
     fn highlight(&self) {
         let filetype = self.filetype.borrow();
         let Some(filetype) = filetype.as_deref() else { return };
@@ -1004,22 +1016,18 @@ impl EditorCore {
             return;
         }
         let text = self.text();
-        let ranges = syntax::highlight_ranges(&text, filetype, &self.syntax_theme.borrow());
-        self.report(self.buffer.remove_highlights(extmarks::SYNTAX_TAG));
-        let Some(ranges) = ranges else { return };
-        // Highlight offsets are display columns that leave out line breaks.
-        let mut start = 0;
-        for (range, style) in ranges {
-            let piece = &text[range];
-            let end = start + self.measure(piece).saturating_sub(piece.matches('\n').count() as u32);
-            if style != Style::new()
-                && let Some(style_id) = self.style_id(style)
-            {
-                let highlight = Highlight { start, end, style_id, priority: 0, tag: extmarks::SYNTAX_TAG };
-                self.report(self.buffer.highlight(highlight));
-            }
-            start = end;
-        }
+        let ranges = syntax::highlight_ranges(&text, filetype, &self.syntax_theme.borrow()).unwrap_or_default();
+        let runs: Vec<LayerRun> = (ranges.into_iter())
+            .filter(|(_, style)| *style != Style::new())
+            .filter_map(|(range, style)| {
+                Some(LayerRun {
+                    start_byte: range.start as u32,
+                    end_byte: range.end as u32,
+                    group_set: self.group_set(style)?,
+                })
+            })
+            .collect();
+        self.report(self.buffer.set_layer(extmarks::SYNTAX_LAYER, 0..u32::MAX, &runs));
     }
 
     fn scroll(&self, rows: i64) {
@@ -1035,6 +1043,18 @@ impl EditorCore {
             }
         }
     }
+}
+
+/// The name of `style` in a style table: made of its fields, so editors that share a table never redefine each other's
+/// names, and within a group set's 64 bytes.
+fn style_name(style: Style) -> String {
+    let color = |color: Option<Color>| {
+        color.map_or("-".into(), |color| {
+            let [r, g, b, a] = color.to_raw();
+            format!("{r:04x}{g:04x}{b:02x}{a:02x}")
+        })
+    };
+    format!("opentui.{}_{}_{:02x}", color(style.fg), color(style.bg), style.attributes.bits())
 }
 
 impl Behavior for EditorCore {
@@ -1130,5 +1150,212 @@ impl Behavior for EditorCore {
         self.on_change.clear();
         self.on_submit.clear();
         self.on_cursor.clear();
+    }
+}
+
+#[cfg(all(test, feature = "tree-sitter"))]
+mod tests {
+    use super::*;
+    use crate::testing::TestApp;
+    use crate::widget::{Container, Textarea, Widget};
+    use std::collections::HashMap;
+
+    const TAG: u16 = u16::MAX - 1;
+
+    /// Syntax highlighting as the editor did it before layers: one highlight per styled range, in display columns
+    /// that leave out line breaks, under `TAG` at priority 0.
+    struct Legacy {
+        table: SyntaxStyle,
+        ids: HashMap<Style, u32>,
+        filetype: Option<&'static str>,
+        theme: SyntaxTheme,
+        highlighted: Option<u64>,
+        /// Whether the pieces' widths fail to add up to the text's: a grapheme cluster spans two pieces, and the
+        /// old columns drift from there on (the layer paints them right; see the next test).
+        drifted: bool,
+    }
+
+    impl Legacy {
+        fn refresh(&mut self, buffer: &EditBuffer) {
+            let Some(filetype) = self.filetype else { return };
+            let epoch = buffer.info().unwrap().content_epoch;
+            if self.highlighted.replace(epoch) == Some(epoch) {
+                return;
+            }
+            let text = buffer.text().unwrap();
+            let ranges = syntax::highlight_ranges(&text, filetype, &self.theme);
+            buffer.remove_highlights(TAG).unwrap();
+            let mut start = 0;
+            for (range, style) in ranges.unwrap_or_default() {
+                let piece = &text[range];
+                let end = start + buffer.measure(piece).unwrap() - piece.matches('\n').count() as u32;
+                if style != Style::new() {
+                    let next = format!("legacy.{}", self.ids.len());
+                    let style_id = *self.ids.entry(style).or_insert_with(|| self.table.register(&next, style).unwrap());
+                    buffer.highlight(Highlight { start, end, style_id, priority: 0, tag: TAG }).unwrap();
+                }
+                start = end;
+            }
+            self.drifted = start != 0 && start != buffer.measure(&text).unwrap() - text.matches('\n').count() as u32;
+        }
+    }
+
+    // Rust and Markdown fragments, split at `|`.
+    const PIECES: &str = "let |fn f() {|}|x| = |1|\"s\\n\"|// c|/* b */|'a'|\t|\n|\u{65e5}\u{672c}|\u{e9}|# h|*e*|`c`|\
+                          ```rust\n|r#\"r\"#|;|\r\n|\"a\\n\u{fe0f}\"|\u{301}";
+    const KEYS: &[&str] = &["backspace", "delete", "left", "right", "up", "down", "home", "end", "ctrl+-", "ctrl+."];
+    const FILETYPES: &[Option<&str>] = &[Some("rust"), Some("markdown"), Some("cobol"), None];
+
+    // Group sets are never freed. Past the Context's bound, styles that need a new set paint plain, and
+    // the app keeps running.
+    #[test]
+    fn syntax_past_the_group_set_bound_paints_plain_and_keeps_running() {
+        let app = TestApp::new(20, 2);
+        let area = Textarea::new(&app).filetype("rust").grow(1.0);
+        area.set_text("let a = 1;");
+        app.root().add(&area);
+        let keyword = |r: u8| SyntaxTheme::new().style("keyword", Style::new().fg(Color::rgb(r, 0, 0)));
+        let fg = |app: &TestApp| app.try_render().expect("a frame past the bound").cell(0, 0).unwrap().fg;
+        area.syntax_theme(keyword(1));
+        assert_eq!(fg(&app), Color::rgb(1, 0, 0));
+        let context = app.session().context();
+        // Fill the 64 KiB name pool, down to fewer bytes than any style name has.
+        let mut index = 0;
+        for width in [64, 16, 4] {
+            while context.group_set(&[&format!("{index:0width$}")]).is_ok() {
+                index += 1;
+            }
+        }
+        for r in 2..40 {
+            area.syntax_theme(keyword(r));
+            assert_eq!(fg(&app), app.theme().foreground);
+        }
+        area.focus();
+        app.type_text("x");
+        area.syntax_theme(keyword(1));
+        assert_eq!(fg(&app), Color::rgb(1, 0, 0));
+    }
+
+    // A grapheme cluster across a capture boundary: VS16 joins the `n` of the escape `\n` but starts the string's
+    // next piece. Measuring pieces apart put the old highlights one column early from there on; byte runs keep the
+    // closing quote a string and the second `let` a keyword, with the space before it plain.
+    #[test]
+    fn a_cluster_across_a_capture_boundary_keeps_later_captures_in_place() {
+        let app = TestApp::new(30, 2);
+        let area = Textarea::new(&app).filetype("rust").grow(1.0);
+        area.set_text("let x=\"a\\n\u{fe0f}\"; let y=3;");
+        app.root().add(&area);
+        let theme = SyntaxTheme::from_theme(&app.theme());
+        let color = |name| theme.get(name).and_then(|style| style.fg).unwrap();
+        let capture = app.render();
+        let cells = &capture.cells[..capture.width as usize];
+        let quote = cells.iter().rposition(|cell| cell.symbol == "\"").unwrap();
+        let second_let = cells.iter().rposition(|cell| cell.symbol == "l").unwrap();
+        assert_eq!(cells[quote].fg, color("string"));
+        assert_eq!(cells[second_let - 1].fg, app.theme().foreground);
+        assert!(cells[second_let..second_let + 3].iter().all(|cell| cell.fg == color("keyword")));
+    }
+
+    // P12: the editor's syntax layer paints byte-identical frames to the per-range highlights it replaced, over
+    // random edits, filetype changes (with and without a grammar), clear_highlights, theme and table swaps, and
+    // styled extmarks above both. One class is left out by rule: frames where the old path's piece widths do not add
+    // up to the text's width (a grapheme cluster spans two pieces), because its columns drift there; the test above
+    // checks the layer's colors for that class.
+    #[test]
+    fn syntax_layers_paint_as_per_range_highlights_did() {
+        let pieces: Vec<&str> = PIECES.split('|').collect();
+        let (mut compared, mut drifted) = (0, 0);
+        for seed in 1..=200u64 {
+            let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            let mut next = |bound: usize| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                (state % bound as u64) as usize
+            };
+            let (layered, legacy) = (TestApp::new(24, 6), TestApp::new(24, 6));
+            let red = Style::new().fg(Color::RED);
+            let other = SyntaxTheme::new().style("keyword", Style::new().bold()).style("comment", red);
+            let themes = [SyntaxTheme::from_theme(&layered.theme()), other.style("string", red.bg(Color::BLUE))];
+            let mut twin = Legacy {
+                table: SyntaxStyle::new(legacy.session().context()).unwrap(),
+                ids: HashMap::new(),
+                filetype: Some("rust"),
+                theme: themes[0].clone(),
+                highlighted: None,
+                drifted: false,
+            };
+            let areas = [Textarea::new(&layered).filetype("rust").grow(1.0), Textarea::new(&legacy).grow(1.0)];
+            areas[1].syntax_style(&twin.table);
+            for (app, area) in [&layered, &legacy].into_iter().zip(&areas) {
+                app.root().add(area);
+                area.focus();
+            }
+            for step in 0..24 {
+                match if step == 0 { 8 } else { next(16) } {
+                    0..=4 => {
+                        let text = pieces[next(pieces.len())];
+                        layered.type_text(text);
+                        legacy.type_text(text);
+                    }
+                    5..=7 => {
+                        let key = KEYS[next(KEYS.len())];
+                        layered.press(key);
+                        legacy.press(key);
+                    }
+                    8 => {
+                        let text: String = (0..next(12)).map(|_| pieces[next(pieces.len())]).collect();
+                        areas.iter().for_each(|area| drop(area.set_text(&text)));
+                    }
+                    9 => {
+                        let filetype = FILETYPES[next(FILETYPES.len())];
+                        areas[0].filetype(filetype);
+                        if twin.filetype != filetype {
+                            (twin.filetype, twin.highlighted) = (filetype, None);
+                            if filetype.is_none() {
+                                areas[1].buffer().remove_highlights(TAG).unwrap();
+                                twin.drifted = false;
+                            }
+                        }
+                    }
+                    10 => {
+                        areas.iter().for_each(|area| area.buffer().clear_highlights().unwrap());
+                        twin.drifted = false;
+                    }
+                    11 => {
+                        let theme = themes[next(2)].clone();
+                        areas[0].syntax_theme(theme.clone());
+                        if twin.theme != theme {
+                            (twin.theme, twin.highlighted) = (theme, None);
+                        }
+                    }
+                    12 => {
+                        areas[0].syntax_style(&SyntaxStyle::new(layered.session().context()).unwrap());
+                        twin.table = SyntaxStyle::new(legacy.session().context()).unwrap();
+                        areas[1].syntax_style(&twin.table);
+                        (twin.ids, twin.highlighted) = (HashMap::new(), None);
+                    }
+                    13 => {
+                        let (start, length) = (next(40) as u32, next(6) as u32);
+                        let options = ExtmarkOptions::default().style(Style::new().fg(Color::CYAN));
+                        for area in &areas {
+                            area.add_extmark(start..start + length, options);
+                        }
+                    }
+                    _ => {
+                        twin.refresh(areas[1].buffer());
+                        let (want, got) = (legacy.render(), layered.render());
+                        if twin.drifted {
+                            drifted += 1;
+                            continue;
+                        }
+                        let differ = want.cells.iter().zip(&got.cells).position(|(want, got)| want != got);
+                        assert!(differ.is_none(), "seed {seed} step {step} cell {differ:?}: {:?}", areas[0].text());
+                        compared += 1;
+                    }
+                }
+            }
+        }
+        assert!(compared > 400 && drifted > 0 && drifted * 4 < compared, "{compared} compared, {drifted} drifted");
     }
 }

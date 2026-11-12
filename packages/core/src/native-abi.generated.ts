@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 563a1f576f1d3f0a2dea11e5aa3aa1b940fdf703e9b29ae6d2c53d67f02eeee5
+// ABI audit SHA-256: 6407ad7d68344c74a21fc6896b6e3ca8d6c1b6b5fc765d4d2bc7e013b76681fb
 
 export const OT_CONTEXT_ABI_VERSION = 2
 export const OT_OK = 0
@@ -916,6 +916,8 @@ export const nativeSymbols = {
   ot_syntax_style_get_count: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_edit_buffer_highlight: { args: ["ptr", "buffer", "u32", "u32", "ptr"], returns: "i32" },
   ot_edit_buffer_get_highlights: { args: ["ptr", "buffer", "u32", "ptr", "u32", "buffer"], returns: "i32" },
+  ot_context_group_set: { args: ["ptr", "buffer", "u32", "buffer", "u32", "buffer"], returns: "i32" },
+  ot_edit_buffer_set_layer: { args: ["ptr", "buffer", "u32", "u32", "u32", "ptr", "u32"], returns: "i32" },
   ot_editor_view_set_viewport: { args: ["ptr", "buffer", "buffer", "u32", "u32"], returns: "i32" },
   ot_editor_view_get_viewport: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_editor_view_set_scroll_margin: { args: ["ptr", "buffer", "f32"], returns: "i32" },
@@ -1780,6 +1782,15 @@ export const nativeLayouts = {
       style_id: { offset: 8, size: 4, alignment: 4, type: "u32" },
       priority: { offset: 12, size: 4, alignment: 4, type: "u32" },
       ref: { offset: 16, size: 4, alignment: 4, type: "u32" },
+    },
+  },
+  ot_highlight_run: {
+    size: 12,
+    alignment: 4,
+    fields: {
+      start_byte: { offset: 0, size: 4, alignment: 4, type: "u32" },
+      end_byte: { offset: 4, size: 4, alignment: 4, type: "u32" },
+      group_set: { offset: 8, size: 4, alignment: 4, type: "u32" },
     },
   },
   ot_editor_viewport: {

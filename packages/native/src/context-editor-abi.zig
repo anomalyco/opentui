@@ -5,10 +5,12 @@ const ctx = @import("context.zig");
 const eb = @import("edit-buffer.zig");
 const iter = @import("text-buffer-iterators.zig");
 const text_work = @import("text-work.zig");
+const hl = @import("highlight-layers.zig");
 const Owner = abi.ContextHandle;
 
 comptime {
     std.debug.assert(c.OT_STYLE_RUN_FLAG == @import("syntax-style.zig").id_limit);
+    std.debug.assert(@sizeOf(c.ot_highlight_run) == 12);
 }
 
 /// Validates admission only; checked Context methods acquire their own mutation guard.
@@ -504,6 +506,28 @@ pub fn ot_edit_buffer_get_highlights(context: ?*Owner, id: ?*const c.ot_handle, 
     };
     out.?.* = @intCast(items.len);
     return c.OT_OK;
+}
+
+pub fn ot_edit_buffer_set_layer(context: ?*Owner, id: ?*const c.ot_handle, layer_id: u32, start_byte: u32, end_byte: u32, runs: ?[*]const c.ot_highlight_run, run_count: u32) callconv(.c) c.ot_status {
+    const owner = admit(context, false) catch |err| return fail(context, err);
+    const value = edit(owner, id) catch |err| return fail(owner, err);
+    const decoded = layerRunsFromC(owner, runs, run_count, value.buffer.tb.getByteSize()) catch |err| return fail(owner, err);
+    defer owner.core.allocator.free(decoded);
+    owner.core.editSetLayer(abi.handleFromC(id.?.*), .{ .layer_id = layer_id, .start_byte = start_byte, .end_byte = end_byte, .runs = decoded }) catch |err| return fail(owner, err);
+    return c.OT_OK;
+}
+
+/// Valid runs are nonempty, disjoint and inside the text, so they number at most its bytes; the
+/// check also bounds the copy.
+pub fn layerRunsFromC(owner: *Owner, runs: ?[*]const c.ot_highlight_run, run_count: u32, byte_count: u32) ![]hl.LayerRun {
+    if (run_count != 0 and runs == null) return error.InvalidOptions;
+    if (run_count > byte_count) return error.InvalidIndex;
+    const decoded = try owner.core.allocator.alloc(hl.LayerRun, run_count);
+    for (decoded, 0..) |*run, index| {
+        const value = runs.?[index];
+        run.* = .{ .start_byte = value.start_byte, .end_byte = value.end_byte, .group_set = value.group_set };
+    }
+    return decoded;
 }
 
 pub fn ot_syntax_style_resolve(context: ?*Owner, id: ?*const c.ot_handle, bytes: ?[*]const u8, count: u32, out: ?*u32) callconv(.c) c.ot_status {

@@ -20,6 +20,10 @@ const ansi = @import("../ansi.zig");
 const utf8 = @import("../utf8.zig");
 const text_work = @import("../text-work.zig");
 const owned_styled = @import("owned-styled-text.zig");
+const c = @import("context_abi_c");
+const abi = @import("../context-abi.zig");
+const editor_abi = @import("../context-editor-abi.zig");
+const context_mod = @import("../context.zig");
 const Value = std.json.Value;
 
 const red = ansi.rgbColor(255, 0, 0, 255);
@@ -843,25 +847,10 @@ test "layers: setLayer rejects bad ids, ranges and boundaries, and failed memory
     defer tb.deinit();
     try tb.setText("a\u{4e16}b\ncd");
     // Bytes: a=0, the CJK character 1..4, b=4, break=5, c=6, d=7; 8 in all.
-    try tb.setLayer(2, 0, 8, &.{.{ .start_byte = 6, .end_byte = 8, .group_set = 3 }});
-    for ([_]struct { anyerror, LayerRun }{
-        .{ error.InvalidId, .{ .start_byte = 0, .end_byte = 1, .group_set = 0 } },
-        .{ error.InvalidId, .{ .start_byte = 0, .end_byte = 1, .group_set = 4 } },
-        .{ error.InvalidIndex, .{ .start_byte = 7, .end_byte = 9, .group_set = 1 } },
-        .{ error.InvalidIndex, .{ .start_byte = 2, .end_byte = 4, .group_set = 1 } },
-        .{ error.InvalidIndex, .{ .start_byte = 1, .end_byte = 3, .group_set = 1 } },
-    }) |row| {
-        try testing.expectError(row[0], tb.setLayer(2, 0, 8, &.{row[1]}));
-        try expectRuns(&.{.{ 6, 8, 3 }}, runsOf(&tb.layers, 2));
-    }
-    // Boundaries: the CJK character's ends, the break, and the text end.
+    // Boundaries: the CJK character's ends, the break, and the text end. The C ABI fuzz below
+    // covers rejected runs and ranges.
     try tb.setLayer(2, 0, 8, &.{ .{ .start_byte = 1, .end_byte = 4, .group_set = 1 }, .{ .start_byte = 5, .end_byte = 8, .group_set = 2 } });
     try expectRuns(&.{ .{ 1, 4, 1 }, .{ 5, 8, 2 } }, runsOf(&tb.layers, 2));
-    // A range edge inside a character would cut the run there, with no new run passed.
-    for ([_][2]u32{ .{ 2, 3 }, .{ 0, 2 }, .{ 3, 8 } }) |range| {
-        try testing.expectError(error.InvalidIndex, tb.setLayer(2, range[0], range[1], &.{}));
-        try expectRuns(&.{ .{ 1, 4, 1 }, .{ 5, 8, 2 } }, runsOf(&tb.layers, 2));
-    }
     // An end past the text clears to the end; a range that changes nothing keeps the stamp.
     const unchanged = tb.span_generation;
     try tb.setLayer(2, 0, 0, &.{});
@@ -892,6 +881,197 @@ test "layers: setLayer rejects bad ids, ranges and boundaries, and failed memory
     }
     try testing.expect(succeeded);
     try testing.expectEqual(@as(u8, 2), tb.layers.count);
+}
+
+const Fault = enum { none, reversed, unsorted, overlapping, empty, past_range, past_text, inside_char, group_set, null_runs };
+
+fn isBoundary(text: []const u8, byte: u32) bool {
+    return byte == text.len or (byte < text.len and text[byte] & 0xC0 != 0x80);
+}
+
+/// The header's rules for one set_layer call, written apart from the implementation.
+fn validLayerCall(text: []const u8, start: u32, end: u32, runs: ?[]const c.ot_highlight_run, set_count: u32) bool {
+    if (start > end) return false;
+    if (start < text.len and !isBoundary(text, start)) return false;
+    if (end < text.len and !isBoundary(text, end)) return false;
+    var previous = start;
+    for (runs orelse return false) |run| {
+        if (run.start_byte < previous or run.start_byte >= run.end_byte or run.end_byte > end or run.end_byte > text.len) return false;
+        if (!isBoundary(text, run.start_byte) or !isBoundary(text, run.end_byte)) return false;
+        if (run.group_set == 0 or run.group_set > set_count) return false;
+        previous = run.end_byte;
+    }
+    return true;
+}
+
+fn faultyLayerCall(random: std.Random, text: []const u8, fault: Fault, range: *[2]u32, runs: []c.ot_highlight_run) void {
+    const last = runs.len -| 1;
+    const index = random.uintAtMost(usize, last);
+    switch (fault) {
+        .none, .null_runs => {},
+        .reversed => {
+            const start = range[0];
+            range[0] = range[1] +| 1;
+            range[1] = start;
+        },
+        .unsorted => if (runs.len > 1) std.mem.swap(c.ot_highlight_run, &runs[0], &runs[last]),
+        .overlapping => if (runs.len > 1) {
+            runs[index].end_byte = runs[(index + 1) % runs.len].start_byte + 1;
+        },
+        .empty => if (runs.len > 0) {
+            runs[index].end_byte = runs[index].start_byte;
+        },
+        .past_range => if (runs.len > 0) {
+            runs[last].end_byte = range[1] +| 1;
+        },
+        .past_text => if (runs.len > 0) {
+            runs[last].end_byte = @intCast(text.len + 1);
+        },
+        .inside_char => for (text, 0..) |byte, at| if (byte & 0xC0 == 0x80 and random.boolean()) {
+            const run_edges: [2]*u32 = if (runs.len > 0) .{ &runs[index].start_byte, &runs[index].end_byte } else .{ &range[0], &range[1] };
+            const edges = [_]*u32{ &range[0], &range[1], run_edges[0], run_edges[1] };
+            edges[random.uintLessThan(usize, edges.len)].* = @intCast(at);
+            break;
+        },
+        .group_set => if (runs.len > 0) {
+            runs[index].group_set = if (random.boolean()) 0 else 4;
+        },
+    }
+}
+
+// P14 through the C ABI: a malformed range or run list rejects with no change to the layers or
+// the span stamp, a fifth layer fails with OT_OBJECT_LIMIT, NULL with no runs clears, CLEAR_ALL
+// empties every layer, REMOVE_REF and CLEAR_LINE keep them, and accepted calls match the byte
+// model. Offsets are bytes of the text as get_text returns it, CRLF included.
+test "layers: seeded C ABI calls reject malformed runs atomically and match the byte model" {
+    var owner: abi.ContextHandle = .{ .gpa = .init, .io_threaded = .init_single_threaded, .core = undefined, .owner_thread = std.Thread.getCurrentId() };
+    defer owner.io_threaded.deinit();
+    owner.core = try context_mod.Context.init(gpa, owner.io_threaded.io(), .{});
+    defer owner.core.deinit() catch unreachable;
+    var group_set: u32 = 0;
+    for ([_][]const u8{ "a", "b", "ab", "a" }, [_][]const u32{ &.{1}, &.{1}, &.{ 1, 2 }, &.{1} }, [_]u32{ 1, 2, 3, 1 }) |names, ends, expected| {
+        try testing.expectEqual(c.OT_OK, abi.ot_context_group_set(&owner, names.ptr, @intCast(names.len), ends.ptr, @intCast(ends.len), &group_set));
+        try testing.expectEqual(expected, group_set);
+    }
+    const long: [hl.group_set_name_byte_count_max + 1]u8 = @splat('x');
+    // Over the length bound and not UTF-8: the bound is checked first, without a scan.
+    var long_invalid = long;
+    long_invalid[long.len - 1] = 0xff;
+    const nine_ends = [_]u32{ 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    for ([_]struct { c.ot_status, []const u8, []const u32 }{
+        .{ c.OT_OBJECT_LIMIT, "abcdefghi", &nine_ends },
+        .{ c.OT_OBJECT_LIMIT, &long, &.{long.len} },
+        .{ c.OT_OBJECT_LIMIT, &long_invalid, &.{long.len} },
+        .{ c.OT_INVALID_ARGUMENT, "ab", &.{1} },
+        .{ c.OT_INVALID_ARGUMENT, "ab", &.{ 2, 1 } },
+        .{ c.OT_INVALID_ARGUMENT, "ab", &.{ 0, 2 } },
+        .{ c.OT_INVALID_ARGUMENT, "ab", &.{3} },
+        .{ c.OT_INVALID_ARGUMENT, "", &.{} },
+        .{ c.OT_INVALID_ARGUMENT, "\xff", &.{1} },
+    }) |row| {
+        group_set = 99;
+        try testing.expectEqual(row[0], abi.ot_context_group_set(&owner, row[1].ptr, @intCast(row[1].len), row[2].ptr, @intCast(row[2].len), &group_set));
+        try testing.expectEqual(@as(u32, 99), group_set);
+    }
+    try testing.expectEqual(@as(u32, 3), owner.core.group_sets.count());
+    const edit_handle = try owner.core.createEditBuffer(.unicode);
+    const id = abi.handleToC(edit_handle);
+    const tb = (try owner.core.raw().getEditBuffer(edit_handle)).buffer.tb;
+    const pieces = [_][]const u8{ "ab", "c", " ", "\t", "\n", "\r\n", "\u{e9}", "\u{4e16}", "\u{1f642}" };
+    const layer_ids = [_]u32{ 7, 1, 4, 2, 9, 3 };
+    var rejected: std.EnumArray(Fault, u32) = .initFill(0);
+    var accepted: u32 = 0;
+    var limited: u32 = 0;
+    var null_clears: u32 = 0;
+    for (0..64) |seed| {
+        var prng = std.Random.DefaultPrng.init(seed);
+        const random = prng.random();
+        var source: std.ArrayListUnmanaged(u8) = .empty;
+        defer source.deinit(gpa);
+        for (0..random.uintAtMost(usize, 60)) |_| try source.appendSlice(gpa, pieces[random.uintLessThan(usize, pieces.len)]);
+        const length: u32 = @intCast(source.items.len);
+        try testing.expectEqual(c.OT_OK, abi.ot_edit_buffer_set_text(&owner, &id, source.items.ptr, length, 0));
+        var text_bytes: [LayerModel.byte_count_max]u8 = undefined;
+        var byte_count: u32 = 0;
+        try testing.expectEqual(c.OT_OK, abi.ot_edit_buffer_get_text(&owner, &id, &text_bytes, text_bytes.len, &byte_count));
+        const text = text_bytes[0..byte_count];
+        var model: LayerModel = .{ .byte_count = byte_count };
+        defer model.deinit();
+        for (0..64) |_| {
+            const generation = tb.span_generation;
+            const roll = random.uintLessThan(u32, 16);
+            if (roll < 2) {
+                const operation: u32 = if (roll == 0) c.OT_EDIT_HIGHLIGHT_CLEAR_ALL else if (random.boolean()) c.OT_EDIT_HIGHLIGHT_REMOVE_REF else c.OT_EDIT_HIGHLIGHT_CLEAR_LINE;
+                try testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_highlight(&owner, &id, operation, 0, null));
+                if (operation == c.OT_EDIT_HIGHLIGHT_CLEAR_ALL) model.reset();
+                try model.expectEqual(&tb.layers, &layer_ids);
+                continue;
+            }
+            const layer = random.uintLessThan(usize, layer_ids.len);
+            var range: [2]u32 = undefined;
+            range[0] = randomBoundary(random, text, 0, byte_count);
+            range[1] = switch (random.uintLessThan(u32, 4)) {
+                0 => std.math.maxInt(u32),
+                1 => byte_count + random.uintAtMost(u32, 3),
+                else => randomBoundary(random, text, range[0], byte_count),
+            };
+            var runs: [24]c.ot_highlight_run = undefined;
+            var run_count: usize = 0;
+            var at = range[0];
+            const limit = @min(range[1], byte_count);
+            while (run_count < runs.len) : (run_count += 1) {
+                at = randomBoundary(random, text, at, 3);
+                if (at >= limit) break;
+                const run_end = randomBoundary(random, text, at + 1, 6);
+                if (run_end > limit) break;
+                runs[run_count] = .{ .start_byte = at, .end_byte = run_end, .group_set = 1 + random.uintLessThan(u32, 3) };
+                at = run_end;
+            }
+            const fault: Fault = if (random.boolean()) .none else random.enumValue(Fault);
+            if (fault == .null_runs and random.boolean()) run_count = 0;
+            faultyLayerCall(random, text, fault, &range, runs[0..run_count]);
+            // NULL is valid only with no runs.
+            const pointer: ?[*]const c.ot_highlight_run = if (fault == .null_runs) null else &runs;
+            const passed: ?[]const c.ot_highlight_run = if (pointer == null and run_count > 0) null else runs[0..run_count];
+            const status = editor_abi.ot_edit_buffer_set_layer(&owner, &id, layer_ids[layer], range[0], range[1], pointer, @intCast(run_count));
+            if (validLayerCall(text, range[0], range[1], passed, 3)) {
+                var model_runs: [24]LayerRun = undefined;
+                for (runs[0..run_count], model_runs[0..run_count]) |run, *target| target.* = .{ .start_byte = run.start_byte, .end_byte = run.end_byte, .group_set = run.group_set };
+                const over_limit = try model.set(layer, @min(range[0], limit), limit, model_runs[0..run_count]);
+                try testing.expectEqual(if (over_limit) c.OT_OBJECT_LIMIT else c.OT_OK, status);
+                if (over_limit) {
+                    try testing.expectEqual(generation, tb.span_generation);
+                    limited += 1;
+                } else accepted += 1;
+                null_clears += @intFromBool(pointer == null);
+            } else {
+                rejected.getPtr(fault).* += 1;
+                try testing.expectEqual(c.OT_INVALID_ARGUMENT, status);
+                try testing.expectEqual(generation, tb.span_generation);
+            }
+            try model.expectEqual(&tb.layers, &layer_ids);
+        }
+    }
+    // Every fault class rejected often, and most clean calls passed.
+    var iterator = rejected.iterator();
+    while (iterator.next()) |entry| if (entry.key != .none) try testing.expect(entry.value.* >= 64);
+    try testing.expectEqual(@as(u32, 0), rejected.get(.none));
+    try testing.expect(accepted >= 1000 and limited >= 16 and null_clears >= 16);
+
+    // Directed edges on 界 (bytes 0..3): a run end or a range end inside it rejects, and NULL with
+    // no runs over the whole character clears.
+    try testing.expectEqual(c.OT_OK, abi.ot_edit_buffer_set_text(&owner, &id, "\u{754c}", 3, 0));
+    try testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_set_layer(&owner, &id, 2, 0, 3, &.{.{ .start_byte = 0, .end_byte = 3, .group_set = 1 }}, 1));
+    for ([_]struct { u32, u32, ?[*]const c.ot_highlight_run, u32 }{
+        .{ 0, 3, &.{.{ .start_byte = 0, .end_byte = 2, .group_set = 1 }}, 1 },
+        .{ 0, 2, null, 0 },
+        .{ 2, 3, null, 0 },
+    }) |row| {
+        try testing.expectEqual(c.OT_INVALID_ARGUMENT, editor_abi.ot_edit_buffer_set_layer(&owner, &id, 2, row[0], row[1], row[2], row[3]));
+        try expectRuns(&.{.{ 0, 3, 1 }}, runsOf(&tb.layers, 2));
+    }
+    try testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_set_layer(&owner, &id, 2, 0, 3, null, 0));
+    try testing.expect(tb.layers.isEmpty());
 }
 
 // Invariant 3: one layer of k runs, or k mutually overlapping records, on one line costs one

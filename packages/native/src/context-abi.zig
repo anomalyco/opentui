@@ -8,6 +8,7 @@ const ObjectHandle = @import("context-handles.zig").Handle;
 const ObjectKind = @import("context-handles.zig").Kind;
 const scene = @import("scene.zig");
 const scene_record = @import("scene-record.zig");
+const highlight_layers = @import("highlight-layers.zig");
 
 const editor_transport = @import("context-editor-abi.zig");
 const text_transport = @import("context-text-abi.zig");
@@ -196,6 +197,31 @@ pub fn ot_context_get_link_url(
         if (capacity == 0) &.{} else bytes.?[0..capacity],
     ) catch |err| return sessionError(owner, err);
     out.?.* = count;
+    return c.OT_OK;
+}
+
+pub fn ot_context_group_set(
+    context: ?*ContextHandle,
+    names: ?[*]const u8,
+    name_byte_count: u32,
+    name_end_bytes: ?[*]const u32,
+    name_count: u32,
+    out: ?*u32,
+) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    if (out == null or names == null or name_end_bytes == null) return sessionError(owner, error.InvalidOptions);
+    if (name_count > highlight_layers.group_set_name_count_max) return sessionError(owner, error.GroupSetLimit);
+    var slices: [highlight_layers.group_set_name_count_max][]const u8 = undefined;
+    var start: u32 = 0;
+    for (name_end_bytes.?[0..name_count], slices[0..name_count]) |end, *slice| {
+        if (end < start or end > name_byte_count) return sessionError(owner, error.InvalidOptions);
+        slice.* = names.?[start..end];
+        start = end;
+    }
+    if (start != name_byte_count) return sessionError(owner, error.InvalidOptions);
+    out.?.* = owner.core.groupSet(slices[0..name_count]) catch |err| return sessionError(owner, err);
     return c.OT_OK;
 }
 
@@ -2629,7 +2655,7 @@ pub fn sessionError(owner: *ContextHandle, err: anyerror) c.ot_status {
         error.Busy, error.PresentationPending, error.SplitRenderPending => c.OT_OUTPUT_BUSY,
         error.StaleRequest, error.InvalidTicket => c.OT_STALE_OUTPUT,
         error.SessionFailed, error.PresentationFailed => c.OT_OUTPUT_FAILED,
-        error.ObjectLimit, error.RequestLimit, error.TrackerLimit => c.OT_OBJECT_LIMIT,
+        error.ObjectLimit, error.RequestLimit, error.TrackerLimit, error.LayerLimit, error.GroupSetLimit => c.OT_OBJECT_LIMIT,
         error.RendererAlreadyAttached => c.OT_RENDERER_ATTACHED,
         error.RendererNotAttached => c.OT_RENDERER_NOT_ATTACHED,
         error.InvalidTerminalState, error.TerminalInactive => c.OT_INVALID_PHASE,
