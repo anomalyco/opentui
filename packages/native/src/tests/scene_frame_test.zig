@@ -728,6 +728,8 @@ test "Scene text paints inside its padding" {
     try f.owner.sceneSetDebugFlags(f.id, c.OT_SCENE_DEBUG_VERIFY);
     const box = try placedAt(f, f.root, c.OT_SCENE_BOX, 2, 0, 0, 8, 8);
     try f.owner.sceneSetPaint(box, .{ .borderSides = c.OT_BORDER_ALL });
+    // A culling parent prepares only the views whose observed box changed.
+    try f.owner.sceneSetScroll(box, .{ .culling = true });
     const text = try placedAt(f, box, c.OT_SCENE_TEXT, 3, 0, 0, 6, 1);
     try f.owner.sceneSetText(text, "ab cd ef");
     const blue = ansi.rgbColor(0, 0, 255, 255);
@@ -758,6 +760,13 @@ test "Scene text paints inside its padding" {
             try testing.expectEqual(@as(u32, line[x]), frame.get(@intCast(1 + x), @intCast(1 + y)).?.char);
         };
     }
+    // Padding that takes the whole height leaves no content: neither paint nor a body draw shows a glyph.
+    try f.owner.sceneSetStyle(text, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, c.OT_EDGE_TOP, c.OT_UNIT_POINT, 2, 0);
+    _ = try presentWork(f, .{});
+    try testing.expectEqual(@as(u32, ' '), f.cli.currentRenderBuffer.get(2, 3).?.char);
+    (try f.owner.raw().getBuffer(body)).clear(.{ 0, 0, 0, 0 }, null);
+    try f.owner.drawSceneBody(body, null, text, 0, 0);
+    try testing.expectEqual(@as(u32, ' '), (try f.owner.raw().getBuffer(body)).get(1, 2).?.char);
 }
 
 const BandCase = enum { space_border_tall, space_border_tracker, hooked_body, hooked_after, surface, offscreen_view, offscreen_view_self };
