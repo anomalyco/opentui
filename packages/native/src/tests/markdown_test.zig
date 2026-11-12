@@ -961,7 +961,11 @@ const Families = struct {
                 // A definition's title, or an inline link's (one title scanner serves both).
                 try out.appendSlice(arena, pick(random, &.{ "[x]: /u '", "[x]: /u\n\"", "intro\n\n[x]: /u (", "> see [ref](url \"", "see [r](u '", "a [b](c\n(" }));
                 for (0..count) |_| try out.appendSlice(arena, pick(random, &.{ "bb\n", "c d\n", "*e* [f]\n" }));
-                try out.appendSlice(arena, pick(random, &.{ "'\n\n[x]\n", "\"\n[x] after\n", ")\n", "\") done\n", "') done\n" }));
+                // The closer, white space as long as the title (bigboi round 5: the tail read the
+                // closed title again while its `)` had not arrived), then what follows.
+                try out.appendSlice(arena, pick(random, &.{ "'", "\"", ")" }));
+                if (random.boolean()) for (0..count) |_| try out.append(arena, ' ');
+                try out.appendSlice(arena, pick(random, &.{ "\n\n[x]\n", "\n[x] after\n", ") done\n" }));
             },
             .title_markup => {
                 try out.appendSlice(arena, pick(random, &.{ "[x]: /u '", "[x]: /u \"`|` ", "text `a | b` ", "text | " }));
@@ -1783,6 +1787,9 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
         .{ .name = "a 64-byte filter, 1-byte appends", .options = .{ .hook = true, .hook_filter = "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq" }, .parts = try split(arena, try std.mem.concat(arena, u8, &.{ xs[0..1024], "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq" }), 1) },
         // An inline link's title over 1,024 words, resumed (bigboi round 4: 2.1M inline visits).
         .{ .name = "an inline link title, 1-byte appends", .parts = try split(arena, try std.mem.concat(arena, u8, &.{ "> see [ref](url \"", line[0..2048], "\") done" }), 1) },
+        // ... and 1,024 spaces between the closed title and its `)` (bigboi round 5: 661,783
+        // inline visits at half this length).
+        .{ .name = "an inline link title, then spaces, 1-byte appends", .parts = try split(arena, try std.mem.concat(arena, u8, &.{ "> p [r](u \"", line[0..2048], "t\"", spaces[0..1024], ") next" }), 1) },
         .{ .name = "se + s_ with the filter", .options = .{ .hook = true, .hook_filter = "ses_" }, .parts = &.{ "see se", "s_abc now\n" } },
     };
     var over = false;

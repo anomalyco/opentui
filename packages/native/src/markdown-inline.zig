@@ -184,7 +184,7 @@ pub const Parser = struct {
     /// Where an HTML tag scan that ran out resumes.
     html_resume: HtmlResume = .{},
     /// An inline link's open title: the link's `]`, the title's opener, where its scan resumes.
-    tail_title: struct { close: u32 = std.math.maxInt(u32), at: u32 = 0, from: u32 = 0, destination: [2]u32 = .{ 0, 0 } } = .{},
+    tail_title: struct { close: u32 = std.math.maxInt(u32), at: u32 = 0, from: u32 = 0, destination: [2]u32 = .{ 0, 0 }, end: u32 = 0, newlines: u32 = 0 } = .{},
     /// A label scan after `]` that ran out of content (its `]` is `search_opener`).
     label_scan: LabelScan = .{ .at = 0, .position = 0 },
     /// The first token whose display changed since `takeChanged` (none: nothing changed).
@@ -888,10 +888,15 @@ pub const Parser = struct {
         var title: ?[]const u8 = null;
         // A title needs white space before it.
         var spaced = true;
+        // A closed title's end and the white space after it read so far (title_end 0: open).
+        var title_end: u32 = 0;
+        var newlines: u32 = 0;
         if (resumed) {
             self.search_opener = std.math.maxInt(u32);
             destination = s[self.tail_title.destination[0]..self.tail_title.destination[1]];
             i = self.tail_title.at;
+            title_end = self.tail_title.end;
+            newlines = self.tail_title.newlines;
         } else {
             i = (try skipSpaceNewline(s, at + 1, final)) orelse return null;
             if (i < s.len and s[i] != ')') {
@@ -906,19 +911,30 @@ pub const Parser = struct {
         if (spaced and i < s.len and (s[i] == '"' or s[i] == '\'' or s[i] == '(')) {
             const from = if (resumed) self.tail_title.from else i + 1;
             self.tail_title.close = std.math.maxInt(u32);
-            switch (titleFrom(s, i, from)) {
-                .open => |stop| {
+            const scan: TitleScan = if (title_end != 0) .{ .closed = title_end } else titleFrom(s, i, from);
+            switch (scan) {
+                .open, .closed => {
+                    // The title, or the white space after a closed one, may run out: the tail
+                    // waits there, keeping where it stopped.
+                    var stop = if (scan == .open) scan.open else if (title_end != 0) from else scan.closed;
+                    if (scan == .closed) {
+                        title = s[i + 1 .. scan.closed - 1];
+                        while (stop < s.len and (s[stop] == ' ' or s[stop] == '\t' or s[stop] == '\n')) : (stop += 1) {
+                            if (s[stop] == '\n') newlines += 1;
+                            if (newlines > 1) return null;
+                        }
+                    }
+                    self.byte_visits += stop - if (resumed) from else at;
+                    if (scan == .closed and stop < s.len) {
+                        if (s[stop] == ')') return .{ .destination = destination, .title = title, .end = stop + 1 };
+                        return null;
+                    }
                     if (final) return null;
-                    self.byte_visits += if (resumed) stop - from else stop - at;
                     const destination_start: u32 = if (destination.len > 0) @intCast(destination.ptr - s.ptr) else 0;
-                    self.tail_title = .{ .close = close, .at = i, .from = stop, .destination = .{ destination_start, destination_start + @as(u32, @intCast(destination.len)) } };
+                    self.tail_title = .{ .close = close, .at = i, .from = stop, .destination = .{ destination_start, destination_start + @as(u32, @intCast(destination.len)) }, .end = if (scan == .closed) scan.closed else 0, .newlines = newlines };
                     // A resumed search counts its own bytes (feed's NeedMore path).
                     self.search_opener = close;
                     return error.NeedMore;
-                },
-                .closed => |end| {
-                    title = s[i + 1 .. end - 1];
-                    i = (try skipSpaceNewline(s, end, final)) orelse return null;
                 },
                 .failed => {},
             }
