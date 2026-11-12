@@ -278,11 +278,10 @@ pub const InputParser = struct {
     /// When the host should call feed with zero bytes, or null.
     pub fn deadlineNs(self: *const InputParser) ?u64 {
         // A raw ESC ends at the read boundary, and the terminal sends Escape and Alt keys as sequences. Due at once:
-        // an ESC that ended a read before the flag was set, and a recovered unit once no sentinel holds a reply.
+        // an ESC that ended a read before the flag was set, and a recovered unit once no sentinel holds it.
         if (self.expect.escape_prefix) return if (switch (self.state) {
             .escape => self.batch_left == 0,
-            .recover_sgr => true,
-            .csi => |csi| csi.recovered and !self.expect.sentinel,
+            .csi => |csi| csi.held and csi.recovered and !self.expect.sentinel,
             .string => |string| string.recovered and !self.expect.sentinel,
             else => false,
         }) self.since_ns else null;
@@ -389,7 +388,7 @@ pub const InputParser = struct {
             switch (self.state) {
                 .ground => self.ground(b, false, .of(false, b), sink),
                 // With `escape_prefix`, the read end was the timeout: a `[` recovers only with its next byte in the read.
-                .expired => if (b == '[' and (self.batch_left > 0 or !self.expect.escape_prefix)) {
+                .expired => if ((b == '[' or (b == '_' and self.expect.escape_prefix)) and (self.batch_left > 0 or !self.expect.escape_prefix)) {
                     self.state = .{ .recover = b };
                 } else if (self.expect.sentinel and std.mem.indexOfScalar(u8, "[]P_", b) != null) {
                     if (self.expect.escape_prefix) self.begin(heldUnit(b), b) else self.state = .{ .recover = b };
@@ -888,8 +887,10 @@ pub const InputParser = struct {
     /// The unit that a timed-out Escape, `introducer`, and `b` resume, if they may begin one.
     fn recovered(self: *const InputParser, introducer: u8, b: u8) ?State {
         if (introducer == '[' and b == '<') return .recover_sgr;
-        // Confirmed Kitty terminals send a key, a reply, or focus this way, never X10 mouse; it is no second key.
-        if (self.expect.escape_prefix) return if (b == '?' or isDigit(b) or (std.ascii.isUpper(b) and b != 'M')) .{ .csi = .{ .alt = false, .deferred = false, .recovered = true } } else null;
+        // Confirmed Kitty terminals send keys, replies, and focus this way, and Kitty graphics replies as APC `_G`,
+        // but no SS3 or X10 mouse; the unit is no second key.
+        if (self.expect.escape_prefix and introducer == '_') return heldUnit('_');
+        if (self.expect.escape_prefix) return if (std.mem.indexOfScalar(u8, "0123456789?>ABCDEFHIOPQS", b) != null) .{ .csi = .{ .alt = false, .deferred = false, .recovered = true } } else null;
         if (introducer == '[' and b == 'M') return .{ .x10 = .{ .alt = false, .recovered = true } };
         if (introducer == '[' and b == '?' and self.expect.kitty_query and self.batch_left >= 2) return heldUnit('[');
         if (!self.expect.sentinel or !beginsReply(introducer, b)) return null;

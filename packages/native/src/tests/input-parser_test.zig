@@ -1210,12 +1210,17 @@ test "input parser times out partial units unless they may be mouse reports, Kit
         .{ "\x1b", "[A", &.{ k(K.escape, NONE), reply("\x1b[A") } },
         .{ "\x1b", "[<0;1;1M", &.{ k(K.escape, NONE), down(0, 0, 0) } },
         .{ "\x1b", "[?62;22c", &.{ k(K.escape, NONE), reply("\x1b[?62;22c") } },
-        // Typed text: these terminals send no SS3, X10, or Linux console key, and strings only as replies.
+        .{ "\x1b", "[>1;4000;49c", &.{ k(K.escape, NONE), reply("\x1b[>1;4000;49c") } },
+        .{ "\x1b", "[I", &.{ k(K.escape, NONE), focus(true) } },
+        .{ "\x1b", "_Gi=31;OK\x1b\\", &.{ k(K.escape, NONE), reply("\x1b_Gi=31;OK\x1b\\") } },
+        // Typed text: these terminals send no SS3, X10, Linux console key, or other bare CSI letter, and strings only
+        // as replies; a typed `_G` is cut at the end of its read.
         .{ "\x1b", "OA", &([_]Expect{k(K.escape, NONE)} ++ typed("OA")) },
         .{ "\x1b", "Please\r", &([_]Expect{k(K.escape, NONE)} ++ typed("Please\r")) },
         .{ "\x1b", "]1z", &([_]Expect{k(K.escape, NONE)} ++ typed("]1z")) },
-        .{ "\x1b", "_Gz", &([_]Expect{k(K.escape, NONE)} ++ typed("_Gz")) },
+        .{ "\x1b", "_Gz\r", &.{ k(K.escape, NONE), ch('_'), frag("Gz"), k(K.enter, NONE) } },
         .{ "\x1b", "[a", &([_]Expect{k(K.escape, NONE)} ++ typed("[a")) },
+        .{ "\x1b", "[Wa", &([_]Expect{k(K.escape, NONE)} ++ typed("[Wa")) },
         .{ "\x1b", "[1\x1b[A", &.{ k(K.escape, NONE), ch('['), frag("1"), k(K.up, NONE) } },
         .{ "\x1b", "[Maaa", &([_]Expect{k(K.escape, NONE)} ++ typed("[Maaa")) },
         .{ "\x1b", "[[A", &([_]Expect{k(K.escape, NONE)} ++ typed("[[A")) },
@@ -1264,6 +1269,21 @@ test "input parser times out partial units unless they may be mouse reports, Kit
         _ = try recovery.wait(0);
         try expectGot(case[0][1], case[3], recovery.out.items);
     };
+    // A recovered unit that a second read boundary splits has no deadline either, and stays whole.
+    for ([_]struct { []const []const u8, []const Expect }{
+        .{ &.{ "\x1b", "[200", "~a\rb\x1b[201~" }, &.{ k(K.escape, NONE), paste("a\rb") } },
+        .{ &.{ "\x1b", "[1;", "5A" }, &.{ k(K.escape, NONE), reply("\x1b[1;5A") } },
+        .{ &.{ "\x1b", "[<0;", "4;5M" }, &.{ k(K.escape, NONE), down(0, 3, 4) } },
+    }) |case| {
+        var cut = try Harness.create();
+        defer cut.deinit();
+        cut.parser.setExpectations(confirmed);
+        for (case[0]) |chunk| {
+            _ = try cut.feed(chunk);
+            _ = try cut.wait(1);
+        }
+        try expectGot(case[0][1], case[1], cut.out.items);
+    }
     // A feed that stops for sink room right after an ESC leaves it to the rest of the same read.
     var small = try Harness.init(4, 64 * 1024);
     defer small.deinit();
