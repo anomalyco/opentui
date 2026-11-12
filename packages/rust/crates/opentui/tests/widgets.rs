@@ -445,6 +445,48 @@ fn an_always_shown_vertical_scrollbar_fills_its_track_until_the_content_overflow
     assert!(!column(&app).contains(&thumb));
 }
 
+// Scrollbar options set on a rendered box show what a box built with them shows, with no size change between.
+#[test]
+fn scrollbar_options_changed_after_a_frame_match_a_fresh_box() {
+    let bars = |lines: usize, (show, always): (bool, bool), last: (bool, bool)| {
+        let app = TestApp::new(8, 4);
+        let scroll = ScrollBox::new(&app).grow(1.0).scrollbars(show).vertical_scrollbar_always(always);
+        scroll.add(&Text::new(&app, "a\n".repeat(lines)).shrink(0.0));
+        app.root().add(&scroll);
+        app.render();
+        // Each setter alone, so neither covers for the other.
+        (show != last.0).then(|| scroll.scrollbars(last.0));
+        (always != last.1).then(|| scroll.vertical_scrollbar_always(last.1));
+        let capture = (app.render(), app.render()).1;
+        let column: String = (0..4).map(|y| capture.row(y).chars().nth(7).unwrap_or(' ')).collect();
+        (column, scroll.content_view().rect().width)
+    };
+    let options = [(false, false), (false, true), (true, false), (true, true)];
+    for lines in [0, 6] {
+        for (first, last) in options.iter().flat_map(|&first| options.map(|last| (first, last))) {
+            assert_eq!(bars(lines, first, last), bars(lines, last, last), "{lines} lines, {first:?} then {last:?}");
+        }
+    }
+    // A box that fits on both axes shows no bar, and between frames the last call wins.
+    let app = TestApp::new(8, 4);
+    app.root().add(&ScrollBox::new(&app).grow(1.0).axes(true, true).child(&Text::new(&app, "a")));
+    assert_eq!(rows(&app)[3], "");
+    let scroll = ScrollBox::new(&app).grow(1.0).child(&Text::new(&app, "a\n".repeat(6)).shrink(0.0));
+    app.root().clear().add(&scroll);
+    app.render();
+    scroll.scrollbars(false).scrollbars(true).scrollbars(false);
+    app.render();
+    assert_eq!(scroll.content_view().rect().width, 8.0);
+    // Options set from a resize handler stay within the per-frame toggle limit, so the frame still lays out.
+    let app = TestApp::new(8, 4);
+    let scroll = ScrollBox::new(&app).grow(1.0).child(&Text::new(&app, "a"));
+    let handle = scroll.clone();
+    scroll.content_view().on_resize(move |_, rect| drop(handle.vertical_scrollbar_always(rect.width >= 8.0)));
+    app.root().add(&scroll);
+    app.render();
+    app.render();
+}
+
 #[test]
 fn sticky_scroll_boxes_follow_new_content() {
     let app = TestApp::new(12, 3);
@@ -914,18 +956,16 @@ fn code_highlights_numbers_lines_and_scrolls() {
 fn followed_code_keeps_appended_text_in_view() {
     use opentui::widget::Code;
     let app = TestApp::new(12, 3);
-    let log = Code::new(&app).follow(true).grow(1.0);
+    // Text given before follow and before the first frame is followed too.
+    let log = Code::new(&app).grow(1.0).append("line 0\nline 1\nline 2\nline 3\n").follow(true);
     app.root().add(&log);
     app.render();
-    for line in 0..6 {
+    for line in 4..6 {
         log.append(&format!("line {line}\n"));
         app.render();
     }
     // The trailing newline leaves an empty last line in view.
     assert_eq!(rows(&app), ["line 4", "line 5", ""]);
-    log.scroll_to(0);
-    log.append("line 6\n");
-    assert_eq!(rows(&app)[0], "line 0");
 }
 
 #[test]
@@ -1761,22 +1801,57 @@ fn accelerated_wheel_bursts_scroll_further() {
     assert_eq!(scroll.scroll_position().1, 1.0);
 }
 
+// Core's offsets: a sticky box follows only its start edge, and stays stuck after a scroll in a range of one cell.
 #[test]
-fn sticky_boxes_follow_the_edge_they_start_at() {
-    use opentui::widget::ScrollEdge;
-    let app = TestApp::new(20, 4);
-    let scroll = scroll_box_with_lines(&app, 2).sticky(true).sticky_start(ScrollEdge::Top);
-    for line in 2..10 {
-        scroll.add(&Text::new(&app, format!("line {line}")));
+fn sticky_boxes_follow_only_the_edge_they_start_at() {
+    use opentui::widget::ScrollEdge::{self, *};
+    // Edge, content size, explicit scroll, grown size, offset after growing with and without a frame in between.
+    let cases: [(ScrollEdge, u16, f64, u16, [f64; 2]); 11] = [
+        (Bottom, 3, 0.0, 6, [4.0, 4.0]),
+        (Bottom, 4, 1.0, 6, [1.0, 1.0]),
+        (Bottom, 6, 0.0, 7, [0.0, 0.0]),
+        (Bottom, 6, 2.0, 7, [2.0, 2.0]),
+        (Bottom, 6, f64::INFINITY, 7, [5.0, 5.0]),
+        (Top, 3, 1.0, 6, [0.0, 0.0]),
+        (Top, 3, f64::INFINITY, 6, [0.0, 0.0]),
+        (Top, 6, f64::INFINITY, 7, [4.0, 5.0]),
+        (Top, 6, 2.0, 7, [2.0, 2.0]),
+        (Right, 3, 0.0, 6, [4.0, 4.0]),
+        (Left, 6, f64::INFINITY, 7, [4.0, 5.0]),
+    ];
+    for ((edge, before, to, after, expected), frame) in cases.into_iter().flat_map(|case| [(case, 0), (case, 1)]) {
+        let (app, x) = (TestApp::new(4, 2), matches!(edge, Left | Right));
+        let scroll = ScrollBox::new(&app).size(2, 2).axes(x, !x).scrollbars(false).sticky(true).sticky_start(edge);
+        let size =
+            |view: &View, length: u16| if x { view.width(length).height(2) } else { view.width(2).height(length) };
+        let content = size(&View::new(&app).shrink(0.0), before);
+        app.root().add(&scroll.child(&content));
+        app.render();
+        scroll.scroll_to(if x { to } else { 0.0 }, if x { 0.0 } else { to });
+        if frame == 0 {
+            app.render();
+        }
+        size(&content, after);
+        app.render();
+        let (offset_x, offset_y) = scroll.scroll_position();
+        assert_eq!(if x { offset_x } else { offset_y }, expected[frame], "{edge:?} {before} {to} {after} {frame}");
     }
+    // Both axes: x has no edge, and setting one edge leaves the other axis's follow alone.
+    let app = TestApp::new(4, 2);
+    let scroll = ScrollBox::new(&app).size(2, 2).axes(true, true).scrollbars(false).sticky(true);
+    let content = View::new(&app).shrink(0.0).width(6).height(8);
+    app.root().add(&scroll.child(&content));
     app.render();
-    assert_eq!(scroll.scroll_position().1, 0.0);
-    scroll.perform(ScrollAction::Bottom);
+    scroll.scroll_to(f64::INFINITY, 3.0);
     app.render();
-    scroll.add(&Text::new(&app, "line 10"));
+    content.width(8).height(4);
     app.render();
-    assert_eq!(scroll.scroll_position().1, 7.0);
-    assert!(rows(&app)[3].starts_with("line 10"));
+    assert_eq!(scroll.scroll_position(), (4.0, 2.0));
+    scroll.sticky_start(Right);
+    app.render();
+    content.height(8);
+    app.render();
+    assert_eq!(scroll.scroll_position(), (6.0, 2.0));
 }
 
 #[test]
@@ -2175,6 +2250,11 @@ fn the_console_shows_messages_from_any_thread() {
     // Following new messages; moving and resizing; Escape hides it.
     console.log(LogLevel::Error, "failed");
     assert!(rows(&app)[9].ends_with("ERROR failed"));
+    // Scrolled up, it keeps its place as messages arrive.
+    console.focus();
+    app.press("home");
+    console.log(LogLevel::Info, "later");
+    assert!(rows(&app)[8].ends_with("starting"), "{:?}", rows(&app));
     console.position(ConsolePosition::Right).size_percent(50.0);
     assert!(rows(&app)[0].starts_with("app content         "), "{:?}", rows(&app));
     console.focus();
