@@ -84,6 +84,25 @@ pub fn check<M: Model>(model: &M, seeds: u64, steps: usize) {
     }
 }
 
+/// Runs every sequence of `depth` commands from `alphabet` (each shorter one is a prefix: `run` checks after every
+/// command), and panics with the commands up to the first failure.
+pub fn check_exhaustive<M: Model>(model: &M, alphabet: &[M::Command], depth: u32) {
+    for sequence in 0..alphabet.len().pow(depth) {
+        let mut rest = sequence;
+        let commands: Vec<M::Command> = (0..depth)
+            .map(|_| {
+                let command = alphabet[rest % alphabet.len()].clone();
+                rest /= alphabet.len();
+                command
+            })
+            .collect();
+        if let Some(failure) = model.run(&commands) {
+            let trace: Vec<String> = commands[..=failure.step].iter().map(|command| format!("  {command:?}")).collect();
+            panic!("model failure: property {}, after:\n{}", failure.property, trace.join("\n"));
+        }
+    }
+}
+
 /// The shrinker keeps a candidate only when it fails the same property: a model names each check site with its own
 /// property, so a candidate that fails another check (another bug) is not taken for this one.
 fn fails_with<M: Model>(model: &M, commands: &[M::Command], property: &str) -> bool {

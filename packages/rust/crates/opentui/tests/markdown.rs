@@ -690,6 +690,8 @@ enum Command {
     Append(&'static str),
     /// A replace with the first `keep` bytes of the source, as OpenCode's `trim()` does.
     Set(usize),
+    /// A replace with the source and more, as a caller that sets the whole streamed text each time does.
+    Extend(&'static str),
     Streaming(bool),
     Conceal(bool),
     /// Theme changes: scope styles, and the other colors.
@@ -748,9 +750,36 @@ struct Settings {
     hook: bool,
 }
 
+/// Sets every setting on a fresh document.
 fn configure(markdown: &Markdown, settings: Settings) {
+    for command in [
+        Command::Conceal(settings.source_mode),
+        Command::Scopes(settings.scopes),
+        Command::Colors(settings.other_colors),
+        Command::Renderer(settings.renderer),
+        Command::Hook(settings.hook),
+        Command::Streaming(settings.streaming),
+    ] {
+        configure_one(markdown, &command, settings);
+    }
+}
+
+/// Sets the one setting `command` changes, as an app does, so a change reaches the subject alone.
+fn configure_one(markdown: &Markdown, command: &Command, settings: Settings) {
     let titles: Titles = Rc::new(RefCell::new(HashMap::from([("ses_a", "Alpha"), ("ses_b", "Beta")])));
-    markdown.conceal(!settings.source_mode).scope_styles(settings.scopes);
+    match command {
+        Command::Conceal(_) => drop(markdown.conceal(!settings.source_mode)),
+        Command::Scopes(_) => drop(markdown.scope_styles(settings.scopes)),
+        Command::Colors(_) => configure_colors(markdown, settings),
+        Command::Renderer(_) => configure_renderer(markdown, settings),
+        Command::Hook(_) if settings.hook => drop(markdown.inline_hook(session_links(&titles, &Calls::default()))),
+        Command::Hook(_) => drop(markdown.remove_inline_hook()),
+        Command::Streaming(_) => drop(markdown.streaming(settings.streaming)),
+        _ => {}
+    }
+}
+
+fn configure_colors(markdown: &Markdown, settings: Settings) {
     if settings.other_colors {
         let theme = opentui::theme::Theme::default();
         let colors = opentui::widget::MarkdownColors {
@@ -762,6 +791,9 @@ fn configure(markdown: &Markdown, settings: Settings) {
     } else {
         markdown.colors(opentui::widget::MarkdownColors::from_theme(&opentui::theme::Theme::default()));
     }
+}
+
+fn configure_renderer(markdown: &Markdown, settings: Settings) {
     if settings.renderer {
         markdown.code_block_renderer("mermaid", |block| {
             Some(Text::new(block.app, format!("diagram {}", block.code)).as_any())
@@ -769,15 +801,18 @@ fn configure(markdown: &Markdown, settings: Settings) {
     } else {
         markdown.remove_code_block_renderer("mermaid");
     }
-    if settings.hook {
-        markdown.inline_hook(session_links(&titles, &Calls::default()));
-    } else {
-        markdown.remove_inline_hook();
-    }
-    markdown.streaming(settings.streaming);
 }
 
-struct MarkdownModel;
+/// The model's terminal shows hyperlinks or not: native code writes the text, or the widget does.
+struct MarkdownModel {
+    hyperlinks: bool,
+}
+
+impl MarkdownModel {
+    fn app(&self) -> TestApp {
+        if self.hyperlinks { TestApp::with_hyperlinks(40, 24) } else { TestApp::new(40, 24) }
+    }
+}
 
 impl model::Model for MarkdownModel {
     type Command = Command;
@@ -793,6 +828,7 @@ impl model::Model for MarkdownModel {
                 5 => Command::Renderer(rng.below(2) == 0),
                 6 => Command::Hook(rng.below(2) == 0),
                 7 => Command::Rerun,
+                8 => Command::Extend(rng.pick(&PIECES)),
                 _ => Command::Append(rng.pick(&PIECES)),
             })
             .collect()
@@ -802,6 +838,7 @@ impl model::Model for MarkdownModel {
         match command {
             Command::Set(keep) if *keep > 0 => vec![Command::Set(keep / 2)],
             Command::Append(piece) if *piece != "word " => vec![Command::Append("word ")],
+            Command::Extend(piece) => vec![Command::Append(piece)],
             _ => Vec::new(),
         }
     }
@@ -810,7 +847,7 @@ impl model::Model for MarkdownModel {
     /// same source and options (P1 at widget level, P6 with spans), and so does every cell's click target (P16). A
     /// theme change changes no text (P11: it parses and writes nothing). A rerun of an unchanged hook changes nothing.
     fn run(&self, commands: &[Command]) -> Option<model::Failure> {
-        let app = TestApp::new(40, 24);
+        let app = self.app();
         let subject = Markdown::new(&app);
         app.root().add(&subject);
         let mut settings = Settings::default();
@@ -820,6 +857,7 @@ impl model::Model for MarkdownModel {
             let before = app.render();
             match *command {
                 Command::Append(piece) => drop(subject.append(piece)),
+                Command::Extend(piece) => drop(subject.set_markdown(subject.markdown() + piece)),
                 Command::Set(keep) => {
                     let source = subject.markdown();
                     let keep = (0..=keep.min(source.len())).rev().find(|&at| source.is_char_boundary(at)).unwrap_or(0);
@@ -833,16 +871,14 @@ impl model::Model for MarkdownModel {
                 Command::Hook(on) => settings.hook = on,
                 Command::Rerun => drop(subject.rerun_inline_hook(|_| true)),
             }
-            if !matches!(command, Command::Append(_) | Command::Set(_) | Command::Rerun) {
-                configure(&subject, settings);
-            }
+            configure_one(&subject, command, settings);
             let shown = app.render();
             if matches!(command, Command::Scopes(_) | Command::Colors(_) | Command::Rerun)
                 && shown.text() != before.text()
             {
                 return fail("theme or rerun changes no text (P11)");
             }
-            let twin_app = TestApp::new(40, 24);
+            let twin_app = self.app();
             let twin = Markdown::new(&twin_app);
             twin_app.root().add(&twin);
             configure(&twin, settings);
@@ -852,11 +888,10 @@ impl model::Model for MarkdownModel {
                 eprintln!("subject:\n{}\nfresh:\n{}", shown.text(), fresh.text());
                 return fail("frame equals a fresh document's, spans included (P1, P6)");
             }
-            if settings.hook {
-                for (x, y) in (0..24u16).flat_map(|y| (0..40u16).map(move |x| (x, y))) {
-                    if subject.target_at(x, y) != twin.target_at(x, y) {
-                        return fail("click targets equal a fresh document's (P16)");
-                    }
+            // With or without a hook: a removed hook's targets go too.
+            for (x, y) in (0..24u16).flat_map(|y| (0..40u16).map(move |x| (x, y))) {
+                if subject.target_at(x, y) != twin.target_at(x, y) {
+                    return fail("click targets equal a fresh document's (P16)");
                 }
             }
         }
@@ -867,5 +902,28 @@ impl model::Model for MarkdownModel {
 #[test]
 fn model_streamed_documents_equal_fresh_ones() {
     // CI budget: 48 seeds of 24 commands; MODEL_SEEDS widens it.
-    model::check(&MarkdownModel, 48, 24);
+    model::check(&MarkdownModel { hyperlinks: false }, 48, 24);
+}
+
+#[test]
+fn model_streamed_documents_equal_fresh_ones_where_native_code_writes_the_text() {
+    model::check(&MarkdownModel { hyperlinks: true }, 48, 24);
+}
+
+#[test]
+fn model_every_three_ownership_changes_equal_a_fresh_document() {
+    // bigboi's ownership model: who writes the text and who owns the targets, after every sequence of three.
+    let alphabet = [
+        Command::Hook(true),
+        Command::Hook(false),
+        Command::Rerun,
+        Command::Streaming(false),
+        Command::Set(0),
+        Command::Append("ses_a word "),
+        Command::Conceal(false),
+        Command::Conceal(true),
+    ];
+    for hyperlinks in [false, true] {
+        model::check_exhaustive(&MarkdownModel { hyperlinks }, &alphabet, 3);
+    }
 }

@@ -421,11 +421,22 @@ impl Markdown {
         markdown
     }
 
-    /// Replaces the content. Blocks equal to the ones shown keep their widgets.
+    /// Replaces the content. Blocks equal to the ones shown keep their widgets. While the document streams, text
+    /// that extends the content costs what appending the new text does.
     pub fn set_markdown(&self, markdown: impl Into<String>) -> Self {
         let markdown = markdown.into();
         self.change(|doc, finish| {
-            let set = doc.set(&markdown)?;
+            // A fresh parse of the whole text equals the appended one (the engine's invariant 1).
+            let kept = if finish {
+                None
+            } else {
+                let source = doc.source()?;
+                markdown.starts_with(source).then_some(source.len())
+            };
+            let set = match kept {
+                Some(len) => doc.append(&markdown[len..])?,
+                None => doc.set(&markdown)?,
+            };
             Ok(if finish { merge(set, doc.finish()?) } else { set })
         });
         self.clone()
