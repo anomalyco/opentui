@@ -4,6 +4,7 @@ import { scrollOnce, wheelDirection } from "../lib/scroll-chain.js"
 import type { NativeRenderableIntegration, Renderable } from "../Renderable.js"
 import type { MouseEvent } from "../renderer.js"
 import type { TimerHandle } from "../lib/clock.js"
+import type { Selection } from "../lib/selection.js"
 import type { RenderContext } from "../types.js"
 import type { NativeScene } from "../NativeScene.js"
 import { emptySceneScrollState, type NativeSceneRect, type NativeSceneScrollState } from "../zig.js"
@@ -96,9 +97,11 @@ export class ScrollBoxRenderable extends BoxRenderable {
   public readonly verticalScrollBar: ScrollBoxBar
 
   protected static override readonly defaultFocusable = true
-  // The selection whose drag auto-scrolls the box: the scroll ends with the drag, also when a press ends a drag whose
-  // release was lost.
-  private autoScrollSelection: ReturnType<RenderContext["getSelection"]> = null
+  // A finished selection ends a drag's auto-scroll; the box listens only while it auto-scrolls.
+  private readonly selectionListener = (): void => this.stopAutoScroll()
+  // The selection whose drag auto-scrolls the box, if one dragged when the scroll started. A press that ends a drag
+  // whose release was lost finishes no selection; the scroll then ends at its next step.
+  private autoScrollSelection: Selection | null = null
 
   private autoScrollMouseX: number = 0
   private autoScrollMouseY: number = 0
@@ -615,8 +618,8 @@ export class ScrollBoxRenderable extends BoxRenderable {
     this.cachedAutoScrollSpeed = this.getAutoScrollSpeed(mouseX, mouseY)
     this.isAutoScrolling = true
     this.live = true
-    const selection = this._ctx.getSelection()
-    this.autoScrollSelection = selection?.isDragging ? selection : null
+    this.autoScrollSelection = this.draggingSelection()
+    this._ctx.on("selection", this.selectionListener)
     this.refreshNativeSceneHooks()
   }
 
@@ -632,9 +635,15 @@ export class ScrollBoxRenderable extends BoxRenderable {
 
     if (scrollX === 0 && scrollY === 0) {
       this.stopAutoScroll()
-    } else if (!this.isAutoScrolling) {
+    } else if (!this.isAutoScrolling || this.autoScrollSelection !== this.draggingSelection()) {
+      // Another selection's drag reached the edge: the scroll follows that drag from now on.
       this.startAutoScroll(mouseX, mouseY)
     }
+  }
+
+  private draggingSelection(): Selection | null {
+    const selection = this._ctx.getSelection()
+    return selection?.isDragging ? selection : null
   }
 
   public stopAutoScroll(): void {
@@ -644,6 +653,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
     this.autoScrollAccumulatorY = 0
     // Auto-scroll is the only reason a ScrollBox goes live or asks for updates.
     if (wasAutoScrolling) {
+      this._ctx.off("selection", this.selectionListener)
       this.live = false
       this.refreshNativeSceneHooks()
     }
@@ -796,7 +806,10 @@ export class ScrollBoxRenderable extends BoxRenderable {
     if (!this.isFreed()) this._scrollState()
     this.layoutCallbacks = []
     this.endBarPress()
-    super.destroySelf()
+    this.runCleanup((run) => {
+      run(() => this._ctx.off("selection", this.selectionListener))
+      run(() => super.destroySelf())
+    })
   }
 }
 
