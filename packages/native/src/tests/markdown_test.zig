@@ -182,9 +182,14 @@ fn streamAgreesParts(arena: std.mem.Allocator, name: []const u8, parts: []const 
     defer sink.deinit();
     streamed.doc.tail_sink = &sink;
     var frame: ?[]const u8 = null;
+    var math_once: MathOnce = .{};
     for (parts) |part| {
         const exempt = p7Exempt(&streamed.doc);
         try streamed.doc.append(part);
+        if (!math_once.check(&streamed.doc)) {
+            std.debug.print("  {s}: a math block reverted to text after {d} bytes\n", .{ name, streamed.doc.source.items.len });
+            return false;
+        }
         if (total > fresh_compare_byte_count_max) continue;
         // P7: no frame loses drawn text (B's exceptions aside).
         const next = try renderFrame(arena, &streamed.doc);
@@ -603,6 +608,7 @@ const Engine = struct {
         // P7: the frame drawn after the last append or finish (null after a replace).
         var frame: ?[]const u8 = null;
         var fed: Fed = .{};
+        var math_once: MathOnce = .{};
         for (commands, 0..) |command, step| {
             const was_finished = f.doc.finished;
             switch (command) {
@@ -757,6 +763,8 @@ const Engine = struct {
             if (f.doc.counters.live_mismatch_count > 0) return .{ .property = "live pending line guessed its leaf", .step = step };
             // (c) after appends: other commands lay the pending line out as an append would.
             if (try genericProperties(arena, &f.doc, fed, options, command == .append)) |property| return .{ .property = property, .step = step };
+            if (command != .append and command != .read) math_once = .{};
+            if (!math_once.check(&f.doc)) return .{ .property = "(c) a math block never reverts to text", .step = step };
         }
         // Every node once more at the end (a call checks only the nodes it wrote or listed).
         if (!try liveShowsReadLeaf(arena, &f.doc, &sink)) return .{ .property = "every node shows read_leaf (P5, B)", .step = commands.len -| 1 };
@@ -836,10 +844,34 @@ fn genericProperties(arena: std.mem.Allocator, doc: *const Doc, fed: Fed, option
     return null;
 }
 
+/// (c) across calls for display math (D102: shown as it streams, never hidden): a math block
+/// may appear once on a line and never reverts to text. Remembers the last math block that
+/// started on the pending line or after the last complete line, by source offset.
+const MathOnce = struct {
+    start: u32 = markdown.none,
+
+    /// False when the math block seen last is gone (its line is text or a row again).
+    fn check(self: *MathOnce, doc: *const Doc) bool {
+        if (self.start != markdown.none) {
+            var found = false;
+            for (doc.blocks.items) |b| {
+                if (b.kind == .code and b.flags.math and b.source_start_byte == self.start) found = true;
+            }
+            if (!found and self.start < doc.source.items.len) return false;
+        }
+        self.start = markdown.none;
+        for (doc.blocks.items) |b| {
+            if (b.kind == .code and b.flags.math and b.source_start_byte >= doc.line_start_byte) self.start = b.source_start_byte;
+        }
+        return true;
+    }
+};
+
 /// (c): the provisional layout of the pending line against the exact parse of the same bytes
 /// with the line completed. Every block shown has the completed parse's kind and parent, and
 /// the completed parse only extends each leaf's display (P7's comparison) except for B's four
-/// accepted exceptions: link brackets and math delimiters (framesGrow skips them), an opener
+/// accepted exceptions, and D102's one switch of a line to display math at its end: link
+/// brackets and inline math delimiters (framesGrow skips them), an opener
 /// drawn as closed that reverts (its marks are extra bytes), and a backtick opener's content
 /// decoding when it reverts (a leaf that holds a backtick is not compared), and a definition the
 /// completed line adds (displays are not compared then). A held line (no layout) shows nothing new
@@ -855,6 +887,11 @@ fn layoutAgrees(arena: std.mem.Allocator, doc: *const Doc, options: markdown.Opt
     try whole.doc.append("\n");
     const shown = doc.blocks.items;
     const exact = whole.doc.blocks.items;
+    // D102: a line that is a one-line math block once complete shows as text or a row until
+    // then and switches once, at its line ending (MathOnce: never back).
+    for (exact) |b| {
+        if (b.kind == .code and b.flags.math and b.flags.closed and b.source_start_byte >= doc.line_start_byte) return true;
+    }
     var agrees = shown.len == exact.len;
     if (agrees) {
         for (shown, exact, 0..) |a, b, i| {
@@ -1046,6 +1083,7 @@ const Families = struct {
         var step_arena = std.heap.ArenaAllocator.init(gpa);
         defer step_arena.deinit();
         _ = arena;
+        var math_once: MathOnce = .{};
         for (commands, 0..) |command, step| {
             _ = step_arena.reset(.retain_capacity);
             switch (command) {
@@ -1070,6 +1108,8 @@ const Families = struct {
                 },
             }
             if (try genericProperties(step_arena.allocator(), &f.doc, fed, options, true)) |property| return .{ .property = property, .step = step };
+            if (command == .math or command == .filter) math_once = .{};
+            if (!math_once.check(&f.doc)) return .{ .property = "(c) a math block never reverts to text", .step = step };
         }
         return null;
     }
@@ -1117,6 +1157,46 @@ test "Markdown tables: a header line of any length is a header; only a line of 4
     }
 }
 
+/// bigboi's prefix differential (round 4) as a row family: documents of mixed fragments, each
+/// streamed byte by byte and in 4-byte pieces, every prefix against a fresh doc of the same
+/// prefix and every written node against read_leaf (streamAgreesParts). The fragments are the
+/// shapes the differential found or exercised: tags and CDATA cut anywhere, entities, split
+/// attributes and escapes, titles over lines, pipes in code, nested markers, both display math
+/// syntaxes after prose, rows and blank lines, escaped cells, closing hashes, all wrapped in
+/// quotes and lists.
+const differential_fragments = [_][]const u8{
+    "<!A",             "`",               " x &",    "<a b=\"c", "\">",        "<![CDATA[x]]>", "&amp;",   "&#x26",
+    "[r](u \"t\nu\")", "[x]: /u '\nt'\n", "`a | b`", "> - 1. ",  "$$E=mc^2$$", "\\[y\\]",       "$$x$$ y", "| a \\| b |",
+    "|---|",           "# h #",           "\n",      "\n\n",     "para",       "\\",            "*e*",
+};
+
+test "Markdown stream: every prefix of mixed fragments equals a fresh doc of it, nodes included" {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const count: u64 = if (environment(arena_state.allocator(), "MARKDOWN_DIFFERENTIAL")) |t| try std.fmt.parseInt(u64, t, 10) else 48;
+    for (0..count) |seed| {
+        _ = arena_state.reset(.retain_capacity);
+        const arena = arena_state.allocator();
+        var prng = std.Random.DefaultPrng.init(seed);
+        const random = prng.random();
+        var text: std.ArrayListUnmanaged(u8) = .empty;
+        const wrap = random.uintLessThan(u32, 4);
+        for (0..2 + random.uintLessThan(usize, 6)) |_| {
+            const fragment = differential_fragments[random.uintLessThan(usize, differential_fragments.len)];
+            if (wrap > 0 and (text.items.len == 0 or text.items[text.items.len - 1] == '\n')) try text.appendSlice(arena, (&[_][]const u8{ "", "> ", "- ", "> - " })[wrap]);
+            try text.appendSlice(arena, fragment);
+        }
+        // Math on for every other document (the name selects the options).
+        const name = if (seed % 2 == 0) "math differential" else "differential";
+        for ([_]usize{ 1, 4 }) |width| {
+            if (!try streamAgreesParts(arena, name, try split(arena, text.items, width))) {
+                std.debug.print("differential seed {d}, width {d}: \"{f}\"\n", .{ seed, width, std.zig.fmtString(text.items) });
+                return error.StreamMismatch;
+            }
+        }
+    }
+}
+
 test "Markdown model: repeated constructs keep work linear, stores within limits and the pending layout exact" {
     var families: Families = .{};
     try model.check(Families, &families, .{ .seeds = 8, .steps = 0 });
@@ -1129,8 +1209,14 @@ test "Markdown model: repeated constructs keep work linear, stores within limits
 const P7Exempt = struct {
     code_drawn: bool,
     definition_count: usize,
+    line_start: u32,
 
+    /// Also exempt (D102): a line shown as text or a row that becomes a display math block when
+    /// its line ends (it switches once, and never back).
     fn exempt(self: P7Exempt, doc: *const Doc) bool {
+        for (doc.blocks.items) |b| {
+            if (b.kind == .code and b.flags.math and b.flags.closed and b.source_start_byte >= self.line_start) return true;
+        }
         return self.code_drawn or doc.definitions.items.len != self.definition_count;
     }
 };
@@ -1141,7 +1227,7 @@ fn p7Exempt(doc: *const Doc) P7Exempt {
         const prose = b.kind == .paragraph or b.kind == .heading or b.kind == .table_cell;
         if (prose and (b.flags.open or b.source_end_byte > doc.line_start_byte) and std.mem.indexOfScalar(u8, doc.source.items[b.source_start_byte..@min(doc.source.items.len, b.source_end_byte)], '`') != null) code_drawn = true;
     }
-    return .{ .code_drawn = code_drawn, .definition_count = doc.definitions.items.len };
+    return .{ .code_drawn = code_drawn, .definition_count = doc.definitions.items.len, .line_start = doc.line_start_byte };
 }
 
 /// Whether every non-white-space byte `previous` drew is in `next`, in order (P7). B's
@@ -1739,10 +1825,14 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
     try std.testing.expectEqual(@as(u64, 7), small.counters.tail_write_bytes);
 }
 
-/// Counts allocator calls that reach the backing allocator.
+/// Counts the allocator calls that obtain memory: an alloc, or a resize or remap that succeeded.
+/// A growth is one such call whether it grows in place (Linux) or falls back to alloc and copy
+/// (macOS, Windows), so the count does not depend on the backing allocator.
 const CountingAllocator = struct {
     backing: std.mem.Allocator,
     count: u64 = 0,
+    /// False: resize and remap never succeed (the fallback macOS and Windows take).
+    in_place: bool = true,
 
     fn allocator(self: *CountingAllocator) std.mem.Allocator {
         return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
@@ -1756,14 +1846,17 @@ const CountingAllocator = struct {
 
     fn resize(context: *anyopaque, memory: []u8, alignment: std.mem.Alignment, len: usize, ret: usize) bool {
         const self: *CountingAllocator = @ptrCast(@alignCast(context));
+        if (!self.in_place or !self.backing.rawResize(memory, alignment, len, ret)) return false;
         self.count += 1;
-        return self.backing.rawResize(memory, alignment, len, ret);
+        return true;
     }
 
     fn remap(context: *anyopaque, memory: []u8, alignment: std.mem.Alignment, len: usize, ret: usize) ?[*]u8 {
         const self: *CountingAllocator = @ptrCast(@alignCast(context));
+        if (!self.in_place) return null;
+        const moved = self.backing.rawRemap(memory, alignment, len, ret) orelse return null;
         self.count += 1;
-        return self.backing.rawRemap(memory, alignment, len, ret);
+        return moved;
     }
 
     fn free(context: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret: usize) void {
@@ -1781,21 +1874,24 @@ test "Markdown work: no allocation per append in steady state, capacity growth c
     var copies: [10][]const u8 = undefined;
     @memset(&copies, prose);
     const long = try std.mem.join(arena, "\n", &copies);
-    var counting: CountingAllocator = .{ .backing = gpa };
-    var scratch = std.heap.ArenaAllocator.init(counting.allocator());
-    defer scratch.deinit();
-    var doc = try Doc.init(counting.allocator(), &scratch, .{});
-    defer doc.deinit();
     const parts = try split(arena, long, 30);
     const warm_up = parts.len / 2;
-    for (parts[0..warm_up]) |part| try doc.append(part);
-    const calls_before = counting.count;
-    const growth_before = doc.counters.capacity_growth_count;
-    for (parts[warm_up..]) |part| try doc.append(part);
-    const calls = counting.count - calls_before;
-    const growth = doc.counters.capacity_growth_count - growth_before;
-    if (environment(arena, "MARKDOWN_GATES") != null) std.debug.print("steady state: {d} appends, {d} allocator calls, {d} capacity growths\n", .{ parts.len - warm_up, calls, growth });
-    try std.testing.expect(calls <= growth);
+    // With an allocator that grows in place and with one that never does.
+    for ([_]bool{ true, false }) |in_place| {
+        var counting: CountingAllocator = .{ .backing = gpa, .in_place = in_place };
+        var scratch = std.heap.ArenaAllocator.init(counting.allocator());
+        defer scratch.deinit();
+        var doc = try Doc.init(counting.allocator(), &scratch, .{});
+        defer doc.deinit();
+        for (parts[0..warm_up]) |part| try doc.append(part);
+        const calls_before = counting.count;
+        const growth_before = doc.counters.capacity_growth_count;
+        for (parts[warm_up..]) |part| try doc.append(part);
+        const calls = counting.count - calls_before;
+        const growth = doc.counters.capacity_growth_count - growth_before;
+        if (environment(arena, "MARKDOWN_GATES") != null) std.debug.print("steady state, in place {}: {d} appends, {d} allocations, {d} capacity growths\n", .{ in_place, parts.len - warm_up, calls, growth });
+        try std.testing.expect(calls <= growth);
+    }
 }
 
 test "Markdown stream: a leaf that changes kind or loses lines keeps its live display exact" {
@@ -1902,6 +1998,14 @@ test "Markdown stream: a leaf that changes kind or loses lines keeps its live di
         try f.doc.append("[foo]: /url\n===\n[foo]\n");
         try f.doc.finish();
         try std.testing.expectEqualStrings("===\nfoo", (try f.doc.readLeaf(arena, 0)).bytes.items);
+    }
+    // opus-14, bigboi round 4: a lazy line that becomes a math block leaves the paragraph's node
+    // as read_leaf shows it (the node kept `para\n$$E=mc^2$`); `$$x$$ y` never shows a math block
+    // that reverts to text.
+    // bigboi round 4: a heading with a tag and a backtick cut anywhere ends as read_leaf does.
+    for ([_]usize{ 1, 2, 3 }) |width| try std.testing.expect(try streamAgreesParts(arena, "kinds", try split(arena, "# <!A` x &", width)));
+    for ([_][]const u8{ "para\n$$E=mc^2$$\nafter", "p\n\\[y\\]\n", "$$x$$ y\n", "| r |\n|---|\n$$x$$ y\n", "| r |\n|---|\n$$E=mc^2$$\nafter" }) |text| {
+        for ([_]usize{ 1, 4, 30 }) |width| try std.testing.expect(try streamAgreesParts(arena, "math kinds", try split(arena, text, width)));
     }
     // One title scanner for definitions and inline links: a parenthesized title cannot hold an
     // unescaped `(` (cmark-gfm: both stay text).

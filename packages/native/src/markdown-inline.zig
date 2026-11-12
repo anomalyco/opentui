@@ -1276,6 +1276,8 @@ pub const PendingScan = struct {
 pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *PendingScan, allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) error{OutOfMemory}!void {
     // Bytes [from, resume) were read by the last call and held its stop.
     const continues = scan.stop == from;
+    // No bytes past the stop: the scan's state (a code span, a tag) stands as it is.
+    if (continues and from >= s.len) return;
     const resume_at: u32 = if (continues) @max(from, scan.scanned) else from;
     var i = from;
     var code: ?u32 = code_opener orelse if (continues) scan.code else null;

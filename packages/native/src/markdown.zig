@@ -173,9 +173,6 @@ const Extension = struct {
     path: [depth_max + 3]u32 = undefined,
     path_len: u32 = 0,
     html_kind: u8 = 0,
-    /// The line's display math decision: a candidate (its closer), or a one-line block.
-    math: enum { none, candidate, one_line } = .none,
-    math_close: [2]u8 = .{ 0, 0 },
     heading: Heading = .{},
     row: Row = .{},
 
@@ -1343,7 +1340,11 @@ pub const Doc = struct {
             // Display math.
             if (self.options.math and (c == '$' or c == '\\')) {
                 line.readAll();
-                if (mathOpener(s, at, line.end)) |opener| {
+                // A one-line block is decided by its line ending (D102: the pending line shows as
+                // text or a row until then, and never reverts).
+                const decided = mathOpener(s, at, line.end);
+                if (decided != null and !(self.provisional and decided.?.one_line != null)) {
+                    const opener = decided.?;
                     try self.closeAbove(matched.*, self.previous_line_end_byte);
                     all_closed.* = true;
                     const m = try self.addChild(.code, at, line.end);
@@ -2009,18 +2010,11 @@ pub const Doc = struct {
                 ext.kind = .heading;
             } else {
                 ext.kind = .plain;
-                self.noteMathCandidate(self.pending_content_start, end);
             }
         } else if (ext.row.row != none and ext.row.row + 1 >= self.provisional_from) {
             ext.kind = .row;
             // The row's cells follow its scan state (scanRow), not the line end.
             deepest = ext.row.row;
-            self.noteMathCandidate(self.blocks.items[deepest].source_start_byte, end);
-        } else if (self.blocks.items.len > self.provisional_from and oneLineMath(self.blocks.items[self.blocks.items.len - 1], end)) {
-            // A one-line math block: only white space keeps it one.
-            ext.kind = .plain;
-            ext.math = .one_line;
-            deepest = @intCast(self.blocks.items.len - 1);
         } else if (tip != none and self.blocks.items[tip].source_end_byte == end) {
             deepest = tip;
             const b = self.blocks.items[tip];
@@ -2037,21 +2031,6 @@ pub const Doc = struct {
             ext.path[ext.path_len] = p;
             ext.path_len += 1;
         }
-    }
-
-    /// With math, a line whose content starts `$$` or `\[` becomes a one-line block once it
-    /// ends with the closer (mathOpener), whichever block lays it out now. It stays a candidate
-    /// while its body (all but its last two bytes) holds neither marker: a body only grows.
-    fn noteMathCandidate(self: *Doc, start: u32, end: u32) void {
-        if (!self.options.math or end < start + 2) return;
-        const s = self.source.items;
-        const open: []const u8 = if (std.mem.startsWith(u8, s[start..end], "$$")) "$$" else if (std.mem.startsWith(u8, s[start..end], "\\[")) "\\[" else return;
-        const close: []const u8 = if (open[0] == '$') "$$" else "\\]";
-        const body = s[start + 2 .. @max(start + 2, end -| 2)];
-        self.counters.block_byte_visits += body.len;
-        if (std.mem.indexOf(u8, body, open) != null or std.mem.indexOf(u8, body, close) != null) return;
-        self.extension.math = .candidate;
-        self.extension.math_close = close[0..2].*;
     }
 
     /// Grows the pending line's layout over the new bytes [extension.end, end) when they
@@ -2073,16 +2052,6 @@ pub const Doc = struct {
             .row => {
                 // Each new byte may open a cell: room for them first.
                 if (!ext.row.full and self.blocks.items.len + new.len > self.options.limits.block_count) return false;
-            },
-        }
-        // White space keeps the line's math decision; else the trimmed line's last bytes do.
-        const last = std.mem.lastIndexOfNone(u8, new, " \t");
-        switch (ext.math) {
-            .none => {},
-            .one_line => if (last != null) return false,
-            .candidate => if (last) |at| {
-                const line_end = old + @as(u32, @intCast(at)) + 1;
-                if (line_end >= 2 and std.mem.eql(u8, s[line_end - 2 .. line_end], &ext.math_close)) return false;
             },
         }
         self.counters.block_byte_visits += new.len;
@@ -2379,6 +2348,9 @@ pub const Doc = struct {
         const b = self.blocks.items[index];
         self.liveCheckDefinitions(b.content_start_byte);
         if (live.block != index or (live.start_byte != b.content_start_byte and live.prose_start != b.content_start_byte)) return null;
+        // A line fed as this paragraph's that the exact parse gave another block (a lazy line that
+        // became display math): the live content holds bytes past the leaf, so it is written whole.
+        if (b.kind == .paragraph and live.line_start_byte != none and live.line_start_byte >= b.content_end_byte) return null;
         // An ATX heading closes with its line: take its bytes not fed yet; its content ends
         // before a closing sequence.
         const atx = b.kind == .heading and !b.flags.setext;
@@ -4291,11 +4263,6 @@ fn lastNonBlankLineEnd(s: []const u8, start: u32, end: u32) u32 {
         if (!isBlankRange(s, ls, line_end) or ls <= start) return line_end;
         line_end = previousLineEnd(s, ls);
     }
-}
-
-/// Whether `b` is a one-line display math block that ends at `end`.
-fn oneLineMath(b: Block, end: u32) bool {
-    return b.kind == .code and b.flags.math and b.flags.closed and b.source_end_byte == end;
 }
 
 /// The first byte from `at` that is neither `c` nor a space or tab.
