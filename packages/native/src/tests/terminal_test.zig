@@ -1937,6 +1937,26 @@ test "queryExplicitWidth - OPENTUI_FORCE_EXPLICIT_WIDTH skips the probes or sets
     }
 }
 
+test "XTVERSION kitty 0.40 or later reports text sizing without a probe" {
+    // Rows: XTVERSION reply, OPENTUI_FORCE_EXPLICIT_WIDTH ("" unset), explicit width and scaled text.
+    const rows = .{
+        .{ "kitty(0.49.2)", "", true },   .{ "kitty(0.40.0)", "", true }, .{ "kitty(0.39.1)", "", false },
+        .{ "kitty(0.49.2)", "0", false }, .{ "tmux 3.5a", "", false },    .{ "foot(1.20.0)", "", false },
+    };
+    inline for (rows) |row| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        if (row[1].len != 0) try env.put("OPENTUI_FORCE_EXPLICIT_WIDTH", row[1]);
+        var term = Terminal.init(.{ .env_map = &env });
+        var writer = TestWriter.init(testing.allocator);
+        defer writer.deinit();
+        try term.queryTerminalSend(&writer);
+        term.processCapabilityResponse("\x1bP>|" ++ row[0] ++ "\x1b\\");
+        try testing.expectEqual(row[2], term.caps.explicit_width);
+        try testing.expectEqual(row[2], term.caps.scaled_text);
+    }
+}
+
 test "enableDetectedFeatures - sends initial theme queries" {
     var env = std.process.Environ.Map.init(testing.allocator);
     defer env.deinit();

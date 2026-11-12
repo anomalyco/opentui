@@ -1455,6 +1455,11 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
         self.caps.kitty_keyboard = true;
         self.caps.bracketed_paste = true;
         self.caps.hyperlinks = true;
+        // Text sizing (OSC 66) since 0.40: the answer the main screen, which gets no probe, cannot ask for.
+        if (!self.skip_explicit_width_query and semanticVersionAtLeast(self.getTerminalVersion(), 0, 40)) {
+            self.caps.explicit_width = true;
+            self.caps.scaled_text = true;
+        }
     }
     // Inside screen a reply may describe the terminal outside it, and screen drops 24-bit SGR.
     if (!self.insideScreen() and (truecolor_reply or (self.term_info.from_xtversion and isTruecolorTerminal(self.getTerminalName())))) {
