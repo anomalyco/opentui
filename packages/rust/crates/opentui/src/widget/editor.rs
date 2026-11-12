@@ -796,6 +796,11 @@ impl EditorCore {
         if self.tracking.get() || self.extmarks.borrow().marks.is_empty() {
             return edit();
         }
+        // A press leaves the cursor on its cell for the handlers until the release; an edit before then starts at the
+        // nearer edge.
+        if self.selection().is_none() {
+            self.keep_cursor_outside(Ordering::Equal);
+        }
         self.tracking.set(true);
         let before = self.text();
         let cursor_before = self.cursor().2;
