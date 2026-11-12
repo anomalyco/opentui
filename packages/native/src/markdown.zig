@@ -1246,11 +1246,10 @@ pub const Doc = struct {
             // Display math.
             if (self.options.math and (c == '$' or c == '\\')) {
                 line.readAll();
-                // A one-line block is decided by its line ending (D102: the pending line shows as
-                // text or a row until then, and never reverts).
-                const decided = mathOpener(s, at, line.end);
-                if (decided != null and !(self.provisional and decided.?.one_line != null)) {
-                    const opener = decided.?;
+                // A math block is decided by the line's ending (D102, D93: the pending line shows
+                // as text or a row until then, and never reverts).
+                const decided = if (self.provisional) null else mathOpener(s, at, line.end);
+                if (decided) |opener| {
                     try self.closeAbove(matched.*, self.previous_line_end_byte);
                     all_closed.* = true;
                     const m = try self.addChild(.code, at, line.end);
@@ -2163,7 +2162,7 @@ pub const Doc = struct {
             // The containers matched and the markers read stay: read on from the last marker.
             if (cached.hold.resume_at != none) {
                 self.counters.block_byte_visits += end - cached.hold.resume_at;
-                const hold = heldPrefix(self.source.items, cached.hold.resume_at, end, cached.hold.state, self.pending_row == .row and !cached.in_table, cached.in_table, self.options.math);
+                const hold = heldPrefix(self.source.items, cached.hold.resume_at, end, cached.hold.state, self.pending_row == .row and !cached.in_table, cached.in_table);
                 return self.cacheHold(hold, end, cached.in_table);
             }
         }
@@ -2190,7 +2189,7 @@ pub const Doc = struct {
         if (line.indented) return self.cacheHold(Hold.not, end, false);
         const tip = self.tipIndex();
         const in_table = tip != none and self.blocks.items[tip].kind == .table and matched == self.open_count;
-        const hold = heldPrefix(self.source.items, line.next_nonspace, end, .{}, self.pending_row == .row and !in_table, in_table, self.options.math);
+        const hold = heldPrefix(self.source.items, line.next_nonspace, end, .{}, self.pending_row == .row and !in_table, in_table);
         // heldPrefix reads at most the markers and a run it keeps (charged here).
         self.counters.block_byte_visits += end - line.next_nonspace;
         return self.cacheHold(hold, end, in_table);
@@ -3595,14 +3594,14 @@ const MarkerScan = struct { after_item: bool = false, markers: u32 = 0 };
 /// Whether the pending line's kind can still change, reading its markers from `from` (a
 /// marker's start, or the line's first non-space byte) with the scan state there. A held line
 /// records where its last marker starts, so the next call reads on from there.
-fn heldPrefix(s: []const u8, from: u32, end: u32, state: MarkerScan, delimiter_row: bool, in_table: bool, math: bool) Hold {
+fn heldPrefix(s: []const u8, from: u32, end: u32, state: MarkerScan, delimiter_row: bool, in_table: bool) Hold {
     if (delimiter_row) return Hold.keeping(" \t:-|");
     var at = from;
     var scan = state;
     // Markers past the nesting limit are text, so the line is decided after that many.
     while (scan.markers <= depth_max) : (scan.markers += 1) {
         while (at < end and isSpaceOrTab(s[at])) at += 1;
-        switch (heldMarker(s[at..end], scan.after_item, in_table, math)) {
+        switch (heldMarker(s[at..end], scan.after_item, in_table)) {
             .decided => |hold| {
                 var held = hold;
                 if (held.held) {
@@ -3627,7 +3626,7 @@ const HeldMarker = union(enum) {
     container: u32,
 };
 
-fn heldMarker(rest: []const u8, after_item: bool, in_table: bool, math: bool) HeldMarker {
+fn heldMarker(rest: []const u8, after_item: bool, in_table: bool) HeldMarker {
     // Nothing after the markers yet: spaces keep it so.
     if (rest.len == 0) return .{ .decided = Hold.keeping(" \t") };
     const c = rest[0];
@@ -3677,13 +3676,6 @@ fn heldMarker(rest: []const u8, after_item: bool, in_table: bool, math: bool) He
         '<' => .{ .decided = Hold.to_line_end },
         '|' => .{ .decided = if (in_table) Hold.not else Hold.to_line_end },
         ':' => .{ .decided = if (onlyBytesOf(rest, ":-| \t")) Hold.keeping(" \t:-|") else Hold.not },
-        '$', '\\' => {
-            if (!math) return .{ .decided = Hold.not };
-            const opener: []const u8 = if (c == '$') "$$" else "\\[";
-            // `$$` or `\[` and spaces: a block opener while only spaces follow.
-            if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], opener)) return .{ .decided = if (onlyBytesOf(rest[2..], " \t")) Hold.keeping(" \t") else Hold.not };
-            return .{ .decided = if (rest.len == 1) Hold.again else Hold.not };
-        },
         else => .{ .decided = Hold.not },
     };
 }

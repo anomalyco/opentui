@@ -886,10 +886,10 @@ fn layoutAgrees(arena: std.mem.Allocator, doc: *const Doc, options: markdown.Opt
     try whole.doc.append("\n");
     const shown = doc.blocks.items;
     const exact = whole.doc.blocks.items;
-    // D102: a line that is a one-line math block once complete shows as text or a row until
-    // then and switches once, at its line ending (MathOnce: never back).
+    // D102: a line that starts a math block once complete shows as text or a row until then and
+    // switches once, at its line ending (MathOnce: never back).
     for (exact) |b| {
-        if (b.kind == .code and b.flags.math and b.flags.closed and b.source_start_byte >= doc.line_start_byte) return true;
+        if (b.kind == .code and b.flags.math and b.source_start_byte >= doc.line_start_byte) return true;
     }
     var agrees = shown.len == exact.len;
     if (agrees) {
@@ -1214,11 +1214,11 @@ const P7Exempt = struct {
     definition_count: usize,
     line_start: u32,
 
-    /// Also exempt (D102): a line shown as text or a row that becomes a display math block when
+    /// Also exempt (D102): a line shown as text or a row that starts a display math block when
     /// its line ends (it switches once, and never back).
     fn exempt(self: P7Exempt, doc: *const Doc) bool {
         for (doc.blocks.items) |b| {
-            if (b.kind == .code and b.flags.math and b.flags.closed and b.source_start_byte >= self.line_start) return true;
+            if (b.kind == .code and b.flags.math and b.source_start_byte >= self.line_start) return true;
         }
         return self.code_drawn or doc.definitions.items.len != self.definition_count;
     }
@@ -2002,6 +2002,26 @@ test "Markdown stream: a leaf that changes kind or loses lines keeps its live di
         try f.doc.append("[foo]: /url\n===\n[foo]\n");
         try f.doc.finish();
         try std.testing.expectEqualStrings("===\nfoo", (try f.doc.readLeaf(arena, 0)).bytes.items);
+    }
+    // bigboi round 5 (D102, D93: math is plain until decided): an opener alone, and with spaces,
+    // shows as text, or as a row, at its two-byte prefix; its line ending makes it math once.
+    for ([_][]const u8{ "", "p\n", "| r |\n|---|\n" }) |context| {
+        for ([_][]const u8{ "$$", "\\[" }) |opener| {
+            var f: Fixture = undefined;
+            try f.init(.{ .math = true });
+            defer f.deinit();
+            try f.doc.append(context);
+            for ([_][]const u8{ opener, "   " }) |part| {
+                try f.doc.append(part);
+                const frame = try renderFrame(arena, &f.doc);
+                try std.testing.expect(std.mem.indexOf(u8, frame, opener[opener.len - 1 ..]) != null);
+            }
+            try f.doc.append("\n");
+            var math = false;
+            for (f.doc.blocks.items) |b| math = math or (b.kind == .code and b.flags.math);
+            try std.testing.expect(math);
+            try std.testing.expect(try streamAgreesParts(arena, "math kinds", &.{ context, opener, "   ", "\nx\n", opener, "\n" }));
+        }
     }
     // opus-14, bigboi round 4: a lazy line that becomes a math block leaves the paragraph's node
     // as read_leaf shows it (the node kept `para\n$$E=mc^2$`); `$$x$$ y` never shows a math block
