@@ -3407,20 +3407,25 @@ for (const [internalBlockMode, defaultCalls] of [
 }
 
 test("internalBlockMode setter updates existing markdown renderable", async () => {
-  const md = createMarkdownRenderable({
-    id: "internal-block-mode-setter",
-    content: "Paragraph\n\n```ts\nconst x = 1\n```",
-    syntaxStyle,
-  })
+  // A streaming document changes block mode too.
+  for (const streaming of [false, true]) {
+    const md = createMarkdownRenderable({
+      id: `internal-block-mode-setter-${streaming}`,
+      content: "Paragraph\n\n```ts\nconst x = 1\n```",
+      streaming,
+      syntaxStyle,
+    })
 
-  renderer.root.add(md)
-  await renderMarkdownRenderable(md)
+    renderer.root.add(md)
+    await renderMarkdownRenderable(md)
 
-  md.internalBlockMode = "top-level"
-  await renderMarkdownRenderable(md)
+    md.internalBlockMode = "top-level"
+    await renderMarkdownRenderable(md)
 
-  expect(md._blockStates.map((state) => state.token.type)).toEqual(["paragraph", "code"])
-  expect(md._blockStates.map((state) => state.marginTop ?? 0)).toEqual([0, 1])
+    expect(md._blockStates.map((state) => state.token.type)).toEqual(["paragraph", "code"])
+    expect(md._blockStates.map((state) => state.marginTop ?? 0)).toEqual([0, 1])
+    md.destroyRecursively()
+  }
 })
 
 test("custom top-level renderNode can increase default block margins", async () => {
