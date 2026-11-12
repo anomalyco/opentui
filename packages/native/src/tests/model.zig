@@ -1,6 +1,7 @@
 //! Shared harness for seeded model tests (markdown-highlight-ssot-models.md, 3.1): generate a
 //! command list from a seed, run it against the system and its oracle, and on a failure shrink
-//! the list (drop chunks of n/2 down to 1, then simplify each command) and print the trace.
+//! the list (drop chunks of n/2 down to 1, then simplify each command) while it fails the same
+//! property at a step of the same kind, and print the trace.
 //!
 //! Environment: MODEL_SEED=<n> runs one seed, MODEL_SEEDS=<n> sets how many seeds run,
 //! MODEL_SKIP=<property,...> ignores failures of the named properties.
@@ -39,7 +40,8 @@ pub fn check(comptime Context: type, context: *Context, default: Options) !void 
         const commands = try context.generate(ra, prng.random(), default.steps);
         const failure = (try context.run(ra, commands)) orelse continue;
         if (listed(skip, failure.property)) continue;
-        const shrunk = try shrink(Context, context, ra, commands, failure.property);
+        const identity: Identity(Context) = .{ .property = failure.property, .kind = std.meta.activeTag(commands[failure.step]) };
+        const shrunk = try shrink(Context, context, ra, commands, identity);
         std.debug.print("model failure: seed {d}, property {s}, shrunk to {d} commands:\n", .{ seed, failure.property, shrunk.len });
         for (shrunk) |command| {
             var buffer: [512]u8 = undefined;
@@ -51,7 +53,13 @@ pub fn check(comptime Context: type, context: *Context, default: Options) !void 
     }
 }
 
-fn shrink(comptime Context: type, context: *Context, arena: std.mem.Allocator, initial: []const Context.Command, property: []const u8) ![]const Context.Command {
+/// What a shrunk trace must still fail: the same property, at a step of the same kind (a
+/// property alone could drift to another bug that breaks it at another kind of step).
+fn Identity(comptime Context: type) type {
+    return struct { property: []const u8, kind: std.meta.Tag(Context.Command) };
+}
+
+fn shrink(comptime Context: type, context: *Context, arena: std.mem.Allocator, initial: []const Context.Command, identity: Identity(Context)) ![]const Context.Command {
     var current = initial;
     var chunk = @max(1, current.len / 2);
     while (chunk >= 1) {
@@ -60,7 +68,7 @@ fn shrink(comptime Context: type, context: *Context, arena: std.mem.Allocator, i
         while (start < current.len) {
             const end = @min(current.len, start + chunk);
             const candidate = try std.mem.concat(arena, Context.Command, &.{ current[0..start], current[end..] });
-            if (try failsWith(Context, context, arena, candidate, property)) {
+            if (try failsWith(Context, context, arena, candidate, identity)) {
                 current = candidate;
                 removed_any = true;
             } else {
@@ -77,7 +85,7 @@ fn shrink(comptime Context: type, context: *Context, arena: std.mem.Allocator, i
             const saved = command.*;
             for (try context.simplify(arena, saved)) |candidate| {
                 command.* = candidate;
-                if (try failsWith(Context, context, arena, result, property)) continue :simpler;
+                if (try failsWith(Context, context, arena, result, identity)) continue :simpler;
             }
             command.* = saved;
             break;
@@ -86,9 +94,10 @@ fn shrink(comptime Context: type, context: *Context, arena: std.mem.Allocator, i
     return result;
 }
 
-fn failsWith(comptime Context: type, context: *Context, arena: std.mem.Allocator, commands: []const Context.Command, property: []const u8) !bool {
+fn failsWith(comptime Context: type, context: *Context, arena: std.mem.Allocator, commands: []const Context.Command, identity: Identity(Context)) !bool {
     const failure = (try context.run(arena, commands)) orelse return false;
-    return std.mem.eql(u8, failure.property, property);
+    if (failure.step >= commands.len) return false;
+    return std.mem.eql(u8, failure.property, identity.property) and std.meta.activeTag(commands[failure.step]) == identity.kind;
 }
 
 fn listed(list: []const u8, name: []const u8) bool {

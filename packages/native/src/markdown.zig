@@ -182,7 +182,14 @@ const Extension = struct {
 
         fn step(self: *Heading, s: []const u8, i: u32) void {
             const c = s[i];
-            if (isSpaceOrTab(c)) return;
+            if (isSpaceOrTab(c)) {
+                // Leading white space is not content (an empty heading starts at the line end).
+                if (self.last_end == self.content_start and self.run_start == none) {
+                    self.content_start = i + 1;
+                    self.last_end = i + 1;
+                }
+                return;
+            }
             if (c == '#') {
                 if (self.run_start != none and i == self.last_end) {
                     self.last_end = i + 1;
@@ -850,6 +857,9 @@ pub const Doc = struct {
     /// Latches the leaves holding a filter match that starts in [start, end); a match in the
     /// pending line is kept for later.
     fn latchRange(self: *Doc, start: u32, end: u32) Error!void {
+        // With the hook off a filter latches nothing (the model's option sets found a table
+        // header's cell latched).
+        if (!self.options.hook or self.filterLength() == 0) return;
         var matches = self.filterMatches(start, end);
         while (matches.next()) |position| try self.latchMatch(position);
     }
@@ -1921,7 +1931,10 @@ pub const Doc = struct {
         switch (ext.kind) {
             .heading => {
                 ext.heading.scan(s, old, end);
-                (try self.blockMut(ext.heading.block)).content_end_byte = ext.heading.contentEnd();
+                const heading = try self.blockMut(ext.heading.block);
+                heading.content_start_byte = ext.heading.content_start;
+                heading.content_end_byte = ext.heading.contentEnd();
+                self.pending_content_start = ext.heading.content_start;
             },
             .row => try self.scanRow(&ext.row, old, end),
             else => {},

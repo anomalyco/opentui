@@ -8,13 +8,15 @@
 //!   a fresh doc of the same complete lines after every append, and one append of the whole after
 //!   finish (invariant 1).
 //!
-//! The CI budget (B3): the command model runs 128 seeds of 64 commands and 32 more with an empty
-//! hook filter, and the repeated-construct model 8 streams under the three generic properties
-//! (work, storage, pending layout); with the corpus and the fixed rows about 6.4 s in a debug
-//! build. Every mutant of the work file's tables is caught at this budget by a fixed row or a
-//! model, except the stated equivalents. Opt in, at the end of each round: MARKDOWN_SPLITS=4 (or
-//! 64) splits every corpus row at random code points; MODEL_SEEDS=2000 (or 20000) widens both
-//! models. MODEL_SEED replays one seed, MARKDOWN_ROW runs one corpus row and prints its HTML.
+//! The CI budget (B3, F6): the command model runs 64 seeds of 64 commands, 16 more with an
+//! empty hook filter and 16 with the hook off and math on (set_options switches math and the
+//! filter mid-stream in every run); the repeated-construct model 8 streams; the depth-2 sweep
+//! every pair of 16 pieces under 5 option sets; the prefix differential 48 documents; with the
+//! corpus and the fixed rows about 9.4 s of CPU in a debug build. Every mutant of the work file's
+//! tables is caught at this budget by a fixed row or a model, except the stated equivalents. Opt
+//! in, at the end of each round: MARKDOWN_SPLITS=4 (or 64) splits every corpus row at random code
+//! points; MODEL_SEEDS=2000 (or 20000) widens both models; MARKDOWN_DIFFERENTIAL=<n> the
+//! differential. MODEL_SEED replays one seed, MARKDOWN_ROW runs one corpus row and prints its HTML.
 const std = @import("std");
 const markdown = @import("../markdown.zig");
 const html = @import("markdown-html.zig");
@@ -499,11 +501,14 @@ const model = @import("model.zig");
 /// Pieces the soup generator glues together: every block start, inline opener and line ending
 /// the engine has a state for.
 const soup = [_][]const u8{
-    "- ",        "> ",  "```",      "```\n", "|",     " | ",   "| --- | --- |\n", "[x]",
-    "[x]: /u\n", "**",  "*",        "_",     "`",     "$",     "10. ",            "1. ",
-    "===",       "---", "\t",       "\r\n",  "\n",    "\n\n",  "word",            " ",
-    "ses_",      "se",  "s_",       "# ",    "<div>", "&amp;", "](/u)",           "\\",
-    "    code",  "~~",  "www.a.b ", "$$\n",  "x",     "[",     "]",               "  \n",
+    "- ",        "> ",  "```",      "```\n", "|",     " | ",      "| --- | --- |\n", "[x]",
+    "[x]: /u\n", "**",  "*",        "_",     "`",     "$",        "10. ",            "1. ",
+    "===",       "---", "\t",       "\r\n",  "\n",    "\n\n",     "word",            " ",
+    "ses_",      "se",  "s_",       "# ",    "<div>", "&amp;",    "](/u)",           "\\",
+    "    code",  "~~",  "www.a.b ", "$$\n",  "x",     "[",        "]",               "  \n",
+    // The bytes of the tear prototype's repros (an email's `@`, an unfinished entity, setext
+    // underlines after a link, a math opener before a word).
+    "@",         "@\n", "$$_",      "&mp;",  "\n=\n", "[x](/u) ", "\n===\n",
 };
 
 const EngineCommand = union(enum) {
@@ -524,6 +529,7 @@ const EngineCommand = union(enum) {
 const Engine = struct {
     corpus_texts: []const []const u8,
     hook: bool = true,
+    math: bool = false,
     filter: []const u8 = "ses_",
     other_filter: []const u8 = "se",
 
@@ -592,7 +598,7 @@ const Engine = struct {
     }
 
     pub fn run(self: *Engine, arena: std.mem.Allocator, commands: []const Command) !?model.Failure {
-        var options: markdown.Options = .{ .hook = self.hook, .hook_filter = self.filter };
+        var options: markdown.Options = .{ .hook = self.hook, .hook_filter = self.filter, .math = self.math };
         var f: Fixture = undefined;
         try f.init(options);
         defer f.deinit();
@@ -884,8 +890,9 @@ const MathOnce = struct {
 /// the completed parse only extends each leaf's display (P7's comparison) except for B's four
 /// accepted exceptions, and D102's one switch of a line to display math at its end: link
 /// brackets and inline math delimiters (framesGrow skips them), an opener
-/// drawn as closed that reverts (its marks are extra bytes), and a backtick opener's content
-/// decoding when it reverts (a leaf that holds a backtick is not compared), and a definition the
+/// drawn as closed that reverts (its marks are extra bytes), and a backtick opener's or inline
+/// math's content decoding when it reverts or closes (a leaf that holds a backtick, or with math
+/// a `$` or `\(`, is not compared), and a definition the
 /// completed line adds (displays are not compared then). A held line (no layout) shows nothing new
 /// and passes.
 fn layoutAgrees(arena: std.mem.Allocator, doc: *const Doc, options: markdown.Options) !bool {
@@ -912,7 +919,11 @@ fn layoutAgrees(arena: std.mem.Allocator, doc: *const Doc, options: markdown.Opt
                 break;
             }
             if (!markdown.Doc.isInlineLeaf(a) or whole.doc.definitions.items.len != doc.definitions.items.len) continue;
-            if (std.mem.indexOfScalar(u8, s[a.source_start_byte..@min(s.len, a.source_end_byte)], '`') != null) continue;
+            const leaf_source = s[a.source_start_byte..@min(s.len, a.source_end_byte)];
+            if (std.mem.indexOfScalar(u8, leaf_source, '`') != null) continue;
+            // Inline math that closes conceals its delimiters and shows its content raw (B's
+            // math exception): such a leaf is not compared either.
+            if (options.math and (std.mem.indexOfScalar(u8, leaf_source, '$') != null or std.mem.indexOf(u8, leaf_source, "\\(") != null)) continue;
             const x = (try doc.readLeaf(arena, @intCast(i))).bytes.items;
             const y = (try whole.doc.readLeaf(arena, @intCast(i))).bytes.items;
             if (!framesGrow(x, y, options.math)) {
@@ -1173,6 +1184,63 @@ test "Markdown tables: a header line of any length is a header; only a line of 4
     }
 }
 
+/// The tear prototype's alphabet for the depth-2 sweep: every soup piece would be 2,000 pairs per
+/// option set; these are the pieces its exhaustive search and repros used.
+const sweep_pieces = [_][]const u8{ "@\n", "$$_", "$$\n", "&mp;", "&amp;", "\n=\n", "\n===\n", "[x](/u) ", "`", "|", "- ", "> ", "*", "[x]: /u\n", "ses_", "\n" };
+
+test "Markdown sweep: every pair of appends, then finish, under every option set" {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    // The tear prototype's repros (math on): A aborted in M2 before fd4ab4e19; B and D pass.
+    for ([_][]const []const u8{ &.{ "@\n$$_", "$$\n" }, &.{"&amp;\n===\n"}, &.{ "&amp;", "\n===\n" } }) |parts| {
+        try std.testing.expect(try streamAgreesParts(arena_state.allocator(), "math tear", parts));
+    }
+    // E and F's inputs with the options M1 has (conceal and hyperlinks are M2's).
+    for ([_][]const u8{ "&mp;\n=\n", "[x](/u) \n===\n" }) |text| {
+        try std.testing.expect(try streamAgreesParts(arena_state.allocator(), "hook tear", &.{text}));
+        try std.testing.expect(try streamAgreesParts(arena_state.allocator(), "math tear", try split(arena_state.allocator(), text, 1)));
+    }
+    // A filter with the hook off latches nothing, a table header's cells included (the model
+    // over every option set found the cell latched).
+    {
+        const options: markdown.Options = .{ .math = true, .hook_filter = "ses_" };
+        var f: Fixture = undefined;
+        try f.init(options);
+        defer f.deinit();
+        try f.doc.set("ses_");
+        for ([_][]const u8{ "bc | defg", "\n", ":-: |", "-", "\n" }) |part| try f.doc.append(part);
+        for (f.doc.blocks.items) |b| try std.testing.expect(!b.flags.hooked);
+    }
+    for ([_]markdown.Options{ .{}, .{ .math = true }, .{ .hook_filter = "ses_" }, .{ .hook = true, .hook_filter = "ses_" }, .{ .math = true, .hook = true, .hook_filter = "" } }) |options| {
+        for (sweep_pieces) |a| for (sweep_pieces) |b| {
+            _ = arena_state.reset(.retain_capacity);
+            const arena = arena_state.allocator();
+            var f: Fixture = undefined;
+            try f.init(options);
+            defer f.deinit();
+            var sink: markdown.TailSink = .{ .allocator = gpa };
+            defer sink.deinit();
+            f.doc.tail_sink = &sink;
+            var fed: Fed = .{};
+            for ([_][]const u8{ a, b }) |part| {
+                fed.add(part.len);
+                try f.doc.append(part);
+                var fresh: Fixture = undefined;
+                try fresh.init(options);
+                defer fresh.deinit();
+                try fresh.doc.append(f.doc.source.items);
+                const property: ?[]const u8 = if (!try sameDocs(arena, &f.doc, &fresh.doc)) "P1" else if (!try liveShowsReadLeaf(arena, &f.doc, &sink)) "nodes" else try genericProperties(arena, &f.doc, fed, options, true);
+                if (property) |name| {
+                    std.debug.print("sweep: \"{f}\" then \"{f}\" fails {s}\n", .{ std.zig.fmtString(a), std.zig.fmtString(b), name });
+                    return error.SweepFailure;
+                }
+            }
+            try f.doc.finish();
+            if (sink.mismatch_count > 0 or !try liveShowsReadLeaf(arena, &f.doc, &sink)) return error.SweepFailure;
+        };
+    }
+}
+
 /// bigboi's prefix differential (round 4) as a row family: documents of mixed fragments, each
 /// streamed byte by byte and in 4-byte pieces, every prefix against a fresh doc of the same
 /// prefix and every written node against read_leaf (streamAgreesParts). The fragments are the
@@ -1332,10 +1400,14 @@ test "Markdown model: append, set, finish and reads keep P1-P5, P18 and the live
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     var engine: Engine = .{ .corpus_texts = try corpusTexts(arena_state.allocator()) };
-    try model.check(Engine, &engine, .{ .seeds = 128, .steps = 64 });
+    try model.check(Engine, &engine, .{ .seeds = 64, .steps = 64 });
     // An empty filter hooks every prose leaf.
     var hook_all: Engine = .{ .corpus_texts = engine.corpus_texts, .filter = "", .other_filter = "ses_" };
-    try model.check(Engine, &hook_all, .{ .seeds = 32, .steps = 64 });
+    try model.check(Engine, &hook_all, .{ .seeds = 16, .steps = 64 });
+    // The other option sets: the hook off and math on from the start (set_options switches
+    // math and the filter mid-stream in every run).
+    var plain_math: Engine = .{ .corpus_texts = engine.corpus_texts, .hook = false, .math = true };
+    try model.check(Engine, &plain_math, .{ .seeds = 16, .steps = 64 });
 }
 
 test "Markdown model: corpus rows split at random code points stream like one append" {
