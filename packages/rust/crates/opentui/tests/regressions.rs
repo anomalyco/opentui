@@ -50,6 +50,8 @@ fn shift_selection_reuses_a_stale_anchor_after_backspace() {
     assert_eq!(input.value(), "abdef");
     app.press("shift+right");
     assert_eq!(input.selected_text(), "d");
+    // Delete removes the one selected character, not the one after it.
+    assert_eq!(input.perform(opentui::widget::EditorAction::Delete).value(), "abef");
 }
 
 // Expected: Shift+arrow extends an existing mouse selection from its anchor, as Core does.
@@ -428,25 +430,27 @@ fn edits_after_a_click_leave_the_cursor_outside_the_view() {
         (A::DeleteWordForward, "ab\nef", "ab\n\nef"),
         (A::DeleteWordBackward, "abcd\nef", "ab\n\nef"),
     ];
-    for (index, events) in gestures.into_iter().enumerate() {
-        for (action, unselected, selected) in actions {
-            let app = TestApp::new(10, 1);
-            let area = Textarea::new(&app).set_text("ab\ncd\nef").grow(1.0);
-            app.root().add(&area);
-            area.focus();
-            app.render();
-            app.press("up");
-            app.render();
-            for &(kind, x) in events {
-                app.mouse(kind, x, 0);
-            }
-            area.perform(action);
-            app.render();
-            let at = format!("gesture {index}, {action:?}");
-            assert_eq!(area.text(), if index == 2 { selected } else { unselected }, "{at}");
-            let (row, viewport) = (area.cursor().0, area.view().viewport().unwrap());
-            assert!((viewport.y..viewport.y + viewport.height).contains(&row), "{at}: row {row}, {viewport:?}");
+    let cases = gestures.iter().enumerate().flat_map(|(index, events)| {
+        actions.map(|(action, unselected, selected)| ("ab\ncd\nef", *events, action, [unselected, selected][index / 2]))
+    });
+    // A line of only a combining mark has no cells; the click's empty selection must not delete it.
+    for (text, events, action, expected) in cases.chain([("\u{301}", gestures[0], A::Newline, "\n\u{301}")]) {
+        let app = TestApp::new(10, 1);
+        let area = Textarea::new(&app).set_text(text).grow(1.0);
+        app.root().add(&area);
+        area.focus();
+        app.render();
+        app.press("up");
+        app.render();
+        for &(kind, x) in events {
+            app.mouse(kind, x, 0);
         }
+        area.perform(action);
+        app.render();
+        let at = format!("{text:?}, {events:?}, {action:?}");
+        assert_eq!(area.text(), expected, "{at}");
+        let (row, viewport) = (area.cursor().0, area.view().viewport().unwrap());
+        assert!((viewport.y..viewport.y + viewport.height).contains(&row), "{at}: row {row}, {viewport:?}");
     }
 }
 
