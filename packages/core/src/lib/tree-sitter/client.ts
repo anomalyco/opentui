@@ -575,11 +575,12 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
     // A removeBuffer, or another createBuffer of this id, replaces this record; this call then returns false.
     const created: BufferState = { id, content, filetype, version, hasParser: false }
     this.buffers.set(id, created)
+    const drop = () => this.buffers.get(id) === created && this.buffers.delete(id)
     if (!this.initialized) {
       try {
         await this.initialize()
       } catch (error) {
-        if (this.buffers.get(id) === created) this.buffers.delete(id)
+        drop()
         this.emitError("Could not create buffer because of initialization error")
         return false
       }
@@ -602,7 +603,7 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
         this.messageCallbacks.delete(messageId)
         reject(error instanceof Error ? error : new Error(String(error)))
       }
-    })
+    }).catch((error) => (drop(), Promise.reject(error)))
 
     if (this.buffers.get(id) !== created) return false
     if (!response.hasParser) {

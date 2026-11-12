@@ -86,6 +86,9 @@ class FakeWorker {
         return this.post({ type: "INIT_RESPONSE" })
       case "INITIALIZE_PARSER": {
         yield
+        // A grammar whose setup throws answers with an error, as an unsupported ABI version does.
+        if (m.filetype === "bad")
+          return this.post({ type: "ERROR", bufferId: m.bufferId, messageId: m.messageId, error: "bad grammar" })
         const hasParser = m.filetype === "js"
         this.post({ type: "PARSER_INIT_RESPONSE", bufferId: m.bufferId, messageId: m.messageId, hasParser })
         if (!hasParser) return
@@ -187,7 +190,7 @@ function generate(seed: number): Command[] {
     return (s >>> 0) % n
   }
   const ops = OPS.match(/\w+ \d+/g)!.flatMap((entry) => Array(Number(entry.split(" ")[1])).fill(entry.split(" ")[0]))
-  return Array.from({ length: STEPS }, () => ({ op: ops[r(ops.length)]!, id: 1 + r(2), n: r(1000) }))
+  return Array.from({ length: STEPS }, () => ({ op: ops[r(ops.length)]!, id: r(2), n: r(1000) }))
 }
 
 async function run(commands: Command[]) {
@@ -198,21 +201,30 @@ async function run(commands: Command[]) {
   const docs = new Map<number, { content: string; version: number; live: boolean }>()
   const pending: { name: string; settled: boolean }[] = []
   const late: unknown[] = []
-  const track = (name: string, promise: Promise<unknown>, then = (_: unknown) => {}) => {
+  const fail = (message: string) => void late.push(new Failure(message))
+  // A destroy or a worker crash may reject any call made before it; otherwise a call rejects only when `rejects` says so.
+  let epoch = 0
+  const track = (name: string, promise: Promise<unknown>, then = (_: unknown) => {}, rejects = (_: Error) => false) => {
     const entry = { name, settled: false }
+    const at = epoch
     pending.push(entry)
     promise
-      .then(then, () => {})
+      .then(then, (error) => void (at === epoch && !rejects(error) && fail(`result: ${name} rejected: ${error}`)))
       .catch((error) => late.push(error))
       .finally(() => (entry.settled = true))
   }
   // What a consumer that merges the replies shows; an edit's reply on top of another version breaks it until a full one.
+  // The client forwards only replies at the version the caller last sent to a buffer it has not removed.
   const shown = new Map<number, { version: number; content?: string }>()
   client.on("highlights:response", (id, version, highlights) => {
+    const doc = docs.get(id)
+    if (!doc?.live || doc.version !== version)
+      fail(`event: highlight ${id}@${version}, caller has ${JSON.stringify(doc)}`)
     const [content, base] = highlights[0]!.highlights.map((range) => range.group)
     const right = base === undefined || shown.get(id)?.version === Number(base)
     shown.set(id, right ? { version, content } : { version: -1 })
   })
+  client.on("buffer:initialized", (id) => void (docs.has(id) || fail(`event: buffer:initialized for removed ${id}`)))
   // Time passes before the worker gets to its queue, then the worker drains and the client's timers run out.
   const settle = async () => {
     await wait(20)
@@ -232,7 +244,9 @@ async function run(commands: Command[]) {
     const owners = [...w.ledger.values()]
     for (const owner of owners)
       check(owner === "cache" || owner.startsWith("buffer "), `ledger: ${owner} after settling`)
-    for (const id of [1, 2]) {
+    const listed = client.getAllBuffers().map((buffer) => buffer.id)
+    check(listed.sort().join() === [0, 1].filter((id) => client.getBuffer(id)).join(), `cache: getAllBuffers ${listed}`)
+    for (const id of [0, 1]) {
       const doc = docs.get(id)
       const cached = client.getBuffer(id)
       const state = w.terminated ? undefined : w.buffers.get(id)
@@ -258,15 +272,26 @@ async function run(commands: Command[]) {
       const piece = ["a", "\n", "bc", ""][n % 4]!
       if (op === "create" && (!doc || doc.live)) {
         const record = { content: piece + n, version: 1 + (n % 3), live: false }
-        const filetype = n % 7 === 0 ? "none" : "js"
+        const filetype = ["none", "bad", "js", "js", "js", "js", "js"][n % 7]!
+        const destroying = (client as unknown as { destroyPromise?: unknown }).destroyPromise !== undefined
+        const [at, ready] = [epoch, client.isInitialized()]
         if (!doc) docs.set(id, record)
-        track(`create ${id}`, client.createBuffer(id, record.content, filetype, record.version), (hasParser) => {
+        const created = client.createBuffer(id, record.content, filetype, record.version)
+        const then = (hasParser: unknown) => {
           check(!doc, `duplicate: create ${id} of a live buffer resolved`)
+          // A destroy or a crash rejects a create that is waiting for the worker.
+          check(!ready || at === epoch, `result: create ${id} resolved ${hasParser} after a destroy or crash`)
           if (docs.get(id) !== record) return
+          // Nothing removed or replaced this create, so only a destroy in progress makes a `js` create fail.
+          check(hasParser || filetype !== "js" || destroying, `result: create ${id} resolved false`)
           record.live = hasParser === true
-          // A create with no parser keeps its record; one that failed or was replaced leaves none.
+          // A create with no parser keeps its record; one that failed leaves none.
           if (!hasParser && filetype === "js") docs.delete(id)
-        })
+        }
+        // A duplicate rejects and keeps the live buffer; a grammar error rejects and leaves no record.
+        const rejects = (error: Error) =>
+          doc ? /already exists/.test(error.message) : (docs.get(id) === record && docs.delete(id), filetype === "bad")
+        track(`create ${id}`, created, then, rejects)
       } else if ((op === "update" || op === "reset") && (!doc || doc.live)) {
         const old = doc?.content ?? ""
         const start = n % (old.length + 1)
@@ -279,6 +304,8 @@ async function run(commands: Command[]) {
         const edit = { startIndex: start, oldEndIndex: end, newEndIndex: start + piece.length }
         const edits = [{ ...edit, startPosition: at0, oldEndPosition: at0, newEndPosition: at0 }]
         if (op === "update") track(`update ${id}`, client.updateBuffer(id, edits, content, version))
+        const cached = client.getBuffer(id)
+        check(!doc || (cached?.version === version && cached.content === content), `cache: ${op} ${id} not stored`)
       } else if (op === "remove") {
         docs.delete(id)
         shown.delete(id)
@@ -290,7 +317,14 @@ async function run(commands: Command[]) {
       } else if (op === "once") {
         track("highlightOnce", client.highlightOnce("a", n % 2 ? "js" : "none"))
       } else if (op === "clear") {
-        track("clearCache", client.clearCache())
+        // A clear frees every parser the cache held when it was asked; it rejects only on a client not initialized.
+        const [w, ready, parsers] = [worker(), client.isInitialized(), [...worker().cache.values()]]
+        const freed = () =>
+          check(
+            parsers.every((p) => !w.ledger.has(p)),
+            `clear: resolved with ${parsers} cached`,
+          )
+        track("clearCache", client.clearCache(), freed, () => !ready)
       } else if (op === "path") {
         track("setDataPath", client.setDataPath(`${dataPath}-${n}`))
       } else if (op === "other") {
@@ -298,8 +332,9 @@ async function run(commands: Command[]) {
         await other.initialize()
         await other.destroy()
       } else if (op === "destroy" || op === "crash") {
-        docs.clear()
-        shown.clear()
+        // A destroy during a destroy only joins it, and a crash needs a running worker: neither clears anything then.
+        const destroying = (client as unknown as { destroyPromise?: unknown }).destroyPromise !== undefined
+        if (op === "destroy" ? !destroying : worker().onerror) (docs.clear(), shown.clear(), epoch++)
         if (op === "destroy") track("destroy", client.destroy())
         else worker().onerror?.({ message: "worker crashed" })
       }
@@ -310,7 +345,7 @@ async function run(commands: Command[]) {
     await settle()
     consistent()
     // Every buffer removed and the cache cleared: nothing is left in the ledger.
-    for (const id of [1, 2]) (docs.delete(id), track(`remove ${id}`, client.removeBuffer(id)))
+    for (const id of [0, 1]) (docs.delete(id), track(`remove ${id}`, client.removeBuffer(id)))
     if (client.isInitialized()) track("clearCache", client.clearCache())
     await settle()
     consistent()
