@@ -1187,8 +1187,9 @@ test "input parser times out partial units unless they may be mouse reports, Kit
     try expectGot("", &.{}, try harness.wait(20));
     try expectGot("", &.{ ch('1'), ch('q') }, try harness.feed("1q"));
     // With ESCAPE_PREFIX (confirmed Kitty) no unit has a deadline. A raw ESC and the byte after it in the same read
-    // are Alt and that key, as without the bit; a raw ESC that ends a read is the Escape key at once, and a unit that
-    // begins the next read is reinstated and no key. Without the bit each split one times out.
+    // are Alt and that key, as without the bit; a raw ESC that ends a read is the Escape key at once, and only a CSI
+    // that the terminal sends and that begins the next read, however late, is reinstated and no key (issue 610).
+    // Without the bit each split one times out.
     const confirmed: ip.Expectations = .{ .kitty_keyboard = true, .escape_prefix = true };
     for ([_]struct { []const u8, []const u8, []const Expect }{
         .{ "\x1bb", "", &.{k('b', ALT)} },
@@ -1203,13 +1204,17 @@ test "input parser times out partial units unless they may be mouse reports, Kit
         .{ "\x1b\x1b", "[?62;22c", &.{ k(K.escape, ALT), reply("\x1b[?62;22c") } },
         .{ "\x1b", "[27u", &.{ k(K.escape, NONE), reply("\x1b[27u") } },
         .{ "\x1b", "[A", &.{ k(K.escape, NONE), reply("\x1b[A") } },
-        .{ "\x1b", "OP", &.{ k(K.escape, NONE), k(K.f(1), NONE) } },
         .{ "\x1b", "[<0;1;1M", &.{ k(K.escape, NONE), down(0, 0, 0) } },
         .{ "\x1b", "[?62;22c", &.{ k(K.escape, NONE), reply("\x1b[?62;22c") } },
-        .{ "\x1b", "]11;rgb:0/0/0\x07", &.{ k(K.escape, NONE), reply("\x1b]11;rgb:0/0/0\x07") } },
-        .{ "\x1b", "_Gi=31;OK\x1b\\", &.{ k(K.escape, NONE), reply("\x1b_Gi=31;OK\x1b\\") } },
-        .{ "\x1b", "P>|kitty\x1b\\", &.{ k(K.escape, NONE), reply("\x1bP>|kitty\x1b\\") } },
-        .{ "\x1b", "[[A", &.{ k(K.escape, NONE), reply("\x1b[[A") } },
+        // Typed text: these terminals send no SS3, X10, or Linux console key, and strings only as replies.
+        .{ "\x1b", "OA", &([_]Expect{k(K.escape, NONE)} ++ typed("OA")) },
+        .{ "\x1b", "Please\r", &([_]Expect{k(K.escape, NONE)} ++ typed("Please\r")) },
+        .{ "\x1b", "]1z", &([_]Expect{k(K.escape, NONE)} ++ typed("]1z")) },
+        .{ "\x1b", "_Gz", &([_]Expect{k(K.escape, NONE)} ++ typed("_Gz")) },
+        .{ "\x1b", "[a", &([_]Expect{k(K.escape, NONE)} ++ typed("[a")) },
+        .{ "\x1b", "[1\x1b[A", &.{ k(K.escape, NONE), ch('['), frag("1"), k(K.up, NONE) } },
+        .{ "\x1b", "[Maaa", &([_]Expect{k(K.escape, NONE)} ++ typed("[Maaa")) },
+        .{ "\x1b", "[[A", &([_]Expect{k(K.escape, NONE)} ++ typed("[[A")) },
         .{ "\x1bO", "P", &.{k(K.f(1), NONE)} },
         .{ "\x1b[1;5", "A", &.{k(K.up, CTRL)} },
         .{ "\x1b[M ", "!!", &.{down(0, 0, 0)} },
@@ -1235,10 +1240,12 @@ test "input parser times out partial units unless they may be mouse reports, Kit
     }
     // A lone introducer after a read-end Escape is recovered as after a timeout, with or without the bit: it waits
     // only while the sentinel is out, and is typed once that clears (`true`). Reads come 25 ms apart. Without the bit
-    // a held bare `ESC [` waits for its next byte instead.
+    // a held bare `ESC [` waits for its next byte instead. A `[<` that ends the read begins no reply and ends at once.
     for ([_]struct { []const []const u8, bool, []const bool, []const Expect }{
         .{ &.{ "\x1b", "]" }, true, &.{ false, true }, &.{ k(K.escape, NONE), ch(']') } },
         .{ &.{ "\x1b", "[" }, true, &.{true}, &.{ k(K.escape, NONE), ch('[') } },
+        .{ &.{ "\x1b", "[<" }, false, &.{true}, &.{ k(K.escape, NONE), frag("[<") } },
+        .{ &.{ "\x1b", "[1" }, true, &.{true}, &.{ k(K.escape, NONE), ch('['), frag("1") } },
         .{ &.{ "\x1b", "[", "M", " ", "!", "!" }, false, &.{ false, true }, &([_]Expect{k(K.escape, NONE)} ++ typed("[M !!")) },
     }) |case| for (case[2]) |prefix| {
         var recovery = try Harness.create();
