@@ -181,6 +181,8 @@ pub const Parser = struct {
     search_read_from: u32 = 0,
     /// The end of the backtick run a search stopped in (its bytes before it were read).
     search_run_end: u32 = 0,
+    /// Where an HTML tag scan that ran out resumes.
+    html_resume: HtmlResume = .{},
     /// A label scan after `]` that ran out of content (its `]` is `search_opener`).
     label_scan: LabelScan = .{ .at = 0, .position = 0 },
     /// The first token whose display changed since `takeChanged` (none: nothing changed).
@@ -906,9 +908,20 @@ pub const Parser = struct {
             self.position = a.end;
             return;
         }
-        if (try scanHtmlTag(self.subject, start, self.final)) |end| {
+        // A tag that runs out of content resumes where it stopped (its last attribute, or the
+        // search for its end marker), so a long one arriving byte by byte is read once.
+        var cursor: HtmlResume = if (self.search_opener == start) self.html_resume else .{ .at = start };
+        const read_from = cursor.at;
+        const scanned = scanHtmlTagFrom(self.subject, start, self.final, &cursor) catch |err| {
+            self.byte_visits += self.subject.len -| read_from;
+            self.search_opener = start;
+            self.html_resume = cursor;
+            return err;
+        };
+        self.search_opener = std.math.maxInt(u32);
+        if (scanned) |end| {
             try self.push(.{ .start = start, .len = end - start, .kind = .html });
-            self.byte_visits += end - start - 1;
+            self.byte_visits += end -| @max(read_from, start + 1);
             self.position = end;
             return;
         }
@@ -1667,10 +1680,24 @@ fn isTagNameChar(c: u8) bool {
 
 /// An inline raw HTML construct at `at` (CommonMark 6.6).
 pub fn scanHtmlTag(s: []const u8, at: u32, final: bool) error{NeedMore}!?u32 {
+    var cursor: HtmlResume = .{ .at = at };
+    return scanHtmlTagFrom(s, at, final, &cursor);
+}
+
+/// Where an HTML tag scan resumes: an open tag's next byte and its phase, or the position an
+/// end marker's search goes on from.
+pub const HtmlResume = struct {
+    at: u32 = 0,
+    phase: enum { first, name, space, spaced, slash, attribute, after_attribute, equals, double_quoted, single_quoted, unquoted } = .first,
+};
+
+/// scanHtmlTag, resuming from `cursor` (from the tag's start when `cursor.at` is `at`); when it
+/// runs out, `cursor` says where the next call goes on.
+pub fn scanHtmlTagFrom(s: []const u8, at: u32, final: bool, cursor: *HtmlResume) error{NeedMore}!?u32 {
     var i = at + 1;
     if (i >= s.len) return ranOut(u32, final);
     const c = s[i];
-    if (std.ascii.isAlphabetic(c)) return scanOpenTag(s, at, final);
+    if (std.ascii.isAlphabetic(c)) return scanOpenTagFrom(s, at, final, cursor);
     if (c == '/') {
         i += 1;
         if (i >= s.len) return ranOut(u32, final);
@@ -1681,7 +1708,7 @@ pub fn scanHtmlTag(s: []const u8, at: u32, final: bool) error{NeedMore}!?u32 {
         if (s[i] == '>') return i + 1;
         return null;
     }
-    if (c == '?') return findAfter(s, i + 1, "?>", final);
+    if (c == '?') return findAfterFrom(s, i + 1, "?>", final, cursor);
     if (c == '!') {
         i += 1;
         const rest = s[i..];
@@ -1694,14 +1721,14 @@ pub fn scanHtmlTag(s: []const u8, at: u32, final: bool) error{NeedMore}!?u32 {
                 if (body + 1 >= s.len) return ranOut(u32, final);
                 if (s[body + 1] == '>') return body + 2;
             }
-            return findAfter(s, body, "-->", final);
+            return findAfterFrom(s, body, "-->", final, cursor);
         }
         if (startsOrPrefix(rest, "[CDATA[")) |complete| {
             if (!complete) return ranOut(u32, final);
-            return findAfter(s, i + 7, "]]>", final);
+            return findAfterFrom(s, i + 7, "]]>", final, cursor);
         }
         if (rest.len == 0) return ranOut(u32, final);
-        if (std.ascii.isAlphabetic(rest[0])) return findAfter(s, i, ">", final);
+        if (std.ascii.isAlphabetic(rest[0])) return findAfterFrom(s, i, ">", final, cursor);
     }
     return null;
 }
@@ -1712,54 +1739,105 @@ fn startsOrPrefix(rest: []const u8, needle: []const u8) ?bool {
     return if (std.mem.startsWith(u8, needle, rest)) false else null;
 }
 
-/// The end of the first `needle` at or after `from`.
-fn findAfter(s: []const u8, from: u32, needle: []const u8, final: bool) error{NeedMore}!?u32 {
-    const close = std.mem.indexOfPos(u8, s, from, needle) orelse return ranOut(u32, final);
+/// The end of the first `needle` at or after `from`, searched from where `cursor` stopped
+/// (a needle's length back, as it may straddle the old end).
+fn findAfterFrom(s: []const u8, from: u32, needle: []const u8, final: bool, cursor: *HtmlResume) error{NeedMore}!?u32 {
+    const start = @max(from, cursor.at);
+    const close = std.mem.indexOfPos(u8, s, start, needle) orelse {
+        cursor.at = @max(start, @as(u32, @intCast(s.len -| (needle.len - 1))));
+        return ranOut(u32, final);
+    };
     return @intCast(close + needle.len);
 }
 
 /// `<tag attr="v"... />`; also used by HTML block type 7 (whole-line check by the caller).
 pub fn scanOpenTag(s: []const u8, at: u32, final: bool) error{NeedMore}!?u32 {
-    var i = at + 1;
-    if (i >= s.len) return ranOut(u32, final);
-    if (!std.ascii.isAlphabetic(s[i])) return null;
-    while (i < s.len and isTagNameChar(s[i])) i += 1;
-    while (true) {
-        const space_start = i;
-        while (i < s.len and isAsciiWhitespace(s[i])) i += 1;
-        if (i >= s.len) return ranOut(u32, final);
-        if (s[i] == '>') return i + 1;
-        if (s[i] == '/') {
-            if (i + 1 >= s.len) return ranOut(u32, final);
-            if (s[i + 1] == '>') return i + 2;
-            return null;
-        }
-        if (i == space_start) return null;
-        // Attribute name.
-        if (!(std.ascii.isAlphabetic(s[i]) or s[i] == '_' or s[i] == ':')) return null;
-        i += 1;
-        while (i < s.len and (std.ascii.isAlphanumeric(s[i]) or s[i] == '_' or s[i] == '.' or s[i] == ':' or s[i] == '-')) i += 1;
-        // Optional value.
-        var j = i;
-        while (j < s.len and isAsciiWhitespace(s[j])) j += 1;
-        if (j >= s.len) return ranOut(u32, final);
-        if (s[j] == '=') {
-            j += 1;
-            while (j < s.len and isAsciiWhitespace(s[j])) j += 1;
-            if (j >= s.len) return ranOut(u32, final);
-            const q = s[j];
-            if (q == '"' or q == '\'') {
-                const close = std.mem.indexOfScalarPos(u8, s, j + 1, q) orelse return ranOut(u32, final);
-                i = @intCast(close + 1);
-            } else {
-                const value_start = j;
-                while (j < s.len and !isAsciiWhitespace(s[j]) and std.mem.indexOfScalar(u8, "\"'=<>`", s[j]) == null) j += 1;
-                if (j == value_start) return null;
-                if (j >= s.len) return ranOut(u32, final);
-                i = j;
-            }
+    var cursor: HtmlResume = .{ .at = at };
+    return scanOpenTagFrom(s, at, final, &cursor);
+}
+
+/// An open tag, byte by byte from `cursor` (a state machine, so a tag that runs out resumes
+/// at the byte it stopped at).
+fn scanOpenTagFrom(s: []const u8, at: u32, final: bool, cursor: *HtmlResume) error{NeedMore}!?u32 {
+    if (cursor.at <= at) cursor.* = .{ .at = at + 1, .phase = .first };
+    var i = cursor.at;
+    var phase = cursor.phase;
+    defer {
+        cursor.at = i;
+        cursor.phase = phase;
+    }
+    while (i < s.len) : (i += 1) {
+        const c = s[i];
+        switch (phase) {
+            .first => {
+                if (!std.ascii.isAlphabetic(c)) return null;
+                phase = .name;
+            },
+            .name => {
+                if (isTagNameChar(c)) continue;
+                phase = .space;
+                i -= 1;
+            },
+            // After a tag name or a value: white space, then `>`, `/>` or (after white space)
+            // an attribute.
+            .space, .spaced => {
+                if (isAsciiWhitespace(c)) {
+                    phase = .spaced;
+                    continue;
+                }
+                if (c == '>') return i + 1;
+                if (c == '/') {
+                    phase = .slash;
+                    continue;
+                }
+                if (phase != .spaced or !(std.ascii.isAlphabetic(c) or c == '_' or c == ':')) return null;
+                phase = .attribute;
+            },
+            .slash => return if (c == '>') i + 1 else null,
+            .attribute => {
+                if (std.ascii.isAlphanumeric(c) or c == '_' or c == '.' or c == ':' or c == '-') continue;
+                phase = .after_attribute;
+                i -= 1;
+            },
+            .after_attribute => {
+                if (isAsciiWhitespace(c)) continue;
+                if (c == '=') {
+                    phase = .equals;
+                    continue;
+                }
+                // No value: this byte starts what follows the attribute.
+                phase = if (isAsciiWhitespace(s[i - 1])) .spaced else .space;
+                i -= 1;
+            },
+            .equals => {
+                if (isAsciiWhitespace(c)) continue;
+                phase = switch (c) {
+                    '"' => .double_quoted,
+                    '\'' => .single_quoted,
+                    else => blk: {
+                        if (std.mem.indexOfScalar(u8, "\"'=<>`", c) != null) return null;
+                        break :blk .unquoted;
+                    },
+                };
+            },
+            .double_quoted, .single_quoted => {
+                const q: u8 = if (phase == .double_quoted) '"' else '\'';
+                const close = std.mem.indexOfScalarPos(u8, s, i, q) orelse {
+                    i = @intCast(s.len);
+                    break;
+                };
+                i = @intCast(close);
+                phase = .space;
+            },
+            .unquoted => {
+                if (isAsciiWhitespace(c) or std.mem.indexOfScalar(u8, "\"'=<>`", c) != null) {
+                    phase = .space;
+                    i -= 1;
+                }
+            },
         }
     }
+    return ranOut(u32, final);
 }
 
 pub const Entity = struct { end: u32 };
