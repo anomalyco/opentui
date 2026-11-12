@@ -1174,7 +1174,6 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
       const markdown = new MarkdownRenderable(testRenderer, {
         syntaxStyle,
         streaming: true,
-        internalBlockMode: "top-level",
         content: `PARAGRAPH_${i}\n\n\`\`\`ts\nconst CODE_${i} = ${i}\n\`\`\``,
         treeSitterClient: mockTreeSitterClient,
       })
@@ -1217,23 +1216,18 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
   // mounted out of view, or moved out by the same tick's layout), it measures as the block grown in view does, never
   // paints raw text, and then shows the same.
   const lines = (count: number, prefix = "") => [1, 2, 3, 4, 5].slice(0, count).map((i) => `${prefix}line ${i}`)
+  // Markdown prose is written natively, culled or not, and never waits for a highlight, so only code blocks run here.
   const grownOutOfView: [string, boolean, (count: number) => string][] = [
     ["code", true, (count) => lines(count).join("\n")],
-    ["paragraph", false, (count) => lines(count).join("\n")],
     ["fence", true, (count) => ["```ts", ...lines(count), "```"].join("\n")],
-    ...[true, false].flatMap((streaming): [string, boolean, (count: number) => string][] => [
-      ["quote", streaming, (count) => lines(count, "> ").join("\n")],
-      ["list", streaming, (count) => `- ${lines(count).join("\n")}`],
-    ]),
   ]
   test.each(grownOutOfView)("a %s block (streaming %p) grown out of view", async (kind, streaming, source) => {
     // In the write's tick, a box inserted above, a last child the view follows, or a shrunk view moves the block out.
     const moved = ["pushed", "followed", "shrunk"]
     const run = async (first: boolean, mode: string) => {
       const client = createMockTreeSitterClient()
-      // The highlight conceals each block's first two characters, so text painted unhighlighted differs. Streamed prose
-      // shows a preview, which equals a highlight without captures.
-      const previewed = streaming && (kind === "quote" || kind === "list")
+      // The highlight conceals each block's first two characters, so text painted unhighlighted differs.
+      const previewed = false
       client.setMockResult({ highlights: previewed ? [] : [[0, 2, "conceal", { conceal: "" }]] })
       const syntaxStyle = SyntaxStyle.create(testRenderer.nativeScene)
       const scrollbox = new ScrollBoxRenderable(testRenderer, { width: 40, height: 6, stickyStart: "bottom" })
@@ -1244,7 +1238,7 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
       const target =
         kind === "code"
           ? new CodeRenderable(testRenderer, { ...options, filetype: "typescript", drawUnstyledText: false })
-          : new MarkdownRenderable(testRenderer, { ...options, internalBlockMode: "top-level" })
+          : new MarkdownRenderable(testRenderer, options)
       const mount = () => scrollbox.insertBefore(target, first ? scrollbox.getChildren()[0] : undefined)
       mount()
       const shown = first ? 0 : Infinity

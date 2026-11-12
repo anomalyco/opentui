@@ -402,8 +402,7 @@ class SplitFooterStreamingDemo {
             syntaxStyle: syntaxStyle!,
             width: "100%",
             streaming: true,
-            internalBlockMode: "top-level",
-            tableOptions: { widthMode: "content" },
+            tableOptions: { style: "columns", widthMode: "content" },
             treeSitterClient: this.treeSitterClient,
           })
           break
@@ -595,19 +594,20 @@ class SplitFooterStreamingDemo {
     renderable.streaming = !done
     await run.surface.settle()
 
-    const targetBlockCount = done ? renderable._blockStates.length : renderable._stableBlockCount
+    // Committed blocks never change again: write each one's rows, with the gap above it, once.
+    const blocks = renderable.getChildren()
+    const targetBlockCount = done ? blocks.length : renderable.committedBlockCount
     if (targetBlockCount <= run.committedBlocks) {
       return
     }
 
-    const firstState = renderable._blockStates[run.committedBlocks]!
-    const lastState = renderable._blockStates[targetBlockCount - 1]!
-    const nextState = renderable._blockStates[targetBlockCount]
-    const endRow = nextState
-      ? nextState.renderable.y
-      : lastState.renderable.y + lastState.renderable.height + (lastState.marginBottom ?? 0)
+    const first = blocks[run.committedBlocks]!
+    const last = blocks[targetBlockCount - 1]!
+    const startRow = run.committedBlocks === 0 ? first.y : run.committedRows
+    const endRow = done ? run.surface.height : last.y + last.height
 
-    run.surface.commitRows(firstState.renderable.y, endRow)
+    run.surface.commitRows(startRow, endRow)
+    run.committedRows = endRow
     run.committedBlocks = targetBlockCount
     this.wrote = true
   }

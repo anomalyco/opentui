@@ -7670,7 +7670,12 @@ export class FFIRenderLib {
   }
 
   /** The byte the latest finished frame drew at cell (x, y) of a text node, or undefined. */
-  public sceneGetTextByteAt(context: NativeContextHandle, node: SceneNodeHandle, x: number, y: number): number | undefined {
+  public sceneGetTextByteAt(
+    context: NativeContextHandle,
+    node: SceneNodeHandle,
+    x: number,
+    y: number,
+  ): number | undefined {
     const output = new Uint32Array(1)
     const pointer = this.nativeContextPointer(context, "ot_scene_get_text_byte_at")
     nativeResult(
@@ -7685,7 +7690,8 @@ export class FFIRenderLib {
     const record = createContextRecord(nativeLayouts.ot_markdown_options)
     record[fields.flags.offset / 4] = options.flags
     record[fields.source_byte_limit.offset / 4] = options.sourceByteLimit ?? 0
-    if (options.syntaxStyle) record.set(encodeContextHandle(context, options.syntaxStyle), fields.syntax_style.offset / 4)
+    if (options.syntaxStyle)
+      record.set(encodeContextHandle(context, options.syntaxStyle), fields.syntax_style.offset / 4)
     const filter = this.encoder.encode((options.hookFilter ?? []).join("\0"))
     if (filter.length > fields.hook_filter.size) throw new RangeError("Markdown hook filter is too long")
     new Uint8Array(record.buffer, fields.hook_filter.offset).set(filter)
@@ -7699,7 +7705,9 @@ export class FFIRenderLib {
     call: (pointer: Pointer, output: Uint32Array) => NativeStatus,
   ): NativeMarkdownResult {
     const output = new Uint32Array(3)
-    this.getYogaHost().runMutation(() => nativeResult(operation, call(this.nativeContextPointer(context, operation), output)))
+    this.getYogaHost().runMutation(() =>
+      nativeResult(operation, call(this.nativeContextPointer(context, operation), output)),
+    )
     const removed = output[2]
     return { changed: output[0], committed: output[1], removedFrom: removed === 0xffff_ffff ? undefined : removed }
   }
@@ -7765,7 +7773,11 @@ export class FFIRenderLib {
   }
 
   /** The blocks changed since the last read, in document order; reading acknowledges them. */
-  public markdownReadChanges(context: NativeContextHandle, doc: ContextMarkdownHandle, count: number): NativeMarkdownBlock[] {
+  public markdownReadChanges(
+    context: NativeContextHandle,
+    doc: ContextMarkdownHandle,
+    count: number,
+  ): NativeMarkdownBlock[] {
     const layout = nativeLayouts.ot_markdown_block
     const words = new Uint32Array((count * layout.size) / 4)
     const halves = new Uint16Array(words.buffer)
@@ -7801,7 +7813,10 @@ export class FFIRenderLib {
     const handle = encodeContextHandle(context, doc)
     const count = new Uint32Array(1)
     const pointer = this.nativeContextPointer(context, "ot_markdown_read_source")
-    nativeResult("ot_markdown_read_source", this.opentui.symbols.ot_markdown_read_source(pointer, handle, block, null, 0, count))
+    nativeResult(
+      "ot_markdown_read_source",
+      this.opentui.symbols.ot_markdown_read_source(pointer, handle, block, null, 0, count),
+    )
     if (count[0] === 0) return ""
     const bytes = new Uint8Array(count[0])
     nativeResult(
@@ -7817,7 +7832,12 @@ export class FFIRenderLib {
     const counts = new Uint32Array(3)
     const [byteCount, chunkCount, urlCount] = [counts.subarray(0, 1), counts.subarray(1, 2), counts.subarray(2, 3)]
     const pointer = this.nativeContextPointer(context, "ot_markdown_read_leaf")
-    const read = (bytes: Uint8Array | null, chunks: Uint32Array | null, spans: Uint32Array | null, urls: Uint8Array | null) =>
+    const read = (
+      bytes: Uint8Array | null,
+      chunks: Uint32Array | null,
+      spans: Uint32Array | null,
+      urls: Uint8Array | null,
+    ) =>
       nativeResult(
         "ot_markdown_read_leaf",
         this.opentui.symbols.ot_markdown_read_leaf(
@@ -7868,7 +7888,12 @@ export class FFIRenderLib {
   }
 
   /** Binds a scene text node to a paragraph or heading, which the doc then writes. */
-  public markdownBind(context: NativeContextHandle, doc: ContextMarkdownHandle, block: number, node: SceneNodeHandle): void {
+  public markdownBind(
+    context: NativeContextHandle,
+    doc: ContextMarkdownHandle,
+    block: number,
+    node: SceneNodeHandle,
+  ): void {
     const handle = encodeContextHandle(context, doc)
     const target = encodeContextHandle(context, node)
     this.getYogaHost().runMutation(() => {

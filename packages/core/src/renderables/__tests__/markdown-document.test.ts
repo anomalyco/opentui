@@ -81,3 +81,20 @@ test("the host's blocks and content equal a fresh document's after every call", 
   }
   if (!process.env.MODEL_SEED) expect(rejected).toBeGreaterThan(0)
 })
+
+// New defect M3-a (engine): a pending line that ends in a task marker is laid out as text, and the next append grows that
+// layout instead of deciding the marker, so the streamed document differs from a fresh one (model seeds 71, 1111, 1120,
+// 1355 and 1447 at MODEL_SEEDS=2000).
+test.todo("a streamed task marker at the end of the pending line is decided as in a fresh document", () => {
+  for (const [first, next] of [
+    ["- [x] - [x] ", "**"],
+    ["- - [x] ", "- [x] **"],
+  ]) {
+    const streamed = create({ flags: 0, syntaxStyle: null })
+    streamed.write(first!, true)
+    streamed.write(first! + next!, true)
+    const fresh = create({ flags: 0, syntaxStyle: null })
+    fresh.write(first! + next!, true)
+    expect(streamed.blocks).toEqual(fresh.blocks)
+  }
+})
