@@ -2253,6 +2253,29 @@ test "Markdown changes: a late definition lists again the paragraph it changes" 
     var f: Fixture = undefined;
     try f.init(.{});
     defer f.deinit();
+    // M2's F2-b: a pending fence opener's info string is the rest of its line; as it grows, the
+    // code block is listed again with the fresh doc's info range (M2 012b6c347's ABI row).
+    for ([_][]const []const u8{ &.{ "```", " ab" }, &.{ " 1. [x] ", "```", " ab" }, &.{ "- ", "```", " ab" } }) |parts| {
+        var g: Fixture = undefined;
+        try g.init(.{});
+        defer g.deinit();
+        var changes: [16]Doc.Change = undefined;
+        for (parts) |part| {
+            try g.doc.append(part);
+            const read = g.doc.readChanges(&changes);
+            var fresh: Fixture = undefined;
+            try fresh.init(.{});
+            defer fresh.deinit();
+            try fresh.doc.append(g.doc.source.items);
+            for (fresh.doc.blocks.items, 0..) |b, i| {
+                if (b.kind != .code) continue;
+                try std.testing.expect(std.mem.eql(u32, &b.payload, &g.doc.blocks.items[i].payload));
+                var found = false;
+                for (changes[0..read.count]) |c| found = found or (c.index == i and std.mem.eql(u32, &c.block.payload, &b.payload));
+                try std.testing.expect(found);
+            }
+        }
+    }
     // A pending row's cell and a pending paragraph that grow after a read are listed again
     // (the growth path writes them in place).
     for ([_][]const u8{ "|a|b|\n|-|-|\n| ab", "> some te" }) |text| {

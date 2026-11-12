@@ -1918,6 +1918,11 @@ pub const Doc = struct {
                 if (!ext.row.full and self.blocks.items.len + new.len > self.options.limits.block_count) return false;
             },
         }
+        // A fence opener's info string is the rest of its line: a new layout reads it.
+        for (ext.path[0..ext.path_len]) |index| {
+            const block = self.blocks.items[index];
+            if (block.kind == .code and block.flags.fenced and block.source_start_byte >= self.line_start_byte) return false;
+        }
         self.counters.block_byte_visits += new.len;
         self.provisional = true;
         defer self.provisional = false;
