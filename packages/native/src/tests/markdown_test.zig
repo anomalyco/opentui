@@ -2122,6 +2122,9 @@ test "Markdown stream: a leaf that changes kind or loses lines keeps its live di
     for ([_][]const u8{ "para\n$$E=mc^2$$\nafter", "p\n\\[y\\]\n", "$$x$$ y\n", "| r |\n|---|\n$$x$$ y\n", "| r |\n|---|\n$$E=mc^2$$\nafter" }) |text| {
         for ([_]usize{ 1, 4, 30 }) |width| try std.testing.expect(try streamAgreesParts(arena, "math kinds", try split(arena, text, width)));
     }
+    // A pending ATX heading's content starts after the white space that follows `#`, as a fresh
+    // parse starts it (the command model over every option set found it after a task marker).
+    for ([_][]const u8{ "# ", "0. [x] # " }) |text| try std.testing.expect(try streamAgreesParts(arena, "kinds", try std.mem.concat(arena, []const u8, &.{ try split(arena, text, 1), &.{ " ", "\\" } })));
     // One title scanner for definitions and inline links: a parenthesized title cannot hold an
     // unescaped `(` (cmark-gfm: both stay text).
     for ([_][]const u8{ "[a](/u (b(c)))\n", "[x]: /u (b(c))\n\n[x]\n" }) |text| {
