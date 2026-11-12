@@ -165,9 +165,10 @@ pub fn writtenShowReadLeaf(arena: std.mem.Allocator, doc: *const Doc, sink: *mar
 fn nodeShowsReadLeaf(arena: std.mem.Allocator, doc: *const Doc, sink: *const markdown.TailSink, index: u32) !bool {
     const b = doc.blocks.items[index];
     if (!markdown.Doc.isBound(b)) return true;
-    const expected = (try doc.readLeaf(arena, index)).bytes.items;
-    if (std.mem.eql(u8, expected, sink.shown(index))) return true;
-    std.debug.print("leaf {d} shows '{s}', read_leaf '{s}'\n", .{ index, sink.shown(index), expected });
+    const leaf = try doc.readLeaf(arena, index);
+    const expected = leaf.bytes.items;
+    if (std.mem.eql(u8, expected, sink.shown(index)) and markdown.Doc.sameStyles(leaf, sink.shownStyles(index))) return true;
+    std.debug.print("leaf {d} shows '{s}', read_leaf '{s}' (styles {s})\n", .{ index, sink.shown(index), expected, if (std.mem.eql(u8, expected, sink.shown(index))) "differ" else "-" });
     return false;
 }
 
@@ -493,7 +494,7 @@ const model = @import("model.zig");
 
 /// Pieces the soup generator glues together: every block start, inline opener and line ending
 /// the engine has a state for.
-const soup = [_][]const u8{
+pub const soup = [_][]const u8{
     "- ",        "> ",  "```",      "```\n", "|",     " | ",   "| --- | --- |\n", "[x]",
     "[x]: /u\n", "**",  "*",        "_",     "`",     "$",     "10. ",            "1. ",
     "===",       "---", "\t",       "\r\n",  "\n",    "\n\n",  "word",            " ",

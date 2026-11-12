@@ -1776,6 +1776,120 @@ typedef struct ot_highlight_run {
 ot_status ot_edit_buffer_set_layer(ot_context *, const ot_handle *, uint32_t layer_id,
     uint32_t start_byte, uint32_t end_byte, const ot_highlight_run *runs, uint32_t run_count);
 
+/* A streamed Markdown document (CommonMark 0.31.2 with GFM tables, strikethrough, task lists and
+ * extended autolinks), parsed incrementally. Blocks have preorder indices, which are their ids;
+ * a removal is always a suffix. Complete lines parse exactly; the bytes after the last line
+ * ending are laid out provisionally, held while their kind can still change. Limits: source
+ * 64 MiB, 1,048,576 blocks, 4,096 link definitions, 32 levels of nesting, hook filter 256
+ * bytes. A rejected call changes nothing: the document, its bound nodes and its pending
+ * changes stay as they were. */
+#define OT_MD_CONCEAL UINT32_C(1)    /* hide markers; off, a leaf shows its source, styled */
+#define OT_MD_HYPERLINKS UINT32_C(2) /* the terminal shows links; off, a label that is not its
+                                        URL is followed by " (url)" */
+#define OT_MD_MATH UINT32_C(4)       /* $…$, \(…\) inline math; $$ and \[ blocks (code, MATH) */
+#define OT_MD_HOOK UINT32_C(8)       /* prose leaves whose source holds a filter substring latch
+                                        HOOKED: the host writes them */
+typedef struct ot_markdown_options {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t flags;             /* OT_MD_* */
+    uint32_t source_byte_limit; /* 0 = 64 MiB; may only lower it */
+    ot_handle syntax_style;     /* style the bound nodes and read_leaf resolve with; zero = none */
+    uint32_t hook_filter_byte_count; /* <= OT_MD_HOOK_FILTER_BYTE_COUNT_MAX */
+    uint32_t reserved;
+    /* NUL-separated substrings, each 1..64 bytes, in the first hook_filter_byte_count bytes;
+     * none with OT_MD_HOOK = every prose leaf is hooked. */
+    uint8_t hook_filter[256];
+} ot_markdown_options;
+#define OT_MD_HOOK_FILTER_BYTE_COUNT_MAX UINT32_C(256)
+typedef struct ot_markdown_result {
+    uint32_t changed_block_count;       /* blocks read_changes lists now */
+    uint32_t committed_top_level_count; /* leading top-level blocks that are final */
+    uint32_t removed_from_index;        /* blocks at this index and after were removed since
+                                           the last read; UINT32_MAX = none */
+} ot_markdown_result;
+/* The doc keeps a copy of the filter. syntax_style must name a live style. */
+ot_status ot_markdown_create(ot_context *, const ot_markdown_options *, ot_handle *out_doc);
+/* Bound nodes keep their last text. */
+ot_status ot_markdown_destroy(ot_context *, const ot_handle *doc);
+/* Conceal, hyperlink, math, hook and limit changes parse the source again: blocks equal to the
+ * old ones keep their indices, bound nodes whose leaf output changed are written again (the
+ * listed ones the host writes), and the blocks after the first difference are removed. A style
+ * change binds the bound nodes to the new style without a rewrite. A finished doc stays
+ * finished. */
+ot_status ot_markdown_set_options(ot_context *, const ot_handle *doc, const ot_markdown_options *,
+    ot_markdown_result *out);
+/* bytes is valid UTF-8 and may be NULL only when byte_count is zero. After finish, an append is
+ * a fresh parse of the whole source and the bytes. */
+ot_status ot_markdown_append(ot_context *, const ot_handle *doc, const uint8_t *bytes,
+    uint32_t byte_count, ot_markdown_result *out);
+/* A fresh parse of bytes; leading blocks equal to the old ones keep their indices unreported. */
+ot_status ot_markdown_set(ot_context *, const ot_handle *doc, const uint8_t *bytes,
+    uint32_t byte_count, ot_markdown_result *out);
+/* Ends the document: the pending line is complete and every block closes. A fence or math
+ * block without its closer stays without OT_MD_BLOCK_CLOSED. */
+ot_status ot_markdown_finish(ot_context *, const ot_handle *doc, ot_markdown_result *out);
+/* The source, borrowed until the next mutating call on doc or its destruction. */
+ot_status ot_markdown_get_source(ot_context *, const ot_handle *doc, const uint8_t **out_bytes,
+    uint32_t *out_byte_count);
+
+#define OT_MD_PARAGRAPH UINT32_C(0)
+#define OT_MD_HEADING UINT32_C(1)
+#define OT_MD_CODE UINT32_C(2)       /* fenced, indented, or display math (OT_MD_BLOCK_MATH) */
+#define OT_MD_HTML UINT32_C(3)       /* shown as its source text */
+#define OT_MD_RULE UINT32_C(4)
+#define OT_MD_TABLE UINT32_C(5)
+#define OT_MD_TABLE_ROW UINT32_C(6)
+#define OT_MD_TABLE_CELL UINT32_C(7) /* a row's source cells only; shorter rows have fewer */
+#define OT_MD_QUOTE UINT32_C(8)
+#define OT_MD_LIST UINT32_C(9)
+#define OT_MD_ITEM UINT32_C(10)
+#define OT_MD_BLOCK_CLOSED UINT32_C(1)       /* a fence's or math block's closer arrived */
+#define OT_MD_BLOCK_SETEXT UINT32_C(2)
+#define OT_MD_BLOCK_ORDERED UINT32_C(4)
+#define OT_MD_BLOCK_TIGHT UINT32_C(8)        /* set when the list closes */
+#define OT_MD_BLOCK_TASK UINT32_C(16)
+#define OT_MD_BLOCK_CHECKED UINT32_C(32)
+#define OT_MD_BLOCK_BLANK_AFTER UINT32_C(64) /* a blank line separates the item from the next */
+#define OT_MD_BLOCK_FENCED UINT32_C(128)
+#define OT_MD_BLOCK_HOOKED UINT32_C(256)
+#define OT_MD_BLOCK_MATH UINT32_C(512)       /* display math: a code block of the language math */
+#define OT_MD_BLOCK_HEADER UINT32_C(1024)    /* a table's header row */
+#define OT_MD_BLOCK_OPEN UINT32_C(2048)      /* later lines may still extend the block */
+typedef struct ot_markdown_block {
+    uint32_t index;           /* preorder index = block id */
+    uint32_t parent_index;    /* UINT32_MAX at top level */
+    uint16_t kind;            /* OT_MD_PARAGRAPH .. OT_MD_ITEM */
+    uint16_t flags;           /* OT_MD_BLOCK_* */
+    uint32_t source_start_byte;
+    uint32_t source_end_byte;
+    uint32_t info_start_byte; /* a fence's info string; empty otherwise */
+    uint32_t info_end_byte;
+    uint32_t number;          /* heading level, list start, table column count, cell column */
+} ot_markdown_block;
+/* Lists every block changed since the last successful read, in document order, and clears the
+ * pending changes and removed_from_index. A zero or short capacity reports the count and
+ * acknowledges nothing. blocks may be NULL only when block_capacity is zero. */
+ot_status ot_markdown_read_changes(ot_context *, const ot_handle *doc, ot_markdown_block *blocks,
+    uint32_t block_capacity, uint32_t *out_block_count);
+#define OT_MD_SPAN_CODE UINT32_C(1)
+#define OT_MD_SPAN_MATH UINT32_C(2)
+/* The parser's output for a leaf (paragraph, heading, code, HTML block or table cell), never a
+ * host's: its display bytes, styled chunks resolved through the doc's style (links point into
+ * urls, as ot_scene_set_styled_text takes them), and, when spans is not NULL, one OT_MD_SPAN_*
+ * word per chunk. All capacities zero report the three counts; otherwise each must hold its
+ * count, and an undersized call writes nothing. A pointer may be NULL only with zero capacity. */
+ot_status ot_markdown_read_leaf(ot_context *, const ot_handle *doc, uint32_t block_index,
+    uint8_t *bytes, uint32_t byte_capacity, uint32_t *out_byte_count,
+    ot_styled_text_chunk *chunks, uint32_t *spans, uint32_t chunk_capacity, uint32_t *out_chunk_count,
+    uint8_t *urls, uint32_t url_byte_capacity, uint32_t *out_url_byte_count);
+/* Binds a scene text node to a paragraph or heading: the node draws with the doc's style, and
+ * while the leaf is not hooked and the doc conceals and shows hyperlinks, the doc writes the
+ * leaf's display and Markdown runs to it now and on every change. A removal of the block
+ * unbinds it; a destroyed node is skipped. */
+ot_status ot_markdown_bind(ot_context *, const ot_handle *doc, uint32_t block_index,
+    const ot_handle *text_node);
+
 typedef struct ot_editor_viewport {
     uint32_t struct_size;
     uint32_t abi_version;

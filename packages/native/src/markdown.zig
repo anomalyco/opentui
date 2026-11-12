@@ -109,6 +109,17 @@ pub const Options = struct {
     /// NUL-separated substrings; a leaf whose source holds one latches `HOOKED`.
     hook_filter: []const u8 = "",
     hook: bool = false,
+    /// read_leaf hides markers. Off, a leaf shows its source, styled (M2 writes such leaves
+    /// from the host; the live display always conceals).
+    conceal: bool = true,
+    /// The terminal shows OSC 8 links. Off, read_leaf follows a link whose label is not its URL
+    /// with ` (url)`.
+    hyperlinks: bool = true,
+
+    /// The live display is what read_leaf shows: bound leaves can be written natively.
+    pub fn liveShown(self: Options) bool {
+        return self.conceal and self.hyperlinks;
+    }
 };
 
 pub const Error = error{ OutOfMemory, SourceLimit, BlockLimit, InvalidOptions };
@@ -139,6 +150,8 @@ pub const Counters = struct {
     tail_write_bytes: u64 = 0,
     /// The live leaf's guess about the pending line disagreed with the parsed line (must stay 0).
     live_mismatch_count: u64 = 0,
+    /// Live tokens walked to style a tail write's runs (and the styles a fold or retire keeps).
+    run_token_visits: u64 = 0,
 
     pub fn plus(a: Counters, b: Counters) Counters {
         var sum: Counters = .{};
@@ -297,20 +310,58 @@ const Live = struct {
     expired_display: u32 = none,
     /// The doc's definition count when the leaf was parsed against them.
     definition_count: u32 = 0,
+    /// The span styles and link in force before the first live token (folded or retired tokens
+    /// may leave a span open across the cut), and that link's URL.
+    base_styles: Styles = .{},
+    base_link: std.ArrayListUnmanaged(u8) = .empty,
+    /// The content held an `@`: a GFM email autolink may link text once the leaf is final.
+    email_possible: bool = false,
+};
+
+/// One write to a bound leaf's node: its text from byte `from` on becomes `bytes`, and its
+/// Markdown runs from `runs_from` (at most `from`) to the new end become `chunks` (styles of
+/// those bytes, links into `urls`).
+pub const NodeWrite = struct {
+    block: u32,
+    from: u32,
+    bytes: []const u8,
+    runs_from: u32,
+    chunks: []const Chunk,
+    urls: []const u8,
+};
+
+/// Where the engine writes bound leaves (M2: the Context's binding of scene text nodes).
+pub const Writer = struct {
+    context: *anyopaque,
+    write_fn: *const fn (context: *anyopaque, doc: *const Doc, write: NodeWrite) Error!void,
+    /// A removal in this call unbound the nodes of blocks from this index on (none: none):
+    /// writes to them are dropped, and the owner forgets their bindings after the call.
+    unbound_from: u32 = none,
 };
 
 /// Test instrument: applies every write the engine makes to a bound leaf (Doc.isBound) to a
-/// mirror of that leaf's display, one per block, as bound text nodes would receive them, and
-/// checks a leaf's mirror against a whole parse when it closes.
+/// mirror of that leaf's display and styles, one per block, as bound text nodes would receive
+/// them, and checks a leaf's mirror against read_leaf.
 pub const TailSink = struct {
     allocator: Allocator,
-    mirrors: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u8)) = .empty,
+    mirrors: std.AutoHashMapUnmanaged(u32, Mirror) = .empty,
     checked_leaf_count: u32 = 0,
     mismatch_count: u32 = 0,
     /// The first block index a removal shifted since the last call ended (none: none).
     rebind_from: u32 = none,
     /// The blocks whose nodes were written since the test last cleared it.
     written: std.ArrayListUnmanaged(u32) = .empty,
+
+    /// A node's bytes and, per byte, its style: scope and span bits and a hash of its URL.
+    pub const Mirror = struct {
+        bytes: std.ArrayListUnmanaged(u8) = .empty,
+        styles: std.ArrayListUnmanaged(u64) = .empty,
+
+        fn deinit(self: *Mirror, allocator: Allocator) void {
+            self.bytes.deinit(allocator);
+            self.styles.deinit(allocator);
+        }
+    };
 
     pub fn deinit(self: *TailSink) void {
         var it = self.mirrors.valueIterator();
@@ -319,27 +370,48 @@ pub const TailSink = struct {
         self.written.deinit(self.allocator);
     }
 
-    pub fn mirror(self: *TailSink, block: u32) Allocator.Error!*std.ArrayListUnmanaged(u8) {
+    pub fn mirror(self: *TailSink, block: u32) Allocator.Error!*Mirror {
         try self.written.append(self.allocator, block);
         const entry = try self.mirrors.getOrPut(self.allocator, block);
-        if (!entry.found_existing) entry.value_ptr.* = .empty;
+        if (!entry.found_existing) entry.value_ptr.* = .{};
         return entry.value_ptr;
     }
 
     /// What block `block`'s node shows ("" before any write).
     pub fn shown(self: *const TailSink, block: u32) []const u8 {
-        return if (self.mirrors.get(block)) |m| m.items else "";
+        return if (self.mirrors.getPtr(block)) |m| m.bytes.items else "";
     }
 
-    /// Writes `bytes` over the node's display from byte `from` on.
-    fn write(self: *TailSink, block: u32, from: u32, bytes: []const u8) Allocator.Error!void {
+    /// The per-byte styles of block `block`'s node.
+    pub fn shownStyles(self: *const TailSink, block: u32) []const u64 {
+        return if (self.mirrors.getPtr(block)) |m| m.styles.items else &.{};
+    }
+
+    /// Applies one write.
+    fn write(self: *TailSink, w: NodeWrite) Allocator.Error!void {
         // A removal earlier in the call unbound the nodes from its index on (rebound after it).
-        if (block >= self.rebind_from) return;
-        const m = try self.mirror(block);
+        if (w.block >= self.rebind_from) return;
+        const m = try self.mirror(w.block);
         // A write past the node's end is a defect the checks report (the gap shows as '?').
-        while (m.items.len < from) try m.append(self.allocator, '?');
-        m.shrinkRetainingCapacity(from);
-        try m.appendSlice(self.allocator, bytes);
+        while (m.bytes.items.len < w.from) try m.bytes.append(self.allocator, '?');
+        m.bytes.shrinkRetainingCapacity(w.from);
+        try m.bytes.appendSlice(self.allocator, w.bytes);
+        // New bytes have no style until a run covers them (a key no chunk makes).
+        m.styles.shrinkRetainingCapacity(@min(m.styles.items.len, w.from));
+        try m.styles.appendNTimes(self.allocator, std.math.maxInt(u64), m.bytes.items.len - m.styles.items.len);
+        assert(w.runs_from <= w.from);
+        var at = w.runs_from;
+        for (w.chunks) |chunk| {
+            const key = styleKey(chunk, w.urls);
+            for (m.styles.items[at..@min(at + chunk.byte_count, m.styles.items.len)]) |*style| style.* = key;
+            at += chunk.byte_count;
+        }
+    }
+
+    pub fn styleKey(chunk: Chunk, urls: []const u8) u64 {
+        const url = urls[chunk.link_offset..][0..chunk.link_byte_count];
+        const link: u64 = if (chunk.link_byte_count == 0) 0 else @as(u32, @truncate(std.hash.Wyhash.hash(0, url))) | 1;
+        return @as(u64, @as(u16, @bitCast(chunk.scope))) | @as(u64, @as(u2, @truncate(@as(u32, @bitCast(chunk.span))))) << 16 | link << 32;
     }
 };
 
@@ -365,6 +437,7 @@ pub const Doc = struct {
     commit_cursor: u32 = 0,
     live: Live,
     tail_sink: ?*TailSink = null,
+    writer: ?*Writer = null,
     counters: Counters = .{},
     /// Undo log of the current mutation (scratch memory): records the first change of each block
     /// that existed before the call, so a rejected call restores them.
@@ -458,6 +531,7 @@ pub const Doc = struct {
 
     pub fn deinit(self: *Doc) void {
         self.live.parser.deinit();
+        self.live.base_link.deinit(self.allocator);
         self.live.content.deinit(self.allocator);
         self.live.display_ends.deinit(self.allocator);
         self.live.pending_display.deinit(self.allocator);
@@ -617,19 +691,33 @@ pub const Doc = struct {
         var equal: u32 = 0;
         const count = @min(self.blocks.items.len, fresh.blocks.items.len);
         while (equal < count and self.sameBlock(fresh, equal)) equal += 1;
-        // A leaf with the same bytes shows otherwise when a definition or the math option did.
-        const outputs_may_change = fresh.options.math != self.options.math or !try self.sameDefinitions(fresh);
+        // A leaf with the same bytes shows otherwise when a definition or an option did.
+        const outputs_may_change = fresh.options.math != self.options.math or fresh.options.conceal != self.options.conceal or
+            fresh.options.hyperlinks != self.options.hyperlinks or !try self.sameDefinitions(fresh);
+        var rewrite: std.ArrayListUnmanaged(u32) = .empty;
         for (fresh.blocks.items[0..equal], self.blocks.items[0..equal], 0..) |*new, old, i| {
             new.flags.unreported = old.flags.unreported;
-            if (outputs_may_change and isInlineLeaf(old) and !try self.sameLeafOutput(fresh, @intCast(i))) new.flags.unreported = true;
+            // An open leaf's display also depends on whether its last line is complete (B holds
+            // a trailing `]` only in the pending line).
+            if ((outputs_may_change or old.flags.open) and isInlineLeaf(old) and !try self.sameLeafOutput(fresh, @intCast(i))) {
+                new.flags.unreported = true;
+                if (isBound(old)) try rewrite.append(self.scratch.allocator(), @intCast(i));
+            }
         }
         const removed = if (equal < self.read_block_count) @min(self.removed_from_index, equal) else self.removed_from_index;
         fresh.removed_from_index = removed;
         fresh.counters = self.counters.plus(fresh.counters);
         fresh.read_block_count = @min(self.read_block_count, equal);
         fresh.tail_sink = self.tail_sink;
+        fresh.writer = self.writer;
         self.deinit();
         self.* = fresh.*;
+        // The equal leading blocks keep their nodes, rewritten where their output changed; the
+        // host binds the blocks after them again.
+        if (self.writer) |w| {
+            w.unbound_from = @min(w.unbound_from, equal);
+            for (rewrite.items) |i| try self.writeLeafNode(i);
+        }
         // A host rebinds after a replace: each node shows its leaf's display (test sink).
         if (self.tail_sink) |sink| {
             sink.rebind_from = 0;
@@ -692,9 +780,15 @@ pub const Doc = struct {
 
     /// Lists the blocks changed since the last successful read, in document order, and clears
     /// the pending state. A capacity below the count reports the count and acknowledges nothing.
-    pub fn readChanges(self: *Doc, out: []Change) struct { count: u32, removed_from_index: u32 } {
+    /// The blocks the next read lists.
+    pub fn changeCount(self: *const Doc) u32 {
         var count: u32 = 0;
         for (self.blocks.items) |b| count += @intFromBool(b.flags.unreported);
+        return count;
+    }
+
+    pub fn readChanges(self: *Doc, out: []Change) struct { count: u32, removed_from_index: u32 } {
+        const count = self.changeCount();
         const removed = self.removed_from_index;
         // A zero or short capacity reports the count and acknowledges nothing.
         if (out.len == 0 or out.len < count) return .{ .count = count, .removed_from_index = removed };
@@ -1543,6 +1637,7 @@ pub const Doc = struct {
 
     fn noteRemoved(self: *Doc, index: u32) void {
         if (self.tail_sink) |sink| sink.rebind_from = @min(sink.rebind_from, index);
+        if (self.writer) |w| w.unbound_from = @min(w.unbound_from, index);
         // A block no read listed yet leaves nothing behind.
         if (index < self.read_block_count) {
             self.removed_from_index = @min(self.removed_from_index, index);
@@ -2301,6 +2396,9 @@ pub const Doc = struct {
         try self.liveFeed(live.content.items[0..end], true);
         if (b.flags.setext) try self.liveWriteExtra(try self.setextUnderline(self.scratch.allocator(), index));
         if (live.expired_display != none) try self.liveRewrite(index, @min(live.expired_display, live.shown_byte_count));
+        // Styles the final parse gives bytes before the live tokens: a setext heading's, and
+        // an email autolink's (found only once the leaf is final).
+        if (b.flags.setext or live.email_possible) try self.liveRestyle(index);
         const unresolved = live.parser.unresolved;
         if (self.tail_sink) |sink| try self.checkSink(sink, index);
         self.liveReset(none, none);
@@ -2316,11 +2414,32 @@ pub const Doc = struct {
         sink.rebind_from = none;
         var it = sink.mirrors.iterator();
         while (it.next()) |entry| {
-            if (entry.key_ptr.* >= i) entry.value_ptr.clearRetainingCapacity();
+            if (entry.key_ptr.* >= i) {
+                entry.value_ptr.bytes.clearRetainingCapacity();
+                entry.value_ptr.styles.clearRetainingCapacity();
+            }
         }
         while (i < self.blocks.items.len) : (i += 1) {
-            if (isBound(self.blocks.items[i])) try sink.write(i, 0, (try self.readLeaf(self.scratch.allocator(), i)).bytes.items);
+            if (isBound(self.blocks.items[i])) try sink.write(try self.wholeWrite(i));
         }
+    }
+
+    /// Leaf `index`'s whole display and styles, as one write.
+    pub fn wholeWrite(self: *const Doc, index: u32) Error!NodeWrite {
+        const leaf = try self.readLeaf(self.scratch.allocator(), index);
+        return .{ .block = index, .from = 0, .bytes = leaf.bytes.items, .runs_from = 0, .chunks = leaf.chunks.items, .urls = leaf.urls.items };
+    }
+
+    /// Sends one write to the test sink and to the node writer.
+    fn emit(self: *Doc, w: NodeWrite) Error!void {
+        if (self.tail_sink) |sink| try sink.write(w);
+        if (self.writer) |writer| if (w.block < writer.unbound_from) try writer.write_fn(writer.context, self, w);
+    }
+
+    /// Writes leaf `index` whole to its node only (the test sink rebinds on its own).
+    fn writeLeafNode(self: *Doc, index: u32) Error!void {
+        const writer = self.writer orelse return;
+        if (index < writer.unbound_from) try writer.write_fn(writer.context, self, try self.wholeWrite(index));
     }
 
     /// The prose leaves bound to a text node, which the engine writes: paragraphs and headings
@@ -2331,20 +2450,44 @@ pub const Doc = struct {
 
     /// Writes leaf `index`'s whole display to its node (a whole parse).
     fn writeLeaf(self: *Doc, index: u32) Error!void {
-        const whole = (try self.readLeaf(self.scratch.allocator(), index)).bytes.items;
-        self.counters.display_byte_visits += whole.len;
-        self.counters.tail_write_bytes += whole.len;
-        if (self.tail_sink) |sink| try sink.write(index, 0, whole);
+        const whole = try self.wholeWrite(index);
+        self.counters.display_byte_visits += whole.bytes.len;
+        self.counters.tail_write_bytes += whole.bytes.len;
+        try self.emit(whole);
     }
 
     fn checkSink(self: *const Doc, sink: *TailSink, index: u32) Error!void {
         if (index >= sink.rebind_from) return;
-        const expected = (try self.readLeaf(self.scratch.allocator(), index)).bytes.items;
+        const leaf = try self.readLeaf(self.scratch.allocator(), index);
+        const expected = leaf.bytes.items;
         sink.checked_leaf_count += 1;
-        if (!std.mem.eql(u8, expected, sink.shown(index))) {
+        if (!std.mem.eql(u8, expected, sink.shown(index)) or !sameStyles(leaf, sink.shownStyles(index))) {
             sink.mismatch_count += 1;
-            if (std.debug.runtime_safety) std.debug.print("live display mismatch at block {d}: expected '{s}' mirror '{s}'\n", .{ index, expected, sink.shown(index) });
+            if (std.debug.runtime_safety) {
+                std.debug.print("live display mismatch at block {d}: expected '{s}' mirror '{s}'\n", .{ index, expected, sink.shown(index) });
+                var at: usize = 0;
+                for (leaf.chunks.items) |chunk| {
+                    const key = TailSink.styleKey(chunk, leaf.urls.items);
+                    for (at..at + chunk.byte_count) |byte| {
+                        const shown_key = if (byte < sink.shownStyles(index).len) sink.shownStyles(index)[byte] else 0;
+                        if (shown_key != key) std.debug.print("  byte {d}: style {x} shown {x}\n", .{ byte, key, shown_key });
+                    }
+                    at += chunk.byte_count;
+                }
+            }
         }
+    }
+
+    /// Whether `styles` gives each byte of `leaf` its chunk's style.
+    pub fn sameStyles(leaf: Leaf, styles: []const u64) bool {
+        if (styles.len != leaf.bytes.items.len) return false;
+        var at: usize = 0;
+        for (leaf.chunks.items) |chunk| {
+            const key = TailSink.styleKey(chunk, leaf.urls.items);
+            for (styles[at..][0..chunk.byte_count]) |style| if (style != key) return false;
+            at += chunk.byte_count;
+        }
+        return at == styles.len;
     }
 
     /// Drops the live leaf when its block is no open prose leaf starting where it does any more
@@ -2417,6 +2560,9 @@ pub const Doc = struct {
         live.token_display = .{};
         live.expired_display = none;
         live.definition_count = @intCast(self.definitions.items.len);
+        live.base_styles = .{};
+        live.base_link.clearRetainingCapacity();
+        live.email_possible = false;
         self.releaseLiveCapacity();
     }
 
@@ -2512,6 +2658,8 @@ pub const Doc = struct {
         live.parser.reset();
         live.display_ends.clearRetainingCapacity();
         live.folded_display_byte_count = 0;
+        live.base_styles = .{};
+        live.base_link.clearRetainingCapacity();
         live.pending_display.clearRetainingCapacity();
         live.pending_scan = .{ .visits = live.pending_scan.visits };
         live.pending_code_opener = null;
@@ -2574,6 +2722,7 @@ pub const Doc = struct {
     }
 
     fn liveAppend(self: *Doc, bytes: []const u8) Error!void {
+        if (std.mem.indexOfScalar(u8, bytes, '@') != null) self.live.email_possible = true;
         const content = &self.live.content;
         if (content.items.len + bytes.len > content.capacity) self.counters.capacity_growth_count += 1;
         try content.appendSlice(self.allocator, bytes);
@@ -2701,18 +2850,82 @@ pub const Doc = struct {
         var write_start = @min(@min(write_full, live.shown_byte_count), rewrite_from);
         write_start = @min(write_start, shown_end);
         self.counters.tail_write_bytes += shown_end - write_start;
-        // The tail write's bytes (M2 writes them to the bound node; the test sink applies them).
-        if (shown_end > write_start) {
+        // The tail write's bytes, and the runs of the live tokens: a closer that arrives restyles
+        // bytes before the first changed one, and only the settled tokens before them keep their
+        // runs.
+        if (self.tail_sink != null or self.writer != null) {
+            const arena = self.scratch.allocator();
             var tail: std.ArrayListUnmanaged(u8) = .empty;
-            try self.liveRender(write_start, shown_end, self.scratch.allocator(), &tail);
-            if (self.tail_sink) |sink| try sink.write(live.block, write_start, tail.items);
-        } else if (self.tail_sink) |sink| {
-            if (live.block < sink.rebind_from) {
-                const m = try sink.mirror(live.block);
-                if (m.items.len > shown_end) m.shrinkRetainingCapacity(shown_end);
-            }
+            if (shown_end > write_start) try self.liveRender(write_start, shown_end, arena, &tail);
+            const runs_from = @min(self.liveTokensEnd(0), shown_end);
+            const runs = try self.liveChunks(arena, runs_from, shown_end);
+            try self.emit(.{ .block = live.block, .from = write_start, .bytes = tail.items, .runs_from = runs_from, .chunks = runs.chunks.items, .urls = runs.urls.items });
         }
         live.shown_byte_count = shown_end;
+    }
+
+    /// The live leaf's chunks for display bytes [from, to), from the first live token on (`from`
+    /// is where it starts, or `to`): the styles read_leaf gives those bytes, counted, not copied.
+    fn liveChunks(self: *Doc, arena: Allocator, from: u32, to: u32) Error!Leaf {
+        const live = &self.live;
+        var leaf: Leaf = .{};
+        if (from >= to) return leaf;
+        assert(from == self.liveTokensEnd(0));
+        var writer: LeafWriter = .{ .arena = arena, .leaf = &leaf, .count_only = true };
+        const b = self.blocks.items[live.block];
+        writer.base.heading_level = if (b.kind == .heading) @intCast(b.payload[0]) else 0;
+        const r = live.parser.result();
+        var styler: TokenStyler = .{ .writer = &writer, .arena = arena, .r = r, .styles = live.base_styles, .references = self.references() };
+        if (live.base_styles.link != null) styler.styles.link = try writer.url("", live.base_link.items);
+        var at = from;
+        var i: u32 = 0;
+        while (i < r.tokens.len and at < to) : (i += 1) {
+            self.counters.run_token_visits += 1;
+            if (live.display_ends.items[i] > to) {
+                // A hold inside this token: B drew its start, styled as read_leaf styles a token
+                // the cut reaches (no autolink of its own).
+                const t = r.tokens[i];
+                styler.sync();
+                writer.base.raw = t.kind == .code;
+                writer.base.math = t.kind == .math;
+                try writer.writeLength(to - at, .{ .code = t.kind == .code, .math = t.kind == .math });
+                at = to;
+                break;
+            }
+            try styler.token(i);
+            at = live.display_ends.items[i];
+        }
+        if (at < to) {
+            // The drawn pending bytes: a backtick opener's content is drawn as code.
+            const code = live.pending_code_opener != null;
+            writer.link = null;
+            writer.base = .{ .heading_level = writer.base.heading_level, .raw = code };
+            try writer.writeLength(to - at, .{ .code = code });
+        }
+        assert(writer.byte_count == to - from);
+        return leaf;
+    }
+
+    /// The styles in force after the first `count` live tokens, from the base styles: what the
+    /// tokens left after them carry when those tokens go (fold, retire).
+    fn liveStylesAfter(self: *Doc, count: u32) Error!void {
+        const live = &self.live;
+        const arena = self.scratch.allocator();
+        var leaf: Leaf = .{};
+        var writer: LeafWriter = .{ .arena = arena, .leaf = &leaf, .count_only = true };
+        var styler: TokenStyler = .{ .writer = &writer, .arena = arena, .r = live.parser.result(), .styles = live.base_styles, .references = self.references() };
+        if (live.base_styles.link != null) styler.styles.link = try writer.url("", live.base_link.items);
+        var i: u32 = 0;
+        while (i < count) : (i += 1) {
+            self.counters.run_token_visits += 1;
+            try styler.token(i);
+        }
+        live.base_styles = styler.styles;
+        live.base_link.clearRetainingCapacity();
+        if (styler.styles.link) |link| {
+            try live.base_link.appendSlice(self.allocator, leaf.urls.items[link[0]..][0..link[1]]);
+            live.base_styles.link = .{ 0, link[1] };
+        }
     }
 
     /// Appends the full display's bytes [from, to): only the tokens that reach into the range
@@ -2856,17 +3069,33 @@ pub const Doc = struct {
     /// longer applies.
     fn liveRewrite(self: *Doc, index: u32, from: u32) Error!void {
         const live = &self.live;
-        const whole = (try self.readLeaf(self.scratch.allocator(), index)).bytes.items;
-        self.counters.display_byte_visits += whole.len;
-        self.counters.tail_write_bytes += whole.len - from;
-        if (self.tail_sink) |sink| try sink.write(index, from, whole[from..]);
-        live.shown_byte_count = @intCast(whole.len);
+        var whole = try self.wholeWrite(index);
+        self.counters.display_byte_visits += whole.bytes.len;
+        self.counters.tail_write_bytes += whole.bytes.len - from;
+        live.shown_byte_count = @intCast(whole.bytes.len);
+        whole.bytes = whole.bytes[from..];
+        whole.from = from;
+        try self.emit(whole);
     }
 
-    /// Writes bytes after the leaf's display (a setext underline when the heading closes).
+    /// Writes the closing leaf's runs again from its start, from a whole parse.
+    fn liveRestyle(self: *Doc, index: u32) Error!void {
+        var whole = try self.wholeWrite(index);
+        assert(whole.bytes.len == self.live.shown_byte_count);
+        self.counters.display_byte_visits += whole.bytes.len;
+        whole.from = @intCast(whole.bytes.len);
+        whole.bytes = "";
+        try self.emit(whole);
+    }
+
+    /// Writes bytes after the leaf's display (a setext underline when the heading closes),
+    /// styled as the heading.
     fn liveWriteExtra(self: *Doc, bytes: []const u8) Error!void {
         self.counters.tail_write_bytes += bytes.len;
-        if (self.tail_sink) |sink| try sink.write(self.live.block, self.live.shown_byte_count, bytes);
+        const b = self.blocks.items[self.live.block];
+        const chunk: Chunk = .{ .byte_count = @intCast(bytes.len), .scope = .{ .heading_level = @intCast(b.payload[0]) }, .span = .{} };
+        const at = self.live.shown_byte_count;
+        try self.emit(.{ .block = self.live.block, .from = at, .bytes = bytes, .runs_from = at, .chunks = if (bytes.len > 0) &.{chunk} else &.{}, .urls = "" });
         self.live.shown_byte_count += @intCast(bytes.len);
     }
 
@@ -2884,6 +3113,10 @@ pub const Doc = struct {
         assert(isAsciiWhitespaceByte(live.content.items[position - 1]));
         const drop = position - look_behind_byte_count;
         const rest = live.content.items.len - drop;
+        // Settled: every span the dropped tokens opened, or a retire left open, closed among
+        // them, so no style carries past the cut.
+        live.base_styles = .{};
+        live.base_link.clearRetainingCapacity();
         self.liveNoteExpired(@intCast(parser.tokens.items.len));
         if (live.display_ends.items.len > 0) live.folded_display_byte_count = live.display_ends.items[live.display_ends.items.len - 1];
         live.display_ends.clearRetainingCapacity();
@@ -2939,6 +3172,8 @@ pub const Doc = struct {
         var drop = at - look_behind_byte_count;
         while (drop > 0 and (live.content.items[drop] & 0xc0) == 0x80) drop -= 1;
         const folded = self.liveTokensEnd(first);
+        // A span can stay open across the cut when a held pipe sits inside it.
+        try self.liveStylesAfter(first);
         self.liveNoteExpired(first);
         // A pipe that goes is on a line too long to hold (liveHoldPipe).
         live.line_pipe = if (live.line_pipe != none and live.line_pipe >= drop) live.line_pipe - drop else none;
@@ -3042,95 +3277,22 @@ pub const Doc = struct {
             try parser.feed(try self.leafSubject(arena, index), true);
         }
         const r = parser.result();
-        var styles: Styles = .{};
+        var styler: TokenStyler = .{ .writer = &writer, .arena = arena, .r = r, .conceal = self.options.conceal, .hyperlinks = self.options.hyperlinks };
+        if (!self.options.conceal and b.kind == .heading and !b.flags.setext) {
+            // Without conceal an ATX heading shows its marker.
+            var marker: [7]u8 = @splat('#');
+            marker[writer.base.heading_level] = ' ';
+            try writer.write(marker[0 .. writer.base.heading_level + 1], .{});
+        }
         var i: u32 = 0;
         while (i < r.tokens.len) : (i += 1) {
             const t = r.tokens[i];
-            const raw = r.content[t.start..t.end()];
-            writer.base.strong = styles.strong > 0;
-            writer.base.italic = styles.italic > 0;
-            writer.base.strikethrough = styles.strikethrough > 0;
-            writer.link = styles.link;
             // A token that reaches the held pipe shows what B drew of it before the pipe.
             if (cut != none and t.end() > cut) {
-                if (t.start < cut) {
-                    var before: std.ArrayListUnmanaged(u8) = .empty;
-                    try inline_parser.appendTokenDisplayBefore(r, i, cut, arena, &before);
-                    const span: Span = .{ .code = t.kind == .code, .math = t.kind == .math };
-                    writer.base.raw = t.kind == .code;
-                    writer.base.math = t.kind == .math;
-                    try writer.write(before.items, span);
-                    writer.base.raw = false;
-                    writer.base.math = false;
-                }
+                if (t.start < cut) try styler.partial(i, cut);
                 break;
             }
-            switch (t.kind) {
-                .delimiter => {
-                    const d_index = inline_parser.delimiterOf(r, i);
-                    const d = if (d_index) |di| r.delimiters[di] else null;
-                    const length = inline_parser.tokenDisplayLength(r, i);
-                    // A run may close spans and open others (CommonMark 6.2: `*a***b**`): the
-                    // closing matches end their styles, the literal rest shows, then the opening
-                    // matches start theirs.
-                    var closed: u32 = 0;
-                    if (d) |dd| {
-                        var m = dd.closer_first_match;
-                        while (m < dd.closer_first_match + dd.closer_match_count) : (m += 1) {
-                            styles.apply(r.matches[m].kind, -1);
-                            closed += r.matches[m].count;
-                        }
-                    }
-                    writer.base.strong = styles.strong > 0;
-                    writer.base.italic = styles.italic > 0;
-                    writer.base.strikethrough = styles.strikethrough > 0;
-                    try writer.plain(r, t.start + closed, t.start + closed + length);
-                    if (d) |dd| {
-                        var m = dd.opener_matches;
-                        while (m) |mi| : (m = r.matches[mi].next_for_opener) styles.apply(r.matches[mi].kind, 1);
-                    }
-                },
-                .bracket_open => {
-                    if (t.aux == 0) {
-                        try writer.write(raw, .{});
-                        continue;
-                    }
-                    const link = r.links[t.aux - 1];
-                    styles.link = try writer.url("", try inline_parser.unescapeText(arena, link.destination));
-                },
-                .bracket_close => {
-                    if (t.aux == 0) try writer.write(raw[0..1], .{}) else styles.link = null;
-                },
-                .autolink, .autolink_email, .extended_autolink => {
-                    const target = if (t.kind == .extended_autolink) raw else raw[1 .. raw.len - 1];
-                    const prefix: []const u8 = if (t.kind == .autolink_email) "mailto:" else if (t.kind == .extended_autolink and t.aux == @backingInt(inline_parser.ExtendedKind.www)) "http://" else "";
-                    writer.link = try writer.url(prefix, target);
-                    try writer.write(target, .{});
-                },
-                .code => {
-                    var display: std.ArrayListUnmanaged(u8) = .empty;
-                    try inline_parser.appendTokenDisplay(r, i, arena, &display);
-                    writer.base.raw = true;
-                    try writer.write(display.items, .{ .code = true });
-                    writer.base.raw = false;
-                },
-                .math => {
-                    writer.base.math = true;
-                    try writer.write(raw[t.aux .. raw.len - t.aux], .{ .math = true });
-                    writer.base.math = false;
-                },
-                .escape => {
-                    writer.base.escape = true;
-                    try writer.write(raw[1..], .{});
-                    writer.base.escape = false;
-                },
-                .text => try writer.plain(r, t.start, t.end()),
-                else => {
-                    var display: std.ArrayListUnmanaged(u8) = .empty;
-                    try inline_parser.appendTokenDisplay(r, i, arena, &display);
-                    try writer.write(display.items, .{});
-                },
-            }
+            try styler.token(i);
         }
         writer.link = null;
         writer.base.strong = false;
@@ -3139,12 +3301,16 @@ pub const Doc = struct {
         if (open and i == r.tokens.len and parser.position < cut) {
             const content = r.content[0..@min(cut, r.content.len)];
             const code = parser.search_opener == parser.position and parser.position < content.len and content[parser.position] == '`';
-            var pending: std.ArrayListUnmanaged(u8) = .empty;
-            var scan: inline_parser.PendingScan = .{};
-            try inline_parser.renderPending(content, parser.position, if (code) parser.position else null, &scan, arena, &pending);
-            writer.base.raw = code;
-            try writer.write(pending.items, .{ .code = code });
-            writer.base.raw = false;
+            if (!self.options.conceal) {
+                try writer.write(content[parser.position..], .{});
+            } else {
+                var pending: std.ArrayListUnmanaged(u8) = .empty;
+                var scan: inline_parser.PendingScan = .{};
+                try inline_parser.renderPending(content, parser.position, if (code) parser.position else null, &scan, arena, &pending);
+                writer.base.raw = code;
+                try writer.write(pending.items, .{ .code = code });
+                writer.base.raw = false;
+            }
         }
         if (b.flags.setext) try writer.write(try self.setextUnderline(arena, index), .{});
         return leaf;
@@ -3528,25 +3694,35 @@ const LeafWriter = struct {
     leaf: *Leaf,
     base: Scope = .{},
     link: ?[2]u32 = null,
+    /// Only chunks (and URLs): the bytes are the caller's (the live leaf's runs).
+    count_only: bool = false,
+    /// Display bytes written so far (`leaf.bytes.items.len` unless count_only).
+    byte_count: usize = 0,
 
     /// Appends bytes with the current style, merging into the previous chunk when equal.
     fn write(self: *LeafWriter, bytes: []const u8, span: Span) Error!void {
         if (bytes.len == 0) return;
+        if (!self.count_only) try self.leaf.bytes.appendSlice(self.arena, bytes);
+        return self.writeLength(@intCast(bytes.len), span);
+    }
+
+    fn writeLength(self: *LeafWriter, byte_count: u32, span: Span) Error!void {
+        if (byte_count == 0) return;
+        self.byte_count += byte_count;
         var scope = self.base;
         scope.link = self.link != null;
         const link = self.link orelse [2]u32{ 0, 0 };
-        try self.leaf.bytes.appendSlice(self.arena, bytes);
         const chunks = &self.leaf.chunks;
         if (chunks.items.len > 0) {
             const last = &chunks.items[chunks.items.len - 1];
             if (@as(u16, @bitCast(last.scope)) == @as(u16, @bitCast(scope)) and @as(u32, @bitCast(last.span)) == @as(u32, @bitCast(span)) and
                 last.link_offset == link[0] and last.link_byte_count == link[1] and !span.code and !span.math)
             {
-                last.byte_count += @intCast(bytes.len);
+                last.byte_count += byte_count;
                 return;
             }
         }
-        try chunks.append(self.arena, .{ .byte_count = @intCast(bytes.len), .scope = scope, .span = span, .link_offset = link[0], .link_byte_count = link[1] });
+        try chunks.append(self.arena, .{ .byte_count = byte_count, .scope = scope, .span = span, .link_offset = link[0], .link_byte_count = link[1] });
     }
 
     /// Plain content bytes [start, end), with GFM email autolinks inside them linked.
@@ -3570,6 +3746,162 @@ const LeafWriter = struct {
         try self.leaf.urls.appendSlice(self.arena, prefix);
         try self.leaf.urls.appendSlice(self.arena, target);
         return .{ offset, @intCast(prefix.len + target.len) };
+    }
+};
+
+/// Writes an inline result's tokens with their styles: read_leaf over a parse of the whole
+/// leaf, and the live leaf's runs over its tokens (a count-only writer; conceal and hyperlinks
+/// on, as the live display is drawn). `styles` carries span and link state across tokens.
+const TokenStyler = struct {
+    writer: *LeafWriter,
+    arena: Allocator,
+    r: inline_parser.Result,
+    styles: Styles = .{},
+    conceal: bool = true,
+    hyperlinks: bool = true,
+    /// Where the open link's label starts in the leaf's bytes, and its URL (URL suffixes).
+    label_start: usize = 0,
+    label_url: []const u8 = "",
+    image: bool = false,
+    /// Set for the live leaf, whose parser keeps links' bytes as slices that later appends
+    /// move: a link's destination is found again from the current bytes.
+    references: ?inline_parser.References = null,
+
+    fn sync(self: *TokenStyler) void {
+        self.writer.base.strong = self.styles.strong > 0;
+        self.writer.base.italic = self.styles.italic > 0;
+        self.writer.base.strikethrough = self.styles.strikethrough > 0;
+        self.writer.link = self.styles.link;
+    }
+
+    fn token(self: *TokenStyler, i: u32) Error!void {
+        const r = self.r;
+        const w = self.writer;
+        const t = r.tokens[i];
+        const raw = r.content[t.start..t.end()];
+        self.sync();
+        switch (t.kind) {
+            .delimiter => {
+                const d_index = inline_parser.delimiterOf(r, i);
+                const d = if (d_index) |di| r.delimiters[di] else null;
+                const length = inline_parser.tokenDisplayLength(r, i);
+                // A run may close spans and open others (CommonMark 6.2: `*a***b**`): the
+                // closing matches end their styles, the literal rest shows, then the opening
+                // matches start theirs. Shown, a marker takes the style of what it marks.
+                var closed: u32 = 0;
+                if (d) |dd| {
+                    var m = dd.closer_first_match;
+                    while (m < dd.closer_first_match + dd.closer_match_count) : (m += 1) closed += r.matches[m].count;
+                    if (!self.conceal) try w.write(raw[0..closed], .{});
+                    m = dd.closer_first_match;
+                    while (m < dd.closer_first_match + dd.closer_match_count) : (m += 1) self.styles.apply(r.matches[m].kind, -1);
+                }
+                self.sync();
+                const literal = if (self.conceal) length else if (d) |dd| dd.count else @as(u32, @intCast(raw.len)) - closed;
+                try w.plain(r, t.start + closed, t.start + closed + literal);
+                if (d) |dd| {
+                    var m = dd.opener_matches;
+                    while (m) |mi| : (m = r.matches[mi].next_for_opener) self.styles.apply(r.matches[mi].kind, 1);
+                    self.sync();
+                    if (!self.conceal) try w.write(raw[closed + literal ..], .{});
+                }
+            },
+            .bracket_open => {
+                if (t.aux == 0) return w.write(raw, .{});
+                const link = r.links[t.aux - 1];
+                const destination = try inline_parser.unescapeText(self.arena, if (self.references != null) self.liveDestination(i) else link.destination);
+                self.styles.link = try w.url("", destination);
+                self.label_start = w.byte_count;
+                self.label_url = destination;
+                self.image = link.image;
+                self.sync();
+                if (!self.conceal) try w.write(raw, .{});
+            },
+            .bracket_close => {
+                if (t.aux == 0) return w.write(raw[0..1], .{});
+                if (!self.conceal) try w.write(raw, .{});
+                // Without hyperlinks a label that is not its URL shows where the link goes.
+                if (self.conceal and !self.hyperlinks and !self.image and !std.mem.eql(u8, w.leaf.bytes.items[self.label_start..], self.label_url)) {
+                    assert(!w.count_only);
+                    try w.write(" (", .{});
+                    try w.write(self.label_url, .{});
+                    try w.write(")", .{});
+                }
+                self.styles.link = null;
+            },
+            .autolink, .autolink_email, .extended_autolink => {
+                const target = if (t.kind == .extended_autolink) raw else raw[1 .. raw.len - 1];
+                const prefix: []const u8 = if (t.kind == .autolink_email) "mailto:" else if (t.kind == .extended_autolink and t.aux == @backingInt(inline_parser.ExtendedKind.www)) "http://" else "";
+                w.link = try w.url(prefix, target);
+                try w.write(if (self.conceal) target else raw, .{});
+            },
+            .code => {
+                w.base.raw = true;
+                defer w.base.raw = false;
+                if (!self.conceal) return w.write(raw, .{ .code = true });
+                if (w.count_only) return w.writeLength(inline_parser.tokenDisplayLength(r, i), .{ .code = true });
+                var display: std.ArrayListUnmanaged(u8) = .empty;
+                try inline_parser.appendTokenDisplay(r, i, self.arena, &display);
+                try w.write(display.items, .{ .code = true });
+            },
+            .math => {
+                w.base.math = true;
+                defer w.base.math = false;
+                try w.write(if (self.conceal) raw[t.aux .. raw.len - t.aux] else raw, .{ .math = true });
+            },
+            .escape => {
+                w.base.escape = true;
+                defer w.base.escape = false;
+                try w.write(if (self.conceal) raw[1..] else raw, .{});
+            },
+            .text => try w.plain(r, t.start, t.end()),
+            else => {
+                if (!self.conceal) return w.write(raw, .{});
+                if (w.count_only) return w.writeLength(inline_parser.tokenDisplayLength(r, i), .{});
+                var display: std.ArrayListUnmanaged(u8) = .empty;
+                try inline_parser.appendTokenDisplay(r, i, self.arena, &display);
+                try w.write(display.items, .{});
+            },
+        }
+    }
+
+    /// The destination of the link token `open` opens, from its closing token: the tail of an
+    /// inline link, or the label of a reference.
+    fn liveDestination(self: *TokenStyler, open: u32) []const u8 {
+        const r = self.r;
+        const aux = r.tokens[open].aux;
+        var j = open + 1;
+        while (j < r.tokens.len and !(r.tokens[j].kind == .bracket_close and r.tokens[j].aux == aux)) j += 1;
+        assert(j < r.tokens.len);
+        const close = r.tokens[j];
+        const raw = r.content[close.start..close.end()];
+        if (raw.len > 1 and raw[1] == '(') {
+            var at: u32 = 2;
+            while (at < raw.len and (raw[at] == ' ' or raw[at] == '\t' or raw[at] == '\n')) at += 1;
+            const scanned = (inline_parser.scanDestination(raw, at, true) catch null) orelse return "";
+            return scanned.value;
+        }
+        const label = if (raw.len > 3 and raw[1] == '[') raw[2 .. raw.len - 1] else r.content[r.tokens[open].end()..close.start];
+        const found = self.references.?.lookup(label) orelse return "";
+        return found.destination;
+    }
+
+    /// Token `i` cut by a hold at content offset `cut`: what B drew of it before the cut.
+    fn partial(self: *TokenStyler, i: u32, cut: u32) Error!void {
+        const w = self.writer;
+        const t = self.r.tokens[i];
+        self.sync();
+        w.base.raw = t.kind == .code;
+        w.base.math = t.kind == .math;
+        defer {
+            w.base.raw = false;
+            w.base.math = false;
+        }
+        const span: Span = .{ .code = t.kind == .code, .math = t.kind == .math };
+        if (!self.conceal) return w.write(self.r.content[t.start..cut], span);
+        var before: std.ArrayListUnmanaged(u8) = .empty;
+        try inline_parser.appendTokenDisplayBefore(self.r, i, cut, self.arena, &before);
+        try w.write(before.items, span);
     }
 };
 

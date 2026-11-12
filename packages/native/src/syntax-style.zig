@@ -33,7 +33,8 @@ pub const Borrower = struct {
     /// Counts rebinds and definition changes, for caches built from resolved definitions.
     changes: u32 = 0,
 
-    pub const Dependent = union(enum) { none, text: *anyopaque, edit: *anyopaque };
+    /// `scene_text` is a scene text node a Markdown doc binds (its NativeRenderable).
+    pub const Dependent = union(enum) { none, text: *anyopaque, edit: *anyopaque, scene_text: *anyopaque };
 
     /// Binding never allocates, so it cannot fail.
     pub fn bind(self: *Borrower, style: ?*SyntaxStyle) void {
