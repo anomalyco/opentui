@@ -1027,6 +1027,53 @@ pub fn Rope(comptime T: type) type {
             return position;
         }
 
+        /// `seekCount`, plus the sum of `summed` over the leaves before that leaf.
+        pub fn seekCountSum(self: *const Self, comptime counted: fn (*const Metrics) u32, comptime summed: fn (*const Metrics) u32, n: u32) ?struct { leaf_index: u32, sum: u32 } {
+            if (n >= counted(&self.root.metrics())) return null;
+            text_work.add(.line_seeks, 1);
+            var node = self.root;
+            var rest = n;
+            var leaf_index: u32 = 0;
+            var sum: u32 = 0;
+            while (node.* == .branch) {
+                text_work.add(.line_seek_nodes, 1);
+                const left = node.branch.left.metrics();
+                if (rest < counted(&left)) {
+                    node = node.branch.left;
+                } else {
+                    rest -= counted(&left);
+                    leaf_index += left.count;
+                    sum += summed(&left);
+                    node = node.branch.right;
+                }
+            }
+            return .{ .leaf_index = leaf_index, .sum = sum };
+        }
+
+        pub const KeyFindResult = struct { leaf: *const T, leaf_index: u32, before: u32 };
+
+        /// The leaf whose range along `key` holds `target` (start <= target < start + key), and the
+        /// key before it; null when `target` is at or past the total.
+        pub fn seekKey(self: *const Self, comptime key: fn (*const Metrics) u32, target: u32) ?KeyFindResult {
+            if (target >= key(&self.root.metrics())) return null;
+            var node = self.root;
+            var before: u32 = 0;
+            var leaf_index: u32 = 0;
+            while (true) switch (node.*) {
+                .branch => |*b| {
+                    const left = b.left.metrics();
+                    if (target < before + key(&left)) {
+                        node = b.left;
+                    } else {
+                        before += key(&left);
+                        leaf_index += left.count;
+                        node = b.right;
+                    }
+                },
+                .leaf => |*l| return .{ .leaf = &l.data, .leaf_index = leaf_index, .before = before },
+            };
+        }
+
         /// Number of leaves that `counted` counts and that start at or before `target`, measured
         /// along `key`, found by one descent. Leaves without key at `target` count.
         pub fn countThrough(self: *const Self, comptime key: fn (*const Metrics) u32, comptime counted: fn (*const Metrics) u32, target: u32) u32 {

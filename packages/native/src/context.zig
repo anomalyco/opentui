@@ -4,6 +4,7 @@ const api = @import("context_abi_c");
 const handles = @import("context-handles.zig");
 const grapheme = @import("grapheme.zig");
 const link = @import("link.zig");
+const highlight_layers = @import("highlight-layers.zig");
 const yoga = @import("yoga.zig");
 const renderer = @import("renderer.zig");
 const session = @import("session.zig");
@@ -243,6 +244,12 @@ pub const Edit = struct {
     pub fn invalidate(self: *Edit) void {
         var next = self.views;
         while (next) |view| : (next = view.next) view.invalidate();
+    }
+
+    /// For changes that cannot change a size, such as highlights: views repaint, Yoga keeps the measure.
+    pub fn invalidatePreparation(self: *Edit) void {
+        var next = self.views;
+        while (next) |view| : (next = view.next) view.invalidatePreparation();
     }
 };
 
@@ -562,6 +569,8 @@ pub const Context = struct {
     last_image_id: u32 = 0,
     graphemes: grapheme.GraphemePool,
     links: link.LinkPool,
+    /// Group sets that highlight layer runs name; every buffer of this Context borrows it.
+    group_sets: highlight_layers.GroupSets,
     diagnostics: logger.Diagnostics,
     logger: logger.Logger,
     yoga_config: yoga.Config,
@@ -675,6 +684,7 @@ pub const Context = struct {
             .objects = objects,
             .graphemes = grapheme.GraphemePool.init(allocator),
             .links = link.LinkPool.init(allocator),
+            .group_sets = highlight_layers.GroupSets.init(allocator),
             .diagnostics = diagnostics,
             .logger = .{ .diagnostics = &self.diagnostics },
             .yoga_config = undefined,
@@ -749,6 +759,7 @@ pub const Context = struct {
         self.yoga_config.deinit();
         self.graphemes.deinit();
         self.links.deinit();
+        self.group_sets.deinit();
         self.diagnostics.deinit();
         self.allocator.destroy(self);
     }
@@ -1949,9 +1960,11 @@ pub const Context = struct {
         if (x >= target.width or y >= target.height) return;
         const text = owned.text orelse return owned.owner.paintBody(&self.objects, target, node, x, y);
         // A prepared text that Yoga sizes to zero paints nothing; an unprepared one draws its text.
-        if (owned.geometry_epoch != std.math.maxInt(u64) and (owned.layout.width == 0 or owned.layout.height == 0)) return;
+        const content = scene.contentLayout(owned.layout);
+        if (owned.geometry_epoch != std.math.maxInt(u64) and (content.width == 0 or content.height == 0)) return;
         try text.prepareView();
-        try target.drawTextBufferChecked(text.view, x, y);
+        const offset = scene.contentOffset(owned.layout);
+        try target.drawTextBufferChecked(text.view, x +| offset[0], y +| offset[1]);
     }
 
     pub fn acquireOwnedBufferLease(self: *Context, handle: Handle) Error!Handle {
@@ -2831,13 +2844,17 @@ pub const Context = struct {
         } else selection: {
             var dirty: u32 = 0;
             try yoga.check(yoga.yogaNodeIsDirtyChecked(node.yoga_node, &dirty));
+            // Hosts pass cells local to the node; the view starts at its content and clamps cells off its edges.
+            const offset = scene.contentOffset(node.scene_node.?.layout);
+            var local = options;
+            for ([_]*i32{ &local.anchor_x, &local.anchor_y, &local.focus_x, &local.focus_y }, [_]i32{ offset[0], offset[1], offset[0], offset[1] }) |point, by| point.* -|= by;
             if (text.view.getViewport()) |viewport| {
                 const x_offset: i32 = if (text.view.wrap_mode == .none) @intCast(viewport.x) else 0;
                 const y_offset: i32 = @intCast(viewport.y);
-                _ = std.math.add(i32, options.anchor_x, x_offset) catch return error.InvalidOptions;
-                _ = std.math.add(i32, options.focus_x, x_offset) catch return error.InvalidOptions;
-                _ = std.math.add(i32, options.anchor_y, y_offset) catch return error.InvalidOptions;
-                _ = std.math.add(i32, options.focus_y, y_offset) catch return error.InvalidOptions;
+                _ = std.math.add(i32, local.anchor_x, x_offset) catch return error.InvalidOptions;
+                _ = std.math.add(i32, local.focus_x, x_offset) catch return error.InvalidOptions;
+                _ = std.math.add(i32, local.anchor_y, y_offset) catch return error.InvalidOptions;
+                _ = std.math.add(i32, local.focus_y, y_offset) catch return error.InvalidOptions;
             }
             if (text.buffer.lineWidthColsMax() > std.math.maxInt(i32)) return error.InvalidOptions;
             // The legacy view methods cannot report allocation failures. Prepare
@@ -2846,9 +2863,9 @@ pub const Context = struct {
             if (text.view.virtual_lines.items.len > std.math.maxInt(i32)) return error.InvalidOptions;
             const behavior: text_buffer_view.SelectionBehavior = @fromBackingInt(@intCast(options.behavior));
             break :selection if (options.operation == api.OT_SCENE_TEXT_SELECTION_SET)
-                text.view.setLocalSelectionBehavior(options.anchor_x, options.anchor_y, options.focus_x, options.focus_y, options.background, options.foreground, behavior)
+                text.view.setLocalSelectionBehavior(local.anchor_x, local.anchor_y, local.focus_x, local.focus_y, options.background, options.foreground, behavior)
             else
-                text.view.updateLocalSelectionBehavior(options.anchor_x, options.anchor_y, options.focus_x, options.focus_y, options.background, options.foreground, behavior);
+                text.view.updateLocalSelectionBehavior(local.anchor_x, local.anchor_y, local.focus_x, local.focus_y, options.background, options.foreground, behavior);
         };
         node.scene_node.?.owner.clearPreparation();
         return changed;
@@ -3029,11 +3046,11 @@ pub const Context = struct {
         };
     }
 
-    pub fn sceneGetPaintLayout(self: *Context, handle: Handle) !scene.Layout {
+    pub fn sceneGetPaintLayout(self: *Context, handle: Handle, content: bool) !scene.Layout {
         try self.checkSceneRead();
         const node = try self.sceneNode(handle);
         try node.scene_node.?.owner.prepareOmitted(&self.objects, node);
-        return scene.getPaintLayout(node);
+        return scene.getPaintLayout(node, content);
     }
 
     /// Solve the Session root without painting or publishing output. Measurement
@@ -3246,6 +3263,7 @@ pub const Context = struct {
         const buffer = try text_buffer.UnifiedTextBuffer.initWithOptions(self.allocator, &self.graphemes, &self.links, width_method, .{
             .io = self.io,
             .logger = &self.logger,
+            .group_sets = &self.group_sets,
         });
         errdefer buffer.deinit();
         const view = try text_buffer_view.UnifiedTextBufferView.init(self.allocator, buffer);
@@ -3280,6 +3298,7 @@ pub const Context = struct {
         const buffer = try text_buffer.UnifiedTextBuffer.initWithOptions(self.allocator, &self.graphemes, &self.links, width_method, .{
             .io = self.io,
             .logger = &self.logger,
+            .group_sets = &self.group_sets,
         });
         value.* = .{ .handle = undefined, .buffer = buffer, .input_mem_id = 0 };
         return value;
@@ -3571,6 +3590,7 @@ pub const Context = struct {
         }, .{
             .io = self.io,
             .logger = &self.logger,
+            .group_sets = &self.group_sets,
         });
         errdefer value.buffer.deinit();
         value.handle = try self.objects.insert(.edit_buffer, value);
@@ -3741,7 +3761,7 @@ pub const Context = struct {
         const edit = try self.getEditBuffer(handle);
         try edit.checkMutable();
         try highlightBuffer(edit.buffer.tb, operation);
-        edit.invalidate();
+        edit.invalidatePreparation();
     }
 
     pub fn editorSetViewport(self: *Context, handle: Handle, viewport: text_buffer_view.Viewport, size_only: bool, move_cursor: bool) !void {

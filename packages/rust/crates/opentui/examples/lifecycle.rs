@@ -15,6 +15,7 @@ use opentui::native::{Node, NodeKind};
 use opentui::prelude::*;
 use opentui::style::Color;
 use opentui::{Error, Result};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 /// Paints the frame number and terminal size, so the driver can tell frames apart.
@@ -64,7 +65,9 @@ fn run_app() -> Result<()> {
             });
         } else if key.matches("r") {
             cx.app().release_terminal(|cx| {
-                println!("lifecycle released");
+                // Numbered: Windows' pseudoconsole repaints earlier lines, so a driver counting them would type early.
+                static RELEASES: AtomicU32 = AtomicU32::new(0);
+                println!("lifecycle released {}", RELEASES.fetch_add(1, Ordering::Relaxed) + 1);
                 let mut line = String::new();
                 let _ = std::io::stdin().read_line(&mut line);
                 println!("lifecycle read {}", line.trim_end());

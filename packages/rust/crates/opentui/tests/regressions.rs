@@ -50,6 +50,8 @@ fn shift_selection_reuses_a_stale_anchor_after_backspace() {
     assert_eq!(input.value(), "abdef");
     app.press("shift+right");
     assert_eq!(input.selected_text(), "d");
+    // Delete removes the one selected character, not the one after it.
+    assert_eq!(input.perform(opentui::widget::EditorAction::Delete).value(), "abef");
 }
 
 // Expected: Shift+arrow extends an existing mouse selection from its anchor, as Core does.
@@ -407,6 +409,48 @@ fn extmark_tracking_measures_text_as_the_cursor_does() {
         assert_eq!(area.text(), format!("{lead}aXb"));
         let ranges = marks.map(|mark| area.extmark(mark).unwrap().range());
         assert_eq!(ranges, [width..width + 1, width + 2..width + 3], "{lead:?}");
+    }
+}
+
+// Expected: as in Core, an edit ends any selection, so the view follows the cursor to the line the edit moved it to.
+// Actual: a click left a zero-width selection that Enter, Backspace and the word deletes kept, and the view does not
+// follow the cursor while a selection exists: the cursor stayed above or below the one visible row.
+#[test]
+fn edits_after_a_click_leave_the_cursor_outside_the_view() {
+    use opentui::widget::EditorAction as A;
+    let [down, drag, up] =
+        [MouseEventKind::Down, MouseEventKind::Drag, MouseEventKind::Up].map(|kind| kind(MouseButton::Left));
+    let gestures: [&[_]; 3] =
+        [&[(down, 0), (up, 0)], &[(down, 0), (drag, 1), (drag, 0), (up, 0)], &[(down, 0), (drag, 1), (up, 1)]];
+    // The text after a click, or a drag back to where it started, at the start of "cd"; then after a drag over "cd".
+    let actions = [
+        (A::Newline, "ab\n\ncd\nef", "ab\n\n\nef"),
+        (A::Backspace, "abcd\nef", "ab\n\nef"),
+        (A::Delete, "ab\nd\nef", "ab\n\nef"),
+        (A::DeleteWordForward, "ab\nef", "ab\n\nef"),
+        (A::DeleteWordBackward, "abcd\nef", "ab\n\nef"),
+    ];
+    let cases = gestures.iter().enumerate().flat_map(|(index, events)| {
+        actions.map(|(action, unselected, selected)| ("ab\ncd\nef", *events, action, [unselected, selected][index / 2]))
+    });
+    // A line of only a combining mark has no cells; the click's empty selection must not delete it.
+    for (text, events, action, expected) in cases.chain([("\u{301}", gestures[0], A::Newline, "\n\u{301}")]) {
+        let app = TestApp::new(10, 1);
+        let area = Textarea::new(&app).set_text(text).grow(1.0);
+        app.root().add(&area);
+        area.focus();
+        app.render();
+        app.press("up");
+        app.render();
+        for &(kind, x) in events {
+            app.mouse(kind, x, 0);
+        }
+        area.perform(action);
+        app.render();
+        let at = format!("{text:?}, {events:?}, {action:?}");
+        assert_eq!(area.text(), expected, "{at}");
+        let (row, viewport) = (area.cursor().0, area.view().viewport().unwrap());
+        assert!((viewport.y..viewport.y + viewport.height).contains(&row), "{at}: row {row}, {viewport:?}");
     }
 }
 
