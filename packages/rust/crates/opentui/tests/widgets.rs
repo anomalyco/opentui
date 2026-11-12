@@ -177,6 +177,7 @@ fn editors_select_with_shift_and_replace_selection() {
         ("a界", "left shift+left", "a界", "x"),
         ("a界", "home shift+right", "a界", "x"),
         ("a界", "shift+left", "界", "ax"),
+        ("a界", "left shift+left shift+right", "", "ax界"),
         ("abc def", "shift+left shift+left shift+left", "def", "abc x"),
         ("abcdef", "left left left shift+left shift+left", "bcd", "axef"),
         ("abcdef", "shift+left shift+right", "", "abcdefx"),
@@ -193,6 +194,10 @@ fn editors_select_with_shift_and_replace_selection() {
         ("drag me", "drag 0 3, shift+left", "dra", "xg me"),
         ("a界b", "drag 2 0, shift+right", "界", "axb"),
         ("a界b", "drag 2 0, shift+right shift+right", "界b", "ax"),
+        ("abc", "drag 3 0, shift+end", "", "abcx"),
+        ("alpha beta gamma", "double-click 7, shift+right", "beta ", "alpha xgamma"),
+        ("alpha beta gamma", "double-click 7, shift+home shift+right", "lpha b", "axeta gamma"),
+        ("alpha beta gamma", "triple-click 7, shift+right", "alpha beta gamma", "x"),
     ] {
         for single_line in [true, false] {
             if single_line && text.contains('\n') {
@@ -208,9 +213,13 @@ fn editors_select_with_shift_and_replace_selection() {
                 area.focus();
             }
             app.render();
-            let (drag, keys) = keys.split_once(", ").unwrap_or(("", keys));
-            if let [_, from, to] = drag.split(' ').collect::<Vec<_>>()[..] {
-                app.drag((from.parse().unwrap(), 0), (to.parse().unwrap(), 0));
+            let (gesture, keys) = keys.split_once(", ").unwrap_or(("", keys));
+            match gesture.split(' ').collect::<Vec<_>>()[..] {
+                ["drag", from, to] => app.drag((from.parse().unwrap(), 0), (to.parse().unwrap(), 0)),
+                [clicks, at] => {
+                    (0..if clicks == "double-click" { 2 } else { 3 }).for_each(|_| app.click(at.parse().unwrap(), 0))
+                }
+                _ => {}
             }
             keys.split(' ').for_each(|key| app.press(key));
             let state = || {

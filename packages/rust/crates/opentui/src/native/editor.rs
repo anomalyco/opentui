@@ -630,6 +630,11 @@ impl EditorView {
             .map(drop)
     }
 
+    /// Makes a word or line selection a cell one from its start to its last cell, and puts the cursor on that cell.
+    pub fn convert_selection_to_cell(&self) -> Result<bool> {
+        self.select(sys::ot_editor_selection { operation: sys::OT_EDITOR_SELECT_CELL, ..Default::default() })
+    }
+
     pub fn clear_selection(&self) -> Result<()> {
         self.select(sys::ot_editor_selection { operation: sys::OT_EDITOR_SELECT_RESET, ..Default::default() })?;
         self.select(sys::ot_editor_selection { operation: sys::OT_EDITOR_SELECT_LOCAL_RESET, ..Default::default() })

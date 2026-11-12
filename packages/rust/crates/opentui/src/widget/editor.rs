@@ -8,7 +8,7 @@ use crate::error::Result;
 use crate::input::{KeyEvent, Keymap, MouseEvent, MouseEventKind};
 use crate::native::{
     EditBuffer, EditCommand, EditQuery, EditorOptions, EditorQuery, EditorView, Highlight, Hooks, LayerRun, NodeKind,
-    SelectionColors, SyntaxStyle, Viewport, WrapMode,
+    SelectionColors, SelectionUnit, SyntaxStyle, Viewport, WrapMode,
 };
 use crate::style::{Color, Span, Style};
 use crate::syntax::{self, SyntaxTheme};
@@ -288,6 +288,8 @@ pub(crate) struct EditorCore {
     anchor: Cell<Option<u32>>,
     /// The side a mouse drag came from, which a cursor it left in an atomic mark leaves by once the selection goes.
     pointer_side: Cell<Ordering>,
+    /// The unit a mouse selection grows by, until a keyboard selection extends it by cells.
+    pointer_unit: Cell<SelectionUnit>,
     pub colors: RefCell<Colors>,
     placeholder: RefCell<String>,
     pub on_change: Callbacks<str>,
@@ -326,6 +328,7 @@ impl EditorCore {
             max_length: Cell::new(if single_line { 1000 } else { usize::MAX }),
             anchor: Cell::new(None),
             pointer_side: Cell::new(Ordering::Equal),
+            pointer_unit: Cell::new(SelectionUnit::Cell),
             colors: RefCell::new(Colors {
                 fg: theme.foreground,
                 bg: theme.input_bg,
@@ -484,25 +487,33 @@ impl EditorCore {
             if let Some(app) = self.element.app() {
                 app.keep_selection_only(&self.element);
             }
-            // Extend a live selection, keyboard or mouse, from its anchor cell; with none, start at the cursor's cell.
+            // Extend a keyboard selection from its anchor offset; with none, start at the cursor's cell. A mouse
+            // selection keeps the anchor cell native pinned; as Core's, a word or line one becomes a cell one first.
             let cursor = self.cursor().2;
             let start = match (self.selection(), self.anchor.get()) {
-                (Some((start, end)), Some(anchor)) if (start..=end).contains(&anchor) => anchor,
-                // A mouse selection leaves the cursor on its focus cell: the anchor is the cell at the other end.
-                (Some((start, end)), _) if cursor == start => end - 1,
-                (Some((start, _)), _) => start,
-                (None, _) => cursor,
+                (Some((start, end)), Some(anchor)) if (start..=end).contains(&anchor) => Some(anchor),
+                (Some(_), _) => None,
+                (None, _) => Some(cursor),
             };
-            step(self);
-            self.keep_cursor_outside(self.cursor().2.cmp(&cursor));
-            let cursor = self.cursor().2;
-            self.anchor.set(Some(start));
-            let colors = self.colors.borrow().selection;
-            if start == cursor {
-                self.report(self.view.clear_selection());
-            } else {
-                self.report(self.view.select_inclusive(start, cursor, colors));
+            if start.is_none() && self.pointer_unit.replace(SelectionUnit::Cell) != SelectionUnit::Cell {
+                self.report(self.view.convert_selection_to_cell());
             }
+            let before = self.cursor().2;
+            step(self);
+            self.keep_cursor_outside(self.cursor().2.cmp(&before));
+            let cursor = self.cursor().2;
+            self.anchor.set(start);
+            let colors = self.colors.borrow().selection;
+            match start {
+                Some(start) if start == cursor => self.report(self.view.clear_selection()),
+                Some(start) => self.report(self.view.select_inclusive(start, cursor, colors)),
+                // A mouse selection's focus moves to the cursor's cell, in viewport-local cells.
+                None => self.report(self.view.position(EditorQuery::Cursor)).and_then(|at| {
+                    let focus = (at.visual_col as i32, at.visual_row as i32);
+                    self.report(self.view.select_local((0, 0), focus, true, SelectionUnit::Cell, false, colors))
+                        .map(drop)
+                }),
+            };
             return;
         }
         // Horizontal movement collapses a selection to its edge without taking another step.
@@ -1108,6 +1119,7 @@ impl Behavior for EditorCore {
             let colors = self.colors.borrow().selection;
             self.report(self.view.select_local(anchor, focus, !selection.start, selection.unit, true, colors));
             self.pointer_side.set((anchor.1, anchor.0).cmp(&(focus.1, focus.0)));
+            self.pointer_unit.set(selection.unit);
             (!selection.start).then_some(Ordering::Equal)
         } else {
             self.report(self.view.clear_selection());
