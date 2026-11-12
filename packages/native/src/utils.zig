@@ -17,45 +17,6 @@ test "repeat concatenates copies in order" {
     try std.testing.expectEqual(0, repeat(u8, "x", 0).len);
 }
 
-/// `@intCast(value)` for a signed `value` and an unsigned `T` narrower than it.
-/// Zig 0.17.0 lowers that cast to LLVM's `trunc nsw`, which leaves a result in
-/// the top half of `T` undefined (ziglang/zig#37127). Casting to the unsigned
-/// type of `value`'s width first lowers to `trunc nuw`.
-pub inline fn unsigned(comptime T: type, value: anytype) T {
-    comptime std.debug.assert(@typeInfo(T).int.signedness == .unsigned);
-    const Same = @Int(.unsigned, @typeInfo(@TypeOf(value)).int.bits);
-    return @intCast(@as(Same, @intCast(value)));
-}
-
-noinline fn pastHalf(offset: i64) bool {
-    return unsigned(u32, offset) > std.math.maxInt(i32);
-}
-
-test "unsigned narrows into the top half of an unsigned type" {
-    var offsets = [_]i64{ std.math.maxInt(i32), std.math.maxInt(i32) + 1 };
-    std.mem.doNotOptimizeAway(&offsets);
-    try std.testing.expect(!pastHalf(offsets[0]));
-    try std.testing.expect(pastHalf(offsets[1]));
-}
-
-/// `@max(value, 0)` for a signed `value`, in the type of `value`. Zig narrows
-/// `@max(value, 0)` to an unsigned type, and Zig 0.17.0 leaves a result in the
-/// top half of that type undefined (ziglang/zig#37127).
-pub inline fn nonNegative(value: anytype) @TypeOf(value) {
-    return if (value < 0) 0 else value;
-}
-
-noinline fn columnPastHalf(x: i32) bool {
-    return nonNegative(x) >= 1 << 30;
-}
-
-test "nonNegative keeps a value in the top half of the narrowed type" {
-    var columns = [_]i32{ std.math.minInt(i32), (1 << 30) + 5 };
-    std.mem.doNotOptimizeAway(&columns);
-    try std.testing.expect(!columnPastHalf(columns[0]));
-    try std.testing.expect(columnPastHalf(columns[1]));
-}
-
 /// `std.mem.eql` for slices of integers. The LLVM backend of Zig 0.17.0 and
 /// 0.17.1 splits the array `@bitCast` that `std.mem.eql` loads each chunk with
 /// into single bytes (ziglang/zig#37120), which makes a large comparison about

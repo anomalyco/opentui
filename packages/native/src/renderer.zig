@@ -1099,7 +1099,7 @@ pub const CliRenderer = struct {
 
     fn recordFrameCost(self: *CliRenderer, started_us: i64) void {
         const elapsed = std.Io.Clock.now(.awake, self.io).toMicroseconds() - started_us;
-        self.lastFrameCostUs = utils.unsigned(u32, @min(utils.nonNegative(elapsed), std.math.maxInt(u32)));
+        self.lastFrameCostUs = @intCast(std.math.clamp(elapsed, 0, std.math.maxInt(u32)));
     }
 
     /// The cost that adaptive image sizes follow: the last frame's, or the most
@@ -2855,7 +2855,7 @@ pub const CliRenderer = struct {
                         }
                         if (gp.isContinuationChar(cell.char)) {
                             const start_x_i = x_i - @as(i32, @intCast(gp.charLeftExtent(cell.char)));
-                            const first_visible_placement_x = utils.nonNegative(placement.x);
+                            const first_visible_placement_x = @max(placement.x, 0);
                             if (start_x_i >= placement.x or x_i != first_visible_placement_x or start_x_i < 0) continue;
                             draw_x_i = start_x_i;
                             cell = self.nextRenderBuffer.get(@intCast(draw_x_i), @intCast(y_i)) orelse continue;

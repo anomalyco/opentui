@@ -667,8 +667,8 @@ pub fn build(b: *std.Build) void {
     const run_test = b.addRunArtifact(test_artifact);
     test_step.dependOn(&run_test.step);
 
-    // Zig 0.17.0 miscompiles some integer casts only in optimized LLVM code,
-    // where utils.zig tests its replacements.
+    // utils.zig replaces std functions whose loads Zig 0.17.1's LLVM backend
+    // splits into bytes (ziglang/zig#37120). Test them in optimized LLVM code.
     const utils_test = b.addTest(.{
         .name = "utils-llvm",
         .root_module = b.createModule(.{
