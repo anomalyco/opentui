@@ -17,9 +17,10 @@ pub const block_count_max: u32 = 1 << 20;
 pub const depth_max: u32 = 32;
 pub const definition_count_max: u32 = 4096;
 pub const table_column_count_max: u32 = 128;
-/// A table header line's bytes at most (from its content start to its end): a longer line is
-/// not a header, so B's hold on a line with a pipe keeps at most this many bytes' tokens.
-pub const table_header_byte_count_max: u32 = 4096;
+/// B holds a paragraph line with a pipe (it may become a table header) only while it has at most
+/// this many bytes (from its content start to its end): a longer line shows as text, so the hold
+/// keeps at most this many bytes' tokens. The finished parse has no such limit (GFM).
+pub const held_line_byte_count_max: u32 = 4096;
 pub const hook_filter_byte_count_max: u32 = 256;
 pub const hook_filter_item_byte_count_max: u32 = 64;
 /// Retained capacity of the per-call scratch arena.
@@ -406,6 +407,11 @@ pub const Doc = struct {
     pending_hold: struct { line: u32 = none, end: u32 = 0, hold: Hold = Hold.not, in_table: bool = false } = .{},
     filter_pool: [hook_filter_byte_count_max]u8 = undefined,
     filter_byte_count: u32 = 0,
+    /// Per filter byte, the KMP fallback of its item; per item, the bytes of it matched by the
+    /// source up to `filter_scanned` (none: start again a filter's length back).
+    filter_fallback: [hook_filter_byte_count_max]u8 = undefined,
+    filter_matched: [hook_filter_byte_count_max / 2 + 1]u8 = undefined,
+    filter_scanned: u32 = none,
     /// A filter match in the pending line, latched once its line is parsed; none otherwise.
     hook_pending_byte: u32 = none,
 
@@ -430,6 +436,24 @@ pub const Doc = struct {
         @memcpy(self.filter_pool[0..items.len], items);
         self.filter_byte_count = @intCast(items.len);
         self.options.hook_filter = "";
+        self.filter_scanned = none;
+        // KMP fallbacks, item by item.
+        var start: usize = 0;
+        while (start <= items.len) {
+            const end = std.mem.indexOfScalarPos(u8, items, start, 0) orelse items.len;
+            const item = items[start..end];
+            var k: u8 = 0;
+            for (item, 0..) |c, i| {
+                if (i == 0) {
+                    self.filter_fallback[start] = 0;
+                    continue;
+                }
+                while (k > 0 and item[k] != c) k = self.filter_fallback[start + k - 1];
+                if (item[k] == c) k += 1;
+                self.filter_fallback[start + i] = k;
+            }
+            start = end + 1;
+        }
     }
 
     pub fn deinit(self: *Doc) void {
@@ -492,6 +516,7 @@ pub const Doc = struct {
             self.source.shrinkRetainingCapacity(old_len);
             self.counters = counters;
             self.hook_pending_byte = hook_pending_byte;
+            self.filter_scanned = none;
             self.liveReset(none, none);
             self.finished_block = none;
             self.addProvisional() catch {};
@@ -504,12 +529,8 @@ pub const Doc = struct {
             self.counters = counters;
             return false;
         }
+        // New matches in the line latch its layout's leaves too (latchMatch).
         try self.latchHooks(old_len);
-        if (self.hook_pending_byte != none) {
-            self.provisional = true;
-            defer self.provisional = false;
-            try self.latchPending(@max(self.hook_pending_byte, old_len -| self.filterOverlap()), end);
-        }
         try self.liveCheckLeaf();
         try self.livePending();
         self.updateCommits();
@@ -728,6 +749,7 @@ pub const Doc = struct {
     }
 
     fn rollback(self: *Doc, snapshot: *const Snapshot) void {
+        self.filter_scanned = none;
         var i = self.undo.items.len;
         while (i > 0) {
             i -= 1;
@@ -831,21 +853,58 @@ pub const Doc = struct {
             self.hook_pending_byte = none;
             try self.latchRange(pending, self.line_start_byte);
         }
-        const overlap = self.filterOverlap();
-        try self.latchRange(from_byte -| overlap, @intCast(self.source.items.len));
+        // Matches that start in the new bytes, or straddle the last call's end: the scan goes on
+        // from each item's partial match, or (after a replace or a rejected call) starts a
+        // filter's length back.
+        const end: u32 = @intCast(self.source.items.len);
+        var start = from_byte;
+        if (self.filter_scanned != from_byte) {
+            start = from_byte -| self.filterOverlap();
+            @memset(&self.filter_matched, 0);
+        }
+        self.filter_scanned = end;
+        const s = self.source.items;
+        const pool = self.filter();
+        var item_start: usize = 0;
+        var item_index: usize = 0;
+        while (item_start <= pool.len) : (item_index += 1) {
+            const item_end = std.mem.indexOfScalarPos(u8, pool, item_start, 0) orelse pool.len;
+            const item = pool[item_start..item_end];
+            defer item_start = item_end + 1;
+            if (item.len == 0) continue;
+            var k = self.filter_matched[item_index];
+            self.counters.hook_byte_visits += end - start;
+            for (s[start..end], start..) |c, i| {
+                while (k > 0 and item[k] != c) k = self.filter_fallback[item_start + k - 1];
+                if (item[k] == c) k += 1;
+                if (k < item.len) continue;
+                try self.latchMatch(@intCast(i + 1 - item.len));
+                k = self.filter_fallback[item_start + k - 1];
+            }
+            self.filter_matched[item_index] = k;
+        }
+    }
+
+    fn latchMatch(self: *Doc, position: u32) Error!void {
+        if (position >= self.line_start_byte) {
+            self.hook_pending_byte = @min(self.hook_pending_byte, position);
+            // The pending line's layout shows it: its leaf latches now, undone with the layout.
+            if (self.provisional_from != none) {
+                const was_provisional = self.provisional;
+                self.provisional = true;
+                defer self.provisional = was_provisional;
+                try self.latchAt(position);
+            }
+        } else {
+            try self.latchAt(position);
+        }
     }
 
     /// Latches the leaves holding a filter match that starts in [start, end); a match in the
     /// pending line is kept for later.
     fn latchRange(self: *Doc, start: u32, end: u32) Error!void {
         var matches = self.filterMatches(start, end);
-        while (matches.next()) |position| {
-            if (position >= self.line_start_byte) {
-                self.hook_pending_byte = @min(self.hook_pending_byte, position);
-            } else {
-                try self.latchAt(position);
-            }
-        }
+        while (matches.next()) |position| try self.latchMatch(position);
     }
 
     /// Whether a filter match starts in [start, end).
@@ -1627,7 +1686,6 @@ pub const Doc = struct {
         const header_end = p.content_end_byte;
         const header_cells = countCells(s, header_start, header_end);
         if (header_cells != delimiter or delimiter > table_column_count_max) return null;
-        if (header_end - header_start > table_header_byte_count_max) return null;
         // The live leaf followed the paragraph's lines; the paragraph now loses its last one.
         if (self.live.block == paragraph) self.liveReset(none, none);
         // Leave the paragraph with its earlier lines, or remove it if the header was its only line.
@@ -2410,7 +2468,7 @@ pub const Doc = struct {
         }
         if (from < end) try self.liveAppendLine(s[from..end]);
         // B holds the line from its first pipe while the next line may make it a table header.
-        live.pipe_line_start = if (end - content_start > table_header_byte_count_max) none else live.line_pipe;
+        live.pipe_line_start = if (end - content_start > held_line_byte_count_max) none else live.line_pipe;
         live.line_pipe = none;
         try self.liveAppend("\n");
         if (live.definition_possible) try self.liveDecideDefinitions(index);
@@ -2731,7 +2789,7 @@ pub const Doc = struct {
     fn liveHoldPipe(self: *const Doc) u32 {
         const live = &self.live;
         if (live.line_start_byte == none) return live.pipe_line_start;
-        if (live.line_fed_end_byte - live.line_start_byte > table_header_byte_count_max) return none;
+        if (live.line_fed_end_byte - live.line_start_byte > held_line_byte_count_max) return none;
         return live.line_pipe;
     }
 
@@ -2976,7 +3034,7 @@ pub const Doc = struct {
             // it may be a table's header (unless it is longer than a header can be).
             if (b.kind == .paragraph) {
                 const last_start: usize = if (std.mem.lastIndexOfScalar(u8, body, '\n')) |n| n + 1 else 0;
-                if (body.len - last_start <= table_header_byte_count_max) {
+                if (body.len - last_start <= held_line_byte_count_max) {
                     if (std.mem.indexOfScalar(u8, body[last_start..], '|')) |at| cut = @intCast(last_start + at);
                 }
             }
@@ -3745,28 +3803,10 @@ fn definitionWait(c: []const u8, at: u32) union(enum) { decided, lines, title: u
 /// An open title's scan from `from` on (scanTitle's rules for the title opened at `at`): the
 /// offset to resume at while it stays open, or null once it closes or fails.
 fn titleScan(c: []const u8, at: u32, from: u32) ?u32 {
-    const close: u8 = switch (c[at]) {
-        '"' => '"',
-        '\'' => '\'',
-        else => ')',
+    return switch (inline_parser.titleFrom(c, at, from)) {
+        .open => |i| i,
+        else => null,
     };
-    var i = @max(from, at + 1);
-    while (i < c.len) : (i += 1) {
-        const b = c[i];
-        if (b == '\\') {
-            if (i + 1 >= c.len) return i;
-            if (inline_parser.isAsciiPunctuation(c[i + 1])) {
-                i += 1;
-                continue;
-            }
-        }
-        if (b == close or (close == ')' and b == '(')) return null;
-        if (b == '\n') {
-            if (i + 1 >= c.len) return i;
-            if (c[i + 1] == '\n') return null;
-        }
-    }
-    return i;
 }
 
 /// The first of `tokens` that ends after content offset `at` (tokens.len: none).

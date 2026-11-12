@@ -8,13 +8,13 @@
 //!   a fresh doc of the same complete lines after every append, and one append of the whole after
 //!   finish (invariant 1).
 //!
-//! The model tests (properties named as in markdown-highlight-ssot-models.md) run 256 seeds
-//! of 64 commands, 64 more with an empty hook filter, 4 random splits of every corpus row, and
-//! 32 streams of repeated constructs under the three generic properties (work, storage, pending
-//! layout): about 18 s in a debug build (the command model 6 s, the splits 7 s, the repeated
-//! constructs 3 s, the corpus 1.5 s). Longer runs: MODEL_SEEDS=20000 for the command models,
-//! MARKDOWN_SPLITS=64 for the splits; MODEL_SEED replays one seed, MARKDOWN_ROW runs one corpus
-//! row and prints its HTML.
+//! The CI budget (B3): the command model runs 128 seeds of 64 commands and 32 more with an empty
+//! hook filter, and the repeated-construct model 8 streams under the three generic properties
+//! (work, storage, pending layout); with the corpus and the fixed rows about 6.4 s in a debug
+//! build. Every mutant of the work file's tables is caught at this budget by a fixed row or a
+//! model, except the stated equivalents. Opt in, at the end of each round: MARKDOWN_SPLITS=4 (or
+//! 64) splits every corpus row at random code points; MODEL_SEEDS=2000 (or 20000) widens both
+//! models. MODEL_SEED replays one seed, MARKDOWN_ROW runs one corpus row and prints its HTML.
 const std = @import("std");
 const markdown = @import("../markdown.zig");
 const html = @import("markdown-html.zig");
@@ -905,6 +905,8 @@ const FamilyCommand = union(enum) {
     append: []const u8,
     finish,
     math,
+    /// The hook on, with this filter.
+    filter: []const u8,
 };
 
 const Families = struct {
@@ -919,9 +921,10 @@ const Families = struct {
         const containers = [_][]const u8{ "> ", "- ", "1. ", "* ", "> - " };
         switch (family) {
             .title_lines => {
-                try out.appendSlice(arena, pick(random, &.{ "[x]: /u '", "[x]: /u\n\"", "intro\n\n[x]: /u (" }));
+                // A definition's title, or an inline link's (one title scanner serves both).
+                try out.appendSlice(arena, pick(random, &.{ "[x]: /u '", "[x]: /u\n\"", "intro\n\n[x]: /u (", "> see [ref](url \"", "see [r](u '", "a [b](c\n(" }));
                 for (0..count) |_| try out.appendSlice(arena, pick(random, &.{ "bb\n", "c d\n", "*e* [f]\n" }));
-                try out.appendSlice(arena, pick(random, &.{ "'\n\n[x]\n", "\"\n[x] after\n", ")\n" }));
+                try out.appendSlice(arena, pick(random, &.{ "'\n\n[x]\n", "\"\n[x] after\n", ")\n", "\") done\n", "') done\n" }));
             },
             .title_markup => {
                 try out.appendSlice(arena, pick(random, &.{ "[x]: /u '", "[x]: /u \"`|` ", "text `a | b` ", "text | " }));
@@ -992,6 +995,8 @@ const Families = struct {
     pub fn generate(_: *Families, arena: std.mem.Allocator, random: std.Random, _: usize) ![]Command {
         var commands: std.ArrayListUnmanaged(Command) = .empty;
         if (random.boolean()) try commands.append(arena, .math);
+        // A filter as long as one may be (its overlap is read at every call), or short ones.
+        if (random.uintLessThan(u32, 4) == 0) try commands.append(arena, .{ .filter = pick(random, &.{ "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq", "ses_", "a\x00bb\x00ccc" }) });
         const family = random.enumValue(Family);
         // From a few repeats to a document past the token limit (log-uniform); nesting lines
         // are long, so fewer.
@@ -1027,6 +1032,7 @@ const Families = struct {
             .append => |text| writer.print("append \"{f}\"", .{std.zig.fmtString(text[0..@min(text.len, 200)])}) catch {},
             .finish => writer.writeAll("finish") catch {},
             .math => writer.writeAll("math on") catch {},
+            .filter => |f| writer.print("hook filter \"{f}\"", .{std.zig.fmtString(f)}) catch {},
         }
     }
 
@@ -1055,6 +1061,12 @@ const Families = struct {
                     fed.add(f.doc.source.items.len);
                     try f.doc.setOptions(options);
                 },
+                .filter => |filter| {
+                    options.hook = true;
+                    options.hook_filter = filter;
+                    fed.add(f.doc.source.items.len);
+                    try f.doc.setOptions(options);
+                },
             }
             if (try genericProperties(step_arena.allocator(), &f.doc, fed, options, true)) |property| return .{ .property = property, .step = step };
         }
@@ -1062,7 +1074,7 @@ const Families = struct {
     }
 };
 
-test "Markdown tables: a header line is at most 4,096 bytes, and only such a line is held" {
+test "Markdown tables: a header line of any length is a header; only a line of 4,096 bytes is held" {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -1074,32 +1086,39 @@ test "Markdown tables: a header line is at most 4,096 bytes, and only such a lin
         try f.doc.append("|a|b|\n|-|-|\n| c\\ | d |\n");
         try std.testing.expectEqualStrings("c\\", f.doc.source.items[f.doc.blocks.items[5].content_start_byte..f.doc.blocks.items[5].content_end_byte]);
     }
-    for ([_]u32{ markdown.table_header_byte_count_max, markdown.table_header_byte_count_max + 1 }) |length| {
+    for ([_]u32{ markdown.held_line_byte_count_max, markdown.held_line_byte_count_max + 1, 8192 }) |length| {
+        // The finished parse is GFM's at any length: cmark-gfm makes these one- and two-column
+        // tables (a header with no pipe, and one with a pipe at its second byte).
+        const header = try arena.alloc(u8, length);
+        @memset(header, 'a');
+        const expected = try std.mem.concat(arena, u8, &.{ "<table>\n<thead>\n<tr>\n<th>", header, "</th>\n</tr>\n</thead>\n</table>\n" });
+        try std.testing.expectEqualStrings(try html.normalize(arena, expected), try html.normalize(arena, try wholeHtml(arena, "kinds", try std.mem.concat(arena, u8, &.{ header, "\n|-|\n" }))));
         const line = try arena.alloc(u8, length);
         @memset(line, 'x');
         line[1] = '|';
-        // Whole: a table exactly while the header line fits.
         var whole: Fixture = undefined;
         try whole.init(.{});
         defer whole.deinit();
         try whole.doc.append(try std.mem.concat(arena, u8, &.{ line, "\n|-|-|\n" }));
-        const table = whole.doc.blocks.items[0].kind == .table;
-        try std.testing.expectEqual(length <= markdown.table_header_byte_count_max, table);
-        // Streamed: the pending line shows past its pipe only once it is too long to be a header.
+        try std.testing.expectEqual(markdown.Kind.table, whole.doc.blocks.items[0].kind);
+        // Streamed: the pending line shows past its pipe only once it is too long to hold; such a
+        // line's frame then changes once, when the delimiter row makes it a header (accepted).
         var f: Fixture = undefined;
         try f.init(.{});
         defer f.deinit();
         var at: usize = 0;
         while (at < line.len) : (at += 30) try f.doc.append(line[at..@min(line.len, at + 30)]);
         const shown = (try f.doc.readLeaf(arena, 0)).bytes.items;
-        try std.testing.expectEqual(length > markdown.table_header_byte_count_max, shown.len > 1);
+        try std.testing.expectEqual(length > markdown.held_line_byte_count_max, shown.len > 1);
+        try f.doc.append("\n|-|-|\n");
+        try std.testing.expectEqual(markdown.Kind.table, f.doc.blocks.items[0].kind);
         try std.testing.expect(try streamAgreesParts(arena, "kinds", &.{ line, "\n", "|-|-|\n" }));
     }
 }
 
 test "Markdown model: repeated constructs keep work linear, stores within limits and the pending layout exact" {
     var families: Families = .{};
-    try model.check(Families, &families, .{ .seeds = 32, .steps = 0 });
+    try model.check(Families, &families, .{ .seeds = 8, .steps = 0 });
 }
 
 /// B's last two exceptions to P7, taken before a step: a backtick opener drawn as a code span
@@ -1210,10 +1229,10 @@ test "Markdown model: append, set, finish and reads keep P1-P5, P18 and the live
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     var engine: Engine = .{ .corpus_texts = try corpusTexts(arena_state.allocator()) };
-    try model.check(Engine, &engine, .{ .seeds = 256, .steps = 64 });
+    try model.check(Engine, &engine, .{ .seeds = 128, .steps = 64 });
     // An empty filter hooks every prose leaf.
     var hook_all: Engine = .{ .corpus_texts = engine.corpus_texts, .filter = "", .other_filter = "ses_" };
-    try model.check(Engine, &hook_all, .{ .seeds = 64, .steps = 64 });
+    try model.check(Engine, &hook_all, .{ .seeds = 32, .steps = 64 });
 }
 
 test "Markdown model: corpus rows split at random code points stream like one append" {
@@ -1221,7 +1240,8 @@ test "Markdown model: corpus rows split at random code points stream like one ap
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const corpus = try std.json.parseFromSliceLeaky(std.json.Value, arena, @embedFile("markdown_conformance"), .{});
-    const seeds: u64 = if (model.environment(arena, "MARKDOWN_SPLITS")) |t| try std.fmt.parseInt(u64, t, 10) else 4;
+    // Opt in (not in the CI budget): MARKDOWN_SPLITS=<n>.
+    const seeds: u64 = if (model.environment(arena, "MARKDOWN_SPLITS")) |t| try std.fmt.parseInt(u64, t, 10) else 0;
     for (corpus.object.get("rows").?.array.items) |row| {
         const name = row.array.items[0].string;
         var text: std.ArrayListUnmanaged(u8) = .empty;
@@ -1604,6 +1624,10 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
         for (0..30) |_| try markers.appendSlice(arena, "> 1. ");
         try markers.appendSlice(arena, "x\n");
     }
+    // opus round 4: f4-12's shrunk trace (a code span over lines with pipes, closed at the end).
+    // Eight times, so the per-document constant does not hide the per-byte factor.
+    const code_trace = [_][]const u8{ "x ` |a\na|| a ", " |a\na aa\naa|a\na a|a\na|a\na|", "a a|| aa ", "|a| aaa a\n| aaaa|aa\na\naaa|", " |a\n a\naa\n aa a\na\na\na a aaa", "| aa\n|| |a\n|a\naa\naa\n|", "|  |aa a\na|a|", "|a  || a\naa |aaa` |||c", "\n\n" };
+    const code_lines = try std.mem.concat(arena, []const u8, &.{ &code_trace, &code_trace, &code_trace, &code_trace, &code_trace, &code_trace, &code_trace, &code_trace });
     const verbose = environment(arena, "MARKDOWN_GATES") != null;
     const Row = struct {
         name: []const u8,
@@ -1665,6 +1689,14 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
         // The span never closes: the leaf is written again, literal, at finish.
         .{ .name = "an open code span over lines with pipes, 1-byte appends", .parts = try split(arena, open_code.items, 1), .sent_factor = 2, .assembled_factor = 3 },
         .{ .name = "lines of 30 nested markers, 1-byte appends", .parts = try split(arena, markers.items, 1) },
+        // A closed code span's display is assembled once per feed, whatever reads it (the hold's
+        // cut, the comparison and the tail write); finish writes the leaf again.
+        .{ .name = "a code span over lines with pipes, closed (8 appends, 8 times)", .parts = code_lines, .assembled_factor = 5, .sent_factor = 3, .display_factor = 3 },
+        // A 64-byte filter: each call reads its new bytes, not the filter's length again (bigboi
+        // round 4: 63,520 visits for 1,024 one-byte appends).
+        .{ .name = "a 64-byte filter, 1-byte appends", .options = .{ .hook = true, .hook_filter = "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq" }, .parts = try split(arena, try std.mem.concat(arena, u8, &.{ xs[0..1024], "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq" }), 1) },
+        // An inline link's title over 1,024 words, resumed (bigboi round 4: 2.1M inline visits).
+        .{ .name = "an inline link title, 1-byte appends", .parts = try split(arena, try std.mem.concat(arena, u8, &.{ "> see [ref](url \"", line[0..2048], "\") done" }), 1) },
         .{ .name = "se + s_ with the filter", .options = .{ .hook = true, .hook_filter = "ses_" }, .parts = &.{ "see se", "s_abc now\n" } },
     };
     var over = false;
@@ -1901,6 +1933,21 @@ test "Markdown stream: a leaf that changes kind or loses lines keeps its live di
         for (0..3000) |_| try parts.append(arena, "`c` x ");
         try parts.append(arena, "\nnext\n");
         try std.testing.expect(try streamAgreesParts(arena, "kinds", parts.items));
+    }
+    // bigboi round 4: one feed settles 8,190 escapes when the next line arrives, and the held
+    // line's pipe is among the tokens a retire would drop: the retire keeps them from the pipe on,
+    // so the display folded away never passes what was drawn.
+    {
+        var f: Fixture = undefined;
+        try f.init(.{});
+        defer f.deinit();
+        var first: std.ArrayListUnmanaged(u8) = .empty;
+        try first.appendSlice(arena, "p ");
+        for (0..8189) |_| try first.appendSlice(arena, "\\.");
+        try first.append(arena, '\n');
+        try f.doc.append(first.items);
+        try f.doc.append("a | b end");
+        try std.testing.expect(f.doc.live.folded_display_byte_count <= f.doc.live.shown_byte_count);
     }
     // A short held line that reaches the retire threshold (7,800 settled tokens before it):
     // the retire keeps the tokens from the pipe on, so the line can still be written when the

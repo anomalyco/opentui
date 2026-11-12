@@ -183,6 +183,8 @@ pub const Parser = struct {
     search_run_end: u32 = 0,
     /// Where an HTML tag scan that ran out resumes.
     html_resume: HtmlResume = .{},
+    /// An inline link's open title: the link's `]`, the title's opener, where its scan resumes.
+    tail_title: struct { close: u32 = std.math.maxInt(u32), at: u32 = 0, from: u32 = 0, destination: [2]u32 = .{ 0, 0 } } = .{},
     /// A label scan after `]` that ran out of content (its `]` is `search_opener`).
     label_scan: LabelScan = .{ .at = 0, .position = 0 },
     /// The first token whose display changed since `takeChanged` (none: nothing changed).
@@ -878,20 +880,47 @@ pub const Parser = struct {
         const final = self.final;
         if (at >= s.len) return if (final) null else error.NeedMore;
         if (s[at] != '(') return null;
-        var i = (try skipSpaceNewline(s, at + 1, final)) orelse return null;
+        // An open title resumes where it stopped: the destination before it stands.
+        const close = at - 1;
+        const resumed = self.tail_title.close == close;
+        var i: u32 = undefined;
         var destination: []const u8 = "";
-        if (i < s.len and s[i] != ')') {
-            const d = (try scanDestination(s, i, final)) orelse return null;
-            destination = d.value;
-            i = d.end;
-        }
         var title: ?[]const u8 = null;
-        const before_title = i;
-        i = (try skipSpaceNewline(s, i, final)) orelse return null;
-        if (i > before_title and i < s.len) {
-            if (try scanTitle(s, i, final)) |t| {
-                title = t.value;
-                i = (try skipSpaceNewline(s, t.end, final)) orelse return null;
+        // A title needs white space before it.
+        var spaced = true;
+        if (resumed) {
+            self.search_opener = std.math.maxInt(u32);
+            destination = s[self.tail_title.destination[0]..self.tail_title.destination[1]];
+            i = self.tail_title.at;
+        } else {
+            i = (try skipSpaceNewline(s, at + 1, final)) orelse return null;
+            if (i < s.len and s[i] != ')') {
+                const d = (try scanDestination(s, i, final)) orelse return null;
+                destination = d.value;
+                i = d.end;
+            }
+            const before_title = i;
+            i = (try skipSpaceNewline(s, i, final)) orelse return null;
+            spaced = i > before_title;
+        }
+        if (spaced and i < s.len and (s[i] == '"' or s[i] == '\'' or s[i] == '(')) {
+            const from = if (resumed) self.tail_title.from else i + 1;
+            self.tail_title.close = std.math.maxInt(u32);
+            switch (titleFrom(s, i, from)) {
+                .open => |stop| {
+                    if (final) return null;
+                    self.byte_visits += if (resumed) stop - from else stop - at;
+                    const destination_start: u32 = if (destination.len > 0) @intCast(destination.ptr - s.ptr) else 0;
+                    self.tail_title = .{ .close = close, .at = i, .from = stop, .destination = .{ destination_start, destination_start + @as(u32, @intCast(destination.len)) } };
+                    // A resumed search counts its own bytes (feed's NeedMore path).
+                    self.search_opener = close;
+                    return error.NeedMore;
+                },
+                .closed => |end| {
+                    title = s[i + 1 .. end - 1];
+                    i = (try skipSpaceNewline(s, end, final)) orelse return null;
+                },
+                .failed => {},
             }
         }
         if (i >= s.len) return if (final) null else error.NeedMore;
@@ -1563,27 +1592,43 @@ pub fn scanDestination(s: []const u8, at: u32, final: bool) error{NeedMore}!?Sca
 
 pub fn scanTitle(s: []const u8, at: u32, final: bool) error{NeedMore}!?Scanned {
     if (at >= s.len) return ranOut(Scanned, final);
+    if (s[at] != '"' and s[at] != '\'' and s[at] != '(') return null;
+    return switch (titleFrom(s, at, at + 1)) {
+        .closed => |end| .{ .value = s[at + 1 .. end - 1], .end = end },
+        .failed => null,
+        .open => ranOut(Scanned, final),
+    };
+}
+
+/// A link title's scan (CommonMark 6.6), opened at `at` and read from `from`: closed (its end),
+/// failed, or still open, resuming at `open` (the content's end, or a backslash or line ending
+/// there whose meaning the next byte decides). Definitions and inline links both resume it.
+pub const TitleScan = union(enum) { open: u32, closed: u32, failed };
+
+pub fn titleFrom(s: []const u8, at: u32, from: u32) TitleScan {
     const close: u8 = switch (s[at]) {
         '"' => '"',
         '\'' => '\'',
-        '(' => ')',
-        else => return null,
+        else => ')',
     };
-    var i = at + 1;
+    var i = @max(from, at + 1);
     while (i < s.len) : (i += 1) {
         const c = s[i];
         if (c == '\\') {
-            if (i + 1 >= s.len) return ranOut(Scanned, final);
+            if (i + 1 >= s.len) return .{ .open = i };
             if (isAsciiPunctuation(s[i + 1])) {
                 i += 1;
                 continue;
             }
         }
-        if (c == close) return .{ .value = s[at + 1 .. i], .end = i + 1 };
-        if (close == ')' and c == '(') return null;
-        if (c == '\n' and i + 1 < s.len and s[i + 1] == '\n') return null;
+        if (c == close) return .{ .closed = i + 1 };
+        if (close == ')' and c == '(') return .failed;
+        if (c == '\n') {
+            if (i + 1 >= s.len) return .{ .open = i };
+            if (s[i + 1] == '\n') return .failed;
+        }
     }
-    return ranOut(Scanned, final);
+    return .{ .open = i };
 }
 
 /// Length of `[label]` at `at` (2 for `[]`), or 0.
