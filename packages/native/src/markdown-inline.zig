@@ -276,6 +276,12 @@ pub const Parser = struct {
             };
             assert(self.position > before);
         }
+        // A `$` span that starts the trailing word is decided by the byte after its closer.
+        if (!final and self.options.math and self.position == self.limit and self.position + 1 < subject.len and subject[self.position] == '$' and subject[self.position + 1] != '$') {
+            self.limit = @intCast(subject.len);
+            self.step() catch |err| if (err == error.OutOfMemory) return error.OutOfMemory;
+            self.limit = self.position;
+        }
         if (!final) return;
         // Expired openers show literal from here, those this feed expired too.
         if (self.expired_from != std.math.maxInt(u32)) self.markChanged(self.expired_from);

@@ -1199,9 +1199,9 @@ test "Markdown sweep: every pair of appends, then finish, under every option set
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     // The tear prototype's repros (math on): A aborted in M2 before fd4ab4e19; B and D pass.
-    // Then a task marker before a nested one (M3-a, M2 F9) and an escaped backslash that ends an
-    // append inside `\(` (bigboi-2).
-    for ([_][]const []const u8{ &.{ "@\n$$_", "$$\n" }, &.{"&amp;\n===\n"}, &.{ "&amp;", "\n===\n" }, &.{ "- [x] - [x] ", "**" }, &.{ "- [x] ", "- [x] ", "word " }, &.{ "\\(a b\\\\", ")", " now" } }) |parts| {
+    // Then a task marker before a nested one (M3-a, M2 F9), an escaped backslash that ends an
+    // append inside `\(` (bigboi-2) and a `$` run that ends an append (bigboi-3).
+    for ([_][]const []const u8{ &.{ "@\n$$_", "$$\n" }, &.{"&amp;\n===\n"}, &.{ "&amp;", "\n===\n" }, &.{ "- [x] - [x] ", "**" }, &.{ "- [x] ", "- [x] ", "word " }, &.{ "\\(a b\\\\", ")", " now" }, &.{ "$ $$", "$x$" } }) |parts| {
         try std.testing.expect(try streamAgreesParts(arena_state.allocator(), "math tear", parts));
     }
     // E and F's inputs with the options M1 has (conceal and hyperlinks are M2's).
@@ -1479,6 +1479,8 @@ test "Markdown read_leaf: display bytes, chunk styles, spans and the URL pool" {
         .{ .source = "\\(a|b\\) c", .math = true, .pending = true, .block = 0, .chunks = &.{.{ "(a", "", "" }} },
         // A word is tokenized once white space follows it (M3-d).
         .{ .source = "See [Updated](https://target)\n", .pending = true, .block = 0, .chunks = &.{ .{ "See ", "", "" }, .{ "Updated", "link", "https://target" } } },
+        // A `$` span that starts the last word shows once the byte after it decides it (bigboi-3).
+        .{ .source = "see $x$.", .math = true, .pending = true, .block = 0, .chunks = &.{ .{ "see ", "", "" }, .{ "x", "math", "" }, .{ ".", "", "" } } },
     };
     for (rows) |row| {
         var f: Fixture = undefined;
