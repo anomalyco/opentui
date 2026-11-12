@@ -406,10 +406,17 @@ pub const MarkdownDoc = struct {
     /// The group set of each scope combination written so far (Context ids, never freed).
     scope_sets: std.AutoHashMapUnmanaged(u16, u32) = .empty,
 
+    /// The calls on the doc so far: a binding notes the call that last wrote its node.
+    calls: u64 = 0,
+    /// Bindings whose node a failed write or a rejected call left behind.
+    stale_count: u32 = 0,
+
     /// `skipped`: a write to the node was skipped (hooked, or not live), or its text changed
     /// since the doc's last write (`epoch`, the buffer's content epoch then: the host wrote
     /// it), so it does not hold the live display's earlier bytes and takes only resync writes.
-    pub const Binding = struct { block: u32, node: Handle, skipped: bool = false, epoch: u64 = 0 };
+    /// `stale`: the node does not show the doc (a write failed, or the call that wrote it was
+    /// rejected); the next call writes it whole.
+    pub const Binding = struct { block: u32, node: Handle, skipped: bool = false, epoch: u64 = 0, call: u64 = 0, stale: bool = false };
     /// The Markdown layer of a bound node's buffer (its only layer).
     pub const layer_id: u32 = 2;
 
@@ -533,14 +540,44 @@ pub const MarkdownDoc = struct {
             binding.skipped = true;
             return;
         }
-        self.writeText(node, text, w) catch |err| return switch (err) {
-            error.OutOfMemory => error.OutOfMemory,
-            error.TextLimit => error.SourceLimit,
-            error.LayerLimit => error.BlockLimit,
-            else => error.InvalidOptions,
+        binding.call = self.calls;
+        self.writeText(node, text, w) catch |err| {
+            self.markStale(binding);
+            return switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                error.TextLimit => error.SourceLimit,
+                error.LayerLimit => error.BlockLimit,
+                else => error.InvalidOptions,
+            };
         };
         binding.skipped = false;
         binding.epoch = text.buffer.getContentEpoch();
+        if (binding.stale) {
+            binding.stale = false;
+            self.stale_count -= 1;
+        }
+    }
+
+    fn markStale(self: *MarkdownDoc, binding: *Binding) void {
+        if (binding.stale) return;
+        binding.stale = true;
+        self.stale_count += 1;
+    }
+
+    /// Writes whole, from the doc as it is, the nodes a failed write left behind and (after a
+    /// rejected call, `rejected`) the nodes that call wrote; one that fails again stays stale.
+    fn resyncNodes(self: *MarkdownDoc, rejected: bool) void {
+        if (!rejected and self.stale_count == 0) return;
+        for (self.bindings.items) |*binding| {
+            if (!binding.stale and !(rejected and binding.call == self.calls)) continue;
+            if (binding.block >= self.doc.blocks.items.len) continue;
+            var whole = self.doc.wholeWrite(binding.block) catch {
+                self.markStale(binding);
+                continue;
+            };
+            whole.resync = true;
+            writeNode(self, &self.doc, whole) catch {};
+        }
     }
 
     fn writeText(self: *MarkdownDoc, node: *native_renderable.NativeRenderable, text: *Text, w: markdown.NodeWrite) !void {
@@ -3941,6 +3978,9 @@ pub const Context = struct {
         defer self.resetMarkdownScratch();
         const value = try self.getMarkdown(handle);
         errdefer value.writer.unbound_from = markdown.none;
+        value.calls += 1;
+        value.resyncNodes(false);
+        errdefer value.resyncNodes(true);
         switch (call) {
             .append => |bytes| {
                 if (!std.unicode.utf8ValidateSlice(bytes)) return error.InvalidUnicode;
@@ -4011,10 +4051,21 @@ pub const Context = struct {
         const style = if (value.syntax_style) |id| try self.getSyntaxStyle(id) else null;
         try value.bindings.ensureUnusedCapacity(self.allocator, 1);
         const at = value.bindingIndex(index);
-        if (at < value.bindings.items.len and value.bindings.items[at].block == index) {
+        const rebind = at < value.bindings.items.len and value.bindings.items[at].block == index;
+        const previous = if (rebind) value.bindings.items[at] else undefined;
+        if (rebind and previous.stale) value.stale_count -= 1;
+        if (rebind) {
             value.bindings.items[at] = .{ .block = index, .node = node_handle };
         } else {
             value.bindings.insertAssumeCapacity(at, .{ .block = index, .node = node_handle });
+        }
+        // A rejected bind leaves the bindings as they were.
+        errdefer {
+            if (value.bindings.items[at].stale) value.stale_count -= 1;
+            if (rebind) {
+                value.bindings.items[at] = previous;
+                if (previous.stale) value.stale_count += 1;
+            } else _ = value.bindings.orderedRemove(at);
         }
         text.buffer.style_binding.dependent = .{ .scene_text = node };
         text.buffer.setSyntaxStyle(style);

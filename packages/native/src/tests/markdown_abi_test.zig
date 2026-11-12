@@ -649,3 +649,101 @@ test "Markdown ABI: read_source gives an inline leaf's source without container 
     try std.testing.expectEqual(@as(u16, c.OT_MD_QUOTE), blocks[1].kind);
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, md.ot_markdown_read_source(f.context, &f.doc, blocks[1].index, null, 0, &count));
 }
+
+/// An allocator whose `countdown`-th allocation (or growth) from now fails, once.
+const OneFailure = struct {
+    inner: std.mem.Allocator,
+    countdown: usize = std.math.maxInt(usize),
+    failed: bool = false,
+
+    fn allocator(self: *OneFailure) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
+    }
+
+    fn fails(self: *OneFailure) bool {
+        if (self.countdown == std.math.maxInt(usize)) return false;
+        if (self.countdown > 0) {
+            self.countdown -= 1;
+            return false;
+        }
+        self.countdown = std.math.maxInt(usize);
+        self.failed = true;
+        return true;
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
+        const self: *OneFailure = @ptrCast(@alignCast(ctx));
+        if (self.fails()) return null;
+        return self.inner.rawAlloc(len, alignment, ra);
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) bool {
+        const self: *OneFailure = @ptrCast(@alignCast(ctx));
+        if (new_len > memory.len and self.fails()) return false;
+        return self.inner.rawResize(memory, alignment, new_len, ra);
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {
+        const self: *OneFailure = @ptrCast(@alignCast(ctx));
+        if (new_len > memory.len and self.fails()) return null;
+        return self.inner.rawRemap(memory, alignment, new_len, ra);
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ra: usize) void {
+        const self: *OneFailure = @ptrCast(@alignCast(ctx));
+        self.inner.rawFree(memory, alignment, ra);
+    }
+};
+
+test "Markdown ABI: a call that fails at any allocation changes nothing, bound nodes included" {
+    const Context = context_mod.Context;
+    const live: context_mod.MarkdownOptions = .{};
+    const calls = [_]Context.MarkdownCall{
+        .{ .options = .{ .flags = live.flags | c.OT_MD_MATH } },
+        .{ .append = " more **e** and `f` text\n\nnext *g*" },
+        .{ .set = "one $x$ **two**\n\nthree **d** four" },
+        .finish,
+    };
+    for (calls) |request| {
+        var failure: OneFailure = .{ .inner = std.testing.allocator };
+        var countdown: usize = 0;
+        while (true) : (countdown += 1) {
+            failure.countdown = std.math.maxInt(usize);
+            failure.failed = false;
+            const owner = try Context.init(failure.allocator(), std.testing.io, .{});
+            defer owner.deinit() catch unreachable;
+            const session = try owner.createSession(.{});
+            try owner.attachSessionRenderer(session, 40, 10, .{ .remote_mode = .remote });
+            _ = try owner.sceneCreateNode(session, c.OT_SCENE_ROOT, 1);
+            const doc = try owner.createMarkdown(live);
+            _ = try owner.markdownCall(doc, .{ .append = "one $x$ **two**\n\nthree **d** four" });
+            const blocks = try owner.markdownReadChanges(doc, 64);
+            var nodes: [2]context_mod.Handle = undefined;
+            for (&nodes, blocks.changes[0..2], 2..) |*node, block, num| {
+                node.* = try owner.sceneCreateNode(session, c.OT_SCENE_TEXT, @intCast(num));
+                try owner.markdownBind(doc, block.index, node.*);
+            }
+            var before: [2][64]u8 = undefined;
+            var before_count: [2]u32 = undefined;
+            for (nodes, 0..) |node, i| before_count[i] = try owner.sceneGetText(node, &before[i]);
+            const source = try std.testing.allocator.dupe(u8, try owner.markdownSource(doc));
+            defer std.testing.allocator.free(source);
+            failure.countdown = countdown;
+            const rejected = if (owner.markdownCall(doc, request)) |_| false else |err| switch (err) {
+                error.OutOfMemory => true,
+                else => return err,
+            };
+            failure.countdown = std.math.maxInt(usize);
+            if (!failure.failed) break;
+            if (!rejected) continue;
+            // Rejected: the source, the pending changes and every node as before.
+            errdefer std.debug.print("{s} failing allocation {d}\n", .{ @tagName(request), countdown });
+            try std.testing.expectEqualStrings(source, try owner.markdownSource(doc));
+            try std.testing.expectEqual(@as(u32, 0), (try owner.markdownReadChanges(doc, 0)).count);
+            for (nodes, 0..) |node, i| {
+                var shown: [64]u8 = undefined;
+                try std.testing.expectEqualStrings(before[i][0..before_count[i]], shown[0..try owner.sceneGetText(node, &shown)]);
+            }
+        }
+    }
+}

@@ -564,7 +564,7 @@ pub const Doc = struct {
         errdefer {
             self.rollback(&snapshot);
             // The pending line's layout as it was before the call.
-            self.addProvisional() catch {};
+            self.restoreProvisional();
         }
         try self.reserveSource(@intCast(self.source.items.len + bytes.len));
         self.source.appendSliceAssumeCapacity(bytes);
@@ -594,7 +594,7 @@ pub const Doc = struct {
             self.filter_scanned = none;
             self.liveReset(none, none);
             self.finished_block = none;
-            self.addProvisional() catch {};
+            self.restoreProvisional();
         }
         try self.reserveSource(@intCast(old_len + bytes.len));
         self.source.appendSliceAssumeCapacity(bytes);
@@ -636,7 +636,7 @@ pub const Doc = struct {
         var snapshot = self.beginMutation();
         errdefer {
             self.rollback(&snapshot);
-            self.addProvisional() catch {};
+            self.restoreProvisional();
         }
         try self.scanLines(true, @as(u32, @intCast(self.source.items.len)) -| 1);
         while (self.open_count > 0) try self.closeBlock(self.open[self.open_count - 1], self.previous_line_end_byte);
@@ -713,8 +713,10 @@ pub const Doc = struct {
         fresh.read_block_count = @min(self.read_block_count, equal);
         fresh.tail_sink = self.tail_sink;
         fresh.writer = self.writer;
-        self.deinit();
-        self.* = fresh.*;
+        // The new state is this doc's while the nodes are written; a failed write takes the old
+        // state back (and `fresh`, the caller's to free, the new one).
+        std.mem.swap(Doc, self, fresh);
+        errdefer std.mem.swap(Doc, self, fresh);
         // The equal leading blocks keep their nodes, rewritten where their output changed; the
         // host binds the blocks after them again.
         if (self.writer) |w| {
@@ -726,6 +728,7 @@ pub const Doc = struct {
             sink.rebind_from = 0;
             try self.rebindSink();
         }
+        fresh.deinit();
     }
 
     /// The two docs' definitions resolve the same labels to the same targets.
@@ -2196,6 +2199,21 @@ pub const Doc = struct {
 
     /// After a call: a block of the previous provisional layout that the host read and that no
     /// block of the same identity replaced is reported removed.
+    /// After a rejected call: the pending line's layout as before the call, its blocks listed
+    /// only if they were before (a rejected call changes nothing).
+    fn restoreProvisional(self: *Doc) void {
+        self.addProvisional() catch {};
+        const from = self.provisional_previous_from;
+        if (from == none) return;
+        self.provisional_previous_from = none;
+        for (self.provisional_previous.items, from..) |old, index| {
+            if (index >= self.blocks.items.len) break;
+            const b = &self.blocks.items[index];
+            if (b.kind == old.kind and b.parent_index == old.parent_index and b.source_start_byte == old.source_start_byte and
+                b.source_end_byte == old.source_end_byte and b.content_end_byte == old.content_end_byte) b.flags.unreported = old.flags.unreported;
+        }
+    }
+
     fn reconcileProvisional(self: *Doc) void {
         const from = self.provisional_previous_from;
         if (from == none) return;
