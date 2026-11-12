@@ -1273,7 +1273,7 @@ test "Markdown model: corpus rows split at random code points stream like one ap
 }
 
 test "Markdown read_leaf: display bytes, chunk styles, spans and the URL pool" {
-    const Row = struct { source: []const u8, math: bool = false, block: u32, chunks: []const struct { []const u8, []const u8, []const u8 } };
+    const Row = struct { source: []const u8, math: bool = false, finish: bool = true, block: u32, chunks: []const struct { []const u8, []const u8, []const u8 } };
     // Each chunk: its text, a scope summary and its link target.
     const rows = [_]Row{
         .{ .source = "see [docs](https://e.x/a) **now**", .block = 0, .chunks = &.{ .{ "see ", "", "" }, .{ "docs", "link", "https://e.x/a" }, .{ " ", "", "" }, .{ "now", "strong", "" } } },
@@ -1285,13 +1285,15 @@ test "Markdown read_leaf: display bytes, chunk styles, spans and the URL pool" {
         .{ .source = "- x\n\n      code\n       more\n", .block = 3, .chunks = &.{.{ "code\n more", "raw", "" }} },
         // One run closes a span and opens another (CommonMark 6.2).
         .{ .source = "*a***b**", .block = 0, .chunks = &.{ .{ "a", " italic", "" }, .{ "b", "strong", "" } } },
+        // A pending word: an underscore between letters can neither open nor close, so B draws it.
+        .{ .source = "see ses_a", .finish = false, .block = 0, .chunks = &.{.{ "see ses_a", "", "" }} },
     };
     for (rows) |row| {
         var f: Fixture = undefined;
         try f.init(.{ .math = row.math });
         defer f.deinit();
         try f.doc.append(row.source);
-        try f.doc.finish();
+        if (row.finish) try f.doc.finish();
         var arena_state = std.heap.ArenaAllocator.init(gpa);
         defer arena_state.deinit();
         const arena = arena_state.allocator();

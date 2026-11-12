@@ -597,24 +597,9 @@ pub const Parser = struct {
         const start = self.position;
         const count = runLength(self.subject, start, c);
         const end = start + count;
-        const before = previousCodePoint(self.subject, start);
-        const after = nextCodePoint(self.subject, end);
-        const before_space = isUnicodeWhitespace(before);
-        const after_space = isUnicodeWhitespace(after);
-        const before_punctuation = isUnicodePunctuation(before);
-        const after_punctuation = isUnicodePunctuation(after);
-        const left = !after_space and (!after_punctuation or before_space or before_punctuation);
-        const right = !before_space and (!before_punctuation or after_space or after_punctuation);
-        var can_open = left;
-        var can_close = right;
-        if (c == '_') {
-            can_open = left and (!right or before_punctuation);
-            can_close = right and (!left or after_punctuation);
-        }
-        if (c == '~' and count > 2) {
-            can_open = false;
-            can_close = false;
-        }
+        const can = flanking(self.subject, start, count, c);
+        const can_open = can.open;
+        const can_close = can.close;
         const token_index: u32 = @intCast(self.tokens.items.len);
         try self.push(.{ .start = start, .len = count, .kind = .delimiter, .aux = c });
         self.position = end;
@@ -1354,7 +1339,16 @@ pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *Pending
         const before = i;
         defer scan.visits += i - before;
         switch (c) {
-            '*', '_', '~' => i += runLength(s, i, c),
+            '*', '_', '~' => {
+                const run = runLength(s, i, c);
+                // B draws a run as matched while it may still open or close; the byte after it
+                // decides, so a run at the end waits for it, and one that can do neither
+                // (`snake_case`, `a * b`) is text.
+                if (i + run == s.len) return hold(scan, i, i, tag);
+                const can = flanking(s, i, run, c);
+                if (!can.open and !can.close) try out.appendSlice(allocator, s[i .. i + run]);
+                i += run;
+            },
             '`' => {
                 // A run at the end may still grow: its length is not known yet.
                 if (i + runLength(s, i, c) == s.len) return hold(scan, i, i, tag);
@@ -1479,6 +1473,21 @@ pub fn isAsciiPunctuation(c: u8) bool {
 }
 
 /// Code point before `at`, or '\n' at the start (CommonMark treats both ends as whitespace).
+/// Whether a run of `count` delimiters `c` at `start` can open and close spans (CommonMark §6.2).
+fn flanking(s: []const u8, start: u32, count: u32, c: u8) struct { open: bool, close: bool } {
+    const before = previousCodePoint(s, start);
+    const after = nextCodePoint(s, start + count);
+    const before_space = isUnicodeWhitespace(before);
+    const after_space = isUnicodeWhitespace(after);
+    const before_punctuation = isUnicodePunctuation(before);
+    const after_punctuation = isUnicodePunctuation(after);
+    const left = !after_space and (!after_punctuation or before_space or before_punctuation);
+    const right = !before_space and (!before_punctuation or after_space or after_punctuation);
+    if (c == '~' and count > 2) return .{ .open = false, .close = false };
+    if (c == '_') return .{ .open = left and (!right or before_punctuation), .close = right and (!left or after_punctuation) };
+    return .{ .open = left, .close = right };
+}
+
 fn previousCodePoint(s: []const u8, at: u32) u21 {
     if (at == 0) return '\n';
     var i = at - 1;
