@@ -23,6 +23,8 @@ pub const table_column_count_max: u32 = 128;
 pub const held_line_byte_count_max: u32 = 4096;
 pub const hook_filter_byte_count_max: u32 = 256;
 pub const hook_filter_item_byte_count_max: u32 = 64;
+/// Filter items at most: each is searched in every new byte (the filter's work bound).
+pub const hook_filter_item_count_max: u32 = 16;
 /// Retained capacity of the per-call scratch arena.
 pub const scratch_retained_byte_count_max: usize = 1 << 20;
 
@@ -193,7 +195,14 @@ const Extension = struct {
 
         fn step(self: *Heading, s: []const u8, i: u32) void {
             const c = s[i];
-            if (isSpaceOrTab(c)) return;
+            if (isSpaceOrTab(c)) {
+                // Leading white space is not content (an empty heading starts at the line end).
+                if (self.last_end == self.content_start and self.run_start == none) {
+                    self.content_start = i + 1;
+                    self.last_end = i + 1;
+                }
+                return;
+            }
             if (c == '#') {
                 if (self.run_start != none and i == self.last_end) {
                     self.last_end = i + 1;
@@ -498,11 +507,6 @@ pub const Doc = struct {
     pending_hold: struct { line: u32 = none, end: u32 = 0, hold: Hold = Hold.not, in_table: bool = false } = .{},
     filter_pool: [hook_filter_byte_count_max]u8 = undefined,
     filter_byte_count: u32 = 0,
-    /// Per filter byte, the KMP fallback of its item; per item, the bytes of it matched by the
-    /// source up to `filter_scanned` (none: start again a filter's length back).
-    filter_fallback: [hook_filter_byte_count_max]u8 = undefined,
-    filter_matched: [hook_filter_byte_count_max / 2 + 1]u8 = undefined,
-    filter_scanned: u32 = none,
     /// A filter match in the pending line, latched once its line is parsed; none otherwise.
     hook_pending_byte: u32 = none,
 
@@ -527,24 +531,6 @@ pub const Doc = struct {
         @memcpy(self.filter_pool[0..items.len], items);
         self.filter_byte_count = @intCast(items.len);
         self.options.hook_filter = "";
-        self.filter_scanned = none;
-        // KMP fallbacks, item by item.
-        var start: usize = 0;
-        while (start <= items.len) {
-            const end = std.mem.indexOfScalarPos(u8, items, start, 0) orelse items.len;
-            const item = items[start..end];
-            var k: u8 = 0;
-            for (item, 0..) |c, i| {
-                if (i == 0) {
-                    self.filter_fallback[start] = 0;
-                    continue;
-                }
-                while (k > 0 and item[k] != c) k = self.filter_fallback[start + k - 1];
-                if (item[k] == c) k += 1;
-                self.filter_fallback[start + i] = k;
-            }
-            start = end + 1;
-        }
     }
 
     pub fn deinit(self: *Doc) void {
@@ -610,7 +596,6 @@ pub const Doc = struct {
             self.source.shrinkRetainingCapacity(old_len);
             self.counters = counters;
             self.hook_pending_byte = hook_pending_byte;
-            self.filter_scanned = none;
             self.liveReset(none, none);
             self.finished_block = none;
             self.restoreProvisional();
@@ -868,7 +853,6 @@ pub const Doc = struct {
     }
 
     fn rollback(self: *Doc, snapshot: *const Snapshot) void {
-        self.filter_scanned = none;
         var i = self.undo.items.len;
         while (i > 0) {
             i -= 1;
@@ -972,36 +956,9 @@ pub const Doc = struct {
             self.hook_pending_byte = none;
             try self.latchRange(pending, self.line_start_byte);
         }
-        // Matches that start in the new bytes, or straddle the last call's end: the scan goes on
-        // from each item's partial match, or (after a replace or a rejected call) starts a
-        // filter's length back.
-        const end: u32 = @intCast(self.source.items.len);
-        var start = from_byte;
-        if (self.filter_scanned != from_byte) {
-            start = from_byte -| self.filterOverlap();
-            @memset(&self.filter_matched, 0);
-        }
-        self.filter_scanned = end;
-        const s = self.source.items;
-        const pool = self.filter();
-        var item_start: usize = 0;
-        var item_index: usize = 0;
-        while (item_start <= pool.len) : (item_index += 1) {
-            const item_end = std.mem.indexOfScalarPos(u8, pool, item_start, 0) orelse pool.len;
-            const item = pool[item_start..item_end];
-            defer item_start = item_end + 1;
-            if (item.len == 0) continue;
-            var k = self.filter_matched[item_index];
-            self.counters.hook_byte_visits += end - start;
-            for (s[start..end], start..) |c, i| {
-                while (k > 0 and item[k] != c) k = self.filter_fallback[item_start + k - 1];
-                if (item[k] == c) k += 1;
-                if (k < item.len) continue;
-                try self.latchMatch(@intCast(i + 1 - item.len));
-                k = self.filter_fallback[item_start + k - 1];
-            }
-            self.filter_matched[item_index] = k;
-        }
+        // Matches that start in the new bytes, or straddle the last call's end: each item is
+        // searched from a filter's length back (the stated bound: items x (bytes + overlap)).
+        try self.latchRange(from_byte -| self.filterOverlap(), @intCast(self.source.items.len));
     }
 
     fn latchMatch(self: *Doc, position: u32) Error!void {
@@ -1022,6 +979,9 @@ pub const Doc = struct {
     /// Latches the leaves holding a filter match that starts in [start, end); a match in the
     /// pending line is kept for later.
     fn latchRange(self: *Doc, start: u32, end: u32) Error!void {
+        // With the hook off a filter latches nothing (the model's option sets found a table
+        // header's cell latched).
+        if (!self.options.hook or self.filterLength() == 0) return;
         var matches = self.filterMatches(start, end);
         while (matches.next()) |position| try self.latchMatch(position);
     }
@@ -1368,11 +1328,10 @@ pub const Doc = struct {
             // Display math.
             if (self.options.math and (c == '$' or c == '\\')) {
                 line.readAll();
-                // A one-line block is decided by its line ending (D102: the pending line shows as
-                // text or a row until then, and never reverts).
-                const decided = mathOpener(s, at, line.end);
-                if (decided != null and !(self.provisional and decided.?.one_line != null)) {
-                    const opener = decided.?;
+                // A math block is decided by the line's ending (D102, D93: the pending line shows
+                // as text or a row until then, and never reverts).
+                const decided = if (self.provisional) null else mathOpener(s, at, line.end);
+                if (decided) |opener| {
                     try self.closeAbove(matched.*, self.previous_line_end_byte);
                     all_closed.* = true;
                     const m = try self.addChild(.code, at, line.end);
@@ -2097,7 +2056,10 @@ pub const Doc = struct {
         switch (ext.kind) {
             .heading => {
                 ext.heading.scan(s, old, end);
-                (try self.blockMut(ext.heading.block)).content_end_byte = ext.heading.contentEnd();
+                const heading = try self.blockMut(ext.heading.block);
+                heading.content_start_byte = ext.heading.content_start;
+                heading.content_end_byte = ext.heading.contentEnd();
+                self.pending_content_start = ext.heading.content_start;
             },
             .row => try self.scanRow(&ext.row, old, end),
             else => {},
@@ -2303,7 +2265,7 @@ pub const Doc = struct {
             // The containers matched and the markers read stay: read on from the last marker.
             if (cached.hold.resume_at != none) {
                 self.counters.block_byte_visits += end - cached.hold.resume_at;
-                const hold = heldPrefix(self.source.items, cached.hold.resume_at, end, cached.hold.state, self.pending_row == .row and !cached.in_table, cached.in_table, self.options.math);
+                const hold = heldPrefix(self.source.items, cached.hold.resume_at, end, cached.hold.state, self.pending_row == .row and !cached.in_table, cached.in_table);
                 return self.cacheHold(hold, end, cached.in_table);
             }
         }
@@ -2330,7 +2292,7 @@ pub const Doc = struct {
         if (line.indented) return self.cacheHold(Hold.not, end, false);
         const tip = self.tipIndex();
         const in_table = tip != none and self.blocks.items[tip].kind == .table and matched == self.open_count;
-        const hold = heldPrefix(self.source.items, line.next_nonspace, end, .{}, self.pending_row == .row and !in_table, in_table, self.options.math);
+        const hold = heldPrefix(self.source.items, line.next_nonspace, end, .{}, self.pending_row == .row and !in_table, in_table);
         // heldPrefix reads at most the markers and a run it keeps (charged here).
         self.counters.block_byte_visits += end - line.next_nonspace;
         return self.cacheHold(hold, end, in_table);
@@ -2819,7 +2781,7 @@ pub const Doc = struct {
             live.pending_display.clearRetainingCapacity();
             live.pending_runs.clearRetainingCapacity();
             old_pending = live.previous_pending.items;
-            live.pending_scan = .{ .stop = parser.position, .visits = live.pending_scan.visits };
+            live.pending_scan = .{ .stop = parser.position, .word_start = parser.position, .visits = live.pending_scan.visits };
         }
         const drawn_before = live.pending_display.items.len;
         if (!final) {
@@ -3089,7 +3051,7 @@ pub const Doc = struct {
             // Draw on from the last cut while the drawing it continues stands.
             var cut = live.cut_draw;
             if (cut.at == none or cut.at > at or cut.from != live.parser.position or !std.meta.eql(cut.code, live.pending_code_opener)) {
-                cut = .{ .from = live.parser.position, .code = live.pending_code_opener, .scan = .{ .stop = live.parser.position } };
+                cut = .{ .from = live.parser.position, .code = live.pending_code_opener, .scan = .{ .stop = live.parser.position, .word_start = live.parser.position } };
             }
             var drawn: std.ArrayListUnmanaged(u8) = .empty;
             inline_parser.renderPending(live.content.items[0..at], cut.scan.stop, cut.code, &cut.scan, self.scratch.allocator(), &drawn) catch return live.folded_display_byte_count;
@@ -3203,6 +3165,7 @@ pub const Doc = struct {
         live.pending_scan.stop -= drop;
         for (live.pending_runs.items) |*run| run.end -= drop;
         live.pending_scan.scanned -|= drop;
+        live.pending_scan.word_start -|= drop;
         live.pending_scan.run_end -|= drop;
         if (live.pending_scan.code) |opener| live.pending_scan.code = opener - drop;
         if (live.pending_code_opener) |opener| live.pending_code_opener = opener - drop;
@@ -3263,6 +3226,7 @@ pub const Doc = struct {
         live.pending_scan.stop -= drop;
         for (live.pending_runs.items) |*run| run.end -= drop;
         live.pending_scan.scanned -|= drop;
+        live.pending_scan.word_start -|= drop;
         live.pending_scan.run_end -|= drop;
         if (live.pending_scan.code) |opener| live.pending_scan.code = opener - drop;
         if (live.pending_code_opener) |opener| live.pending_code_opener = opener - drop;
@@ -4100,14 +4064,14 @@ const MarkerScan = struct { after_item: bool = false, markers: u32 = 0 };
 /// Whether the pending line's kind can still change, reading its markers from `from` (a
 /// marker's start, or the line's first non-space byte) with the scan state there. A held line
 /// records where its last marker starts, so the next call reads on from there.
-fn heldPrefix(s: []const u8, from: u32, end: u32, state: MarkerScan, delimiter_row: bool, in_table: bool, math: bool) Hold {
+fn heldPrefix(s: []const u8, from: u32, end: u32, state: MarkerScan, delimiter_row: bool, in_table: bool) Hold {
     if (delimiter_row) return Hold.keeping(" \t:-|");
     var at = from;
     var scan = state;
     // Markers past the nesting limit are text, so the line is decided after that many.
     while (scan.markers <= depth_max) : (scan.markers += 1) {
         while (at < end and isSpaceOrTab(s[at])) at += 1;
-        switch (heldMarker(s[at..end], scan.after_item, in_table, math)) {
+        switch (heldMarker(s[at..end], scan.after_item, in_table)) {
             .decided => |hold| {
                 var held = hold;
                 if (held.held) {
@@ -4132,7 +4096,7 @@ const HeldMarker = union(enum) {
     container: u32,
 };
 
-fn heldMarker(rest: []const u8, after_item: bool, in_table: bool, math: bool) HeldMarker {
+fn heldMarker(rest: []const u8, after_item: bool, in_table: bool) HeldMarker {
     // Nothing after the markers yet: spaces keep it so.
     if (rest.len == 0) return .{ .decided = Hold.keeping(" \t") };
     const c = rest[0];
@@ -4182,13 +4146,6 @@ fn heldMarker(rest: []const u8, after_item: bool, in_table: bool, math: bool) He
         '<' => .{ .decided = Hold.to_line_end },
         '|' => .{ .decided = if (in_table) Hold.not else Hold.to_line_end },
         ':' => .{ .decided = if (onlyBytesOf(rest, ":-| \t")) Hold.keeping(" \t:-|") else Hold.not },
-        '$', '\\' => {
-            if (!math) return .{ .decided = Hold.not };
-            const opener: []const u8 = if (c == '$') "$$" else "\\[";
-            // `$$` or `\[` and spaces: a block opener while only spaces follow.
-            if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], opener)) return .{ .decided = if (onlyBytesOf(rest[2..], " \t")) Hold.keeping(" \t") else Hold.not };
-            return .{ .decided = if (rest.len == 1) Hold.again else Hold.not };
-        },
         else => .{ .decided = Hold.not },
     };
 }
@@ -4699,9 +4656,12 @@ fn validateFilter(filter: []const u8) Error!void {
     if (filter.len > hook_filter_byte_count_max) return error.InvalidOptions;
     var it = std.mem.splitScalar(u8, filter, 0);
     if (filter.len == 0) return;
+    var count: u32 = 0;
     while (it.next()) |item| {
         if (item.len == 0 or item.len > hook_filter_item_byte_count_max) return error.InvalidOptions;
+        count += 1;
     }
+    if (count > hook_filter_item_count_max) return error.InvalidOptions;
 }
 
 test {

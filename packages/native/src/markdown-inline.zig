@@ -184,7 +184,7 @@ pub const Parser = struct {
     /// Where an HTML tag scan that ran out resumes.
     html_resume: HtmlResume = .{},
     /// An inline link's open title: the link's `]`, the title's opener, where its scan resumes.
-    tail_title: struct { close: u32 = std.math.maxInt(u32), at: u32 = 0, from: u32 = 0, destination: [2]u32 = .{ 0, 0 } } = .{},
+    tail_title: struct { close: u32 = std.math.maxInt(u32), at: u32 = 0, from: u32 = 0, destination: [2]u32 = .{ 0, 0 }, end: u32 = 0, newlines: u32 = 0 } = .{},
     /// A label scan after `]` that ran out of content (its `]` is `search_opener`).
     label_scan: LabelScan = .{ .at = 0, .position = 0 },
     /// The first token whose display changed since `takeChanged` (none: nothing changed).
@@ -881,10 +881,15 @@ pub const Parser = struct {
         var title: ?[]const u8 = null;
         // A title needs white space before it.
         var spaced = true;
+        // A closed title's end and the white space after it read so far (title_end 0: open).
+        var title_end: u32 = 0;
+        var newlines: u32 = 0;
         if (resumed) {
             self.search_opener = std.math.maxInt(u32);
             destination = s[self.tail_title.destination[0]..self.tail_title.destination[1]];
             i = self.tail_title.at;
+            title_end = self.tail_title.end;
+            newlines = self.tail_title.newlines;
         } else {
             i = (try skipSpaceNewline(s, at + 1, final)) orelse return null;
             if (i < s.len and s[i] != ')') {
@@ -899,19 +904,30 @@ pub const Parser = struct {
         if (spaced and i < s.len and (s[i] == '"' or s[i] == '\'' or s[i] == '(')) {
             const from = if (resumed) self.tail_title.from else i + 1;
             self.tail_title.close = std.math.maxInt(u32);
-            switch (titleFrom(s, i, from)) {
-                .open => |stop| {
+            const scan: TitleScan = if (title_end != 0) .{ .closed = title_end } else titleFrom(s, i, from);
+            switch (scan) {
+                .open, .closed => {
+                    // The title, or the white space after a closed one, may run out: the tail
+                    // waits there, keeping where it stopped.
+                    var stop = if (scan == .open) scan.open else if (title_end != 0) from else scan.closed;
+                    if (scan == .closed) {
+                        title = s[i + 1 .. scan.closed - 1];
+                        while (stop < s.len and (s[stop] == ' ' or s[stop] == '\t' or s[stop] == '\n')) : (stop += 1) {
+                            if (s[stop] == '\n') newlines += 1;
+                            if (newlines > 1) return null;
+                        }
+                    }
+                    self.byte_visits += stop - if (resumed) from else at;
+                    if (scan == .closed and stop < s.len) {
+                        if (s[stop] == ')') return .{ .destination = destination, .title = title, .end = stop + 1 };
+                        return null;
+                    }
                     if (final) return null;
-                    self.byte_visits += if (resumed) stop - from else stop - at;
                     const destination_start: u32 = if (destination.len > 0) @intCast(destination.ptr - s.ptr) else 0;
-                    self.tail_title = .{ .close = close, .at = i, .from = stop, .destination = .{ destination_start, destination_start + @as(u32, @intCast(destination.len)) } };
+                    self.tail_title = .{ .close = close, .at = i, .from = stop, .destination = .{ destination_start, destination_start + @as(u32, @intCast(destination.len)) }, .end = if (scan == .closed) scan.closed else 0, .newlines = newlines };
                     // A resumed search counts its own bytes (feed's NeedMore path).
                     self.search_opener = close;
                     return error.NeedMore;
-                },
-                .closed => |end| {
-                    title = s[i + 1 .. end - 1];
-                    i = (try skipSpaceNewline(s, end, final)) orelse return null;
                 },
                 .failed => {},
             }
@@ -1274,6 +1290,7 @@ pub const PendingScan = struct {
     scanned: u32 = 0,
     code: ?u32 = null,
     tag: bool = false,
+    word_start: u32 = 0,
     /// The code span's opener length, and the end of a backtick run that touched the end.
     code_length: u32 = 0,
     run_end: u32 = 0,
@@ -1333,6 +1350,9 @@ pub fn renderPendingRuns(s: []const u8, from: u32, code_opener: ?u32, scan: *Pen
     var i = from;
     var code: ?u32 = code_opener orelse if (continues) scan.code else null;
     var tag = continues and scan.tag;
+    // Where the word being drawn starts: an entity or escape in a possible extended autolink
+    // waits for the word to end (the link shows its source raw).
+    var word_start = if (continues) scan.word_start else from;
     while (i < s.len) {
         if (code) |opener| {
             // In a code span from `opener`: drawn raw ('\n' as a space) up to a run that closes
@@ -1397,7 +1417,7 @@ pub fn renderPendingRuns(s: []const u8, from: u32, code_opener: ?u32, scan: *Pen
                 // B draws a run as matched while it may still open or close; the byte after it
                 // decides, so a run at the end waits for it, and one that can do neither
                 // (`snake_case`, `a * b`) is text.
-                if (i + run == s.len) return hold(scan, i, i, tag);
+                if (i + run == s.len) return hold(scan, i, i, tag, word_start);
                 const can = flanking(s, i, run, c);
                 if (!can.open and !can.close) {
                     try out.appendSlice(allocator, s[i .. i + run]);
@@ -1408,7 +1428,7 @@ pub fn renderPendingRuns(s: []const u8, from: u32, code_opener: ?u32, scan: *Pen
             },
             '`' => {
                 // A run at the end may still grow: its length is not known yet.
-                if (i + runLength(s, i, c) == s.len) return hold(scan, i, i, tag);
+                if (i + runLength(s, i, c) == s.len) return hold(scan, i, i, tag, word_start);
                 code = i;
             },
             ' ', '\t', '\n' => {
@@ -1416,9 +1436,10 @@ pub fn renderPendingRuns(s: []const u8, from: u32, code_opener: ?u32, scan: *Pen
                 const look_from = j;
                 while (j < s.len and isAsciiWhitespace(s[j])) j += 1;
                 scan.visits += j - look_from;
-                if (j >= s.len) return hold(scan, i, j, tag);
+                if (j >= s.len) return hold(scan, i, j, tag, word_start);
                 try out.appendSlice(allocator, s[i..j]);
                 i = j;
+                word_start = j;
             },
             '\\' => {
                 // Before a line ending it may be a hard break, or text at the leaf's end.
@@ -1426,7 +1447,8 @@ pub fn renderPendingRuns(s: []const u8, from: u32, code_opener: ?u32, scan: *Pen
                 const look_from = j;
                 while (j < s.len and isAsciiWhitespace(s[j])) j += 1;
                 scan.visits += j - look_from;
-                if (j >= s.len) return hold(scan, i, j, tag);
+                if (j >= s.len) return hold(scan, i, j, tag, word_start);
+                if (isAsciiPunctuation(s[i + 1]) and autolinkWord(s[word_start..i])) return hold(scan, i, i, tag, word_start);
                 if (isAsciiPunctuation(s[i + 1]) or s[i + 1] == '\n') {
                     // An escape, or a hard break (drawn as its line break).
                     try out.append(allocator, s[i + 1]);
@@ -1437,12 +1459,12 @@ pub fn renderPendingRuns(s: []const u8, from: u32, code_opener: ?u32, scan: *Pen
                 }
             },
             '&' => {
-                if (tag) return hold(scan, i, i, tag);
+                if (tag or autolinkWord(s[word_start..i])) return hold(scan, i, i, tag, word_start);
                 var j = @max(i + 1, known);
                 const look_from = j;
                 while (j < s.len and (std.ascii.isAlphanumeric(s[j]) or s[j] == '#')) j += 1;
                 scan.visits += j - look_from;
-                if (j >= s.len) return hold(scan, i, j, tag);
+                if (j >= s.len) return hold(scan, i, j, tag, word_start);
                 if (s[j] == ';' and scanEntity(s, i) != null) {
                     const cps = decodeEntity(s[i .. j + 1]);
                     var buffer: [8]u8 = undefined;
@@ -1460,7 +1482,7 @@ pub fn renderPendingRuns(s: []const u8, from: u32, code_opener: ?u32, scan: *Pen
                 const look_from = j;
                 while (j < s.len and s[j] != '>' and !isAsciiWhitespace(s[j])) j += 1;
                 scan.visits += j - look_from;
-                if (j >= s.len) return hold(scan, i, j, tag);
+                if (j >= s.len) return hold(scan, i, j, tag, word_start);
                 if (scanAutolink(s, i)) |a| {
                     try out.appendSlice(allocator, s[i + 1 .. a.end - 1]);
                     i = a.end;
@@ -1471,12 +1493,12 @@ pub fn renderPendingRuns(s: []const u8, from: u32, code_opener: ?u32, scan: *Pen
                 }
             },
             ']' => {
-                if (i + 1 >= s.len or s[i + 1] == '(' or s[i + 1] == '[') return hold(scan, i, i, tag);
+                if (i + 1 >= s.len or s[i + 1] == '(' or s[i + 1] == '[') return hold(scan, i, i, tag, word_start);
                 try out.append(allocator, c);
                 i += 1;
             },
             '!' => {
-                if (i + 1 >= s.len) return hold(scan, i, i, tag);
+                if (i + 1 >= s.len) return hold(scan, i, i, tag, word_start);
                 if (s[i + 1] != '[') try out.append(allocator, c);
                 i += 1;
             },
@@ -1487,11 +1509,20 @@ pub fn renderPendingRuns(s: []const u8, from: u32, code_opener: ?u32, scan: *Pen
             },
         }
     }
-    return hold(scan, i, i, tag);
+    return hold(scan, i, i, tag, word_start);
 }
 
-fn hold(scan: *PendingScan, stop: u32, scanned: u32, tag: bool) void {
-    scan.* = .{ .stop = stop, .scanned = scanned, .code = null, .tag = tag, .visits = scan.visits };
+fn hold(scan: *PendingScan, stop: u32, scanned: u32, tag: bool, word_start: u32) void {
+    scan.* = .{ .stop = stop, .scanned = scanned, .code = null, .tag = tag, .word_start = word_start, .visits = scan.visits };
+}
+
+/// Whether a word that starts so may still be an extended autolink (GFM: `www.`, `http://`,
+/// `https://`), whose display is its source.
+fn autolinkWord(word: []const u8) bool {
+    for ([_][]const u8{ "www.", "http://", "https://" }) |prefix| {
+        if (word.len >= prefix.len and std.ascii.eqlIgnoreCase(word[0..prefix.len], prefix)) return true;
+    }
+    return false;
 }
 
 /// A code span's content without the one space stripped from each end (line endings count as

@@ -8,13 +8,15 @@
 //!   a fresh doc of the same complete lines after every append, and one append of the whole after
 //!   finish (invariant 1).
 //!
-//! The CI budget (B3): the command model runs 128 seeds of 64 commands and 32 more with an empty
-//! hook filter, and the repeated-construct model 8 streams under the three generic properties
-//! (work, storage, pending layout); with the corpus and the fixed rows about 6.4 s in a debug
-//! build. Every mutant of the work file's tables is caught at this budget by a fixed row or a
-//! model, except the stated equivalents. Opt in, at the end of each round: MARKDOWN_SPLITS=4 (or
-//! 64) splits every corpus row at random code points; MODEL_SEEDS=2000 (or 20000) widens both
-//! models. MODEL_SEED replays one seed, MARKDOWN_ROW runs one corpus row and prints its HTML.
+//! The CI budget (B3, F6): the command model runs 64 seeds of 64 commands, 16 more with an
+//! empty hook filter and 16 with the hook off and math on (set_options switches math and the
+//! filter mid-stream in every run); the repeated-construct model 8 streams; the depth-2 sweep
+//! every pair of 16 pieces under 5 option sets; the prefix differential 48 documents; with the
+//! corpus and the fixed rows about 9.4 s of CPU in a debug build. Every mutant of the work file's
+//! tables is caught at this budget by a fixed row or a model, except the stated equivalents. Opt
+//! in, at the end of each round: MARKDOWN_SPLITS=4 (or 64) splits every corpus row at random code
+//! points; MODEL_SEEDS=2000 (or 20000) widens both models; MARKDOWN_DIFFERENTIAL=<n> the
+//! differential. MODEL_SEED replays one seed, MARKDOWN_ROW runs one corpus row and prints its HTML.
 const std = @import("std");
 const markdown = @import("../markdown.zig");
 const html = @import("markdown-html.zig");
@@ -500,11 +502,14 @@ const model = @import("model.zig");
 /// Pieces the soup generator glues together: every block start, inline opener and line ending
 /// the engine has a state for.
 pub const soup = [_][]const u8{
-    "- ",        "> ",  "```",      "```\n", "|",     " | ",   "| --- | --- |\n", "[x]",
-    "[x]: /u\n", "**",  "*",        "_",     "`",     "$",     "10. ",            "1. ",
-    "===",       "---", "\t",       "\r\n",  "\n",    "\n\n",  "word",            " ",
-    "ses_",      "se",  "s_",       "# ",    "<div>", "&amp;", "](/u)",           "\\",
-    "    code",  "~~",  "www.a.b ", "$$\n",  "x",     "[",     "]",               "  \n",
+    "- ",        "> ",  "```",      "```\n", "|",     " | ",      "| --- | --- |\n", "[x]",
+    "[x]: /u\n", "**",  "*",        "_",     "`",     "$",        "10. ",            "1. ",
+    "===",       "---", "\t",       "\r\n",  "\n",    "\n\n",     "word",            " ",
+    "ses_",      "se",  "s_",       "# ",    "<div>", "&amp;",    "](/u)",           "\\",
+    "    code",  "~~",  "www.a.b ", "$$\n",  "x",     "[",        "]",               "  \n",
+    // The bytes of the tear prototype's repros (an email's `@`, an unfinished entity, setext
+    // underlines after a link, a math opener before a word).
+    "@",         "@\n", "$$_",      "&mp;",  "\n=\n", "[x](/u) ", "\n===\n",
 };
 
 const EngineCommand = union(enum) {
@@ -525,6 +530,7 @@ const EngineCommand = union(enum) {
 const Engine = struct {
     corpus_texts: []const []const u8,
     hook: bool = true,
+    math: bool = false,
     filter: []const u8 = "ses_",
     other_filter: []const u8 = "se",
 
@@ -593,7 +599,7 @@ const Engine = struct {
     }
 
     pub fn run(self: *Engine, arena: std.mem.Allocator, commands: []const Command) !?model.Failure {
-        var options: markdown.Options = .{ .hook = self.hook, .hook_filter = self.filter };
+        var options: markdown.Options = .{ .hook = self.hook, .hook_filter = self.filter, .math = self.math };
         var f: Fixture = undefined;
         try f.init(options);
         defer f.deinit();
@@ -800,9 +806,10 @@ fn genericProperties(arena: std.mem.Allocator, doc: *const Doc, fed: Fed, option
         // A line is read by the scanner's block pass, its paragraph checks, the pipe scan, a
         // definition scan and once more at close: k = 6.
         .{ "(a) work: block visits <= 6n + 8 calls", c.block_byte_visits, 6 * n + 8 * calls + 64 },
-        // New bytes and the filter's overlap, plus the pending line again wherever a new layout
-        // reads it (the block counter's term): k = 6, as the block counter.
-        .{ "(a) work: hook visits <= 6n + 8 calls", c.hook_byte_visits, 6 * n + 8 * calls + 64 },
+        // Each filter item searches the new bytes and the filter's overlap (its longest item less
+        // one), plus the pending line again wherever a new layout reads it (the block counter's
+        // term): k = 6 per item, as the block counter.
+        .{ "(a) work: hook visits <= items x (6n + longest x calls)", c.hook_byte_visits, filterItems(options) * (6 * n + filterLongest(options) * calls) + 64 },
         .{ "(a) work: inline visits <= 4n", c.inline_byte_visits, 4 * n + 64 },
         .{ "(a) work: display visits <= 6n", c.display_byte_visits, 6 * n + 64 },
         // A display byte is assembled when it is drawn pending, drawn up to a hold's cut, and
@@ -847,6 +854,18 @@ fn genericProperties(arena: std.mem.Allocator, doc: *const Doc, fed: Fed, option
     return null;
 }
 
+fn filterItems(options: markdown.Options) u64 {
+    if (!options.hook or options.hook_filter.len == 0) return 1;
+    return std.mem.count(u8, options.hook_filter, "\x00") + 1;
+}
+
+fn filterLongest(options: markdown.Options) u64 {
+    var longest: u64 = 8;
+    var it = std.mem.splitScalar(u8, options.hook_filter, 0);
+    while (it.next()) |item| longest = @max(longest, item.len);
+    return longest;
+}
+
 /// (c) across calls for display math (D102: shown as it streams, never hidden): a math block
 /// may appear once on a line and never reverts to text. Remembers the last math block that
 /// started on the pending line or after the last complete line, by source offset.
@@ -875,8 +894,9 @@ const MathOnce = struct {
 /// the completed parse only extends each leaf's display (P7's comparison) except for B's four
 /// accepted exceptions, and D102's one switch of a line to display math at its end: link
 /// brackets and inline math delimiters (framesGrow skips them), an opener
-/// drawn as closed that reverts (its marks are extra bytes), and a backtick opener's content
-/// decoding when it reverts (a leaf that holds a backtick is not compared), and a definition the
+/// drawn as closed that reverts (its marks are extra bytes), and a backtick opener's or inline
+/// math's content decoding when it reverts or closes (a leaf that holds a backtick, or with math
+/// a `$` or `\(`, is not compared), and a definition the
 /// completed line adds (displays are not compared then). A held line (no layout) shows nothing new
 /// and passes.
 fn layoutAgrees(arena: std.mem.Allocator, doc: *const Doc, options: markdown.Options) !bool {
@@ -890,10 +910,10 @@ fn layoutAgrees(arena: std.mem.Allocator, doc: *const Doc, options: markdown.Opt
     try whole.doc.append("\n");
     const shown = doc.blocks.items;
     const exact = whole.doc.blocks.items;
-    // D102: a line that is a one-line math block once complete shows as text or a row until
-    // then and switches once, at its line ending (MathOnce: never back).
+    // D102: a line that starts a math block once complete shows as text or a row until then and
+    // switches once, at its line ending (MathOnce: never back).
     for (exact) |b| {
-        if (b.kind == .code and b.flags.math and b.flags.closed and b.source_start_byte >= doc.line_start_byte) return true;
+        if (b.kind == .code and b.flags.math and b.source_start_byte >= doc.line_start_byte) return true;
     }
     var agrees = shown.len == exact.len;
     if (agrees) {
@@ -903,7 +923,11 @@ fn layoutAgrees(arena: std.mem.Allocator, doc: *const Doc, options: markdown.Opt
                 break;
             }
             if (!markdown.Doc.isInlineLeaf(a) or whole.doc.definitions.items.len != doc.definitions.items.len) continue;
-            if (std.mem.indexOfScalar(u8, s[a.source_start_byte..@min(s.len, a.source_end_byte)], '`') != null) continue;
+            const leaf_source = s[a.source_start_byte..@min(s.len, a.source_end_byte)];
+            if (std.mem.indexOfScalar(u8, leaf_source, '`') != null) continue;
+            // Inline math that closes conceals its delimiters and shows its content raw (B's
+            // math exception): such a leaf is not compared either.
+            if (options.math and (std.mem.indexOfScalar(u8, leaf_source, '$') != null or std.mem.indexOf(u8, leaf_source, "\\(") != null)) continue;
             const x = (try doc.readLeaf(arena, @intCast(i))).bytes.items;
             const y = (try whole.doc.readLeaf(arena, @intCast(i))).bytes.items;
             if (!framesGrow(x, y, options.math)) {
@@ -967,7 +991,11 @@ const Families = struct {
                 // A definition's title, or an inline link's (one title scanner serves both).
                 try out.appendSlice(arena, pick(random, &.{ "[x]: /u '", "[x]: /u\n\"", "intro\n\n[x]: /u (", "> see [ref](url \"", "see [r](u '", "a [b](c\n(" }));
                 for (0..count) |_| try out.appendSlice(arena, pick(random, &.{ "bb\n", "c d\n", "*e* [f]\n" }));
-                try out.appendSlice(arena, pick(random, &.{ "'\n\n[x]\n", "\"\n[x] after\n", ")\n", "\") done\n", "') done\n" }));
+                // The closer, white space as long as the title (bigboi round 5: the tail read the
+                // closed title again while its `)` had not arrived), then what follows.
+                try out.appendSlice(arena, pick(random, &.{ "'", "\"", ")" }));
+                if (random.boolean()) for (0..count) |_| try out.append(arena, ' ');
+                try out.appendSlice(arena, pick(random, &.{ "\n\n[x]\n", "\n[x] after\n", ") done\n" }));
             },
             .title_markup => {
                 try out.appendSlice(arena, pick(random, &.{ "[x]: /u '", "[x]: /u \"`|` ", "text `a | b` ", "text | " }));
@@ -1043,7 +1071,7 @@ const Families = struct {
         var commands: std.ArrayListUnmanaged(Command) = .empty;
         if (random.boolean()) try commands.append(arena, .math);
         // A filter as long as one may be (its overlap is read at every call), or short ones.
-        if (random.uintLessThan(u32, 4) == 0) try commands.append(arena, .{ .filter = pick(random, &.{ "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq", "ses_", "a\x00bb\x00ccc" }) });
+        if (random.uintLessThan(u32, 4) == 0) try commands.append(arena, .{ .filter = pick(random, &.{ "q\x00r\x00s\x00t\x00u\x00v\x00w\x00x\x00y\x00z\x00b\x00c\x00d\x00e\x00f\x00g", "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq", "ses_", "a\x00bb\x00ccc" }) });
         const family = random.enumValue(Family);
         // From a few repeats to a document past the token limit (log-uniform); nesting lines
         // are long, so fewer.
@@ -1171,6 +1199,63 @@ test "Markdown tables: a header line of any length is a header; only a line of 4
     }
 }
 
+/// The tear prototype's alphabet for the depth-2 sweep: every soup piece would be 2,000 pairs per
+/// option set; these are the pieces its exhaustive search and repros used.
+const sweep_pieces = [_][]const u8{ "@\n", "$$_", "$$\n", "&mp;", "&amp;", "\n=\n", "\n===\n", "[x](/u) ", "`", "|", "- ", "> ", "*", "[x]: /u\n", "ses_", "\n" };
+
+test "Markdown sweep: every pair of appends, then finish, under every option set" {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    // The tear prototype's repros (math on): A aborted in M2 before fd4ab4e19; B and D pass.
+    for ([_][]const []const u8{ &.{ "@\n$$_", "$$\n" }, &.{"&amp;\n===\n"}, &.{ "&amp;", "\n===\n" } }) |parts| {
+        try std.testing.expect(try streamAgreesParts(arena_state.allocator(), "math tear", parts));
+    }
+    // E and F's inputs with the options M1 has (conceal and hyperlinks are M2's).
+    for ([_][]const u8{ "&mp;\n=\n", "[x](/u) \n===\n" }) |text| {
+        try std.testing.expect(try streamAgreesParts(arena_state.allocator(), "hook tear", &.{text}));
+        try std.testing.expect(try streamAgreesParts(arena_state.allocator(), "math tear", try split(arena_state.allocator(), text, 1)));
+    }
+    // A filter with the hook off latches nothing, a table header's cells included (the model
+    // over every option set found the cell latched).
+    {
+        const options: markdown.Options = .{ .math = true, .hook_filter = "ses_" };
+        var f: Fixture = undefined;
+        try f.init(options);
+        defer f.deinit();
+        try f.doc.set("ses_");
+        for ([_][]const u8{ "bc | defg", "\n", ":-: |", "-", "\n" }) |part| try f.doc.append(part);
+        for (f.doc.blocks.items) |b| try std.testing.expect(!b.flags.hooked);
+    }
+    for ([_]markdown.Options{ .{}, .{ .math = true }, .{ .hook_filter = "ses_" }, .{ .hook = true, .hook_filter = "ses_" }, .{ .math = true, .hook = true, .hook_filter = "" } }) |options| {
+        for (sweep_pieces) |a| for (sweep_pieces) |b| {
+            _ = arena_state.reset(.retain_capacity);
+            const arena = arena_state.allocator();
+            var f: Fixture = undefined;
+            try f.init(options);
+            defer f.deinit();
+            var sink: markdown.TailSink = .{ .allocator = gpa };
+            defer sink.deinit();
+            f.doc.tail_sink = &sink;
+            var fed: Fed = .{};
+            for ([_][]const u8{ a, b }) |part| {
+                fed.add(part.len);
+                try f.doc.append(part);
+                var fresh: Fixture = undefined;
+                try fresh.init(options);
+                defer fresh.deinit();
+                try fresh.doc.append(f.doc.source.items);
+                const property: ?[]const u8 = if (!try sameDocs(arena, &f.doc, &fresh.doc)) "P1" else if (!try liveShowsReadLeaf(arena, &f.doc, &sink)) "nodes" else try genericProperties(arena, &f.doc, fed, options, true);
+                if (property) |name| {
+                    std.debug.print("sweep: \"{f}\" then \"{f}\" fails {s}\n", .{ std.zig.fmtString(a), std.zig.fmtString(b), name });
+                    return error.SweepFailure;
+                }
+            }
+            try f.doc.finish();
+            if (sink.mismatch_count > 0 or !try liveShowsReadLeaf(arena, &f.doc, &sink)) return error.SweepFailure;
+        };
+    }
+}
+
 /// bigboi's prefix differential (round 4) as a row family: documents of mixed fragments, each
 /// streamed byte by byte and in 4-byte pieces, every prefix against a fresh doc of the same
 /// prefix and every written node against read_leaf (streamAgreesParts). The fragments are the
@@ -1234,6 +1319,7 @@ test "Markdown model: tokens after an opener that never closes are restyled once
 }
 
 /// B's last two exceptions to P7, taken before a step: a backtick opener drawn as a code span
+/// (or, with math, inline math that closes and shows its content raw)
 /// that never closes reverts to text (its content's escapes and entities then decode), and a
 /// definition that arrives turns `[a][b]` into `a`. The check skips a step that starts with an
 /// open prose leaf holding a backtick, and a step that adds a definition.
@@ -1242,11 +1328,11 @@ const P7Exempt = struct {
     definition_count: usize,
     line_start: u32,
 
-    /// Also exempt (D102): a line shown as text or a row that becomes a display math block when
+    /// Also exempt (D102): a line shown as text or a row that starts a display math block when
     /// its line ends (it switches once, and never back).
     fn exempt(self: P7Exempt, doc: *const Doc) bool {
         for (doc.blocks.items) |b| {
-            if (b.kind == .code and b.flags.math and b.flags.closed and b.source_start_byte >= self.line_start) return true;
+            if (b.kind == .code and b.flags.math and b.source_start_byte >= self.line_start) return true;
         }
         return self.code_drawn or doc.definitions.items.len != self.definition_count;
     }
@@ -1256,7 +1342,12 @@ fn p7Exempt(doc: *const Doc) P7Exempt {
     var code_drawn = false;
     for (doc.blocks.items) |b| {
         const prose = b.kind == .paragraph or b.kind == .heading or b.kind == .table_cell;
-        if (prose and (b.flags.open or b.source_end_byte > doc.line_start_byte) and std.mem.indexOfScalar(u8, doc.source.items[b.source_start_byte..@min(doc.source.items.len, b.source_end_byte)], '`') != null) code_drawn = true;
+        if (!prose or !(b.flags.open or b.source_end_byte > doc.line_start_byte)) continue;
+        const source = doc.source.items[b.source_start_byte..@min(doc.source.items.len, b.source_end_byte)];
+        if (std.mem.indexOfScalar(u8, source, '`') != null) code_drawn = true;
+        // Inline math that closes shows its content raw (entities and escapes undecoded): the
+        // same exception as a code span's (the model over every option set found it).
+        if (doc.options.math and (std.mem.indexOfScalar(u8, source, '$') != null or std.mem.indexOf(u8, source, "\\(") != null)) code_drawn = true;
     }
     return .{ .code_drawn = code_drawn, .definition_count = doc.definitions.items.len, .line_start = doc.line_start_byte };
 }
@@ -1347,10 +1438,14 @@ test "Markdown model: append, set, finish and reads keep P1-P5, P18 and the live
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     var engine: Engine = .{ .corpus_texts = try corpusTexts(arena_state.allocator()) };
-    try model.check(Engine, &engine, .{ .seeds = 128, .steps = 64 });
+    try model.check(Engine, &engine, .{ .seeds = 64, .steps = 64 });
     // An empty filter hooks every prose leaf.
     var hook_all: Engine = .{ .corpus_texts = engine.corpus_texts, .filter = "", .other_filter = "ses_" };
-    try model.check(Engine, &hook_all, .{ .seeds = 32, .steps = 64 });
+    try model.check(Engine, &hook_all, .{ .seeds = 16, .steps = 64 });
+    // The other option sets: the hook off and math on from the start (set_options switches
+    // math and the filter mid-stream in every run).
+    var plain_math: Engine = .{ .corpus_texts = engine.corpus_texts, .hook = false, .math = true };
+    try model.check(Engine, &plain_math, .{ .seeds = 16, .steps = 64 });
 }
 
 test "Markdown model: corpus rows split at random code points stream like one append" {
@@ -1569,6 +1664,10 @@ test "Markdown limits: each store stays within its limit and a rejection publish
         const long_item = repeat("x", 65);
         try std.testing.expectError(error.InvalidOptions, Doc.init(gpa, &scratch, .{ .hook = true, .hook_filter = long_item }));
         try std.testing.expectError(error.InvalidOptions, Doc.init(gpa, &scratch, .{ .hook = true, .hook_filter = "a\x00\x00b" }));
+        // At most 16 items.
+        try std.testing.expectError(error.InvalidOptions, Doc.init(gpa, &scratch, .{ .hook = true, .hook_filter = repeat("a\x00", 16) ++ "b" }));
+        var at_limit = try Doc.init(gpa, &scratch, .{ .hook = true, .hook_filter = repeat("a\x00", 15) ++ "b" });
+        at_limit.deinit();
         const items = repeat("x" ++ repeat("x", 62) ++ "\x00", 4) ++ "y";
         try std.testing.expectError(error.InvalidOptions, Doc.init(gpa, &scratch, .{ .hook = true, .hook_filter = items }));
         var doc = try Doc.init(gpa, &scratch, .{ .hook = true, .hook_filter = items[0 .. items.len - 2] });
@@ -1812,11 +1911,15 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
         // A closed code span's display is assembled once per feed, whatever reads it (the hold's
         // cut, the comparison and the tail write); finish writes the leaf again.
         .{ .name = "a code span over lines with pipes, closed (8 appends, 8 times)", .parts = code_lines, .assembled_factor = 5, .sent_factor = 3, .display_factor = 3 },
-        // A 64-byte filter: each call reads its new bytes, not the filter's length again (bigboi
-        // round 4: 63,520 visits for 1,024 one-byte appends).
+        // A 64-byte filter, and 16 items (the limit; bigboi round 5: the bound left out the item
+        // count): each item reads the new bytes and the overlap.
         .{ .name = "a 64-byte filter, 1-byte appends", .options = .{ .hook = true, .hook_filter = "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq" }, .parts = try split(arena, try std.mem.concat(arena, u8, &.{ xs[0..1024], "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq" }), 1) },
         // An inline link's title over 1,024 words, resumed (bigboi round 4: 2.1M inline visits).
+        .{ .name = "16 filter items, 1-byte appends", .options = .{ .hook = true, .hook_filter = "q\x00r\x00s\x00t\x00u\x00v\x00w\x00x\x00y\x00z\x00b\x00c\x00d\x00e\x00f\x00g" }, .parts = try split(arena, try std.mem.concat(arena, u8, &.{ digits[0..1024], " g" }), 1) },
         .{ .name = "an inline link title, 1-byte appends", .parts = try split(arena, try std.mem.concat(arena, u8, &.{ "> see [ref](url \"", line[0..2048], "\") done" }), 1) },
+        // ... and 1,024 spaces between the closed title and its `)` (bigboi round 5: 661,783
+        // inline visits at half this length).
+        .{ .name = "an inline link title, then spaces, 1-byte appends", .parts = try split(arena, try std.mem.concat(arena, u8, &.{ "> p [r](u \"", line[0..2048], "t\"", spaces[0..1024], ") next" }), 1) },
         .{ .name = "se + s_ with the filter", .options = .{ .hook = true, .hook_filter = "ses_" }, .parts = &.{ "see se", "s_abc now\n" } },
     };
     var over = false;
@@ -1832,7 +1935,8 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
             .{ "line", c.line_byte_visits, n + w.append_count + 1 },
             // A pending line's first byte is read again per append (its kind, its layout).
             .{ "block", c.block_byte_visits, row.block_factor * n + 4 * w.append_count + 64 },
-            .{ "hook", c.hook_byte_visits, n + 3 * w.append_count + 8 },
+            // Each item reads the new bytes and the filter's overlap (its longest item less one).
+            .{ "hook", c.hook_byte_visits, filterItems(row.options) * (n + filterLongest(row.options) * w.append_count) + 8 },
             .{ "inline", c.inline_byte_visits, row.inline_factor * n + 64 },
             .{ "display", c.display_byte_visits, row.display_factor * n + 64 },
             .{ "sent", c.tail_write_bytes, row.sent_factor * n + 64 },
@@ -2030,6 +2134,26 @@ test "Markdown stream: a leaf that changes kind or loses lines keeps its live di
         try f.doc.finish();
         try std.testing.expectEqualStrings("===\nfoo", (try f.doc.readLeaf(arena, 0)).bytes.items);
     }
+    // bigboi round 5 (D102, D93: math is plain until decided): an opener alone, and with spaces,
+    // shows as text, or as a row, at its two-byte prefix; its line ending makes it math once.
+    for ([_][]const u8{ "", "p\n", "| r |\n|---|\n" }) |context| {
+        for ([_][]const u8{ "$$", "\\[" }) |opener| {
+            var f: Fixture = undefined;
+            try f.init(.{ .math = true });
+            defer f.deinit();
+            try f.doc.append(context);
+            for ([_][]const u8{ opener, "   " }) |part| {
+                try f.doc.append(part);
+                const frame = try renderFrame(arena, &f.doc);
+                try std.testing.expect(std.mem.indexOf(u8, frame, opener[opener.len - 1 ..]) != null);
+            }
+            try f.doc.append("\n");
+            var math = false;
+            for (f.doc.blocks.items) |b| math = math or (b.kind == .code and b.flags.math);
+            try std.testing.expect(math);
+            try std.testing.expect(try streamAgreesParts(arena, "math kinds", &.{ context, opener, "   ", "\nx\n", opener, "\n" }));
+        }
+    }
     // opus-14, bigboi round 4: a lazy line that becomes a math block leaves the paragraph's node
     // as read_leaf shows it (the node kept `para\n$$E=mc^2$`); `$$x$$ y` never shows a math block
     // that reverts to text.
@@ -2037,6 +2161,15 @@ test "Markdown stream: a leaf that changes kind or loses lines keeps its live di
     for ([_]usize{ 1, 2, 3 }) |width| try std.testing.expect(try streamAgreesParts(arena, "kinds", try split(arena, "# <!A` x &", width)));
     for ([_][]const u8{ "para\n$$E=mc^2$$\nafter", "p\n\\[y\\]\n", "$$x$$ y\n", "| r |\n|---|\n$$x$$ y\n", "| r |\n|---|\n$$E=mc^2$$\nafter" }) |text| {
         for ([_]usize{ 1, 4, 30 }) |width| try std.testing.expect(try streamAgreesParts(arena, "math kinds", try split(arena, text, width)));
+    }
+    // A pending ATX heading's content starts after the white space that follows `#`, as a fresh
+    // parse starts it (the command model over every option set found it after a task marker).
+    for ([_][]const u8{ "# ", "0. [x] # " }) |text| try std.testing.expect(try streamAgreesParts(arena, "kinds", try std.mem.concat(arena, []const u8, &.{ try split(arena, text, 1), &.{ " ", "\\" } })));
+    // An entity or escape in a word that may be an extended autolink waits for the word's end:
+    // the link shows its source raw, so drawing it decoded took text back (model seeds 4,860
+    // and 63, over every option set).
+    for ([_][]const u8{ "www.a&mp;b\n", "www.a.b de&mp; \n", "x https://a\\.b y\n" }) |text| {
+        for ([_]usize{ 1, 3 }) |width| try std.testing.expect(try streamAgreesParts(arena, "kinds", try split(arena, text, width)));
     }
     // One title scanner for definitions and inline links: a parenthesized title cannot hold an
     // unescaped `(` (cmark-gfm: both stay text).
