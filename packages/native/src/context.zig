@@ -406,9 +406,10 @@ pub const MarkdownDoc = struct {
     /// The group set of each scope combination written so far (Context ids, never freed).
     scope_sets: std.AutoHashMapUnmanaged(u16, u32) = .empty,
 
-    /// `skipped`: a write to the node was skipped (hooked, or not live), so it does not hold
-    /// the live display's earlier bytes and takes only whole writes.
-    pub const Binding = struct { block: u32, node: Handle, skipped: bool = false };
+    /// `skipped`: a write to the node was skipped (hooked, or not live), or its text changed
+    /// since the doc's last write (`epoch`, the buffer's content epoch then: the host wrote
+    /// it), so it does not hold the live display's earlier bytes and takes only resync writes.
+    pub const Binding = struct { block: u32, node: Handle, skipped: bool = false, epoch: u64 = 0 };
     /// The Markdown layer of a bound node's buffer (its only layer).
     pub const layer_id: u32 = 2;
 
@@ -523,23 +524,23 @@ pub const MarkdownDoc = struct {
         const at = self.bindingIndex(w.block);
         if (at == self.bindings.items.len or self.bindings.items[at].block != w.block) return;
         const binding = &self.bindings.items[at];
+        const node = self.owner.sceneMutableNode(binding.node) catch return;
+        const text = node.scene_node.?.text orelse return;
         // A hooked leaf's flag is off while its pending line is parsed again: the node keeps
-        // what the host wrote until a whole write.
-        if (!doc.options.liveShown() or b.flags.hooked) {
+        // what the host wrote until a resync write.
+        if (!w.resync and text.buffer.getContentEpoch() != binding.epoch) binding.skipped = true;
+        if (!doc.options.liveShown() or b.flags.hooked or (binding.skipped and !w.resync)) {
             binding.skipped = true;
             return;
         }
-        if (binding.skipped and !w.whole) return;
-        binding.skipped = false;
-        const owner = self.owner;
-        const node = owner.sceneMutableNode(binding.node) catch return;
-        const text = node.scene_node.?.text orelse return;
         self.writeText(node, text, w) catch |err| return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             error.TextLimit => error.SourceLimit,
             error.LayerLimit => error.BlockLimit,
             else => error.InvalidOptions,
         };
+        binding.skipped = false;
+        binding.epoch = text.buffer.getContentEpoch();
     }
 
     fn writeText(self: *MarkdownDoc, node: *native_renderable.NativeRenderable, text: *Text, w: markdown.NodeWrite) !void {
@@ -4019,7 +4020,8 @@ pub const Context = struct {
         text.buffer.setSyntaxStyle(style);
         node.scene_node.?.paint_epoch = nextPaintEpoch();
         // The node shows the leaf now, if the doc writes it.
-        const whole = value.doc.wholeWrite(index) catch |err| return markdownError(err);
+        var whole = value.doc.wholeWrite(index) catch |err| return markdownError(err);
+        whole.resync = true;
         MarkdownDoc.writeNode(value, &value.doc, whole) catch |err| return markdownError(err);
     }
 

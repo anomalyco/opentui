@@ -325,9 +325,10 @@ pub const NodeWrite = struct {
     runs_from: u32,
     chunks: []const Chunk,
     urls: []const u8,
-    /// The leaf's whole display from 0 (read_leaf), not a step of the live display: it also
-    /// writes a node whose earlier writes were skipped.
-    whole: bool = false,
+    /// The leaf's whole display for a node just bound, or for nodes an option change left
+    /// behind: it also writes a node whose earlier writes were skipped (a hooked leaf's, which
+    /// the host writes; its flag is off while its pending line is parsed again).
+    resync: bool = false,
 };
 
 /// Where the engine writes bound leaves (M2: the Context's binding of scene text nodes).
@@ -1810,6 +1811,8 @@ pub const Doc = struct {
         const kept = self.blocks.items[paragraph];
         const hooked = self.filterHolds(kept.source_start_byte, kept.source_end_byte);
         if (kept.flags.hooked != hooked) (try self.blockMut(paragraph)).flags.hooked = hooked;
+        // Unhooked, its node holds what the host wrote: the doc writes it now.
+        if (kept.flags.hooked and !hooked) try self.writeLeafNode(paragraph);
         try self.latchRange(header_start, header_end);
         return t;
     }
@@ -2404,7 +2407,7 @@ pub const Doc = struct {
     /// Leaf `index`'s whole display and styles, as one write.
     pub fn wholeWrite(self: *const Doc, index: u32) Error!NodeWrite {
         const leaf = try self.readLeaf(self.scratch.allocator(), index);
-        return .{ .block = index, .from = 0, .bytes = leaf.bytes.items, .runs_from = 0, .chunks = leaf.chunks.items, .urls = leaf.urls.items, .whole = true };
+        return .{ .block = index, .from = 0, .bytes = leaf.bytes.items, .runs_from = 0, .chunks = leaf.chunks.items, .urls = leaf.urls.items };
     }
 
     /// Sends one write to the test sink and to the node writer.
@@ -2416,7 +2419,9 @@ pub const Doc = struct {
     /// Writes leaf `index` whole to its node only (the test sink rebinds on its own).
     fn writeLeafNode(self: *Doc, index: u32) Error!void {
         const writer = self.writer orelse return;
-        if (index < writer.unbound_from) try writer.write_fn(writer.context, self, try self.wholeWrite(index));
+        var whole = try self.wholeWrite(index);
+        whole.resync = true;
+        if (index < writer.unbound_from) try writer.write_fn(writer.context, self, whole);
     }
 
     /// The prose leaves bound to a text node, which the engine writes: paragraphs and headings
@@ -3052,7 +3057,6 @@ pub const Doc = struct {
         live.shown_byte_count = @intCast(whole.bytes.len);
         whole.bytes = whole.bytes[from..];
         whole.from = from;
-        whole.whole = from == 0;
         try self.emit(whole);
     }
 
@@ -3065,7 +3069,6 @@ pub const Doc = struct {
         self.counters.display_byte_visits += whole.bytes.len;
         whole.from = @intCast(whole.bytes.len);
         whole.bytes = "";
-        whole.whole = false;
         try self.emit(whole);
     }
 
