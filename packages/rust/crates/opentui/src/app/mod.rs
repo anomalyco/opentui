@@ -1218,7 +1218,7 @@ impl App {
     }
 
     /// Tracks a left-button drag from the captured widget: drag-over changes for the widgets under the pointer, then a
-    /// drop where it ends.
+    /// drop where it ends. A press during a drag means the drag's release was lost: the press ends it without a drop.
     fn drag_and_drop(
         &self,
         event: &MouseEvent,
@@ -1254,13 +1254,14 @@ impl App {
                     widget.element().handlers.drag_over.emit(&mut Cx::new(self), &(source.clone(), true));
                 }
             }
-            MouseEventKind::Up(MouseButton::Left) => {
+            MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left) => {
                 let Some((source, over)) = self.0.drag.borrow_mut().take() else { return };
                 let dragged = AnyWidget(Rc::clone(&source));
                 for widget in over.iter().filter_map(Weak::upgrade) {
                     widget.element().handlers.drag_over.emit(&mut Cx::new(self), &(dragged.clone(), false));
                 }
-                let Some(hit) = hit.filter(|hit| !hit.element().is_within(source.element())) else { return };
+                let up = matches!(event.kind, MouseEventKind::Up(_));
+                let Some(hit) = hit.filter(|hit| up && !hit.element().is_within(source.element())) else { return };
                 let mut cx = Cx::new(self);
                 for widget in Self::path(Rc::clone(hit)) {
                     widget.element().handlers.drop.emit(&mut cx, &(dragged.clone(), *event));

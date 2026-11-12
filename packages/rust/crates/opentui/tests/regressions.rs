@@ -641,10 +641,16 @@ fn press_and_release_handlers_see_a_selection_drag() {
     app.mouse(MouseEventKind::Drag(MouseButton::Left), 4, 0);
     app.mouse(MouseEventKind::Up(MouseButton::Left), 4, 0);
     assert!(!app.is_selecting());
-    // A press on no text is no drag.
-    app.mouse(MouseEventKind::Down(MouseButton::Left), 1, 1);
-    let ello = Some("ello".to_owned());
-    assert_eq!(*seen.borrow(), [(true, None), (true, ello.clone()), (false, ello)]);
+    // A press during a drag means the drag's release was lost: the press starts a new selection. Then, after another
+    // lost release, a press on no text is no drag, also when its handler keeps the selection.
+    blank.on_mouse(|cx, _event| cx.prevent_default());
+    for (kind, x, y) in [(0, 3, 0), (1, 4, 0), (0, 6, 0), (1, 8, 0), (0, 1, 1), (1, 2, 1), (2, 2, 1)] {
+        let kinds = [MouseEventKind::Down, MouseEventKind::Drag, MouseEventKind::Up];
+        app.mouse(kinds[kind](MouseButton::Left), x, y);
+    }
+    let (ello, wor) = (Some("ello".to_owned()), Some("wor".to_owned()));
+    let selections = [(true, None), (true, ello), (true, None), (true, None), (false, wor.clone()), (false, wor)];
+    assert_eq!(*seen.borrow(), selections);
 }
 
 // The tests below guard against bugs found in a review of the public API.

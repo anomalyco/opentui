@@ -2070,6 +2070,17 @@ fn drags_report_targets_and_drops() {
     log.borrow_mut().clear();
     app.drag((1, 0), (3, 0));
     assert!(log.borrow().is_empty());
+    // A press during a drag means the drag's release was lost: the press ends the drag with its leaves and no drop, on
+    // the old target or elsewhere, and the gesture it starts drags from its own widget.
+    for (x, y) in [(22, 1), (12, 1)] {
+        log.borrow_mut().clear();
+        app.mouse(MouseEventKind::Down(MouseButton::Left), 1, 0);
+        app.mouse(MouseEventKind::Drag(MouseButton::Left), 22, 1);
+        app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+        app.mouse(MouseEventKind::Drag(MouseButton::Left), x + 1, y);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), x + 1, y);
+        assert_eq!(*log.borrow(), ["right over", "right out"]);
+    }
 }
 
 #[test]
