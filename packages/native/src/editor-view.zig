@@ -571,12 +571,11 @@ pub const EditorView = struct {
 
         const visual_col = cursor.offset - vline.document_cell_offset;
         var visual_col_max = vline.width_cols;
-        const viewport_width = if (self.text_buffer_view.getViewport()) |vp| vp.width else vline.width_cols;
-        // An overwide visual line may be one atomic grapheme; do not reserve a
-        // viewport-edge cell as though it were an ordinary soft wrap.
+        // A visual line wider than the wrap width is one atomic grapheme; do not
+        // reserve a wrap-edge cell as though it were an ordinary soft wrap.
         if (self.text_buffer_view.getSelectionOccupancy() == .cell and
             vline.width_cols > 0 and
-            vline.width_cols <= viewport_width and
+            vline.width_cols <= (self.text_buffer_view.layoutWrapWidth() orelse vline.width_cols) and
             visual_row + 1 < vlines.len)
         {
             const next_vline = &vlines[visual_row + 1];
@@ -866,9 +865,8 @@ pub const EditorView = struct {
         }
 
         const vline = &vlines[vcursor.visual_row];
-        const viewport_width = if (self.text_buffer_view.getViewport()) |vp| vp.width else vline.width_cols;
         // Keep an overwide grapheme atomic instead of targeting a synthetic wrap cell.
-        const oversized_visual_line = vline.width_cols > viewport_width;
+        const oversized_visual_line = vline.width_cols > (self.text_buffer_view.layoutWrapWidth() orelse vline.width_cols);
         var target_visual_col = if (self.text_buffer_view.getSelectionOccupancy() == .boundary)
             vline.width_cols
         else if (oversized_visual_line)
