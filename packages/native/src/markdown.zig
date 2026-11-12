@@ -286,6 +286,8 @@ const Live = struct {
     folded_display_byte_count: u32 = 0,
     /// What B draws of the untokenized bytes, and where drawing stopped.
     pending_display: std.ArrayListUnmanaged(u8) = .empty,
+    /// The runs B drew concealed in it, which style the spans they close.
+    pending_runs: std.ArrayListUnmanaged(inline_parser.PendingRun) = .empty,
     /// The previous drawing, kept (not copied) while a feed compares the new display with it.
     previous_pending: std.ArrayListUnmanaged(u8) = .empty,
     pending_scan: inline_parser.PendingScan = .{},
@@ -552,6 +554,7 @@ pub const Doc = struct {
         self.live.display_ends.deinit(self.allocator);
         self.live.token_styles.deinit(self.allocator);
         self.live.pending_display.deinit(self.allocator);
+        self.live.pending_runs.deinit(self.allocator);
         self.live.previous_pending.deinit(self.allocator);
         self.provisional_undo.deinit(self.allocator);
         self.provisional_previous.deinit(self.allocator);
@@ -2577,6 +2580,7 @@ pub const Doc = struct {
         live.folded_display_byte_count = 0;
         live.content_base = 0;
         live.pending_display.clearRetainingCapacity();
+        live.pending_runs.clearRetainingCapacity();
         live.pending_scan = .{};
         live.pending_code_opener = null;
         live.shown_byte_count = 0;
@@ -2605,6 +2609,7 @@ pub const Doc = struct {
         if (live.display_ends.capacity > inline_parser.token_count_max) live.display_ends.clearAndFree(self.allocator);
         if (live.token_styles.capacity > inline_parser.token_count_max) live.token_styles.clearAndFree(self.allocator);
         if (live.pending_display.capacity > live_retained_byte_count_max) live.pending_display.clearAndFree(self.allocator);
+        if (live.pending_runs.capacity > inline_parser.token_count_max) live.pending_runs.clearAndFree(self.allocator);
         if (live.previous_pending.capacity > live_retained_byte_count_max) live.previous_pending.clearAndFree(self.allocator);
         live.parser.releaseCapacity();
     }
@@ -2693,6 +2698,7 @@ pub const Doc = struct {
         live.base_styles = .{};
         live.base_link.clearRetainingCapacity();
         live.pending_display.clearRetainingCapacity();
+        live.pending_runs.clearRetainingCapacity();
         live.pending_scan = .{ .visits = live.pending_scan.visits };
         live.pending_code_opener = null;
         live.partial_token = none;
@@ -2811,13 +2817,14 @@ pub const Doc = struct {
             // The old drawing stays in the other buffer for the comparison below (no copy).
             std.mem.swap(std.ArrayListUnmanaged(u8), &live.pending_display, &live.previous_pending);
             live.pending_display.clearRetainingCapacity();
+            live.pending_runs.clearRetainingCapacity();
             old_pending = live.previous_pending.items;
             live.pending_scan = .{ .stop = parser.position, .visits = live.pending_scan.visits };
         }
         const drawn_before = live.pending_display.items.len;
         if (!final) {
             const read_before = live.pending_scan.visits;
-            try inline_parser.renderPending(content, live.pending_scan.stop, code, &live.pending_scan, self.allocator, &live.pending_display);
+            try inline_parser.renderPendingRuns(content, live.pending_scan.stop, code, &live.pending_scan, self.allocator, &live.pending_display, &live.pending_runs);
             self.counters.display_byte_visits += live.pending_scan.visits - read_before;
             self.counters.display_assembled_bytes += live.pending_display.items.len - drawn_before;
         }
@@ -2953,11 +2960,20 @@ pub const Doc = struct {
             at = live.display_ends.items[i];
         }
         if (at < to) {
-            // The drawn pending bytes: a backtick opener's content is drawn as code.
+            // The drawn pending bytes: a backtick opener's content is drawn as code, and the
+            // runs that close one another style the spans between them.
             const code = live.pending_code_opener != null;
             writer.link = null;
             writer.base = .{ .heading_level = writer.base.heading_level, .raw = code };
-            try writer.writeLength(to - at, .{ .code = code });
+            const pending_start = self.liveTokensEnd(@intCast(r.tokens.len));
+            // Under a hold cut, only the runs before it: a run at the cut waits, as read_leaf's does.
+            var shown_runs = live.pending_runs.items;
+            const cut = to - pending_start < live.pending_display.items.len;
+            while (cut and shown_runs.len > 0 and shown_runs[shown_runs.len - 1].at >= to - pending_start) shown_runs.len -= 1;
+            var spans: std.ArrayListUnmanaged(inline_parser.PendingSpan) = .empty;
+            try inline_parser.pendingSpans(shown_runs, arena, &spans);
+            self.counters.run_token_visits += live.pending_runs.items.len;
+            try writer.writePending(null, at - pending_start, to - pending_start, spans.items, .{ .code = code });
         }
         assert(writer.byte_count == to - from);
         return leaf;
@@ -3367,9 +3383,12 @@ pub const Doc = struct {
             } else {
                 var pending: std.ArrayListUnmanaged(u8) = .empty;
                 var scan: inline_parser.PendingScan = .{};
-                try inline_parser.renderPending(content, parser.position, if (code) parser.position else null, &scan, arena, &pending);
+                var runs: std.ArrayListUnmanaged(inline_parser.PendingRun) = .empty;
+                try inline_parser.renderPendingRuns(content, parser.position, if (code) parser.position else null, &scan, arena, &pending, &runs);
+                var spans: std.ArrayListUnmanaged(inline_parser.PendingSpan) = .empty;
+                try inline_parser.pendingSpans(runs.items, arena, &spans);
                 writer.base.raw = code;
-                try writer.write(pending.items, .{ .code = code });
+                try writer.writePending(pending.items, 0, @intCast(pending.items.len), spans.items, .{ .code = code });
                 writer.base.raw = false;
             }
         }
@@ -3821,6 +3840,28 @@ const LeafWriter = struct {
             .text => self.link = null,
         }
         return self.write(bytes, .{});
+    }
+
+    /// B's drawn bytes [start, end) (`bytes`, or only their count), styled by the spans their runs
+    /// make: each piece between span edges takes the spans over it.
+    fn writePending(self: *LeafWriter, bytes: ?[]const u8, start: u32, end: u32, spans: []const inline_parser.PendingSpan, span: Span) Error!void {
+        const saved = self.base;
+        defer self.base = saved;
+        var at = start;
+        while (at < end) {
+            var next = end;
+            var counts = [_]u32{ 0, 0, 0 };
+            for (spans) |s| {
+                if (s.from > at) next = @min(next, s.from);
+                if (s.to > at) next = @min(next, s.to);
+                if (s.from <= at and at < s.to) counts[@backingInt(s.kind)] += 1;
+            }
+            self.base.italic = saved.italic or counts[@backingInt(inline_parser.MatchKind.emphasis)] > 0;
+            self.base.strong = saved.strong or counts[@backingInt(inline_parser.MatchKind.strong)] > 0;
+            self.base.strikethrough = saved.strikethrough or counts[@backingInt(inline_parser.MatchKind.strikethrough)] > 0;
+            if (bytes) |b| try self.write(b[at - start .. next - start], span) else try self.writeLength(next - at, span);
+            at = next;
+        }
     }
 
     fn url(self: *LeafWriter, prefix: []const u8, target: []const u8) Error![2]u32 {

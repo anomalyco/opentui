@@ -1281,7 +1281,49 @@ pub const PendingScan = struct {
     visits: u64 = 0,
 };
 
+/// A `*`, `_` or `~` run B drew concealed, at display offset `at` of the drawn bytes.
+pub const PendingRun = struct { at: u32, char: u8, count: u32, open: bool, close: bool };
+
+/// A styled range of the drawn bytes, from the runs that close one another (B draws them as the
+/// spans they are; an opener that waits is concealed and styles nothing until its closer).
+pub const PendingSpan = struct { from: u32, to: u32, kind: MatchKind };
+
+/// The spans the drawn runs make, as process emphasis matches them (each closer with the nearest
+/// opener of its character before it; a strikethrough's runs of equal length).
+pub fn pendingSpans(runs: []const PendingRun, allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(PendingSpan)) error{OutOfMemory}!void {
+    var openers: std.ArrayListUnmanaged(struct { at: u32, char: u8, count: u32, original: u32, close: bool }) = .empty;
+    defer openers.deinit(allocator);
+    for (runs) |run| {
+        var count = run.count;
+        if (run.close) {
+            var i = openers.items.len;
+            while (count > 0 and i > 0) {
+                i -= 1;
+                const opener = &openers.items[i];
+                if (opener.char != run.char or opener.count == 0) continue;
+                if (run.char == '~' and opener.original != run.count) continue;
+                // The rule of three: a run that can both open and close.
+                if (run.char != '~' and (run.open or opener.close) and run.count % 3 != 0 and (opener.original + run.count) % 3 == 0) continue;
+                const used: u32 = if (run.char == '~') count else if (count >= 2 and opener.count >= 2) 2 else 1;
+                const kind: MatchKind = if (run.char == '~') .strikethrough else if (used == 2) .strong else .emphasis;
+                try out.append(allocator, .{ .from = opener.at, .to = run.at, .kind = kind });
+                opener.count -= used;
+                count -= used;
+                // Openers between the two are text now.
+                openers.items.len = i + 1;
+                if (opener.count > 0) i += 1;
+            }
+        }
+        if (run.open and count > 0) try openers.append(allocator, .{ .at = run.at, .char = run.char, .count = count, .original = run.count, .close = run.close });
+    }
+}
+
 pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *PendingScan, allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) error{OutOfMemory}!void {
+    return renderPendingRuns(s, from, code_opener, scan, allocator, out, null);
+}
+
+/// renderPending that also notes the concealed runs in `runs`.
+pub fn renderPendingRuns(s: []const u8, from: u32, code_opener: ?u32, scan: *PendingScan, allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), runs: ?*std.ArrayListUnmanaged(PendingRun)) error{OutOfMemory}!void {
     // Bytes [from, resume) were read by the last call and held its stop.
     const continues = scan.stop == from;
     // No bytes past the stop: the scan's state (a code span, a tag) stands as it is.
@@ -1356,7 +1398,11 @@ pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *Pending
                 // (`snake_case`, `a * b`) is text.
                 if (i + run == s.len) return hold(scan, i, i, tag);
                 const can = flanking(s, i, run, c);
-                if (!can.open and !can.close) try out.appendSlice(allocator, s[i .. i + run]);
+                if (!can.open and !can.close) {
+                    try out.appendSlice(allocator, s[i .. i + run]);
+                } else if (runs) |list| {
+                    try list.append(allocator, .{ .at = @intCast(out.items.len), .char = c, .count = run, .open = can.open, .close = can.close });
+                }
                 i += run;
             },
             '`' => {

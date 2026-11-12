@@ -736,3 +736,28 @@ test "Markdown ABI: a style swap lists the leaves whose read_leaf styles the hos
         try std.testing.expect((try f.readLeaf(arena, leaf)).chunks[0].flags & c.OT_SCENE_TEXT_FOREGROUND == 0);
     }
 }
+
+test "Markdown ABI: a span that closes in the last, undecided word of a stream is styled" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // OpenCode's compaction summary never ends its stream (oc-rust E.6b).
+    for ([_][]const u8{ "The user is fixing the **parser**.", "fixing the **parser**.\n", "a *b*, ~~c~~! _d_" }) |text| {
+        for ([_]u32{ live_flags, c.OT_MD_CONCEAL }) |flags| {
+            var f = try Fixture.init(flags);
+            defer f.deinit();
+            const node = try f.textNode();
+            _ = try f.append(text[0 .. text.len / 2]);
+            _ = try f.changes(arena);
+            try expectOk(md.ot_markdown_bind(f.context, &f.doc, 0, &node));
+            _ = try f.append(text[text.len / 2 ..]);
+            _ = try f.changes(arena);
+            const leaf = try f.readLeaf(arena, 0);
+            var styled = false;
+            for (leaf.chunks) |chunk| styled = styled or chunk.attributes & (1 | 4 | 128) != 0;
+            errdefer std.debug.print("'{s}' flags {d}: '{s}'\n", .{ text, flags, leaf.bytes });
+            try std.testing.expect(styled);
+            if (flags == live_flags) try std.testing.expect(try f.nodeShowsLeaf(arena, 0, node));
+        }
+    }
+}
