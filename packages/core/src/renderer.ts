@@ -3300,7 +3300,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       if (prevSplitHeight === 0 && nextSplitHeight > 0) {
         scrollOutput = ANSI.scrollDown(this._terminalHeight - nextSplitHeight)
       } else if (splitViewportScrollLines > 0) {
-        scrollOutput = ANSI.scrollUp(splitViewportScrollLines)
+        scrollOutput = ANSI.scrollIntoHistory(splitViewportScrollLines)
       }
     }
     const clearOutput =
