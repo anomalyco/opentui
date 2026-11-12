@@ -1456,11 +1456,14 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
         self.caps.kitty_keyboard = true;
         self.caps.bracketed_paste = true;
         self.caps.hyperlinks = true;
-        // Text sizing (OSC 66) since 0.40: the answer the main screen, which gets no probe, cannot ask for.
-        if (!self.skip_explicit_width_query and !self.explicit_width_probed and semanticVersionAtLeast(self.getTerminalVersion(), 0, 40)) {
-            self.caps.explicit_width = true;
-            self.caps.scaled_text = true;
-        }
+    }
+    // OSC 66 text sizing where setup runs no probe (the main screen): kitty since 0.40, foot since 1.21 (width only).
+    if (self.term_info.from_xtversion and !self.skip_explicit_width_query and !self.explicit_width_probed) {
+        const name = self.getTerminalName();
+        const version = self.getTerminalVersion();
+        const kitty = std.ascii.eqlIgnoreCase(name, "kitty") and semanticVersionAtLeast(version, 0, 40);
+        if (kitty or (std.ascii.eqlIgnoreCase(name, "foot") and semanticVersionAtLeast(version, 1, 21))) self.caps.explicit_width = true;
+        if (kitty) self.caps.scaled_text = true;
     }
     // Inside screen a reply may describe the terminal outside it, and screen drops 24-bit SGR.
     if (!self.insideScreen() and (truecolor_reply or (self.term_info.from_xtversion and isTruecolorTerminal(self.getTerminalName())))) {

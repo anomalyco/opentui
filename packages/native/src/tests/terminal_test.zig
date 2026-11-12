@@ -1938,11 +1938,13 @@ test "queryExplicitWidth - OPENTUI_FORCE_EXPLICIT_WIDTH skips the probes or sets
     }
 }
 
-test "XTVERSION kitty 0.40 or later reports text sizing without a probe" {
-    // Rows: XTVERSION reply, OPENTUI_FORCE_EXPLICIT_WIDTH ("" unset), explicit width and scaled text.
+test "XTVERSION kitty 0.40 and foot 1.21 or later report text sizing without a probe" {
+    // Rows: XTVERSION reply, OPENTUI_FORCE_EXPLICIT_WIDTH ("" unset), explicit width, scaled text (foot: width only).
     const rows = .{
-        .{ "kitty(0.49.2)", "", true },   .{ "kitty(0.40.0)", "", true }, .{ "kitty(0.39.1)", "", false },
-        .{ "kitty(0.49.2)", "0", false }, .{ "tmux 3.5a", "", false },    .{ "foot(1.20.0)", "", false },
+        .{ "kitty(0.49.2)", "", true, true },   .{ "kitty(0.40.0)", "", true, true },  .{ "kitty(0.39.1)", "", false, false },
+        .{ "kitty(1.0.0)", "", true, true },    .{ "kitty(0.9.0)", "", false, false }, .{ "kitty(0.49.2)", "0", false, false },
+        .{ "foot(1.28.0)", "", true, false },   .{ "foot(1.21.0)", "", true, false },  .{ "foot(1.20.2)", "", false, false },
+        .{ "foot(1.28.0)", "0", false, false }, .{ "tmux 3.5a", "", false, false },
     };
     inline for (rows) |row| {
         var env = std.process.Environ.Map.init(testing.allocator);
@@ -1953,8 +1955,9 @@ test "XTVERSION kitty 0.40 or later reports text sizing without a probe" {
         defer writer.deinit();
         try term.queryTerminalSend(&writer);
         term.processCapabilityResponse("\x1bP>|" ++ row[0] ++ "\x1b\\");
+        errdefer std.debug.print("XTVERSION {s}\n", .{row[0]});
         try testing.expectEqual(row[2], term.caps.explicit_width);
-        try testing.expectEqual(row[2], term.caps.scaled_text);
+        try testing.expectEqual(row[3], term.caps.scaled_text);
     }
 }
 
