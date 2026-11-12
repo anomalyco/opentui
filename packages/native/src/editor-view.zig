@@ -191,7 +191,12 @@ pub const EditorView = struct {
             else
                 vp.y + vp.height - margin_lines - 1;
 
-            if (target_visual_row < self.text_buffer_view.virtual_lines.items.len) self.moveToVisualRow(vcursor, target_visual_row);
+            if (target_visual_row < self.text_buffer_view.virtual_lines.items.len) {
+                // Use the column Up and Down remember, but remember none of the scroll's own.
+                const desired_visual_col = self.desired_visual_col;
+                self.moveToVisualRow(vcursor, target_visual_row);
+                self.desired_visual_col = desired_visual_col;
+            }
         }
     }
 

@@ -411,6 +411,9 @@ test "EditorView - vertical moves keep the desired column and land on cursor-uni
         // visual column on that row.
         .{ .text = "abcd efgh ijkl", .wrap = .word, .width = 5, .start = .{ 0, 1 }, .moves = "D1U", .ends = &.{ .{ 0, 6 }, .{ 0, 6 }, .{ 0, 1 } } },
         .{ .text = wheel, .wrap = .char, .width = 6, .start = .{ 1, 1 }, .moves = "432101234", .ends = &.{ .{ 1, 1 }, .{ 0, 19 }, .{ 0, 13 }, .{ 0, 7 }, .{ 0, 1 }, .{ 0, 7 }, .{ 0, 13 }, .{ 0, 19 }, .{ 1, 1 } } },
+        // A scroll uses the column Up and Down remember, but remembers none of its own.
+        .{ .text = "abcdefghijk\nx\nabcdefghijk", .start = .{ 2, 8 }, .moves = "10", .ends = &.{ .{ 1, 1 }, .{ 0, 1 } } },
+        .{ .text = "abcdefghijk\nx\nabcdefghijk", .start = .{ 2, 8 }, .moves = "U012", .ends = &.{ .{ 1, 1 }, .{ 0, 8 }, .{ 1, 1 }, .{ 2, 8 } } },
         .{ .text = wheel, .wrap = .word, .width = 6, .start = .{ 1, 1 }, .moves = "432101234", .ends = &.{ .{ 1, 1 }, .{ 0, 16 }, .{ 0, 10 }, .{ 0, 4 }, .{ 0, 1 }, .{ 0, 4 }, .{ 0, 10 }, .{ 0, 16 }, .{ 1, 1 } } },
         // #1289: cell boundaries 0, 2, 3, 5, ... above 0, 2, 4, ...
         .{ .text = "的[代码签名政策](\n因此签名批准者角色", .width = 40, .start = .{ 0, 5 }, .moves = "DUdu", .ends = &.{ .{ 1, 4 }, .{ 0, 5 }, .{ 1, 4 }, .{ 0, 5 } } },
@@ -2254,6 +2257,11 @@ test "occupancy - EditorView forwards occupancy and replays stored endpoints" {
     ev.setSelectionOccupancy(.cell);
     const vcursor = ev.getVisualCursor();
     try std.testing.expectEqual([3]u32{ 2, 1, 0 }, [3]u32{ vcursor.offset, vcursor.visual_row, vcursor.visual_col });
+
+    // A one-row text has no row below the top margin of a two-row viewport: the cursor stays.
+    ev.setSelectionOccupancy(.boundary);
+    ev.setViewport(.{ .x = 0, .y = 0, .width = 4, .height = 2 }, true);
+    try std.testing.expectEqual([2]u32{ 2, 0 }, [2]u32{ ev.getPrimaryCursor().offset, ev.getVisualCursor().visual_row });
 }
 
 test "EditorView - word press keeps cursor on the clicked grapheme" {
