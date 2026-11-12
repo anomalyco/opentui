@@ -93,7 +93,8 @@ fn corpus_matches_core_one_shot_and_streamed() {
             assert_eq!(frame(&app), expected, "{case} ({mode}), one shot");
             assert!(oneshot.with_markdown(|shown| shown == source) && oneshot.markdown() == source);
 
-            // Streamed in chunks, each frame equals a one-shot render of the source so far.
+            // Streamed in chunks, each frame equals a fresh streaming document of the source so far: the last line is
+            // pending in both.
             let streamed_app = TestApp::new(60, 80);
             let streamed = document(&streamed_app, conceal).streaming(true);
             let mut end = 0;
@@ -106,7 +107,7 @@ fn corpus_matches_core_one_shot_and_streamed() {
                 assert_eq!(ALLOCATIONS.with(Cell::get), allocations, "{case} ({mode}), read allocates");
                 assert_eq!(streamed.markdown(), &source[..end]);
                 let oneshot_app = TestApp::new(60, 80);
-                document(&oneshot_app, conceal).set_markdown(&source[..end]);
+                document(&oneshot_app, conceal).streaming(true).set_markdown(&source[..end]);
                 assert_eq!(frame(&streamed_app), frame(&oneshot_app), "{case} ({mode}), streamed to byte {end}");
             }
             streamed.streaming(false);
@@ -226,8 +227,9 @@ fn code_block_renderers_learn_when_the_fence_closes() {
     app.root().add(&markdown);
     markdown.set_markdown("```latex\nx +");
     assert_eq!(frame(&app), "preview\n");
-    // The closing fence leaves the code as it was, and the renderer runs again while the document still streams.
-    markdown.append("\n```");
+    // The closing fence leaves the code as it was, and the renderer runs again while the document still streams. A
+    // closer counts once its line ends: until then the line may still grow into code.
+    markdown.append("\n```\n");
     assert_eq!(frame(&app), "x +\n");
     assert_eq!(*seen.borrow(), [("x +".to_owned(), false), ("x +".to_owned(), true)]);
 }
@@ -637,4 +639,193 @@ fn inline_hooks_keep_source_mode() {
     let underlined: Vec<u32> =
         (0..60).filter(|&x| capture.cell(x, 0).unwrap().attributes.contains(Attributes::UNDERLINE)).collect();
     assert_eq!(underlined, (6..15).chain(20..38).collect::<Vec<_>>());
+}
+
+#[path = "support/model.rs"]
+mod model;
+
+/// What the model does to the document under test (the subject).
+#[derive(Clone, Debug)]
+enum Command {
+    Append(&'static str),
+    /// A replace with the first `keep` bytes of the source, as OpenCode's `trim()` does.
+    Set(usize),
+    Streaming(bool),
+    Conceal(bool),
+    /// Theme changes: scope styles, and the other colors.
+    Scopes(bool),
+    Colors(bool),
+    Renderer(bool),
+    Hook(bool),
+    /// The hook again on every block; its titles never change, so nothing may.
+    Rerun,
+}
+
+/// Pieces the generator glues together: block starts, inline markers, IDs the hook links, and line endings.
+const PIECES: [&str; 32] = [
+    "- ",
+    "> ",
+    "```",
+    "```mermaid\n",
+    "```\n",
+    "| a | b |\n",
+    "| - | - |\n",
+    "|",
+    "[x](/u)",
+    "[x]: /u\n",
+    "**",
+    "*",
+    "_",
+    "`",
+    "1. ",
+    "10. ",
+    "===",
+    "---",
+    "\n",
+    "\n\n",
+    "word ",
+    "ses_a",
+    " ses_b ",
+    "# ",
+    "<div>",
+    "&amp;",
+    "\\",
+    "    code",
+    "~~",
+    "www.a.b ",
+    "- [x] ",
+    "é",
+];
+
+/// The options a document has, which its fresh twin takes too.
+#[derive(Clone, Copy, Default)]
+struct Settings {
+    streaming: bool,
+    source_mode: bool,
+    scopes: bool,
+    other_colors: bool,
+    renderer: bool,
+    hook: bool,
+}
+
+fn configure(markdown: &Markdown, settings: Settings) {
+    let titles: Titles = Rc::new(RefCell::new(HashMap::from([("ses_a", "Alpha"), ("ses_b", "Beta")])));
+    markdown.conceal(!settings.source_mode).scope_styles(settings.scopes);
+    if settings.other_colors {
+        let theme = opentui::theme::Theme::default();
+        let colors = opentui::widget::MarkdownColors {
+            heading: Color::rgb(200, 20, 20),
+            code_bg: Color::rgb(10, 10, 60),
+            ..opentui::widget::MarkdownColors::from_theme(&theme)
+        };
+        markdown.colors(colors);
+    } else {
+        markdown.colors(opentui::widget::MarkdownColors::from_theme(&opentui::theme::Theme::default()));
+    }
+    if settings.renderer {
+        markdown.code_block_renderer("mermaid", |block| {
+            Some(Text::new(block.app, format!("diagram {}", block.code)).as_any())
+        });
+    } else {
+        markdown.remove_code_block_renderer("mermaid");
+    }
+    if settings.hook {
+        markdown.inline_hook(session_links(&titles, &Calls::default()));
+    } else {
+        markdown.remove_inline_hook();
+    }
+    markdown.streaming(settings.streaming);
+}
+
+struct MarkdownModel;
+
+impl model::Model for MarkdownModel {
+    type Command = Command;
+
+    fn generate(&self, rng: &mut model::Rng, steps: usize) -> Vec<Command> {
+        (0..steps)
+            .map(|_| match rng.below(24) {
+                0 => Command::Set(rng.below(64)),
+                1 => Command::Streaming(rng.below(2) == 0),
+                2 => Command::Conceal(rng.below(4) == 0),
+                3 => Command::Scopes(rng.below(2) == 0),
+                4 => Command::Colors(rng.below(2) == 0),
+                5 => Command::Renderer(rng.below(2) == 0),
+                6 => Command::Hook(rng.below(2) == 0),
+                7 => Command::Rerun,
+                _ => Command::Append(rng.pick(&PIECES)),
+            })
+            .collect()
+    }
+
+    fn simplify(&self, command: &Command) -> Vec<Command> {
+        match command {
+            Command::Set(keep) if *keep > 0 => vec![Command::Set(keep / 2)],
+            Command::Append(piece) if *piece != "word " => vec![Command::Append("word ")],
+            _ => Vec::new(),
+        }
+    }
+
+    /// After every command: the document's frame, colors and attributes included, equals a fresh document's given the
+    /// same source and options (P1 at widget level, P6 with spans), and so does every cell's click target (P16). A
+    /// theme change changes no text (P11: it parses and writes nothing). A rerun of an unchanged hook changes nothing.
+    fn run(&self, commands: &[Command]) -> Option<model::Failure> {
+        let app = TestApp::new(40, 24);
+        let subject = Markdown::new(&app);
+        app.root().add(&subject);
+        let mut settings = Settings::default();
+        configure(&subject, settings);
+        for (step, command) in commands.iter().enumerate() {
+            let fail = |property| Some(model::Failure { property, step });
+            let before = app.render();
+            match *command {
+                Command::Append(piece) => drop(subject.append(piece)),
+                Command::Set(keep) => {
+                    let source = subject.markdown();
+                    let keep = (0..=keep.min(source.len())).rev().find(|&at| source.is_char_boundary(at)).unwrap_or(0);
+                    subject.set_markdown(&source[..keep]);
+                }
+                Command::Streaming(on) => settings.streaming = on,
+                Command::Conceal(off) => settings.source_mode = off,
+                Command::Scopes(on) => settings.scopes = on,
+                Command::Colors(on) => settings.other_colors = on,
+                Command::Renderer(on) => settings.renderer = on,
+                Command::Hook(on) => settings.hook = on,
+                Command::Rerun => drop(subject.rerun_inline_hook(|_| true)),
+            }
+            if !matches!(command, Command::Append(_) | Command::Set(_) | Command::Rerun) {
+                configure(&subject, settings);
+            }
+            let shown = app.render();
+            if matches!(command, Command::Scopes(_) | Command::Colors(_) | Command::Rerun)
+                && shown.text() != before.text()
+            {
+                return fail("theme or rerun changes no text (P11)");
+            }
+            let twin_app = TestApp::new(40, 24);
+            let twin = Markdown::new(&twin_app);
+            twin_app.root().add(&twin);
+            configure(&twin, settings);
+            twin.set_markdown(subject.markdown());
+            let fresh = twin_app.render();
+            if shown != fresh {
+                eprintln!("subject:\n{}\nfresh:\n{}", shown.text(), fresh.text());
+                return fail("frame equals a fresh document's, spans included (P1, P6)");
+            }
+            if settings.hook {
+                for (x, y) in (0..24u16).flat_map(|y| (0..40u16).map(move |x| (x, y))) {
+                    if subject.target_at(x, y) != twin.target_at(x, y) {
+                        return fail("click targets equal a fresh document's (P16)");
+                    }
+                }
+            }
+        }
+        None
+    }
+}
+
+#[test]
+fn model_streamed_documents_equal_fresh_ones() {
+    // CI budget: 48 seeds of 24 commands; MODEL_SEEDS widens it.
+    model::check(&MarkdownModel, 48, 24);
 }

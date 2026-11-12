@@ -1164,8 +1164,8 @@ fn markdown_styles_text_by_syntax_scope() {
     assert_eq!(fg(&capture, 0, 2), italic);
     assert_eq!(fg(&capture, 2, 2), text);
     assert_eq!(fg(&capture, 3, 2), label);
-    // A concealed link's URL: a plain space, then the URL in parentheses.
-    assert_eq!([4, 5, 6, 17].map(|x| fg(&capture, x, 2)), [text, link, url, link]);
+    // A concealed link's URL, as Core writes it: ` (` and `)` as `markup.link`, the URL as `markup.link.url`.
+    assert_eq!([4, 5, 6, 17].map(|x| fg(&capture, x, 2)), [link, link, url, link]);
     assert_eq!(fg(&capture, 19, 2), escape);
     // `markup.list` has no style, so the marker takes its color from MarkdownColors.
     assert_eq!(fg(&capture, 0, 4), MarkdownColors::from_theme(&app.theme()).marker);
@@ -1175,8 +1175,8 @@ fn markdown_styles_text_by_syntax_scope() {
     assert_eq!(rows(&app)[2], "*it* [l](https://u.t) \\*");
     let capture = app.render();
     assert_eq!(fg(&capture, 0, 0), heading);
-    // As in Core's query, a link's `]` is not part of the link.
-    assert_eq!([0, 5, 6, 7, 8, 9].map(|x| fg(&capture, x, 2)), [italic, link, label, text, link, url]);
+    // As Core writes a link's source: `](` is `markup.link`.
+    assert_eq!([0, 5, 6, 7, 8, 9].map(|x| fg(&capture, x, 2)), [italic, link, label, link, link, url]);
 
     // Off, the colors style everything again.
     doc.scope_styles(false).conceal(true);
