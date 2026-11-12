@@ -1126,7 +1126,7 @@ describe("stdin parser", () => {
         for (const [head, tail, events] of [
           ["\x1b[<35;20", ";5m", [sgr("\x1b[<35;20;5m", "move", 19, 4)]],
           ["\x1b[20", "0~a\rb\x1b[201~", [paste("a\rb")]],
-        ] as const) {
+        ] as [string, string, Snap[]][]) {
           const { parser, clock } = createTimedParser()
           try {
             parser.push(Buffer.from(head))
