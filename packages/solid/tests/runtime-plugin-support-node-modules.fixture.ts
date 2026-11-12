@@ -90,7 +90,29 @@ writeFileSync(
   }),
 )
 
+// Plugins installed from a registry ship TSX under node_modules, and it still needs the Solid compiler.
+writeFileSync(
+  join(externalPackageDir, "panel.tsx"),
+  [
+    "/** @jsxImportSource @opentui/solid */",
+    'import { Show } from "solid-js"',
+    "export let hiddenChildRan = false",
+    "const Child = () => {",
+    "  hiddenChildRan = true",
+    "  return null",
+    "}",
+    "export const Panel = () => (",
+    "  <Show when={false}>",
+    "    <Child />",
+    "  </Show>",
+    ")",
+    "",
+  ].join("\n"),
+)
+
 const source = [
+  'import { createRoot } from "solid-js"',
+  'import { Panel, hiddenChildRan } from "./panel.tsx"',
   'import * as solid from "@opentui/solid"',
   'import * as core from "@opentui/core"',
   'import * as coreTesting from "@opentui/core/testing"',
@@ -99,7 +121,9 @@ const source = [
   'import { checks as esmChecks } from "runtime-plugin-support-esm-wrapper"',
   'import * as solidStore from "solid-js/store"',
   "const host = globalThis.__solidRuntimeHost__",
+  "createRoot(() => Panel())",
   "const checks = [",
+  "  `jsx=${!hiddenChildRan}`,",
   "  `solid=${solid.extend === host?.solid.extend}`,",
   "  `core=${core.engine === host?.core.engine}`,",
   "  `coreTesting=${coreTesting.createTestRenderer === host?.coreTesting.createTestRenderer}`,",

@@ -731,8 +731,8 @@ impl App {
 
     /// Restores the terminal after the current turn, runs `task` while another program owns it (an external editor,
     /// for example), and sets the terminal up again when `task` returns. The event loop waits for `task`, and input the
-    /// terminal sent meanwhile is dropped. Without a running local terminal (a test, a remote app, Windows), `task` runs
-    /// after the current event with the terminal untouched. A second call before the first runs replaces it.
+    /// terminal sent meanwhile is dropped. Without a running local terminal (a test, a remote app), `task` runs after
+    /// the current event with the terminal untouched. A second call before the first runs replaces it.
     pub fn release_terminal(&self, task: impl FnOnce(&mut Cx<'_>) + 'static) {
         if !self.0.terminal_active.get() {
             self.defer(task);

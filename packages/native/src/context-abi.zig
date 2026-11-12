@@ -2040,7 +2040,7 @@ pub fn ot_scene_get_layout(context: ?*ContextHandle, node_ptr: ?*const c.ot_hand
     const result = (switch (observation) {
         c.OT_LAYOUT_PUBLIC => owner.core.sceneGetLayout(handleFromC(id.*), false),
         c.OT_LAYOUT_YOGA => owner.core.sceneGetLayout(handleFromC(id.*), true),
-        c.OT_LAYOUT_PAINT => owner.core.sceneGetPaintLayout(handleFromC(id.*)),
+        c.OT_LAYOUT_PAINT, c.OT_LAYOUT_CONTENT => owner.core.sceneGetPaintLayout(handleFromC(id.*), observation == c.OT_LAYOUT_CONTENT),
         else => return sessionError(owner, error.InvalidOptions),
     }) catch |err| return sessionError(owner, err);
     out.* = sceneLayoutToC(result);
@@ -2422,7 +2422,7 @@ pub fn ot_scene_frame_step_with_geometry(context: ?*ContextHandle, session_ptr: 
     if (result.kind == c.OT_SCENE_FRAME_DONE or result.kind == c.OT_SCENE_FRAME_RECORD) return c.OT_OK;
     const node = result.node;
     // Public observations advance during refresh, after the ticket is created.
-    if (owner.core.sceneGetPaintLayout(node)) |layout| {
+    if (owner.core.sceneGetPaintLayout(node, false)) |layout| {
         geometry.paint = sceneLayoutToC(layout);
         geometry.flags |= c.OT_SCENE_GEOMETRY_PAINT;
     } else |_| {}
@@ -4275,7 +4275,7 @@ test "Scene ABI records preserve rejected outputs and read real Session metadata
     try std.testing.expectEqual(c.OT_OK, ot_scene_get_layout(handle, &box, 0, &layout));
     try std.testing.expectEqual(@as(f32, 3), layout.width);
     const before_selector = layout;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_get_layout(handle, &box, 3, &layout));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_get_layout(handle, &box, c.OT_LAYOUT_CONTENT + 1, &layout));
     try std.testing.expectEqualDeep(before_selector, layout);
     try owner.core.sceneSetStyle(handleFromC(box), 4, 0, 0, 1, 0, 1);
     try std.testing.expectEqual(c.OT_OK, ot_scene_frame_cancel(handle, &session_c, frame.frame_id));
