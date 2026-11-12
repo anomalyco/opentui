@@ -280,6 +280,8 @@ const TokenStyle = struct {
     italic: i32,
     strikethrough: i32,
     link: u32,
+    /// The parser's matches when these were noted: a later one may cover the token too.
+    matches: u32,
 
     const base_link = none - 1;
 };
@@ -3001,10 +3003,9 @@ pub const Doc = struct {
         const r = live.parser.result();
         var styler: TokenStyler = .{ .writer = &writer, .arena = arena, .r = r, .styles = live.base_styles, .references = self.references() };
         var segment_from = from;
-        // This call's matches: how many of each kind cover the token the walk is past (one may
-        // open before the walk's start: a match from an opener whose earlier match of its kind
-        // styled the tokens up to that one's closer, where the walk starts). The earlier matches
-        // the walk is inside, and per kind how many and the closer of the outermost.
+        // This call's matches: how many of each kind cover the token the walk is past. The
+        // earlier matches the walk is inside, and per kind how many and the closer of the
+        // outermost.
         var new_active: [3]u32 = .{ 0, 0, 0 };
         const OldMatch = struct { kind: inline_parser.MatchKind, closer: u32 };
         var open_old: std.ArrayListUnmanaged(OldMatch) = .empty;
@@ -3015,24 +3016,37 @@ pub const Doc = struct {
             const before = live.token_styles.items[start];
             styler.styles = .{ .strong = before.strong, .italic = before.italic, .strikethrough = before.strikethrough };
             link = before.link;
+            // The walk may start past an opener (at the last closer of a kind it matched): the
+            // matches made since the styles before `start` were noted that cover it, newest
+            // (outermost) first, as closers come in order.
+            var j = r.matches.len;
+            while (j > @min(before.matches, old_matches)) {
+                j -= 1;
+                self.counters.match_reads += 1;
+                const m = r.matches[j];
+                if (m.opener_token >= start or m.closer_token < start) continue;
+                styler.styles.apply(m.kind, 1);
+                const k = @backingInt(m.kind);
+                if (j >= old_matches) {
+                    new_active[k] += 1;
+                    continue;
+                }
+                if (old_count[k] == 0) old_end[k] = m.closer_token;
+                old_count[k] += 1;
+                try open_old.append(arena, .{ .kind = m.kind, .closer = m.closer_token });
+            }
         }
         if (link == TokenStyle.base_link) {
             styler.styles.link = try writer.url("", live.base_link.items);
         } else if (link != none) {
             styler.styles.link = try writer.url("", try styler.destination(link));
         }
-        for (r.matches[old_matches..]) |m| {
-            self.counters.match_reads += 1;
-            if (m.opener_token >= start or m.closer_token < start) continue;
-            new_active[@backingInt(m.kind)] += 1;
-            styler.styles.apply(m.kind, 1);
-        }
         try live.token_styles.resize(self.allocator, r.tokens.len);
         var at = from;
         var i: u32 = start;
         while (i < r.tokens.len and at < to) : (i += 1) {
             self.counters.run_token_visits += 1;
-            live.token_styles.items[i] = .{ .strong = styler.styles.strong, .italic = styler.styles.italic, .strikethrough = styler.styles.strikethrough, .link = link };
+            live.token_styles.items[i] = .{ .strong = styler.styles.strong, .italic = styler.styles.italic, .strikethrough = styler.styles.strikethrough, .link = link, .matches = @intCast(r.matches.len) };
             live.styled_count = i + 1;
             if (live.display_ends.items[i] > to) {
                 // A hold inside this token: B drew its start, styled as read_leaf styles a token

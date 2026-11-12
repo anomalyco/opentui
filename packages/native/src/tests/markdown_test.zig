@@ -1061,15 +1061,27 @@ const Families = struct {
             .shared_openers => {
                 const mark = pick(random, &.{ "*", "_" });
                 try out.appendSlice(arena, pick(random, &.{ "begin ", "", "`c` " }));
-                switch (random.uintLessThan(u32, 3)) {
+                switch (random.uintLessThan(u32, 4)) {
                     0 => {
                         for (0..count) |_| try out.appendSlice(arena, try std.mem.concat(arena, u8, &.{ mark, mark, mark, pick(random, &.{ "a", "`c`" }), mark, " " }));
                         for (0..count) |_| try out.appendSlice(arena, try std.mem.concat(arena, u8, &.{ pick(random, &.{ "b", "`c`" }), mark, mark, " " }));
                     },
                     1 => {
-                        for (0..2 * count) |_| try out.appendSlice(arena, mark);
+                        // One long run that every closer shares: `**` closers, or (leapfrogging the
+                        // run's per-kind ends) `*` and `**` in turn.
+                        const leap = random.boolean();
+                        for (0..3 * count) |_| try out.appendSlice(arena, mark);
                         try out.appendSlice(arena, "a ");
-                        for (0..count) |_| try out.appendSlice(arena, try std.mem.concat(arena, u8, &.{ pick(random, &.{ "b", "`c`" }), mark, mark, " " }));
+                        for (0..count) |n| try out.appendSlice(arena, try std.mem.concat(arena, u8, &.{ pick(random, &.{ "b", "`c`" }), mark, if (leap and n % 2 == 0) "" else mark, " " }));
+                    },
+                    2 => {
+                        // Runs of one to six marks around words and spaces, sharing openers and
+                        // closers at random (carbon-r3-1: "******a** **b*** c* d**").
+                        if (random.boolean()) try out.appendSlice(arena, "******a** **b*** c* d** ");
+                        for (0..count) |_| {
+                            for (0..1 + random.uintLessThan(usize, 6)) |_| try out.appendSlice(arena, mark);
+                            try out.appendSlice(arena, pick(random, &.{ "a", "b ", " c", "d", " " }));
+                        }
                     },
                     else => {
                         // Spans inside one word, after an opener that may never close.
@@ -1202,6 +1214,11 @@ const Families = struct {
             }
             if (try genericProperties(step_arena.allocator(), &f.doc, fed, options, true)) |property| return .{ .property = property, .step = step };
             if (sink.mismatch_count > 0) return .{ .property = "every node shows read_leaf (P5)", .step = step };
+            // P5 at every call, styles included, while the document is small enough to read
+            // whole each time (carbon-r3-1 lost a style mid-stream that finish restored).
+            if (f.doc.source.items.len <= fresh_compare_byte_count_max and !try writtenShowReadLeaf(step_arena.allocator(), &f.doc, &sink, false)) {
+                return .{ .property = "every node shows read_leaf after every call (P5)", .step = step };
+            }
             if (command == .math or command == .filter) math_once = .{};
             if (!math_once.check(&f.doc)) return .{ .property = "(c) a math block never reverts to text", .step = step };
         }
@@ -1411,6 +1428,8 @@ test "Markdown model: streams the reviewers found quadratic keep work linear" {
         // D102's limit), and the same nested inside one word.
         &.{ .{ "begin ", 1 }, .{ "~~a *b ", 128 }, .{ "c~~ ", 128 } },
         &.{ .{ "(*a", 128 }, .{ "a*)", 128 } },
+        // carbon-r3-1's leapfrog: `*` and `**` closers in turn on one run of 384.
+        &.{ .{ repeat("*", 384) ++ "a ", 1 }, .{ "b* c** ", 128 } },
         // carbon-r2-2: one undecided word whose long run every `**` closer shares (8,385 visits).
         &.{ .{ repeat("*", 257) ++ "x", 1 }, .{ "_a_b", 128 }, .{ "**c", 128 } },
     };
@@ -1461,6 +1480,35 @@ test "Markdown: past delimiter_count_max waiting runs, the oldest never matches"
     }
 }
 
+// Words of an opening run of up to six of a mark, a letter and a closing run of up to three
+// (carbon-r3-1's "******a** **b*** c* d**" is one): one run's matches of two kinds, closed in turn,
+// streamed a byte and two at a time, every prefix against a fresh doc. Small documents, many.
+test "Markdown stream: words of shared runs stream like a fresh doc of each prefix (seeded)" {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const count: u64 = if (environment(arena_state.allocator(), "MARKDOWN_DIFFERENTIAL")) |t| 10 * try std.fmt.parseInt(u64, t, 10) else 2000;
+    for (0..count) |seed| {
+        _ = arena_state.reset(.retain_capacity);
+        const arena = arena_state.allocator();
+        var prng = std.Random.DefaultPrng.init(seed);
+        const random = prng.random();
+        const mark = (&[_]u8{ '*', '_' })[random.uintLessThan(usize, 2)];
+        var text: std.ArrayListUnmanaged(u8) = .empty;
+        for (0..3 + random.uintLessThan(usize, 10)) |word| {
+            if (word > 0) try text.append(arena, ' ');
+            try text.appendNTimes(arena, mark, random.uintLessThan(usize, 7));
+            try text.append(arena, 'a' + @as(u8, @intCast(word)));
+            try text.appendNTimes(arena, mark, random.uintLessThan(usize, 4));
+        }
+        for ([_]usize{ 1, 2 }) |width| {
+            if (!try streamAgreesParts(arena, "kinds", try split(arena, text.items, width))) {
+                std.debug.print("shared-run seed {d}, width {d}: \"{f}\"\n", .{ seed, width, std.zig.fmtString(text.items) });
+                return error.StreamMismatch;
+            }
+        }
+    }
+}
+
 // bigboi's prefix-frame differential over nested and shared delimiters (round 3): openers of mixed
 // marks, their closers in reverse, adjacent closers sometimes run together (`**` then `*` as `***`,
 // so one run closes two matches), interiors of text, code and links; each document streamed at
@@ -1471,7 +1519,7 @@ test "Markdown stream: nested and shared delimiters stream like a fresh doc of e
     // CI: 60 documents, 240 streams; MARKDOWN_DIFFERENTIAL widens it.
     const count: u64 = if (environment(arena_state.allocator(), "MARKDOWN_DIFFERENTIAL")) |t| try std.fmt.parseInt(u64, t, 10) else 60;
     // A heading's pipe holds nothing, a code span's pipe included (seed 601 of the mixed fragments).
-    const rows = [_][]const u8{ "begin *out ***a** b* tail q* e", "begin **out ***a* b** tail q** e", "# h `a | b`*e*<" };
+    const rows = [_][]const u8{ "begin *out ***a** b* tail q* e", "begin **out ***a* b** tail q** e", "# h `a | b`*e*<", "******a** **b*** c* d**" };
     for (0..count + rows.len) |seed| {
         _ = arena_state.reset(.retain_capacity);
         const arena = arena_state.allocator();
