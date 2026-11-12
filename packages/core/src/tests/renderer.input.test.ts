@@ -1551,6 +1551,42 @@ test("explicit-width reports, OSC 10 and malformed XTGETTCAP Ms replies do not r
   expect(received).toHaveLength(0)
 })
 
+// Rows: screen mode, then what follows the startup report: Shift+F3 on the main screen, which sends no width probe,
+// or the two probe replies (Shift+F3 and Alt+F3 in shape) on the alternate screen.
+test.each([
+  ["main-screen", ["\x1b[5;1R", "\x1b[1;2R"], ["shift+f3"], false],
+  ["alternate-screen", ["\x1b[5;1R"], [], true],
+] as const)(
+  "startup consumes only the cursor reports a %s setup asked for",
+  async (screenMode, handled, keys, width) => {
+    const clock = new ManualClock()
+    const { renderer } = await createTestRenderer({ clock, screenMode })
+    try {
+      await renderer.setupTerminal()
+      const received: string[] = []
+      renderer.addInputHandler((sequence) => {
+        received.push(sequence)
+        return false
+      })
+      const pressed: string[] = []
+      renderer.keyInput.on("keypress", (event) => pressed.push(`${event.shift ? "shift+" : ""}${event.name}`))
+      renderer.stdin.emit("data", Buffer.from("\x1b[5;1R"))
+      renderer.stdin.emit("data", Buffer.from("\x1b[1;2R"))
+      if (width) renderer.stdin.emit("data", Buffer.from("\x1b[1;3R"))
+      clock.advance(25)
+      // A standalone startup report still reaches handlers, as on main.
+      expect({ received, pressed, width: renderer.capabilities?.explicit_width }).toEqual({
+        received: [...handled],
+        pressed: [...keys],
+        width,
+      })
+    } finally {
+      renderer.destroy()
+      await renderer.closed
+    }
+  },
+)
+
 test("capability response followed by keypress", async () => {
   const keypresses: KeyEvent[] = []
   currentRenderer.keyInput.on("keypress", (event) => {

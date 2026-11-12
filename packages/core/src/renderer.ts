@@ -1157,6 +1157,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private replyBatches: ReplyBatch[] = []
   // No missed DA1 reply yet. After a miss, batches carry no DA1 and end at their backstop.
   private replySentinel = true
+  /** Cursor reports startup still expects: its position, then the two width probes of an alternate-screen setup. */
+  private startupCursorReports = 0
   public readonly clock: Clock
 
   private rendering: boolean = false
@@ -3452,6 +3454,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this.pendingSplitStartupCursorSeed =
       this._screenMode === "split-footer" && this._externalOutputMode === "capture-stdout"
+    this.startupCursorReports = this._screenMode === "alternate-screen" ? 3 : 1
     // The startup batch asks OSC 11; after its DA1 reply a theme wait has its answer.
     const startup = this.admitReplyBatch("startup", () => this.replySentinel && this.themeModeState.resolveWaiters())
     try {
@@ -3577,7 +3580,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.updateStdinParserProtocolContext(
       {
         privateCapabilityRepliesActive: startup,
-        explicitWidthCprActive: startup,
+        // Past the expected reports, `CSI 1;2R` is Shift+F3 again.
+        explicitWidthCprActive: startup && this.startupCursorReports > 0,
         pixelResolutionQueryActive: this.waitingForPixelResolution,
         replySentinelActive: this.replySentinel && this.replyBatches.length > 0,
       },
@@ -3656,6 +3660,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (!shouldProcessAsCapability) {
       return false
     }
+    if (hasCursorReport && this.startupCursorReports > 0 && --this.startupCursorReports === 0)
+      this.syncReplyContext(false)
 
     try {
       this.nativeSession.control({ kind: "capability-response", bytes: Buffer.from(sequence) })
