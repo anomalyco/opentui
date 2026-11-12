@@ -653,8 +653,8 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     if (changed) {
       this.requestRender()
     }
-    // Not until the gesture ends, so the press's handlers see where the cursor landed.
-    if (!selection?.isDragging && side !== undefined) this.editorView._keepCursorOutside(side)
+    // Not on the press itself: its handlers see where the cursor landed, then onMouseEvent applies it.
+    if ((!selection?.isDragging || !selection.isStart) && side !== undefined) this.editorView._keepCursorOutside(side)
 
     return this.hasSelection()
   }

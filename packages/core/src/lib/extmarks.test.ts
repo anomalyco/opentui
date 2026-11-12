@@ -333,7 +333,7 @@ describe("ExtmarksController", () => {
     // One row of 24 columns. While a selection is left the cursor and the selection are `held`; then it is cleared. A
     // press's handlers see the pressed cell; then a pointer leaves the cursor at the nearer outer edge of the marks
     // around it, a cleared drag at the side it came from, the wheel and the setter at the edge they moved toward.
-    // "press" types Z before the release. After ", " comes a key, a wheel step, an offset, a selection or a click. The
+    // "press" drags through its other cells and types Z before the release. After ", " comes a key, a wheel step, an offset, a selection or a click. The
     // rows match the Rust editor's but Shift+Left, which extends a selection into a mark here, and the rejected offset.
     const pasted = "x [Pasted ~20 lines] y"
     for (const [text, marks, from, gesture, held, to] of [
@@ -341,6 +341,7 @@ describe("ExtmarksController", () => {
       ["x @file y", "2..7", 9, "click 3", null, 2],
       ["x @file y", "2..7", 9, "click 5", null, 7],
       ["x @file y", "2..7", 9, "press 3", null, 3],
+      ["x @file y", "2..7", 9, "press 3 5 3", null, 3],
       ["x @file y", "2..7", 9, "offset -1, click 3", null, 2],
       [pasted, "2..20", 22, "click 15", null, 20],
       ["x @file y", "2..7", 9, "double-click 4", "4 2..7", 2],
@@ -383,8 +384,9 @@ describe("ExtmarksController", () => {
         if (kind === "click") await mouse.click(Number(a), 0)
         else if (kind === "press") {
           await mouse.pressDown(Number(a), 0)
+          for (const x of [b, c].filter(Boolean)) await mouse.moveTo(Number(x), 0)
           await result.mockInput.typeText("Z")
-          await mouse.release(Number(a), 0)
+          await mouse.release(Number(c ?? a), 0)
           expect(textarea.plainText).toBe("x Z@file y")
         } else if (kind === "double-click") await mouse.doubleClick(Number(a), 0)
         else if (kind === "drag" && c) {

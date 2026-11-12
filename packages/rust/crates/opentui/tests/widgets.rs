@@ -1972,7 +1972,7 @@ fn mouse_and_wheel_leave_the_cursor_outside_atomic_extmarks() {
     // One row of a 24x2 app; a click on row 1 clears a selection left. While a selection is left the cursor and the
     // selection are `held`. A press's handlers see the pressed cell; then a pointer leaves the cursor at the nearer
     // outer edge of the marks around it, a cleared drag at the side it came from, the wheel and the setter at the edge
-    // they moved toward. "press" types Z before the release. `then` is a key, a wheel step or an offset after the gesture.
+    // they moved toward. "press" drags through its other cells and types Z before the release. `then` is a key, a wheel step or an offset after the gesture.
     let one = &[(2, 7)][..];
     let pasted = "x [Pasted ~20 lines] y";
     for (text, marks, from, gesture, held, to) in [
@@ -1980,6 +1980,7 @@ fn mouse_and_wheel_leave_the_cursor_outside_atomic_extmarks() {
         ("x @file y", one, 9, "click 3", None, 2),
         ("x @file y", one, 9, "click 5", None, 7),
         ("x @file y", one, 9, "press 3", None, 3),
+        ("x @file y", one, 9, "press 3 5 3", None, 3),
         (pasted, &[(2, 20)], 22, "click 15", None, 20),
         ("x @file y", one, 9, "double-click 4", Some((4, (2, 7))), 2),
         ("x @file y", one, 9, "double-click 4, offset 3", None, 2),
@@ -2025,8 +2026,9 @@ fn mouse_and_wheel_leave_the_cursor_outside_atomic_extmarks() {
             "click" => app.click(n[0], 0),
             "press" => {
                 app.mouse(MouseEventKind::Down(MouseButton::Left), n[0], 0);
+                n[1..].iter().for_each(|&x| app.mouse(MouseEventKind::Drag(MouseButton::Left), x, 0));
                 app.type_text("Z");
-                app.mouse(MouseEventKind::Up(MouseButton::Left), n[0], 0);
+                app.mouse(MouseEventKind::Up(MouseButton::Left), n[n.len() - 1], 0);
                 assert_eq!(area.text(), "x Z@file y", "{gesture}: typed before the release");
             }
             "double-click" => (0..2).for_each(|_| app.click(n[0], 0)),
