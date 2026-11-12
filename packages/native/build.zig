@@ -32,6 +32,9 @@ const YOGA_CXX_FLAGS = [_][]const u8{
     "-std=c++20",
     "-fexceptions",
     "-frtti",
+    // Bind Yoga's C++ calls inside the library instead of through the PLT.
+    "-fvisibility-inlines-hidden",
+    "-fno-semantic-interposition",
 };
 
 const YOGA_CXX_SOURCES = [_][]const u8{
