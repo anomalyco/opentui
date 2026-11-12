@@ -262,12 +262,17 @@ fn releasing_hands_the_terminal_over_and_takes_it_back() {
     let text = run.text();
     let released = text.find("lifecycle released").unwrap();
     assert!(text[..released].contains(LEAVE_ALT), "the alternate screen is still active: {text:?}");
-    // Taking it back after a resize, the app draws again and asks for the pixel size, which ConPTY may not pass on.
+    // The program's terminal echoes what it reads.
+    run.press("hello");
+    run.wait_for("hello");
+    // Taking it back after a resize, the app draws at the new size and asks for the pixel size, which ConPTY may not
+    // pass on.
     run.pty.resize(100, 30).unwrap();
-    run.press("hello\r");
+    run.press("\r");
     run.wait_for("lifecycle read hello");
     let read = run.text().find("lifecycle read hello").unwrap();
-    let wanted = [ENTER_ALT, DRAWN, if cfg!(windows) { DRAWN } else { "\x1b[14t" }];
+    let wanted: &[&str] =
+        if cfg!(windows) { &[ENTER_ALT, "size 100x30"] } else { &[ENTER_ALT, "size 100x30", "\x1b[14t"] };
     let taken = || wanted.iter().all(|text| run.text()[read..].contains(text));
     let seen = run.app.wait_until(Duration::from_secs(10), taken);
     assert!(seen, "the app never took the terminal back: {:?}", run.text());
