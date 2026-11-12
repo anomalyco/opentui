@@ -1212,7 +1212,10 @@ impl App {
                 self.set_focus(Some(focusable));
             }
         }
-        self.drag_and_drop(event, captured.as_ref(), hit.as_ref(), selecting);
+        // A left press ended the old drag before its handlers; a drag they started is the new gesture's.
+        if event.kind != MouseEventKind::Down(MouseButton::Left) {
+            self.drag_and_drop(event, captured.as_ref(), hit.as_ref(), selecting);
+        }
         if let MouseEventKind::Up(_) = event.kind {
             *self.0.capture.borrow_mut() = None;
             self.finish_selection_drag(event, hit.as_ref());

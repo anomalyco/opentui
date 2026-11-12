@@ -2072,11 +2072,16 @@ fn drags_report_targets_and_drops() {
     assert!(log.borrow().is_empty());
     // A press during a drag means the drag's release was lost: the press ends the drag, with its leaves before its own
     // handlers and no drop, on the old target, elsewhere or on the source, and a drag it starts is its own.
+    let reenter = Rc::new(Cell::new(false));
     app.root().on_mouse({
-        let log = Rc::clone(&log);
-        move |_cx, event| {
+        let (log, reenter) = (Rc::clone(&log), Rc::clone(&reenter));
+        move |cx, event| {
             if event.kind == MouseEventKind::Down(MouseButton::Left) {
                 log.borrow_mut().push("press".to_owned());
+                if reenter.get() {
+                    let drag = MouseEvent { kind: MouseEventKind::Drag(MouseButton::Left), x: 22, y: 1, ..*event };
+                    cx.app().dispatch(Event::Mouse(drag));
+                }
             }
         }
     });
@@ -2091,6 +2096,15 @@ fn drags_report_targets_and_drops() {
         app.mouse(MouseEventKind::Up(MouseButton::Left), to_x, to_y);
         assert_eq!(*log.borrow(), ["press", "right over", "right out", "press"]);
     }
+    // A drag that the press's handler starts is the new gesture's: its own release ends it, with a drop.
+    log.borrow_mut().clear();
+    app.mouse(MouseEventKind::Down(MouseButton::Left), 1, 0);
+    app.mouse(MouseEventKind::Drag(MouseButton::Left), 22, 1);
+    reenter.set(true);
+    app.mouse(MouseEventKind::Down(MouseButton::Left), 1, 0);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), 22, 1);
+    let ends = ["press", "right over", "right out", "press", "right over", "right out", "drop on right at 22"];
+    assert_eq!(*log.borrow(), ends);
 }
 
 #[test]
