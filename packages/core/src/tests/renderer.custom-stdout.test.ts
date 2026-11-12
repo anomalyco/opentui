@@ -1936,6 +1936,8 @@ const processExit = (renderer: CliRenderer) => {
   renderer.nativeScene.driver.dispose()
   expect(flushed).toBe(0)
 }
+const listenerWrites = (renderer: CliRenderer, stdout: CollectingStdout) =>
+  renderer.once(CliRenderEvents.EXTERNAL_OUTPUT, () => stdout.write("B"))
 const sessionClose = async (renderer: CliRenderer) => {
   const closing = renderer.nativeScene.driver.close()
   renderer.destroy()
@@ -1956,6 +1958,11 @@ test.each<[string, StdoutStep[], string]>([
   ["4-byte split", splitBytes("\u{10437}", 1), "\u{10437}"],
   ["a combining mark in a later write", ["xe", "\u0301y\n"], "xe\u0301y"],
   ["VS16 in a later write", ["\u2764", "\ufe0f\n"], "\u2764\ufe0f"],
+  ["a combining mark after the last column", ["x".repeat(79) + "e", "\u0301\n"], `${"x".repeat(79)}e\u0301`],
+  ["capture set again before a combining mark", ["e", capture, "\u0301\n"], "e\u0301"],
+  ["a CR between a row and its LF", ["OK", "\r", "\n"], "OK"],
+  ["a listener write during a frame", [listenerWrites, "A"], "AB"],
+  ["a listener write during destroy", [listenerWrites, "A", destroy], "AB|"],
   ["empty writes inside a split", splitBytes("\u00e9", 1, "", null as never, ["", ""], ["", "bogus"]), "\u00e9"],
   ["string inside a split", splitBytes("\u00e9", 1, "x"), "\ufffdx\ufffd"],
   ["capture set again inside a split", splitBytes("\u00e9", 1, capture), "\u00e9"],

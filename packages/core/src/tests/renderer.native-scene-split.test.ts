@@ -575,20 +575,55 @@ test("a collapse drops whole terminal rows, counts them, and predicts the tail t
   expect(created.filter((buffer) => !(buffer as unknown as { _destroyed: boolean })._destroyed)).toEqual([])
 }, 30_000)
 
-// After the frame the published tail is 4; the queued newline resets it.
+// After the frame the published tail is 4; the queued newline resets it. A listener's write ends the row at 6.
 test("the predicted tail column counts every cell of a trailing wide character", async () => {
   const { renderer, stdout, frame } = await setupTerminal()
+  renderer.once(CliRenderEvents.EXTERNAL_OUTPUT, () =>
+    renderer.root.add(new TextRenderable(renderer, { content: "NEW" })),
+  )
   stdout.write("ab二")
   await frame()
-  // The frame prints the unfinished row and needs no other.
-  expect([stdout.text().includes("ab二"), renderer.getSchedulerState().hasScheduledRender]).toEqual([true, false])
+  // The frame prints the unfinished row and what its listener changed, and needs no other.
+  const printed = ["ab二", "NEW"].map((text) => stdout.text().includes(text))
+  expect([...printed, renderer.getSchedulerState().hasScheduledRender]).toEqual([true, true, false])
   stdout.write("\nab二")
+  renderer.once(CliRenderEvents.EXTERNAL_OUTPUT, () => stdout.write("cd"))
   let tailColumn = -1
   renderer.writeToScrollback(({ renderContext, tailColumn: tail }) => {
     tailColumn = tail
     return { root: new TextRenderable(renderContext, { content: "x", width: 1, height: 1 }) }
   })
-  expect(tailColumn).toBe(4)
+  expect(tailColumn).toBe(6)
+})
+
+// A held row is at most 8 code units a cell (72 at 9 columns); a longer one goes to the queue at once.
+test("captured stdout holds no more than 8 code units a cell", async () => {
+  const { renderer, stdout } = await setupTerminal({ columns: 9 })
+  const cells: number[] = []
+  renderer.on(CliRenderEvents.EXTERNAL_OUTPUT, ({ rowColumns }) => cells.push(rowColumns))
+  stdout.write("e" + "\u0301".repeat(71))
+  expect(cells).toEqual([])
+  stdout.write("\u0301")
+  expect(cells).toEqual([1])
+})
+
+// A resize waits for an unfinished stdout row as it waits for queued rows.
+test("a resize waits for an unfinished captured stdout row", async () => {
+  const { renderer, stdout, drainUntil } = await setupTerminal()
+  stdout.write("held")
+  renderer.resize(30, 12)
+  expect(renderer.width).toBe(40)
+  await drainUntil("held")
+})
+
+// A write after a frame has presented waits for the next frame, which a later mark can still join.
+test("captured stdout written as a frame ends joins a combining mark before the next frame", async () => {
+  const { renderer, stdout, frame } = await setupTerminal()
+  renderer.once(CliRenderEvents.FRAME, () => stdout.write("xe"))
+  await frame()
+  stdout.write("\u0301y\n")
+  await frame()
+  expect(stdout.text()).toContain("xe\u0301y")
 })
 
 test("captured stdout that fails mid-write queues and leaks none of its rows", async () => {
