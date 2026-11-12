@@ -260,8 +260,6 @@ pub const Parser = struct {
         self.subject = subject;
         self.final = final;
         if (final) {
-            // Expired openers show literal from here.
-            if (self.expired_from != std.math.maxInt(u32)) self.markChanged(self.expired_from);
             self.limit = @intCast(subject.len);
         } else {
             self.updateLimit(previous_len);
@@ -279,6 +277,8 @@ pub const Parser = struct {
             assert(self.position > before);
         }
         if (!final) return;
+        // Expired openers show literal from here, those this feed expired too.
+        if (self.expired_from != std.math.maxInt(u32)) self.markChanged(self.expired_from);
         // Brackets still open are literal; closers they held back resolve now; openers left are
         // literal.
         self.brackets.clearRetainingCapacity();

@@ -1108,6 +1108,10 @@ const Families = struct {
         var f: Fixture = undefined;
         try f.init(options);
         defer f.deinit();
+        // Node writes on, so their run work counts.
+        var sink: markdown.TailSink = .{ .allocator = gpa };
+        defer sink.deinit();
+        f.doc.tail_sink = &sink;
         var fed: Fed = .{};
         var step_arena = std.heap.ArenaAllocator.init(gpa);
         defer step_arena.deinit();
@@ -1137,6 +1141,7 @@ const Families = struct {
                 },
             }
             if (try genericProperties(step_arena.allocator(), &f.doc, fed, options, true)) |property| return .{ .property = property, .step = step };
+            if (sink.mismatch_count > 0) return .{ .property = "every node shows read_leaf (P5)", .step = step };
             if (command == .math or command == .filter) math_once = .{};
             if (!math_once.check(&f.doc)) return .{ .property = "(c) a math block never reverts to text", .step = step };
         }
@@ -2158,6 +2163,15 @@ test "Markdown stream: a leaf that changes kind or loses lines keeps its live di
     }
     for ([_][]const u8{ "www.a&mp;b\n", "www.a.b de&mp; \n", "x https://a\\.b y\n" }) |text| {
         for ([_]usize{ 1, 3 }) |width| try std.testing.expect(try streamAgreesParts(arena, "kinds", try split(arena, text, width)));
+    }
+    // M2's F2-c: an opener that the token limit makes literal in the finishing feed (its last
+    // word is tokenized only then) is written literal, not left concealed on the node.
+    for (2040..2052) |n| {
+        var text: std.ArrayListUnmanaged(u8) = .empty;
+        try text.appendSlice(arena, "**open ");
+        for (0..n) |_| try text.appendSlice(arena, "`c` ");
+        for (0..12) |_| try text.appendSlice(arena, "&amp;");
+        try std.testing.expect(try streamAgreesParts(arena, "kinds", try split(arena, text.items, 30)));
     }
     // One title scanner for definitions and inline links: a parenthesized title cannot hold an
     // unescaped `(` (cmark-gfm: both stay text).
