@@ -327,6 +327,8 @@ interface Shown {
   marker?: TextRenderable
   /** The parser output last written by the host to a paragraph or heading, so an unchanged one is not written again. */
   written?: string
+  /** Whether the doc has the paragraph's or heading's node bound. */
+  bound?: boolean
   /** A table cell's content as its table shows it, kept until the cell changes. */
   cell?: TextChunk[]
   targets?: Targets
@@ -484,6 +486,8 @@ export class MarkdownRenderable extends Renderable {
     if (this._conceal !== value) {
       this._conceal = value
       this.changeOptions()
+      // The hook sees conceal, so it runs again where the parser's output did not change.
+      this.rerunInlineHook(() => true)
       this.markStyleDirty()
     }
   }
@@ -676,6 +680,7 @@ export class MarkdownRenderable extends Renderable {
     if (!force && flags === this._flags) return
     this._flags = flags
     this.change(() => this._doc.setOptions(this.engineOptions()))
+    this.syncLeaves()
   }
 
   private change(run: () => MarkdownChanges): void {
@@ -700,6 +705,29 @@ export class MarkdownRenderable extends Renderable {
     const a = before.subarray(old.sourceStart, old.sourceEnd)
     const b = this._sourceBytes.subarray(block.sourceStart, block.sourceEnd)
     return a.length === b.length && a.every((byte, at) => byte === b[at])
+  }
+
+  /** Binds a paragraph's or heading's node, which hands it to the doc. */
+  private bind(index: number, text: TextRenderable): void {
+    this._doc.bind(index, this.ctx.nativeScene.textNode(text))
+    const shown = this._shown[index]
+    if (shown) {
+      shown.bound = true
+      shown.written = shown.targets = undefined
+    }
+  }
+
+  /**
+   * After an option change, each paragraph and heading goes to the writer the options now give it: the doc does not
+   * list a leaf whose output did not change, so the host hands it over or takes it back here.
+   */
+  private syncLeaves(): void {
+    this._shown.forEach((shown, index) => {
+      const block = this._doc.blocks[index]!
+      if (!isProse(block.kind) || this.isHidden(index) || !(shown.default instanceof TextRenderable)) return
+      if (this.hostWrites(block)) this.writeProse(index, false)
+      else if (!shown.bound || shown.written !== undefined) this.bind(index, shown.default)
+    })
   }
 
   /** Whether the host writes a paragraph or heading: the doc writes only concealed, linked, unhooked text. */
@@ -737,8 +765,9 @@ export class MarkdownRenderable extends Renderable {
         this._shown.push({ ...old, record: block, written: undefined, targets: undefined })
         this.parentOf(index).add(old.renderable)
         old.renderable = undefined
+        this._shown[index]!.bound = false
         if (old.default instanceof TextRenderable && isProse(block.kind) && !this.hostWrites(block)) {
-          this._doc.bind(index, this.ctx.nativeScene.textNode(old.default))
+          this.bind(index, old.default)
         }
         this.afterChange(index, refresh)
         return
@@ -749,9 +778,7 @@ export class MarkdownRenderable extends Renderable {
       if (reuse) old!.renderable = undefined
       if (!this.isHidden(index)) this.show(index, undefined)
       // The doc unbound the removed block's node.
-      if (reuse instanceof TextRenderable && !this.hostWrites(block)) {
-        this._doc.bind(index, this.ctx.nativeScene.textNode(reuse))
-      }
+      if (reuse instanceof TextRenderable && isProse(block.kind) && !this.hostWrites(block)) this.bind(index, reuse)
     } else {
       // A kind change at the same index rebuilds, except that a paragraph that becomes a setext heading keeps its text.
       const rebuild = shown.kind !== block.kind && !(isProse(shown.kind) && isProse(block.kind))
@@ -884,7 +911,10 @@ export class MarkdownRenderable extends Renderable {
         if (current instanceof TextRenderable) return current
         const text = new TextRenderable(this.ctx, { id, flexShrink: 0, wrapMode: "word" })
         this.styleText(index, text)
-        if (isProse(block.kind) && !this.hostWrites(block)) this._doc.bind(index, this.ctx.nativeScene.textNode(text))
+        if (isProse(block.kind) && !this.hostWrites(block)) {
+          this._doc.bind(index, this.ctx.nativeScene.textNode(text))
+          shown.bound = true
+        }
         return text
       }
       case md.OT_MD_CODE: {
@@ -996,9 +1026,7 @@ export class MarkdownRenderable extends Renderable {
       this.writeProse(index, false)
     } else if (shown.written !== undefined) {
       // The doc writes the text again: hand the node back, so it never writes over the host's text.
-      shown.written = undefined
-      shown.targets = undefined
-      this._doc.bind(index, this.ctx.nativeScene.textNode(shown.default))
+      this.bind(index, shown.default)
     }
   }
 

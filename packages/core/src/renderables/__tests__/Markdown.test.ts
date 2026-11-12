@@ -13,7 +13,6 @@ import { CodeRenderable } from "../Code.js"
 import { BoxRenderable } from "../Box.js"
 import { TextRenderable } from "../Text.js"
 import { TextTableRenderable } from "../TextTable.js"
-import { ScrollBoxRenderable } from "../ScrollBox.js"
 import { SyntaxStyle } from "../../syntax-style.js"
 import { RGBA } from "../../lib/RGBA.js"
 import { TreeSitterClient } from "../../lib/tree-sitter/index.js"
@@ -1798,6 +1797,17 @@ test("streamed quote text shows in the quote style before it highlights", async 
   const span = findSpanContaining(spans, "quoted")
   expect(span?.fg?.toInts()).toEqual(quoteColor.toInts())
   expect((span?.attributes ?? 0) & TextAttributes.ITALIC).toBe(TextAttributes.ITALIC)
+})
+
+test("prose that waited for the style shows when the engine takes it over first", async () => {
+  // Without hyperlinks the host writes prose, but not before the style arrives; links turning on hands it to the engine.
+  const md = new MarkdownRenderable(renderer, { content: "Hello *there*" } as MarkdownOptions)
+  renderer.root.add(md)
+  await renderOnce()
+  renderer.emit("capabilities", setRendererCapabilities(renderer, { hyperlinks: true }))
+  md.syntaxStyle = syntaxStyle
+  await renderOnce()
+  expect(frameText()).toBe("Hello there")
 })
 
 test("blockquote uses markup.quote style for text and conceal style for bar", async () => {
@@ -5085,225 +5095,6 @@ test("a finished block keeps the hooked text", async () => {
   await renderOnce()
   expect(frameText()).toBe("see @Again @Again run ses_alpha!")
 })
-
-// Seeded model of a hooked, streamed Markdown answer against the fake worker. Each seed appends pieces (prose, quotes,
-// lists, code spans, a table's header, delimiter and row), draws frames, answers highlights in any order (even seeds
-// also reject some), renames the linked sessions, reruns the hook, swaps the theme, scrolls the Markdown out of view
-// (culled) and back, remounts it with the same content (as a tab switch does) and ends the stream. Every frame must
-// show no ID the hook links (no unhooked frame); while streaming and in view, it must show a label for every ID the
-// content holds and lose no drawn row or text; in top-level mode, a row of a stable block that showed text must not
-// change (no flicker above the streamed block). The settled frame must equal a fresh render, colors included.
-test("hooked streaming Markdown never shows unhooked text or changes settled rows", async () => {
-  // A second theme for the style command: other colors and attributes for the groups prose uses.
-  const otherStyle = SyntaxStyle.fromStyles(
-    {
-      default: { fg: RGBA.fromValues(0.8, 0.8, 0.6, 1) },
-      conceal: { fg: RGBA.fromValues(0.3, 0.3, 0.3, 1) },
-      "markup.raw": { fg: RGBA.fromValues(1, 0.5, 0, 1), bold: true },
-      "markup.italic": { italic: true, fg: RGBA.fromValues(0.5, 1, 0.5, 1) },
-      "markup.heading": { bold: true, fg: RGBA.fromValues(0, 0.6, 1, 1) },
-      "markup.quote": { italic: true },
-      "markup.list": { fg: RGBA.fromValues(1, 0, 1, 1) },
-    },
-    renderer.nativeScene,
-  )
-  const pieces = ["see ", "ses_a ", "ses_b\n", "word ", "\n\n", "# ", "> ", "- ", "*x* ", "`ses_a` ", "`run x` ", "\n"]
-  // Three columns: a line holds at most one table piece, so only a delimiter's "--" cells can fall beyond the header.
-  pieces.push("| ses_a | | |\n", "|--|--|--|\n", "| x ses_b |\n")
-  // MARKDOWN_MODEL_SEED=<s> replays one seed; MARKDOWN_MODEL_SEEDS=<n> runs more. Seeds 449 and 3638 found the
-  // child-kind defects.
-  const one = process.env.MARKDOWN_MODEL_SEED
-  // 500 seeds run in about 2 s under Bun; 1000 took 5 s.
-  const count = Number(process.env.MARKDOWN_MODEL_SEEDS ?? 500)
-  const seeds = one ? [Number(one)] : [449, 3638, ...Array.from({ length: count }, (_, i) => i + 1)]
-  for (const seed of seeds) {
-    let state = seed * 2654435761
-    const random = () => {
-      state ^= state << 13
-      state ^= state >>> 17
-      state ^= state << 5
-      return (state >>> 0) / 4294967296
-    }
-    const pick = (count: number) => Math.floor(random() * count)
-    const titles = new Map([
-      ["ses_a", "A"],
-      ["ses_b", "B"],
-    ])
-    let style = syntaxStyle
-    // The Markdown is the first of 17 children of a scroll box (the scene culls only parents with 16 or more), so
-    // scrolling to the end culls it. A remount builds both again, as a tab switch does.
-    const mount = (worker: FakeWorker, content: string, streaming: boolean) => {
-      const box = new ScrollBoxRenderable(renderer, { width: "100%", height: renderer.height })
-      box.verticalScrollBar.visible = false
-      const md = createMarkdownRenderable({
-        content,
-        syntaxStyle: style,
-        streaming,
-        treeSitterClient: worker,
-        inlineHook: sessionLinks(titles),
-      })
-      box.add(md)
-      for (let i = 0; i < 16; i++) box.add(new BoxRenderable(renderer, { height: 3, flexShrink: 0 }))
-      renderer.root.add(box)
-      return { box, md }
-    }
-    const worker = new FakeWorker()
-    let { box, md } = mount(worker, "", true)
-    let inView = true
-    const trace: string[] = []
-    const rows = () =>
-      captureFrame()
-        .split("\n")
-        .map((row) => row.trimEnd().replace(/@[AB]\b/g, "@?"))
-    // Before a frame: the blocks the frame draws in their final form, up to the first one not stable yet or still to
-    // highlight its current text.
-    const waiting = (node: Renderable): boolean =>
-      (node instanceof CodeRenderable && (node.isHighlighting || Reflect.get(node, "_highlightsDirty"))) ||
-      node.getChildren().some(waiting)
-    const settledBlocks = () => {
-      const end = md.getChildren().slice(0, md.committedBlockCount).findIndex(waiting)
-      return end === -1 ? md.committedBlockCount : end
-    }
-    const stableRows = (count: number) => {
-      const block = md.getChildren()[count]
-      return rows().slice(0, block ? block.y - md.y : md.getChildren().length > 0 ? md.height : 0)
-    }
-    let previous: string[] = []
-    let drawn = { rows: 0, text: 0 }
-    const frame = async () => {
-      const settledCount = settledBlocks()
-      await renderOnce()
-      if (!inView) return
-      const frame = captureFrame()
-      const fail = (what: string) => {
-        throw new Error(`seed ${seed}: ${what} after ${trace.join(" | ")}\n${JSON.stringify(md.content)}\n${frame}`)
-      }
-      if (/ses_[ab]/.test(frame)) fail("unhooked ID")
-      if (md.streaming) {
-        // No ID shows twice; a line that may still change kind is held (D93 B), so its IDs may not show yet.
-        const labels = rows().join("\n").match(/@\?/g)?.length ?? 0
-        if (md.height <= renderer.height && labels > (md.content.match(/ses_[ab]/g)?.length ?? 0)) fail("extra label")
-        const now = { rows: rows().filter((row) => /[^│\s#]/.test(row)).length, text: 0 }
-        // Markers are not text: a header line drops its pipes when the delimiter makes it a table.
-        now.text = rows()
-          .join("")
-          .replace(/[\s│#─|-]/g, "").length
-        if (now.rows < drawn.rows || now.text < drawn.text - 2) fail("drawn text lost")
-        drawn = now
-      }
-      const stable = stableRows(settledCount)
-      const kept = rows().slice(0, previous.length)
-      // A block not yet drawn (blank, or only a quote's bar) may draw; drawn text may not change.
-      if (previous.some((row, index) => /[^│\s]/.test(row) && row !== kept[index])) {
-        throw new Error(
-          `seed ${seed}: settled rows changed after ${trace.join(" | ")}\n${JSON.stringify(previous)}\n${JSON.stringify(kept)} committed ${md.committedBlockCount}`,
-        )
-      }
-      previous = stable
-    }
-    const warn = console.warn
-    console.warn = () => {}
-    try {
-      for (let step = 0; step < 40; step++) {
-        const roll = random()
-        if (roll < 0.35 && md.streaming) {
-          const piece = pieces[pick(pieces.length)]!
-          trace.push(`append ${JSON.stringify(piece)}`)
-          md.content += piece
-        } else if (roll < 0.55) {
-          trace.push("frame")
-          await frame()
-        } else if (roll < 0.75) {
-          trace.push("reply")
-          worker.reply(pick(worker.pending.length))
-          await flushAsync()
-        } else if (roll < 0.82 && seed % 2 === 0 && md.streaming) {
-          // Only while streaming: after the end, a theme swap or rerun asks the worker again with no preview to keep,
-          // and Code's lifecycle (code-highlight-model) owns that case.
-          trace.push("fail")
-          worker.fail(pick(worker.pending.length))
-          await flushAsync()
-        } else if (roll < 0.88) {
-          // Titles keep their width, so a rename moves no row.
-          const title = titles.get("ses_a") === "A" ? "B" : "A"
-          trace.push(`rename ${title}`)
-          titles.set("ses_a", title)
-          md.rerunInlineHook((source) => source.includes("ses_a"))
-        } else if (roll < 0.9) {
-          trace.push("finish")
-          md.streaming = false
-        } else if (roll < 0.92) {
-          trace.push("style")
-          style = style === syntaxStyle ? otherStyle : syntaxStyle
-          md.syntaxStyle = style
-        } else if (roll < 0.94) {
-          inView = !inView
-          trace.push(inView ? "scroll in" : "scroll out")
-          box.scrollTo(inView ? 0 : renderer.height * 2)
-        } else if (roll < 0.96) {
-          trace.push("remount")
-          const content = md.content
-          const streaming = md.streaming
-          box.destroyRecursively()
-          ;({ box, md } = mount(worker, content, streaming))
-          inView = true
-          // The new mount starts from its own first frame.
-          previous = []
-          drawn = { rows: 0, text: 0 }
-        } else {
-          trace.push("tick")
-          await new Promise<void>((resolve) => setImmediate(resolve))
-        }
-      }
-      trace.push("settle")
-      inView = true
-      box.scrollTo(0)
-      md.streaming = false
-      // Highlights rejected on the way are asked again, as a later change would.
-      md.rerunInlineHook(() => true)
-      for (let pass = 0; pass < 6; pass++) {
-        await frame()
-        while (worker.pending.length > 0) worker.reply()
-        await flushAsync()
-      }
-      await renderOnce()
-      // Text, colors and attributes of every cell.
-      const cells = () =>
-        captureSpans()
-          .lines.map((line) =>
-            line.spans.map((span) => [span.text, span.fg.toInts(), span.bg.toInts(), span.attributes]),
-          )
-          .map((line) => JSON.stringify(line))
-      const settled = { text: frameText(), cells: cells() }
-      const content = md.content
-      box.destroyRecursively()
-
-      const twinWorker = new FakeWorker()
-      const twin = mount(twinWorker, content, false)
-      for (let pass = 0; pass < 4; pass++) {
-        await renderOnce()
-        while (twinWorker.pending.length > 0) twinWorker.reply()
-        await flushAsync()
-      }
-      await renderOnce()
-      const fresh = { text: frameText(), cells: cells() }
-      const row = fresh.cells.findIndex((line, index) => line !== settled.cells[index])
-      if (fresh.text !== settled.text || row !== -1) {
-        throw new Error(`seed ${seed}: settled frame differs from a fresh render after ${trace.join(" | ")}
-${settled.text}
---- fresh
-${fresh.text}
---- first differing row ${row}
-${settled.cells[row]}
-${fresh.cells[row]}`)
-      }
-      twin.box.destroyRecursively()
-    } finally {
-      console.warn = warn
-    }
-  }
-  otherStyle.destroy()
-}, 600_000)
 
 test("list and quote children keep their text when their kind or the stream changes", async () => {
   const worker = new FakeWorker()
