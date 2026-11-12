@@ -812,3 +812,19 @@ test "Markdown ABI: tear's D2 rows close a setext leaf in host-written modes" {
         }
     }
 }
+
+test "Markdown ABI: a pending fence opener's info string grows with its line, listed" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // The seeded test's seed 965: in an item, the pending line's layout grew without its info.
+    for ([_][]const []const u8{ &.{ "```", " ab" }, &.{ " 1. [x] ", "```", " ab" }, &.{ "- ", "```", " ab" } }) |parts| {
+        var f = try Fixture.init(live_flags);
+        defer f.deinit();
+        var mirror: Mirror = .{};
+        for (parts) |piece| {
+            _ = try mirror.update(&f, arena, try f.append(piece));
+            try std.testing.expect(try mirror.matchesFresh(&f, arena, .{ .flags = live_flags }, false));
+        }
+    }
+}
