@@ -24,6 +24,14 @@ export interface ExtmarkOptions {
   metadata?: any
 }
 
+const viewCursorWrites = [
+  "setViewport",
+  "setLocalSelection",
+  "updateLocalSelection",
+  "resetLocalSelection",
+  "setCursorByOffset",
+] as const
+
 /**
  * WARNING: This is simulating extmarks in the edit buffer
  * and will move to a real native implementation in the future.
@@ -90,6 +98,7 @@ export class ExtmarksController {
     this.originalRedo = editBuffer.redo.bind(editBuffer)
 
     this.wrapCursorMovement()
+    this.wrapViewCursorWrites()
     this.wrapDeletion()
     this.wrapInsertion()
     this.wrapEditorViewDeleteSelectedText()
@@ -228,15 +237,36 @@ export class ExtmarksController {
       this.moveBefore(extmark)
       if (this.editBuffer.getCursorPosition().offset > from) return
     }
-    this.moveAfter(extmark.end)
+    this.originalSetCursorByOffset(extmark.end)
+    this.keepCursorOutside(-1)
   }
 
-  // An end inside a later virtual extmark that overlaps the one moved over goes on to that mark's end.
-  private moveAfter(end: number): void {
-    for (const extmark of this.extmarks.values()) {
-      if (extmark.virtual && extmark.start < end && end < extmark.end) return this.moveAfter(extmark.end)
+  // A wheel step, a mouse selection, a cleared selection and the view's offset setter move the cursor without the
+  // moves above. Each is followed by the rule below. A pointer puts the cursor on its cell, so the selections go to
+  // the nearer edge, not the one they moved toward.
+  private wrapViewCursorWrites(): void {
+    const view = this.editorView as any
+    for (const name of viewCursorWrites) {
+      const original = view[name]
+      view[name] = (...args: unknown[]) => {
+        const from = this.editBuffer.getCursorPosition().offset
+        const result = original.apply(view, args)
+        this.keepCursorOutside(name.endsWith("Selection") ? this.editBuffer.getCursorPosition().offset : from)
+        return result
+      }
     }
-    this.originalSetCursorByOffset(end)
+  }
+
+  // A cursor inside virtual extmarks goes to the edge it moved toward from `from`, or the nearer one, past every mark
+  // that overlaps it, as the Rust editor's. Not while a selection is left: it holds the cursor at its focus.
+  private keepCursorOutside(from: number): void {
+    if (this.editorView.hasSelection()) return
+    const offset = this.editBuffer.getCursorPosition().offset
+    const extmark = [...this.extmarks.values()].find((m) => m.virtual && m.start < offset && offset < m.end)
+    if (!extmark) return
+    const toEnd = offset === from ? extmark.end - offset <= offset - extmark.start : offset > from
+    this.originalSetCursorByOffset(toEnd ? extmark.end : extmark.start)
+    this.keepCursorOutside(toEnd ? -1 : Infinity)
   }
 
   private wrapDeletion(): void {
@@ -799,6 +829,7 @@ export class ExtmarksController {
     this.editorView._replaceSelectedText = this.originalEditorViewReplaceSelectedText
     this.editBuffer.undo = this.originalUndo
     this.editBuffer.redo = this.originalRedo
+    for (const name of viewCursorWrites) delete (this.editorView as any)[name]
 
     this.extmarks.clear()
     this.extmarksByTypeId.clear()

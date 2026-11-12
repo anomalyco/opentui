@@ -329,6 +329,56 @@ describe("ExtmarksController", () => {
     })
   })
 
+  describe("Virtual Extmark - Mouse, Wheel and Offset Setter", () => {
+    // One row, so the wheel scrolls; then a selection left is cleared. Marks in both orders where they overlap. A pointer
+    // leaves the cursor at the nearer edge; the wheel and the setter at the one they moved toward, as the Rust editor's.
+    for (const [text, marks, from, gesture, to] of [
+      ["x @file y", "2..7", 9, "click 2", 2],
+      ["x @file y", "2..7", 9, "click 3", 2],
+      ["x @file y", "2..7", 9, "click 5", 7],
+      ["x @file y", "2..7", 9, "double-click 4", 2],
+      ["x @file y", "2..7", 9, "drag 0 4", 2],
+      ["x @file y", "2..7", 9, "drag 8 6", 7],
+      ["x @file y", "2..7", 9, "drag 3 5 3", 2],
+      ["x @file y", "2..7", 9, "drag 0 4, right", 7],
+      ["b ca", "0..3 0..4", 4, "click 2", 4],
+      ["b ca", "0..4 0..3", 4, "click 2", 4],
+      ["b ca", "0..3 0..4", 0, "offset 2", 4],
+      ["b ca", "0..4 0..3", 4, "offset 2", 0],
+      ["ab\n@file\nc", "3..8", 2, "wheel down", 8],
+      ["ab\n@file\nc", "3..8", 10, "wheel up", 3],
+    ] as const) {
+      it(`${gesture} from ${from} in ${JSON.stringify(text)} with ${marks} → ${to}`, async () => {
+        const result = await createTestRenderer({ width: 12, height: 2 })
+        currentRenderer = result.renderer
+        textarea = new TextareaRenderable(currentRenderer, { width: 12, height: 1, initialValue: text })
+        currentRenderer.root.add(textarea)
+        textarea.focus()
+        extmarks = textarea.extmarks
+        for (const [start, end] of marks.split(" ").map((mark) => mark.split("..").map(Number))) {
+          extmarks.create({ start, end, virtual: true })
+        }
+        textarea.cursorOffset = from
+        await result.renderOnce()
+        const [kind, a, b, c] = gesture.split(/[ ,]+/)
+        const mouse = result.mockMouse
+        if (kind === "click") await mouse.click(Number(a), 0)
+        else if (kind === "double-click") await mouse.doubleClick(Number(a), 0)
+        else if (kind === "drag" && Number(c) >= 0) {
+          await mouse.pressDown(Number(a), 0)
+          await mouse.moveTo(Number(b), 0)
+          await mouse.moveTo(Number(c), 0)
+          await mouse.release(Number(c), 0)
+        } else if (kind === "drag") await mouse.drag(Number(a), 0, Number(b), 0)
+        else if (kind === "offset") textarea.cursorOffset = Number(a)
+        else await mouse.scroll(0, 0, a as "up" | "down")
+        if (gesture.endsWith("right")) result.mockInput.pressArrow("right")
+        if (textarea.hasSelection()) textarea.clearSelection()
+        expect(textarea.cursorOffset).toBe(to)
+      })
+    }
+  })
+
   describe("Virtual Extmark - Backspace Deletion", () => {
     it("should delete entire virtual extmark on backspace at end", async () => {
       await setup("abc[LINK]def")
