@@ -30,7 +30,8 @@ const Fixture = struct {
             .{ "markup.strong", 1, .{ 9, 0, 0, 255 } },    .{ "markup.italic", 4, .{ 0, 0, 0, 0 } },
             .{ "markup.raw", 0, .{ 0, 9, 0, 255 } },       .{ "markup.link.label", 8, .{ 0, 0, 9, 255 } },
             .{ "markup.heading.1", 1, .{ 7, 7, 0, 255 } }, .{ "markup.strikethrough", 128, .{ 0, 0, 0, 0 } },
-            .{ "string.escape", 0, .{ 5, 5, 5, 255 } },
+            .{ "string.escape", 0, .{ 5, 5, 5, 255 } },    .{ "markup.link", 0, .{ 6, 0, 0, 255 } },
+            .{ "markup.link.url", 0, .{ 3, 3, 3, 255 } },
         }) |entry| try self.register(entry[0], entry[1], entry[2]);
         var options = optionsWith(flags, self.style);
         try expectOk(md.ot_markdown_create(context, &options, &self.doc));
@@ -244,6 +245,23 @@ test "Markdown ABI: host-written modes, URL suffixes and source display" {
         var count: u32 = 0;
         try expectOk(abi.ot_scene_get_text(f.context, &node, &shown, shown.len, &count));
         try std.testing.expectEqualStrings(if (row[0] == live_flags) row[2] else "", shown[0..count]);
+    }
+    // A link's parts take Core's names: `markup.link` around the label and `markup.link.url`.
+    const parts = [_]struct { u32, []const u8, []const u16 }{
+        .{ c.OT_MD_CONCEAL, "[c](https://u.test)", &.{ 9, 6, 3, 6 } },
+        .{ 0, "[c](https://u.test) <https://v.test>", &.{ 6, 9, 6, 3, 6, 0, 6, 9, 6 } },
+    };
+    for (parts) |part| {
+        var f = try Fixture.init(part[0]);
+        defer f.deinit();
+        _ = try f.append(part[1]);
+        var result: c.ot_markdown_result = undefined;
+        try expectOk(md.ot_markdown_finish(f.context, &f.doc, &result));
+        _ = try f.changes(arena);
+        const leaf = try f.readLeaf(arena, 0);
+        const colors = try arena.alloc(u16, leaf.chunks.len);
+        for (leaf.chunks, colors) |chunk, *color| color.* = chunk.foreground[0] | chunk.foreground[2];
+        try std.testing.expectEqualSlices(u16, part[2], colors);
     }
 }
 

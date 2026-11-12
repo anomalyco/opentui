@@ -3647,7 +3647,11 @@ pub const Scope = packed struct(u16) {
     link: bool = false,
     math: bool = false,
     escape: bool = false,
-    _unused: u6 = 0,
+    /// A link's brackets and parentheses: `markup.link` without `markup.link.label`.
+    link_gap: bool = false,
+    /// A link's URL as text: `markup.link.url`.
+    link_url: bool = false,
+    _unused: u4 = 0,
 };
 
 /// Span flags per chunk (design: OT_MD_SPAN_CODE, OT_MD_SPAN_MATH).
@@ -3741,6 +3745,18 @@ const LeafWriter = struct {
         if (at < end) try self.write(r.content[at..end], .{});
     }
 
+    /// Writes a link's brackets and parentheses (`gap`) or its URL as text, styled as Core
+    /// styles them.
+    fn linkPart(self: *LeafWriter, bytes: []const u8, part: enum { gap, url }) Error!void {
+        const saved = self.base;
+        defer self.base = saved;
+        switch (part) {
+            .gap => self.base.link_gap = true,
+            .url => self.base.link_url = true,
+        }
+        return self.write(bytes, .{});
+    }
+
     fn url(self: *LeafWriter, prefix: []const u8, target: []const u8) Error![2]u32 {
         const offset: u32 = @intCast(self.leaf.urls.items.len);
         try self.leaf.urls.appendSlice(self.arena, prefix);
@@ -3815,17 +3831,24 @@ const TokenStyler = struct {
                 self.label_url = destination;
                 self.image = link.image;
                 self.sync();
-                if (!self.conceal) try w.write(raw, .{});
+                if (!self.conceal) try w.linkPart(raw, .gap);
             },
             .bracket_close => {
                 if (t.aux == 0) return w.write(raw[0..1], .{});
-                if (!self.conceal) try w.write(raw, .{});
+                if (!self.conceal) {
+                    // An inline link's destination (and title) between `](` and `)`.
+                    if (raw.len >= 3 and std.mem.startsWith(u8, raw, "](") and raw[raw.len - 1] == ')') {
+                        try w.linkPart(raw[0..2], .gap);
+                        try w.linkPart(raw[2 .. raw.len - 1], .url);
+                        try w.linkPart(raw[raw.len - 1 ..], .gap);
+                    } else try w.linkPart(raw, .gap);
+                }
                 // Without hyperlinks a label that is not its URL shows where the link goes.
                 if (self.conceal and !self.hyperlinks and !self.image and !std.mem.eql(u8, w.leaf.bytes.items[self.label_start..], self.label_url)) {
                     assert(!w.count_only);
-                    try w.write(" (", .{});
-                    try w.write(self.label_url, .{});
-                    try w.write(")", .{});
+                    try w.linkPart(" (", .gap);
+                    try w.linkPart(self.label_url, .url);
+                    try w.linkPart(")", .gap);
                 }
                 self.styles.link = null;
             },
@@ -3833,7 +3856,10 @@ const TokenStyler = struct {
                 const target = if (t.kind == .extended_autolink) raw else raw[1 .. raw.len - 1];
                 const prefix: []const u8 = if (t.kind == .autolink_email) "mailto:" else if (t.kind == .extended_autolink and t.aux == @backingInt(inline_parser.ExtendedKind.www)) "http://" else "";
                 w.link = try w.url(prefix, target);
-                try w.write(if (self.conceal) target else raw, .{});
+                const angled = !self.conceal and t.kind != .extended_autolink;
+                if (angled) try w.linkPart(raw[0..1], .gap);
+                try w.write(target, .{});
+                if (angled) try w.linkPart(raw[raw.len - 1 ..], .gap);
             },
             .code => {
                 w.base.raw = true;

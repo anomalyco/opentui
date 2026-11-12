@@ -478,11 +478,13 @@ pub const MarkdownDoc = struct {
             names[count] = headings[@min(scope.heading_level, 6) - 1];
             count += 1;
         }
+        const label = scope.link and !scope.link_gap and !scope.link_url;
         inline for (.{
             .{ scope.strong, "markup.strong" },               .{ scope.italic, "markup.italic" },
-            .{ scope.strikethrough, "markup.strikethrough" }, .{ scope.link, "markup.link" },
-            .{ scope.link, "markup.link.label" },             .{ scope.raw, "markup.raw" },
-            .{ scope.math, "markup.math" },                   .{ scope.escape, "string.escape" },
+            .{ scope.strikethrough, "markup.strikethrough" }, .{ (scope.link or scope.link_gap) and !scope.link_url, "markup.link" },
+            .{ label, "markup.link.label" },                  .{ scope.link_url, "markup.link.url" },
+            .{ scope.raw, "markup.raw" },                     .{ scope.math, "markup.math" },
+            .{ scope.escape, "string.escape" },
         }) |entry| {
             if (entry[0]) {
                 names[count] = entry[1];
