@@ -1127,8 +1127,9 @@ ot_status ot_scene_get_text_byte_at(ot_context *, const ot_handle *node, int32_t
  * paints it, reads its latest solved geometry composed with current translations and
  * offsets; zeros if Yoga has not laid it out since it was created or moved. While a host
  * request is pending, such a node's first read holds. OT_LAYOUT_CONTENT is PAINT without a
- * text node's padding, in whole cells rounded down: the cells its text view fills, which
- * paint, wrapping, text byte hits, selection and body draws use. Other nodes read PAINT.
+ * text node's padding, its content edges rounded as Yoga rounds the node's own edges (no
+ * padding reads the box): the cells its text view fills, which paint, wrapping, text byte
+ * hits, selection and body draws use. Other nodes read PAINT.
  * These reads do not run layout. Other selectors reject without changing output.
  * A scroll node's children report YOGA values local to its content node, and their
  * screen_x/y compose through the viewport and content origins and the offset. */
