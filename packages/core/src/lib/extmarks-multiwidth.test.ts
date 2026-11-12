@@ -302,14 +302,16 @@ describe("ExtmarksController - Multi-width Graphemes", () => {
     })
 
     // Left or a word left from a virtual extmark's end, and Up or Down into it nearer its start, go to the start of
-    // the character before it, not into the second cell of a wide one. Halfway goes to the end.
-    for (const char of ["a", "日", "👍", "\t"]) {
+    // the character before it, not into the second cell of a wide one; with none, to the end of the line above.
+    // Halfway or nearer the end goes to the end.
+    for (const char of ["a", "日", "👍", "\t", ""]) {
       for (const [move, row, col, to] of [
         ["left", 1, 8, 0],
         ["word", 1, 8, 0],
         ["down", 0, 1, 0],
         ["up", 2, 1, 0],
         ["down", 0, 4, 8],
+        ["down", 0, 6, 8],
       ] as const) {
         it(`${move} from column ${col} into a virtual extmark after ${JSON.stringify(char)}`, async () => {
           await setup(`0123456789\n${char}@main.rs\nxxxxxxxxxx`)
@@ -319,9 +321,45 @@ describe("ExtmarksController - Multi-width Graphemes", () => {
           textarea.editBuffer.setCursor(row, width + col)
           if (move === "word") textarea.moveWordBackward()
           else currentMockInput.pressArrow(move)
-          expect(textarea.editBuffer.getCursorPosition()).toMatchObject({ row: 1, col: to && width + to })
+          expect(textarea.editBuffer.getCursorPosition().offset).toBe(to ? 11 + width + to : width ? 11 : 10)
         })
       }
+    }
+
+    // In 6 columns the mark 2..15 wraps under `日`. Down from 0 lands in it nearer its start, and before it is where
+    // Down started, so it goes to the end: past a second mark that overlaps that end, not past one that starts there.
+    for (const [second, to] of [
+      [null, 15],
+      [{ start: 14, end: 19 }, 19],
+      [{ start: 15, end: 17 }, 15],
+    ] as const) {
+      it(`Down from before a wrapped virtual extmark goes to ${to} with ${JSON.stringify(second)}`, async () => {
+        await setup("日@mainrsxyzuvwABCDEFGH")
+        textarea.width = 6
+        await renderOnce()
+        extmarks.create({ start: 2, end: 15, virtual: true })
+        if (second) extmarks.create({ ...second, virtual: true })
+        textarea.focus()
+        textarea.editBuffer.setCursor(0, 0)
+        currentMockInput.pressArrow("down")
+        expect(textarea.editBuffer.getCursorPosition().offset).toBe(to)
+      })
+    }
+
+    // A selection skips the mark logic: the second Shift+Down or Shift+Up, which extends one, stops inside the mark.
+    for (const [key, from] of [
+      ["down", 3],
+      ["up", 26],
+    ] as const) {
+      it(`Shift+${key} twice from ${from} extends the selection into a virtual extmark`, async () => {
+        await setup("0123\nabcd\n日@file\nwxyz\n0123")
+        extmarks.create({ start: 12, end: 17, virtual: true })
+        textarea.focus()
+        textarea.editBuffer.setCursorByOffset(from)
+        currentMockInput.pressArrow(key, { shift: true })
+        currentMockInput.pressArrow(key, { shift: true })
+        expect(textarea.editBuffer.getCursorPosition()).toMatchObject({ row: 2, col: 3 })
+      })
     }
   })
 

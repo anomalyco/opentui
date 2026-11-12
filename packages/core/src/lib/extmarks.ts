@@ -228,7 +228,15 @@ export class ExtmarksController {
       this.moveBefore(extmark)
       if (this.editBuffer.getCursorPosition().offset > from) return
     }
-    this.originalSetCursorByOffset(extmark.end)
+    this.moveAfter(extmark.end)
+  }
+
+  // An end inside a later virtual extmark that overlaps the one moved over goes on to that mark's end.
+  private moveAfter(end: number): void {
+    for (const extmark of this.extmarks.values()) {
+      if (extmark.virtual && extmark.start < end && end < extmark.end) return this.moveAfter(extmark.end)
+    }
+    this.originalSetCursorByOffset(end)
   }
 
   private wrapDeletion(): void {
