@@ -196,9 +196,6 @@ pub const Parser = struct {
     /// The first opener a match since `takeChanged` took: the styles after it changed even
     /// where its display did not (an optimistic opener).
     matched_from: u32 = std.math.maxInt(u32),
-    /// The first bracket a link took since `takeChanged`: its tokens change style even where
-    /// their bytes do not (source mode).
-    linked_from: u32 = std.math.maxInt(u32),
     /// The first token whose delimiter expired (none: none did).
     expired_from: u32 = std.math.maxInt(u32),
     /// Bytes the tokenizer examined (counters; a construct retried after "need more" counts again).
@@ -331,7 +328,6 @@ pub const Parser = struct {
         self.changed_from = std.math.maxInt(u32);
         self.extended_from = std.math.maxInt(u32);
         self.matched_from = std.math.maxInt(u32);
-        self.linked_from = std.math.maxInt(u32);
         self.expired_from = std.math.maxInt(u32);
     }
 
@@ -355,17 +351,14 @@ pub const Parser = struct {
         extended: u32,
         /// The first opener a new match took (none: no match).
         matched: u32,
-        /// The first bracket a new link took (none: no link).
-        linked: u32,
     };
 
     /// What changed since the last call, and forgets it.
     pub fn takeChanged(self: *Parser) Changed {
-        const changed: Changed = .{ .token = self.changed_from, .extended = self.extended_from, .matched = self.matched_from, .linked = self.linked_from };
+        const changed: Changed = .{ .token = self.changed_from, .extended = self.extended_from, .matched = self.matched_from };
         self.changed_from = std.math.maxInt(u32);
         self.extended_from = std.math.maxInt(u32);
         self.matched_from = std.math.maxInt(u32);
-        self.linked_from = std.math.maxInt(u32);
         return changed;
     }
 
@@ -825,7 +818,6 @@ pub const Parser = struct {
         try self.links.append(self.allocator, l);
         self.tokens.items[bracket.token_index].aux = @intCast(link_index + 1);
         self.markChanged(bracket.token_index);
-        self.linked_from = @min(self.linked_from, bracket.token_index);
         try self.push(.{ .start = start, .len = end - start, .kind = .bracket_close, .aux = @intCast(link_index + 1) });
         self.position = end;
         try self.processEmphasis(bracket.previous_delimiter);
