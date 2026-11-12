@@ -1218,7 +1218,7 @@ test "input parser times out partial units unless they may be mouse reports, Kit
         .{ "\x1b", "OA", &([_]Expect{k(K.escape, NONE)} ++ typed("OA")) },
         .{ "\x1b", "Please\r", &([_]Expect{k(K.escape, NONE)} ++ typed("Please\r")) },
         .{ "\x1b", "]1z", &([_]Expect{k(K.escape, NONE)} ++ typed("]1z")) },
-        .{ "\x1b", "_Gz\r", &.{ k(K.escape, NONE), ch('_'), frag("Gz"), k(K.enter, NONE) } },
+        .{ "\x1b", "_GitHub\r", &([_]Expect{k(K.escape, NONE)} ++ typed("_GitHub\r")) },
         .{ "\x1b", "[a", &([_]Expect{k(K.escape, NONE)} ++ typed("[a")) },
         .{ "\x1b", "[Wa", &([_]Expect{k(K.escape, NONE)} ++ typed("[Wa")) },
         .{ "\x1b", "[1\x1b[A", &.{ k(K.escape, NONE), ch('['), frag("1"), k(K.up, NONE) } },
@@ -1274,6 +1274,7 @@ test "input parser times out partial units unless they may be mouse reports, Kit
         .{ &.{ "\x1b", "[200", "~", "a\rb\x1b[201~" }, &.{ k(K.escape, NONE), paste("a\rb") } },
         .{ &.{ "\x1b", "[1;", "5A" }, &.{ k(K.escape, NONE), reply("\x1b[1;5A") } },
         .{ &.{ "\x1b", "[<0;", "4;5M" }, &.{ k(K.escape, NONE), down(0, 3, 4) } },
+        .{ &.{ "\x1b", "_Gi=31;", "OK\x1b\\" }, &.{ k(K.escape, NONE), reply("\x1b_Gi=31;OK\x1b\\") } },
     }) |case| {
         var cut = try Harness.create();
         defer cut.deinit();

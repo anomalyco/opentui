@@ -282,7 +282,7 @@ pub const InputParser = struct {
         if (self.expect.escape_prefix) return if (switch (self.state) {
             .escape => self.batch_left == 0,
             .csi => |csi| csi.held and csi.recovered and !self.expect.sentinel,
-            .string => |string| string.recovered and !self.expect.sentinel,
+            .string => |string| string.recovered and string.deferred and !self.expect.sentinel,
             else => false,
         }) self.since_ns else null;
         const waits = switch (self.state) {
@@ -725,7 +725,10 @@ pub const InputParser = struct {
         if (!typed) return emitReply(sink, self.unit[start..self.unit_len], protocol, flags.reply_fragment);
         const introducer = self.unit[1];
         emitKey(sink, &.{self.unit[1..2]}, introducer, .{}, .{ .flags = flags.key_typed, .text = self.unit[1..2] });
-        if (self.unit_len > 2) emitReply(sink, self.unit[2..self.unit_len], protocol, flags.reply_fragment);
+        // With `escape_prefix`, a recovered APC that matched no Kitty graphics reply is at most `G` and a key letter: type it.
+        if (protocol == .apc and self.expect.escape_prefix) {
+            for (self.unit[2..self.unit_len]) |c| self.ground(c, false, .of(false, c), sink);
+        } else if (self.unit_len > 2) emitReply(sink, self.unit[2..self.unit_len], protocol, flags.reply_fragment);
     }
 
     /// `reply_only`: a held unit, which never decodes as a key.
