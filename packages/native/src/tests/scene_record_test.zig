@@ -228,7 +228,7 @@ test "Scene record hooks mutate before paint without tearing or reviving destroy
     try f.owner.sceneFrameCancel(f.id, done.frame_id);
     const next = try f.owner.sceneFrameStep(f.id, null, options);
     try testing.expectEqual(@as(u32, c.OT_SCENE_FRAME_RECORD), next.kind);
-    try testing.expectEqual(@as(f64, 6), (try f.owner.sceneGetPaintLayout(second)).screenX);
+    try testing.expectEqual(@as(f64, 6), (try f.owner.sceneGetPaintLayout(second, false)).screenX);
     try f.owner.sceneFrameCancel(f.id, next.frame_id);
 }
 

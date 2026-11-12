@@ -902,6 +902,12 @@ pub export fn yogaNodeLayoutGetEdgeChecked(node: YGNodeConstRef, kind: u32, edge
     return @fromBackingInt(@intCast(c.otYogaNodeLayoutGetEdge(node, kind, edge, out)));
 }
 
+pub fn yogaNodeGetContentBoxChecked(node: YGNodeConstRef, out: *[4]f32) Status {
+    const status = nodeStatus(node, false, false);
+    if (status != .ok) return status;
+    return @fromBackingInt(@intCast(c.otYogaNodeGetContentBox(node, out)));
+}
+
 pub export fn yogaNodeStyleSetEnum(node: YGNodeRef, kind: u32, value: u32) void {
     _ = yogaNodeStyleSetEnumChecked(node, kind, value);
 }
