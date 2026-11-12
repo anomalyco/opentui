@@ -276,6 +276,9 @@ pub(crate) struct MarkdownInner {
     blocks: RefCell<Vec<Shown>>,
     /// Whether the terminal showed hyperlinks at the last change (the engine's `OT_MD_HYPERLINKS`, N5).
     hyperlinks: Cell<bool>,
+    /// The code blocks whose renderer ran for a finished document in the last change: ending the stream asks each
+    /// one once.
+    rendered_code: RefCell<Vec<u32>>,
 }
 
 impl Behavior for MarkdownInner {
@@ -416,6 +419,7 @@ impl Markdown {
             styles: Cell::new(styles),
             blocks: RefCell::new(Vec::new()),
             hyperlinks: Cell::new(app.hyperlinks()),
+            rendered_code: RefCell::default(),
         }));
         markdown.0.element.set_layout(LayoutProperty::Gap(Gutter::Row, 1.into()));
         markdown
@@ -671,6 +675,7 @@ impl Markdown {
     fn change(&self, run: impl FnOnce(&MarkdownDoc, bool) -> crate::Result<MarkdownResult>) {
         let Some(app) = self.app() else { return };
         let Some(doc) = &self.0.doc else { return };
+        self.0.rendered_code.borrow_mut().clear();
         let result = {
             let guard = self.0.guard.try_borrow_mut();
             let _guard = guard.expect("the Markdown content changed while it was read");
@@ -1023,6 +1028,9 @@ impl Markdown {
             };
             let closed = block.has(sys::OT_MD_BLOCK_CLOSED);
             let (conceal, streaming) = (options.conceal, options.streaming);
+            if !streaming {
+                self.0.rendered_code.borrow_mut().push(block.index);
+            }
             render(&CodeBlock { app, language: &language, info, code: &code, closed, conceal, streaming, previous })
         });
         if let Some(widget) = custom {
@@ -1204,8 +1212,12 @@ impl Markdown {
                 let blocks = self.0.blocks.borrow();
                 (blocks[index].block.clone(), blocks[index].rendered.clone())
             };
-            // A renderer that chose the default widget while streaming may choose its own now.
-            if block.kind != sys::OT_MD_CODE || self.0.options.borrow().code_blocks.is_empty() {
+            // A renderer that chose the default widget while streaming may choose its own now; one the finish
+            // already asked is not asked again.
+            if block.kind != sys::OT_MD_CODE
+                || self.0.options.borrow().code_blocks.is_empty()
+                || self.0.rendered_code.borrow().contains(&block.index)
+            {
                 continue;
             }
             let new = self.code_block(&app, doc, &block, rendered.as_ref());

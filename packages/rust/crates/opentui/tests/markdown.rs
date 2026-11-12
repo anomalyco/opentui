@@ -199,6 +199,25 @@ fn ending_the_stream_runs_code_block_renderers_again() {
     assert_eq!(frame(&app), "x\n\ntail\n");
     markdown.streaming(false);
     assert_eq!(frame(&app), "done\n\ntail\n");
+    // Ending the stream asks each fence's renderer once (bigboi-r2-4): an open fence, a pending closer, a nested
+    // fence, and a closed fence with a tail.
+    for source in ["```latex\nx", "```latex\nx\n```", "- a\n\n  ```latex\n  x", "```latex\nx\n```\n\ntail\n"] {
+        let app = TestApp::new(30, 6);
+        let finished = Rc::new(Cell::new(0));
+        let count = finished.clone();
+        let markdown = Markdown::new(&app).streaming(true).code_block_renderer("latex", move |block| {
+            if block.streaming {
+                return None;
+            }
+            count.set(count.get() + 1);
+            (count.get() > 1).then(|| Text::new(block.app, "second call").as_any())
+        });
+        app.root().add(&markdown);
+        markdown.set_markdown(source);
+        markdown.streaming(false);
+        assert_eq!(finished.get(), 1, "{source:?}");
+        assert!(!frame(&app).contains("second call"), "{source:?}");
+    }
 }
 
 #[test]
