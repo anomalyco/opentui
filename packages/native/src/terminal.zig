@@ -424,11 +424,11 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     self.explicit_width_probe_reports_pending = 0;
 }
 
-/// OSC 66 terminals draw the probes' spaces: call only on the alternate screen just entered, cursor saved before.
+/// Draws OSC 66 probes: call only on the alternate screen just entered; it saves its own cursor, not another app's.
 pub fn queryExplicitWidth(self: *Terminal, tty: anytype) !void {
     if (self.skip_explicit_width_query) return;
     self.explicit_width_probe_reports_pending = 2;
-    try tty.writeAll(ansi.ANSI.home ++ ansi.ANSI.explicitWidthQuery ++ ansi.ANSI.cursorPositionRequest ++
+    try tty.writeAll(ansi.ANSI.saveCursorState ++ ansi.ANSI.home ++ ansi.ANSI.explicitWidthQuery ++ ansi.ANSI.cursorPositionRequest ++
         ansi.ANSI.home ++ ansi.ANSI.scaledTextQuery ++ ansi.ANSI.cursorPositionRequest ++ ansi.ANSI.restoreCursorState);
 }
 

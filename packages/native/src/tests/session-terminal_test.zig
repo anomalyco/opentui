@@ -321,11 +321,13 @@ test "Session terminal setup reserves main-screen rows and repositions by the ac
 /// Replays setup bytes on a `rows`-row screen whose cursor starts at column 5 of `start_row`, in a terminal that
 /// draws OSC 66 as kitty does (`w=1` covers one cell, `s=2` two rows and two columns) or ignores it, and writes its
 /// answer to each cursor position request. Fails when a probe draws on the main screen, which holds history, or
-/// past the bottom row, where kitty scrolls. Returns the final cursor position.
+/// past the bottom row, where kitty scrolls. Each screen has its own saved cursor (xterm, kitty, foot, libghostty),
+/// which holds another app's state (charset, reverse video) until setup saves its own: restoring that fails.
+/// Returns the final cursor position.
 fn replayProbe(bytes: []const u8, rows: u32, start_row: u32, draws: bool, replies: *std.Io.Writer) ![2]u32 {
     var row = start_row;
     var col: u32 = 5;
-    var saved: [2]u32 = .{ row, col };
+    var saved: [2]?[2]u32 = .{ null, null };
     var alternate = false;
     var i: usize = 0;
     while (i < bytes.len) : (i += 1) {
@@ -347,11 +349,12 @@ fn replayProbe(bytes: []const u8, rows: u32, start_row: u32, draws: bool, replie
                     col = 1;
                 } else return error.TestUnexpectedResult,
                 's' => if (params.len == 0) {
-                    saved = .{ row, col };
+                    saved[@intFromBool(alternate)] = .{ row, col };
                 },
                 'u' => if (params.len == 0) {
-                    row = saved[0];
-                    col = saved[1];
+                    const back = saved[@intFromBool(alternate)] orelse return error.TestUnexpectedResult;
+                    row = back[0];
+                    col = back[1];
                 },
                 'n' => if (std.mem.eql(u8, params, "6")) try replies.print("\x1b[{d};{d}R", .{ row, col }),
                 'h', 'l' => if (std.mem.eql(u8, params, "?1049")) {
