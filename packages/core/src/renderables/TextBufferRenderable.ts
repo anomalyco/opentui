@@ -247,9 +247,10 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     return Math.max(0, this.scrollWidth - this.textViewport.width)
   }
 
-  /** The cells the text fills: native text leaves its padding out. */
+  /** The cells the text fills: native text leaves its padding out once it has a layout; until then, its box. */
   private get textViewport(): { width: number; height: number } {
-    return this.nativeTextScene ? this.nativeTextScene.getLayout(this, "content") : this
+    const scene = this.nativeTextScene
+    return scene && scene.getLayout(this, "paint").width > 0 ? scene.getLayout(this, "content") : this
   }
 
   protected updateViewportOffset(scrollX = this._scrollX, scrollY = this._scrollY): void {

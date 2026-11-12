@@ -2347,6 +2347,13 @@ describe("TextRenderable Selection", () => {
       textRenderable.scrollY = 99
       await renderOnce()
       expect(captureFrame().split("\n")[4]?.slice(0, 8)).toBe("  8 end ")
+
+      // Before the first frame there is no content rect yet; the box's own size stands in.
+      const early = new TextRenderable(currentRenderer, { content: text, wrapMode: "none", width: 6, height: 2 })
+      currentRenderer.root.add(early)
+      early.scrollX = 99
+      early.scrollY = 99
+      expect([early.scrollX, early.scrollY]).toEqual([4, 6])
     })
 
     it("should update scroll position via setters", async () => {
