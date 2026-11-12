@@ -3729,14 +3729,19 @@ const LeafWriter = struct {
         if (at < end) try self.write(r.content[at..end], .{});
     }
 
-    /// Writes a link's brackets and parentheses (`gap`) or its URL as text, styled as Core
-    /// styles them.
-    fn linkPart(self: *LeafWriter, bytes: []const u8, part: enum { gap, url }) Error!void {
+    /// Writes a link's brackets and parentheses (`gap`), its URL as text, or a byte of it drawn
+    /// as plain text, styled as OpenCode's frames show them.
+    fn linkPart(self: *LeafWriter, bytes: []const u8, part: enum { gap, url, text }) Error!void {
         const saved = self.base;
-        defer self.base = saved;
+        const link = self.link;
+        defer {
+            self.base = saved;
+            self.link = link;
+        }
         switch (part) {
             .gap => self.base.link_gap = true,
             .url => self.base.link_url = true,
+            .text => self.link = null,
         }
         return self.write(bytes, .{});
     }
@@ -3821,8 +3826,10 @@ const TokenStyler = struct {
                 if (t.aux == 0) return w.write(raw[0..1], .{});
                 if (!self.conceal) {
                     // An inline link's destination (and title) between `](` and `)`.
+                    // As OpenCode's frames show it: `]` is text, `(` and `)` are the link's.
                     if (raw.len >= 3 and std.mem.startsWith(u8, raw, "](") and raw[raw.len - 1] == ')') {
-                        try w.linkPart(raw[0..2], .gap);
+                        try w.linkPart(raw[0..1], .text);
+                        try w.linkPart(raw[1..2], .gap);
                         try w.linkPart(raw[2 .. raw.len - 1], .url);
                         try w.linkPart(raw[raw.len - 1 ..], .gap);
                     } else try w.linkPart(raw, .gap);
@@ -3830,7 +3837,8 @@ const TokenStyler = struct {
                 // Without hyperlinks a label that is not its URL shows where the link goes.
                 if (self.conceal and !self.hyperlinks and !self.image and !std.mem.eql(u8, w.leaf.bytes.items[self.label_start..], self.label_url)) {
                     assert(!w.count_only);
-                    try w.linkPart(" (", .gap);
+                    try w.linkPart(" ", .text);
+                    try w.linkPart("(", .gap);
                     try w.linkPart(self.label_url, .url);
                     try w.linkPart(")", .gap);
                 }

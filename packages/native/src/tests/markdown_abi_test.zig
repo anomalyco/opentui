@@ -442,10 +442,11 @@ test "Markdown ABI: host-written modes, URL suffixes and source display" {
         try expectOk(abi.ot_scene_get_text(f.context, &node, &shown, shown.len, &count));
         try std.testing.expectEqualStrings(if (row[0] == live_flags) row[2] else "", shown[0..count]);
     }
-    // A link's parts take Core's names: `markup.link` around the label and `markup.link.url`.
+    // A link's parts as OpenCode's frames show them: `markup.link` around the label and
+    // `markup.link.url`; the space before a URL suffix and the `]` of a link's source are text.
     const parts = [_]struct { u32, []const u8, []const u16 }{
-        .{ c.OT_MD_CONCEAL, "[c](https://u.test)", &.{ 9, 6, 3, 6 } },
-        .{ 0, "[c](https://u.test) <https://v.test>", &.{ 6, 9, 6, 3, 6, 0, 6, 9, 6 } },
+        .{ c.OT_MD_CONCEAL, "[c](https://u.test)", &.{ 9, 0, 6, 3, 6 } },
+        .{ 0, "[c](https://u.test) <https://v.test>", &.{ 6, 9, 0, 6, 3, 6, 0, 6, 9, 6 } },
     };
     for (parts) |part| {
         var f = try Fixture.init(part[0]);
