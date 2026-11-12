@@ -1281,8 +1281,9 @@ pub const PendingScan = struct {
     visits: u64 = 0,
 };
 
-/// A `*`, `_` or `~` run B drew concealed, at display offset `at` of the drawn bytes.
-pub const PendingRun = struct { at: u32, char: u8, count: u32, open: bool, close: bool };
+/// A `*`, `_` or `~` run B drew concealed, at display offset `at` of the drawn bytes; it ends at
+/// content offset `end`.
+pub const PendingRun = struct { at: u32, end: u32, char: u8, count: u32, open: bool, close: bool };
 
 /// A styled range of the drawn bytes, from the runs that close one another (B draws them as the
 /// spans they are; an opener that waits is concealed and styles nothing until its closer).
@@ -1401,7 +1402,7 @@ pub fn renderPendingRuns(s: []const u8, from: u32, code_opener: ?u32, scan: *Pen
                 if (!can.open and !can.close) {
                     try out.appendSlice(allocator, s[i .. i + run]);
                 } else if (runs) |list| {
-                    try list.append(allocator, .{ .at = @intCast(out.items.len), .char = c, .count = run, .open = can.open, .close = can.close });
+                    try list.append(allocator, .{ .at = @intCast(out.items.len), .end = i + run, .char = c, .count = run, .open = can.open, .close = can.close });
                 }
                 i += run;
             },

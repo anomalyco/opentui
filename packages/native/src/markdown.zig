@@ -2966,10 +2966,11 @@ pub const Doc = struct {
             writer.link = null;
             writer.base = .{ .heading_level = writer.base.heading_level, .raw = code };
             const pending_start = self.liveTokensEnd(@intCast(r.tokens.len));
-            // Under a hold cut, only the runs before it: a run at the cut waits, as read_leaf's does.
+            // Under a held pipe, only the runs before it: a run that reaches it waits for the
+            // byte after it, as read_leaf's does.
             var shown_runs = live.pending_runs.items;
-            const cut = to - pending_start < live.pending_display.items.len;
-            while (cut and shown_runs.len > 0 and shown_runs[shown_runs.len - 1].at >= to - pending_start) shown_runs.len -= 1;
+            const pipe = self.liveHoldPipe();
+            while (pipe != none and shown_runs.len > 0 and shown_runs[shown_runs.len - 1].end >= pipe) shown_runs.len -= 1;
             var spans: std.ArrayListUnmanaged(inline_parser.PendingSpan) = .empty;
             try inline_parser.pendingSpans(shown_runs, arena, &spans);
             self.counters.run_token_visits += live.pending_runs.items.len;
@@ -3200,6 +3201,7 @@ pub const Doc = struct {
         live.content.items.len = rest;
         live.content_base += drop;
         live.pending_scan.stop -= drop;
+        for (live.pending_runs.items) |*run| run.end -= drop;
         live.pending_scan.scanned -|= drop;
         live.pending_scan.run_end -|= drop;
         if (live.pending_scan.code) |opener| live.pending_scan.code = opener - drop;
@@ -3259,6 +3261,7 @@ pub const Doc = struct {
         live.content.items.len = rest;
         live.content_base += drop;
         live.pending_scan.stop -= drop;
+        for (live.pending_runs.items) |*run| run.end -= drop;
         live.pending_scan.scanned -|= drop;
         live.pending_scan.run_end -|= drop;
         if (live.pending_scan.code) |opener| live.pending_scan.code = opener - drop;

@@ -1121,6 +1121,7 @@ const Families = struct {
                 },
             }
             if (try genericProperties(step_arena.allocator(), &f.doc, fed, options, true)) |property| return .{ .property = property, .step = step };
+            if (sink.mismatch_count > 0) return .{ .property = "every node shows read_leaf (P5)", .step = step };
             if (command == .math or command == .filter) math_once = .{};
             if (!math_once.check(&f.doc)) return .{ .property = "(c) a math block never reverts to text", .step = step };
         }
