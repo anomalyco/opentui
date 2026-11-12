@@ -343,11 +343,12 @@ class GutterRenderable extends Renderable {
   }
 }
 
-/** The rows of the target its text fills, from the target's top: native text leaves its padding out. */
+/** The rows of the target its text fills, from the target's top cell: native text leaves its padding out. */
 function textRows(scene: RenderContext["nativeScene"], target: Renderable): [top: number, height: number] {
   const box = scene.getLayout(target, "paint")
   const content = scene.getLayout(target, "content")
-  return [content.screenY - box.screenY, content.height]
+  // Paint truncates each origin to its cell on its own.
+  return [Math.trunc(content.screenY) - Math.trunc(box.screenY), content.height]
 }
 
 function getLineSources(target: LineInfoProvider, startLine: number, lineCount: number): number[] {

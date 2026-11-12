@@ -146,6 +146,8 @@ describe("LineNumber paint window", () => {
             [1.5, -1.5, 2, 0],
             [0, 0.5, 0, 0],
             [0, 1.5, 0, 1],
+            // Paint truncates the box and the content origin each on its own: both land on row 0.
+            [0, -0.5, 0, 0, 1],
           ]
         : []),
     ]) {
