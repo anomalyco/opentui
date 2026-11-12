@@ -1916,25 +1916,40 @@ fn atomic_extmarks_move_with_edits_and_act_as_one_unit() {
 }
 
 #[test]
-fn vertical_moves_into_an_atomic_extmark_go_to_its_nearer_edge() {
+fn moves_into_an_atomic_extmark_go_to_its_nearer_edge() {
     use opentui::widget::ExtmarkOptions;
+    // As Core's: nearer the start goes to the start of the character before it, even a wide one or a tab, and halfway
+    // or nearer the end to the end. The mark is on row 1 after `char`, at 11 + width..19 + width.
+    for (char, width) in [("a", 1), ("日", 2), ("👍", 2), ("\t", 2)] {
+        let app = TestApp::new(20, 4);
+        let area = Textarea::new(&app).grow(1.0);
+        area.set_text(format!("0123456789\n{char}@main.rs\nxxxxxxxxxx"));
+        app.root().add(&area);
+        area.focus();
+        area.add_extmark(11 + width..19 + width, ExtmarkOptions::default().atomic());
+        app.render();
+        for (key, from, to) in [
+            ("left", 19 + width, 11),
+            ("down", width + 1, 11),
+            ("up", 20 + width + width + 1, 11),
+            ("down", width + 4, 19 + width),
+        ] {
+            area.set_cursor_offset(from);
+            app.press(key);
+            assert_eq!(area.cursor_offset(), to, "{key} from {from} after {char:?}");
+        }
+    }
+    // Down never goes back: from the empty row before a mark at a line start, it goes to the mark's end.
     let app = TestApp::new(20, 4);
     let area = Textarea::new(&app).grow(1.0);
-    area.set_text("0123456789\nab@main.rs\nxxxxxxxxxx");
+    area.set_text("a\n\n@main.rs\nb");
     app.root().add(&area);
     area.focus();
-    area.add_extmark(13..21, ExtmarkOptions::default().atomic());
+    area.add_extmark(3..11, ExtmarkOptions::default().atomic());
     app.render();
-    // As Core's: nearer the start goes to one before it, nearer the end to the end.
-    area.set_cursor_offset(3);
+    area.set_cursor_offset(2);
     app.press("down");
-    assert_eq!(area.cursor_offset(), 12);
-    area.set_cursor_offset(8);
-    app.press("down");
-    assert_eq!(area.cursor_offset(), 21);
-    area.set_cursor_offset(26);
-    app.press("up");
-    assert_eq!(area.cursor_offset(), 12);
+    assert_eq!(area.cursor_offset(), 11);
 }
 
 #[test]
