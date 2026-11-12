@@ -2284,9 +2284,11 @@ pub const Context = struct {
         if (x >= target.width or y >= target.height) return;
         const text = owned.text orelse return owned.owner.paintBody(&self.objects, target, node, x, y);
         // A prepared text that Yoga sizes to zero paints nothing; an unprepared one draws its text.
-        if (owned.geometry_epoch != std.math.maxInt(u64) and (owned.layout.width == 0 or owned.layout.height == 0)) return;
+        const content = scene.contentLayout(owned.layout);
+        if (owned.geometry_epoch != std.math.maxInt(u64) and (content.width == 0 or content.height == 0)) return;
         try text.prepareView();
-        try target.drawTextBufferChecked(text.view, x, y);
+        const offset = scene.contentOffset(owned.layout);
+        try target.drawTextBufferChecked(text.view, x +| offset[0], y +| offset[1]);
     }
 
     pub fn acquireOwnedBufferLease(self: *Context, handle: Handle) Error!Handle {
@@ -3166,13 +3168,17 @@ pub const Context = struct {
         } else selection: {
             var dirty: u32 = 0;
             try yoga.check(yoga.yogaNodeIsDirtyChecked(node.yoga_node, &dirty));
+            // Hosts pass cells local to the node; the view starts at its content and clamps cells off its edges.
+            const offset = scene.contentOffset(node.scene_node.?.layout);
+            var local = options;
+            for ([_]*i32{ &local.anchor_x, &local.anchor_y, &local.focus_x, &local.focus_y }, [_]i32{ offset[0], offset[1], offset[0], offset[1] }) |point, by| point.* -|= by;
             if (text.view.getViewport()) |viewport| {
                 const x_offset: i32 = if (text.view.wrap_mode == .none) @intCast(viewport.x) else 0;
                 const y_offset: i32 = @intCast(viewport.y);
-                _ = std.math.add(i32, options.anchor_x, x_offset) catch return error.InvalidOptions;
-                _ = std.math.add(i32, options.focus_x, x_offset) catch return error.InvalidOptions;
-                _ = std.math.add(i32, options.anchor_y, y_offset) catch return error.InvalidOptions;
-                _ = std.math.add(i32, options.focus_y, y_offset) catch return error.InvalidOptions;
+                _ = std.math.add(i32, local.anchor_x, x_offset) catch return error.InvalidOptions;
+                _ = std.math.add(i32, local.focus_x, x_offset) catch return error.InvalidOptions;
+                _ = std.math.add(i32, local.anchor_y, y_offset) catch return error.InvalidOptions;
+                _ = std.math.add(i32, local.focus_y, y_offset) catch return error.InvalidOptions;
             }
             if (text.buffer.lineWidthColsMax() > std.math.maxInt(i32)) return error.InvalidOptions;
             // The legacy view methods cannot report allocation failures. Prepare
@@ -3181,9 +3187,9 @@ pub const Context = struct {
             if (text.view.virtual_lines.items.len > std.math.maxInt(i32)) return error.InvalidOptions;
             const behavior: text_buffer_view.SelectionBehavior = @fromBackingInt(@intCast(options.behavior));
             break :selection if (options.operation == api.OT_SCENE_TEXT_SELECTION_SET)
-                text.view.setLocalSelectionBehavior(options.anchor_x, options.anchor_y, options.focus_x, options.focus_y, options.background, options.foreground, behavior)
+                text.view.setLocalSelectionBehavior(local.anchor_x, local.anchor_y, local.focus_x, local.focus_y, options.background, options.foreground, behavior)
             else
-                text.view.updateLocalSelectionBehavior(options.anchor_x, options.anchor_y, options.focus_x, options.focus_y, options.background, options.foreground, behavior);
+                text.view.updateLocalSelectionBehavior(local.anchor_x, local.anchor_y, local.focus_x, local.focus_y, options.background, options.foreground, behavior);
         };
         node.scene_node.?.owner.clearPreparation();
         return changed;
@@ -3364,11 +3370,11 @@ pub const Context = struct {
         };
     }
 
-    pub fn sceneGetPaintLayout(self: *Context, handle: Handle) !scene.Layout {
+    pub fn sceneGetPaintLayout(self: *Context, handle: Handle, content: bool) !scene.Layout {
         try self.checkSceneRead();
         const node = try self.sceneNode(handle);
         try node.scene_node.?.owner.prepareOmitted(&self.objects, node);
-        return scene.getPaintLayout(node);
+        return scene.getPaintLayout(node, content);
     }
 
     /// Solve the Session root without painting or publishing output. Measurement

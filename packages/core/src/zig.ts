@@ -8364,7 +8364,7 @@ export class FFIRenderLib {
   public sceneGetLayout(
     context: NativeContextHandle,
     node: SceneNodeHandle,
-    observation: boolean | "paint" = false,
+    observation: boolean | "paint" | "content" = false,
   ): NativeSceneLayout {
     const layout = nativeLayouts.ot_scene_layout
     const scratch = this.sceneLayoutRecord ?? createSceneLayoutRecord()
@@ -8374,9 +8374,11 @@ export class FFIRenderLib {
       const mode =
         observation === "paint"
           ? nativeConstants.OT_LAYOUT_PAINT
-          : toFFIBool(observation, "Scene Yoga layout observation")
-            ? nativeConstants.OT_LAYOUT_YOGA
-            : nativeConstants.OT_LAYOUT_PUBLIC
+          : observation === "content"
+            ? nativeConstants.OT_LAYOUT_CONTENT
+            : toFFIBool(observation, "Scene Yoga layout observation")
+              ? nativeConstants.OT_LAYOUT_YOGA
+              : nativeConstants.OT_LAYOUT_PUBLIC
       const { output, values, coordinates } = scratch
       output[layout.fields.struct_size.offset / 4] = layout.size
       output[layout.fields.abi_version.offset / 4] = nativeConstants.OT_CONTEXT_ABI_VERSION

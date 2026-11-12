@@ -628,7 +628,7 @@ export class NativeScene {
    * Native owns callback-time projections and composes accepted ancestor translations. */
   getLayout(
     node: { _getSceneHandle(owner: NativeScene): SceneNodeHandle },
-    rawYoga: boolean | "paint" = false,
+    rawYoga: boolean | "paint" | "content" = false,
   ): NativeSceneLayout {
     const handle = node._getSceneHandle(this)
     this.flushStaged()

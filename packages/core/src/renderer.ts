@@ -1234,6 +1234,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _splitHeight: number = 0
   private renderOffset: number = 0
   private splitTailColumn: number = 0
+  // The native row count and tail belong to the normal screen behind the alternate screen.
+  private parkedSplitScrollback = false
   // The tail after the last queued commit, so each captured write reads it in O(1); a reset or a resize voids it.
   private queuedSplitTail: { column: number; width: number } | null = null
   private pendingSplitFooterTransition: PendingSplitFooterTransition | null = null
@@ -2105,7 +2107,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       const previousSurfaceHeight = this._splitHeight
 
       this.clearPendingSplitFooterTransition()
-      this.resetSplitScrollback(this.getSplitCursorSeedRows())
+
+      if (this.parkedSplitScrollback) {
+        this.parkedSplitScrollback = false
+        this.forceFullRepaintRequested = true
+      } else {
+        this.resetSplitScrollback(this.getSplitCursorSeedRows())
+      }
 
       if (previousMode === "passthrough" && this._terminalIsSetup) {
         const nextSurfaceTopLine = this.renderOffset + 1
@@ -3123,15 +3131,14 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private syncSplitFooterState(): void {
     const splitActive = this._screenMode === "split-footer" && this._splitHeight > 0
-
     if (!splitActive) {
       this.clearPendingSplitFooterTransition()
-      this.resetSplitScrollback()
+      if (!this.parkedSplitScrollback) this.resetSplitScrollback()
       this.setRenderOffset(0)
       return
     }
 
-    if (this._externalOutputMode === "capture-stdout") {
+    if (this._externalOutputMode === "capture-stdout" || this.parkedSplitScrollback) {
       this.syncSplitScrollback()
     } else {
       this.clearPendingSplitFooterTransition()
@@ -3212,6 +3219,14 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     const terminalScreenModeChanged = this._terminalIsSetup && prevUseAlternateScreen !== nextUseAlternateScreen
     const leavingSplitFooter = prevSplitHeight > 0 && nextSplitHeight === 0
 
+    if (prevScreenMode === "split-footer" && prevSplitHeight > 0 && nextUseAlternateScreen) {
+      this.parkedSplitScrollback = this.getSplitOutputOffset(this._terminalHeight) > 0
+    } else if (screenMode === "main-screen") {
+      // Leaving the split footer for a plain main screen collapses the region
+      // so any parked state is stale and the next split-footer entry re-seeds instead.
+      this.parkedSplitScrollback = false
+    }
+
     const previousSurfaceTopLine = this.renderOffset + 1
     const shouldDeferSplitFooterResizeTransition =
       this._terminalIsSetup &&
@@ -3285,7 +3300,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       if (prevSplitHeight === 0 && nextSplitHeight > 0) {
         scrollOutput = ANSI.scrollDown(this._terminalHeight - nextSplitHeight)
       } else if (splitViewportScrollLines > 0) {
-        scrollOutput = ANSI.scrollUp(splitViewportScrollLines)
+        scrollOutput = ANSI.scrollIntoHistory(splitViewportScrollLines)
       }
     }
     const clearOutput =
@@ -4348,6 +4363,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this._terminalHeight,
       this._footerHeight,
     )
+
+    // The normal screen behind the alternate screen reflows out of sight.
+    if (this._screenMode === "alternate-screen") this.parkedSplitScrollback = false
     const prevWidth = this._terminalWidth
     const previousTerminalHeight = this._terminalHeight
     const visiblePreviousSplitHeight =

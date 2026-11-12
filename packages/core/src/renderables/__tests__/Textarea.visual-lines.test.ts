@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
 import { createTestRenderer, type TestRenderer, type MockInput } from "../../testing/test-renderer.js"
 import { createTextareaRenderable } from "./renderable-test-utils.js"
+import { InputRenderable } from "../Input.js"
+import { TextareaRenderable } from "../Textarea.js"
 
 let currentRenderer: TestRenderer
 let renderOnce: () => Promise<void>
@@ -22,76 +24,49 @@ describe("TextareaRenderable - Visual Line Navigation", () => {
     currentRenderer.destroy()
   })
 
-  describe("without wrapping", () => {
-    it("gotoVisualLineHome should go to start of line", async () => {
-      const { textarea } = await createTextareaRenderable(currentRenderer, renderOnce, {
-        width: 40,
-        height: 10,
-        wrapMode: "none",
-      })
-
-      textarea.setText("Hello World")
-      textarea.editBuffer.setCursor(0, 6)
-
-      textarea.gotoVisualLineHome()
-
-      const cursor = textarea.editBuffer.getCursorPosition()
-      expect(cursor.row).toBe(0)
-      expect(cursor.col).toBe(0)
-    })
-
-    it("gotoVisualLineEnd should go to end of line", async () => {
-      const { textarea } = await createTextareaRenderable(currentRenderer, renderOnce, {
-        width: 40,
-        height: 10,
-        wrapMode: "none",
-      })
-
-      textarea.setText("Hello World")
-      textarea.editBuffer.setCursor(0, 6)
-
-      textarea.gotoVisualLineEnd()
-
-      const cursor = textarea.editBuffer.getCursorPosition()
-      expect(cursor.row).toBe(0)
-      expect(cursor.col).toBe(11)
-    })
-
-    it("should support selection with visual line home", async () => {
-      const { textarea } = await createTextareaRenderable(currentRenderer, renderOnce, {
-        width: 40,
-        height: 10,
-      })
-
-      textarea.setText("Hello World")
-      textarea.editBuffer.setCursor(0, 11)
-
-      textarea.gotoVisualLineHome({ select: true })
-
-      const selection = textarea.getSelection()
-      expect(selection).not.toBeNull()
-      expect(selection!.start).toBe(0)
-      expect(selection!.end).toBe(11)
-      expect(textarea.getSelectedText()).toBe("Hello World")
-    })
-
-    it("should support selection with visual line end", async () => {
-      const { textarea } = await createTextareaRenderable(currentRenderer, renderOnce, {
-        width: 40,
-        height: 10,
-      })
-
-      textarea.setText("Hello World")
-      textarea.editBuffer.setCursor(0, 0)
-
-      textarea.gotoVisualLineEnd({ select: true })
-
-      const selection = textarea.getSelection()
-      expect(selection).not.toBeNull()
-      expect(selection!.start).toBe(0)
-      expect(selection!.end).toBe(11)
-      expect(textarea.getSelectedText()).toBe("Hello World")
-    })
+  // 606: without wrapping, a visual line is the logical line, however narrow the field. Each field
+  // first scrolls to the line end, so column 1 is before its scroll offset and column 9 past it. A
+  // line that fits is one visual line with wrapping on too. `end` and `home` are the selections of
+  // select-to-visual-end and -home from the column; a backward cell selection keeps its anchor cell.
+  it("visual home and end of a one-line field are its logical home and end", async () => {
+    const text = "Hello World"
+    type Range = [number, number] | null
+    const rows: [kind: string, width: number, wrapMode: "none" | "word", col: number, end: Range, home: Range][] = [
+      ["Textarea", 40, "none", 6, [6, 11], [0, 7]],
+      ["Textarea", 4, "none", 1, [1, 11], [0, 2]],
+      ["Textarea", 4, "none", 9, [9, 11], [0, 10]],
+      ["Input", 4, "none", 1, [1, 11], [0, 2]],
+      ["Input", 4, "none", 9, [9, 11], [0, 10]],
+      ["Textarea", 40, "word", 0, [0, 11], null],
+      ["Textarea", 40, "word", 11, null, [0, 11]],
+    ]
+    for (const [kind, width, wrapMode, col, end, home] of rows) {
+      const field =
+        kind === "Input"
+          ? new InputRenderable(currentRenderer, { width, value: text })
+          : new TextareaRenderable(currentRenderer, { width, height: 2, wrapMode, initialValue: text })
+      currentRenderer.root.add(field)
+      field.focus()
+      field.gotoBufferEnd()
+      await renderOnce()
+      const row = [kind, width, wrapMode, col]
+      const after = (move: () => void) => {
+        field.clearSelection()
+        field.editBuffer.setCursor(0, col)
+        move()
+        const selection = field.getSelection()
+        const range = selection && selection.start !== selection.end ? [selection.start, selection.end] : null
+        return [...row, field.logicalCursor.col, range, field.getSelectedText()]
+      }
+      const at = (cursor: number, range: Range = null) => [...row, cursor, range, range ? text.slice(...range) : ""]
+      expect(after(() => currentMockInput.pressKey("e", { meta: true }))).toEqual(at(11))
+      expect(after(() => field.gotoLineEnd())).toEqual(at(11))
+      expect(after(() => currentMockInput.pressKey("a", { meta: true }))).toEqual(at(0))
+      expect(after(() => field.gotoLineHome())).toEqual(at(0))
+      expect(after(() => field.gotoVisualLineEnd({ select: true }))).toEqual(at(11, end))
+      expect(after(() => field.gotoVisualLineHome({ select: true }))).toEqual(at(0, home))
+      field.destroy()
+    }
   })
 
   describe("with wrapping", () => {
@@ -273,38 +248,6 @@ describe("TextareaRenderable - Visual Line Navigation", () => {
       expect(logicalEndCol).toBe(26)
 
       expect(visualEndCol).not.toBe(logicalEndCol)
-    })
-
-    it("without wrapping, visual and logical should be the same", async () => {
-      const { textarea } = await createTextareaRenderable(currentRenderer, renderOnce, {
-        width: 40,
-        height: 10,
-        wrapMode: "none",
-      })
-
-      textarea.setText("Hello World")
-
-      // Test home
-      textarea.editBuffer.setCursor(0, 6)
-      textarea.gotoVisualLineHome()
-      const visualHomeCol = textarea.editBuffer.getCursorPosition().col
-
-      textarea.editBuffer.setCursor(0, 6)
-      textarea.gotoLineHome()
-      const logicalHomeCol = textarea.editBuffer.getCursorPosition().col
-
-      expect(visualHomeCol).toBe(logicalHomeCol)
-
-      // Test end
-      textarea.editBuffer.setCursor(0, 6)
-      textarea.gotoVisualLineEnd()
-      const visualEndCol = textarea.editBuffer.getCursorPosition().col
-
-      textarea.editBuffer.setCursor(0, 6)
-      textarea.gotoLineEnd()
-      const logicalEndCol = textarea.editBuffer.getCursorPosition().col
-
-      expect(visualEndCol).toBe(logicalEndCol)
     })
   })
 })

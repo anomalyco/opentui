@@ -1313,11 +1313,13 @@ impl Markdown {
             let blocks = self.0.blocks.borrow();
             (blocks[index].block.clone(), blocks[index].rendered.clone())
         };
-        if let (PARAGRAPH | HEADING, Some(Rendered::Text(text))) = (block.kind, &rendered)
-            && self.host_writes()
-        {
-            self.write_prose(app, doc, index, text, true);
-            return;
+        if let (PARAGRAPH | HEADING, Some(Rendered::Text(text))) = (block.kind, &rendered) {
+            if self.host_writes() {
+                self.write_prose(app, doc, index, text, true);
+                return;
+            }
+            // Attached again, the text shows what the widget last set: native code writes it whole when bound again.
+            self.0.blocks.borrow_mut()[index].host_wrote = true;
         }
         self.after_change(app, doc, index, refresh);
     }
