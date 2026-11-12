@@ -817,9 +817,10 @@ fn genericProperties(arena: std.mem.Allocator, doc: *const Doc, fed: Fed, option
         .{ "(a) work: assembled bytes <= 4n", c.display_assembled_bytes, 4 * n + 64 },
         .{ "(a) work: sent bytes <= 3n", c.tail_write_bytes, 3 * n + 64 },
         // A node write restyles from the first token whose style may have changed: each token
-        // once when it arrives and once for each match kind it gains (k kinds the doc's closers
-        // made, at most 3), plus the last one per call.
-        .{ "(a) work: run token visits <= (1 + k)n + calls", c.run_token_visits, (1 + @popCount(c.restyled_kinds)) * n + calls + 64 },
+        // once when it arrives, once when a later call writes it again or it gains its first
+        // match kind, and once for each further kind (k kinds the doc's closers made, at most
+        // 3), plus the last one per call.
+        .{ "(a) work: run token visits <= (1 + max(1, k))n + calls", c.run_token_visits, (1 + @max(1, @popCount(c.restyled_kinds))) * n + calls + 64 },
     };
     for (bounds) |bound| {
         if (bound[1] > bound[2]) {
