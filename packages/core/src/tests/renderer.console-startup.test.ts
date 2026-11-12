@@ -736,7 +736,11 @@ test("CliRenderer preserves split render offset when switching to passthrough", 
   expect((renderer as any).renderOffset).toBe(before)
 })
 
-test("CliRenderer keeps split render offset across an alternate-screen roundtrip", async () => {
+// After the round trip the footer sits below the history rows, and the next write starts where the history ends.
+test.each([
+  ["one", 1, 4],
+  ["one\ntwo\nthree", 3, 6],
+] as const)("CliRenderer keeps split history %j across an alternate-screen trip", async (history, rows, column) => {
   const result = await createTestRenderer({
     width: 30,
     height: 8,
@@ -747,21 +751,27 @@ test("CliRenderer keeps split render offset across an alternate-screen roundtrip
   })
 
   renderer = result.renderer
+  renderer.root.add(new TextRenderable(renderer, { content: "[footer]" }))
+  // The last cursor move before `text` in the output: the cell where it was drawn.
+  const cellOf = (text: string) => /.*(\x1b\[\d+;\d+H)/s.exec(result.output().split(text)[0]!)?.[1]
 
-  ;(renderer as any).stdout.write("one\ntwo\nthree")
+  ;(renderer as any).stdout.write(history)
   await result.renderOnce()
-  expect((renderer as any).renderOffset).toBe(3)
 
   renderer.externalOutputMode = "passthrough"
   renderer.screenMode = "alternate-screen"
   renderer.screenMode = "split-footer"
   renderer.externalOutputMode = "capture-stdout"
+  result.writes.length = 0
   await result.renderOnce()
-  expect((renderer as any).renderOffset).toBe(3)
+  expect(cellOf("[footer]")).toBe(`\x1b[${rows + 1};1H`)
 
+  result.writes.length = 0
   ;(renderer as any).stdout.write("\nfour")
   await result.renderOnce()
-  expect((renderer as any).renderOffset).toBe(4)
+  expect(cellOf("\r\n")).toBe(`\x1b[${rows};${column}H`)
+  expect(cellOf("four")).toBe(`\x1b[${rows + 1};1H`)
+  expect(cellOf("[footer]")).toBe(`\x1b[${rows + 2};1H`)
 })
 
 test("CliRenderer does not force split repaint when switching to passthrough with no pending output", async () => {
