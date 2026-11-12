@@ -96,8 +96,9 @@ export class ScrollBoxRenderable extends BoxRenderable {
   public readonly verticalScrollBar: ScrollBoxBar
 
   protected static override readonly defaultFocusable = true
-  // A finished selection ends a drag's auto-scroll; the box listens only while it auto-scrolls.
-  private readonly selectionListener = (): void => this.stopAutoScroll()
+  // The selection whose drag auto-scrolls the box: the scroll ends with the drag, also when a press ends a drag whose
+  // release was lost.
+  private autoScrollSelection: ReturnType<RenderContext["getSelection"]> = null
 
   private autoScrollMouseX: number = 0
   private autoScrollMouseY: number = 0
@@ -614,7 +615,8 @@ export class ScrollBoxRenderable extends BoxRenderable {
     this.cachedAutoScrollSpeed = this.getAutoScrollSpeed(mouseX, mouseY)
     this.isAutoScrolling = true
     this.live = true
-    this._ctx.on("selection", this.selectionListener)
+    const selection = this._ctx.getSelection()
+    this.autoScrollSelection = selection?.isDragging ? selection : null
     this.refreshNativeSceneHooks()
   }
 
@@ -642,7 +644,6 @@ export class ScrollBoxRenderable extends BoxRenderable {
     this.autoScrollAccumulatorY = 0
     // Auto-scroll is the only reason a ScrollBox goes live or asks for updates.
     if (wasAutoScrolling) {
-      this._ctx.off("selection", this.selectionListener)
       this.live = false
       this.refreshNativeSceneHooks()
     }
@@ -650,6 +651,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
 
   private handleAutoScroll(deltaTime: number): void {
     if (!this.isAutoScrolling) return
+    if (this.autoScrollSelection?.isDragging === false) return this.stopAutoScroll()
 
     const scrollX = this.getAutoScrollDirectionX(this.autoScrollMouseX)
     const scrollY = this.getAutoScrollDirectionY(this.autoScrollMouseY)
@@ -794,10 +796,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
     if (!this.isFreed()) this._scrollState()
     this.layoutCallbacks = []
     this.endBarPress()
-    this.runCleanup((run) => {
-      run(() => this._ctx.off("selection", this.selectionListener))
-      run(() => super.destroySelf())
-    })
+    super.destroySelf()
   }
 }
 

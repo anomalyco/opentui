@@ -942,18 +942,6 @@ describe("ScrollBoxRenderable - padding behavior", () => {
 })
 
 describe("ScrollBoxRenderable - destroyRecursively", () => {
-  test("selection dispatch continues when an earlier listener destroys the ScrollBox", () => {
-    const scrollbox = new ScrollBoxRenderable(testRenderer, { id: "scrollbox" })
-    testRenderer.root.add(scrollbox)
-    scrollbox.startAutoScroll(0, 0)
-
-    let laterCalls = 0
-    testRenderer.prependOnceListener("selection", () => scrollbox.destroyRecursively())
-    testRenderer.on("selection", () => laterCalls++)
-    testRenderer.emit("selection", null)
-    expect([laterCalls, testRenderer.listenerCount("selection")]).toEqual([1, 1])
-  })
-
   test("destroys internal ScrollBox components", () => {
     const parent = new ScrollBoxRenderable(testRenderer, { id: "scroll-parent" })
     const child = new BoxRenderable(testRenderer, { id: "child" })

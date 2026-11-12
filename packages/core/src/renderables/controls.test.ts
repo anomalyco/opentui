@@ -593,8 +593,7 @@ test.each(scrolling)("ScrollBox %s", async (_, options, steps, expected) => {
 // Host requests (P1 frameWork) of the frame after each step: the update hook asks only while auto-scrolling, and the
 // SCROLL request comes only while a part has a listener (`listen` adds a content "resize" and a bar "change" listener;
 // it hears changes from then on). Listeners of events a part does not emit ask for nothing. The counts of the events
-// follow the trace. `+n` counts the renderer's selection listeners: the box listens once while it auto-scrolls, also
-// while it is detached, and a finished selection stops it; a destroyed box does not listen.
+// follow the trace.
 test("ScrollBox host requests per frame", async () => {
   const scroll = new ScrollBoxRenderable(renderer, { width: 20, height: 10 })
   for (let i = 0; i < 20; i++) scroll.add(new BoxRenderable(renderer, { height: 1 }))
@@ -610,7 +609,7 @@ test("ScrollBox host requests per frame", async () => {
     stop: () => scroll.stopAutoScroll(),
     "auto+remove": () => (scroll.updateAutoScroll(10, 0), renderer.root.remove(scroll)),
     add: () => renderer.root.add(scroll),
-    selection: () => renderer.emit(CliRenderEvents.SELECTION, null),
+    "stop again": () => scroll.stopAutoScroll(),
     listen: () => (scroll.content.on("resize", resized), scroll.verticalScrollBar.on("change", changed)),
     "append+listeners": () => scroll.add(new BoxRenderable(renderer, { height: 1 })),
     "idle+listeners": () => {},
@@ -630,16 +629,43 @@ test("ScrollBox host requests per frame", async () => {
     await step()
     renderer.requestRender()
     await setup.renderOnce()
-    const listeners = renderer.listenerCount(CliRenderEvents.SELECTION) || ""
-    trace.push(`${name}:${renderer.getNativeStats().frameWork.hostRequests}${events}${listeners && `+${listeners}`}`)
+    trace.push(`${name}:${renderer.getNativeStats().frameWork.hostRequests}${events}`)
     events = ""
   }
   expect(trace.join(" ")).toBe(
-    "idle:0 scroll:0 wheel:0 append:0 auto:1+1 start twice:1+1 stop:0 auto+remove:0+1 add:1+1 selection:0 listen:0 " +
+    "idle:0 scroll:0 wheel:0 append:0 auto:1 start twice:1 stop:0 auto+remove:0 add:1 stop again:0 listen:0 " +
       "append+listeners:1r idle+listeners:0 " +
       "scroll+listeners:0c unlisten:0 append again:0 unsupported:0 append unsupported:0 destroy+auto:0 " +
       "start after destroy:0",
   )
+})
+
+// A selection drag's auto-scroll ends with the drag: on its release, or on a press after the release was lost. One
+// started from code keeps going while an earlier selection is finished. Each start records the scroll and liveness.
+test("ScrollBox auto-scroll ends with its selection drag", async () => {
+  const scroll = new ScrollBoxRenderable(renderer, { width: 20, height: 9 })
+  scroll.add(new TextRenderable(renderer, { content: Array.from({ length: 99 }, (_, i) => `line ${i}`).join("\n") }))
+  renderer.root.add(scroll)
+  renderer.root.add(new BoxRenderable(renderer, { width: 20, height: 1 }))
+  await setup.renderOnce()
+  const moved: number[] = []
+  for (const start of ["release", "lost release", "code"]) {
+    if (start === "code") {
+      await setup.mockMouse.drag(2, 1, 4, 1)
+      scroll.updateAutoScroll(2, 8)
+    } else {
+      await setup.mockMouse.pressDown(2, 0)
+      await setup.mockMouse.moveTo(2, 8)
+      if (start === "release") await setup.mockMouse.release(2, 8)
+      await setup.mockMouse.click(2, 9)
+    }
+    const top = scroll.scrollTop
+    clock.advance(160)
+    await setup.renderOnce()
+    moved.push(Math.sign(scroll.scrollTop - top), Number(scroll.live))
+  }
+  scroll.stopAutoScroll()
+  expect(moved).toEqual([0, 0, 0, 0, 1, 1])
 })
 
 // Wheel steps over an inner scroller in an outer ScrollBox (scrolled to 5, rows 5..8 show the inner node). A step
