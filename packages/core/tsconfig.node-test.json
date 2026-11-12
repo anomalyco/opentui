@@ -27,6 +27,7 @@
     "src/lib/RGBA.test.ts",
     "src/lib/tree-sitter/resolve-ft.test.ts",
     "src/tests/renderer.kitty-flags.test.ts",
+    "src/tests/interaction-machines.test.ts",
     "src/tests/renderer.kitty-transport.test.ts",
     "src/buffer.test.ts",
     "src/console.test.ts",
