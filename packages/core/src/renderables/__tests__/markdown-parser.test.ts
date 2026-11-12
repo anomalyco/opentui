@@ -60,8 +60,8 @@ test("streamed, the stable tokens are a growing prefix of the final text's token
     "    code\n\n    more\n\ntext\n",
     "[r]: /u\n  'title'\n\nsee [r]\n\n[s]: /v\n",
     // marked drops a repeated definition, and lets a label or title span blank lines or other blocks
-    "[r]: /u\n\n- [n]: /x\n\n> [q]: /q\n\nHello\n\n[r]: /v\n\n[r]: /w\n\n[q]: /v\n\n[n]: /y\n\nWorld\n\nEND\n",
-    "[part\n\npart\n\nmore\\]]: /a\n\n[t]: /b (one\n\ntwo)\n\n [u]: /c\n\"three\n\nfour\"\n\n[v]: /d 'x\n# h\n# i\ny'\n\nEND\n",
+    "[r]: /u\n\n- [n]: /x\n\n> > [q]: /q\nlazy\n\nHello\n\n[r]: /v\n\n[r]: /w\n\n[q]: /v\n\n[n]: /y\n\nWorld\n\nEND\n",
+    '[part\n\npart\n\nmore\\]]: /a\n\n[t]: <b c> (one\n\ntwo)\n\n [u]: /c\n"th\\"ree\n\nfour"\n\n[v]: /d \'x\n# h\n# i\ny\'\n\nEND\n',
     "| a | b |\n|---|---|\n| 1 | 2 |\n\n| c |\n|---|\n\npara\n",
     "<pre>\na\n\nb\n</pre>\n\nx\n",
     "1) a\n\n   b\n\n 100) c\n\nend\n",
@@ -141,6 +141,14 @@ test("parseMarkdownIncremental reports stableTokenCount for the reused prefix", 
   let edited: ParseState | null = null
   for (const text of ["alpha\n\nb", "alpha\n\nbc", "alphaX"]) edited = parseMarkdownIncremental(text, edited, 2)
   expect(edited!.tokens.map((token) => token.raw)).toEqual(["alphaX"])
+  // Blocks after a repeated definition, whose text marked drops from the tokens, still become stable
+  let repeated: ParseState | null = null
+  for (const text of ["[k]: /a\n\nb\n\n[k]: /c\n\nd\n\ne", "[k]: /a\n\nb\n\n[k]: /c\n\nd\n\ne\n\nf"])
+    repeated = parseMarkdownIncremental(text, repeated, 2)
+  expect(repeated!.tokens[repeated!.stableTokenCount! - 1]?.raw).toBe("d")
+  // The first definition of a label wins, also over one in a later quote
+  const quoted = parseMarkdownIncremental("[k]: /a\n\n> [k]: /c\n\nd\n\ne", null, 2)
+  expect(parseMarkdownIncremental(quoted.content + "\n\nf", quoted, 2).links?.k?.href).toBe("/a")
 })
 
 test("handles content truncation", () => {

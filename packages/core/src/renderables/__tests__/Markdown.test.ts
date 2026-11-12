@@ -4284,6 +4284,74 @@ test("internalBlockMode=top-level exposes a conservative stable block prefix", a
   expect(md._stableBlockCount).toBe(3)
 })
 
+// OpenCode's split footer writes each stable block to scrollback once, so the rows of the stable blocks (with their top
+// margins) must be those of a one-shot render. Generated answers repeat labels at top level and in quotes and lists,
+// let quotes take lazy lines, and span labels and titles of each delimiter, with escapes, over blank lines.
+test("streamed, the rows of the stable top-level blocks are those of a one-shot render", async () => {
+  resizeRenderer(60, 150)
+  let seed = 1
+  const random = (n: number) => ((seed = (Math.imul(seed, 48271) + 11) % 2147483647) >>> 0) % n
+  const pick = <T>(items: T[]) => items[random(items.length)]!
+  const treeSitterClient = new MockTreeSitterClient({ autoResolveTimeout: 0 })
+  mockTreeSitterClients.push(treeSitterClient)
+  treeSitterClient.setMockResult({ highlights: [] })
+  // Text draws once its highlight resolves, on a timer.
+  const settle = async () => {
+    await renderOnce()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await renderOnce()
+  }
+  const rows = (end: number) =>
+    captureFrame()
+      .split("\n", end)
+      .map((row) => row.trimEnd())
+  const options = { syntaxStyle, internalBlockMode: "top-level", treeSitterClient } as const
+  const titles = [
+    "",
+    ' "t"',
+    " (one\n\ntwo)",
+    '\n"one\n\ntwo"',
+    " 'one\n# two\nend'",
+    ' "a\\\\" b\n\nc"',
+    ' "a\\"\n\nb"',
+  ]
+  const generate = () => {
+    const blocks = Array.from({ length: 3 + random(6) }, (_, i) => {
+      const def = `[${pick(["x", "y", "one\n\ntwo", "m\\]n"])}]: ${pick(["/a", "<a b>"])}${pick(titles)}`
+      const [quote, item] = [def.replaceAll("\n", "\n> "), def.replaceAll("\n", "\n  ")]
+      return pick([def, def, `> ${quote}`, `- ${item}`, `> > ${quote}\nlazy`, `[z] in para ${i}`, `- [ ] task ${i}`])
+    })
+    return [...blocks, "END\n"].join("\n\n")
+  }
+  const failures: string[] = []
+  // The first streams by characters: the lazy line hides the quote's definition among its children.
+  const docs = ["> > [r]: /a\nlazy\n\nP\n\n> [r]: /b\n\nWorld\n\nEND\n"]
+  for (let n = Number(process.env.MARKDOWN_TRANSCRIPT_DOCS ?? 24); n > 0; n--) docs.push(generate())
+  for (const [index, doc] of docs.entries()) {
+    const once = createMarkdownRenderable({ ...options, content: doc })
+    renderer.root.add(once)
+    await settle()
+    const expected = rows(once.height)
+    once.destroyRecursively()
+    for (const most of index ? [15, 15] : [1]) {
+      const md = createMarkdownRenderable({ ...options, content: "", streaming: true })
+      renderer.root.add(md)
+      for (let at = 0; at < doc.length; ) {
+        md.content = doc.slice(0, (at += 1 + random(most)))
+        await settle()
+        const last = md._blockStates[md._stableBlockCount - 1]?.renderable
+        const end = last ? last.y + last.height - md.y : 0
+        if (JSON.stringify(rows(end)) !== JSON.stringify(expected.slice(0, end))) {
+          failures.push(JSON.stringify(md.content))
+          break
+        }
+      }
+      md.destroyRecursively()
+    }
+  }
+  expect(failures).toEqual([])
+})
+
 test("default block mode still coalesces ordinary markdown blocks", async () => {
   const md = createMarkdownRenderable({
     id: "markdown-default-coalesced-blocks",
