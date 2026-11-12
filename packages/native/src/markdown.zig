@@ -3602,8 +3602,10 @@ fn heldMarker(rest: []const u8, after_item: bool, in_table: bool) HeldMarker {
     // Nothing after the markers yet: spaces keep it so.
     if (rest.len == 0) return .{ .decided = Hold.keeping(" \t") };
     const c = rest[0];
-    // A task marker after a list item marker: `[`, `[x`, `[x]` and spaces may still be one.
+    // A task marker after a list item marker: `[`, `[x`, `[x]` and spaces may still be one. A
+    // whole one before more bytes is read past like a container marker.
     if (after_item and c == '[') {
+        if (rest.len > 4 and taskPrefix(rest[0..4])) return .{ .container = 3 };
         if (!taskPrefix(rest)) return .{ .decided = Hold.not };
         return .{ .decided = if (rest.len >= 3) Hold.keeping(" \t") else Hold.again };
     }
