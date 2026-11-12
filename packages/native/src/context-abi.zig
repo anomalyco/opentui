@@ -2515,14 +2515,7 @@ pub fn ot_scene_paint(context: ?*ContextHandle, session_ptr: ?*const c.ot_handle
 }
 
 pub fn ot_scene_hit_test(context: ?*ContextHandle, session_ptr: ?*const c.ot_handle, x: i32, y: i32, out_ptr: ?*u32) callconv(.c) c.ot_status {
-    const status = sessionContextStatus(context);
-    if (status != c.OT_OK) return status;
-    const owner = context.?;
-    const id = session_ptr orelse return sessionError(owner, error.InvalidOptions);
-    const out = out_ptr orelse return sessionError(owner, error.InvalidOptions);
-    const result = owner.core.sceneHitTest(handleFromC(id.*), x, y) catch |err| return sessionError(owner, err);
-    out.* = result;
-    return c.OT_OK;
+    return ot_scene_hit_test_excluding(context, session_ptr, x, y, 0, out_ptr);
 }
 
 pub fn ot_scene_hit_test_excluding(context: ?*ContextHandle, session_ptr: ?*const c.ot_handle, x: i32, y: i32, excluded_num: u32, out_ptr: ?*u32) callconv(.c) c.ot_status {

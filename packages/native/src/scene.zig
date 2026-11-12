@@ -3124,7 +3124,7 @@ pub const Scene = struct {
         for (0..2) |axis| {
             if (!state.visible[axis]) continue;
             const hit = intersection(cellClip(state.barRects(axis, box, node.paint.borderSides).bar), entry.clip);
-            if (hit.width != 0 and hit.height != 0) self.hits.appendAssumeCapacity(.{ .x = @intCast(hit.x), .y = @intCast(hit.y), .width = hit.width, .height = hit.height, .token = node.token });
+            if (hit.width != 0 and hit.height != 0) self.hits.appendAssumeCapacity(.{ .x = @intCast(hit.x), .y = @intCast(hit.y), .width = hit.width, .height = hit.height, .token = node.token, .num = node.num });
         }
     }
 
