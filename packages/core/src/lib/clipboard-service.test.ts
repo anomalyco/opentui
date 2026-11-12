@@ -203,25 +203,44 @@ describe("createClipboard", () => {
       ["clipboard", "c2"],
       ["clipboard", "c3"],
     ] as const
+    const c3 = "clipboard:c3"
+    const p0 = "primary:p0"
     const cases = [
       // c3 cannot start its host write, then the older writes time out (c0 rejects) in poll order.
       [
-        [4, "failed", ["clipboard:c3"], "attempted"],
-        [2, "timed-out", ["clipboard:c3"], "not-attempted"],
-        [1, "timed-out", ["clipboard:c3", "primary:p0"], "attempted"],
-        [0, "rejected", ["clipboard:c3", "primary:p0"], undefined],
-        [3, "timed-out", ["clipboard:c3", "primary:p0", "clipboard:c3"], "not-attempted"],
+        "supported",
+        [
+          [4, "failed", [c3], "attempted"],
+          [2, "timed-out", [c3, c3], "attempted"],
+          [1, "timed-out", [c3, c3, p0], "attempted"],
+          [0, "rejected", [c3, c3, p0, c3], undefined],
+          [3, "timed-out", [c3, c3, p0, c3, c3], "attempted"],
+        ],
       ],
-      // Host writes settle in order, so each selection gets its newest copy once.
+      // Host writes settle in order; each replaced copy writes the newest text too.
       [
-        [0, "written", [], "not-attempted"],
-        [1, "written", ["primary:p0"], "attempted"],
-        [2, "written", ["primary:p0"], "not-attempted"],
-        [3, "written", ["primary:p0"], "not-attempted"],
-        [4, "written", ["primary:p0", "clipboard:c3"], "attempted"],
+        "supported",
+        [
+          [0, "written", [c3], "attempted"],
+          [1, "written", [c3, p0], "attempted"],
+          [2, "written", [c3, p0, c3], "attempted"],
+          [3, "written", [c3, p0, c3, c3], "attempted"],
+          [4, "written", [c3, p0, c3, c3, c3], "attempted"],
+        ],
+      ],
+      // Without OSC 52 a replaced copy reports what the terminal reports.
+      [
+        "unsupported",
+        [
+          [2, "timed-out", [c3], "not-attempted"],
+          [4, "timed-out", [c3, c3], "not-attempted"],
+          [1, "timed-out", [c3, c3, p0], "not-attempted"],
+          [0, "timed-out", [c3, c3, p0, c3], "not-attempted"],
+          [3, "timed-out", [c3, c3, p0, c3, c3], "not-attempted"],
+        ],
       ],
     ] as const
-    for (const steps of cases) {
+    for (const [capability, steps] of cases) {
       const hostTexts: string[] = []
       const settle: ((status: (typeof steps)[number][1]) => void)[] = []
       const terminalTexts: string[] = []
@@ -240,7 +259,7 @@ describe("createClipboard", () => {
         terminal: {
           writeText(text, selection) {
             terminalTexts.push(`${selection}:${text}`)
-            return { status: "attempted", capability: "supported" }
+            return { status: capability === "supported" ? "attempted" : "not-attempted", capability }
           },
         },
       })
@@ -253,7 +272,9 @@ describe("createClipboard", () => {
         settle[index]!(status)
         const result = await pending[index]!.catch((error: Error) => error.message)
         expect(terminalTexts).toEqual([...terminal])
-        expect(typeof result === "string" ? result : result.terminal.status).toBe(terminalStatus ?? "host failed")
+        expect(typeof result === "string" ? result : result.terminal).toEqual(
+          terminalStatus ? { status: terminalStatus, capability } : "host failed",
+        )
       }
       await service.clipboard.dispose()
     }

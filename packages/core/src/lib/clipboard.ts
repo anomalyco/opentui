@@ -223,10 +223,9 @@ export const createClipboard = ({ host, terminal }: ClipboardOptions): Clipboard
     }
     // Write the terminal last: on Wayland/X11 the last writer owns the
     // selection. A rejected host write must not suppress it. Host writes can
-    // settle out of order (timeouts), so only the newest operation per
-    // selection writes the terminal: when its own host write settles, and
-    // again when the last one in flight settles, in case an older host write
-    // took the selection after it.
+    // settle out of order (timeouts), so each settled host write sends the
+    // newest operation on its selection to the terminal, and the last one
+    // leaves the terminal with the newest text.
     if (!canUseRemoteHost(options)) {
       return { host: { status: "not-attempted" }, terminal: terminalOperation() }
     }
@@ -236,9 +235,7 @@ export const createClipboard = ({ host, terminal }: ClipboardOptions): Clipboard
     inFlight.set(selection, state)
     const settled = (): TerminalClipboardOperationResult => {
       if (--state.count === 0) inFlight.delete(selection)
-      if (state.newest === terminalOperation) return terminalOperation()
-      if (state.count === 0) state.newest()
-      return NOT_ATTEMPTED_TERMINAL
+      return state.newest()
     }
     let hostResult: Result
     try {
