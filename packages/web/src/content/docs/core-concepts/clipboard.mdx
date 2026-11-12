@@ -82,9 +82,10 @@ The composed service owns the host service passed to `createClipboard()`. The re
 
 Skipped destinations report `{ status: "not-attempted" }` in the result.
 
-Host writes can settle out of order, for example when they time out. When `all-available` operations on one selection
-overlap, each one writes the newest operation's text to the terminal when its host write settles, so the terminal ends
-with the newest text. Each result reports that terminal write.
+Host writes can settle out of order, for example when they time out. When operations on one selection overlap, the
+newest one wins, whatever its destination. Each settled `all-available` or `best-available` host write sends the newest
+operation's terminal write, unless the terminal already took it and no host write has taken the selection since, and
+reports that write's result. A newer `host-only` write stops the older operations' terminal writes.
 
 ### Remote sessions
 

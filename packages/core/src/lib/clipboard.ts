@@ -193,8 +193,30 @@ export const createClipboard = ({ host, terminal }: ClipboardOptions): Clipboard
     readonly terminal: TerminalClipboardOperationResult
   }
 
-  // All-available operations whose host write is in flight, and the newest one's terminal write.
-  const inFlight = new Map<ClipboardSelection, { count: number; newest: () => TerminalClipboardOperationResult }>()
+  // Per selection while host writes are in flight: their count, the newest
+  // operation's terminal write (null: none; undefined: decided when its host
+  // write settles), and that write's result once the terminal took it.
+  type Newest = { write: (() => TerminalClipboardOperationResult) | null | undefined }
+  type Pending = { count: number; newest: Newest; sent?: TerminalClipboardOperationResult }
+  const inFlight = new Map<ClipboardSelection, Pending>()
+
+  const replace = (selection: ClipboardSelection, newest: Newest): Pending | undefined => {
+    const pending = inFlight.get(selection)
+    if (pending) {
+      pending.newest = newest
+      pending.sent = undefined
+    }
+    return pending
+  }
+
+  const sendNewest = (pending: Pending): TerminalClipboardOperationResult => {
+    const newest = pending.newest
+    if (!newest.write) return NOT_ATTEMPTED_TERMINAL
+    if (pending.sent) return pending.sent
+    const result = newest.write()
+    if (pending.newest === newest && result.status === "attempted") pending.sent = result
+    return result
+  }
 
   const composeMutation = async <Result extends HostMutationResult>(
     options: ClipboardWriteOptions,
@@ -203,48 +225,42 @@ export const createClipboard = ({ host, terminal }: ClipboardOptions): Clipboard
     hostOperation: () => Promise<Result>,
     terminalOperation: () => TerminalClipboardOperationResult,
   ): Promise<MutationResult<Result>> => {
-    if (options.destination === "terminal-only") {
-      return { host: { status: "not-attempted" }, terminal: terminalOperation() }
+    // The newest operation on a selection wins, whatever its destination.
+    const now = (): MutationResult<Result> => {
+      const pending = replace(selection, { write: terminalOperation })
+      return { host: { status: "not-attempted" }, terminal: pending ? sendNewest(pending) : terminalOperation() }
     }
+    if (options.destination === "terminal-only") return now()
     if (options.destination === "host-only") {
-      const hostResult = canUseRemoteHost(options) ? await hostOperation() : { status: "not-attempted" as const }
-      return { host: hostResult, terminal: NOT_ATTEMPTED_TERMINAL }
+      if (!canUseRemoteHost(options)) return { host: { status: "not-attempted" }, terminal: NOT_ATTEMPTED_TERMINAL }
+      replace(selection, { write: null })
+      return { host: await hostOperation(), terminal: NOT_ATTEMPTED_TERMINAL }
     }
-    if (options.destination === "best-available") {
-      if (terminal.remote) {
-        return { host: { status: "not-attempted" }, terminal: terminalOperation() }
-      }
-      const hostResult = await hostOperation()
-      const terminalResult =
-        !signal.aborted && (hostResult.status === "unsupported" || hostResult.status === "failed")
-          ? terminalOperation()
-          : NOT_ATTEMPTED_TERMINAL
-      return { host: hostResult, terminal: terminalResult }
-    }
+    const bestAvailable = options.destination === "best-available"
+    if (bestAvailable ? terminal.remote : !canUseRemoteHost(options)) return now()
     // Write the terminal last: on Wayland/X11 the last writer owns the
     // selection. A rejected host write must not suppress it. Host writes can
-    // settle out of order (timeouts), so each settled host write sends the
-    // newest operation on its selection to the terminal, and the last one
-    // leaves the terminal with the newest text.
-    if (!canUseRemoteHost(options)) {
-      return { host: { status: "not-attempted" }, terminal: terminalOperation() }
-    }
-    const state = inFlight.get(selection) ?? { count: 0, newest: terminalOperation }
-    state.count++
-    state.newest = terminalOperation
-    inFlight.set(selection, state)
-    const settled = (): TerminalClipboardOperationResult => {
-      if (--state.count === 0) inFlight.delete(selection)
-      return state.newest()
-    }
-    let hostResult: Result
+    // settle out of order (timeouts), so each settle sends the newest
+    // operation's terminal write, again only if a host write may have taken
+    // the selection since the terminal took it.
+    const newest: Newest = { write: bestAvailable ? undefined : terminalOperation }
+    const pending = replace(selection, newest) ?? { count: 0, newest }
+    pending.count++
+    inFlight.set(selection, pending)
+    let hostResult: Result | undefined
+    let terminalResult: TerminalClipboardOperationResult
     try {
       hostResult = await hostOperation()
-    } catch (error) {
-      settled()
-      throw error
+    } finally {
+      if (--pending.count === 0) inFlight.delete(selection)
+      const status = hostResult?.status
+      if (status === undefined || status === "written" || status === "cleared") pending.sent = undefined
+      if (newest.write === undefined) {
+        newest.write = !signal.aborted && (status === "unsupported" || status === "failed") ? terminalOperation : null
+      }
+      terminalResult = sendNewest(pending)
     }
-    return { host: hostResult, terminal: settled() }
+    return { host: hostResult, terminal: terminalResult }
   }
   return {
     read(options) {
