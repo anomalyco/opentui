@@ -947,9 +947,6 @@ fn followed_code_keeps_appended_text_in_view() {
     }
     // The trailing newline leaves an empty last line in view.
     assert_eq!(rows(&app), ["line 4", "line 5", ""]);
-    log.scroll_to(0);
-    log.append("line 6\n");
-    assert_eq!(rows(&app)[0], "line 0");
 }
 
 #[test]

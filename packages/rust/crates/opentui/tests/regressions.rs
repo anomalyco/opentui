@@ -168,22 +168,31 @@ fn set_timeout_with_a_huge_delay_panics() {
     app.advance(Duration::from_secs(1));
 }
 
-// Expected: follow stops after the user scrolls up, so a resize keeps the view at the top.
-// Actual: `CodeInner::resized` jumps to the bottom whenever follow is on.
+// Expected: follow stops after the user scrolls up, so new text or a resize keeps the view at the top, and a view at
+// the end stays there.
+// Actual: `CodeInner::resized`, and later `Code::set_code` (record 647), jumped to the bottom whenever follow is on.
 #[test]
-fn followed_code_jumps_to_the_bottom_on_resize_after_the_user_scrolled_up() {
-    let app = TestApp::new(12, 3);
-    let log = Code::new(&app).follow(true).grow(1.0);
-    app.root().add(&log);
-    app.render();
-    for line in 0..10 {
-        log.append(&format!("line {line}\n"));
+fn followed_code_jumps_to_the_bottom_after_the_user_scrolled_up() {
+    let changes: [fn(&TestApp, &Code); 4] = [
+        |_, log| drop(log.append("\nmore")),
+        |_, log| drop(log.set_code(log.code() + "\nmore")),
+        |_, log| drop(log.set_code(["other"; 12].join("\n"))),
+        |app, _| app.resize(14, 3),
+    ];
+    for (index, scrolled_up) in (0..changes.len()).flat_map(|index| [(index, false), (index, true)]) {
+        let app = TestApp::new(12, 3);
+        let log = Code::new(&app).follow(true).grow(1.0).set_code(["line"; 10].join("\n"));
+        app.root().add(&log);
+        app.render();
+        if scrolled_up {
+            log.scroll_to(0);
+        }
+        changes[index](&app, &log);
+        app.render();
+        let row = log.scroll_position();
+        let end = log.perform(ScrollAction::Bottom).scroll_position();
+        assert_eq!(row, if scrolled_up { 0 } else { end }, "change {index}, scrolled up: {scrolled_up}");
     }
-    app.render();
-    log.scroll_to(0);
-    assert_eq!(rows(&app)[0], "line 0");
-    app.resize(14, 3);
-    assert_eq!(rows(&app)[0], "line 0");
 }
 
 // Expected: Home scrolls to the top and keeps the horizontal position, as End does and as Core's vertical
