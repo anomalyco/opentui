@@ -288,8 +288,9 @@ impl Behavior for MarkdownInner {
 struct Shown {
     block: MarkdownBlock,
     rendered: Option<Rendered>,
-    /// A leaf the widget writes itself: the parser output it wrote last, which an unchanged leaf does not write again.
-    written: Option<MarkdownLeaf>,
+    /// A leaf the widget writes itself: the parser output it wrote last, with the inline source when a hook read it,
+    /// which an unchanged leaf does not write again.
+    written: Option<(MarkdownLeaf, Option<String>)>,
     /// A hash of the spans the widget wrote last: equal spans leave the node as is, so its painted bytes keep
     /// answering clicks.
     content: Option<u64>,
@@ -659,18 +660,26 @@ impl Markdown {
     fn change(&self, run: impl FnOnce(&MarkdownDoc, bool) -> crate::Result<MarkdownResult>) {
         let Some(app) = self.app() else { return };
         let Some(doc) = &self.0.doc else { return };
-        let guard = self.0.guard.try_borrow_mut();
-        let _guard = guard.expect("the Markdown content changed while it was read");
-        // Link text depends on hyperlink support, which the terminal reports after startup (N5).
-        if app.hyperlinks() != self.0.hyperlinks.get() {
-            self.0.hyperlinks.set(app.hyperlinks());
-            let style = self.0.style.as_ref();
-            if let Some(result) = app.report(doc.set_options(&MarkdownOptions { flags: self.flags(), style })) {
-                self.apply(&app, doc, result);
+        let result = {
+            let guard = self.0.guard.try_borrow_mut();
+            let _guard = guard.expect("the Markdown content changed while it was read");
+            // Link text depends on hyperlink support, which the terminal reports after startup (N5).
+            let mut options = None;
+            if app.hyperlinks() != self.0.hyperlinks.get() {
+                self.0.hyperlinks.set(app.hyperlinks());
+                let style = self.0.style.as_ref();
+                options = app.report(doc.set_options(&MarkdownOptions { flags: self.flags(), style }));
             }
-        }
-        let streaming = self.0.options.borrow().streaming;
-        if let Some(result) = app.report(run(doc, !streaming)) {
+            let streaming = self.0.options.borrow().streaming;
+            let result = app.report(run(doc, !streaming));
+            match (options, result) {
+                (Some(options), Some(result)) => Some(merge(options, result)),
+                (options, result) => result.or(options),
+            }
+        };
+        // Showing the change runs hooks and renderers, which may read the content but not change it.
+        let _guard = self.0.guard.borrow();
+        if let Some(result) = result {
             self.apply(&app, doc, result);
         }
     }
@@ -800,6 +809,8 @@ impl Markdown {
             (PARAGRAPH | HEADING, Some(Rendered::Text(text))) if self.host_writes() => {
                 self.write_prose(app, doc, index, &text, false);
             }
+            // Native code writes the text: it has no targets once a frame paints it.
+            (PARAGRAPH | HEADING, Some(Rendered::Text(_))) => self.set_targets(app, index, Vec::new()),
             (sys::OT_MD_HTML, Some(Rendered::Text(text))) => {
                 if let Some(leaf) = app.report(doc.read_leaf(block.index)) {
                     text.set_text(String::from_utf8_lossy(&leaf.bytes).into_owned());
@@ -918,10 +929,13 @@ impl Markdown {
     fn write_prose(&self, app: &App, doc: &MarkdownDoc, index: usize, text: &Text, force: bool) {
         let block = self.0.blocks.borrow()[index].block.index;
         let Some(leaf) = app.report(doc.read_leaf(block)) else { return };
-        if !force && self.0.blocks.borrow()[index].written.as_ref() == Some(&leaf) {
+        // A hook's output depends on the inline source too.
+        let source = self.0.options.borrow().inline_hook.as_ref().map(|_| doc.read_source(block).unwrap_or_default());
+        let written = (leaf, source);
+        if !force && self.0.blocks.borrow()[index].written.as_ref() == Some(&written) {
             return;
         }
-        let spans = self.hook(doc, block, leaf_spans(&leaf), false);
+        let spans = self.hook(doc, block, leaf_spans(&written.0), false, written.1.as_deref());
         let (mut ranges, mut end) = (Vec::new(), 0);
         let content: Vec<Span<'static>> = spans
             .into_iter()
@@ -940,12 +954,20 @@ impl Markdown {
         if self.0.blocks.borrow()[index].content != hash {
             text.set_text(content);
         }
-        // Until a frame paints the new ranges, clicks keep reaching the ones on screen.
+        {
+            let mut blocks = self.0.blocks.borrow_mut();
+            blocks[index].written = Some(written);
+            blocks[index].content = hash;
+        }
+        self.set_targets(app, index, ranges);
+    }
+
+    /// The click targets of block `index`'s text from the next frame on; until a frame paints them, clicks keep
+    /// reaching the ones on screen.
+    fn set_targets(&self, app: &App, index: usize, ranges: Vec<(Range<usize>, String)>) {
         let since = app.painted_frames();
         let mut blocks = self.0.blocks.borrow_mut();
         let shown = &mut blocks[index];
-        shown.written = Some(leaf);
-        shown.content = hash;
         let painted =
             shown.targets.take().map_or_else(Vec::new, |old| if old.since < since { old.ranges } else { old.painted });
         if !ranges.is_empty() || !painted.is_empty() {
@@ -954,11 +976,19 @@ impl Markdown {
         }
     }
 
-    /// `spans` of leaf `block` as the inline hook rewrites them, if there is one.
-    fn hook(&self, doc: &MarkdownDoc, block: u32, spans: Vec<InlineSpan>, table_cell: bool) -> Vec<InlineSpan> {
+    /// `spans` of leaf `block` as the inline hook rewrites them, if there is one; `source` is its inline source, if
+    /// read already.
+    fn hook(
+        &self,
+        doc: &MarkdownDoc,
+        block: u32,
+        spans: Vec<InlineSpan>,
+        table_cell: bool,
+        source: Option<&str>,
+    ) -> Vec<InlineSpan> {
         let options = Rc::clone(&self.0.options.borrow());
         let Some(hook) = &options.inline_hook else { return spans };
-        let source = doc.read_source(block).unwrap_or_default();
+        let source = source.map_or_else(|| doc.read_source(block).unwrap_or_default(), str::to_owned);
         let syntax = Arc::clone(&self.0.syntax.borrow());
         hook(spans, &InlineContext { source: &source, conceal: options.conceal, syntax: &syntax, table_cell })
     }
@@ -1065,7 +1095,7 @@ impl Markdown {
                     .into_iter()
                     .map(|cell| {
                         let leaf = app.report(doc.read_leaf(cell)).unwrap_or_default();
-                        let spans = self.hook(doc, cell, leaf_spans(&leaf), true);
+                        let spans = self.hook(doc, cell, leaf_spans(&leaf), true, None);
                         Content(
                             spans
                                 .into_iter()

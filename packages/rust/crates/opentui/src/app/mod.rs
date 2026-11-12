@@ -60,6 +60,12 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+thread_local! {
+    /// More environment the terminal of a headless app made on this thread reports
+    /// ([`crate::testing::TestApp::with_hyperlinks`]).
+    pub(crate) static HEADLESS_ENVIRONMENT: RefCell<Vec<(&'static str, &'static str)>> = const { RefCell::new(Vec::new()) };
+}
+
 /// How an [`App`] runs.
 #[derive(Clone, Debug)]
 #[must_use]
@@ -485,12 +491,9 @@ impl App {
     fn headless_session(width: u16, height: u16, options: &AppOptions) -> Result<Session> {
         let context = Context::new(options.host.context)?;
         let session = Session::new(&context, options.host.session)?;
-        session.attach_renderer(
-            u32::from(width.max(1)),
-            u32::from(height.max(1)),
-            Remote::Remote,
-            &[("TERM", "xterm-256color"), ("COLORTERM", "truecolor")],
-        )?;
+        let mut environment = vec![("TERM", "xterm-256color"), ("COLORTERM", "truecolor")];
+        HEADLESS_ENVIRONMENT.with_borrow(|extra| environment.extend_from_slice(extra));
+        session.attach_renderer(u32::from(width.max(1)), u32::from(height.max(1)), Remote::Remote, &environment)?;
         Ok(session)
     }
 

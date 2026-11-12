@@ -61,6 +61,15 @@ impl TestApp {
         Self { app, parser }
     }
 
+    /// A `width` by `height` app whose terminal shows hyperlinks (OSC 8), as most terminals do: widgets take the
+    /// paths they take there, such as Markdown that native code writes itself.
+    pub fn with_hyperlinks(width: u16, height: u16) -> Self {
+        crate::app::HEADLESS_ENVIRONMENT.set(vec![("FORCE_HYPERLINK", "1")]);
+        let app = Self::new(width, height);
+        crate::app::HEADLESS_ENVIRONMENT.set(Vec::new());
+        app
+    }
+
     pub fn app(&self) -> &App {
         &self.app
     }

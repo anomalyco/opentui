@@ -360,11 +360,16 @@ fn inline_hooks_rewrite_table_cells_without_targets() {
 fn the_inline_context_says_which_spans_are_table_cells() {
     let app = TestApp::new(20, 16);
     let seen: Rc<RefCell<Vec<(String, bool)>>> = Rc::default();
-    let record = seen.clone();
+    // The hook may read the whole document while it runs.
+    let document: Rc<RefCell<Option<Markdown>>> = Rc::default();
+    let (record, read) = (seen.clone(), document.clone());
     let markdown = Markdown::new(&app).streaming(true).inline_hook(move |spans, context| {
+        let whole = read.borrow().as_ref().map(Markdown::markdown).unwrap_or_default();
+        assert!(whole.starts_with("# Title\n\nText") && whole.contains(context.source), "{whole:?}");
         record.borrow_mut().push((context.source.to_owned(), context.table_cell));
         spans
     });
+    *document.borrow_mut() = Some(markdown.clone());
     app.root().add(&markdown);
     markdown.append("# Title\n\nText\n\n- item\n\n> quote\n\n| id |\n| -- |\n| cell |");
     // A streamed row refills the table; a re-run reaches a quote and a table.
@@ -387,6 +392,7 @@ fn the_inline_context_says_which_spans_are_table_cells() {
         ("more", cell),
     ];
     assert_eq!(*seen.borrow(), expected.map(|(source, cell)| (source.to_owned(), cell)));
+    document.borrow_mut().take();
 }
 
 #[test]
@@ -596,6 +602,29 @@ fn rerunning_the_inline_hook_touches_only_selected_blocks() {
     let capture = app.render();
     assert_eq!(capture.row(0).trim_end(), "Head ses_a");
     assert_targets(&capture, &markdown, |_| "none");
+}
+
+#[test]
+fn a_hook_shows_its_inputs_and_its_targets_go_with_it() {
+    // A hook that shows the inline source: a new source with the same display shows.
+    let app = TestApp::new(20, 2);
+    let markdown = Markdown::new(&app).inline_hook(|_, context| vec![Span::raw(context.source.to_owned()).into()]);
+    app.root().add(&markdown);
+    markdown.set_markdown("*hi*");
+    assert_eq!(frame(&app), "*hi*\n");
+    markdown.set_markdown("_hi_");
+    assert_eq!(frame(&app), "_hi_\n");
+    // Where native code writes the text (a terminal with hyperlinks), the hook's targets go with the hook.
+    let app = TestApp::with_hyperlinks(20, 2);
+    let markdown = Markdown::new(&app)
+        .inline_hook(|_, _| vec![InlineSpan { span: Span::raw("hello"), code: false, target: Some("old".to_owned()) }]);
+    app.root().add(&markdown);
+    markdown.set_markdown("hi");
+    assert_eq!(frame(&app), "hello\n");
+    assert_eq!(markdown.target_at(1, 0).as_deref(), Some("old"));
+    markdown.remove_inline_hook();
+    assert_eq!(frame(&app), "hi\n");
+    assert_eq!(markdown.target_at(1, 0), None);
 }
 
 #[test]
