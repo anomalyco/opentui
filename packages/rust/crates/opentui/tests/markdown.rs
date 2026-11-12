@@ -188,6 +188,17 @@ fn ending_the_stream_runs_code_block_renderers_again() {
     assert_eq!(frame(&app), "preview\n");
     markdown.streaming(false);
     assert_eq!(frame(&app), "x +\n");
+    // The other way: the default widget while streaming, the renderer's once the stream ends, though the closed
+    // fence did not change.
+    let app = TestApp::new(30, 4);
+    let markdown = Markdown::new(&app)
+        .streaming(true)
+        .code_block_renderer("latex", move |block| (!block.streaming).then(|| Text::new(block.app, "done").as_any()));
+    app.root().add(&markdown);
+    markdown.set_markdown("```latex\nx\n```\n\ntail\n");
+    assert_eq!(frame(&app), "x\n\ntail\n");
+    markdown.streaming(false);
+    assert_eq!(frame(&app), "done\n\ntail\n");
 }
 
 #[test]

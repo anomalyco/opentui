@@ -1198,7 +1198,8 @@ impl Markdown {
                 let blocks = self.0.blocks.borrow();
                 (blocks[index].block.clone(), blocks[index].rendered.clone())
             };
-            if !matches!(rendered, Some(Rendered::Custom(_))) {
+            // A renderer that chose the default widget while streaming may choose its own now.
+            if block.kind != sys::OT_MD_CODE || self.0.options.borrow().code_blocks.is_empty() {
                 continue;
             }
             let new = self.code_block(&app, doc, &block, rendered.as_ref());
