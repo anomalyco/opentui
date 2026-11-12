@@ -772,7 +772,7 @@ test("CliRenderer does not force split repaint when switching to passthrough wit
   expect(renderer.getNativeStats().nativeFrameCount).toBe(frames)
 })
 
-// `history` is the rows that reach scrollback, in this 10-row terminal and in one that grew to 12 rows unseen.
+// `history` is the rows that reach scrollback, in this 10-row terminal and in ones that grew to 12 or 10,001 rows unseen.
 for (const [name, screenMode, change, dimensions, output, history] of [
   [
     "alternate-screen resize",
@@ -803,7 +803,7 @@ for (const [name, screenMode, change, dimensions, output, history] of [
     "split-footer",
     (target: TestRenderer) => (target.footerHeight = 6),
     [40, 6],
-    ANSI.scrollIntoHistory(2),
+    "\x1b[65535H\n\n",
     2,
   ],
   [
@@ -880,7 +880,7 @@ for (const [name, screenMode, change, dimensions, output, history] of [
     const sentinel = (renderer as any).replySentinel ? "\x1b[c" : ""
     const written = writes.map((write) => write.output).join("")
     expect(written).toBe(output.replace("\x1b[14t", "\x1b[14t" + sentinel))
-    expect([10, 12].map((rows) => scrollbackRows(written, rows))).toEqual([history, history])
+    expect([10, 12, 10_001].map((rows) => scrollbackRows(written, rows))).toEqual([history, history, history])
     for (const write of writes) {
       expect(write.dimensions).toEqual([dimensions, dimensions, dimensions, dimensions])
     }
@@ -1576,8 +1576,8 @@ test("CliRenderer split-footer reuses the reserved gap when reopening the footer
   })
 
   await result.renderOnce()
-  // The native transition keeps the 4 rows it scrolls off, also in a terminal that grew to 12 rows unseen.
-  expect([10, 12].map((rows) => scrollbackRows(result.output(), rows))).toEqual([4, 4])
+  // The native transition keeps the 4 rows it scrolls off, also in a terminal that grew unseen.
+  expect([10, 12, 10_001].map((rows) => scrollbackRows(result.output(), rows))).toEqual([4, 4, 4])
 
   renderer.footerHeight = 4
 
@@ -1606,10 +1606,14 @@ test("CliRenderer split-footer reuses the reserved gap when reopening the footer
   })
 })
 
-test("CliRenderer split-footer passthrough footerHeight shrink clears stale rows without reverse scrolling", async () => {
+test.each([
+  ["shrink clears stale rows without reverse scrolling", 10, 3, `${ANSI.moveCursor(7, 1)}\x1b[2K`],
+  ["growth by 4000 rows feeds every line", 4100, 4004, `\x1b[65535H${"\n".repeat(4000)}`],
+  ["growth past one screen packet scrolls every row", 4100, 4096, `\x1b[65535H${"\n".repeat(4000)}\x1b[92S`],
+] as const)("CliRenderer split-footer passthrough footerHeight %s", async (_name, height, footerHeight, output) => {
   const result = await createTestRenderer({
     width: 40,
-    height: 10,
+    height,
     screenMode: "split-footer",
     footerHeight: 4,
     externalOutputMode: "passthrough",
@@ -1618,9 +1622,10 @@ test("CliRenderer split-footer passthrough footerHeight shrink clears stale rows
 
   renderer = result.renderer
 
-  renderer.footerHeight = 3
+  renderer.footerHeight = footerHeight
   await renderer.nativeScene!.driver.idle()
-  expect(result.output()).toBe(`${ANSI.moveCursor(7, 1)}\x1b[2K`)
+  expect(renderer.footerHeight).toBe(footerHeight)
+  expect(result.output()).toBe(output)
 })
 
 // The scrub clears from the visible footer top: the settling origin, a deferred transition's source, or, after a

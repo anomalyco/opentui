@@ -1163,10 +1163,10 @@ pub const CliRenderer = struct {
                 if (transition.source_top_line < transition.target_top_line) {
                     writer.print("\x1b[{d}T", .{transition.scroll_lines}) catch {};
                 } else if (transition.source_top_line > transition.target_top_line) {
-                    // Line feeds on the last row keep the top rows in scrollback; CSI S deletes them on xterm.
-                    writer.writeAll("\x1b7\x1b[9999;1H") catch {};
+                    // Line feeds on the last row (65535, the largest tty row count, clamps to it) keep the top rows
+                    // in scrollback, where xterm.js deletes them on CSI S.
+                    writer.writeAll("\x1b[65535H") catch {};
                     writer.splatByteAll('\n', transition.scroll_lines) catch {};
-                    writer.writeAll("\x1b8") catch {};
                 }
             },
             .clear_stale_rows => {
