@@ -638,6 +638,42 @@ fn a_hook_shows_its_inputs_and_its_targets_go_with_it() {
     assert_eq!(markdown.target_at(1, 0), None);
 }
 
+/// Sets up the session's terminal and drains its setup output, as a terminal that has not replied yet.
+fn activate_terminal(session: &opentui::native::Session) {
+    use opentui::native::{Pump, TerminalOptions};
+    session.setup_terminal(TerminalOptions::default()).unwrap();
+    let mut now = 0;
+    for _ in 0..4096 {
+        match session.pump(now, 1).unwrap() {
+            Pump::Idle | Pump::Closed => break,
+            Pump::Again => {}
+            Pump::WaitUntil(deadline) => now = deadline,
+            Pump::OutputPending => {
+                let mut bytes = [0; 4096];
+                let ticket = session.read_output(&mut bytes).unwrap().expect("pending output");
+                session.complete_output(ticket, true).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn an_option_change_after_a_hyperlink_reply_keeps_text_coming() {
+    // bigboi-r2-3: the terminal reports hyperlinks while the document streams; the next option change must send
+    // the flags it decides, so native code and the widget agree who writes the text.
+    let app = TestApp::new(30, 2);
+    let session = app.app().session();
+    activate_terminal(session);
+    let markdown = Markdown::new(&app).streaming(true).inline_hook(|spans, _| spans);
+    app.root().add(&markdown);
+    markdown.set_markdown("first");
+    assert_eq!(frame(&app), "first\n");
+    session.control(opentui::native::Control::CapabilityResponse(b"\x1bP>|ghostty 1.3.1\x1b\\")).unwrap();
+    assert!(session.capabilities().unwrap().flags.contains(opentui::native::CapabilityFlags::HYPERLINKS));
+    markdown.remove_inline_hook().append(" second");
+    assert_eq!(frame(&app), "first second\n");
+}
+
 #[test]
 fn rerunning_without_a_hook_builds_nothing() {
     let app = TestApp::new(30, 6);

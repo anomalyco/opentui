@@ -701,9 +701,9 @@ impl Markdown {
             shown.written = None;
             shown.content = None;
         }
-        let flags = self.flags();
+        // The flags as `change` leaves them: it may first take in a new hyperlink capability (N5).
         let style = self.0.style.as_ref();
-        self.change(|doc, _| doc.set_options(&MarkdownOptions { flags, style }));
+        self.change(|doc, _| doc.set_options(&MarkdownOptions { flags: self.flags(), style }));
     }
 
     /// Shows a call's changes: drops the widgets of removed blocks, then builds or updates each listed block.
