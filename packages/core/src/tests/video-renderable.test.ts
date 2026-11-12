@@ -17,11 +17,11 @@ describe("VideoRenderable", () => {
   let setup: TestRendererSetup
   let renderer: TestRenderer
 
-  // Renders until the condition holds; playback follows the wall clock.
+  // Renders until the condition holds; playback follows the wall clock, so the first paint follows play() at once.
   async function renderUntil(condition: () => boolean): Promise<void> {
     for (let attempt = 0; attempt < 500 && !condition(); attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 5))
       await setup.renderOnce()
+      await new Promise((resolve) => setTimeout(resolve, 5))
     }
     expect(condition()).toBe(true)
   }
