@@ -5015,6 +5015,86 @@ test("targetAt counts bytes as the hook returned them", async () => {
   expectTargets(md, () => "ses_a")
 })
 
+// OpenCode's split footer writes each committed block to scrollback once, so the rows of the committed blocks (with the
+// gaps above them) must be those of a fresh render of the same text, and their count never goes down while the text
+// grows. Generated answers repeat labels at top level and in quotes and lists, let quotes take lazy lines, and span
+// labels and titles of each delimiter, with escapes, over blank lines (#2039). A definition that arrives after its use
+// was committed re-inlines that block (N1 (a), next row), so the oracle is the same prefix, not the whole answer.
+test("streamed, the rows of the committed blocks are those of a fresh render", async () => {
+  resizeRenderer(60, 150)
+  let seed = 1
+  const random = (n: number) => ((seed = (Math.imul(seed, 48271) + 11) % 2147483647) >>> 0) % n
+  const pick = <T>(items: T[]) => items[random(items.length)]!
+  const rows = (end: number) =>
+    captureFrame()
+      .split("\n", end)
+      .map((row) => row.trimEnd())
+  const committedRows = (md: MarkdownRenderable) => {
+    const last = md.getChildren()[md.committedBlockCount - 1]
+    return rows(last ? last.y + last.height - md.y : 0)
+  }
+  const titles = [
+    "",
+    ' "t"',
+    " (one\n\ntwo)",
+    '\n"one\n\ntwo"',
+    " 'one\n# two\nend'",
+    ' "a\\\\" b\n\nc"',
+    ' "a\\"\n\nb"',
+  ]
+  const generate = () => {
+    const blocks = Array.from({ length: 3 + random(6) }, (_, i) => {
+      const def = `[${pick(["x", "y", "one\n\ntwo", "m\\]n"])}]: ${pick(["/a", "<a b>"])}${pick(titles)}`
+      const [quote, item] = [def.replaceAll("\n", "\n> "), def.replaceAll("\n", "\n  ")]
+      return pick([def, def, `> ${quote}`, `- ${item}`, `> > ${quote}\nlazy`, `[z] in para ${i}`, `- [ ] task ${i}`])
+    })
+    return [...blocks, "END\n"].join("\n\n")
+  }
+  const failures: string[] = []
+  // The first streams by characters: the lazy line hides the quote's definition among its children.
+  const docs = ["> > [r]: /a\nlazy\n\nP\n\n> [r]: /b\n\nWorld\n\nEND\n"]
+  for (let n = Number(process.env.MARKDOWN_TRANSCRIPT_DOCS ?? 24); n > 0; n--) docs.push(generate())
+  for (const [index, doc] of docs.entries()) {
+    for (const most of index ? [15, 15] : [1]) {
+      const md = createMarkdownRenderable({ syntaxStyle, content: "", streaming: true })
+      renderer.root.add(md)
+      let committed = 0
+      for (let at = 0; at < doc.length; ) {
+        md.content = doc.slice(0, (at += 1 + random(most)))
+        await renderOnce()
+        const shown = committedRows(md)
+        const lost = md.committedBlockCount < committed
+        committed = md.committedBlockCount
+        md.visible = false
+        const fresh = createMarkdownRenderable({ syntaxStyle, content: md.content, streaming: true })
+        renderer.root.add(fresh)
+        await renderOnce()
+        const expected = rows(shown.length)
+        fresh.destroyRecursively()
+        md.visible = true
+        if (lost || JSON.stringify(shown) !== JSON.stringify(expected)) {
+          failures.push(`${JSON.stringify(md.content)}\n${shown.join("|")}\n${expected.join("|")}`)
+          break
+        }
+      }
+      md.destroyRecursively()
+    }
+  }
+  expect(failures).toEqual([])
+})
+
+test("a definition after a committed use re-inlines it; the committed count stays", async () => {
+  const md = createMarkdownRenderable({ syntaxStyle, content: "See [y] here.\n\nNext\n\n", streaming: true })
+  renderer.root.add(md)
+  await renderOnce()
+  expect(md.committedBlockCount).toBe(2)
+  expect(frameText()).toBe("See [y] here.\n\nNext")
+  md.content += "[y]: /a\n\nEnd\n"
+  await renderOnce()
+  expect(md.committedBlockCount).toBeGreaterThanOrEqual(2)
+  expect(frameText()).toBe("See y (/a) here.\n\nNext\n\nEnd")
+})
+
 test("math extension: inline math reaches the hook and display math is a math code block", async () => {
   const seen: MarkdownInlineSpan[] = []
   const blocks: { lang?: string; text: string; closed: boolean }[] = []
