@@ -190,6 +190,9 @@ pub const Parser = struct {
     /// The first token whose display changed since `takeChanged` (none: nothing changed).
     changed_from: u32 = std.math.maxInt(u32),
     extended_from: u32 = std.math.maxInt(u32),
+    /// The first opener a match since `takeChanged` took: the styles after it changed even
+    /// where its display did not (an optimistic opener).
+    matched_from: u32 = std.math.maxInt(u32),
     /// The first token whose delimiter expired (none: none did).
     expired_from: u32 = std.math.maxInt(u32),
     /// Bytes the tokenizer examined (counters; a construct retried after "need more" counts again).
@@ -321,6 +324,7 @@ pub const Parser = struct {
         self.links.clearRetainingCapacity();
         self.changed_from = std.math.maxInt(u32);
         self.extended_from = std.math.maxInt(u32);
+        self.matched_from = std.math.maxInt(u32);
         self.expired_from = std.math.maxInt(u32);
     }
 
@@ -342,13 +346,16 @@ pub const Parser = struct {
         token: u32,
         /// The first text token that only grew at its end (none: none did).
         extended: u32,
+        /// The first opener a new match took (none: no match).
+        matched: u32,
     };
 
     /// What changed since the last call, and forgets it.
     pub fn takeChanged(self: *Parser) Changed {
-        const changed: Changed = .{ .token = self.changed_from, .extended = self.extended_from };
+        const changed: Changed = .{ .token = self.changed_from, .extended = self.extended_from, .matched = self.matched_from };
         self.changed_from = std.math.maxInt(u32);
         self.extended_from = std.math.maxInt(u32);
+        self.matched_from = std.math.maxInt(u32);
         return changed;
     }
 
@@ -737,6 +744,7 @@ pub const Parser = struct {
     fn addMatch(self: *Parser, opener_index: u32, closer_index: u32, kind: MatchKind, count: u32) Error!void {
         const index: u32 = @intCast(self.matches.items.len);
         try self.matches.append(self.allocator, .{ .kind = kind, .count = count, .next_for_opener = self.delimiters.items[opener_index].opener_matches });
+        self.matched_from = @min(self.matched_from, self.delimiters.items[opener_index].token_index);
         self.delimiters.items[opener_index].opener_matches = index;
         const closer = &self.delimiters.items[closer_index];
         if (closer.closer_match_count == 0) closer.closer_first_match = index;

@@ -717,11 +717,13 @@ test "Markdown ABI: a call that fails at any allocation changes nothing, bound n
             _ = try owner.sceneCreateNode(session, c.OT_SCENE_ROOT, 1);
             const doc = try owner.createMarkdown(live);
             _ = try owner.markdownCall(doc, .{ .append = "one $x$ **two**\n\nthree **d** four" });
+            // The changes are in the Markdown scratch, which the next call reuses.
             const blocks = try owner.markdownReadChanges(doc, 64);
+            const indexes = [2]u32{ blocks.changes[0].index, blocks.changes[1].index };
             var nodes: [2]context_mod.Handle = undefined;
-            for (&nodes, blocks.changes[0..2], 2..) |*node, block, num| {
+            for (&nodes, indexes, 2..) |*node, index, num| {
                 node.* = try owner.sceneCreateNode(session, c.OT_SCENE_TEXT, @intCast(num));
-                try owner.markdownBind(doc, block.index, node.*);
+                try owner.markdownBind(doc, index, node.*);
             }
             var before: [2][64]u8 = undefined;
             var before_count: [2]u32 = undefined;

@@ -809,6 +809,9 @@ fn genericProperties(arena: std.mem.Allocator, doc: *const Doc, fed: Fed, option
         // (once in a token) for the comparison and the cut: k = 4.
         .{ "(a) work: assembled bytes <= 4n", c.display_assembled_bytes, 4 * n + 64 },
         .{ "(a) work: sent bytes <= 3n", c.tail_write_bytes, 3 * n + 64 },
+        // A node write restyles from the first token whose style may have changed: each token
+        // once when it arrives and once when a closer restyles it, plus the last one per call.
+        .{ "(a) work: run token visits <= 2n + calls", c.run_token_visits, 2 * n + calls + 64 },
     };
     for (bounds) |bound| {
         if (bound[1] > bound[2]) {
@@ -929,6 +932,8 @@ const Family = enum {
     code_pipes,
     code_span_pipe,
     open_emphasis,
+    /// Tokens after an opener that never closes (each node write restyled them all).
+    open_emphasis_tokens,
     heading,
     table_rows,
     wide_rows,
@@ -989,6 +994,10 @@ const Families = struct {
                 try out.appendSlice(arena, pick(random, &.{ "*", "**", "_", "text | *", "~~" }));
                 for (0..count) |_| try out.appendSlice(arena, pick(random, &.{ "ab ", "cd ", "e" }));
                 try out.appendSlice(arena, "end");
+            },
+            .open_emphasis_tokens => {
+                try out.appendSlice(arena, pick(random, &.{ "*open ", "**open ", "_o ", "[a ", "~~s " }));
+                for (0..count) |_| try out.appendSlice(arena, pick(random, &.{ "`c` ", "&amp; ", "\\* ", "<b> " }));
             },
             .heading => {
                 try out.appendSlice(arena, pick(random, &.{ "# ", "###### ", "> ## " }));
@@ -1079,6 +1088,10 @@ const Families = struct {
         var f: Fixture = undefined;
         try f.init(options);
         defer f.deinit();
+        // Node writes on, so their run work counts.
+        var sink: markdown.TailSink = .{ .allocator = gpa };
+        defer sink.deinit();
+        f.doc.tail_sink = &sink;
         var fed: Fed = .{};
         var step_arena = std.heap.ArenaAllocator.init(gpa);
         defer step_arena.deinit();
@@ -1200,6 +1213,23 @@ test "Markdown stream: every prefix of mixed fragments equals a fresh doc of it,
 test "Markdown model: repeated constructs keep work linear, stores within limits and the pending layout exact" {
     var families: Families = .{};
     try model.check(Families, &families, .{ .seeds = 8, .steps = 0 });
+}
+
+test "Markdown model: tokens after an opener that never closes are restyled once each" {
+    // bigboi-2's stream: 2,054 bytes cost 262,656 run token visits when each node write
+    // restyled every live token; the work property holds it linear.
+    var families: Families = .{};
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var commands: std.ArrayListUnmanaged(FamilyCommand) = .empty;
+    try commands.append(arena, .{ .append = "*open " });
+    for (0..512) |_| try commands.append(arena, .{ .append = "`c` " });
+    try commands.append(arena, .finish);
+    if (try families.run(arena, commands.items)) |failure| {
+        std.debug.print("{s} at step {d}\n", .{ failure.property, failure.step });
+        return error.ModelFailure;
+    }
 }
 
 /// B's last two exceptions to P7, taken before a step: a backtick opener drawn as a code span

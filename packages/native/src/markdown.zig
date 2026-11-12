@@ -249,6 +249,17 @@ const HoldCut = struct {
     partial_byte_count: u32 = 0,
 };
 
+/// The styles in force before a live token; its link is the bracket's that opened it (or the
+/// base link, carried across a fold or retire).
+const TokenStyle = struct {
+    strong: i32,
+    italic: i32,
+    strikethrough: i32,
+    link: u32,
+
+    const base_link = none - 1;
+};
+
 const Live = struct {
     parser: inline_parser.Parser,
     /// The leaf's content (lines joined by '\n', each complete line followed by one) from the
@@ -311,6 +322,10 @@ const Live = struct {
     /// may leave a span open across the cut), and that link's URL.
     base_styles: Styles = .{},
     base_link: std.ArrayListUnmanaged(u8) = .empty,
+    /// The styles in force before each live token, valid for the first `styled_count` tokens:
+    /// a write restyles from the first token whose style may have changed, not from the first.
+    token_styles: std.ArrayListUnmanaged(TokenStyle) = .empty,
+    styled_count: u32 = 0,
     /// The content held an `@`: a GFM email autolink may link text once the leaf is final.
     email_possible: bool = false,
 };
@@ -535,6 +550,7 @@ pub const Doc = struct {
         self.live.base_link.deinit(self.allocator);
         self.live.content.deinit(self.allocator);
         self.live.display_ends.deinit(self.allocator);
+        self.live.token_styles.deinit(self.allocator);
         self.live.pending_display.deinit(self.allocator);
         self.live.previous_pending.deinit(self.allocator);
         self.provisional_undo.deinit(self.allocator);
@@ -2544,6 +2560,7 @@ pub const Doc = struct {
         live.line_start_byte = none;
         live.line_fed_end_byte = 0;
         live.display_ends.clearRetainingCapacity();
+        live.styled_count = 0;
         live.folded_display_byte_count = 0;
         live.content_base = 0;
         live.pending_display.clearRetainingCapacity();
@@ -2573,6 +2590,7 @@ pub const Doc = struct {
             live.content.clearAndFree(self.allocator);
         }
         if (live.display_ends.capacity > inline_parser.token_count_max) live.display_ends.clearAndFree(self.allocator);
+        if (live.token_styles.capacity > inline_parser.token_count_max) live.token_styles.clearAndFree(self.allocator);
         if (live.pending_display.capacity > live_retained_byte_count_max) live.pending_display.clearAndFree(self.allocator);
         if (live.previous_pending.capacity > live_retained_byte_count_max) live.previous_pending.clearAndFree(self.allocator);
         live.parser.releaseCapacity();
@@ -2657,6 +2675,7 @@ pub const Doc = struct {
         live.pipe_line_start = if (live.pipe_line_start != none and live.pipe_line_start >= prose) live.pipe_line_start - prose else none;
         live.parser.reset();
         live.display_ends.clearRetainingCapacity();
+        live.styled_count = 0;
         live.folded_display_byte_count = 0;
         live.base_styles = .{};
         live.base_link.clearRetainingCapacity();
@@ -2754,6 +2773,9 @@ pub const Doc = struct {
         const ends = &live.display_ends;
         if (r.tokens.len > ends.capacity) self.counters.capacity_growth_count += 1;
         try ends.resize(self.allocator, r.tokens.len);
+        // The styles before the first changed token, or before the first opener a new match
+        // took, stand (tokens before it decide them).
+        live.styled_count = @min(live.styled_count, @min(first, changes.matched) +| 1);
         var offset = self.liveTokensEnd(first);
         var i = first;
         while (i < r.tokens.len) : (i += 1) {
@@ -2820,7 +2842,8 @@ pub const Doc = struct {
             }
             write_full = self.liveTokensEnd(first) + same;
         }
-        try self.liveShow(write_full, full_end, final);
+        // Styles change from the first changed token, or the first opener a new match took.
+        try self.liveShow(write_full, full_end, final, @min(first, changes.matched));
         if (!final) {
             self.liveFold();
             try self.liveRetire();
@@ -2834,7 +2857,7 @@ pub const Doc = struct {
 
     /// Applies B's holds to the full display and writes what changed: the display shown now is
     /// the full display up to the hold cut.
-    fn liveShow(self: *Doc, write_full: u32, full_end: u32, final: bool) Error!void {
+    fn liveShow(self: *Doc, write_full: u32, full_end: u32, final: bool, first: u32) Error!void {
         const live = &self.live;
         // A hold inside a token shows what B drew of it, which the token's whole display need
         // not start with: the bytes from that token on are written again once it shows whole
@@ -2850,37 +2873,53 @@ pub const Doc = struct {
         var write_start = @min(@min(write_full, live.shown_byte_count), rewrite_from);
         write_start = @min(write_start, shown_end);
         self.counters.tail_write_bytes += shown_end - write_start;
-        // The tail write's bytes, and the runs of the live tokens: a closer that arrives restyles
-        // bytes before the first changed one, and only the settled tokens before them keep their
-        // runs.
+        // The tail write's bytes, and the runs from the first token whose style may have changed:
+        // the first changed token (a closer marks the opener it matches changed), and no later
+        // than the written bytes.
         if (self.tail_sink != null or self.writer != null) {
             const arena = self.scratch.allocator();
             var tail: std.ArrayListUnmanaged(u8) = .empty;
             if (shown_end > write_start) try self.liveRender(write_start, shown_end, arena, &tail);
-            const runs_from = @min(self.liveTokensEnd(0), shown_end);
-            const runs = try self.liveChunks(arena, runs_from, shown_end);
+            var start = @min(first, live.styled_count -| 1);
+            while (start > 0 and self.liveTokensEnd(start) > write_start) start -= 1;
+            const runs_from = @min(self.liveTokensEnd(start), shown_end);
+            const runs = try self.liveChunks(arena, start, runs_from, shown_end);
             try self.emit(.{ .block = live.block, .from = write_start, .bytes = tail.items, .runs_from = runs_from, .chunks = runs.chunks.items, .urls = runs.urls.items });
         }
         live.shown_byte_count = shown_end;
     }
 
-    /// The live leaf's chunks for display bytes [from, to), from the first live token on (`from`
+    /// The live leaf's chunks for display bytes [from, to), from live token `start` on (`from`
     /// is where it starts, or `to`): the styles read_leaf gives those bytes, counted, not copied.
-    fn liveChunks(self: *Doc, arena: Allocator, from: u32, to: u32) Error!Leaf {
+    /// Notes the styles before each token it passes.
+    fn liveChunks(self: *Doc, arena: Allocator, start: u32, from: u32, to: u32) Error!Leaf {
         const live = &self.live;
         var leaf: Leaf = .{};
         if (from >= to) return leaf;
-        assert(from == self.liveTokensEnd(0));
+        assert(from == self.liveTokensEnd(start) and (start == 0 or start < live.styled_count));
         var writer: LeafWriter = .{ .arena = arena, .leaf = &leaf, .count_only = true };
         const b = self.blocks.items[live.block];
         writer.base.heading_level = if (b.kind == .heading) @intCast(b.payload[0]) else 0;
         const r = live.parser.result();
         var styler: TokenStyler = .{ .writer = &writer, .arena = arena, .r = r, .styles = live.base_styles, .references = self.references() };
-        if (live.base_styles.link != null) styler.styles.link = try writer.url("", live.base_link.items);
+        var link: u32 = if (live.base_styles.link != null) TokenStyle.base_link else none;
+        if (start > 0) {
+            const before = live.token_styles.items[start];
+            styler.styles = .{ .strong = before.strong, .italic = before.italic, .strikethrough = before.strikethrough };
+            link = before.link;
+        }
+        if (link == TokenStyle.base_link) {
+            styler.styles.link = try writer.url("", live.base_link.items);
+        } else if (link != none) {
+            styler.styles.link = try writer.url("", try styler.destination(link));
+        }
+        try live.token_styles.resize(self.allocator, r.tokens.len);
         var at = from;
-        var i: u32 = 0;
+        var i: u32 = start;
         while (i < r.tokens.len and at < to) : (i += 1) {
             self.counters.run_token_visits += 1;
+            live.token_styles.items[i] = .{ .strong = styler.styles.strong, .italic = styler.styles.italic, .strikethrough = styler.styles.strikethrough, .link = link };
+            live.styled_count = i + 1;
             if (live.display_ends.items[i] > to) {
                 // A hold inside this token: B drew its start, styled as read_leaf styles a token
                 // the cut reaches (no autolink of its own).
@@ -2893,6 +2932,11 @@ pub const Doc = struct {
                 break;
             }
             try styler.token(i);
+            if (styler.styles.link == null) {
+                link = none;
+            } else if (r.tokens[i].kind == .bracket_open and r.tokens[i].aux != 0) {
+                link = i;
+            }
             at = live.display_ends.items[i];
         }
         if (at < to) {
@@ -3122,6 +3166,7 @@ pub const Doc = struct {
         self.liveNoteExpired(@intCast(parser.tokens.items.len));
         if (live.display_ends.items.len > 0) live.folded_display_byte_count = live.display_ends.items[live.display_ends.items.len - 1];
         live.display_ends.clearRetainingCapacity();
+        live.styled_count = 0;
         std.mem.copyForwards(u8, live.content.items[0..rest], live.content.items[drop..]);
         live.content.items.len = rest;
         live.content_base += drop;
@@ -3200,6 +3245,7 @@ pub const Doc = struct {
         const tokens = parser.result().tokens;
         live.folded_display_byte_count = folded;
         try live.display_ends.resize(self.allocator, tokens.len);
+        live.styled_count = 0;
         var offset = folded;
         for (0..tokens.len) |i| {
             offset += inline_parser.tokenDisplayLength(parser.result(), @intCast(i));
@@ -3832,10 +3878,10 @@ const TokenStyler = struct {
             .bracket_open => {
                 if (t.aux == 0) return w.write(raw, .{});
                 const link = r.links[t.aux - 1];
-                const destination = try inline_parser.unescapeText(self.arena, if (self.references != null) self.liveDestination(i) else link.destination);
-                self.styles.link = try w.url("", destination);
+                const url = try self.destination(i);
+                self.styles.link = try w.url("", url);
                 self.label_start = w.byte_count;
-                self.label_url = destination;
+                self.label_url = url;
                 self.image = link.image;
                 self.sync();
                 if (!self.conceal) try w.linkPart(raw, .gap);
@@ -3903,6 +3949,12 @@ const TokenStyler = struct {
 
     /// The destination of the link token `open` opens, from its closing token: the tail of an
     /// inline link, or the label of a reference.
+    /// Link `open`'s destination, unescaped.
+    fn destination(self: *TokenStyler, open: u32) Error![]const u8 {
+        const link = self.r.links[self.r.tokens[open].aux - 1];
+        return inline_parser.unescapeText(self.arena, if (self.references != null) self.liveDestination(open) else link.destination);
+    }
+
     fn liveDestination(self: *TokenStyler, open: u32) []const u8 {
         const r = self.r;
         const aux = r.tokens[open].aux;
