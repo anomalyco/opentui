@@ -14,6 +14,7 @@ describe("solid runtime plugin support in node_modules", () => {
     const stdout = result.stdout.toString().trim()
 
     expect(result.exitCode).toBe(0)
+    expect(stdout).toContain("jsx=true")
     expect(stdout).toContain("solid=true")
     expect(stdout).toContain("core=true")
     expect(stdout).toContain("coreTesting=true")

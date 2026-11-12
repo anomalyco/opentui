@@ -861,6 +861,56 @@ fn editor_nodes_paint_measure_and_edit_bound_buffers() -> Result<()> {
     Ok(())
 }
 
+// Expected: every selection call takes any subset of its colors. Actual: `TextView` and `EditorView` set the scene
+// text-selection flags in `ot_editor_selection`, whose values are swapped, so one color failed with InvalidArgument.
+#[test]
+fn selections_take_each_subset_of_their_colors() -> Result<()> {
+    let context = context(9)?;
+    let session = session(&context, 5, 4)?;
+    let root = Node::new(&session, NodeKind::Root, 1)?;
+    let kinds = [NodeKind::Text, NodeKind::TextView, NodeKind::Editor, NodeKind::Editor];
+    let nodes =
+        (0..4).map(|index| Node::new(&session, kinds[index as usize], index + 2)).collect::<Result<Vec<_>>>()?;
+    for (index, node) in (0..).zip(&nodes) {
+        node.insert_into(&root, index)?;
+    }
+    nodes[0].set_text("hello")?;
+    let text_buffer = TextBuffer::new(&context, WidthMethod::Unicode)?;
+    text_buffer.set_text("hello")?;
+    let text_view = TextView::new(&text_buffer)?;
+    nodes[1].set_text_view(Some(&text_view))?;
+    let edit_buffer = EditBuffer::new(&context, WidthMethod::Unicode)?;
+    edit_buffer.set_text("hello", false)?;
+    let (range, local) = (EditorView::new(&edit_buffer, 5, 1)?, EditorView::new(&edit_buffer, 5, 1)?);
+    nodes[2].set_editor_view(Some(&range))?;
+    nodes[3].set_editor_view(Some(&local))?;
+    let (fg, bg) = (Some(Color::rgb(255, 0, 0)), Some(Color::rgb(0, 0, 255)));
+    let transparent = Some(Color::TRANSPARENT);
+    let rows = [(None, None), (fg, None), (None, bg), (fg, bg), (None, transparent)];
+    for colors in rows.map(|(fg, bg)| SelectionColors { fg, bg }) {
+        // Each row starts unselected, so a call that selects nothing cannot pass on the previous row's selection.
+        nodes[0].clear_text_selection()?;
+        text_view.clear_selection()?;
+        range.clear_selection()?;
+        local.clear_selection()?;
+        nodes[0].select_text((0, 0), (1, 0), false, SelectionUnit::Cell, colors)?;
+        text_view.select_local((0, 0), (1, 0), false, SelectionUnit::Cell, colors)?;
+        range.select_range(0, 2, colors)?;
+        local.select_local((0, 0), (1, 0), false, SelectionUnit::Cell, false, colors)?;
+        let selected =
+            [nodes[0].selected_text()?, text_view.selected_text()?, range.selected_text()?, local.selected_text()?];
+        assert_eq!(selected, ["he"; 4], "{colors:?}");
+        // Each view paints its selection as the scene text node does.
+        let capture = session.paint(Color::BLACK, true, 0)?.capture()?;
+        let cells = (0..4).map(|y| capture.cell(0, y).map(|cell| (cell.fg, cell.bg))).collect::<Vec<_>>();
+        assert_eq!(cells, [cells[0]; 4], "{colors:?}");
+        // A transparent background composites onto the frame, so only an opaque one paints as itself.
+        let opaque = colors.bg.filter(|bg| bg.a == 255);
+        assert!(opaque.is_none_or(|bg| cells[0].is_some_and(|cell| cell.1 == bg)), "{colors:?}");
+    }
+    Ok(())
+}
+
 #[test]
 fn a_context_has_one_clipboard_service_whose_reads_finish() {
     use crate::native::{ClipboardOptions, ClipboardSelection, ClipboardService};

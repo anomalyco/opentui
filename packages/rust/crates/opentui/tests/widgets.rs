@@ -140,6 +140,33 @@ fn inputs_type_move_delete_and_undo() {
     app.press("ctrl+.");
     assert_eq!(input.value(), ">hel");
     assert_eq!(app.render().row(0).trim_end(), ">hel");
+
+    // 606: in a field narrower than its line, the visual line end is the line end, from before (Home) or past
+    // (Left) the scroll offset.
+    let app = TestApp::new(4, 2);
+    let input = Input::new(&app).width(4).set_value("abcdefgh");
+    let area = Textarea::new(&app).width(4).height(1).wrap(WrapMode::None).set_text("abcdefgh");
+    app.root().add(&input).add(&area);
+    let scroll_then_press = |start, key| {
+        app.press("end");
+        app.render();
+        app.press(start);
+        app.press(key);
+    };
+    let rows = [
+        ("home", "alt+e", ""),
+        ("left", "super+right", ""),
+        ("home", "shift+alt+e", "abcdefgh"),
+        ("left", "shift+super+right", "h"),
+    ];
+    for (start, key, selected) in rows {
+        input.focus();
+        scroll_then_press(start, key);
+        assert_eq!((input.cursor_offset(), input.selected_text()), (8, selected.to_owned()), "Input {start} {key}");
+        area.focus();
+        scroll_then_press(start, key);
+        assert_eq!((area.cursor_offset(), area.selected_text()), (8, selected.to_owned()), "Textarea {start} {key}");
+    }
 }
 
 #[test]

@@ -63,9 +63,11 @@ export function resetSolidTransformPluginState(): void {
 }
 
 export function createSolidTransformPlugin(input: CreateSolidTransformPluginOptions = {}): BunPlugin {
+  // JSX always needs the Solid compiler, including in node_modules, where installed runtime plugins ship TSX. Plain
+  // JS and TS in node_modules stay out: routing CJS through onLoad breaks its interop.
   const sourceFilter = input.resolvePath
-    ? /^(?!.*[/\\]node_modules[/\\]).*\.[cm]?[jt]sx?(?:[?#].*)?$/
-    : /^(?!.*[/\\]node_modules[/\\]).*\.[cm]?[jt]sx(?:[?#].*)?$/
+    ? /(?:^(?!.*[/\\]node_modules[/\\]).*\.[cm]?[jt]s|\.[cm]?[jt]sx)(?:[?#].*)?$/
+    : /\.[cm]?[jt]sx(?:[?#].*)?$/
 
   return {
     name: "bun-plugin-solid",
