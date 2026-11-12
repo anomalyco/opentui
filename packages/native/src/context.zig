@@ -410,13 +410,18 @@ pub const MarkdownDoc = struct {
     calls: u64 = 0,
     /// Bindings whose node a failed write or a rejected call left behind.
     stale_count: u32 = 0,
+    /// Inside a call's change: a host-written node the doc would take over waits for the call
+    /// to succeed (`Binding.handoff`).
+    handing_off: bool = false,
 
     /// `skipped`: a write to the node was skipped (hooked, or not live), or its text changed
     /// since the doc's last write (`epoch`, the buffer's content epoch then: the host wrote
     /// it), so it does not hold the live display's earlier bytes and takes only resync writes.
     /// `stale`: the node does not show the doc (a write failed, or the call that wrote it was
     /// rejected); the next call writes it whole.
-    pub const Binding = struct { block: u32, node: Handle, skipped: bool = false, epoch: u64 = 0, call: u64 = 0, stale: bool = false };
+    /// `handoff`: the host wrote the node, and the doc takes it over once the call succeeds (a
+    /// rejected call leaves the host's text, which the doc cannot rebuild).
+    pub const Binding = struct { block: u32, node: Handle, skipped: bool = false, epoch: u64 = 0, call: u64 = 0, stale: bool = false, handoff: bool = false };
     /// The Markdown layer of a bound node's buffer (its only layer).
     pub const layer_id: u32 = 2;
 
@@ -542,6 +547,10 @@ pub const MarkdownDoc = struct {
             binding.skipped = true;
             return;
         }
+        if (binding.skipped and self.handing_off) {
+            binding.handoff = true;
+            return;
+        }
         binding.call = self.calls;
         self.writeText(node, text, w) catch |err| {
             self.markStale(binding);
@@ -564,6 +573,22 @@ pub const MarkdownDoc = struct {
         if (binding.stale) return;
         binding.stale = true;
         self.stale_count += 1;
+    }
+
+    /// After a call: the nodes it takes over from the host are written whole, or (rejected) left
+    /// to the host. A write that fails leaves the node stale: the next call writes it.
+    fn finishHandoff(self: *MarkdownDoc, rejected: bool) void {
+        for (self.bindings.items) |*binding| {
+            if (!binding.handoff) continue;
+            binding.handoff = false;
+            if (rejected or binding.block >= self.doc.blocks.items.len) continue;
+            var whole = self.doc.wholeWrite(binding.block) catch {
+                self.markStale(binding);
+                continue;
+            };
+            whole.resync = true;
+            writeNode(self, &self.doc, whole) catch {};
+        }
     }
 
     /// Writes whole, from the doc as it is, the nodes a failed write left behind and (after a
@@ -3984,6 +4009,9 @@ pub const Context = struct {
         value.calls += 1;
         value.resyncNodes(false);
         errdefer value.resyncNodes(true);
+        errdefer value.finishHandoff(true);
+        value.handing_off = true;
+        defer value.handing_off = false;
         switch (call) {
             .append => |bytes| {
                 if (!std.unicode.utf8ValidateSlice(bytes)) return error.InvalidUnicode;
@@ -3997,6 +4025,8 @@ pub const Context = struct {
             .options => |options| try value.setOptions(options),
         }
         value.unbindRemoved();
+        value.handing_off = false;
+        value.finishHandoff(false);
         return value.result();
     }
 

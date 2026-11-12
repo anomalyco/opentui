@@ -681,13 +681,17 @@ const OneFailure = struct {
 test "Markdown ABI: a call that fails at any allocation changes nothing, bound nodes included" {
     const Context = context_mod.Context;
     const live: context_mod.MarkdownOptions = .{};
-    const calls = [_]Context.MarkdownCall{
-        .{ .options = .{ .flags = live.flags | c.OT_MD_MATH } },
-        .{ .append = " more **e** and `f` text\n\nnext *g*" },
-        .{ .set = "one $x$ **two**\n\nthree **d** four" },
-        .finish,
+    const host: context_mod.MarkdownOptions = .{ .flags = 0 };
+    // Each call from live options, and (bigboi-r2-1) the hand-off of host-written nodes to the doc.
+    const calls = [_]struct { context_mod.MarkdownOptions, Context.MarkdownCall }{
+        .{ live, .{ .options = .{ .flags = live.flags | c.OT_MD_MATH } } },
+        .{ live, .{ .append = " more **e** and `f` text\n\nnext *g*" } },
+        .{ live, .{ .set = "one $x$ **two**\n\nthree **d** four" } },
+        .{ live, .finish },
+        .{ host, .{ .options = live } },
     };
-    for (calls) |request| {
+    for (calls) |row| {
+        const start, const request = row;
         var failure: OneFailure = .{ .inner = std.testing.allocator };
         var countdown: usize = 0;
         while (true) : (countdown += 1) {
@@ -698,7 +702,7 @@ test "Markdown ABI: a call that fails at any allocation changes nothing, bound n
             const session = try owner.createSession(.{});
             try owner.attachSessionRenderer(session, 40, 10, .{ .remote_mode = .remote });
             _ = try owner.sceneCreateNode(session, c.OT_SCENE_ROOT, 1);
-            const doc = try owner.createMarkdown(live);
+            const doc = try owner.createMarkdown(start);
             _ = try owner.markdownCall(doc, .{ .append = "one $x$ **two**\n\nthree **d** four" });
             // The changes are in the Markdown scratch, which the next call reuses.
             const blocks = try owner.markdownReadChanges(doc, 64);
@@ -707,6 +711,8 @@ test "Markdown ABI: a call that fails at any allocation changes nothing, bound n
             for (&nodes, indexes, 2..) |*node, index, num| {
                 node.* = try owner.sceneCreateNode(session, c.OT_SCENE_TEXT, @intCast(num));
                 try owner.markdownBind(doc, index, node.*);
+                // The host writes the nodes the doc does not.
+                if (start.flags != live.flags) try owner.sceneSetText(node.*, "host custom");
             }
             var before: [2][64]u8 = undefined;
             var before_count: [2]u32 = undefined;
@@ -722,7 +728,7 @@ test "Markdown ABI: a call that fails at any allocation changes nothing, bound n
             if (!failure.failed) break;
             if (!rejected) continue;
             // Rejected: the source, the pending changes and every node as before.
-            errdefer std.debug.print("{s} failing allocation {d}\n", .{ @tagName(request), countdown });
+            errdefer std.debug.print("{s} from flags {d}, failing allocation {d}\n", .{ @tagName(request), start.flags, countdown });
             try std.testing.expectEqualStrings(source, try owner.markdownSource(doc));
             try std.testing.expectEqual(@as(u32, 0), (try owner.markdownReadChanges(doc, 0)).count);
             for (nodes, 0..) |node, i| {
