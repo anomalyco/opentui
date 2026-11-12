@@ -82,7 +82,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
     lifecycle: {
       update: {
         idle: this.prototype.onUpdate,
-        active: (renderable) => (renderable as ScrollBoxRenderable)["isAutoScrolling"],
+        active: (renderable) => (renderable as ScrollBoxRenderable)["autoScrollOwner"] !== undefined,
       },
       scroll: {
         active: (renderable) => (renderable as ScrollBoxRenderable).scrollHook,
@@ -99,9 +99,9 @@ export class ScrollBoxRenderable extends BoxRenderable {
   protected static override readonly defaultFocusable = true
   // A finished selection ends a drag's auto-scroll; the box listens only while it auto-scrolls.
   private readonly selectionListener = (): void => this.stopAutoScroll()
-  // The selection whose drag auto-scrolls the box, if one dragged when the scroll started. A press that ends a drag
-  // whose release was lost finishes no selection; the scroll then ends at its next step.
-  private autoScrollSelection: Selection | null = null
+  // Undefined while the box does not auto-scroll; otherwise the selection whose drag it scrolls for, or null. A press
+  // that ends a drag whose release was lost finishes no selection; the scroll then ends at its next step.
+  private autoScrollOwner?: Selection | null
 
   private autoScrollMouseX: number = 0
   private autoScrollMouseY: number = 0
@@ -110,7 +110,6 @@ export class ScrollBoxRenderable extends BoxRenderable {
   private readonly autoScrollSpeedSlow = 6
   private readonly autoScrollSpeedMedium = 36
   private readonly autoScrollSpeedFast = 72
-  private isAutoScrolling: boolean = false
   private cachedAutoScrollSpeed: number = 3
   private autoScrollAccumulatorX: number = 0
   private autoScrollAccumulatorY: number = 0
@@ -616,9 +615,8 @@ export class ScrollBoxRenderable extends BoxRenderable {
     this.autoScrollMouseX = mouseX
     this.autoScrollMouseY = mouseY
     this.cachedAutoScrollSpeed = this.getAutoScrollSpeed(mouseX, mouseY)
-    this.isAutoScrolling = true
+    this.autoScrollOwner = this.draggingSelection()
     this.live = true
-    this.autoScrollSelection = this.draggingSelection()
     this._ctx.on("selection", this.selectionListener)
     this.refreshNativeSceneHooks()
   }
@@ -635,7 +633,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
 
     if (scrollX === 0 && scrollY === 0) {
       this.stopAutoScroll()
-    } else if (!this.isAutoScrolling || this.autoScrollSelection !== this.draggingSelection()) {
+    } else if (this.autoScrollOwner !== this.draggingSelection()) {
       // Another selection's drag reached the edge: the scroll follows that drag from now on.
       this.startAutoScroll(mouseX, mouseY)
     }
@@ -647,8 +645,8 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   public stopAutoScroll(): void {
-    const wasAutoScrolling = this.isAutoScrolling
-    this.isAutoScrolling = false
+    const wasAutoScrolling = this.autoScrollOwner !== undefined
+    this.autoScrollOwner = undefined
     this.autoScrollAccumulatorX = 0
     this.autoScrollAccumulatorY = 0
     // Auto-scroll is the only reason a ScrollBox goes live or asks for updates.
@@ -660,8 +658,8 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   private handleAutoScroll(deltaTime: number): void {
-    if (!this.isAutoScrolling) return
-    if (this.autoScrollSelection?.isDragging === false) return this.stopAutoScroll()
+    if (this.autoScrollOwner === undefined) return
+    if (this.autoScrollOwner?.isDragging === false) return this.stopAutoScroll()
 
     const scrollX = this.getAutoScrollDirectionX(this.autoScrollMouseX)
     const scrollY = this.getAutoScrollDirectionY(this.autoScrollMouseY)
