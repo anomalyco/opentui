@@ -333,13 +333,15 @@ describe("ExtmarksController", () => {
     // One row of 24 columns. While a selection is left the cursor and the selection are `held`; then it is cleared. A
     // press's handlers see the pressed cell; then a pointer leaves the cursor at the nearer outer edge of the marks
     // around it, a cleared drag at the side it came from, the wheel and the setter at the edge they moved toward.
-    // After ", " comes a key, a wheel step, an offset or a selection. The rows match the Rust editor's but Shift+Left,
-    // which extends a selection into a mark here.
+    // "press" types Z before the release. After ", " comes a key, a wheel step, an offset, a selection or a click. The
+    // rows match the Rust editor's but Shift+Left, which extends a selection into a mark here, and the rejected offset.
     const pasted = "x [Pasted ~20 lines] y"
     for (const [text, marks, from, gesture, held, to] of [
       ["x @file y", "2..7", 9, "click 2", null, 2],
       ["x @file y", "2..7", 9, "click 3", null, 2],
       ["x @file y", "2..7", 9, "click 5", null, 7],
+      ["x @file y", "2..7", 9, "press 3", null, 3],
+      ["x @file y", "2..7", 9, "offset -1, click 3", null, 2],
       [pasted, "2..20", 22, "click 15", null, 20],
       ["x @file y", "2..7", 9, "double-click 4", "4 2..7", 2],
       ["x @file y", "2..7", 9, "double-click 4, offset 3", null, 2],
@@ -379,24 +381,31 @@ describe("ExtmarksController", () => {
         const [kind, a, b, c] = first.split(" ")
         const mouse = result.mockMouse
         if (kind === "click") await mouse.click(Number(a), 0)
-        else if (kind === "double-click") await mouse.doubleClick(Number(a), 0)
+        else if (kind === "press") {
+          await mouse.pressDown(Number(a), 0)
+          await result.mockInput.typeText("Z")
+          await mouse.release(Number(a), 0)
+          expect(textarea.plainText).toBe("x Z@file y")
+        } else if (kind === "double-click") await mouse.doubleClick(Number(a), 0)
         else if (kind === "drag" && c) {
           await mouse.pressDown(Number(a), 0)
           await mouse.moveTo(Number(b), 0)
           await mouse.moveTo(Number(c), 0)
           await mouse.release(Number(c), 0)
         } else if (kind === "drag") await mouse.drag(Number(a), 0, Number(b), 0)
+        else if (kind === "offset" && Number(a) < 0) expect(() => (textarea.cursorOffset = Number(a))).toThrow()
         else if (kind === "offset") textarea.cursorOffset = Number(a)
         else await mouse.scroll(0, 0, a as "up" | "down")
-        if (kind === "click") expect(pressed).toBe(Number(a))
+        if (kind === "click" || kind === "press") expect(pressed).toBe(Number(a))
         const [step, x, y] = then.split(" ")
         if (step === "wheel") await mouse.scroll(0, 0, x as "up" | "down")
         else if (step === "offset") textarea.cursorOffset = Number(x)
         else if (step === "select") textarea.setSelection(Number(x), Number(y))
+        else if (step === "click") await mouse.click(Number(x), 0)
         else if (step) result.mockInput.pressArrow(step as "right")
         const selection = textarea.getSelection()
         expect(selection && `${textarea.cursorOffset} ${selection.start}..${selection.end}`).toBe(held)
-        textarea.clearSelection()
+        if (selection) textarea.clearSelection()
         expect(textarea.cursorOffset).toBe(to)
       })
     }
