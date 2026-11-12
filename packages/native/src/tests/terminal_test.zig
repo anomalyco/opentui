@@ -742,8 +742,9 @@ test "processCapabilityResponse only accepts exact ordered explicit width probe 
     try testing.expect(startup_on_row_one.caps.scaled_text);
 
     // The probes run on row 2: the wrong columns there (#1383), or the right ones on row 1, where Shift+F3 and
-    // Alt+F3 send the same bytes, are no answer.
-    for ([_][]const u8{ "\x1b[7;11R\x1b[2;12R\x1b[2;8R", "\x1b[7;11R\x1b[1;2R\x1b[1;3R" }) |replies| {
+    // Alt+F3 send the same bytes, are no answer. Nor is a repeated startup report at (2,2) before a terminal that
+    // ignores OSC 66 answers column 1 twice: only a pair of replies that both moved counts.
+    for ([_][]const u8{ "\x1b[7;11R\x1b[2;12R\x1b[2;8R", "\x1b[7;11R\x1b[1;2R\x1b[1;3R", "\x1b[2;2R\x1b[2;2R\x1b[2;1R\x1b[2;1R" }) |replies| {
         var echoed = Terminal.init(.{});
         var echoed_writer = TestWriter.init(testing.allocator);
         defer echoed_writer.deinit();

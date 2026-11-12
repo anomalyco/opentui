@@ -232,6 +232,7 @@ skip_explicit_width_query: bool = false,
 startup_cursor_query_pending: bool = false,
 startup_cursor_query_captured: bool = false,
 explicit_width_probe_reports_pending: u8 = 0,
+explicit_width_probe_first_column: u16 = 0,
 /// Setup probes OSC 66 (an alternate screen of 3+ rows), so the probe's answer, not XTVERSION, decides explicit width.
 explicit_width_probed: bool = false,
 /// The host ends each query batch with DA1 and waits for its reply (sentinel mode).
@@ -1425,11 +1426,12 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
             // Terminals answer in order, and the probes follow the capability queries.
             self.sync_reply_settled = true;
 
-            if (probe_index == 0 and col == 2) {
+            // A terminal that draws `w=1` (column 2) also moves for `s=2`: kitty to column 3, foot to 2. Deciding on
+            // the pair keeps a stray column-2 report, such as a repeated startup report, from passing alone.
+            if (probe_index == 0) self.explicit_width_probe_first_column = col;
+            if (probe_index == 1 and self.explicit_width_probe_first_column == 2 and col >= 2) {
                 self.caps.explicit_width = true;
-            } else if (probe_index == 1 and col == 3) {
-                self.caps.explicit_width = true;
-                self.caps.scaled_text = true;
+                self.caps.scaled_text = col == 3;
             }
         }
 
