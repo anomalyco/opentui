@@ -56,9 +56,10 @@ test "nonNegative keeps a value in the top half of the narrowed type" {
     try std.testing.expect(columnPastHalf(columns[1]));
 }
 
-/// `std.mem.eql` for slices of integers. Zig 0.17.0's LLVM backend splits the
-/// array `@bitCast` that `std.mem.eql` loads each chunk with into single bytes
-/// (ziglang/zig#37120), which makes a large comparison about 90 times slower.
+/// `std.mem.eql` for slices of integers. The LLVM backend of Zig 0.17.0 and
+/// 0.17.1 splits the array `@bitCast` that `std.mem.eql` loads each chunk with
+/// into single bytes (ziglang/zig#37120), which makes a large comparison about
+/// 90 times slower.
 /// Coercing an array to a vector loads it at once.
 pub fn eql(comptime T: type, a: []const T, b: []const T) bool {
     comptime std.debug.assert(@typeInfo(T) == .int);
@@ -93,8 +94,9 @@ test "eql agrees with std.mem.eql at every length and difference" {
 }
 
 /// `std.base64.standard.Encoder.encode`. That encoder reads 16 bytes at a time
-/// through `std.mem.readInt`, whose array `@bitCast` Zig 0.17.0's LLVM backend
-/// splits into single bytes (ziglang/zig#37120). This reads them in one load.
+/// through `std.mem.readInt`, whose array `@bitCast` the LLVM backend of Zig
+/// 0.17.0 and 0.17.1 splits into single bytes (ziglang/zig#37120). This reads
+/// them in one load.
 pub fn base64Encode(dest: []u8, source: []const u8) []const u8 {
     const encoder = std.base64.standard.Encoder;
     std.debug.assert(dest.len >= encoder.calcSize(source.len));
