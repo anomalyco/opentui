@@ -170,26 +170,57 @@ fn inputs_type_move_delete_and_undo() {
 }
 
 #[test]
-fn inputs_select_with_shift_and_replace_selection() {
-    let app = TestApp::new(30, 1);
-    let input = Input::new(&app).set_value("abc def");
-    app.root().add(&input);
-    input.focus();
-    app.press("shift+left");
-    app.press("shift+left");
-    app.press("shift+left");
-    assert_eq!(input.selected_text(), "def");
-    app.type_text("xyz");
-    assert_eq!(input.value(), "abc xyz");
-    app.press("super+a");
-    assert_eq!(input.selected_text(), "abc xyz");
-    app.press("left");
-    assert_eq!(input.cursor_offset(), 0);
-    assert_eq!(input.selected_text(), "");
-    app.press("alt+shift+f");
-    assert!(!input.selected_text().is_empty());
-    app.press("backspace");
-    assert!(input.value().ends_with("xyz"), "{:?}", input.value());
+fn editors_select_with_shift_and_replace_selection() {
+    // Core's rows for the same keys (cell occupancy): a selection covers the cell it started on and the cursor's cell,
+    // but not an empty one past the end of a line. A mouse selection grows from the cell at its other end.
+    for (text, keys, selected, typed) in [
+        ("a界", "left shift+left", "a界", "x"),
+        ("a界", "home shift+right", "a界", "x"),
+        ("a界", "shift+left", "界", "ax"),
+        ("abc def", "shift+left shift+left shift+left", "def", "abc x"),
+        ("abcdef", "left left left shift+left shift+left", "bcd", "axef"),
+        ("abcdef", "shift+left shift+right", "", "abcdefx"),
+        ("abcdef", "left left left shift+right shift+left backspace shift+right", "de", "abxf"),
+        ("abcdef", "left left left shift+home", "abcd", "xef"),
+        ("abc def", "home alt+shift+f", "abc d", "xef"),
+        ("abc def", "super+a", "abc def", "x"),
+        ("abc def", "super+a left", "", "xabc def"),
+        ("ab\ncd", "up shift+right", "\nc", "abxd"),
+        ("ab\ncd", "up home shift+right shift+right", "ab", "x\ncd"),
+        ("ab\ncd", "left left shift+up", "ab\nc", "xd"),
+        ("drag me", "drag 0 3, shift+right", "drag ", "xme"),
+        ("drag me", "drag 3 0, shift+right", "rag", "dx me"),
+        ("drag me", "drag 0 3, shift+left", "dra", "xg me"),
+        ("a界b", "drag 2 0, shift+right", "界", "axb"),
+        ("a界b", "drag 2 0, shift+right shift+right", "界b", "ax"),
+    ] {
+        for single_line in [true, false] {
+            if single_line && text.contains('\n') {
+                continue;
+            }
+            let app = TestApp::new(20, 1);
+            let (input, area) = (Input::new(&app).set_value(text), Textarea::new(&app).set_text(text));
+            if single_line {
+                app.root().add(&input);
+                input.focus();
+            } else {
+                app.root().add(&area);
+                area.focus();
+            }
+            app.render();
+            let (drag, keys) = keys.split_once(", ").unwrap_or(("", keys));
+            if let [_, from, to] = drag.split(' ').collect::<Vec<_>>()[..] {
+                app.drag((from.parse().unwrap(), 0), (to.parse().unwrap(), 0));
+            }
+            keys.split(' ').for_each(|key| app.press(key));
+            let state = || {
+                if single_line { (input.selected_text(), input.value()) } else { (area.selected_text(), area.text()) }
+            };
+            let now = state().0;
+            app.type_text("x");
+            assert_eq!((now.as_str(), state().1.as_str()), (selected, typed), "{text:?} {keys} {single_line}");
+        }
+    }
 }
 
 #[test]

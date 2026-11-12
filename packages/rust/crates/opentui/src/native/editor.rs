@@ -624,6 +624,12 @@ impl EditorView {
             .map(drop)
     }
 
+    /// Selects `start..end` and, in cell occupancy, the grapheme at the larger offset unless a line ends there.
+    pub fn select_inclusive(&self, start: u32, end: u32, colors: SelectionColors) -> Result<()> {
+        self.select(sys::ot_editor_selection { start, end, ..colors.editor_selection(sys::OT_EDITOR_SELECT_INCLUSIVE) })
+            .map(drop)
+    }
+
     pub fn clear_selection(&self) -> Result<()> {
         self.select(sys::ot_editor_selection { operation: sys::OT_EDITOR_SELECT_RESET, ..Default::default() })?;
         self.select(sys::ot_editor_selection { operation: sys::OT_EDITOR_SELECT_LOCAL_RESET, ..Default::default() })

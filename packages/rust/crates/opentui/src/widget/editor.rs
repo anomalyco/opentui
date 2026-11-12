@@ -484,31 +484,24 @@ impl EditorCore {
             if let Some(app) = self.element.app() {
                 app.keep_selection_only(&self.element);
             }
-            // Extend a live selection, keyboard or mouse, from its far end; with none, start at the cursor.
+            // Extend a live selection, keyboard or mouse, from its anchor cell; with none, start at the cursor's cell.
             let cursor = self.cursor().2;
-            let start = match self.selection() {
-                Some((start, end)) => match self.anchor.get() {
-                    Some(anchor) if anchor == start || anchor == end => anchor,
-                    _ => {
-                        // A mouse selection leaves the cursor on its focus cell, inside the selection: keep the end
-                        // away from the cursor and move from the other end.
-                        let (anchor, moving) = if cursor == start { (end, start) } else { (start, end) };
-                        self.report(self.buffer.command(EditCommand::CursorOffset(moving)));
-                        anchor
-                    }
-                },
-                None => cursor,
+            let start = match (self.selection(), self.anchor.get()) {
+                (Some((start, end)), Some(anchor)) if (start..=end).contains(&anchor) => anchor,
+                // A mouse selection leaves the cursor on its focus cell: the anchor is the cell at the other end.
+                (Some((start, end)), _) if cursor == start => end - 1,
+                (Some((start, _)), _) => start,
+                (None, _) => cursor,
             };
-            let before = self.cursor().2;
             step(self);
-            self.keep_cursor_outside(self.cursor().2.cmp(&before));
+            self.keep_cursor_outside(self.cursor().2.cmp(&cursor));
             let cursor = self.cursor().2;
             self.anchor.set(Some(start));
             let colors = self.colors.borrow().selection;
             if start == cursor {
                 self.report(self.view.clear_selection());
             } else {
-                self.report(self.view.select_range(start.min(cursor), start.max(cursor), colors));
+                self.report(self.view.select_inclusive(start, cursor, colors));
             }
             return;
         }

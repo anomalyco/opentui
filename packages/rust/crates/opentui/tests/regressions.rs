@@ -35,39 +35,6 @@ fn table_change_handler_that_mutates_the_table_panics() {
     assert_eq!(files.row_count(), 6);
 }
 
-// Expected: with no selection, Shift+Right selects from the cursor, as Core does ("d" in "ab|def").
-// Actual: Backspace kept the anchor of an earlier, collapsed selection, so the new selection starts at a stale
-// offset and comes out empty.
-#[test]
-fn shift_selection_reuses_a_stale_anchor_after_backspace() {
-    let app = TestApp::new(20, 1);
-    let input = Input::new(&app).set_value("abcdef");
-    app.root().add(&input);
-    input.focus();
-    for key in ["left", "left", "left", "shift+right", "shift+left", "backspace"] {
-        app.press(key);
-    }
-    assert_eq!(input.value(), "abdef");
-    app.press("shift+right");
-    assert_eq!(input.selected_text(), "d");
-    // Delete removes the one selected character, not the one after it.
-    assert_eq!(input.perform(opentui::widget::EditorAction::Delete).value(), "abef");
-}
-
-// Expected: Shift+arrow extends an existing mouse selection from its anchor, as Core does.
-// Actual: the mouse selection is dropped and a new one starts at the cursor ("g").
-#[test]
-fn shift_selection_discards_a_mouse_selection() {
-    let app = TestApp::new(20, 1);
-    let input = Input::new(&app).set_value("drag to select");
-    app.root().add(&input);
-    app.render();
-    app.drag((0, 0), (3, 0));
-    assert_eq!(input.selected_text(), "drag");
-    app.press("shift+right");
-    assert!(input.selected_text().starts_with("drag"), "{:?}", input.selected_text());
-}
-
 // Expected: clicking the first body row, which shows "row 3", selects row 3.
 // Actual: clicks map rows with the stored offset (5), not the clamped offset paint uses (3), so the click lands on
 // the selected row 5 and activates it instead.
