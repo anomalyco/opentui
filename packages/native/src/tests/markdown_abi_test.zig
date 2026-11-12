@@ -275,8 +275,12 @@ test "Markdown ABI: a host that reads changes holds a fresh doc's blocks and lea
     const model = @import("model.zig");
     const seeds = if (model.environment(env_arena.allocator(), "MODEL_SEEDS")) |text| try std.fmt.parseInt(usize, text, 10) else 48;
     const only = if (model.environment(env_arena.allocator(), "MODEL_SEED")) |text| try std.fmt.parseInt(usize, text, 10) else null;
-    const first = only orelse 0;
-    for (first..if (only) |seed| seed + 1 else seeds) |seed| {
+    // Seed 647 also runs: a hooked leaf latches after the doc's last write to its node, and the
+    // next append parses its pending line again (535e21c1f).
+    var list: std.ArrayListUnmanaged(usize) = .empty;
+    if (only) |seed| try list.append(env_arena.allocator(), seed) else for (0..seeds) |seed| try list.append(env_arena.allocator(), seed);
+    if (only == null and seeds <= 647) try list.append(env_arena.allocator(), 647);
+    for (list.items) |seed| {
         var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
@@ -544,53 +548,6 @@ test "Markdown ABI: options, removal, styles, and rejections that change nothing
     try std.testing.expectEqualStrings("three four", shown[0..count]);
 }
 
-test "Markdown ABI: the doc leaves a node the host wrote while a hooked leaf's pending line is parsed again" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    // The seeded test's seed 647: the leaf latches after the doc's last write to it.
-    const set: OptionSet = .{ .flags = live_flags | c.OT_MD_MATH | c.OT_MD_HOOK, .filter = "ses_" };
-    var f = try Fixture.initWith(set);
-    defer f.deinit();
-    var mirror: Mirror = .{};
-    var nodes: std.AutoArrayHashMapUnmanaged(u32, c.ot_handle) = .empty;
-    var host_wrote: std.AutoArrayHashMapUnmanaged(u32, void) = .empty;
-    var checked: u32 = 0;
-    for ([_][]const u8{ "word\n===\n[x](/u) ", "&amp;10.  | ", "---> ses_\\", "  \nx\t10. " }) |piece| {
-        const result = try f.append(piece);
-        const blocks = try mirror.update(&f, arena, result);
-        var i: usize = nodes.count();
-        while (i > 0) {
-            i -= 1;
-            if (nodes.keys()[i] < result.removed_from_index) continue;
-            try expectOk(abi.ot_scene_destroy_node(f.context, &nodes.values()[i]));
-            _ = host_wrote.swapRemove(nodes.keys()[i]);
-            nodes.swapRemoveAt(i);
-        }
-        // The nodes the host wrote still show its text.
-        for (nodes.keys(), nodes.values()) |index, node| {
-            if (!host_wrote.contains(index) or !hostWrites(set, mirror.blocks.items[index])) continue;
-            var shown: [64]u8 = undefined;
-            var count: u32 = 0;
-            try expectOk(abi.ot_scene_get_text(f.context, &node, &shown, shown.len, &count));
-            try std.testing.expectEqualStrings("host", shown[0..count]);
-            checked += 1;
-        }
-        for (blocks) |block| {
-            if (block.kind != c.OT_MD_PARAGRAPH or nodes.contains(block.index)) continue;
-            const node = try f.textNode();
-            try expectOk(md.ot_markdown_bind(f.context, &f.doc, block.index, &node));
-            try nodes.put(arena, block.index, node);
-        }
-        for (nodes.keys(), nodes.values()) |index, node| {
-            if (!hostWrites(set, mirror.blocks.items[index])) continue;
-            try expectOk(abi.ot_scene_set_text(f.context, &node, "host", 4));
-            try host_wrote.put(arena, index, {});
-        }
-    }
-    try std.testing.expect(checked > 0);
-}
-
 test "Markdown ABI: a paragraph a table header leaves without its hook shows the doc's write" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -747,5 +704,35 @@ test "Markdown ABI: a call that fails at any allocation changes nothing, bound n
                 try std.testing.expectEqualStrings(before[i][0..before_count[i]], shown[0..try owner.sceneGetText(node, &shown)]);
             }
         }
+    }
+}
+
+test "Markdown ABI: a style swap lists the leaves whose read_leaf styles the host copied" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // Hooked prose, a table cell and source mode: the host writes each from read_leaf.
+    for ([_]struct { OptionSet, []const u8 }{
+        .{ .{ .flags = live_flags | c.OT_MD_HOOK }, "**example**\n" },
+        .{ .{ .flags = live_flags }, "| **a** |\n| - |\n" },
+        .{ .{ .flags = c.OT_MD_HYPERLINKS }, "**example**\n" },
+    }) |row| {
+        var f = try Fixture.initWith(row[0]);
+        defer f.deinit();
+        _ = try f.append(row[1]);
+        var result: c.ot_markdown_result = undefined;
+        try expectOk(md.ot_markdown_finish(f.context, &f.doc, &result));
+        const before = try f.changes(arena);
+        const leaf = before[before.len - 1].index;
+        try std.testing.expect((try f.readLeaf(arena, leaf)).chunks[0].flags & c.OT_SCENE_TEXT_FOREGROUND != 0);
+        var empty: c.ot_handle = undefined;
+        try expectOk(abi.ot_syntax_style_create(f.context, &empty));
+        var options = row[0].options(empty);
+        try expectOk(md.ot_markdown_set_options(f.context, &f.doc, &options, &result));
+        try std.testing.expect(result.changed_block_count > 0);
+        var listed = false;
+        for (try f.changes(arena)) |block| listed = listed or block.index == leaf;
+        try std.testing.expect(listed);
+        try std.testing.expect((try f.readLeaf(arena, leaf)).chunks[0].flags & c.OT_SCENE_TEXT_FOREGROUND == 0);
     }
 }

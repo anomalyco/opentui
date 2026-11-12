@@ -2458,6 +2458,19 @@ pub const Doc = struct {
         if (index < writer.unbound_from) try writer.write_fn(writer.context, self, whole);
     }
 
+    /// After a style swap: the leaves whose read_leaf styles a host copied (every leaf the doc
+    /// does not write itself) are listed again.
+    pub fn relistHostWritten(self: *Doc) void {
+        for (self.blocks.items) |*b| {
+            switch (b.kind) {
+                .paragraph, .heading, .code, .html, .table_cell => {},
+                else => continue,
+            }
+            if (isBound(b.*) and self.options.liveShown() and !b.flags.hooked) continue;
+            b.flags.unreported = true;
+        }
+    }
+
     /// The prose leaves bound to a text node, which the engine writes: paragraphs and headings
     /// (an HTML block's node shows its source). A host reads a table cell with read_leaf.
     pub fn isBound(b: Block) bool {

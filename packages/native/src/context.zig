@@ -464,8 +464,10 @@ pub const MarkdownDoc = struct {
             std.mem.eql(u8, engine.hook_filter, self.doc.filter());
         if (!same) self.doc.setOptions(engine) catch |err| return markdownError(err);
         if (!std.meta.eql(options.syntax_style, self.syntax_style)) {
-            // A style swap: the bound nodes draw with the new style, nothing is written again.
+            // A style swap: the bound nodes draw with the new style, nothing is written again;
+            // the leaves a host writes from read_leaf are listed.
             self.syntax_style = options.syntax_style;
+            self.doc.relistHostWritten();
             for (self.bindings.items) |binding| {
                 const node = self.owner.sceneNode(binding.node) catch continue;
                 const text = node.scene_node.?.text orelse continue;
