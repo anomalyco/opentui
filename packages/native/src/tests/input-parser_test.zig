@@ -1271,7 +1271,7 @@ test "input parser times out partial units unless they may be mouse reports, Kit
     };
     // A recovered unit that a second read boundary splits has no deadline either, and stays whole.
     for ([_]struct { []const []const u8, []const Expect }{
-        .{ &.{ "\x1b", "[200", "~a\rb\x1b[201~" }, &.{ k(K.escape, NONE), paste("a\rb") } },
+        .{ &.{ "\x1b", "[200", "~", "a\rb\x1b[201~" }, &.{ k(K.escape, NONE), paste("a\rb") } },
         .{ &.{ "\x1b", "[1;", "5A" }, &.{ k(K.escape, NONE), reply("\x1b[1;5A") } },
         .{ &.{ "\x1b", "[<0;", "4;5M" }, &.{ k(K.escape, NONE), down(0, 3, 4) } },
     }) |case| {
