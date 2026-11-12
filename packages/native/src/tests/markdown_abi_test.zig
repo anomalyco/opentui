@@ -990,7 +990,7 @@ test "Markdown ABI: a call rejected for memory lists no block again and reports 
     // put back, and its log, are what the next call drops).
     const Context = context_mod.Context;
     const calls = [_]Context.MarkdownCall{ .{ .append = " c* [x](https://new-link.test) " }, .{ .append = "\nnext **b**\n\nend " }, .{ .append = "\n- c" }, .{ .append = "\n" }, .finish };
-    for ([_]bool{ false, true }) |sustained| for (calls) |call| for ([_][]const u8{ "- item", "> quote", "para", "- a\n- item", "> a\n> quote", "[x]: /u\n" }, [_]u32{ 2, 1, 0, 4, 1, 0 }) |line, paragraph| {
+    for ([_]bool{ false, true }) |sustained| for (calls) |call| for ([_][]const u8{ "- item", "> quote", "para", "- a\n- item", "> a\n> quote", "[x]: /u\n", "- [x]: /u\n" }, [_]u32{ 2, 1, 0, 4, 1, 0, 2 }) |line, paragraph| {
         var failure: OneFailure = .{ .inner = std.testing.allocator, .sustained = sustained };
         var countdown: usize = 0;
         while (true) : (countdown += 1) {
