@@ -694,6 +694,23 @@ fn an_option_change_after_a_hyperlink_reply_keeps_text_coming() {
 }
 
 #[test]
+fn a_conceal_round_trip_shows_what_a_fresh_widget_shows() {
+    // The math run's repro: the rebuild after conceal turned on again attached the paragraph's text anew, and it
+    // kept the source form the widget had written (`` ```word ```mermaid ``).
+    let app = TestApp::with_hyperlinks(40, 8);
+    let subject = Markdown::new(&app);
+    app.root().add(&subject);
+    subject.append("```").append("word ").append("```mermaid\n");
+    subject.conceal(false).append("- x ").conceal(true);
+    let fresh_app = TestApp::with_hyperlinks(40, 8);
+    let fresh = Markdown::new(&fresh_app);
+    fresh_app.root().add(&fresh);
+    fresh.set_markdown(subject.markdown());
+    assert_eq!(frame(&app), frame(&fresh_app));
+    assert!(app.render() == fresh_app.render(), "styles");
+}
+
+#[test]
 fn rerunning_without_a_hook_builds_nothing() {
     let app = TestApp::new(30, 6);
     let built = Rc::new(Cell::new(0));
