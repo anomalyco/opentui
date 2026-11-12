@@ -715,11 +715,6 @@ impl Markdown {
             let at = (from as usize).min(blocks.len());
             removed = Removed { from: at as u32, blocks: blocks.drain(at..).collect(), reusing: true };
         }
-        for shown in &removed.blocks {
-            if let Some(parent) = shown.block.parent.filter(|&parent| parent < removed.from) {
-                refresh.parent_changed(&self.0.blocks.borrow(), parent);
-            }
-        }
         if result.changed > 0
             && let Some(changes) = app.report(doc.read_changes())
         {
@@ -1315,10 +1310,10 @@ struct Removed {
 
 impl Removed {
     fn reuse(&mut self, block: &MarkdownBlock) -> Option<Shown> {
-        // Only a block whose parent stays: its widget sits in a container that stays.
+        // Containers are never taken back, and taking back stops at the first that is not: a block taken back has a
+        // parent that stays.
         let at = block.index.checked_sub(self.from).map(|at| at as usize);
         let reusable = self.reusing
-            && block.parent.is_none_or(|parent| parent < self.from)
             && at.and_then(|at| self.blocks.get(at)).is_some_and(|old| {
                 old.block.kind == block.kind
                     && old.block.parent == block.parent
