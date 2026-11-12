@@ -330,6 +330,11 @@ export class EditorView {
     return this.lib.contextEditorViewGetLines(this.native.handle.context, this.native.handle, true)
   }
 
+  /** @internal Moves a cursor left inside virtual extmarks to an edge, when the view has an extmark controller. */
+  public _keepCursorOutside(direction: number): void {
+    this._extmarksController?._keepCursorOutside(direction)
+  }
+
   public get extmarks(): any {
     this.guard()
     if (!this._extmarksController) {
