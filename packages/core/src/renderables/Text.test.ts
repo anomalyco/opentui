@@ -2325,20 +2325,28 @@ describe("TextRenderable Selection", () => {
     it("should calculate maxScrollY and maxScrollX correctly", async () => {
       resize(20, 5)
 
-      const text = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8"
+      const text = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8 end"
       const { text: textRenderable } = await createTextRenderable(currentRenderer, {
         content: text,
         wrapMode: "none",
+        width: 8,
         height: 5,
+        paddingLeft: 1,
+        paddingRight: 1,
+        paddingTop: 1,
       })
 
       await renderOnce()
 
-      // maxScrollY should be scrollHeight - viewport height
-      expect(textRenderable.maxScrollY).toBe(Math.max(0, textRenderable.scrollHeight - textRenderable.height))
+      // Content size minus the viewport, which leaves the padding out: 6 x 4 cells.
+      expect(textRenderable.maxScrollY).toBe(8 - 4)
+      expect(textRenderable.maxScrollX).toBe(10 - 6)
 
-      // maxScrollX should be scrollWidth - viewport width
-      expect(textRenderable.maxScrollX).toBe(Math.max(0, textRenderable.scrollWidth - textRenderable.width))
+      // The setters clamp to them, so the last line's end scrolls into view.
+      textRenderable.scrollX = 99
+      textRenderable.scrollY = 99
+      await renderOnce()
+      expect(captureFrame().split("\n")[4]?.slice(0, 8)).toBe("  8 end ")
     })
 
     it("should update scroll position via setters", async () => {

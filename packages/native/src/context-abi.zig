@@ -2008,10 +2008,10 @@ pub fn ot_scene_get_layout(context: ?*ContextHandle, node_ptr: ?*const c.ot_hand
     const result = (switch (observation) {
         c.OT_LAYOUT_PUBLIC => owner.core.sceneGetLayout(handleFromC(id.*), false),
         c.OT_LAYOUT_YOGA => owner.core.sceneGetLayout(handleFromC(id.*), true),
-        c.OT_LAYOUT_PAINT => owner.core.sceneGetPaintLayout(handleFromC(id.*)),
+        c.OT_LAYOUT_PAINT, c.OT_LAYOUT_CONTENT => owner.core.sceneGetPaintLayout(handleFromC(id.*)),
         else => return sessionError(owner, error.InvalidOptions),
     }) catch |err| return sessionError(owner, err);
-    out.* = sceneLayoutToC(result);
+    out.* = sceneLayoutToC(if (observation == c.OT_LAYOUT_CONTENT) scene.contentLayout(result) else result);
     return c.OT_OK;
 }
 
@@ -4243,7 +4243,7 @@ test "Scene ABI records preserve rejected outputs and read real Session metadata
     try std.testing.expectEqual(c.OT_OK, ot_scene_get_layout(handle, &box, 0, &layout));
     try std.testing.expectEqual(@as(f32, 3), layout.width);
     const before_selector = layout;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_get_layout(handle, &box, 3, &layout));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_get_layout(handle, &box, c.OT_LAYOUT_CONTENT + 1, &layout));
     try std.testing.expectEqualDeep(before_selector, layout);
     try owner.core.sceneSetStyle(handleFromC(box), 4, 0, 0, 1, 0, 1);
     try std.testing.expectEqual(c.OT_OK, ot_scene_frame_cancel(handle, &session_c, frame.frame_id));
