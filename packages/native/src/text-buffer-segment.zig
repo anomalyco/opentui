@@ -16,6 +16,8 @@ pub const TextBufferError = error{
     InvalidIndex,
     InvalidId,
     InvalidMemId,
+    /// A fifth nonempty highlight layer (`highlight-layers.zig` `layer_count_max`).
+    LayerLimit,
 };
 
 const MemRegistry = mem_registry_mod.MemRegistry;
@@ -325,12 +327,34 @@ pub const Highlight = struct {
     internal: bool = false,
 };
 
-/// Pre-computed style span for efficient rendering
-/// Represents a contiguous region with a single style
+/// One span of a line's cached paint styles. A line's spans run from column 0 without gaps, so a
+/// span starts where the previous one ends; only the right edge is stored.
 pub const StyleSpan = struct {
-    col: u32,
+    end_col_exclusive: u32,
+    /// A legacy style id (a SyntaxStyle id, or a run style with `run_style_flag`) or a group-set
+    /// id, as `kind` says.
     style_id: u32,
-    next_col: u32,
+    /// Bits 0..23: link id (layer runs only); bits 24..31: `StyleSpan.Kind`.
+    link_id_and_kind: u32 = 0,
+
+    pub const Kind = enum(u8) { legacy = 0, group_set = 1 };
+    pub const link_id_mask: u32 = 0x00FF_FFFF;
+
+    pub fn legacy(end_col_exclusive: u32, style_id: u32) StyleSpan {
+        return .{ .end_col_exclusive = end_col_exclusive, .style_id = style_id };
+    }
+
+    pub fn kind(self: StyleSpan) Kind {
+        return @fromBackingInt(@intCast(self.link_id_and_kind >> 24));
+    }
+
+    pub fn linkId(self: StyleSpan) u32 {
+        return self.link_id_and_kind & link_id_mask;
+    }
+
+    comptime {
+        std.debug.assert(@sizeOf(StyleSpan) == 12);
+    }
 };
 
 /// A segment in the unified rope - either text content or a line break marker

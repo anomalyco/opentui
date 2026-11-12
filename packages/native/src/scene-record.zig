@@ -340,7 +340,7 @@ pub fn fingerprint(owner: *Context, member: *const native.NativeRenderable, byte
                     } else if (raw.getRenderable(source)) |node| {
                         // A body paints at the node's paint size, with focus colors when focus lies within it.
                         state = .{ node.scene_node.?.paint_epoch, @intFromBool(node.scene_node.?.focus_frame == frame_id) };
-                        layout = scene.getPaintLayout(node) catch .{};
+                        layout = scene.getPaintLayout(node, false) catch .{};
                     } else |_| {}
                     if (bound != null and bound.? != member) result.stable = false;
                     hasher.update(std.mem.asBytes(&state));

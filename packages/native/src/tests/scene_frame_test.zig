@@ -212,14 +212,14 @@ test "Scene frame paint layout reports where a hook-free frame painted a node mo
     try f.owner.sceneSetHooks(f.root, c.OT_SCENE_HOOK_UPDATE, 1, 8, 1);
     // Before any paint list, a measured node reads its solved geometry.
     try f.owner.sceneMeasureLayout(f.id, f.root);
-    try testing.expectEqual(@as(f32, 1), (try f.owner.sceneGetPaintLayout(child)).width);
+    try testing.expectEqual(@as(f32, 1), (try f.owner.sceneGetPaintLayout(child, false)).width);
     const update = try f.step(null, options, c.OT_SCENE_FRAME_UPDATE, f.root);
     try f.owner.scenePatchPaint(child, c.OT_SCENE_PROPERTY_TRANSLATE_X, .{ .translateX = 3 });
     const done = try f.step(update, options, c.OT_SCENE_FRAME_DONE, null);
     try testing.expectEqual(@as(u16, 2), f.cli.getNextBuffer().get(3, 0).?.bg[0]);
-    try testing.expectEqual(@as(f64, 3), (try f.owner.sceneGetPaintLayout(child)).screenX);
+    try testing.expectEqual(@as(f64, 3), (try f.owner.sceneGetPaintLayout(child, false)).screenX);
     // A node no solve laid out has no paint cells.
-    try testing.expectEqual(scene.Layout{}, try f.owner.sceneGetPaintLayout(try f.owner.sceneCreateNode(f.id, 1, 3)));
+    try testing.expectEqual(scene.Layout{}, try f.owner.sceneGetPaintLayout(try f.owner.sceneCreateNode(f.id, 1, 3), false));
     try f.owner.sceneFrameCancel(f.id, done.frame_id);
     // A scroll of a culling parent keeps the candidates: a shown row's request reports where the
     // scroll moved it, through a scroll node's content origin and offset too, and a row no list
@@ -244,13 +244,13 @@ test "Scene frame paint layout reports where a hook-free frame painted a node mo
                 _ = try g.owner.sceneScrollTo(content, .{ 0, -shift }, .{ false, false }, false);
             } else try g.owner.scenePatchPaint(content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = shift });
             if (shift == -2) {
-                try testing.expectEqual(@as(f64, -2), (try g.owner.sceneGetPaintLayout(rows[0])).screenY);
+                try testing.expectEqual(@as(f64, -2), (try g.owner.sceneGetPaintLayout(rows[0], false)).screenY);
                 // Childless rows hold nothing to prepare.
                 try testing.expectEqual(@as(u64, 0), g.state.test_subtree_preparations);
                 break;
             }
             const asked = try g.step(null, options, c.OT_SCENE_FRAME_UPDATE, rows[1]);
-            try testing.expectEqual(1 + shift, (try g.owner.sceneGetPaintLayout(rows[1])).screenY);
+            try testing.expectEqual(1 + shift, (try g.owner.sceneGetPaintLayout(rows[1], false)).screenY);
             _ = try g.owner.sceneFrameCommit(g.id, try g.step(asked, options, c.OT_SCENE_FRAME_DONE, null), false);
             try drain(g.owner, g.id);
             // A painted row reads its solved width after a measurement, and a row detached after
@@ -258,11 +258,11 @@ test "Scene frame paint layout reports where a hook-free frame painted a node mo
             if (shift == 0) {
                 try g.owner.sceneSetStyle(rows[2], 4, 0, 0, 1, 3, 1);
                 try g.owner.sceneMeasureLayout(g.id, g.root);
-                try testing.expectEqual(@as(f32, 3), (try g.owner.sceneGetPaintLayout(rows[2])).width);
+                try testing.expectEqual(@as(f32, 3), (try g.owner.sceneGetPaintLayout(rows[2], false)).width);
             }
             if (shift != -1) continue;
             try g.owner.sceneMoveNode(rows[1], null, 0);
-            try testing.expectEqual(scene.Layout{}, try g.owner.sceneGetPaintLayout(rows[1]));
+            try testing.expectEqual(scene.Layout{}, try g.owner.sceneGetPaintLayout(rows[1], false));
         }
     }
 }
@@ -708,6 +708,89 @@ test "Scene text bytes answer only for glyphs a finished frame drew" {
     _ = try f.owner.sceneFrameCommit(f.id, request, false);
     try drain(f.owner, f.id);
     try testing.expectEqual(@as(?u32, null), try f.owner.sceneGetTextByteAt(text, 1, 0));
+}
+
+// A 6-column text in a bordered box takes each row's padding (left, top, right, bottom) in turn:
+// it paints, wraps, answers byte hits and selects inside it. Rows 2-4 keep row 1's border box and
+// change only where the content sits or how it wraps; VERIFY fails a frame that kept stale rows.
+test "Scene text paints inside its padding" {
+    const Row = struct { padding: [4]f32, height: f32, lines: []const []const u8, fixed: bool = false };
+    const rows = [_]Row{
+        .{ .padding = .{ 0, 0, 0, 0 }, .height = 2, .lines = &.{ "ab cd ", "ef    " } },
+        .{ .padding = .{ 2, 0, 0, 0 }, .height = 3, .lines = &.{ "  ab  ", "  cd  ", "  ef  " } },
+        .{ .padding = .{ 1, 0, 1, 0 }, .height = 3, .lines = &.{ " ab   ", " cd   ", " ef   " } },
+        .{ .padding = .{ 0, 1, 0, 0 }, .height = 3, .lines = &.{ "      ", "ab cd ", "ef    " } },
+        .{ .padding = .{ 0, 0, 0, 1 }, .height = 3, .lines = &.{ "ab cd ", "ef    ", "      " } },
+        // Yoga rounds the box to 2 rows, not its padding; the content keeps both measured rows.
+        .{ .padding = .{ 0, 0, 0, 0.3 }, .height = 2, .lines = &.{ "ab cd ", "ef    " } },
+        // Fractions round where Yoga rounds a child's edges; the view is as wide as measurement saw.
+        .{ .padding = .{ 0, 0.5, 0, 0.5 }, .height = 3, .lines = &.{ "      ", "ab cd ", "ef    " } },
+        .{ .padding = .{ 1.5, 0, 0, 0 }, .height = 3, .lines = &.{ "  ab  ", "  cd  ", "  ef  " } },
+        .{ .padding = .{ 1, 1, 1, 1 }, .height = 5, .lines = &.{ "      ", " ab   ", " cd   ", " ef   ", "      " } },
+        // A fixed height cuts the third line at the bottom padding.
+        .{ .padding = .{ 1, 0, 1, 1 }, .height = 3, .lines = &.{ " ab   ", " cd   ", "      " }, .fixed = true },
+    };
+    const f = try Fixture.init(testing.allocator, 8, 8, .{});
+    defer f.deinit();
+    try f.owner.sceneSetDebugFlags(f.id, c.OT_SCENE_DEBUG_VERIFY);
+    const box = try placedAt(f, f.root, c.OT_SCENE_BOX, 2, 0, 0, 8, 8);
+    try f.owner.sceneSetPaint(box, .{ .borderSides = c.OT_BORDER_ALL });
+    // A culling parent prepares only the views whose observed box changed.
+    try f.owner.sceneSetScroll(box, .{ .culling = true });
+    const text = try placedAt(f, box, c.OT_SCENE_TEXT, 3, 0, 0, 6, 1);
+    try f.owner.sceneSetText(text, "ab cd ef");
+    const blue = ansi.rgbColor(0, 0, 255, 255);
+    const body = try f.owner.createBuffer(8, 8, .{});
+    for (rows) |row| {
+        try f.owner.sceneSetStyle(text, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_HEIGHT, 0, if (row.fixed) c.OT_UNIT_POINT else c.OT_UNIT_AUTO, row.height, 1);
+        for (row.padding, c.OT_EDGE_LEFT..) |padding, edge| try f.owner.sceneSetStyle(text, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, @intCast(edge), c.OT_UNIT_POINT, padding, 0);
+        _ = try presentWork(f, .{});
+        try testing.expectEqual(row.height, (try f.owner.sceneGetLayout(text, false)).height);
+        const left: i32 = @intFromFloat(@round(row.padding[0]));
+        const top: i32 = @intFromFloat(@round(row.padding[1]));
+        try testing.expectEqual(@as(?u32, 0), try f.owner.sceneGetTextByteAt(text, 1 + left, 1 + top));
+        try testing.expectEqual(if (left == 0 and top == 0) @as(?u32, 0) else null, try f.owner.sceneGetTextByteAt(text, 1, 1));
+        // A host's body draw at the node's cell starts at the content too.
+        try f.owner.drawSceneBody(body, null, text, 0, 0);
+        try testing.expectEqual(@as(u32, 'a'), (try f.owner.raw().getBuffer(body)).get(@intCast(left), @intCast(top)).?.char);
+        // Selection takes the border box's local cells, as hosts pass them, on a drag's start and
+        // its updates; an anchor far off the left edge clamps to the line start.
+        _ = try f.owner.sceneSetTextSelection(text, .{ .operation = c.OT_SCENE_TEXT_SELECTION_SET, .anchor_x = std.math.minInt(i32), .anchor_y = top, .focus_x = left, .focus_y = top, .background = blue });
+        _ = try f.owner.sceneSetTextSelection(text, .{ .operation = c.OT_SCENE_TEXT_SELECTION_UPDATE, .anchor_x = std.math.minInt(i32), .anchor_y = top, .focus_x = left + 1, .focus_y = top, .background = blue });
+        var selected: [8]u8 = undefined;
+        try testing.expectEqualStrings("ab", selected[0..try f.owner.sceneGetSelectedText(text, &selected)]);
+        _ = try presentWork(f, .{});
+        const frame = f.cli.currentRenderBuffer;
+        try testing.expectEqual(blue, frame.get(@intCast(1 + left), @intCast(1 + top)).?.bg);
+        for (0..6) |y| for (0..6) |x| {
+            const line = if (y < row.lines.len) row.lines[y] else "      ";
+            try testing.expectEqual(@as(u32, line[x]), frame.get(@intCast(1 + x), @intCast(1 + y)).?.char);
+        };
+    }
+    // Padding that takes the whole height leaves no content: neither paint nor a body draw shows a glyph.
+    try f.owner.sceneSetStyle(text, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, c.OT_EDGE_TOP, c.OT_UNIT_POINT, 1.5, 0);
+    _ = try presentWork(f, .{});
+    (try f.owner.raw().getBuffer(body)).clear(.{ 0, 0, 0, 0 }, null);
+    try f.owner.drawSceneBody(body, null, text, 0, 0);
+    for (1..4) |y| {
+        try testing.expectEqual(@as(u32, ' '), f.cli.currentRenderBuffer.get(2, @intCast(y)).?.char);
+        try testing.expectEqual(@as(u32, ' '), (try f.owner.raw().getBuffer(body)).get(1, @intCast(y - 1)).?.char);
+    }
+    // A box far past the cell range keeps its view: 512 - 30 columns, cut out before the clamp, never through an inset.
+    try f.owner.sceneSetStyle(text, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_WIDTH, 0, c.OT_UNIT_POINT, 2147484160, 1);
+    for ([_]f32{ 30, 2147483648 }, [_]u32{ c.OT_EDGE_LEFT, c.OT_EDGE_RIGHT }) |padding, edge| try f.owner.sceneSetStyle(text, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, edge, c.OT_UNIT_POINT, padding, 0);
+    _ = try presentWork(f, .{});
+    try testing.expectEqual(@as(f32, 482), (try f.owner.sceneGetPaintLayout(text, true)).width);
+    // Without padding the view is Yoga's box, at a fractional place (edges 1.2 and 7.6 round to 7 cells)
+    // and 2^28 cells out, translated back on screen; one cell of padding takes two columns there too.
+    for ([_][3]f32{ .{ 0.2, 6.4, 0 }, .{ 268435456, 6, 0 }, .{ 268435456, 6, 1 } }) |place| {
+        for (c.OT_EDGE_LEFT..c.OT_EDGE_START) |edge| try f.owner.sceneSetStyle(text, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, @intCast(edge), c.OT_UNIT_POINT, place[2], 0);
+        try f.owner.sceneSetStyle(text, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_WIDTH, 0, c.OT_UNIT_POINT, place[1], 1);
+        try f.owner.sceneSetPositions(text, 3, .{ 1, 1, 0, 0 }, .{ place[0], 0, 0, 0 });
+        try f.owner.scenePatchPaint(text, c.OT_SCENE_PROPERTY_TRANSLATE_X, .{ .translateX = @floor(-place[0]) });
+        _ = try presentWork(f, .{});
+        try testing.expectEqual((try f.owner.sceneGetPaintLayout(text, false)).width - 2 * place[2], (try f.owner.sceneGetPaintLayout(text, true)).width);
+    }
 }
 
 const BandCase = enum { space_border_tall, space_border_tracker, hooked_body, hooked_after, surface, offscreen_view, offscreen_view_self };
@@ -1349,6 +1432,42 @@ test "Scene frame work solves Yoga only for text writes that can change the meas
     try testing.expectEqualSlices(u64, &expected, &actual);
 }
 
+// Highlights never change a size, so an editor's highlight repaints without a layout solve
+// (track step C3.1, invariant 4); an edit still solves.
+test "Scene editor highlights repaint without a layout solve" {
+    const f = try Fixture.init(testing.allocator, 8, 2, .{});
+    defer f.deinit();
+    const style = try f.owner.createSyntaxStyle();
+    _ = try f.owner.syntaxStyleRegister(style, "red", .{ .fg = ansi.rgbColor(255, 0, 0, 255), .bg = null, .attributes = 0 });
+    const edit = try f.owner.createEditBuffer(.unicode);
+    try f.owner.editSetText(edit, "abc", false);
+    try f.owner.editSetSyntaxStyle(edit, style);
+    const editor = try f.owner.createEditorView(edit, 6, 1);
+    const node = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_EDITOR, 3);
+    try f.owner.sceneSetEditorView(node, editor);
+    try f.owner.sceneMoveNode(node, f.root, 0);
+    _ = try presentWork(f, .{});
+    const red = ansi.rgbColor(255, 0, 0, 255);
+    const rows = [_]struct { context.TextHighlight, bool }{
+        .{ .{ .add_range = .{ .start = 0, .end = 1, .style_id = 1, .ref = 4 } }, true },
+        .{ .{ .remove_ref = 4 }, false },
+        .{ .{ .add_line = .{ .line = 0, .range = .{ .start = 0, .end = 2, .style_id = 1 } } }, true },
+        .{ .{ .clear_line = 0 }, false },
+        .{ .{ .add_range = .{ .start = 0, .end = 3, .style_id = 1 } }, true },
+        .{ .clear_all, false },
+    };
+    for (rows) |row| {
+        try f.owner.editHighlight(edit, row[0]);
+        const w = try presentWork(f, .{});
+        try testing.expectEqual(@as(u64, 0), w.yoga_solves);
+        const cell = f.cli.currentRenderBuffer.get(0, 0).?;
+        try testing.expectEqual(@as(u32, 'a'), cell.char);
+        try testing.expectEqual(row[1], std.meta.eql(red, cell.fg));
+    }
+    try f.owner.editSetText(edit, "abcd", false);
+    try testing.expectEqual(@as(u64, 1), (try presentWork(f, .{})).yoga_solves);
+}
+
 // A reply changes the visibility of a member whose feedback already started. The visibility
 // stamp must give way to the walk: no request may reach a node the reply hid.
 test "Scene feedback visibility follows replies that hide, detach, or move a started member" {
@@ -1650,7 +1769,7 @@ fn expectSameObservations(twins: [2]Fixture, nodes: [2][]context.Handle) !void {
         for ([_]bool{ false, true }) |raw| {
             try testing.expectEqual(try twins[0].owner.sceneGetLayout(first, raw), try twins[1].owner.sceneGetLayout(second, raw));
         }
-        try testing.expectEqual(try twins[0].owner.sceneGetPaintLayout(first), try twins[1].owner.sceneGetPaintLayout(second));
+        try testing.expectEqual(try twins[0].owner.sceneGetPaintLayout(first, false), try twins[1].owner.sceneGetPaintLayout(second, false));
         const states = .{ (try twins[0].owner.raw().getRenderable(first)).scene_node.?, (try twins[1].owner.raw().getRenderable(second)).scene_node.? };
         // Composition reads only the box; refresh copies the paint position too.
         inline for (.{ "left", "top", "right", "bottom", "width", "height" }) |name| {
@@ -2792,13 +2911,13 @@ fn culledFrame(f: Fixture, case: Culled, list: []const context.Handle, log: *std
             .first_frame_read, .solve_read, .translated_read, .translate_in_reply, .held_read => true,
             else => false,
         };
-        const painted = try f.owner.sceneGetPaintLayout(if (read) list[19] else request.node);
+        const painted = try f.owner.sceneGetPaintLayout(if (read) list[19] else request.node, false);
         try log.append(testing.allocator, .{ request.kind, request.num, request.layout_epoch, @bitCast(@as(f64, painted.width)), @bitCast(painted.screenY), request.node.slot });
         if (reply and std.meta.eql(request.node, list[0])) switch (case) {
             .scroll_in_reply => try f.owner.sceneSetScroll(list[19], .{}),
             .read_moved => {
                 try f.owner.sceneMoveNode(list[19], list[6], 0);
-                _ = try f.owner.sceneGetPaintLayout(list[19]);
+                _ = try f.owner.sceneGetPaintLayout(list[19], false);
             },
             .moved_out => try f.owner.sceneMoveNode(list[19], list[20], 0),
             .idle_update => try feedbackHook(f, list[19], c.OT_SCENE_HOOK_UPDATE),
@@ -2825,7 +2944,7 @@ fn culledFrame(f: Fixture, case: Culled, list: []const context.Handle, log: *std
             },
             .cancelled_solve => {
                 try f.owner.sceneFrameCancel(f.id, request.frame_id);
-                const after = try f.owner.sceneGetPaintLayout(list[19]);
+                const after = try f.owner.sceneGetPaintLayout(list[19], false);
                 return log.append(testing.allocator, .{ 0, 0, 0, @bitCast(@as(f64, after.width)), @bitCast(after.screenY), 0 });
             },
             .row_bars_in_reply => {
@@ -2834,7 +2953,7 @@ fn culledFrame(f: Fixture, case: Culled, list: []const context.Handle, log: *std
             },
             .held_read => {
                 try feedbackHook(f, list[20], c.OT_SCENE_HOOK_UPDATE);
-                const after = try f.owner.sceneGetPaintLayout(list[19]);
+                const after = try f.owner.sceneGetPaintLayout(list[19], false);
                 try log.append(testing.allocator, .{ 0, 0, 0, @bitCast(@as(f64, after.width)), @bitCast(after.screenY), 0 });
             },
             .shown_then_update, .hidden_row => {
@@ -2966,7 +3085,7 @@ test "Scene culled subtrees follow replies and reads as the full walk does" {
         try twins[0].expectSameCells(twins[1]);
         // G's public layout is its solved one, in a row the walk left out too.
         const public = try twins[1].owner.sceneGetLayout(g[1], false);
-        const solved = try twins[1].owner.sceneGetPaintLayout(g[1]);
+        const solved = try twins[1].owner.sceneGetPaintLayout(g[1], false);
         try testing.expectEqual(.{ @max(solved.height, 1), solved.screenY }, .{ public.height, public.screenY });
         // A child mounted since the solve has no layout yet.
         const mounted = try twins[1].owner.sceneCreateNode(twins[1].id, c.OT_SCENE_BOX, 97);

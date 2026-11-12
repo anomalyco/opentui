@@ -202,8 +202,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   }
 
   public set scrollY(value: number) {
-    const maxScrollY = Math.max(0, this.scrollHeight - this.height)
-    const clamped = Math.max(0, Math.min(value ?? 0, maxScrollY))
+    const clamped = Math.max(0, Math.min(value ?? 0, this.maxScrollY))
     if (this._scrollY !== clamped) {
       this.runMutation(() => {
         this.setNativeSceneTextOptions({ scrollY: clamped })
@@ -219,8 +218,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   }
 
   public set scrollX(value: number) {
-    const maxScrollX = Math.max(0, this.scrollWidth - this.width)
-    const clamped = Math.max(0, Math.min(value ?? 0, maxScrollX))
+    const clamped = Math.max(0, Math.min(value ?? 0, this.maxScrollX))
     if (this._scrollX !== clamped) {
       this.runMutation(() => {
         this.setNativeSceneTextOptions({ scrollX: clamped })
@@ -242,11 +240,17 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   }
 
   public get maxScrollY(): number {
-    return Math.max(0, this.scrollHeight - this.height)
+    return Math.max(0, this.scrollHeight - this.textViewport.height)
   }
 
   public get maxScrollX(): number {
-    return Math.max(0, this.scrollWidth - this.width)
+    return Math.max(0, this.scrollWidth - this.textViewport.width)
+  }
+
+  /** The cells the text fills: native text leaves its padding out once it has a layout; until then, its box. */
+  private get textViewport(): { width: number; height: number } {
+    const scene = this.nativeTextScene
+    return scene && scene.getLayout(this, "paint").width > 0 ? scene.getLayout(this, "content") : this
   }
 
   protected updateViewportOffset(scrollX = this._scrollX, scrollY = this._scrollY): void {

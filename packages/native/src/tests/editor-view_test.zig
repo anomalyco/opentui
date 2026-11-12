@@ -389,8 +389,9 @@ test "EditorView - vertical moves keep the desired column and land on cursor-uni
     // From (0, 1) into the width-2 unit at the start of line 1, and back to column 1 on ASCII lines.
     const wide = [_][2]u32{ .{ 1, 0 }, .{ 0, 1 }, .{ 1, 0 }, .{ 2, 1 }, .{ 1, 0 }, .{ 0, 1 }, .{ 1, 0 }, .{ 2, 1 }, .{ 1, 0 }, .{ 0, 1 } };
     const Case = struct { text: []const u8, wrap: text_buffer.WrapMode = .none, width: u32 = 20, placeholder: []const owned_styled.Part = &.{}, start: [2]u32, moves: []const u8, ends: []const [2]u32 };
-    // u/d move the EditBuffer, U/D move the EditorView, a digit scrolls a one-row viewport to that
-    // line with moveCursor, x types "x". Each end is the logical (row, col) after the move.
+    // u/d move the EditBuffer, U/D move the EditorView, E goes to the visual line end, a digit
+    // scrolls a one-row viewport to that line with moveCursor, x types "x". Each end is the
+    // logical (row, col) after the move.
     const cases = [_]Case{
         .{ .text = long, .wrap = .char, .start = .{ 0, 50 }, .moves = "UD", .ends = &.{ .{ 0, 30 }, .{ 0, 50 } } },
         .{ .text = long, .wrap = .char, .start = .{ 0, 0 }, .moves = "D", .ends = &.{.{ 0, 20 }} },
@@ -413,6 +414,10 @@ test "EditorView - vertical moves keep the desired column and land on cursor-uni
         // 172: the placeholder's visual rows are not rows of the empty buffer.
         .{ .text = "", .placeholder = &.{.{ .text = "type here\nsecond line" }}, .start = .{ 0, 0 }, .moves = "UDUx", .ends = &.{ .{ 0, 0 }, .{ 0, 0 }, .{ 0, 0 }, .{ 0, 1 } } },
         .{ .text = "", .wrap = .char, .width = 10, .placeholder = &.{.{ .text = "a placeholder wider than the box" }}, .start = .{ 0, 0 }, .moves = "DDUx", .ends = &.{ .{ 0, 0 }, .{ 0, 0 }, .{ 0, 0 }, .{ 0, 1 } } },
+        // 606: without wrapping, the visual line end is the line end, however wide the line.
+        .{ .text = "ab\nabcd\nabcdefgh", .width = 4, .start = .{ 0, 1 }, .moves = "EDEDEUU", .ends = &.{ .{ 0, 2 }, .{ 1, 2 }, .{ 1, 4 }, .{ 2, 4 }, .{ 2, 8 }, .{ 1, 4 }, .{ 0, 2 } } },
+        .{ .text = "日本語ab", .width = 3, .start = .{ 0, 0 }, .moves = "EE", .ends = &.{ .{ 0, 8 }, .{ 0, 8 } } },
+        .{ .text = "", .width = 4, .placeholder = &.{.{ .text = "abcde" }}, .start = .{ 0, 0 }, .moves = "Ex", .ends = &.{ .{ 0, 0 }, .{ 0, 1 } } },
     };
     for ([_]utf8.WidthMethod{ .unicode, .wcwidth }) |method| {
         const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method, null);
@@ -432,6 +437,7 @@ test "EditorView - vertical moves keep the desired column and land on cursor-uni
                     'd' => eb.moveDown(),
                     'U' => ev.moveUpVisual(),
                     'D' => ev.moveDownVisual(),
+                    'E' => ev.gotoVisualLineEnd(),
                     'x' => try eb.insertText("x"),
                     '0'...'9' => ev.setViewport(.{ .x = 0, .y = move - '0', .width = case.width, .height = 1 }, true),
                     else => unreachable,
@@ -439,6 +445,12 @@ test "EditorView - vertical moves keep the desired column and land on cursor-uni
                 const cursor = ev.getPrimaryCursor();
                 try std.testing.expectEqual(end, [2]u32{ cursor.row, cursor.col });
                 try std.testing.expectEqual(ev.logicalToVisualCursor(cursor.row, cursor.col).offset, cursor.offset);
+                // 184: a placeholder's rows are not the buffer's, and without wrapping a visual line is the logical one.
+                if (ev.placeholder_active or case.wrap == .none) {
+                    const eol = ev.getEOL();
+                    const visual_eol = ev.getVisualEOL();
+                    try std.testing.expectEqual([3]u32{ eol.logical_row, eol.logical_col, eol.offset }, [3]u32{ visual_eol.logical_row, visual_eol.logical_col, visual_eol.offset });
+                }
             }
         }
     }
@@ -2221,6 +2233,18 @@ test "occupancy - EditorView forwards occupancy and replays stored endpoints" {
     ev.setSelectionOccupancy(.cell);
     ev.gotoVisualLineEnd();
     try std.testing.expectEqual(@as(u32, 2), ev.getPrimaryCursor().offset);
+
+    // A full soft-wrapped row keeps its wrap-edge cell under cell occupancy, so the
+    // boundary end of row 0 shows as the start of row 1 after the switch.
+    try eb.setText("abcd");
+    ev.setWrapMode(.char);
+    ev.setViewportSize(2, 24);
+    ev.setSelectionOccupancy(.boundary);
+    try eb.setCursor(0, 0);
+    ev.gotoVisualLineEnd();
+    ev.setSelectionOccupancy(.cell);
+    const vcursor = ev.getVisualCursor();
+    try std.testing.expectEqual([3]u32{ 2, 1, 0 }, [3]u32{ vcursor.offset, vcursor.visual_row, vcursor.visual_col });
 }
 
 test "EditorView - word press keeps cursor on the clicked grapheme" {

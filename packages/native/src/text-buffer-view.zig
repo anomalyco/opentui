@@ -13,6 +13,7 @@ const TextSelection = tb.TextSelection;
 pub const WrapMode = tb.WrapMode;
 const TextChunk = seg_mod.TextChunk;
 const StyleSpan = tb.StyleSpan;
+const TextBufferError = tb.TextBufferError;
 
 pub const TextBufferViewError = error{
     OutOfMemory,
@@ -549,6 +550,11 @@ pub const UnifiedTextBufferView = struct {
         }
     }
 
+    /// The width the layout wraps lines at, or null when it does not wrap them.
+    pub fn layoutWrapWidth(self: *const Self) ?u32 {
+        return if (self.wrap_mode == .none) null else self.wrap_width;
+    }
+
     pub fn setWrapMode(self: *Self, mode: WrapMode) void {
         if (self.wrap_mode != mode) {
             self.wrap_mode = mode;
@@ -744,12 +750,11 @@ pub const UnifiedTextBufferView = struct {
         const allocator = self.virtual_lines_arena.allocator();
         const word_layout: ?*WordLayoutStorage = if (self.word_layout.lines.items.len == self.text_buffer.getLineCount()) &self.word_layout else null;
         text_work.add(.layouts, 1);
-        return if (self.wrap_mode == .none or self.wrap_width == null)
-            calculateUnwrappedVirtualLines(allocator, self.text_buffer, range, output)
-        else switch (self.wrap_mode) {
+        const width = self.layoutWrapWidth() orelse return calculateUnwrappedVirtualLines(allocator, self.text_buffer, range, output);
+        return switch (self.wrap_mode) {
             .none => unreachable,
-            .char => calculateVirtualLinesGeneric(.render, .char, allocator, self.text_buffer, range, self.wrap_width.?, self.first_line_offset, output, null),
-            .word => calculateVirtualLinesGeneric(.render, .word, allocator, self.text_buffer, range, self.wrap_width.?, self.first_line_offset, output, word_layout),
+            .char => calculateVirtualLinesGeneric(.render, .char, allocator, self.text_buffer, range, width, self.first_line_offset, output, null),
+            .word => calculateVirtualLinesGeneric(.render, .word, allocator, self.text_buffer, range, width, self.first_line_offset, output, word_layout),
         };
     }
 
@@ -1628,13 +1633,14 @@ pub const UnifiedTextBufferView = struct {
         return self.text_buffer.copyTextRange(selection.start, selection.end, out);
     }
 
-    pub fn getVirtualLineSpans(self: *const Self, vline_idx: usize) VirtualLineSpanInfo {
+    /// Rebuilding a stale line's spans can need memory, so this can fail.
+    pub fn getVirtualLineSpans(self: *const Self, vline_idx: usize) TextBufferError!VirtualLineSpanInfo {
         if (vline_idx >= self.virtual_lines.items.len) {
             return .{ .spans = &[_]StyleSpan{}, .source_line = 0, .source_col_start = 0 };
         }
 
         const vline = &self.virtual_lines.items[vline_idx];
-        const spans = self.text_buffer.getLineSpans(vline.source_line);
+        const spans = try self.text_buffer.getLineSpans(vline.source_line);
 
         return .{
             .spans = spans,

@@ -233,6 +233,7 @@ typedef struct ot_handle {
 #define OT_LAYOUT_PUBLIC UINT32_C(0)
 #define OT_LAYOUT_YOGA UINT32_C(1)
 #define OT_LAYOUT_PAINT UINT32_C(2)
+#define OT_LAYOUT_CONTENT UINT32_C(3)
 
 /* Border masks are paint bits, not OT_EDGE_* layout selectors. */
 #define OT_BORDER_NONE UINT32_C(0)
@@ -1125,7 +1126,10 @@ ot_status ot_scene_get_text_byte_at(ot_context *, const ot_handle *node, int32_t
  * after a solve or after a change between frames that drops the list, until the next list
  * paints it, reads its latest solved geometry composed with current translations and
  * offsets; zeros if Yoga has not laid it out since it was created or moved. While a host
- * request is pending, such a node's first read holds.
+ * request is pending, such a node's first read holds. OT_LAYOUT_CONTENT is PAINT without a
+ * text node's padding, its content edges rounded as Yoga rounds the node's own edges (no
+ * padding reads the box): the cells its text view fills, which paint, wrapping, text byte
+ * hits, selection and body draws use. Other nodes read PAINT.
  * These reads do not run layout. Other selectors reject without changing output.
  * A scroll node's children report YOGA values local to its content node, and their
  * screen_x/y compose through the viewport and content origins and the offset. */
