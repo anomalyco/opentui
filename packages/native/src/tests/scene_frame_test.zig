@@ -212,14 +212,14 @@ test "Scene frame paint layout reports where a hook-free frame painted a node mo
     try f.owner.sceneSetHooks(f.root, c.OT_SCENE_HOOK_UPDATE, 1, 8, 1);
     // Before any paint list, a measured node reads its solved geometry.
     try f.owner.sceneMeasureLayout(f.id, f.root);
-    try testing.expectEqual(@as(f32, 1), (try f.owner.sceneGetPaintLayout(child)).width);
+    try testing.expectEqual(@as(f32, 1), (try f.owner.sceneGetPaintLayout(child, false)).width);
     const update = try f.step(null, options, c.OT_SCENE_FRAME_UPDATE, f.root);
     try f.owner.scenePatchPaint(child, c.OT_SCENE_PROPERTY_TRANSLATE_X, .{ .translateX = 3 });
     const done = try f.step(update, options, c.OT_SCENE_FRAME_DONE, null);
     try testing.expectEqual(@as(u16, 2), f.cli.getNextBuffer().get(3, 0).?.bg[0]);
-    try testing.expectEqual(@as(f64, 3), (try f.owner.sceneGetPaintLayout(child)).screenX);
+    try testing.expectEqual(@as(f64, 3), (try f.owner.sceneGetPaintLayout(child, false)).screenX);
     // A node no solve laid out has no paint cells.
-    try testing.expectEqual(scene.Layout{}, try f.owner.sceneGetPaintLayout(try f.owner.sceneCreateNode(f.id, 1, 3)));
+    try testing.expectEqual(scene.Layout{}, try f.owner.sceneGetPaintLayout(try f.owner.sceneCreateNode(f.id, 1, 3), false));
     try f.owner.sceneFrameCancel(f.id, done.frame_id);
     // A scroll of a culling parent keeps the candidates: a shown row's request reports where the
     // scroll moved it, through a scroll node's content origin and offset too, and a row no list
@@ -244,13 +244,13 @@ test "Scene frame paint layout reports where a hook-free frame painted a node mo
                 _ = try g.owner.sceneScrollTo(content, .{ 0, -shift }, .{ false, false }, false);
             } else try g.owner.scenePatchPaint(content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = shift });
             if (shift == -2) {
-                try testing.expectEqual(@as(f64, -2), (try g.owner.sceneGetPaintLayout(rows[0])).screenY);
+                try testing.expectEqual(@as(f64, -2), (try g.owner.sceneGetPaintLayout(rows[0], false)).screenY);
                 // Childless rows hold nothing to prepare.
                 try testing.expectEqual(@as(u64, 0), g.state.test_subtree_preparations);
                 break;
             }
             const asked = try g.step(null, options, c.OT_SCENE_FRAME_UPDATE, rows[1]);
-            try testing.expectEqual(1 + shift, (try g.owner.sceneGetPaintLayout(rows[1])).screenY);
+            try testing.expectEqual(1 + shift, (try g.owner.sceneGetPaintLayout(rows[1], false)).screenY);
             _ = try g.owner.sceneFrameCommit(g.id, try g.step(asked, options, c.OT_SCENE_FRAME_DONE, null), false);
             try drain(g.owner, g.id);
             // A painted row reads its solved width after a measurement, and a row detached after
@@ -258,11 +258,11 @@ test "Scene frame paint layout reports where a hook-free frame painted a node mo
             if (shift == 0) {
                 try g.owner.sceneSetStyle(rows[2], 4, 0, 0, 1, 3, 1);
                 try g.owner.sceneMeasureLayout(g.id, g.root);
-                try testing.expectEqual(@as(f32, 3), (try g.owner.sceneGetPaintLayout(rows[2])).width);
+                try testing.expectEqual(@as(f32, 3), (try g.owner.sceneGetPaintLayout(rows[2], false)).width);
             }
             if (shift != -1) continue;
             try g.owner.sceneMoveNode(rows[1], null, 0);
-            try testing.expectEqual(scene.Layout{}, try g.owner.sceneGetPaintLayout(rows[1]));
+            try testing.expectEqual(scene.Layout{}, try g.owner.sceneGetPaintLayout(rows[1], false));
         }
     }
 }
@@ -718,7 +718,9 @@ test "Scene text paints inside its padding" {
         .{ .padding = .{ 0, 0, 0, 1 }, .height = 3, .lines = &.{ "ab cd ", "ef    ", "      " } },
         // Yoga rounds the box to 2 rows, not its padding; the content keeps both measured rows.
         .{ .padding = .{ 0, 0, 0, 0.3 }, .height = 2, .lines = &.{ "ab cd ", "ef    " } },
-        .{ .padding = .{ 0, 0.5, 0, 0.5 }, .height = 3, .lines = &.{ "ab cd ", "ef    ", "      " } },
+        // Fractions round where Yoga rounds a child's edges; the view is as wide as measurement saw.
+        .{ .padding = .{ 0, 0.5, 0, 0.5 }, .height = 3, .lines = &.{ "      ", "ab cd ", "ef    " } },
+        .{ .padding = .{ 1.5, 0, 0, 0 }, .height = 3, .lines = &.{ "  ab  ", "  cd  ", "  ef  " } },
         .{ .padding = .{ 1, 1, 1, 1 }, .height = 5, .lines = &.{ "      ", " ab   ", " cd   ", " ef   ", "      " } },
         // A fixed height cuts the third line at the bottom padding.
         .{ .padding = .{ 1, 0, 1, 1 }, .height = 3, .lines = &.{ " ab   ", " cd   ", "      " }, .fixed = true },
@@ -739,8 +741,8 @@ test "Scene text paints inside its padding" {
         for (row.padding, c.OT_EDGE_LEFT..) |padding, edge| try f.owner.sceneSetStyle(text, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, @intCast(edge), c.OT_UNIT_POINT, padding, 0);
         _ = try presentWork(f, .{});
         try testing.expectEqual(row.height, (try f.owner.sceneGetLayout(text, false)).height);
-        const left: i32 = @intFromFloat(row.padding[0]);
-        const top: i32 = @intFromFloat(row.padding[1]);
+        const left: i32 = @intFromFloat(@round(row.padding[0]));
+        const top: i32 = @intFromFloat(@round(row.padding[1]));
         try testing.expectEqual(@as(?u32, 0), try f.owner.sceneGetTextByteAt(text, 1 + left, 1 + top));
         try testing.expectEqual(if (left == 0 and top == 0) @as(?u32, 0) else null, try f.owner.sceneGetTextByteAt(text, 1, 1));
         // A host's body draw at the node's cell starts at the content too.
@@ -761,12 +763,25 @@ test "Scene text paints inside its padding" {
         };
     }
     // Padding that takes the whole height leaves no content: neither paint nor a body draw shows a glyph.
-    try f.owner.sceneSetStyle(text, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, c.OT_EDGE_TOP, c.OT_UNIT_POINT, 2, 0);
+    try f.owner.sceneSetStyle(text, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, c.OT_EDGE_TOP, c.OT_UNIT_POINT, 1.5, 0);
     _ = try presentWork(f, .{});
-    try testing.expectEqual(@as(u32, ' '), f.cli.currentRenderBuffer.get(2, 3).?.char);
     (try f.owner.raw().getBuffer(body)).clear(.{ 0, 0, 0, 0 }, null);
     try f.owner.drawSceneBody(body, null, text, 0, 0);
-    try testing.expectEqual(@as(u32, ' '), (try f.owner.raw().getBuffer(body)).get(1, 2).?.char);
+    for (1..4) |y| {
+        try testing.expectEqual(@as(u32, ' '), f.cli.currentRenderBuffer.get(2, @intCast(y)).?.char);
+        try testing.expectEqual(@as(u32, ' '), (try f.owner.raw().getBuffer(body)).get(1, @intCast(y - 1)).?.char);
+    }
+    // A box far past the cell range keeps the view measurement saw: 512 columns, cut out before the clamp.
+    try f.owner.sceneSetStyle(text, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_WIDTH, 0, c.OT_UNIT_POINT, 2147484160, 1);
+    for ([_]f32{ 0, 2147483648 }, [_]u32{ c.OT_EDGE_LEFT, c.OT_EDGE_RIGHT }) |padding, edge| try f.owner.sceneSetStyle(text, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, edge, c.OT_UNIT_POINT, padding, 0);
+    _ = try presentWork(f, .{});
+    try testing.expectEqual(@as(f32, 512), (try f.owner.sceneGetPaintLayout(text, true)).width);
+    // Without padding the view is Yoga's box, also at a fractional place: edges 1.2 and 7.6 round to 7 cells.
+    for (c.OT_EDGE_LEFT..c.OT_EDGE_START) |edge| try f.owner.sceneSetStyle(text, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, @intCast(edge), c.OT_UNIT_POINT, 0, 0);
+    try f.owner.sceneSetStyle(text, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_WIDTH, 0, c.OT_UNIT_POINT, 6.4, 1);
+    try f.owner.sceneSetPositions(text, 3, .{ 1, 1, 0, 0 }, .{ 0.2, 0, 0, 0 });
+    _ = try presentWork(f, .{});
+    try testing.expectEqual((try f.owner.sceneGetPaintLayout(text, false)).width, (try f.owner.sceneGetPaintLayout(text, true)).width);
 }
 
 const BandCase = enum { space_border_tall, space_border_tracker, hooked_body, hooked_after, surface, offscreen_view, offscreen_view_self };
@@ -1709,7 +1724,7 @@ fn expectSameObservations(twins: [2]Fixture, nodes: [2][]context.Handle) !void {
         for ([_]bool{ false, true }) |raw| {
             try testing.expectEqual(try twins[0].owner.sceneGetLayout(first, raw), try twins[1].owner.sceneGetLayout(second, raw));
         }
-        try testing.expectEqual(try twins[0].owner.sceneGetPaintLayout(first), try twins[1].owner.sceneGetPaintLayout(second));
+        try testing.expectEqual(try twins[0].owner.sceneGetPaintLayout(first, false), try twins[1].owner.sceneGetPaintLayout(second, false));
         const states = .{ (try twins[0].owner.raw().getRenderable(first)).scene_node.?, (try twins[1].owner.raw().getRenderable(second)).scene_node.? };
         // Composition reads only the box; refresh copies the paint position too.
         inline for (.{ "left", "top", "right", "bottom", "width", "height" }) |name| {
@@ -2851,13 +2866,13 @@ fn culledFrame(f: Fixture, case: Culled, list: []const context.Handle, log: *std
             .first_frame_read, .solve_read, .translated_read, .translate_in_reply, .held_read => true,
             else => false,
         };
-        const painted = try f.owner.sceneGetPaintLayout(if (read) list[19] else request.node);
+        const painted = try f.owner.sceneGetPaintLayout(if (read) list[19] else request.node, false);
         try log.append(testing.allocator, .{ request.kind, request.num, request.layout_epoch, @bitCast(@as(f64, painted.width)), @bitCast(painted.screenY), request.node.slot });
         if (reply and std.meta.eql(request.node, list[0])) switch (case) {
             .scroll_in_reply => try f.owner.sceneSetScroll(list[19], .{}),
             .read_moved => {
                 try f.owner.sceneMoveNode(list[19], list[6], 0);
-                _ = try f.owner.sceneGetPaintLayout(list[19]);
+                _ = try f.owner.sceneGetPaintLayout(list[19], false);
             },
             .moved_out => try f.owner.sceneMoveNode(list[19], list[20], 0),
             .idle_update => try feedbackHook(f, list[19], c.OT_SCENE_HOOK_UPDATE),
@@ -2884,7 +2899,7 @@ fn culledFrame(f: Fixture, case: Culled, list: []const context.Handle, log: *std
             },
             .cancelled_solve => {
                 try f.owner.sceneFrameCancel(f.id, request.frame_id);
-                const after = try f.owner.sceneGetPaintLayout(list[19]);
+                const after = try f.owner.sceneGetPaintLayout(list[19], false);
                 return log.append(testing.allocator, .{ 0, 0, 0, @bitCast(@as(f64, after.width)), @bitCast(after.screenY), 0 });
             },
             .row_bars_in_reply => {
@@ -2893,7 +2908,7 @@ fn culledFrame(f: Fixture, case: Culled, list: []const context.Handle, log: *std
             },
             .held_read => {
                 try feedbackHook(f, list[20], c.OT_SCENE_HOOK_UPDATE);
-                const after = try f.owner.sceneGetPaintLayout(list[19]);
+                const after = try f.owner.sceneGetPaintLayout(list[19], false);
                 try log.append(testing.allocator, .{ 0, 0, 0, @bitCast(@as(f64, after.width)), @bitCast(after.screenY), 0 });
             },
             .shown_then_update, .hidden_row => {
@@ -3025,7 +3040,7 @@ test "Scene culled subtrees follow replies and reads as the full walk does" {
         try twins[0].expectSameCells(twins[1]);
         // G's public layout is its solved one, in a row the walk left out too.
         const public = try twins[1].owner.sceneGetLayout(g[1], false);
-        const solved = try twins[1].owner.sceneGetPaintLayout(g[1]);
+        const solved = try twins[1].owner.sceneGetPaintLayout(g[1], false);
         try testing.expectEqual(.{ @max(solved.height, 1), solved.screenY }, .{ public.height, public.screenY });
         // A child mounted since the solve has no layout yet.
         const mounted = try twins[1].owner.sceneCreateNode(twins[1].id, c.OT_SCENE_BOX, 97);

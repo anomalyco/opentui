@@ -2008,10 +2008,10 @@ pub fn ot_scene_get_layout(context: ?*ContextHandle, node_ptr: ?*const c.ot_hand
     const result = (switch (observation) {
         c.OT_LAYOUT_PUBLIC => owner.core.sceneGetLayout(handleFromC(id.*), false),
         c.OT_LAYOUT_YOGA => owner.core.sceneGetLayout(handleFromC(id.*), true),
-        c.OT_LAYOUT_PAINT, c.OT_LAYOUT_CONTENT => owner.core.sceneGetPaintLayout(handleFromC(id.*)),
+        c.OT_LAYOUT_PAINT, c.OT_LAYOUT_CONTENT => owner.core.sceneGetPaintLayout(handleFromC(id.*), observation == c.OT_LAYOUT_CONTENT),
         else => return sessionError(owner, error.InvalidOptions),
     }) catch |err| return sessionError(owner, err);
-    out.* = sceneLayoutToC(if (observation == c.OT_LAYOUT_CONTENT) scene.contentLayout(result) else result);
+    out.* = sceneLayoutToC(result);
     return c.OT_OK;
 }
 
@@ -2390,7 +2390,7 @@ pub fn ot_scene_frame_step_with_geometry(context: ?*ContextHandle, session_ptr: 
     if (result.kind == c.OT_SCENE_FRAME_DONE or result.kind == c.OT_SCENE_FRAME_RECORD) return c.OT_OK;
     const node = result.node;
     // Public observations advance during refresh, after the ticket is created.
-    if (owner.core.sceneGetPaintLayout(node)) |layout| {
+    if (owner.core.sceneGetPaintLayout(node, false)) |layout| {
         geometry.paint = sceneLayoutToC(layout);
         geometry.flags |= c.OT_SCENE_GEOMETRY_PAINT;
     } else |_| {}

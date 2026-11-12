@@ -314,8 +314,8 @@ pub const Layout = struct {
     height: f32 = 0,
     screenX: f64 = 0,
     screenY: f64 = 0,
-    // A text node's computed padding (left, top, right, bottom), which its view leaves empty.
-    padding: [4]f32 = @splat(0),
+    // The cells a text node's view leaves empty on each side (left, top, right, bottom).
+    inset: [4]f32 = @splat(0),
 };
 
 pub const Paint = struct {
@@ -2533,7 +2533,7 @@ pub const Scene = struct {
     /// A node no frame has prepared has no cells and draws nothing.
     pub fn paintBody(self: *const Scene, objects: *const handles.Table, target: *buffer.OptimizedBuffer, value: *const native.NativeRenderable, x: i32, y: i32) !void {
         const node = value.scene_node.?;
-        var layout = try getPaintLayout(value);
+        var layout = try getPaintLayout(value, false);
         // At its own cell a body keeps the fractional position, so slider thumbs land where paintNode puts them.
         if (x != @as(i32, @intFromFloat(layout.screenX)) or y != @as(i32, @intFromFloat(layout.screenY))) {
             layout.screenX = @floatFromInt(x);
@@ -3603,7 +3603,7 @@ fn sameBox(a: Layout, b: Layout) bool {
     inline for (.{ "left", "top", "right", "bottom", "width", "height" }) |name| {
         if (@as(u32, @bitCast(@field(a, name))) != @as(u32, @bitCast(@field(b, name)))) return false;
     }
-    return std.mem.eql(u8, std.mem.asBytes(&a.padding), std.mem.asBytes(&b.padding));
+    return std.mem.eql(u8, std.mem.asBytes(&a.inset), std.mem.asBytes(&b.inset));
 }
 
 /// Public geometry keeps at least one cell per dimension; paint geometry keeps Yoga's zero. Culling
@@ -3654,19 +3654,21 @@ pub fn getLayout(value: *const native.NativeRenderable) !Layout {
 /// Where the latest paint list painted the node, or where this frame's preparation placed it.
 /// The walks prepare a culled subtree only where it shows, so a node the list did not paint
 /// reads its solved geometry again; while a host request is pending, the first read holds, so
-/// a hook reads its request's geometry after its own changes.
-pub fn getPaintLayout(value: *const native.NativeRenderable) !Layout {
+/// a hook reads its request's geometry after its own changes. `content` cuts a text's view
+/// out of the box before the box is clamped to cells, as paint does.
+pub fn getPaintLayout(value: *const native.NativeRenderable, content: bool) !Layout {
     const node = value.scene_node.?;
     const owner = node.owner;
-    if (node.painted_gen == owner.members_gen) return cellLayout(node.layout);
     const pending = if (owner.attempt) |active| active.pending != null else false;
-    if (pending and node.read_request == owner.last_request) return cellLayout(node.layout);
-    const layout = try composedLayout(value, .solved);
-    if (pending) {
-        node.layout = layout;
-        node.read_request = owner.last_request;
-    }
-    return cellLayout(layout);
+    const layout = if (node.painted_gen == owner.members_gen or (pending and node.read_request == owner.last_request)) node.layout else solved: {
+        const solved = try composedLayout(value, .solved);
+        if (pending) {
+            node.layout = solved;
+            node.read_request = owner.last_request;
+        }
+        break :solved solved;
+    };
+    return cellLayout(if (content) contentLayout(layout) else layout);
 }
 
 /// Composes a node's local geometry through its ancestors: the observed, prepared, or solved
@@ -3718,23 +3720,23 @@ fn localLayout(value: *const native.NativeRenderable, comptime source: anytype) 
     var computed: yoga.ExternalYogaLayout = undefined;
     try yoga.check(yoga.yogaNodeGetComputedLayoutChecked(value.yoga_node, &computed));
     var layout: Layout = .{ .left = computed.left, .top = computed.top, .right = computed.right, .bottom = computed.bottom, .width = computed.width, .height = computed.height };
-    // Edge kind 1 is padding. Only text nodes paint inside theirs; boxes place children there.
-    // Yoga rounds the box but not the padding: whole cells, rounded down, leave the view at
-    // least the size Yoga measured the text at, so every measured row shows.
-    if (node.text != null) for (&layout.padding, api.OT_EDGE_LEFT..) |*padding, edge| {
-        try yoga.check(yoga.yogaNodeLayoutGetEdgeChecked(value.yoga_node, 1, @intCast(edge), padding));
-        padding.* = @floor(padding.*);
-    };
+    // Only text nodes paint inside their padding; boxes place children there. Yoga rounds the
+    // content box's edges as it rounds the node's own, so without padding the view is the box.
+    if (node.text != null) {
+        var box: [4]f32 = undefined;
+        try yoga.check(yoga.yogaNodeGetContentBoxChecked(value.yoga_node, &box));
+        layout.inset = .{ box[0], box[1], @max(0, layout.width - box[0] - box[2]), @max(0, layout.height - box[1] - box[3]) };
+    }
     return layout;
 }
 
-/// The rect a text node's view fills: its layout without its padding.
+/// The rect a text node's view fills: its layout without its insets.
 pub fn contentLayout(layout: Layout) Layout {
     var content = layout;
-    content.screenX += layout.padding[0];
-    content.screenY += layout.padding[1];
-    content.width = @max(0, layout.width - layout.padding[0] - layout.padding[2]);
-    content.height = @max(0, layout.height - layout.padding[1] - layout.padding[3]);
+    content.screenX += layout.inset[0];
+    content.screenY += layout.inset[1];
+    content.width = @max(0, layout.width - layout.inset[0] - layout.inset[2]);
+    content.height = @max(0, layout.height - layout.inset[1] - layout.inset[3]);
     return content;
 }
 

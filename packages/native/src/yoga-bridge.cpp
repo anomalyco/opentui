@@ -2,6 +2,7 @@
 #include "yoga-vocabulary.h"
 
 #include <yoga/OTAllocator.h>
+#include <yoga/algorithm/PixelGrid.h>
 #include <yoga/node/Node.h>
 
 #include <algorithm>
@@ -14,7 +15,6 @@
 #ifdef OT_YOGA_TEST_ALLOCATOR
 #include <yoga/algorithm/Cache.h>
 #include <yoga/algorithm/CalculateLayout.h>
-#include <yoga/algorithm/PixelGrid.h>
 #include <yoga/debug/Log.h>
 #include <yoga/numeric/Comparison.h>
 #include <utility>
@@ -252,6 +252,33 @@ uint32_t otYogaNodeLayoutGetEdge(YGNodeConstRef node, uint32_t kind, uint32_t ed
       case 1: *out = YGNodeLayoutGetPadding(node, e); break;
       case 2: *out = YGNodeLayoutGetBorder(node, e); break;
     }
+  });
+}
+
+uint32_t otYogaNodeGetContentBox(YGNodeConstRef node, float* out) noexcept {
+  if (!node || !out) return OT_YOGA_INVALID_ARGUMENT;
+  return checked([&] {
+    using namespace facebook::yoga;
+    const auto* target = resolveRef(node);
+    const auto& layout = target->getLayout();
+    // The unrounded absolute origin that rounding starts from.
+    double left = 0, top = 0;
+    for (auto* cursor = target; cursor; cursor = cursor->getOwner()) {
+      left += cursor->getLayout().rawPosition(PhysicalEdge::Left);
+      top += cursor->getLayout().rawPosition(PhysicalEdge::Top);
+    }
+    const double scale = target->getConfig()->getPointScaleFactor();
+    const float pad[4] = {layout.padding(PhysicalEdge::Left), layout.padding(PhysicalEdge::Top),
+                          layout.padding(PhysicalEdge::Right), layout.padding(PhysicalEdge::Bottom)};
+    // Rounded as Yoga rounds the node's own edges (PixelGrid.cpp), so no padding gives the box.
+    // Natively measured nodes keep the default node type (yoga.zig), whose edges round to nearest.
+    auto edge = [&](double value) { return roundValueToPixelGrid(value, scale, false, false); };
+    const double right = left + layout.rawDimension(Dimension::Width);
+    const double bottom = top + layout.rawDimension(Dimension::Height);
+    out[0] = edge(left + pad[0]) - edge(left);
+    out[1] = edge(top + pad[1]) - edge(top);
+    out[2] = edge(right - pad[2]) - edge(left + pad[0]);
+    out[3] = edge(bottom - pad[3]) - edge(top + pad[1]);
   });
 }
 

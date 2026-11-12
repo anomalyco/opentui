@@ -3035,11 +3035,11 @@ pub const Context = struct {
         };
     }
 
-    pub fn sceneGetPaintLayout(self: *Context, handle: Handle) !scene.Layout {
+    pub fn sceneGetPaintLayout(self: *Context, handle: Handle, content: bool) !scene.Layout {
         try self.checkSceneRead();
         const node = try self.sceneNode(handle);
         try node.scene_node.?.owner.prepareOmitted(&self.objects, node);
-        return scene.getPaintLayout(node);
+        return scene.getPaintLayout(node, content);
     }
 
     /// Solve the Session root without painting or publishing output. Measurement
