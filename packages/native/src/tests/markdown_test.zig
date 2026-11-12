@@ -960,6 +960,8 @@ const Family = enum {
     open_emphasis,
     /// Tokens after an opener that never closes (each node write restyled them all).
     open_emphasis_tokens,
+    /// Openers, then their closers in reverse: each closer's match encloses the last one's.
+    nested_closers,
     heading,
     table_rows,
     wide_rows,
@@ -1028,6 +1030,12 @@ const Families = struct {
             .open_emphasis_tokens => {
                 try out.appendSlice(arena, pick(random, &.{ "*open ", "**open ", "_o ", "[a ", "~~s " }));
                 for (0..count) |_| try out.appendSlice(arena, pick(random, &.{ "`c` ", "&amp; ", "\\* ", "<b> " }));
+            },
+            .nested_closers => {
+                const marks = pick(random, &.{ "*", "**", "_", "~~" });
+                try out.appendSlice(arena, pick(random, &.{ "begin ", "", "`c` " }));
+                for (0..count) |_| try out.appendSlice(arena, try std.mem.concat(arena, u8, &.{ marks, pick(random, &.{ "a ", "`c` a ", "&amp; a " }) }));
+                for (0..count) |_| try out.appendSlice(arena, try std.mem.concat(arena, u8, &.{ pick(random, &.{ "b", "`c`" }), marks, " " }));
             },
             .heading => {
                 try out.appendSlice(arena, pick(random, &.{ "# ", "###### ", "> ## " }));
@@ -1313,6 +1321,24 @@ test "Markdown model: tokens after an opener that never closes are restyled once
     var commands: std.ArrayListUnmanaged(FamilyCommand) = .empty;
     try commands.append(arena, .{ .append = "*open " });
     for (0..512) |_| try commands.append(arena, .{ .append = "`c` " });
+    try commands.append(arena, .finish);
+    if (try families.run(arena, commands.items)) |failure| {
+        std.debug.print("{s} at step {d}\n", .{ failure.property, failure.step });
+        return error.ModelFailure;
+    }
+}
+
+test "Markdown model: a closer whose match encloses the last one's restyles only what it adds" {
+    // bigboi-r2-2: `begin `, 64 times `*a `, then 64 times `b* `, one piece per call: 8,385 run token
+    // visits for 390 bytes when each closer walked the interiors already italic.
+    var families: Families = .{};
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var commands: std.ArrayListUnmanaged(FamilyCommand) = .empty;
+    try commands.append(arena, .{ .append = "begin " });
+    for (0..64) |_| try commands.append(arena, .{ .append = "*a " });
+    for (0..64) |_| try commands.append(arena, .{ .append = "b* " });
     try commands.append(arena, .finish);
     if (try families.run(arena, commands.items)) |failure| {
         std.debug.print("{s} at step {d}\n", .{ failure.property, failure.step });

@@ -85,6 +85,9 @@ pub const Match = struct {
     count: u32,
     /// Next older match of the same opener.
     next_for_opener: ?u32,
+    /// The opener's and the closer's tokens.
+    opener_token: u32 = 0,
+    closer_token: u32 = 0,
 };
 
 pub const Link = struct {
@@ -743,7 +746,13 @@ pub const Parser = struct {
 
     fn addMatch(self: *Parser, opener_index: u32, closer_index: u32, kind: MatchKind, count: u32) Error!void {
         const index: u32 = @intCast(self.matches.items.len);
-        try self.matches.append(self.allocator, .{ .kind = kind, .count = count, .next_for_opener = self.delimiters.items[opener_index].opener_matches });
+        try self.matches.append(self.allocator, .{
+            .kind = kind,
+            .count = count,
+            .next_for_opener = self.delimiters.items[opener_index].opener_matches,
+            .opener_token = self.delimiters.items[opener_index].token_index,
+            .closer_token = self.delimiters.items[closer_index].token_index,
+        });
         self.matched_from = @min(self.matched_from, self.delimiters.items[opener_index].token_index);
         self.delimiters.items[opener_index].opener_matches = index;
         const closer = &self.delimiters.items[closer_index];

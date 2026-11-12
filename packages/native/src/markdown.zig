@@ -337,6 +337,12 @@ const Live = struct {
     /// a write restyles from the first token whose style may have changed, not from the first.
     token_styles: std.ArrayListUnmanaged(TokenStyle) = .empty,
     styled_count: u32 = 0,
+    /// Token ranges [lo, hi) whose `token_styles` a write skipped (a matched interior whose styles
+    /// a new enclosing match of its kind leaves as they are): a write that starts in one starts
+    /// before it. Disjoint, sorted.
+    stale: std.ArrayListUnmanaged([2]u32) = .empty,
+    /// The parser's matches the writes have seen.
+    matches_seen: u32 = 0,
     /// The content held an `@`: a GFM email autolink may link text once the leaf is final.
     email_possible: bool = false,
 };
@@ -355,6 +361,8 @@ pub const NodeWrite = struct {
     /// behind: it also writes a node whose earlier writes were skipped (a hooked leaf's, which
     /// the host writes; its flag is off while its pending line is parsed again).
     resync: bool = false,
+    /// The runs end here instead of at the text's end (none): the runs after it stay.
+    runs_end: u32 = none,
 };
 
 /// Where the engine writes bound leaves (M2: the Context's binding of scene text nodes).
@@ -539,6 +547,7 @@ pub const Doc = struct {
         self.live.content.deinit(self.allocator);
         self.live.display_ends.deinit(self.allocator);
         self.live.token_styles.deinit(self.allocator);
+        self.live.stale.deinit(self.allocator);
         self.live.pending_display.deinit(self.allocator);
         self.live.pending_runs.deinit(self.allocator);
         self.live.previous_pending.deinit(self.allocator);
@@ -2544,6 +2553,7 @@ pub const Doc = struct {
         live.line_fed_end_byte = 0;
         live.display_ends.clearRetainingCapacity();
         live.styled_count = 0;
+        live.matches_seen = 0;
         live.folded_display_byte_count = 0;
         live.content_base = 0;
         live.pending_display.clearRetainingCapacity();
@@ -2661,6 +2671,7 @@ pub const Doc = struct {
         live.parser.reset();
         live.display_ends.clearRetainingCapacity();
         live.styled_count = 0;
+        live.matches_seen = 0;
         live.folded_display_byte_count = 0;
         live.base_styles = .{};
         live.base_link.clearRetainingCapacity();
@@ -2830,7 +2841,7 @@ pub const Doc = struct {
             write_full = self.liveTokensEnd(first) + same;
         }
         // Styles change from the first changed token, or the first opener a new match took.
-        try self.liveShow(write_full, full_end, final, @min(first, changes.matched));
+        try self.liveShow(write_full, full_end, final, @min(first, changes.matched), first);
         if (!final) {
             self.liveFold();
             try self.liveRetire();
@@ -2844,7 +2855,7 @@ pub const Doc = struct {
 
     /// Applies B's holds to the full display and writes what changed: the display shown now is
     /// the full display up to the hold cut.
-    fn liveShow(self: *Doc, write_full: u32, full_end: u32, final: bool, first: u32) Error!void {
+    fn liveShow(self: *Doc, write_full: u32, full_end: u32, final: bool, first: u32, first_display: u32) Error!void {
         const live = &self.live;
         // A hold inside a token shows what B drew of it, which the token's whole display need
         // not start with: the bytes from that token on are written again once it shows whole
@@ -2869,26 +2880,97 @@ pub const Doc = struct {
             if (shown_end > write_start) try self.liveRender(write_start, shown_end, arena, &tail);
             var start = @min(first, live.styled_count -| 1);
             while (start > 0 and self.liveTokensEnd(start) > write_start) start -= 1;
+            start = self.liveStaleStart(start);
             const runs_from = @min(self.liveTokensEnd(start), shown_end);
-            const runs = try self.liveChunks(arena, start, runs_from, shown_end);
-            try self.emit(.{ .block = live.block, .from = write_start, .bytes = tail.items, .runs_from = runs_from, .chunks = runs.chunks.items, .urls = runs.urls.items });
+            // New matches all of one kind: the interiors of matches of that kind keep their styles.
+            const r = live.parser.result();
+            if (live.matches_seen > r.matches.len) live.matches_seen = 0;
+            var kind: ?inline_parser.MatchKind = null;
+            for (r.matches[live.matches_seen..], 0..) |m, n| {
+                if (n == 0) kind = m.kind else if (kind != m.kind) kind = null;
+                if (kind == null) break;
+            }
+            const skip: Skip = .{ .kind = kind, .old_matches = live.matches_seen, .before_token = first_display, .before_display = write_start };
+            const segments = try self.liveChunks(arena, start, runs_from, shown_end, skip);
+            for (segments, 0..) |segment, i| {
+                const last = i + 1 == segments.len;
+                try self.emit(.{
+                    .block = live.block,
+                    .from = if (i == 0) write_start else shown_end,
+                    .bytes = if (i == 0) tail.items else "",
+                    .runs_from = segment.from,
+                    .runs_end = if (last) none else segment.to,
+                    .chunks = segment.leaf.chunks.items,
+                    .urls = segment.leaf.urls.items,
+                });
+            }
         }
+        live.matches_seen = @intCast(live.parser.result().matches.len);
         live.shown_byte_count = shown_end;
     }
 
+    /// A write that would start inside a range of tokens whose styles a write skipped starts at
+    /// the token before it, whose styles it noted.
+    fn liveStaleStart(self: *Doc, start: u32) u32 {
+        const live = &self.live;
+        // Ranges at or past the styled prefix's end are gone with it.
+        var n = live.stale.items.len;
+        while (n > 0 and live.stale.items[n - 1][0] >= live.styled_count) n -= 1;
+        live.stale.items.len = n;
+        var at = start;
+        var i = n;
+        while (i > 0) {
+            i -= 1;
+            const range = live.stale.items[i];
+            if (at >= range[0] and at < range[1]) at = range[0] - 1;
+        }
+        return at;
+    }
+
+    /// Notes tokens [lo, hi) as skipped, in place of the ranges inside them.
+    fn liveNoteStale(self: *Doc, lo: u32, hi: u32) Error!void {
+        const stale = &self.live.stale;
+        var n = stale.items.len;
+        while (n > 0 and stale.items[n - 1][0] >= lo) n -= 1;
+        stale.items.len = n;
+        try stale.append(self.allocator, .{ lo, hi });
+    }
+
+    const Skip = struct {
+        /// The kind of every match this call made, when they share one.
+        kind: ?inline_parser.MatchKind,
+        /// Matches before this one were styled by earlier writes; a new one's interior is not.
+        old_matches: u32,
+        /// A skipped range ends before the first token whose display changed, and before the
+        /// written bytes.
+        before_token: u32,
+        before_display: u32,
+    };
+
+    const Segment = struct { from: u32, to: u32, leaf: Leaf };
+
     /// The live leaf's chunks for display bytes [from, to), from live token `start` on (`from`
     /// is where it starts, or `to`): the styles read_leaf gives those bytes, counted, not copied.
-    /// Notes the styles before each token it passes.
-    fn liveChunks(self: *Doc, arena: Allocator, start: u32, from: u32, to: u32) Error!Leaf {
+    /// Notes the styles before each token it passes. When the call's new matches are all of one
+    /// kind, the interior of a match of that kind keeps its styles (that kind was on there
+    /// already): the chunks skip it, so they come in segments, and each token is walked about
+    /// once per kind.
+    fn liveChunks(self: *Doc, arena: Allocator, start: u32, from: u32, to: u32, skip: Skip) Error![]const Segment {
         const live = &self.live;
-        var leaf: Leaf = .{};
-        if (from >= to) return leaf;
+        var segments: std.ArrayListUnmanaged(Segment) = .empty;
+        var leaf = try arena.create(Leaf);
+        leaf.* = .{};
+        if (from >= to) {
+            try segments.append(arena, .{ .from = from, .to = from, .leaf = leaf.* });
+            return segments.items;
+        }
         assert(from == self.liveTokensEnd(start) and (start == 0 or start < live.styled_count));
-        var writer: LeafWriter = .{ .arena = arena, .leaf = &leaf, .count_only = true };
+        var writer: LeafWriter = .{ .arena = arena, .leaf = leaf, .count_only = true };
         const b = self.blocks.items[live.block];
         writer.base.heading_level = if (b.kind == .heading) @intCast(b.payload[0]) else 0;
         const r = live.parser.result();
         var styler: TokenStyler = .{ .writer = &writer, .arena = arena, .r = r, .styles = live.base_styles, .references = self.references() };
+        var segment_from = from;
         var link: u32 = if (live.base_styles.link != null) TokenStyle.base_link else none;
         if (start > 0) {
             const before = live.token_styles.items[start];
@@ -2925,6 +3007,23 @@ pub const Doc = struct {
                 link = i;
             }
             at = live.display_ends.items[i];
+            // Matches nest and do not cross links, so the styles before the inner closer are the
+            // ones after its opener.
+            if (self.liveSkipTo(r, i, skip)) |closer| {
+                try segments.append(arena, .{ .from = segment_from, .to = at, .leaf = leaf.* });
+                try self.liveNoteStale(i + 1, closer);
+                const next = try arena.create(Leaf);
+                next.* = .{};
+                // A link open across the gap: its URL in the next segment's URLs.
+                const url: ?[]const u8 = if (styler.styles.link) |l| leaf.urls.items[l[0]..][0..l[1]] else null;
+                writer.leaf = next;
+                writer.byte_count = 0;
+                if (url) |u| styler.styles.link = try writer.url("", u);
+                leaf = next;
+                at = self.liveTokensEnd(closer);
+                segment_from = at;
+                i = closer - 1;
+            }
         }
         if (at < to) {
             // The drawn pending bytes: a backtick opener's content is drawn as code, and the
@@ -2943,8 +3042,26 @@ pub const Doc = struct {
             self.counters.run_token_visits += live.pending_runs.items.len;
             try writer.writePending(null, at - pending_start, to - pending_start, spans.items, .{ .code = code });
         }
-        assert(writer.byte_count == to - from);
-        return leaf;
+        assert(writer.byte_count == to - segment_from);
+        try segments.append(arena, .{ .from = segment_from, .to = to, .leaf = leaf.* });
+        return segments.items;
+    }
+
+    /// After token `i` of the walk: the closer to go on at, when `i` opens a match of the new
+    /// matches' kind whose interior no change reached.
+    fn liveSkipTo(self: *const Doc, r: inline_parser.Result, i: u32, skip: Skip) ?u32 {
+        const kind = skip.kind orelse return null;
+        if (r.tokens[i].kind != .delimiter) return null;
+        const d = inline_parser.delimiterOf(r, i) orelse return null;
+        var m = r.delimiters[d].opener_matches;
+        while (m) |mi| : (m = r.matches[mi].next_for_opener) {
+            const inner = r.matches[mi];
+            if (mi >= skip.old_matches or inner.kind != kind or inner.closer_token <= i + 1) continue;
+            if (inner.closer_token >= skip.before_token) return null;
+            if (self.live.display_ends.items[inner.closer_token] > skip.before_display) return null;
+            return inner.closer_token;
+        }
+        return null;
     }
 
     /// The styles in force after the first `count` live tokens, from the base styles: what the
@@ -3164,6 +3281,7 @@ pub const Doc = struct {
         if (live.display_ends.items.len > 0) live.folded_display_byte_count = live.display_ends.items[live.display_ends.items.len - 1];
         live.display_ends.clearRetainingCapacity();
         live.styled_count = 0;
+        live.matches_seen = 0;
         std.mem.copyForwards(u8, live.content.items[0..rest], live.content.items[drop..]);
         live.content.items.len = rest;
         live.content_base += drop;
@@ -3249,6 +3367,7 @@ pub const Doc = struct {
         live.folded_display_byte_count = folded;
         try live.display_ends.resize(self.allocator, tokens.len);
         live.styled_count = 0;
+        live.matches_seen = 0;
         var offset = folded;
         for (0..tokens.len) |i| {
             offset += inline_parser.tokenDisplayLength(parser.result(), @intCast(i));

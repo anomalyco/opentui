@@ -611,7 +611,8 @@ pub const MarkdownDoc = struct {
         node.scene_node.?.paint_epoch = nextPaintEpoch();
         if (changed) try buffer.replaceTail(w.from, w.bytes);
         const end = buffer.getByteSize();
-        try buffer.setLayer(layer_id, @min(w.runs_from, end), end, runs[0..run_count]);
+        const runs_end = if (w.runs_end == markdown.none) end else @min(w.runs_end, end);
+        try buffer.setLayer(layer_id, @min(w.runs_from, runs_end), runs_end, runs[0..run_count]);
         if (changed) Context.textResourceChanged(text) else Context.textResent(node);
         node.scene_node.?.owner.clearPreparation();
     }
