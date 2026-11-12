@@ -3385,7 +3385,7 @@ test "renderer - split repaint writes the footer and its pending transition in o
             .viewport_scroll = 2,
             .transition = .{ .mode = .viewport_scroll, .source_top_line = 7, .source_height = 4, .target_top_line = 3, .target_height = 8, .scroll_lines = 2 },
             .pinned = 2,
-            .ordered = &.{ ansi.ANSI.syncSet, "\x1b7\x1b[10;1H\n\n\x1b8", "FOOT" },
+            .ordered = &.{ ansi.ANSI.syncSet, "\x1b7\x1b[9999;1H\n\n\x1b8", "FOOT" },
             .absent = &.{ "\x1b[2S", "\x1b[4S" },
             .output_offset = 2,
         },

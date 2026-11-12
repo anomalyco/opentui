@@ -1163,16 +1163,9 @@ pub const CliRenderer = struct {
                 if (transition.source_top_line < transition.target_top_line) {
                     writer.print("\x1b[{d}T", .{transition.scroll_lines}) catch {};
                 } else if (transition.source_top_line > transition.target_top_line) {
-                    // The footer is pinned to the bottom of the screen,
-                    // so a line feed on the last row of the full-screen scroll region
-                    // pushes the top history row into scrollback explicitly.
-                    const last_row = transition.target_top_line + transition.target_height - 1;
-                    writer.writeAll("\x1b7") catch {};
-                    ansi.ANSI.moveToOutput(writer, 1, last_row) catch {};
-                    var line_feeds: u32 = 0;
-                    while (line_feeds < transition.scroll_lines) : (line_feeds += 1) {
-                        writer.writeAll("\n") catch {};
-                    }
+                    // Line feeds on the last row keep the top rows in scrollback; CSI S deletes them on xterm.
+                    writer.writeAll("\x1b7\x1b[9999;1H") catch {};
+                    writer.splatByteAll('\n', transition.scroll_lines) catch {};
                     writer.writeAll("\x1b8") catch {};
                 }
             },

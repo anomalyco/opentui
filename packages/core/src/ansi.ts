@@ -8,9 +8,8 @@ export const ANSI = {
   clearSavedLines: "\x1b[3J",
 
   scrollDown: (lines: number) => `\x1b[${lines}T`,
-  scrollUp: (lines: number) => `\x1b[${lines}S`,
-
-  scrollIntoHistory: (lines: number, lastRow: number) => `\x1b7\x1b[${lastRow};1H${"\n".repeat(lines)}\x1b8`,
+  // Line feeds on the last row; CSI S deletes the top rows on xterm instead of keeping them in scrollback.
+  scrollIntoHistory: (lines: number) => `\x1b7\x1b[9999;1H${"\n".repeat(lines)}\x1b8`,
 
   moveCursor: (row: number, col: number) => `\x1b[${row};${col}H`,
   moveCursorAndClear: (row: number, col: number) => `\x1b[${row};${col}H\x1b[J`,

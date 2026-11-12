@@ -110,6 +110,22 @@ function blockSplitStartupCursorSeed(target: TestRenderer): () => void {
   return () => target.stdin.emit("data", Buffer.from("\x1b[1;1R"))
 }
 
+// Rows that reach scrollback in a terminal of `rows` rows: a line feed or IND on the last row keeps the top row, while
+// CSI S deletes it on xterm. Text is ignored, so the output must not wrap.
+function scrollbackRows(output: string, rows: number): number {
+  let row = 1
+  let saved = 1
+  let kept = 0
+  for (const [, cup, esc] of output.matchAll(/\x1b\[(\d*)(?:;\d*)?H|\x1b([78D])|\n/g)) {
+    if (cup !== undefined) row = Math.min(Number(cup) || 1, rows)
+    else if (esc === "7") saved = row
+    else if (esc === "8") row = saved
+    else if (row === rows) kept++
+    else row++
+  }
+  return kept
+}
+
 beforeEach(() => {
   previousShowConsole = process.env.SHOW_CONSOLE
   previousUseAlternateScreen = process.env.OTUI_USE_ALTERNATE_SCREEN
@@ -756,14 +772,23 @@ test("CliRenderer does not force split repaint when switching to passthrough wit
   expect(renderer.getNativeStats().nativeFrameCount).toBe(frames)
 })
 
-for (const [name, screenMode, change, dimensions, output] of [
-  ["alternate-screen resize", "alternate-screen", (target: TestRenderer) => target.resize(20, 6), [20, 6], "\x1b[14t"],
+// `history` is the rows that reach scrollback, in this 10-row terminal and in one that grew to 12 rows unseen.
+for (const [name, screenMode, change, dimensions, output, history] of [
+  [
+    "alternate-screen resize",
+    "alternate-screen",
+    (target: TestRenderer) => target.resize(20, 6),
+    [20, 6],
+    "\x1b[14t",
+    0,
+  ],
   [
     "split-footer resize",
     "split-footer",
     (target: TestRenderer) => target.resize(20, 6),
     [20, 4],
     ANSI.moveCursorAndClear(2, 1) + "\x1b[14t",
+    0,
   ],
   [
     "entering split-footer",
@@ -771,13 +796,15 @@ for (const [name, screenMode, change, dimensions, output] of [
     (target: TestRenderer) => (target.screenMode = "split-footer"),
     [40, 4],
     ANSI.scrollDown(6),
+    0,
   ],
   [
     "growing footerHeight",
     "split-footer",
     (target: TestRenderer) => (target.footerHeight = 6),
     [40, 6],
-    ANSI.scrollIntoHistory(2, 10),
+    ANSI.scrollIntoHistory(2),
+    2,
   ],
   [
     "shrinking footerHeight",
@@ -785,6 +812,7 @@ for (const [name, screenMode, change, dimensions, output] of [
     (target: TestRenderer) => (target.footerHeight = 3),
     [40, 3],
     `${ANSI.moveCursor(7, 1)}\x1b[2K`,
+    0,
   ],
 ] as const) {
   test(`CliRenderer publishes ${name} geometry before stdout callbacks`, async () => {
@@ -850,7 +878,9 @@ for (const [name, screenMode, change, dimensions, output] of [
 
     // Sentinel mode (native parser) ends the pixel query batch with DA1.
     const sentinel = (renderer as any).replySentinel ? "\x1b[c" : ""
-    expect(writes.map((write) => write.output).join("")).toBe(output.replace("\x1b[14t", "\x1b[14t" + sentinel))
+    const written = writes.map((write) => write.output).join("")
+    expect(written).toBe(output.replace("\x1b[14t", "\x1b[14t" + sentinel))
+    expect([10, 12].map((rows) => scrollbackRows(written, rows))).toEqual([history, history])
     for (const write of writes) {
       expect(write.dimensions).toEqual([dimensions, dimensions, dimensions, dimensions])
     }
@@ -1532,6 +1562,7 @@ test("CliRenderer split-footer reuses the reserved gap when reopening the footer
   }
 
   expect((renderer as any).renderOffset).toBe(6)
+  result.writes.length = 0
 
   renderer.footerHeight = 8
 
@@ -1545,6 +1576,8 @@ test("CliRenderer split-footer reuses the reserved gap when reopening the footer
   })
 
   await result.renderOnce()
+  // The native transition keeps the 4 rows it scrolls off, also in a terminal that grew to 12 rows unseen.
+  expect([10, 12].map((rows) => scrollbackRows(result.output(), rows))).toEqual([4, 4])
 
   renderer.footerHeight = 4
 
