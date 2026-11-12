@@ -205,6 +205,17 @@ pub fn ot_markdown_read_leaf(
     return c.OT_OK;
 }
 
+pub fn ot_markdown_read_source(context: ?*abi.ContextHandle, doc: ?*const c.ot_handle, block_index: u32, bytes: ?[*]u8, capacity: u32, out_count: ?*u32) callconv(.c) c.ot_status {
+    const status = abi.sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    if (doc == null or out_count == null or (capacity != 0 and bytes == null)) return fail(context, error.InvalidOptions);
+    const source = context.?.core.markdownReadSource(abi.handleFromC(doc.?.*), block_index) catch |err| return fail(context, err);
+    if (capacity != 0 and capacity < source.len) return fail(context, error.BufferTooSmall);
+    if (capacity != 0 and source.len > 0) @memcpy(bytes.?[0..source.len], source);
+    out_count.?.* = @intCast(source.len);
+    return c.OT_OK;
+}
+
 pub fn ot_markdown_bind(context: ?*abi.ContextHandle, doc: ?*const c.ot_handle, block_index: u32, node: ?*const c.ot_handle) callconv(.c) c.ot_status {
     const status = abi.sessionContextStatus(context);
     if (status != c.OT_OK) return status;

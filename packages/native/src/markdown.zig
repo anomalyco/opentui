@@ -3335,7 +3335,7 @@ pub const Doc = struct {
     /// The inline parse of a leaf (paragraph, heading, table cell).
     /// A leaf's inline content as the parser takes it: trailing whitespace and a table cell's
     /// escaped pipes removed.
-    fn leafSubject(self: *const Doc, arena: Allocator, index: u32) Error![]const u8 {
+    pub fn leafSubject(self: *const Doc, arena: Allocator, index: u32) Error![]const u8 {
         const content = try self.leafContent(arena, index);
         var bytes = content.bytes;
         var end = bytes.len;

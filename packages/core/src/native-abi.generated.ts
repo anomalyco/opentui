@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: edee72ba4f3149da30361326ed6937c29ee8bb0da4fc0c453b65388406c353bf
+// ABI audit SHA-256: d68eaf13571229459463708b0e570ea022b5624ba06658d78d7d86d2051a5814
 
 export const OT_CONTEXT_ABI_VERSION = 2
 export const OT_OK = 0
@@ -958,6 +958,7 @@ export const nativeSymbols = {
   ot_markdown_finish: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_markdown_get_source: { args: ["ptr", "buffer", "buffer", "buffer"], returns: "i32" },
   ot_markdown_read_changes: { args: ["ptr", "buffer", "ptr", "u32", "buffer"], returns: "i32" },
+  ot_markdown_read_source: { args: ["ptr", "buffer", "u32", "ptr", "u32", "buffer"], returns: "i32" },
   ot_markdown_read_leaf: {
     args: ["ptr", "buffer", "u32", "ptr", "u32", "buffer", "ptr", "ptr", "u32", "buffer", "ptr", "u32", "buffer"],
     returns: "i32",

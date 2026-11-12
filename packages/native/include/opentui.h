@@ -1879,6 +1879,12 @@ ot_status ot_markdown_read_changes(ot_context *, const ot_handle *doc, ot_markdo
  * urls, as ot_scene_set_styled_text takes them), and, when spans is not NULL, one OT_MD_SPAN_*
  * word per chunk. All capacities zero report the three counts; otherwise each must hold its
  * count, and an undersized call writes nothing. A pointer may be NULL only with zero capacity. */
+/* A paragraph's, heading's or table cell's inline source: its content with container markers
+ * and leading whitespace removed, lines joined by '\n', trailing whitespace and leading link
+ * definitions dropped, a cell's escaped pipes unescaped (what an inline hook gets as the
+ * block's source). Zero capacity reports the count; a short one writes nothing. */
+ot_status ot_markdown_read_source(ot_context *, const ot_handle *doc, uint32_t block_index,
+    uint8_t *bytes, uint32_t byte_capacity, uint32_t *out_byte_count);
 ot_status ot_markdown_read_leaf(ot_context *, const ot_handle *doc, uint32_t block_index,
     uint8_t *bytes, uint32_t byte_capacity, uint32_t *out_byte_count,
     ot_styled_text_chunk *chunks, uint32_t *spans, uint32_t chunk_capacity, uint32_t *out_chunk_count,

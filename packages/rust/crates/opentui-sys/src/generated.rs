@@ -5,7 +5,7 @@ use core::ffi::c_void;
 
 /// FNV-1a 64-bit hash of the `opentui.h` these declarations were generated from.
 /// The build script rejects native artifacts whose header has a different hash.
-pub const OPENTUI_HEADER_FNV1A64: u64 = 0x873e407f72f12be2;
+pub const OPENTUI_HEADER_FNV1A64: u64 = 0x150ed926a2bcb4ab;
 
 pub type ot_status = i32;
 
@@ -4536,6 +4536,7 @@ unsafe extern "C" {
     pub fn ot_markdown_finish(context: *mut ot_context, doc: *const ot_handle, out: *mut ot_markdown_result) -> ot_status;
     pub fn ot_markdown_get_source(context: *mut ot_context, doc: *const ot_handle, out_bytes: *mut *const u8, out_byte_count: *mut u32) -> ot_status;
     pub fn ot_markdown_read_changes(context: *mut ot_context, doc: *const ot_handle, blocks: *mut ot_markdown_block, block_capacity: u32, out_block_count: *mut u32) -> ot_status;
+    pub fn ot_markdown_read_source(context: *mut ot_context, doc: *const ot_handle, block_index: u32, bytes: *mut u8, byte_capacity: u32, out_byte_count: *mut u32) -> ot_status;
     pub fn ot_markdown_read_leaf(context: *mut ot_context, doc: *const ot_handle, block_index: u32, bytes: *mut u8, byte_capacity: u32, out_byte_count: *mut u32, chunks: *mut ot_styled_text_chunk, spans: *mut u32, chunk_capacity: u32, out_chunk_count: *mut u32, urls: *mut u8, url_byte_capacity: u32, out_url_byte_count: *mut u32) -> ot_status;
     pub fn ot_markdown_bind(context: *mut ot_context, doc: *const ot_handle, block_index: u32, text_node: *const ot_handle) -> ot_status;
     pub fn ot_editor_view_set_viewport(context: *mut ot_context, handle: *const ot_handle, editor_viewport: *const ot_editor_viewport, size_only: u32, move_cursor: u32) -> ot_status;

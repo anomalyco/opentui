@@ -194,6 +194,7 @@ export const nativePointerPolicies = {
     10: empty,
     12: buffer,
   },
+  ot_markdown_read_source: { 0: context, 1: buffer, 3: empty, 5: buffer },
   ot_markdown_bind: { 0: context, 1: buffer, 3: buffer },
   ot_editor_view_set_viewport: { 0: context, 1: buffer, 2: buffer },
   ot_editor_view_get_viewport: { 0: context, 1: buffer, 2: buffer },

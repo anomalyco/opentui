@@ -3977,6 +3977,15 @@ pub const Context = struct {
         return .{ .leaf = leaf, .doc = value };
     }
 
+    /// Inline leaf `index`'s source (in the Markdown scratch, valid until the next Markdown call).
+    pub fn markdownReadSource(self: *Context, handle: Handle, index: u32) ![]const u8 {
+        if (self.mutating) return error.ContextBusy;
+        const value = try self.getMarkdown(handle);
+        if (index >= value.doc.blocks.items.len or !markdown.Doc.isInlineLeaf(value.doc.blocks.items[index])) return error.InvalidIndex;
+        self.resetMarkdownScratch();
+        return value.doc.leafSubject(self.markdown_scratch.allocator(), index) catch |err| return markdownError(err);
+    }
+
     pub fn markdownBind(self: *Context, handle: Handle, index: u32, node_handle: Handle) !void {
         try self.beginMutation();
         defer self.mutating = false;

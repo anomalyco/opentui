@@ -346,3 +346,28 @@ test "Markdown ABI: a replace that leaves a leaf's last line pending lists and w
     try std.testing.expectEqual(@as(u32, 1), result.changed_block_count);
     try std.testing.expect(try f.nodeShowsLeaf(arena, 0, node));
 }
+
+test "Markdown ABI: read_source gives an inline leaf's source without container markers" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var f = try Fixture.init(live_flags);
+    defer f.deinit();
+    _ = try f.append("# Plan x\n\n> first\n> ses_a\n\n- item `y`\n\n| a \\| b |\n| - |\n");
+    const blocks = try f.changes(arena);
+    var sources: std.ArrayListUnmanaged([]const u8) = .empty;
+    for (blocks) |block| {
+        if (block.kind != c.OT_MD_PARAGRAPH and block.kind != c.OT_MD_HEADING and block.kind != c.OT_MD_TABLE_CELL) continue;
+        var count: u32 = 0;
+        try expectOk(md.ot_markdown_read_source(f.context, &f.doc, block.index, null, 0, &count));
+        const bytes = try arena.alloc(u8, count);
+        try expectOk(md.ot_markdown_read_source(f.context, &f.doc, block.index, bytes.ptr, count, &count));
+        try sources.append(arena, bytes);
+    }
+    try std.testing.expectEqual(@as(usize, 4), sources.items.len);
+    for ([_][]const u8{ "Plan x", "first\nses_a", "item `y`", "a | b" }, sources.items) |expected, actual| try std.testing.expectEqualStrings(expected, actual);
+    var count: u32 = 0;
+    // A quote is no inline leaf.
+    try std.testing.expectEqual(@as(u16, c.OT_MD_QUOTE), blocks[1].kind);
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, md.ot_markdown_read_source(f.context, &f.doc, blocks[1].index, null, 0, &count));
+}
