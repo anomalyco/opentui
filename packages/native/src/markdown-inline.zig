@@ -9,7 +9,10 @@ const tables = @import("markdown-tables.zig");
 
 /// Bounded stacks (design, memory model). Overflowing openers become literal text.
 pub const token_count_max: u32 = 4096;
-pub const delimiter_count_max: u32 = 1024;
+/// Delimiter runs that may still open or close, drawn concealed (D102): past it, the oldest
+/// expires. A closer that matches reveals the runs between, so this bounds how often a byte is
+/// written again (work property: sent bytes <= (3 + D)n).
+pub const delimiter_count_max: u32 = 32;
 pub const bracket_count_max: u32 = 64;
 /// CommonMark 4.7: at most 999 characters (code points) between a label's brackets.
 pub const label_codepoint_count_max: u32 = 999;
@@ -172,6 +175,8 @@ pub const Parser = struct {
     /// Top of the delimiter stack.
     delimiter_top: ?u32 = null,
     delimiter_stack_count: u32 = 0,
+    /// The most runs that waited on the stack at once.
+    delimiter_stack_max: u32 = 0,
     unresolved: bool = false,
     /// After one failed backtick search, the last start of each run length (cmark's rule), so
     /// later openers fail without searching again. Only a final parse fails a search.
@@ -213,7 +218,7 @@ pub const Parser = struct {
     /// Frees a store that grew past what one leaf's tail needs.
     pub fn releaseCapacity(self: *Parser) void {
         if (self.tokens.capacity > token_count_max) self.tokens.clearAndFree(self.allocator);
-        if (self.delimiters.capacity > delimiter_count_max) self.delimiters.clearAndFree(self.allocator);
+        if (self.delimiters.capacity > token_count_max) self.delimiters.clearAndFree(self.allocator);
         if (self.matches.capacity > token_count_max) self.matches.clearAndFree(self.allocator);
         if (self.links.capacity > bracket_count_max) self.links.clearAndFree(self.allocator);
         if (self.emails.capacity > bracket_count_max) self.emails.clearAndFree(self.allocator);
@@ -448,12 +453,17 @@ pub const Parser = struct {
             _ = self.brackets.orderedRemove(0);
         }
         while (self.bottomDelimiter()) |bottom| {
-            const d = &self.delimiters.items[bottom];
-            if (d.token_index >= oldest_allowed) break;
-            d.expired = true;
-            self.expired_from = @min(self.expired_from, d.token_index);
-            self.removeDelimiter(bottom);
+            if (self.delimiters.items[bottom].token_index >= oldest_allowed) break;
+            self.expire(bottom);
         }
+    }
+
+    /// Delimiter `index` leaves the stack and never matches: it is literal (drawn so once the
+    /// leaf is final).
+    fn expire(self: *Parser, index: u32) void {
+        self.delimiters.items[index].expired = true;
+        self.expired_from = @min(self.expired_from, self.delimiters.items[index].token_index);
+        self.removeDelimiter(index);
     }
 
     fn bottomDelimiter(self: *const Parser) ?u32 {
@@ -614,7 +624,6 @@ pub const Parser = struct {
         try self.push(.{ .start = start, .len = count, .kind = .delimiter, .aux = c });
         self.position = end;
         if (!can_open and !can_close) return;
-        if (self.delimiter_stack_count >= delimiter_count_max) return;
         const index: u32 = @intCast(self.delimiters.items.len);
         try self.delimiters.append(self.allocator, .{
             .token_index = token_index,
@@ -632,6 +641,9 @@ pub const Parser = struct {
         // A closer resolves as it arrives unless a bracket that may become a link holds it back:
         // the same matches as processing every closer at the end, in the same order.
         if (can_close and !self.activeBracket()) try self.processEmphasisFrom(index, null);
+        // Then the runs that wait are bounded: past the limit, the oldest expires.
+        if (self.delimiter_stack_count > delimiter_count_max) self.expire(self.bottomDelimiter().?);
+        self.delimiter_stack_max = @max(self.delimiter_stack_max, self.delimiter_stack_count);
     }
 
     fn activeBracket(self: *const Parser) bool {
@@ -1315,6 +1327,8 @@ pub const PendingSpans = struct {
     spans: std.ArrayListUnmanaged(PendingSpan) = .empty,
     /// The runs read so far.
     resolved: u32 = 0,
+    /// The most openers that waited at once.
+    openers_max: u32 = 0,
 
     pub fn clear(self: *PendingSpans) void {
         self.openers.clearRetainingCapacity();
@@ -1354,6 +1368,10 @@ pub const PendingSpans = struct {
                 }
             }
             if (run.open and count > 0) try self.openers.append(allocator, .{ .at = run.at, .char = run.char, .count = count, .original = run.count, .close = run.close });
+            // The parser's limit: past it, the oldest opener never matches (it stays concealed
+            // in the drawing; the parse of the word shows it).
+            if (self.openers.items.len > delimiter_count_max) _ = self.openers.orderedRemove(0);
+            self.openers_max = @max(self.openers_max, @as(u32, @intCast(self.openers.items.len)));
         }
         self.resolved = @intCast(runs.len);
         return first;

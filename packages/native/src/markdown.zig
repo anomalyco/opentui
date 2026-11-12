@@ -157,11 +157,17 @@ pub const Counters = struct {
     /// The match kinds a tail write restyled for, one bit per kind: a walk passes a token once
     /// when it is new and once more for each kind it gains, so it bounds the run token visits.
     restyled_kinds: u64 = 0,
+    /// The most delimiter runs that waited at once in a live leaf (its parse's or its pending
+    /// word's, at most `delimiter_count_max`): a byte is written again at most once for each
+    /// that waited before it when it came.
+    waiting_runs_max: u64 = 0,
 
     pub fn plus(a: Counters, b: Counters) Counters {
         var sum: Counters = .{};
         inline for (@typeInfo(Counters).@"struct".field_names) |name| {
-            @field(sum, name) = if (comptime std.mem.eql(u8, name, "restyled_kinds")) a.restyled_kinds | b.restyled_kinds else @field(a, name) + @field(b, name);
+            const x = @field(a, name);
+            const y = @field(b, name);
+            @field(sum, name) = if (comptime std.mem.eql(u8, name, "restyled_kinds")) x | y else if (comptime std.mem.endsWith(u8, name, "_max")) @max(x, y) else x + y;
         }
         return sum;
     }
@@ -2851,6 +2857,7 @@ pub const Doc = struct {
         }
         // Styles change from the first changed token, or the first opener a new match took.
         try self.liveShow(write_full, full_end, final, @min(first, changes.matched));
+        self.counters.waiting_runs_max = @max(self.counters.waiting_runs_max, live.parser.delimiter_stack_max, live.pending_spans.openers_max);
         if (!final) {
             self.liveFold();
             try self.liveRetire();

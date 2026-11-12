@@ -815,12 +815,15 @@ fn genericProperties(arena: std.mem.Allocator, doc: *const Doc, fed: Fed, option
         // A display byte is assembled when it is drawn pending, drawn up to a hold's cut, and
         // (once in a token) for the comparison and the cut: k = 4.
         .{ "(a) work: assembled bytes <= 4n", c.display_assembled_bytes, 4 * n + 64 },
-        .{ "(a) work: sent bytes <= 3n", c.tail_write_bytes, 3 * n + 64 },
+        // A closer that matches reveals the runs between: each byte once more for each run that
+        // waited before it when it came (D at most delimiter_count_max, D102).
+        .{ "(a) work: sent bytes <= (3 + D)n", c.tail_write_bytes, (3 + c.waiting_runs_max) * n + 64 },
         // A node write restyles from the first token whose style may have changed: each token
         // once when it arrives, once when a later call writes it again or it gains its first
-        // match kind, and once for each further kind (k kinds the doc's closers made, at most
-        // 3), plus the last one per call.
-        .{ "(a) work: run token visits <= (1 + max(1, k))n + calls", c.run_token_visits, (1 + @max(1, @popCount(c.restyled_kinds))) * n + calls + 64 },
+        // match kind, once for each further kind (k kinds the doc's closers made, at most 3),
+        // and once for each run that waited before it and is revealed (D), plus the last one
+        // per call.
+        .{ "(a) work: run token visits <= (1 + max(1, k) + D)n + calls", c.run_token_visits, (1 + @max(1, @popCount(c.restyled_kinds)) + c.waiting_runs_max) * n + calls + 64 },
     };
     for (bounds) |bound| {
         if (bound[1] > bound[2]) {
@@ -1400,6 +1403,10 @@ test "Markdown model: streams the reviewers found quadratic keep work linear" {
         // the word's start that never closes.
         &.{.{ "*a*b", 128 }},
         &.{ .{ "~~x", 1 }, .{ "*a*b", 128 } },
+        // A closer that matches reveals the runs between (sent bytes 57,282 for 1,408 bytes before
+        // D102's limit), and the same nested inside one word.
+        &.{ .{ "begin ", 1 }, .{ "~~a *b ", 128 }, .{ "c~~ ", 128 } },
+        &.{ .{ "(*a", 128 }, .{ "a*)", 128 } },
     };
     var families: Families = .{};
     var arena_state = std.heap.ArenaAllocator.init(gpa);
@@ -1413,6 +1420,24 @@ test "Markdown model: streams the reviewers found quadratic keep work linear" {
             std.debug.print("row {d}: {s} at step {d}\n", .{ index, failure.property, failure.step });
             return error.ModelFailure;
         }
+    }
+}
+
+test "Markdown: past delimiter_count_max waiting runs, the oldest never matches" {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // `~~` waits under 31 or 32 `*` openers; at 33 runs it expires and shows as text.
+    for ([_]usize{ 31, 32 }, [_][]const u8{ "a ", "~~a " }) |count, shown| {
+        var f: Fixture = undefined;
+        try f.init(.{});
+        defer f.deinit();
+        try f.doc.append("~~a ");
+        for (0..count) |_| try f.doc.append("*b ");
+        try f.doc.append("c~~");
+        try f.doc.finish();
+        const leaf = try f.doc.readLeaf(arena, 0);
+        try std.testing.expectStringStartsWith(leaf.bytes.items, shown);
     }
 }
 
