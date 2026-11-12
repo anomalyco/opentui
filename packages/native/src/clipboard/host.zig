@@ -339,7 +339,6 @@ pub const Operation = struct {
     fn pollPlatform(operation: *Operation) OperationStatus {
         operation.mutex.lock();
         if (operation.status == .pending and operation.platform_terminal_request == null and
-            !operation.platform_mutation_started.load(.acquire) and
             platformDeadlineExpired(operation, clipboard_clock.nowNs()))
         {
             operation.platform_terminal_request = .timed_out;
@@ -1485,8 +1484,6 @@ fn resolvePlatformStatus(
     platform_status: OperationStatus,
     now_ns: i128,
 ) OperationStatus {
-    if ((platform_status == .written or platform_status == .cleared) and
-        operation.platform_mutation_started.load(.acquire)) return platform_status;
     if (operation.platform_terminal_request) |requested| return requested;
     if (!operation.platform_mutation_started.load(.acquire) and platformDeadlineExpired(operation, now_ns)) return .timed_out;
     return platform_status;
@@ -2200,7 +2197,10 @@ test "clipboard platform operations settle at their deadline whether queued or r
     try std.testing.expectEqual(OperationStatus.timed_out, expired.pollPlatform());
     try std.testing.expectEqual(OperationStatus.cancelled, cancelled.pollPlatform());
     try std.testing.expectEqual(OperationStatus.pending, next.pollPlatform());
-    try std.testing.expectEqual(OperationStatus.pending, committed.pollPlatform());
+    // A write stuck inside its OS call times out too, and a late commit doesn't change that.
+    try std.testing.expectEqual(OperationStatus.timed_out, committed.pollPlatform());
+    service.publishPlatformResultAt(&committed, .written, &.{}, &.{}, 0, now_ns);
+    try std.testing.expectEqual(OperationStatus.timed_out, committed.status);
     try std.testing.expectEqualSlices(*Operation, &.{&next}, service.platform_queue.items);
 
     // Destroying the settled operation leaves its storage to the worker, which drops the late
@@ -2269,7 +2269,7 @@ test "clipboard platform result preserves out of memory after data allocation fa
     try std.testing.expectEqual(@backingInt(ErrorCode.out_of_memory), operation.error_code);
 }
 
-test "clipboard cancellation recorded before a platform mutation wins over late success" {
+test "clipboard platform write keeps a cancel recorded before it and a commit nobody settled" {
     var operation: Operation = .{
         .allocator = std.testing.allocator,
         .service = undefined,
@@ -2278,28 +2278,12 @@ test "clipboard cancellation recorded before a platform mutation wins over late 
         .started_ns = 100,
         .platform_terminal_request = .cancelled,
     };
+    const late_ns = 100 + 100 * std.time.ns_per_ms;
 
-    try std.testing.expectEqual(
-        OperationStatus.cancelled,
-        resolvePlatformStatus(&operation, .written, 100 + std.time.ns_per_ms),
-    );
-}
-
-test "clipboard platform mutation commit wins over later cancellation" {
-    var operation: Operation = .{
-        .allocator = std.testing.allocator,
-        .service = undefined,
-        .kind = .write,
-        .timeout_ms = 100,
-        .started_ns = 100,
-        .platform_terminal_request = .cancelled,
-    };
+    try std.testing.expectEqual(OperationStatus.cancelled, resolvePlatformStatus(&operation, .written, late_ns));
+    operation.platform_terminal_request = null;
     operation.platform_mutation_started.store(true, .release);
-
-    try std.testing.expectEqual(
-        OperationStatus.written,
-        resolvePlatformStatus(&operation, .written, 100 + std.time.ns_per_ms),
-    );
+    try std.testing.expectEqual(OperationStatus.written, resolvePlatformStatus(&operation, .written, late_ns));
 }
 
 test "clipboard platform mutation callbacks mark the shared operation state" {
