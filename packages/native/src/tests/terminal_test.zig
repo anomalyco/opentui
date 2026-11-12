@@ -677,14 +677,14 @@ test "remote detection - explicit local mode ignores SSH environment" {
     try testing.expect(!term.caps.remote);
 }
 
-test "processCapabilityResponse captures startup cursor report before home probes" {
+test "processCapabilityResponse captures startup cursor report before the width probes" {
     var term = Terminal.init(.{});
     var writer = TestWriter.init(testing.allocator);
     defer writer.deinit();
     try term.queryTerminalSend(&writer);
     try term.queryExplicitWidth(&writer);
 
-    term.processCapabilityResponse("\x1b[7;11R\x1b[1;2R\x1b[1;3R");
+    term.processCapabilityResponse("\x1b[7;11R\x1b[2;2R\x1b[2;3R");
 
     const cursor = term.getCursorPosition();
     try testing.expectEqual(@as(u32, 11), cursor.x);
@@ -698,12 +698,12 @@ test "processCapabilityResponse captures startup cursor report before home probe
 test "a DA1 reply ends startup cursor reports in sentinel mode and reports Sixel only for a graphics query" {
     // Rows: sentinel, multiplexer variable, replies (one capability response each), explicit width, Sixel.
     const rows = .{
-        .{ false, "", .{ "\x1b[?62;4c", "\x1b[7;11R", "\x1b[1;2R", "\x1b[1;3R" }, true, true },
-        .{ true, "", .{ "\x1b[7;11R", "\x1b[1;2R", "\x1b[1;3R", "\x1b[?62;4c" }, true, true },
-        .{ true, "", .{ "\x1b[7;11R\x1b[1;2R\x1b[1;3R\x1b[?62;4c", "", "", "" }, true, true },
-        .{ true, "", .{ "\x1b[7;11R", "\x1b[?62;4c", "\x1b[1;2R", "\x1b[1;3R" }, false, true },
-        .{ true, "TMUX", .{ "\x1b[7;11R", "\x1b[1;2R", "\x1b[1;3R", "\x1b[?62;4c" }, true, false },
-        .{ true, "STY", .{ "\x1b[7;11R", "\x1b[1;2R", "\x1b[1;3R", "\x1b[?62;4c" }, true, false },
+        .{ false, "", .{ "\x1b[?62;4c", "\x1b[7;11R", "\x1b[2;2R", "\x1b[2;3R" }, true, true },
+        .{ true, "", .{ "\x1b[7;11R", "\x1b[2;2R", "\x1b[2;3R", "\x1b[?62;4c" }, true, true },
+        .{ true, "", .{ "\x1b[7;11R\x1b[2;2R\x1b[2;3R\x1b[?62;4c", "", "", "" }, true, true },
+        .{ true, "", .{ "\x1b[7;11R", "\x1b[?62;4c", "\x1b[2;2R", "\x1b[2;3R" }, false, true },
+        .{ true, "TMUX", .{ "\x1b[7;11R", "\x1b[2;2R", "\x1b[2;3R", "\x1b[?62;4c" }, true, false },
+        .{ true, "STY", .{ "\x1b[7;11R", "\x1b[2;2R", "\x1b[2;3R", "\x1b[?62;4c" }, true, false },
     };
     inline for (rows) |row| {
         var env = std.process.Environ.Map.init(testing.allocator);
@@ -733,16 +733,17 @@ test "processCapabilityResponse only accepts exact ordered explicit width probe 
     try startup_on_row_one.queryTerminalSend(&startup_writer);
     try startup_on_row_one.queryExplicitWidth(&startup_writer);
     startup_on_row_one.processCapabilityResponse("\x1b[1;5R");
-    startup_on_row_one.processCapabilityResponse("\x1b[1;2R");
-    startup_on_row_one.processCapabilityResponse("\x1b[1;3R");
+    startup_on_row_one.processCapabilityResponse("\x1b[2;2R");
+    startup_on_row_one.processCapabilityResponse("\x1b[2;3R");
     const cursor = startup_on_row_one.getCursorPosition();
     try testing.expectEqual(@as(u32, 5), cursor.x);
     try testing.expectEqual(@as(u32, 1), cursor.y);
     try testing.expect(startup_on_row_one.caps.explicit_width);
     try testing.expect(startup_on_row_one.caps.scaled_text);
 
-    // The probes start at home: the wrong columns on row 1 (#1383), or the right ones on another row, are no answer.
-    for ([_][]const u8{ "\x1b[7;11R\x1b[1;12R\x1b[1;8R", "\x1b[7;11R\x1b[4;2R\x1b[4;3R" }) |replies| {
+    // The probes run on row 2: the wrong columns there (#1383), or the right ones on row 1, where Shift+F3 and
+    // Alt+F3 send the same bytes, are no answer.
+    for ([_][]const u8{ "\x1b[7;11R\x1b[2;12R\x1b[2;8R", "\x1b[7;11R\x1b[1;2R\x1b[1;3R" }) |replies| {
         var echoed = Terminal.init(.{});
         var echoed_writer = TestWriter.init(testing.allocator);
         defer echoed_writer.deinit();
@@ -1934,7 +1935,7 @@ test "queryExplicitWidth - OPENTUI_FORCE_EXPLICIT_WIDTH skips the probes or sets
         try testing.expect(std.mem.find(u8, output, ansi.ANSI.xtversion) != null);
         try testing.expectEqual(row[2], term.caps.explicit_width);
         // foot's replies (it draws `w` only); without probes they are not evidence.
-        term.processCapabilityResponse("\x1b[7;11R\x1b[1;2R\x1b[1;2R");
+        term.processCapabilityResponse("\x1b[7;11R\x1b[2;2R\x1b[2;2R");
         try testing.expectEqual(row[1] or row[2], term.caps.explicit_width);
         try testing.expect(!term.caps.scaled_text);
     }
@@ -2066,8 +2067,8 @@ test "width method follows the environment, then the DECRPM 2027 reply and XTVER
         .{ tmux38 ++ .{.{ "ZELLIJ", "0" }}, .{"\x1bP>|tmux 3.8\x1b\\"}, .unicode },
         .{ .{ .{ "TERM", "xterm-256color" }, .{ "XTERM_VERSION", "XTerm(411)" }, .{ "KONSOLE_VERSION", "250400" } }, .{}, .unicode },
         // Explicit widths (the probe moved the cursor to column 2) need no mode 2027.
-        .{ .{}, .{ "\x1b[?2027;2$y", "\x1b[1;1R\x1b[1;2R\x1b[1;3R" }, .unicode },
-        .{ .{}, .{ "\x1b[?2027;1$y", "\x1b[1;1R\x1b[1;2R\x1b[1;3R" }, .unicode },
+        .{ .{}, .{ "\x1b[?2027;2$y", "\x1b[1;1R\x1b[2;2R\x1b[2;3R" }, .unicode },
+        .{ .{}, .{ "\x1b[?2027;1$y", "\x1b[1;1R\x1b[2;2R\x1b[2;3R" }, .unicode },
     };
     inline for (rows, 0..) |row, index| {
         var env = std.process.Environ.Map.init(testing.allocator);

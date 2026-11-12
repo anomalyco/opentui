@@ -232,7 +232,7 @@ skip_explicit_width_query: bool = false,
 startup_cursor_query_pending: bool = false,
 startup_cursor_query_captured: bool = false,
 explicit_width_probe_reports_pending: u8 = 0,
-/// Setup probes OSC 66 (on the alternate screen), so the probe's answer, not XTVERSION, decides explicit width.
+/// Setup probes OSC 66 (an alternate screen of 3+ rows), so the probe's answer, not XTVERSION, decides explicit width.
 explicit_width_probed: bool = false,
 /// The host ends each query batch with DA1 and waits for its reply (sentinel mode).
 reply_sentinel: bool = false,
@@ -426,11 +426,13 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
 }
 
 /// Draws OSC 66 probes: call only on the alternate screen just entered; it saves its own cursor, not another app's.
+/// They run on row 2 (the 2-row `s=2` cell needs row 3), so no reply equals a modified F3 key (`CSI 1;m R`).
 pub fn queryExplicitWidth(self: *Terminal, tty: anytype) !void {
     if (self.skip_explicit_width_query) return;
     self.explicit_width_probe_reports_pending = 2;
-    try tty.writeAll(ansi.ANSI.saveCursorState ++ ansi.ANSI.home ++ ansi.ANSI.explicitWidthQuery ++ ansi.ANSI.cursorPositionRequest ++
-        ansi.ANSI.home ++ ansi.ANSI.scaledTextQuery ++ ansi.ANSI.cursorPositionRequest ++ ansi.ANSI.restoreCursorState);
+    const row_two = "\x1b[2H";
+    try tty.writeAll(ansi.ANSI.saveCursorState ++ row_two ++ ansi.ANSI.explicitWidthQuery ++ ansi.ANSI.cursorPositionRequest ++
+        row_two ++ ansi.ANSI.scaledTextQuery ++ ansi.ANSI.cursorPositionRequest ++ ansi.ANSI.restoreCursorState);
 }
 
 /// ConPTY draws 24-bit color, but a remote app's output never reaches this process's console.
@@ -1416,15 +1418,16 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
             self.setCursorPosition(col, row, self.state.cursor.visible);
             self.startup_cursor_query_captured = true;
             self.startup_cursor_query_pending = false;
-        } else if (self.explicit_width_probe_reports_pending > 0) {
+        } else if (self.explicit_width_probe_reports_pending > 0 and row == 2 and col <= 3) {
+            // A probe reply is on row 2, columns 1 to 3; a key or a repeated report forwarded as a reply is skipped.
             const probe_index = 2 - self.explicit_width_probe_reports_pending;
             self.explicit_width_probe_reports_pending -= 1;
             // Terminals answer in order, and the probes follow the capability queries.
             self.sync_reply_settled = true;
 
-            if (row == 1 and probe_index == 0 and col == 2) {
+            if (probe_index == 0 and col == 2) {
                 self.caps.explicit_width = true;
-            } else if (row == 1 and probe_index == 1 and col == 3) {
+            } else if (probe_index == 1 and col == 3) {
                 self.caps.explicit_width = true;
                 self.caps.scaled_text = true;
             }

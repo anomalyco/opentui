@@ -346,10 +346,11 @@ fn replayProbe(bytes: []const u8, rows: u32, start_row: u32, draws: Draws, repli
             switch (bytes[i]) {
                 'A' => row -= @min(n, row - 1),
                 'B' => row = @min(rows, row + n),
-                'H' => if (params.len == 0) {
-                    row = 1;
-                    col = 1;
-                } else return error.TestUnexpectedResult,
+                'H' => {
+                    var parts = std.mem.splitScalar(u8, params, ';');
+                    row = std.fmt.parseInt(u32, parts.first(), 10) catch 1;
+                    col = std.fmt.parseInt(u32, parts.next() orelse "", 10) catch 1;
+                },
                 's' => if (params.len == 0) {
                     saved[@intFromBool(alternate)] = .{ row, col };
                 },
@@ -387,8 +388,12 @@ fn replayProbe(bytes: []const u8, rows: u32, start_row: u32, draws: Draws, repli
 test "Session terminal setup probes OSC 66 only on the alternate screen" {
     const screen_rows = 6;
     // The main screen with a split footer pinned to the bottom or at full height (capture and passthrough send
-    // the same setup bytes), and the alternate screen; each kind of OSC 66 terminal; sentinel and clock mode.
+    // the same setup bytes), and alternate screens of 1 to 6 rows; each kind of OSC 66 terminal; sentinel and
+    // clock mode. Only an alternate screen of 3 rows or more fits the probe's 2-row cell below row 1.
     for ([_]bool{ false, true }) |alternate| for ([_]u32{ 1, 2, 3, 4, screen_rows }) |height| for (std.enums.values(Draws)) |draws| for ([_]bool{ false, true }) |sentinel| for (1..screen_rows + 1) |start_row| {
+        const rows = if (alternate) height else screen_rows;
+        if (start_row > rows) continue;
+        const probed = alternate and height >= 3;
         errdefer std.debug.print("alternate={} height={} draws={t} sentinel={} start_row={}\n", .{ alternate, height, draws, sentinel, start_row });
         const f = try Fixture.init(testing.allocator, testing.io, 8, height);
         defer f.deinit();
@@ -404,7 +409,7 @@ test "Session terminal setup probes OSC 66 only on the alternate screen" {
         try testing.expect(!f.cli.terminal.caps.explicit_width);
         // A kitty XTVERSION before the probe: it decides only where no probe runs.
         try f.value.control(.{ .capability_response = "\x1bP>|kitty(0.40.0)\x1b\\" });
-        try testing.expectEqual(!alternate, f.cli.terminal.caps.explicit_width);
+        try testing.expectEqual(!probed, f.cli.terminal.caps.explicit_width);
         len += (try f.driveOutput(&now_ns, .active, bytes[len..], 32)).len;
         const output = bytes[0..len];
         // One DA1 either way; the sentinel's follows every other query of the setup.
@@ -412,13 +417,18 @@ test "Session terminal setup probes OSC 66 only on the alternate screen" {
         try testing.expectEqual(sentinel, std.mem.endsWith(u8, output, ansi.ANSI.primaryDeviceAttrs));
         var reply_bytes: [64]u8 = undefined;
         var replies: std.Io.Writer = .fixed(&reply_bytes);
-        const end = try replayProbe(output, screen_rows, @intCast(start_row), draws, &replies);
+        const end = try replayProbe(output, rows, @intCast(start_row), draws, &replies);
         // The alternate screen reserves no rows, so the probe hands the cursor back where it started.
         if (alternate) try testing.expectEqual([2]u32{ @intCast(start_row), 5 }, end);
-        const probe_replies = replies.buffered()[std.mem.findScalar(u8, replies.buffered(), 'R').? + 1 ..];
-        if (probe_replies.len != 0) try f.value.control(.{ .capability_response = probe_replies });
-        try testing.expectEqual(!alternate or draws != .none, f.cli.terminal.caps.explicit_width);
-        try testing.expectEqual(!alternate or draws == .scaled, f.cli.terminal.caps.scaled_text);
+        // Each probe reply, then Shift+F3 and a repeated startup report, which a host may forward as replies.
+        var reports = std.mem.splitScalar(u8, replies.buffered(), 'R');
+        _ = reports.first();
+        while (reports.next()) |report| if (report.len != 0) {
+            var fed: [48]u8 = undefined;
+            try f.value.control(.{ .capability_response = try std.fmt.bufPrint(&fed, "{s}R\x1b[1;2R\x1b[{d};5R", .{ report, start_row }) });
+        };
+        try testing.expectEqual(!probed or draws != .none, f.cli.terminal.caps.explicit_width);
+        try testing.expectEqual(!probed or draws == .scaled, f.cli.terminal.caps.scaled_text);
         // Resume keeps the capabilities and draws no probe.
         try f.owner.suspendSession(f.id);
         try f.drive(&now_ns, .suspended);
