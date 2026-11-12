@@ -2833,12 +2833,10 @@ pub const Context = struct {
         } else selection: {
             var dirty: u32 = 0;
             try yoga.check(yoga.yogaNodeIsDirtyChecked(node.yoga_node, &dirty));
-            // Hosts pass cells local to the node; the view starts at its content.
+            // Hosts pass cells local to the node; the view starts at its content and clamps cells off its edges.
             const offset = scene.contentOffset(node.scene_node.?.layout);
             var local = options;
-            for ([_]*i32{ &local.anchor_x, &local.anchor_y, &local.focus_x, &local.focus_y }, [_]i32{ offset[0], offset[1], offset[0], offset[1] }) |point, by| {
-                point.* = std.math.sub(i32, point.*, by) catch return error.InvalidOptions;
-            }
+            for ([_]*i32{ &local.anchor_x, &local.anchor_y, &local.focus_x, &local.focus_y }, [_]i32{ offset[0], offset[1], offset[0], offset[1] }) |point, by| point.* -|= by;
             if (text.view.getViewport()) |viewport| {
                 const x_offset: i32 = if (text.view.wrap_mode == .none) @intCast(viewport.x) else 0;
                 const y_offset: i32 = @intCast(viewport.y);

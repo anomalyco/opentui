@@ -744,8 +744,10 @@ test "Scene text paints inside its padding" {
         // A host's body draw at the node's cell starts at the content too.
         try f.owner.drawSceneBody(body, null, text, 0, 0);
         try testing.expectEqual(@as(u32, 'a'), (try f.owner.raw().getBuffer(body)).get(@intCast(left), @intCast(top)).?.char);
-        // Selection takes the border box's local cells, as hosts pass them.
-        _ = try f.owner.sceneSetTextSelection(text, .{ .operation = c.OT_SCENE_TEXT_SELECTION_SET, .anchor_x = left, .anchor_y = top, .focus_x = left + 1, .focus_y = top, .background = blue });
+        // Selection takes the border box's local cells, as hosts pass them, on a drag's start and
+        // its updates; an anchor far off the left edge clamps to the line start.
+        _ = try f.owner.sceneSetTextSelection(text, .{ .operation = c.OT_SCENE_TEXT_SELECTION_SET, .anchor_x = std.math.minInt(i32), .anchor_y = top, .focus_x = left, .focus_y = top, .background = blue });
+        _ = try f.owner.sceneSetTextSelection(text, .{ .operation = c.OT_SCENE_TEXT_SELECTION_UPDATE, .anchor_x = std.math.minInt(i32), .anchor_y = top, .focus_x = left + 1, .focus_y = top, .background = blue });
         var selected: [8]u8 = undefined;
         try testing.expectEqualStrings("ab", selected[0..try f.owner.sceneGetSelectedText(text, &selected)]);
         _ = try presentWork(f, .{});
