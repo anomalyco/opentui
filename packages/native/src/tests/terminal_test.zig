@@ -1153,14 +1153,14 @@ test "queryTerminalSend - keeps response-generating queries inside tmux" {
 
     // tmux's graphics replies describe tmux, not the passthrough endpoint.
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.kittyGraphicsQuery) == null);
-    try testing.expect(std.mem.find(u8, output, ansi.ANSI.primaryDeviceAttrs) == null);
 }
 
-test "queryTerminalSend - sentinel mode leaves its one DA1 to the end of the setup" {
-    for ([_]bool{ false, true }) |tmux| {
+test "queryTerminalSend - one DA1 follows DECRQM 2026, and sentinel mode leaves it to the end of the setup" {
+    // Without a graphics query too: the DA1 reply settles the 2026 decision when no width probe runs.
+    for ([_][]const u8{ "", "TMUX=/tmp/tmux-1000/default,12345,0", "STY=1234.session", "OPENTUI_GRAPHICS=0" }) |vars| {
         var env = std.process.Environ.Map.init(testing.allocator);
         defer env.deinit();
-        if (tmux) try env.put("TMUX", "/tmp/tmux-1000/default,12345,0");
+        try putEnv(&env, vars);
         var clock = TestWriter.init(testing.allocator);
         defer clock.deinit();
         var sentinel = TestWriter.init(testing.allocator);
@@ -1172,7 +1172,8 @@ test "queryTerminalSend - sentinel mode leaves its one DA1 to the end of the set
         try sentinel_term.queryTerminalSend(&sentinel);
 
         const da1 = ansi.ANSI.primaryDeviceAttrs;
-        try testing.expectEqual(@as(usize, @intFromBool(!tmux)), std.mem.count(u8, clock.getWritten(), da1));
+        try testing.expectEqual(@as(usize, 1), std.mem.count(u8, clock.getWritten(), da1));
+        try testing.expect(std.mem.find(u8, clock.getWritten(), da1).? > std.mem.find(u8, clock.getWritten(), ansi.ANSI.decrqmSync).?);
         const moved = try std.mem.replaceOwned(u8, testing.allocator, clock.getWritten(), da1, "");
         defer testing.allocator.free(moved);
         try testing.expectEqualStrings(moved, sentinel.getWritten());

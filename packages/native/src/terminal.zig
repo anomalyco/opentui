@@ -415,10 +415,9 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     self.recordKittyQuery();
 
     // Inside tmux, graphics replies cannot describe the passthrough endpoint.
-    if (!self.skip_graphics_query and !self.isInTmux()) {
-        try tty.writeAll(ansi.ANSI.kittyGraphicsQuery);
-        if (!self.reply_sentinel) try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
-    }
+    if (!self.skip_graphics_query and !self.isInTmux()) try tty.writeAll(ansi.ANSI.kittyGraphicsQuery);
+    // Its reply settles the 2026 decision and Sixel; sentinel mode sends it at the end of setup instead.
+    if (!self.reply_sentinel) try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
 
     // Only queryExplicitWidth's own reports count; a key between packets is not one.
     self.explicit_width_probe_reports_pending = 0;
