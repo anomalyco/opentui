@@ -36,7 +36,8 @@ test("an edit with trailingUnstable 0 parses like fresh content", () => {
 
 // Apps write stable blocks out once (OpenCode's split-footer scrollback), so a stable token must never change: after
 // each append and at the stream's end, the tokens are those of a fresh lex, and the stable ones are a prefix of the
-// final text's tokens and never fewer. In blocks split by single blank lines (paragraphs, tight lists), the next
+// final text's tokens and never fewer; while streaming, newly stable tokens have a block after them, where OpenCode
+// ends their rows. In blocks split by single blank lines (paragraphs, tight lists), the next
 // append after a blank line and the next block's first character makes the block before them stable; the next
 // blocks here never start with what a list holds for.
 test("streamed, the stable tokens are a growing prefix of the final text's tokens", () => {
@@ -58,6 +59,9 @@ test("streamed, the stable tokens are a growing prefix of the final text's token
     "> a\n>\n> b\nlazy\n\n> c\n\nend\n",
     "    code\n\n    more\n\ntext\n",
     "[r]: /u\n  'title'\n\nsee [r]\n\n[s]: /v\n",
+    // marked drops a repeated definition, and lets a label or title span blank lines or other blocks
+    "[r]: /u\n\n- [n]: /x\n\n> [q]: /q\n\nHello\n\n[r]: /v\n\n[r]: /w\n\n[q]: /v\n\n[n]: /y\n\nWorld\n\nEND\n",
+    "[part\n\npart\n\nmore\\]]: /a\n\n[t]: /b (one\n\ntwo)\n\n [u]: /c\n\"three\n\nfour\"\n\n[v]: /d 'x\n# h\n# i\ny'\n\nEND\n",
     "| a | b |\n|---|---|\n| 1 | 2 |\n\n| c |\n|---|\n\npara\n",
     "<pre>\na\n\nb\n</pre>\n\nx\n",
     "1) a\n\n   b\n\n 100) c\n\nend\n",
@@ -88,7 +92,8 @@ test("streamed, the stable tokens are a growing prefix of the final text's token
         if (
           state.stableTokenCount! < Math.max(stable, due) ||
           wrong ||
-          JSON.stringify(raws) !== JSON.stringify(lexed)
+          JSON.stringify(raws) !== JSON.stringify(lexed) ||
+          (piece && state.stableTokenCount! > stable && raws.slice(state.stableTokenCount).every((raw) => !raw.trim()))
         ) {
           failures.push(JSON.stringify(text))
           break
@@ -307,17 +312,15 @@ test("falls back to full re-parse when incremental tail parse fails", () => {
   const content2 = "| A |\n|---|\n| 1 |\n| 2 |"
   const state1 = parseMarkdownIncremental(content1, null, 2)
 
-  const lexerRef = Lexer as unknown as { lex: typeof Lexer.lex }
+  const lexerRef = Lexer.prototype
   const originalLex = lexerRef.lex
   let lexCalls = 0
 
-  lexerRef.lex = ((src, options) => {
+  lexerRef.lex = function (this: Lexer, src) {
     lexCalls += 1
-    if (lexCalls === 1) {
-      throw new Error("incremental tail parse failed")
-    }
-    return originalLex(src, options)
-  }) as typeof Lexer.lex
+    if (lexCalls === 1) throw new Error("incremental tail parse failed")
+    return originalLex.call(this, src)
+  }
 
   try {
     const state2 = parseMarkdownIncremental(content2, state1, 2)
@@ -337,12 +340,12 @@ test("returns empty token list when both incremental and full parse fail", () =>
   const content2 = "| A |\n|---|\n| 1 |\n| 2 |"
   const state1 = parseMarkdownIncremental(content1, null, 2)
 
-  const lexerRef = Lexer as unknown as { lex: typeof Lexer.lex }
+  const lexerRef = Lexer.prototype
   const originalLex = lexerRef.lex
 
-  lexerRef.lex = (() => {
+  lexerRef.lex = () => {
     throw new Error("parse failed")
-  }) as typeof Lexer.lex
+  }
 
   try {
     const state2 = parseMarkdownIncremental(content2, state1, 2)
