@@ -157,6 +157,10 @@ pub const Counters = struct {
     /// The match kinds a tail write restyled for, one bit per kind: a walk passes a token once
     /// when it is new and once more for each kind it gains, so it bounds the run token visits.
     restyled_kinds: u64 = 0,
+    /// Match records the restyle walk read (an opener's or a closer's matches as it passes the
+    /// token, and this call's): each is read when its token is passed, so they are bounded as
+    /// token visits are.
+    match_reads: u64 = 0,
     /// The most delimiter runs that waited at once in a live leaf (its parse's or its pending
     /// word's, at most `delimiter_count_max`): a byte is written again at most once for each
     /// that waited before it when it came.
@@ -2944,8 +2948,9 @@ pub const Doc = struct {
         const r = live.parser.result();
         var styler: TokenStyler = .{ .writer = &writer, .arena = arena, .r = r, .styles = live.base_styles, .references = self.references() };
         var segment_from = from;
-        // This call's matches open after the walk's start (it starts at the first opener one
-        // took): how many of each kind cover the token the walk is past. The earlier matches
+        // This call's matches: how many of each kind cover the token the walk is past (one may
+        // open before the walk's start: a match from an opener whose earlier match of its kind
+        // styled the tokens up to that one's closer, where the walk starts). The earlier matches
         // the walk is inside, and per kind how many and the closer of the outermost.
         var new_active: [3]u32 = .{ 0, 0, 0 };
         const OldMatch = struct { kind: inline_parser.MatchKind, closer: u32 };
@@ -2962,6 +2967,12 @@ pub const Doc = struct {
             styler.styles.link = try writer.url("", live.base_link.items);
         } else if (link != none) {
             styler.styles.link = try writer.url("", try styler.destination(link));
+        }
+        for (r.matches[skip.old_matches..]) |m| {
+            self.counters.match_reads += 1;
+            if (m.opener_token >= start or m.closer_token < start) continue;
+            new_active[@backingInt(m.kind)] += 1;
+            styler.styles.apply(m.kind, 1);
         }
         try live.token_styles.resize(self.allocator, r.tokens.len);
         var at = from;
@@ -2984,6 +2995,7 @@ pub const Doc = struct {
             try styler.token(i);
             if (r.tokens[i].kind == .delimiter) if (inline_parser.delimiterOf(r, i)) |di| {
                 const d = r.delimiters[di];
+                self.counters.match_reads += d.closer_match_count;
                 for (d.closer_first_match..d.closer_first_match + d.closer_match_count) |m| {
                     if (m >= skip.old_matches) new_active[@backingInt(r.matches[m].kind)] -= 1;
                 }
@@ -2993,6 +3005,7 @@ pub const Doc = struct {
                 // Newest first: an opener's later matches enclose its earlier ones.
                 var m = d.opener_matches;
                 while (m) |mi| : (m = r.matches[mi].next_for_opener) {
+                    self.counters.match_reads += 1;
                     const match = r.matches[mi];
                     const k = @backingInt(match.kind);
                     if (mi >= skip.old_matches) {

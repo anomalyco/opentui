@@ -824,6 +824,9 @@ fn genericProperties(arena: std.mem.Allocator, doc: *const Doc, fed: Fed, option
         // and once for each run that waited before it and is revealed (D), plus the last one
         // per call.
         .{ "(a) work: run token visits <= (1 + max(1, k) + D)n + calls", c.run_token_visits, (1 + @max(1, @popCount(c.restyled_kinds)) + c.waiting_runs_max) * n + calls + 64 },
+        // The walk reads a token's match records as it passes it: each match has two, and
+        // matches are at most n / 2.
+        .{ "(a) work: match reads <= (1 + max(1, k) + D)n + calls", c.match_reads, (1 + @max(1, @popCount(c.restyled_kinds)) + c.waiting_runs_max) * n + calls + 64 },
     };
     for (bounds) |bound| {
         if (bound[1] > bound[2]) {

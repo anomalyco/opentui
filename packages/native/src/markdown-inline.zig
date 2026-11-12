@@ -70,6 +70,9 @@ pub const Delimiter = struct {
     next: ?u32 = null,
     /// Head of the matches where this delimiter is the opener, newest first.
     opener_matches: ?u32 = null,
+    /// Per kind, the closer token of its latest match from this opener (0: none): the tokens
+    /// before it have the kind already, so a new match of the kind changes styles from there.
+    styled_to: [3]u32 = .{ 0, 0, 0 },
     /// First match where this delimiter is the closer and how many follow it in order.
     closer_first_match: u32 = 0,
     closer_match_count: u32 = 0,
@@ -762,8 +765,11 @@ pub const Parser = struct {
             .opener_token = self.delimiters.items[opener_index].token_index,
             .closer_token = self.delimiters.items[closer_index].token_index,
         });
-        self.matched_from = @min(self.matched_from, self.delimiters.items[opener_index].token_index);
-        self.delimiters.items[opener_index].opener_matches = index;
+        const opener = &self.delimiters.items[opener_index];
+        const styled_to = &opener.styled_to[@backingInt(kind)];
+        self.matched_from = @min(self.matched_from, if (styled_to.* != 0) styled_to.* else opener.token_index);
+        styled_to.* = self.delimiters.items[closer_index].token_index;
+        opener.opener_matches = index;
         const closer = &self.delimiters.items[closer_index];
         if (closer.closer_match_count == 0) closer.closer_first_match = index;
         assert(closer.closer_first_match + closer.closer_match_count == index);
