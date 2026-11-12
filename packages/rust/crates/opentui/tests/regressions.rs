@@ -410,6 +410,46 @@ fn extmark_tracking_measures_text_as_the_cursor_does() {
     }
 }
 
+// Expected: as in Core, an edit ends any selection, so the view follows the cursor to the line the edit moved it to.
+// Actual: a click left a zero-width selection that Enter, Backspace and the word deletes kept, and the view does not
+// follow the cursor while a selection exists: the cursor stayed above or below the one visible row.
+#[test]
+fn edits_after_a_click_leave_the_cursor_outside_the_view() {
+    use opentui::widget::EditorAction as A;
+    let [down, drag, up] =
+        [MouseEventKind::Down, MouseEventKind::Drag, MouseEventKind::Up].map(|kind| kind(MouseButton::Left));
+    let gestures: [&[_]; 3] =
+        [&[(down, 0), (up, 0)], &[(down, 0), (drag, 1), (drag, 0), (up, 0)], &[(down, 0), (drag, 1), (up, 1)]];
+    // The text after a click, or a drag back to where it started, at the start of "cd"; then after a drag over "cd".
+    let actions = [
+        (A::Newline, "ab\n\ncd\nef", "ab\n\n\nef"),
+        (A::Backspace, "abcd\nef", "ab\n\nef"),
+        (A::Delete, "ab\nd\nef", "ab\n\nef"),
+        (A::DeleteWordForward, "ab\nef", "ab\n\nef"),
+        (A::DeleteWordBackward, "abcd\nef", "ab\n\nef"),
+    ];
+    for (index, events) in gestures.into_iter().enumerate() {
+        for (action, unselected, selected) in actions {
+            let app = TestApp::new(10, 1);
+            let area = Textarea::new(&app).set_text("ab\ncd\nef").grow(1.0);
+            app.root().add(&area);
+            area.focus();
+            app.render();
+            app.press("up");
+            app.render();
+            for &(kind, x) in events {
+                app.mouse(kind, x, 0);
+            }
+            area.perform(action);
+            app.render();
+            let at = format!("gesture {index}, {action:?}");
+            assert_eq!(area.text(), if index == 2 { selected } else { unselected }, "{at}");
+            let (row, viewport) = (area.cursor().0, area.view().viewport().unwrap());
+            assert!((viewport.y..viewport.y + viewport.height).contains(&row), "{at}: row {row}, {viewport:?}");
+        }
+    }
+}
+
 // Expected: as in Core, a left press that ends a selection without starting one also resets the click count
 // (`clearSelection` sets `lastClick = null`), so click on text, click elsewhere, click on the text again is three
 // single clicks.

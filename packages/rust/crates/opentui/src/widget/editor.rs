@@ -465,12 +465,12 @@ impl EditorCore {
     }
 
     fn delete_selection(&self) -> bool {
-        if self.selection().is_none() {
-            return false;
+        let selected = self.selection().is_some();
+        if selected {
+            self.report(self.view.delete_selection());
         }
-        self.report(self.view.delete_selection());
         self.clear_selection_state();
-        true
+        selected
     }
 
     /// Moves the cursor. With `select`, extends the selection from where it started; otherwise clears it.
