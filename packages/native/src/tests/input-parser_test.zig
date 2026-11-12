@@ -1034,6 +1034,12 @@ test "input parser times out partial units unless they may be mouse reports, Kit
         .{ plain, "\x1b[<", 0, "0;1;1M", &.{down(0, 0, 0)} },
         .{ plain, "\x1b[<35;20", 0, "x", &.{ frag("\x1b[<35;20"), ch('x') } },
         .{ plain, "\x1b\x1b[<35;20", 0, "\x1b", &.{ k(K.escape, NONE), frag("\x1b[<35;20") } },
+        // A paste start waits too, wherever the pause cuts it (issue 615); a byte that does not continue it ends it.
+        .{ plain, "\x1b[", 0, "200~\x1b[201~", &.{paste("")} },
+        .{ plain, "\x1b[2", 0, "00~a\rb\x1b[201~", &.{paste("a\rb")} },
+        .{ sentinel, "\x1b[200", 0, "~\x1b[201~", &.{paste("")} },
+        .{ plain, "\x1b[20", 0, "0~\x1b[201", &([_]Expect{frag("\x1b[20")} ++ typed("0~")) },
+        .{ plain, "\x1b[20", 0, "1~abcdefg", &([_]Expect{frag("\x1b[20")} ++ typed("1~abcdefg")) },
         .{ kitty, "\x1b[118;5", 0, ";3u", &.{kt('v', CTRL, "v")} },
         .{ kitty, "\x1b[97;", 0, "2u", &.{kt('a', SHIFT, "A")} },
         .{ kitty, "\x1b[97:65;", 0, "6:1u", &.{k('a', mods(&.{ CTRL, SHIFT }))} },

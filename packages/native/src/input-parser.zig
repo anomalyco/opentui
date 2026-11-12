@@ -842,7 +842,7 @@ pub const InputParser = struct {
         if (params.len == 0) return !self.state.csi.alt;
         if (self.kittyHeld()) return true;
         if (params[0] == '<') return allOf(params[1..], "0123456789;");
-        return (self.expect.replies and self.replyShaped()) or
+        return std.mem.startsWith(u8, "200", params) or (self.expect.replies and self.replyShaped()) or
             (self.expect.kitty_keyboard and params[0] != '?' and Shape.of(params, true) != null);
     }
 
@@ -891,11 +891,13 @@ pub const InputParser = struct {
     fn continuesDeferred(self: *const InputParser, b: u8, reply_only: bool) bool {
         const params = self.unit[2..self.unit_len];
         const digit = isDigit(b);
+        // A paste start continues only into a read that holds its rest and an end marker, so typed keys never open one.
+        const paste = std.mem.startsWith(u8, "200~", params) and b == "200~"[params.len] and self.batch_left + params.len >= 3 + paste_end_marker.len;
         // A reply prefix continues a bare unit only while the host awaits the sentinel.
-        if (params.len == 0) return (b == '<' and self.batch_left >= 1) or (b == 'M' and self.batch_left >= 3) or
+        if (params.len == 0) return paste or (b == '<' and self.batch_left >= 1) or (b == 'M' and self.batch_left >= 3) or
             (self.expect.kitty_query and b == '?' and self.batch_left >= 2) or (self.expect.sentinel and beginsReply('[', b));
-        // Only `sentinel` defers these; a number continues toward a cursor or pixel size reply.
-        if (allDigits(params)) return digit or b == ';';
+        // With `sentinel`, a number continues toward a cursor or pixel size reply.
+        if (allDigits(params)) return paste or (self.expect.sentinel and (digit or b == ';'));
         // Whether the field being read has a digit; a mode report's `$` follows its digits.
         const field = std.mem.trimEnd(u8, params, "$");
         const has_digit = isDigit(field[field.len - 1]);

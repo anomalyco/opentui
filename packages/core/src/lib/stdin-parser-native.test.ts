@@ -195,9 +195,9 @@ describe("native stdin parser: replay", () => {
   }
 
   test("the parser reports the same events however the reads between pauses are split", () => {
-    // Seeded streams of the rows' and streams' inputs, with up to two pauses. A read after a
-    // pause that ends in `[` keeps its first 4 bytes: a timed-out `ESC [` continues only when the
-    // next read holds the rest of a mouse report (issue 348).
+    // Seeded streams of the rows' and streams' inputs, with up to two pauses. A read after a pause that ends in `[`
+    // or a digit keeps its first 10 bytes: a timed-out `ESC [` continues only when the next read holds the rest of a
+    // mouse report (issue 348), or of a paste start and an end marker (issue 615).
     const fragments = [...ROWS.flatMap(([, chunks]) => chunks), ...streams.map(([, text]) => text)]
       .filter((chunk): chunk is string | Uint8Array => chunk !== null && chunk.length > 0)
       .map((chunk) => (typeof chunk === "string" ? Buffer.from(chunk) : chunk))
@@ -216,7 +216,10 @@ describe("native stdin parser: replay", () => {
         while (end < input.length && !pauses.has(end)) end++
         whole.push(input.subarray(start, end))
         for (let at = start; at < end; ) {
-          const size = at === start && pauses.has(start) && input[start - 1] === 0x5b ? 4 : 1 + random(6)
+          const size =
+            at === start && pauses.has(start) && /[[0-9]/.test(String.fromCharCode(input[start - 1]!))
+              ? 10
+              : 1 + random(6)
           split.push(input.subarray(at, Math.min(end, at + size)))
           at += size
         }
