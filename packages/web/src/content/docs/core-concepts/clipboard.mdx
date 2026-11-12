@@ -78,9 +78,14 @@ The composed service owns the host service passed to `createClipboard()`. The re
 | `terminal-only`  | Terminal only                                                     | Terminal only                              |
 | `host-only`      | Host only                                                         | Skipped unless `allowRemoteHost` is `true` |
 | `best-available` | Host first, then the terminal if the host is unsupported or fails | Terminal only                              |
-| `all-available`  | Both concurrently                                                 | Terminal, plus host with `allowRemoteHost` |
+| `all-available`  | Host first, then the terminal when the host settles               | Terminal, plus host with `allowRemoteHost` |
 
 Skipped destinations report `{ status: "not-attempted" }` in the result.
+
+Host writes can settle out of order, for example when they time out. When operations on one selection overlap, the
+newest one wins, whatever its destination. Each settled `all-available` or `best-available` host write sends the newest
+operation's terminal write, unless the terminal already took it and no host write has taken the selection since, and
+reports that write's result. A newer `host-only` write stops the older operations' terminal writes.
 
 ### Remote sessions
 
