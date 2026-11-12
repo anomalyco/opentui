@@ -1477,6 +1477,8 @@ test "Markdown read_leaf: display bytes, chunk styles, spans and the URL pool" {
         .{ .source = "*a***b**", .block = 0, .chunks = &.{ .{ "a", " italic", "" }, .{ "b", "strong", "" } } },
         // A math span the held pipe cuts shows as B drew it, literal (opus-2).
         .{ .source = "\\(a|b\\) c", .math = true, .pending = true, .block = 0, .chunks = &.{.{ "(a", "", "" }} },
+        // A word is tokenized once white space follows it (M3-d).
+        .{ .source = "See [Updated](https://target)\n", .pending = true, .block = 0, .chunks = &.{ .{ "See ", "", "" }, .{ "Updated", "link", "https://target" } } },
     };
     for (rows) |row| {
         var f: Fixture = undefined;

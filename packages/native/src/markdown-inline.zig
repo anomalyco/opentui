@@ -153,8 +153,8 @@ pub const Parser = struct {
     options: Options,
     subject: []const u8 = "",
     final: bool = false,
-    /// Tokenizing stops here: the start of the trailing word (and the whitespace after it) until
-    /// the content is final.
+    /// Tokenizing stops here until the content is final: the start of the trailing word, or its
+    /// end once whitespace follows it (the whitespace may be the leaf's end).
     limit: u32 = 0,
     /// Start of the subject's trailing run of non-whitespace bytes; its length when it ends in
     /// whitespace.
@@ -287,8 +287,9 @@ pub const Parser = struct {
         try self.findEmails();
     }
 
-    /// The limit moves to the start of the trailing word; only the bytes added since
-    /// `previous_len` are read (a long word arriving byte by byte stays linear).
+    /// The limit moves to the start of the trailing word, or to its end once whitespace follows
+    /// it; only the bytes added since `previous_len` are read (a long word arriving byte by byte
+    /// stays linear).
     fn updateLimit(self: *Parser, previous_len: u32) void {
         const s = self.subject;
         const n: u32 = @intCast(s.len);
@@ -296,14 +297,14 @@ pub const Parser = struct {
         var i = n;
         while (i > previous_len and isAsciiWhitespace(s[i - 1])) i -= 1;
         if (i == previous_len) {
-            if (n > previous_len and previous_ended_in_word) self.limit = self.tail_run_start;
+            if (n > previous_len and previous_ended_in_word) self.limit = previous_len;
             if (n > previous_len) self.tail_run_start = n;
             return;
         }
         var j = i;
         while (j > previous_len and !isAsciiWhitespace(s[j - 1])) j -= 1;
         const word_start = if (j > previous_len or !previous_ended_in_word) j else self.tail_run_start;
-        self.limit = word_start;
+        self.limit = if (i == n) word_start else i;
         self.tail_run_start = if (i == n) word_start else n;
     }
 
@@ -485,6 +486,8 @@ pub const Parser = struct {
             return self.text(at, at + 1);
         }
         if (s[at + 1] == '\n') {
+            // Before the content's last line ending it may end the leaf (then it is text).
+            if (at + 2 == n and !self.final) return error.NeedMore;
             var next = at + 2;
             while (next < n and (s[next] == ' ' or s[next] == '\t')) next += 1;
             try self.push(.{ .start = at, .len = next - at, .kind = .hard_break });

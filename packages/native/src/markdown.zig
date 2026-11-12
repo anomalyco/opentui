@@ -2819,8 +2819,8 @@ pub const Doc = struct {
         if (!parser.settled() or position != parser.limit or position >= live.content.items.len) return;
         if (position <= 2 * look_behind_byte_count) return;
         if (live.definition_possible or live.pipe_line_start != none or live.line_pipe != none) return;
-        // The limit is a word start: whitespace precedes it.
-        assert(isAsciiWhitespaceByte(live.content.items[position - 1]));
+        // At a word start only: whitespace precedes it.
+        if (!isAsciiWhitespaceByte(live.content.items[position - 1])) return;
         const drop = position - look_behind_byte_count;
         const rest = live.content.items.len - drop;
         self.liveNoteExpired(@intCast(parser.tokens.items.len));
