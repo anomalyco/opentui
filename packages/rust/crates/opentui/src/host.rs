@@ -882,13 +882,10 @@ impl Host {
     }
 
     /// Restores the terminal, runs `task` while another program owns it, and sets the terminal up again after it
-    /// returns. Reports [`Event::Resumed`]: paint a new frame. For a remote terminal, or on Windows, `task` runs with
-    /// the terminal untouched.
+    /// returns. Reports [`Event::Resumed`]: paint a new frame. For a remote terminal, `task` runs with the terminal
+    /// untouched.
     pub fn release<T>(&mut self, events: &mut Vec<Event>, task: impl FnOnce() -> T) -> Result<T> {
         let Connection::Local { restore, .. } = &self.connection else { return Ok(task()) };
-        if cfg!(windows) {
-            return Ok(task());
-        }
         let restore = Rc::clone(restore);
         let suspended = Instant::now();
         // Core's renderer stops expecting capability replies when it suspends.

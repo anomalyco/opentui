@@ -250,7 +250,6 @@ impl Drop for XServer {
 }
 
 /// A released terminal is the program's to read in cooked mode, and the app draws again afterwards.
-#[cfg(unix)]
 #[test]
 fn releasing_hands_the_terminal_over_and_takes_it_back() {
     let run = Run::fixture(&["--app"]);
@@ -263,12 +262,13 @@ fn releasing_hands_the_terminal_over_and_takes_it_back() {
     let text = run.text();
     let released = text.find("lifecycle released").unwrap();
     assert!(text[..released].contains(LEAVE_ALT), "the alternate screen is still active: {text:?}");
-    // Taking it back after a resize, the app asks for the pixel size again.
+    // Taking it back after a resize, the app draws again and asks for the pixel size, which ConPTY may not pass on.
     run.pty.resize(100, 30).unwrap();
     run.press("hello\r");
     run.wait_for("lifecycle read hello");
     let read = run.text().find("lifecycle read hello").unwrap();
-    let taken = || ["\x1b[14t", ENTER_ALT].iter().all(|text| run.text()[read..].contains(text));
+    let wanted = [ENTER_ALT, DRAWN, if cfg!(windows) { DRAWN } else { "\x1b[14t" }];
+    let taken = || wanted.iter().all(|text| run.text()[read..].contains(text));
     let seen = run.app.wait_until(Duration::from_secs(10), taken);
     assert!(seen, "the app never took the terminal back: {:?}", run.text());
     let released = |count| {
