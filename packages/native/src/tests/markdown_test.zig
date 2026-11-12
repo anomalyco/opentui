@@ -817,8 +817,9 @@ fn genericProperties(arena: std.mem.Allocator, doc: *const Doc, fed: Fed, option
         .{ "(a) work: assembled bytes <= 4n", c.display_assembled_bytes, 4 * n + 64 },
         .{ "(a) work: sent bytes <= 3n", c.tail_write_bytes, 3 * n + 64 },
         // A node write restyles from the first token whose style may have changed: each token
-        // once when it arrives and once when a closer restyles it, plus the last one per call.
-        .{ "(a) work: run token visits <= 2n + calls", c.run_token_visits, 2 * n + calls + 64 },
+        // once when it arrives and once for each match kind it gains (k kinds the doc's closers
+        // made, at most 3), plus the last one per call.
+        .{ "(a) work: run token visits <= (1 + k)n + calls", c.run_token_visits, (1 + @popCount(c.restyled_kinds)) * n + calls + 64 },
     };
     for (bounds) |bound| {
         if (bound[1] > bound[2]) {
@@ -1340,15 +1341,39 @@ test "Markdown model: tokens after an opener that never closes are restyled once
 
 test "Markdown model: a triple-star closer whose matches enclose the last ones restyles only what they add" {
     // bigboi-r3-2: `begin `, 64 times `***a `, then 64 times `b*** `, one piece per call: 8,385 run token
-    // visits where the work property allows 1,485.
+    // visits. Each `***` closer adds both its kinds in one call, so each token is passed once
+    // when it arrives and once when its closer comes: 2n + calls, tighter than the (1 + k)n the
+    // work property allows for two kinds.
+    var f: Fixture = undefined;
+    try f.init(.{});
+    defer f.deinit();
+    var sink: markdown.TailSink = .{ .allocator = gpa };
+    defer sink.deinit();
+    f.doc.tail_sink = &sink;
+    var fed: Fed = .{};
+    const stream = [_]struct { []const u8, usize }{ .{ "begin ", 1 }, .{ "***a ", 64 }, .{ "b*** ", 64 } };
+    for (stream) |piece| for (0..piece[1]) |_| {
+        fed.add(piece[0].len);
+        try f.doc.append(piece[0]);
+    };
+    fed.add(f.doc.source.items.len);
+    try f.doc.finish();
+    try std.testing.expectEqual(@as(usize, 0), sink.mismatch_count);
+    try std.testing.expect(f.doc.counters.run_token_visits <= 2 * fed.byte_count + fed.call_count + 64);
+}
+
+test "Markdown model: closers of two kinds in one call skip interiors older matches of both kinds style" {
+    // Seed 81 of the repeated-construct model at 1,000 seeds: each call closes a `~~` and the `**`
+    // around it; inside, the older `**` and `~~` give the two kinds by two matches, so a jump
+    // that asks one opener for both kinds walked every level below on every call.
     var families: Families = .{};
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     var commands: std.ArrayListUnmanaged(FamilyCommand) = .empty;
     try commands.append(arena, .{ .append = "begin " });
-    for (0..64) |_| try commands.append(arena, .{ .append = "***a " });
-    for (0..64) |_| try commands.append(arena, .{ .append = "b*** " });
+    for (0..64) |_| try commands.append(arena, .{ .append = "**a ~~b " });
+    for (0..64) |_| try commands.append(arena, .{ .append = "c~~ d** " });
     try commands.append(arena, .finish);
     if (try families.run(arena, commands.items)) |failure| {
         std.debug.print("{s} at step {d}\n", .{ failure.property, failure.step });

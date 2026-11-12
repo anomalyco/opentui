@@ -154,10 +154,15 @@ pub const Counters = struct {
     live_mismatch_count: u64 = 0,
     /// Live tokens walked to style a tail write's runs (and the styles a fold or retire keeps).
     run_token_visits: u64 = 0,
+    /// The match kinds a tail write restyled for, one bit per kind: a walk passes a token once
+    /// when it is new and once more for each kind it gains, so it bounds the run token visits.
+    restyled_kinds: u64 = 0,
 
     pub fn plus(a: Counters, b: Counters) Counters {
         var sum: Counters = .{};
-        inline for (@typeInfo(Counters).@"struct".field_names) |name| @field(sum, name) = @field(a, name) + @field(b, name);
+        inline for (@typeInfo(Counters).@"struct".field_names) |name| {
+            @field(sum, name) = if (comptime std.mem.eql(u8, name, "restyled_kinds")) a.restyled_kinds | b.restyled_kinds else @field(a, name) + @field(b, name);
+        }
         return sum;
     }
 };
@@ -2884,6 +2889,7 @@ pub const Doc = struct {
             const runs_from = @min(self.liveTokensEnd(start), shown_end);
             // The matches the parser made in this call are the ones past those the writes saw.
             if (live.matches_seen > live.parser.result().matches.len) live.matches_seen = 0;
+            for (live.parser.result().matches[live.matches_seen..]) |m| self.counters.restyled_kinds |= @as(u64, 1) << @intCast(@backingInt(m.kind));
             const skip: Skip = .{ .old_matches = live.matches_seen, .before_token = first_linked, .before_display = write_start };
             const segments = try self.liveChunks(arena, start, runs_from, shown_end, skip);
             for (segments, 0..) |segment, i| {
@@ -3002,7 +3008,7 @@ pub const Doc = struct {
                 link = i;
             }
             at = live.display_ends.items[i];
-            if (self.liveSkipTo(r, i, skip, new_active)) |closer| {
+            if (self.liveSkipTo(r, i, skip, styler.styles, new_active)) |closer| {
                 try segments.append(arena, .{ .from = segment_from, .to = at, .leaf = leaf.* });
                 try self.liveNoteStale(i + 1, closer);
                 const next = try arena.create(Leaf);
@@ -3065,24 +3071,24 @@ pub const Doc = struct {
     /// After token `i` of the walk: the token to go on at, when the tokens between cannot
     /// change style in this call. That holds for the interior of `i`'s innermost match when it
     /// is an earlier call's (so no match of this call starts or ends inside: matches nest), every
-    /// kind this call's matches add there is one `i`'s matches give it already, and no token's
-    /// display changed there. Matches nest and do not cross links, so the styles before that
+    /// kind this call's matches add there is one an earlier match around it gives already
+    /// (`styles` counts all of them after `i`, `active` this call's), and no token's display
+    /// changed there. Matches nest and do not cross links, so the styles before that
     /// innermost closer are the ones after `i` and those of the matches it closes whose openers
     /// lie between: the walk goes on from there with them.
-    fn liveSkipTo(self: *const Doc, r: inline_parser.Result, i: u32, skip: Skip, active: [3]u32) ?u32 {
+    fn liveSkipTo(self: *const Doc, r: inline_parser.Result, i: u32, skip: Skip, styles: Styles, active: [3]u32) ?u32 {
         if (r.tokens[i].kind != .delimiter) return null;
         const d = r.delimiters[inline_parser.delimiterOf(r, i) orelse return null];
         var closer: u32 = none;
-        var kinds: [3]bool = .{ false, false, false };
         var m = d.opener_matches;
         while (m) |mi| : (m = r.matches[mi].next_for_opener) {
             const match = r.matches[mi];
             if (mi >= skip.old_matches and match.closer_token <= closer) return null;
             closer = @min(closer, match.closer_token);
-            kinds[@backingInt(match.kind)] = true;
         }
         if (closer == none or closer <= i + 1) return null;
-        for (active, kinds) |count, given| if (count > 0 and !given) return null;
+        const all = [3]i32{ styles.italic, styles.strong, styles.strikethrough };
+        for (active, all) |count, total| if (count > 0 and total <= count) return null;
         if (closer >= skip.before_token or self.live.display_ends.items[closer] > skip.before_display) return null;
         return closer;
     }
