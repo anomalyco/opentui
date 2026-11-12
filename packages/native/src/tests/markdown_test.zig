@@ -1199,8 +1199,9 @@ test "Markdown sweep: every pair of appends, then finish, under every option set
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     // The tear prototype's repros (math on): A aborted in M2 before fd4ab4e19; B and D pass.
-    // Then a task marker before a nested one (M3-a, M2 F9).
-    for ([_][]const []const u8{ &.{ "@\n$$_", "$$\n" }, &.{"&amp;\n===\n"}, &.{ "&amp;", "\n===\n" }, &.{ "- [x] - [x] ", "**" }, &.{ "- [x] ", "- [x] ", "word " } }) |parts| {
+    // Then a task marker before a nested one (M3-a, M2 F9) and an escaped backslash that ends an
+    // append inside `\(` (bigboi-2).
+    for ([_][]const []const u8{ &.{ "@\n$$_", "$$\n" }, &.{"&amp;\n===\n"}, &.{ "&amp;", "\n===\n" }, &.{ "- [x] - [x] ", "**" }, &.{ "- [x] ", "- [x] ", "word " }, &.{ "\\(a b\\\\", ")", " now" } }) |parts| {
         try std.testing.expect(try streamAgreesParts(arena_state.allocator(), "math tear", parts));
     }
     // E and F's inputs with the options M1 has (conceal and hyperlinks are M2's).

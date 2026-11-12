@@ -519,7 +519,8 @@ pub const Parser = struct {
             }
             if (c == '\\') i += 1;
         }
-        return self.searchRanOut(opener, @min(i, @as(u32, @intCast(s.len -| 1))));
+        // At the end, or past an escaped pair that ends there: read on from `i`.
+        return self.searchRanOut(opener, i);
     }
 
     fn resumeSearch(self: *Parser, opener: u32, from: u32) u32 {
