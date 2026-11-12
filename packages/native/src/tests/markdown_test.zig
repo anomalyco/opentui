@@ -965,7 +965,7 @@ const Family = enum {
     /// Openers, then their closers in reverse: each closer's match encloses the last one's.
     nested_closers,
     /// Matches that share an opening run (`***a* ` then `b** `, or one long run then `b** `
-    /// closers): no opener between is revealed.
+    /// closers), and spans inside one word (`*a*b`): no opener between is revealed.
     shared_openers,
     heading,
     table_rows,
@@ -1055,7 +1055,7 @@ const Families = struct {
             .shared_openers => {
                 const mark = pick(random, &.{ "*", "_" });
                 try out.appendSlice(arena, pick(random, &.{ "begin ", "", "`c` " }));
-                switch (random.uintLessThan(u32, 2)) {
+                switch (random.uintLessThan(u32, 3)) {
                     0 => {
                         for (0..count) |_| try out.appendSlice(arena, try std.mem.concat(arena, u8, &.{ mark, mark, mark, pick(random, &.{ "a", "`c`" }), mark, " " }));
                         for (0..count) |_| try out.appendSlice(arena, try std.mem.concat(arena, u8, &.{ pick(random, &.{ "b", "`c`" }), mark, mark, " " }));
@@ -1065,7 +1065,11 @@ const Families = struct {
                         try out.appendSlice(arena, "a ");
                         for (0..count) |_| try out.appendSlice(arena, try std.mem.concat(arena, u8, &.{ pick(random, &.{ "b", "`c`" }), mark, mark, " " }));
                     },
-                    else => unreachable,
+                    else => {
+                        // Spans inside one word, after an opener that may never close.
+                        try out.appendSlice(arena, pick(random, &.{ "", "~~x", "(*x" }));
+                        for (0..count) |_| try out.appendSlice(arena, pick(random, &.{ "*a*b", "**a**b", "*`c`*b", "_a_b" }));
+                    },
                 }
             },
             .heading => {
@@ -1392,6 +1396,10 @@ test "Markdown model: streams the reviewers found quadratic keep work linear" {
         &.{ .{ "begin ", 1 }, .{ "***a* ", 128 }, .{ "b** ", 128 } },
         // bigboi-r4-1: 128 strong matches share one opening run (16,643 visits).
         &.{ .{ "begin ", 1 }, .{ repeat("*", 256) ++ "a ", 1 }, .{ "b** ", 128 } },
+        // carbon-2: spans inside one undecided word (16,512 visits at 128); and with an opener at
+        // the word's start that never closes.
+        &.{.{ "*a*b", 128 }},
+        &.{ .{ "~~x", 1 }, .{ "*a*b", 128 } },
     };
     var families: Families = .{};
     var arena_state = std.heap.ArenaAllocator.init(gpa);

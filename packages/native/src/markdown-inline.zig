@@ -1306,35 +1306,70 @@ pub const PendingRun = struct { at: u32, end: u32, char: u8, count: u32, open: b
 /// spans they are; an opener that waits is concealed and styles nothing until its closer).
 pub const PendingSpan = struct { from: u32, to: u32, kind: MatchKind };
 
-/// The spans the drawn runs make, as process emphasis matches them (each closer with the nearest
-/// opener of its character before it; a strikethrough's runs of equal length).
-pub fn pendingSpans(runs: []const PendingRun, allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(PendingSpan)) error{OutOfMemory}!void {
-    var openers: std.ArrayListUnmanaged(struct { at: u32, char: u8, count: u32, original: u32, close: bool }) = .empty;
-    defer openers.deinit(allocator);
-    for (runs) |run| {
-        var count = run.count;
-        if (run.close) {
-            var i = openers.items.len;
-            while (count > 0 and i > 0) {
-                i -= 1;
-                const opener = &openers.items[i];
-                if (opener.char != run.char or opener.count == 0) continue;
-                if (run.char == '~' and opener.original != run.count) continue;
-                // The rule of three: a run that can both open and close.
-                if (run.char != '~' and (run.open or opener.close) and run.count % 3 != 0 and (opener.original + run.count) % 3 == 0) continue;
-                const used: u32 = if (run.char == '~') count else if (count >= 2 and opener.count >= 2) 2 else 1;
-                const kind: MatchKind = if (run.char == '~') .strikethrough else if (used == 2) .strong else .emphasis;
-                try out.append(allocator, .{ .from = opener.at, .to = run.at, .kind = kind });
-                opener.count -= used;
-                count -= used;
-                // Openers between the two are text now.
-                openers.items.len = i + 1;
-                if (opener.count > 0) i += 1;
-            }
-        }
-        if (run.open and count > 0) try openers.append(allocator, .{ .at = run.at, .char = run.char, .count = count, .original = run.count, .close = run.close });
+/// The spans drawn runs make, as process emphasis matches them (each closer with the nearest
+/// opener of its character before it; a strikethrough's runs of equal length), resolved as the
+/// runs come: a live leaf's runs grow at the end, and each is read once.
+pub const PendingSpans = struct {
+    openers: std.ArrayListUnmanaged(struct { at: u32, char: u8, count: u32, original: u32, close: bool }) = .empty,
+    /// In closer order, so `to` never decreases.
+    spans: std.ArrayListUnmanaged(PendingSpan) = .empty,
+    /// The runs read so far.
+    resolved: u32 = 0,
+
+    pub fn clear(self: *PendingSpans) void {
+        self.openers.clearRetainingCapacity();
+        self.spans.clearRetainingCapacity();
+        self.resolved = 0;
     }
-}
+
+    pub fn deinit(self: *PendingSpans, allocator: std.mem.Allocator) void {
+        self.openers.deinit(allocator);
+        self.spans.deinit(allocator);
+    }
+
+    /// Reads `runs` past the ones read (the same runs, more of them); returns where the first span
+    /// it makes starts (maxInt: it makes none).
+    pub fn add(self: *PendingSpans, runs: []const PendingRun, allocator: std.mem.Allocator) error{OutOfMemory}!u32 {
+        var first: u32 = std.math.maxInt(u32);
+        for (runs[self.resolved..]) |run| {
+            var count = run.count;
+            if (run.close) {
+                var i = self.openers.items.len;
+                while (count > 0 and i > 0) {
+                    i -= 1;
+                    const opener = &self.openers.items[i];
+                    if (opener.char != run.char or opener.count == 0) continue;
+                    if (run.char == '~' and opener.original != run.count) continue;
+                    // The rule of three: a run that can both open and close.
+                    if (run.char != '~' and (run.open or opener.close) and run.count % 3 != 0 and (opener.original + run.count) % 3 == 0) continue;
+                    const used: u32 = if (run.char == '~') count else if (count >= 2 and opener.count >= 2) 2 else 1;
+                    const kind: MatchKind = if (run.char == '~') .strikethrough else if (used == 2) .strong else .emphasis;
+                    try self.spans.append(allocator, .{ .from = opener.at, .to = run.at, .kind = kind });
+                    first = @min(first, opener.at);
+                    opener.count -= used;
+                    count -= used;
+                    // Openers between the two are text now.
+                    self.openers.items.len = i + 1;
+                    if (opener.count > 0) i += 1;
+                }
+            }
+            if (run.open and count > 0) try self.openers.append(allocator, .{ .at = run.at, .char = run.char, .count = count, .original = run.count, .close = run.close });
+        }
+        self.resolved = @intCast(runs.len);
+        return first;
+    }
+
+    /// The spans that end after drawn offset `at` (the others style nothing from it on).
+    pub fn after(self: *const PendingSpans, at: u32) []const PendingSpan {
+        var low: usize = 0;
+        var high: usize = self.spans.items.len;
+        while (low < high) {
+            const mid = (low + high) / 2;
+            if (self.spans.items[mid].to <= at) low = mid + 1 else high = mid;
+        }
+        return self.spans.items[low..];
+    }
+};
 
 pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *PendingScan, allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) error{OutOfMemory}!void {
     return renderPendingRuns(s, from, code_opener, scan, allocator, out, null);
