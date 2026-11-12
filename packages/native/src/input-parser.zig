@@ -387,10 +387,11 @@ pub const InputParser = struct {
             std.debug.assert(iterations <= 3);
             switch (self.state) {
                 .ground => self.ground(b, false, .of(false, b), sink),
-                // With `escape_prefix`, the read end was the timeout: a `[` recovers only with its next byte in the read.
-                .expired => if ((b == '[' or (b == '_' and self.expect.escape_prefix)) and (self.batch_left > 0 or !self.expect.escape_prefix)) {
+                // With `escape_prefix`, the read end was the timeout: a `[` recovers only with its next byte in the read, and
+                // a `_` too, as a held Kitty graphics reply (no sentinel covers the file transport's).
+                .expired => if (b == '[' and (self.batch_left > 0 or !self.expect.escape_prefix)) {
                     self.state = .{ .recover = b };
-                } else if (self.expect.sentinel and std.mem.indexOfScalar(u8, "[]P_", b) != null) {
+                } else if ((self.expect.sentinel or (self.expect.escape_prefix and b == '_' and self.batch_left > 0)) and std.mem.indexOfScalar(u8, "[]P_", b) != null) {
                     if (self.expect.escape_prefix) self.begin(heldUnit(b), b) else self.state = .{ .recover = b };
                 } else {
                     self.state = .ground;
@@ -890,9 +891,7 @@ pub const InputParser = struct {
     /// The unit that a timed-out Escape, `introducer`, and `b` resume, if they may begin one.
     fn recovered(self: *const InputParser, introducer: u8, b: u8) ?State {
         if (introducer == '[' and b == '<') return .recover_sgr;
-        // Confirmed Kitty terminals send keys, replies, and focus this way, and Kitty graphics replies as APC `_G`,
-        // but no SS3 or X10 mouse; the unit is no second key.
-        if (self.expect.escape_prefix and introducer == '_') return heldUnit('_');
+        // Confirmed Kitty terminals send keys, replies, and focus this way, but no SS3 or X10 mouse; it is no second key.
         if (self.expect.escape_prefix) return if (std.mem.indexOfScalar(u8, "0123456789?>ABCDEFHIOPQS", b) != null) .{ .csi = .{ .alt = false, .deferred = false, .recovered = true } } else null;
         if (introducer == '[' and b == 'M') return .{ .x10 = .{ .alt = false, .recovered = true } };
         if (introducer == '[' and b == '?' and self.expect.kitty_query and self.batch_left >= 2) return heldUnit('[');
