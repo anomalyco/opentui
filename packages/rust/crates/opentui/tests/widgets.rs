@@ -140,6 +140,33 @@ fn inputs_type_move_delete_and_undo() {
     app.press("ctrl+.");
     assert_eq!(input.value(), ">hel");
     assert_eq!(app.render().row(0).trim_end(), ">hel");
+
+    // 606: in a field narrower than its line, the visual line end is the line end, from before (Home) or past
+    // (Left) the scroll offset.
+    let app = TestApp::new(4, 2);
+    let input = Input::new(&app).width(4).set_value("abcdefgh");
+    let area = Textarea::new(&app).width(4).height(1).wrap(WrapMode::None).set_text("abcdefgh");
+    app.root().add(&input).add(&area);
+    let scroll_then_press = |start, key| {
+        app.press("end");
+        app.render();
+        app.press(start);
+        app.press(key);
+    };
+    let rows = [
+        ("home", "alt+e", ""),
+        ("left", "super+right", ""),
+        ("home", "shift+alt+e", "abcdefgh"),
+        ("left", "shift+super+right", "h"),
+    ];
+    for (start, key, selected) in rows {
+        input.focus();
+        scroll_then_press(start, key);
+        assert_eq!((input.cursor_offset(), input.selected_text()), (8, selected.to_owned()), "Input {start} {key}");
+        area.focus();
+        scroll_then_press(start, key);
+        assert_eq!((area.cursor_offset(), area.selected_text()), (8, selected.to_owned()), "Textarea {start} {key}");
+    }
 }
 
 #[test]
@@ -1916,25 +1943,142 @@ fn atomic_extmarks_move_with_edits_and_act_as_one_unit() {
 }
 
 #[test]
-fn vertical_moves_into_an_atomic_extmark_go_to_its_nearer_edge() {
+fn moves_into_an_atomic_extmark_go_to_its_nearer_edge() {
     use opentui::widget::ExtmarkOptions;
-    let app = TestApp::new(20, 4);
-    let area = Textarea::new(&app).grow(1.0);
-    area.set_text("0123456789\nab@main.rs\nxxxxxxxxxx");
-    app.root().add(&area);
-    area.focus();
-    area.add_extmark(13..21, ExtmarkOptions::default().atomic());
-    app.render();
-    // As Core's: nearer the start goes to one before it, nearer the end to the end.
-    area.set_cursor_offset(3);
-    app.press("down");
-    assert_eq!(area.cursor_offset(), 12);
-    area.set_cursor_offset(8);
-    app.press("down");
-    assert_eq!(area.cursor_offset(), 21);
-    area.set_cursor_offset(26);
-    app.press("up");
-    assert_eq!(area.cursor_offset(), 12);
+    // As Core's: nearer the start goes to the start of the character before it, even a wide one or a tab, or with
+    // none to the end of the line above; halfway or nearer the end to the end. The mark is on row 1 after `char`, at
+    // 11 + width..19 + width.
+    for (char, width) in [("a", 1), ("日", 2), ("👍", 2), ("\t", 2), ("", 0)] {
+        let app = TestApp::new(20, 4);
+        let area = Textarea::new(&app).grow(1.0);
+        area.set_text(format!("0123456789\n{char}@main.rs\nxxxxxxxxxx"));
+        app.root().add(&area);
+        area.focus();
+        area.add_extmark(11 + width..19 + width, ExtmarkOptions::default().atomic());
+        app.render();
+        let before = if width == 0 { 10 } else { 11 };
+        for (key, from, to) in [
+            ("left", 19 + width, before),
+            ("down", width + 1, before),
+            ("up", 20 + width + width + 1, before),
+            ("down", width + 4, 19 + width),
+            ("down", width + 6, 19 + width),
+        ] {
+            area.set_cursor_offset(from);
+            app.press(key);
+            assert_eq!(area.cursor_offset(), to, "{key} from {from} after {char:?}");
+        }
+    }
+    // Down never goes back: when the start of the character before the mark is where it started, it goes to the end,
+    // and past marks that overlap that end, but not past one that starts there.
+    let wrapped = "日@mainrsxyzuvwABCDEFGHIJKL";
+    for (text, columns, from, marks, to) in [
+        ("a\n\n@main.rs\nb", 20, 2, &[(3, 11)][..], 11),
+        (wrapped, 6, 0, &[(2, 15)], 15),
+        (wrapped, 6, 0, &[(2, 15), (14, 19), (18, 23), (22, 27)], 27),
+        (wrapped, 6, 0, &[(2, 15), (15, 17)], 15),
+    ] {
+        let app = TestApp::new(columns, 4);
+        let area = Textarea::new(&app).grow(1.0);
+        area.set_text(text);
+        app.root().add(&area);
+        area.focus();
+        for &(start, end) in marks {
+            area.add_extmark(start..end, ExtmarkOptions::default().atomic());
+        }
+        app.render();
+        area.set_cursor_offset(from);
+        app.press("down");
+        assert_eq!(area.cursor_offset(), to, "down from {from} with {marks:?}");
+    }
+}
+
+#[test]
+fn mouse_and_wheel_leave_the_cursor_outside_atomic_extmarks() {
+    use opentui::widget::ExtmarkOptions;
+    // One row of a 24x2 app; a click on row 1 clears a selection left. While a selection is left the cursor and the
+    // selection are `held`. A press's handlers see the pressed cell; then a pointer leaves the cursor at the nearer
+    // outer edge of the marks around it, a cleared drag at the side it came from, the wheel and the setter at the edge
+    // they moved toward. "press" drags through its other cells and types Z before the release. `then` is a key, a wheel step or an offset after the gesture.
+    let one = &[(2, 7)][..];
+    let pasted = "x [Pasted ~20 lines] y";
+    for (text, marks, from, gesture, held, to) in [
+        ("x @file y", one, 9, "click 2", None, 2),
+        ("x @file y", one, 9, "click 3", None, 2),
+        ("x @file y", one, 9, "click 5", None, 7),
+        ("x @file y", one, 9, "press 3", None, 3),
+        ("x @file y", one, 9, "press 3 5 3", None, 3),
+        (pasted, &[(2, 20)], 22, "click 15", None, 20),
+        ("x @file y", one, 9, "double-click 4", Some((4, (2, 7))), 2),
+        ("x @file y", one, 9, "double-click 4, offset 3", None, 2),
+        ("x @file y", one, 9, "drag 0 4", Some((4, (0, 5))), 2),
+        ("x @file y", one, 9, "drag 8 4", Some((4, (4, 9))), 7),
+        ("x @file y", one, 9, "drag 8 6", Some((6, (6, 9))), 7),
+        ("x @file y", one, 9, "drag 0 4, right", None, 7),
+        ("x @file y", one, 9, "drag 8 6, shift+left", Some((2, (2, 9))), 2),
+        ("b ca", &[(0, 3), (0, 4)], 4, "click 2", None, 4),
+        ("b ca", &[(0, 4), (0, 3)], 4, "click 2", None, 4),
+        ("abcdefgh", &[(0, 6), (2, 8)], 8, "click 3", None, 0),
+        ("abcdefgh", &[(2, 8), (0, 6)], 8, "click 3", None, 0),
+        ("b ca", &[(0, 3), (0, 4)], 0, "offset 2", None, 4),
+        ("b ca", &[(0, 4), (0, 3)], 4, "offset 2", None, 0),
+        ("abcd", &[(2, 4), (1, 3), (0, 2)], 0, "offset 1", None, 4),
+        ("ab\n@file\nc", &[(3, 8)], 2, "wheel down", None, 8),
+        ("ab\n@file\nc", &[(3, 8)], 10, "wheel up", None, 3),
+        ("abcd\n@file\nc", &[(5, 10)], 0, "double-click 2, wheel down", Some((7, (0, 4))), 5),
+    ] {
+        let app = TestApp::new(24, 2);
+        let area = Textarea::new(&app).set_text(text).height(1);
+        app.root().add(&area);
+        area.focus();
+        for &(start, end) in marks {
+            area.add_extmark(start..end, ExtmarkOptions::default().atomic());
+        }
+        area.set_cursor_offset(from);
+        app.render();
+        // As OpenCode's prompt: after a press, look up the mark under the cursor.
+        let pressed = Rc::new(Cell::new(None));
+        area.on_mouse({
+            let (area, pressed) = (area.clone(), Rc::clone(&pressed));
+            move |cx, event| {
+                if event.kind == MouseEventKind::Down(MouseButton::Left) {
+                    let (area, pressed) = (area.clone(), Rc::clone(&pressed));
+                    cx.app().defer(move |_| pressed.set(Some(area.cursor_offset())));
+                }
+            }
+        });
+        let (first, then) = gesture.split_once(", ").unwrap_or((gesture, ""));
+        let n: Vec<u16> = first.split(' ').filter_map(|n| n.parse().ok()).collect();
+        match first.split(' ').next().unwrap() {
+            "click" => app.click(n[0], 0),
+            "press" => {
+                app.mouse(MouseEventKind::Down(MouseButton::Left), n[0], 0);
+                n[1..].iter().for_each(|&x| app.mouse(MouseEventKind::Drag(MouseButton::Left), x, 0));
+                app.type_text("Z");
+                app.mouse(MouseEventKind::Up(MouseButton::Left), n[n.len() - 1], 0);
+                assert_eq!(area.text(), "x Z@file y", "{gesture}: typed before the release");
+            }
+            "double-click" => (0..2).for_each(|_| app.click(n[0], 0)),
+            "drag" => app.drag((n[0], 0), (n[1], 0)),
+            "offset" => drop(area.set_cursor_offset(u32::from(n[0]))),
+            _ => app.scroll(0, 0, first.ends_with("down")),
+        }
+        if first.starts_with("click") || first.starts_with("press") {
+            assert_eq!(pressed.get(), Some(u32::from(n[0])), "{gesture}: the press's handler");
+        }
+        match then.split_once(' ') {
+            Some(("wheel", way)) => app.scroll(0, 0, way == "down"),
+            Some(("offset", at)) => drop(area.set_cursor_offset(at.parse().unwrap())),
+            _ if !then.is_empty() => app.press(then),
+            _ => {}
+        }
+        let selection = area.view().selection().unwrap().filter(|(start, end)| start != end);
+        assert_eq!(selection.map(|range| (area.cursor_offset(), range)), held, "{gesture} in {text:?} with {marks:?}");
+        if selection.is_some() {
+            app.click(0, 1);
+        }
+        assert_eq!(area.cursor_offset(), to, "{gesture} from {from} in {text:?} with {marks:?}");
+    }
 }
 
 #[test]

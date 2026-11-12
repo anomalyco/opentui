@@ -88,6 +88,41 @@ const decoder = new TextDecoder()
 const lines = (count: number) => Array.from({ length: count }, (_, index) => `line ${index}`)
 
 type Terminal = Awaited<ReturnType<typeof setupTerminal>>
+// A mode round trip is an identity on the visible main screen, not on the terminal byte stream.
+// All two-write histories over a continuing row and a new row; no resize or passthrough writes.
+const historyWrites = ["a", "\n日"]
+test.each(historyWrites.flatMap((first) => historyWrites.map((second) => [first, second] as const)))(
+  "an alternate-screen round trip preserves split history after %j, %j",
+  async (first, second) => {
+    const terminal = await setupTerminal({ columns: 12, height: 8, footerHeight: 2 })
+    terminal.renderer.root.add(new TextRenderable(terminal.renderer, { content: "footer" }))
+    const view = await createTestRenderer({ width: 12, height: 8 })
+    renderers.push(view.renderer)
+    const vt = new EmbeddedTerminalRenderable(view.renderer, { cols: 12, rows: 8 })
+    view.renderer.root.add(vt)
+    const screen = async () => {
+      vt.write(terminal.stdout.bytes())
+      terminal.stdout.clear()
+      await view.renderOnce()
+      return vt.screen().text
+    }
+    for (const write of [first, second]) {
+      terminal.stdout.write(write)
+      await terminal.frame()
+    }
+    const before = await screen()
+    expect(before).toContain(second.trim())
+    expect(before).toContain("footer")
+    terminal.renderer.externalOutputMode = "passthrough"
+    terminal.renderer.screenMode = "alternate-screen"
+    await terminal.frame()
+    terminal.renderer.screenMode = "split-footer"
+    terminal.renderer.externalOutputMode = "capture-stdout"
+    await terminal.frame()
+    expect(await screen()).toBe(before)
+  },
+)
+
 const writeRow = ({ renderer }: Terminal, row: string) =>
   renderer.writeToScrollback(({ renderContext }) => ({
     root: new TextRenderable(renderContext, { content: row, width: row.length, height: 1 }),

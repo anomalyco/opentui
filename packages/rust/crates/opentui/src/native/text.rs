@@ -323,24 +323,14 @@ impl TextView {
         colors: super::SelectionColors,
     ) -> Result<bool> {
         let operation = if extend { sys::OT_EDITOR_SELECT_LOCAL_UPDATE } else { sys::OT_EDITOR_SELECT_LOCAL };
-        let mut raw = sys::ot_editor_selection {
-            operation,
+        self.select(sys::ot_editor_selection {
             behavior: unit.raw(),
             anchor_x: anchor.0,
             anchor_y: anchor.1,
             focus_x: focus.0,
             focus_y: focus.1,
-            ..Default::default()
-        };
-        if let Some(color) = colors.fg {
-            raw.flags |= sys::OT_SCENE_TEXT_SELECTION_FOREGROUND;
-            raw.foreground = color.to_raw();
-        }
-        if let Some(color) = colors.bg {
-            raw.flags |= sys::OT_SCENE_TEXT_SELECTION_BACKGROUND;
-            raw.background = color.to_raw();
-        }
-        self.select(raw)
+            ..colors.editor_selection(operation)
+        })
     }
 
     pub fn clear_selection(&self) -> Result<()> {

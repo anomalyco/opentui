@@ -198,7 +198,7 @@ mod tests {
         type Cells = &'static [(i32, i32, Option<u32>)];
         // Each case builds a text and renders it, optionally changes it without rendering, and checks cells:
         // (x, y, byte) after the change and, where given, after the next frame.
-        let cases: [(&str, Setup, Cells, Cells); 16] = [
+        let cases: [(&str, Setup, Cells, Cells); 17] = [
             ("painted", |app| (Text::new(app, "hello"), None), &[(0, 0, Some(0)), (4, 0, Some(4)), (5, 0, None)], &[]),
             ("hidden", |app| (Text::new(app, "hello"), Some(|text| drop(text.visible(false)))), &[], &[(0, 0, None)]),
             ("detached", |app| (Text::new(app, "hello"), Some(|text| text.detach())), &[], &[(0, 0, None)]),
@@ -252,6 +252,13 @@ mod tests {
                 "wide cut by width",
                 |app| (Text::new(app, "a\u{4e2d}").wrap(WrapMode::None).width(2), None),
                 &[(0, 0, Some(0)), (1, 0, None)],
+                &[],
+            ),
+            (
+                // Paint, wrap, and hits keep out of the padding.
+                "padded",
+                |app| (Text::new(app, "hello world").width(7).padding_x(1), None),
+                &[(0, 0, None), (1, 0, Some(0)), (1, 1, Some(6))],
                 &[],
             ),
             ("wide wider than the text", |app| (Text::new(app, "\u{4e2d}").width(1), None), &[(0, 0, None)], &[]),

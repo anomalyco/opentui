@@ -157,15 +157,17 @@ jobs:
         uses: ./.github/actions/enable-linux-coredumps
 
       # Native inputs did not change, so the bottle should hit. A miss builds the library and the core TypeScript
-      # library from source instead of waiting for the cross-compile.
+      # library from source instead of waiting for the cross-compile. Until a push to main saves the bottle for its
+      # native inputs, every such pull request misses.
       - name: Restore native host bottle
         id: bottle
         uses: ./.github/actions/restore-native-host-bottle
         with:
           zig-version: ${{ env.ZIG_VERSION }}
 
+      # The packed distribution test needs a stripped library. A bottle holds one; a miss must separate the symbols.
       - name: Build core
-        run: bun scripts/native-bottle.ts package --hit "${{ steps.bottle.outputs.cache-hit }}" --zig "$ZIG_VERSION" --skip-symbols --lib
+        run: bun scripts/native-bottle.ts package --hit "${{ steps.bottle.outputs.cache-hit }}" --zig "$ZIG_VERSION" ${{ steps.bottle.outputs.cache-hit == 'true' && '--skip-symbols' || '' }} --lib
 
       # Both lanes run the same tests on fixed paths under the temp directory, so the Node lane gets its own.
       - name: Run Bun and Node TypeScript tests

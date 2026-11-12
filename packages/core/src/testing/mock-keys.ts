@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer"
 import type { CliRenderer } from "../renderer.js"
 import { ANSI } from "../ansi.js"
-import { kittyKeyMap } from "../lib/parse.keypress-kitty.js"
+import { kittyKeyMap } from "../lib/kitty-keys.js"
 
 export function pasteBytes(text: string): Uint8Array {
   return Uint8Array.from(Buffer.from(text))

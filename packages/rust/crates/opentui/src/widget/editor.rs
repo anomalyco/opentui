@@ -13,6 +13,7 @@ use crate::native::{
 use crate::style::{Color, Span, Style};
 use crate::syntax::{self, SyntaxTheme};
 use std::cell::{Cell, RefCell};
+use std::cmp::Ordering;
 use std::rc::Rc;
 
 /// What a key does in an [`Input`](super::Input) or [`Textarea`](super::Textarea). Bind keys to actions with
@@ -285,6 +286,8 @@ pub(crate) struct EditorCore {
     pub max_length: Cell<usize>,
     /// The document offset a keyboard selection started from.
     anchor: Cell<Option<u32>>,
+    /// The side a mouse drag came from, which a cursor it left in an atomic mark leaves by once the selection goes.
+    pointer_side: Cell<Ordering>,
     pub colors: RefCell<Colors>,
     placeholder: RefCell<String>,
     pub on_change: Callbacks<str>,
@@ -322,6 +325,7 @@ impl EditorCore {
             single_line,
             max_length: Cell::new(if single_line { 1000 } else { usize::MAX }),
             anchor: Cell::new(None),
+            pointer_side: Cell::new(Ordering::Equal),
             colors: RefCell::new(Colors {
                 fg: theme.foreground,
                 bg: theme.input_bg,
@@ -465,12 +469,12 @@ impl EditorCore {
     }
 
     fn delete_selection(&self) -> bool {
-        if self.selection().is_none() {
-            return false;
+        let selected = self.selection().is_some();
+        if selected {
+            self.report(self.view.delete_selection());
         }
-        self.report(self.view.delete_selection());
         self.clear_selection_state();
-        true
+        selected
     }
 
     /// Moves the cursor. With `select`, extends the selection from where it started; otherwise clears it.
@@ -497,7 +501,7 @@ impl EditorCore {
             };
             let before = self.cursor().2;
             step(self);
-            self.keep_cursor_outside(before);
+            self.keep_cursor_outside(self.cursor().2.cmp(&before));
             let cursor = self.cursor().2;
             self.anchor.set(Some(start));
             let colors = self.colors.borrow().selection;
@@ -517,11 +521,11 @@ impl EditorCore {
         self.clear_selection_state();
         let before = self.cursor().2;
         step(self);
-        self.keep_cursor_outside(before);
+        self.keep_cursor_outside(self.cursor().2.cmp(&before));
     }
 
     /// Moves the cursor one column, past atomic marks as Core moves past virtual ones (`extmarks.ts`): left from a
-    /// mark's end goes to one before its start, and right from at most its start goes to its end.
+    /// mark's end goes to the start of the character before it, and right from at most its start goes to its end.
     fn step_horizontal(&self, forward: bool) {
         let before = self.cursor().2;
         let marks = self.extmarks.borrow();
@@ -532,27 +536,39 @@ impl EditorCore {
                 .checked_sub(1)
                 .and_then(|target| marks.atomic_containing(target))
                 .filter(|mark| before >= mark.end)
-                .map(|mark| mark.start.saturating_sub(1))
+                .map(|mark| mark.start)
         };
         drop(marks);
         let command = match edge {
-            Some(offset) => EditCommand::CursorOffset(offset),
+            Some(end) if forward => EditCommand::CursorOffset(end),
+            Some(start) => return self.move_before(start),
             None if forward => EditCommand::MoveRight,
             None => EditCommand::MoveLeft,
         };
         self.report(self.buffer.command(command));
     }
 
-    /// Moves the cursor one visual row. Landing in an atomic mark sends it to the nearer edge, as Core's: one before
-    /// the start, or the end. Moving down never goes back to or before where it started.
+    /// One unit step left from a mark's start, so a wide character or a tab before it is not split.
+    fn move_before(&self, start: u32) {
+        self.report(self.buffer.command(EditCommand::CursorOffset(start)));
+        self.report(self.buffer.command(EditCommand::MoveLeft));
+    }
+
+    /// Moves the cursor one visual row. Landing in an atomic mark sends it to the nearer edge, as Core's: before the
+    /// start, or the end. Moving down never goes back to or before where it started.
     fn step_vertical(&self, down: bool) {
         let before = self.cursor().2;
         self.report(if down { self.view.move_down() } else { self.view.move_up() });
         let after = self.cursor().2;
         let Some(mark) = self.extmarks.borrow().atomic_containing(after) else { return };
-        let start = mark.start.saturating_sub(1);
-        let to_start = after - mark.start < mark.end - after && !(down && start <= before);
-        self.report(self.buffer.command(EditCommand::CursorOffset(if to_start { start } else { mark.end })));
+        if after - mark.start < mark.end - after {
+            self.move_before(mark.start);
+            if !down || self.cursor().2 > before {
+                return;
+            }
+        }
+        // Past later marks that overlap the end, so the cursor is not left inside one.
+        self.report(self.buffer.command(EditCommand::CursorOffset(self.outside(mark.end, true))));
     }
 
     fn goto_buffer_end(&self) {
@@ -780,6 +796,11 @@ impl EditorCore {
         if self.tracking.get() || self.extmarks.borrow().marks.is_empty() {
             return edit();
         }
+        // A press leaves the cursor on its cell for the handlers until the release; an edit before then starts at the
+        // nearer edge.
+        if self.selection().is_none() {
+            self.keep_cursor_outside(Ordering::Equal);
+        }
         self.tracking.set(true);
         let before = self.text();
         let cursor_before = self.cursor().2;
@@ -797,20 +818,32 @@ impl EditorCore {
             extmarks::apply(&mut self.extmarks.borrow_mut().marks, change);
             self.refresh_extmarks();
         }
-        self.keep_cursor_outside(cursor_before);
+        self.keep_cursor_outside(self.cursor().2.cmp(&cursor_before));
         result
     }
 
-    /// Moves a cursor inside an atomic mark to its edge: the one it moved toward from `before`, or the nearer one.
-    fn keep_cursor_outside(&self, before: u32) {
+    /// Moves a cursor inside atomic marks to the outer edge of the marks around it: toward the end for `Greater`, the
+    /// start for `Less`, or the nearer one.
+    fn keep_cursor_outside(&self, toward: Ordering) {
         let cursor = self.cursor().2;
-        let Some(mark) = self.extmarks.borrow().atomic_around(cursor) else { return };
-        let to_end = match cursor.cmp(&before) {
-            std::cmp::Ordering::Less => false,
-            std::cmp::Ordering::Greater => true,
-            std::cmp::Ordering::Equal => mark.end - cursor <= cursor - mark.start,
+        let (start, end) = (self.outside(cursor, false), self.outside(cursor, true));
+        let to_end = match toward {
+            Ordering::Less => false,
+            Ordering::Greater => true,
+            Ordering::Equal => end - cursor <= cursor - start,
         };
-        self.report(self.buffer.command(EditCommand::CursorOffset(if to_end { mark.end } else { mark.start })));
+        if start != cursor {
+            self.report(self.buffer.command(EditCommand::CursorOffset(if to_end { end } else { start })));
+        }
+    }
+
+    /// The first offset from `offset` toward the end (`forward`) or the start that no atomic mark surrounds.
+    fn outside(&self, mut offset: u32, forward: bool) -> u32 {
+        let marks = self.extmarks.borrow();
+        while let Some(mark) = marks.atomic_around(offset) {
+            offset = if forward { mark.end } else { mark.start };
+        }
+        offset
     }
 
     /// Deletes a whole atomic mark that starts at the cursor (`forward`) or ends at it. Returns whether it did.
@@ -938,7 +971,7 @@ impl EditorCore {
         let before = self.cursor().2;
         self.clear_selection_state();
         self.report(self.buffer.command(EditCommand::CursorOffset(offset)));
-        self.keep_cursor_outside(before);
+        self.keep_cursor_outside(offset.cmp(&before));
     }
 
     /// Tells change handlers about the text if it changed since `before`, a content epoch.
@@ -1004,6 +1037,10 @@ impl EditorCore {
         let y = (i64::from(viewport.y) + rows).clamp(0, i64::from(max)) as u32;
         if y != viewport.y {
             self.report(self.view.set_viewport(Viewport { y, ..viewport }, true));
+            // A selection holds the cursor where the wheel left it.
+            if self.selection().is_none() {
+                self.keep_cursor_outside(rows.cmp(&0));
+            }
         }
     }
 }
@@ -1070,18 +1107,23 @@ impl Behavior for EditorCore {
 
     /// Mouse selections move the cursor to their focus, as Core's do.
     fn select(&self, selection: Option<&SelectionUpdate>) -> bool {
-        let Some(selection) = selection else {
-            self.clear_selection_state();
-            return false;
-        };
-        let (anchor, focus) = selection.local(&self.element);
-        let colors = self.colors.borrow().selection;
         self.anchor.set(None);
-        let (row, col, before) = self.cursor();
-        self.report(self.view.select_local(anchor, focus, !selection.start, selection.unit, true, colors));
+        let (row, col, _) = self.cursor();
+        // A cursor the pointer left inside a mark stays until the press's handlers have seen it, then goes to the
+        // nearer edge; once a drag's selection is gone, to the side the drag came from.
+        let toward = if let Some(selection) = selection {
+            let (anchor, focus) = selection.local(&self.element);
+            let colors = self.colors.borrow().selection;
+            self.report(self.view.select_local(anchor, focus, !selection.start, selection.unit, true, colors));
+            self.pointer_side.set((anchor.1, anchor.0).cmp(&(focus.1, focus.0)));
+            (!selection.start).then_some(Ordering::Equal)
+        } else {
+            self.report(self.view.clear_selection());
+            Some(self.pointer_side.get())
+        };
         let selected = self.selection().is_some();
-        if !selected {
-            self.keep_cursor_outside(before);
+        if let (false, Some(toward)) = (selected, toward) {
+            self.keep_cursor_outside(toward);
         }
         if let Some(app) = self.element.app() {
             self.cursor_moved_since(&mut Cx::new(&app), (row, col));

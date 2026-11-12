@@ -449,6 +449,22 @@ pub struct SelectionColors {
     pub bg: Option<Color>,
 }
 
+impl SelectionColors {
+    /// The editor and text views' selection record, whose flags are `OT_SCENE_TEXT_FOREGROUND` and `_BACKGROUND`.
+    pub(super) fn editor_selection(self, operation: u32) -> sys::ot_editor_selection {
+        let mut raw = sys::ot_editor_selection { operation, ..Default::default() };
+        if let Some(color) = self.fg {
+            raw.flags |= sys::OT_SCENE_TEXT_FOREGROUND;
+            raw.foreground = color.to_raw();
+        }
+        if let Some(color) = self.bg {
+            raw.flags |= sys::OT_SCENE_TEXT_BACKGROUND;
+            raw.background = color.to_raw();
+        }
+        raw
+    }
+}
+
 /// Editor view state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EditorInfo {
@@ -602,22 +618,9 @@ impl EditorView {
         Ok(changed != 0)
     }
 
-    fn colored(operation: u32, colors: SelectionColors) -> sys::ot_editor_selection {
-        let mut raw = sys::ot_editor_selection { operation, ..Default::default() };
-        if let Some(color) = colors.fg {
-            raw.flags |= sys::OT_SCENE_TEXT_SELECTION_FOREGROUND;
-            raw.foreground = color.to_raw();
-        }
-        if let Some(color) = colors.bg {
-            raw.flags |= sys::OT_SCENE_TEXT_SELECTION_BACKGROUND;
-            raw.background = color.to_raw();
-        }
-        raw
-    }
-
     /// Selects document offsets `start..end`.
     pub fn select_range(&self, start: u32, end: u32, colors: SelectionColors) -> Result<()> {
-        self.select(sys::ot_editor_selection { start, end, ..Self::colored(sys::OT_EDITOR_SELECT_SET, colors) })
+        self.select(sys::ot_editor_selection { start, end, ..colors.editor_selection(sys::OT_EDITOR_SELECT_SET) })
             .map(drop)
     }
 
@@ -646,7 +649,7 @@ impl EditorView {
             focus_x: focus.0,
             focus_y: focus.1,
             update_cursor: u32::from(move_cursor),
-            ..Self::colored(operation, colors)
+            ..colors.editor_selection(operation)
         })
     }
 

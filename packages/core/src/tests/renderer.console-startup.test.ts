@@ -110,6 +110,22 @@ function blockSplitStartupCursorSeed(target: TestRenderer): () => void {
   return () => target.stdin.emit("data", Buffer.from("\x1b[1;1R"))
 }
 
+// Rows that reach scrollback in a terminal of `rows` rows: a line feed or IND on the last row keeps the top row, while
+// CSI S deletes it on xterm. Text is ignored, so the output must not wrap.
+function scrollbackRows(output: string, rows: number): number {
+  let row = 1
+  let saved = 1
+  let kept = 0
+  for (const [, cup, esc] of output.matchAll(/\x1b\[(\d*)(?:;\d*)?H|\x1b([78D])|\n/g)) {
+    if (cup !== undefined) row = Math.min(Number(cup) || 1, rows)
+    else if (esc === "7") saved = row
+    else if (esc === "8") row = saved
+    else if (row === rows) kept++
+    else row++
+  }
+  return kept
+}
+
 beforeEach(() => {
   previousShowConsole = process.env.SHOW_CONSOLE
   previousUseAlternateScreen = process.env.OTUI_USE_ALTERNATE_SCREEN
@@ -736,6 +752,51 @@ test("CliRenderer preserves split render offset when switching to passthrough", 
   expect((renderer as any).renderOffset).toBe(before)
 })
 
+// After the round trip the footer sits below the history rows, and the next write starts where the history ends.
+// Before capture resumes, "frame" draws a frame and "narrow" also narrows the terminal.
+test.each([
+  ["one", "", 1, 4],
+  ["one\ntwo\nthree", "", 3, 6],
+  ["one\ntwo\nthree", "frame", 3, 6],
+  ["one\ntwo\nthree", "narrow", 3, 6],
+] as const)("CliRenderer keeps split history %j across an alternate-screen trip %j", async (text, step, rows, col) => {
+  const result = await createTestRenderer({
+    width: 30,
+    height: 8,
+    screenMode: "split-footer",
+    footerHeight: 2,
+    externalOutputMode: "capture-stdout",
+    consoleMode: "disabled",
+  })
+
+  renderer = result.renderer
+  renderer.root.add(new TextRenderable(renderer, { content: "[footer]" }))
+  // The last cursor move before `text` in the output: the cell where it was drawn.
+  const cellOf = (text: string) => /.*(\x1b\[\d+;\d+H)/s.exec(result.output().split(text)[0]!)?.[1]
+
+  ;(renderer as any).stdout.write(text)
+  await result.renderOnce()
+
+  renderer.externalOutputMode = "passthrough"
+  renderer.screenMode = "alternate-screen"
+  renderer.screenMode = "split-footer"
+  if (step) await result.renderOnce()
+  if (step === "narrow") result.resize(20, 8)
+  await renderer.nativeScene.driver.idle()
+  result.writes.length = 0
+  renderer.externalOutputMode = "capture-stdout"
+  await result.renderOnce()
+  expect(result.output()).not.toContain(ANSI.clearScreen)
+  expect(cellOf("[footer]")).toBe(`\x1b[${rows + 1};1H`)
+
+  result.writes.length = 0
+  ;(renderer as any).stdout.write("\nfour")
+  await result.renderOnce()
+  expect(cellOf("\r\n")).toBe(`\x1b[${rows};${col}H`)
+  expect(cellOf("four")).toBe(`\x1b[${rows + 1};1H`)
+  expect(cellOf("[footer]")).toBe(`\x1b[${rows + 2};1H`)
+})
+
 test("CliRenderer does not force split repaint when switching to passthrough with no pending output", async () => {
   const result = await createTestRenderer({
     screenMode: "split-footer",
@@ -756,14 +817,23 @@ test("CliRenderer does not force split repaint when switching to passthrough wit
   expect(renderer.getNativeStats().nativeFrameCount).toBe(frames)
 })
 
-for (const [name, screenMode, change, dimensions, output] of [
-  ["alternate-screen resize", "alternate-screen", (target: TestRenderer) => target.resize(20, 6), [20, 6], "\x1b[14t"],
+// `history` is the rows that reach scrollback, in this 10-row terminal and in ones that grew to 12 or 10,001 rows unseen.
+for (const [name, screenMode, change, dimensions, output, history] of [
+  [
+    "alternate-screen resize",
+    "alternate-screen",
+    (target: TestRenderer) => target.resize(20, 6),
+    [20, 6],
+    "\x1b[14t",
+    0,
+  ],
   [
     "split-footer resize",
     "split-footer",
     (target: TestRenderer) => target.resize(20, 6),
     [20, 4],
     ANSI.moveCursorAndClear(2, 1) + "\x1b[14t",
+    0,
   ],
   [
     "entering split-footer",
@@ -771,13 +841,15 @@ for (const [name, screenMode, change, dimensions, output] of [
     (target: TestRenderer) => (target.screenMode = "split-footer"),
     [40, 4],
     ANSI.scrollDown(6),
+    0,
   ],
   [
     "growing footerHeight",
     "split-footer",
     (target: TestRenderer) => (target.footerHeight = 6),
     [40, 6],
-    ANSI.scrollUp(2),
+    "\x1b[65535H\n\n",
+    2,
   ],
   [
     "shrinking footerHeight",
@@ -785,6 +857,7 @@ for (const [name, screenMode, change, dimensions, output] of [
     (target: TestRenderer) => (target.footerHeight = 3),
     [40, 3],
     `${ANSI.moveCursor(7, 1)}\x1b[2K`,
+    0,
   ],
 ] as const) {
   test(`CliRenderer publishes ${name} geometry before stdout callbacks`, async () => {
@@ -850,7 +923,9 @@ for (const [name, screenMode, change, dimensions, output] of [
 
     // Sentinel mode (native parser) ends the pixel query batch with DA1.
     const sentinel = (renderer as any).replySentinel ? "\x1b[c" : ""
-    expect(writes.map((write) => write.output).join("")).toBe(output.replace("\x1b[14t", "\x1b[14t" + sentinel))
+    const written = writes.map((write) => write.output).join("")
+    expect(written).toBe(output.replace("\x1b[14t", "\x1b[14t" + sentinel))
+    expect([10, 12, 10_001].map((rows) => scrollbackRows(written, rows))).toEqual([history, history, history])
     for (const write of writes) {
       expect(write.dimensions).toEqual([dimensions, dimensions, dimensions, dimensions])
     }
@@ -1532,6 +1607,7 @@ test("CliRenderer split-footer reuses the reserved gap when reopening the footer
   }
 
   expect((renderer as any).renderOffset).toBe(6)
+  result.writes.length = 0
 
   renderer.footerHeight = 8
 
@@ -1545,6 +1621,8 @@ test("CliRenderer split-footer reuses the reserved gap when reopening the footer
   })
 
   await result.renderOnce()
+  // The native transition keeps the 4 rows it scrolls off, also in a terminal that grew unseen.
+  expect([10, 12, 10_001].map((rows) => scrollbackRows(result.output(), rows))).toEqual([4, 4, 4])
 
   renderer.footerHeight = 4
 
@@ -1573,10 +1651,14 @@ test("CliRenderer split-footer reuses the reserved gap when reopening the footer
   })
 })
 
-test("CliRenderer split-footer passthrough footerHeight shrink clears stale rows without reverse scrolling", async () => {
+test.each([
+  ["shrink clears stale rows without reverse scrolling", 10, 3, `${ANSI.moveCursor(7, 1)}\x1b[2K`],
+  ["growth by 4000 rows feeds every line", 4100, 4004, `\x1b[65535H${"\n".repeat(4000)}`],
+  ["growth past one screen packet scrolls every row", 4100, 4096, `\x1b[65535H${"\n".repeat(4000)}\x1b[92S`],
+] as const)("CliRenderer split-footer passthrough footerHeight %s", async (_name, height, footerHeight, output) => {
   const result = await createTestRenderer({
     width: 40,
-    height: 10,
+    height,
     screenMode: "split-footer",
     footerHeight: 4,
     externalOutputMode: "passthrough",
@@ -1585,9 +1667,10 @@ test("CliRenderer split-footer passthrough footerHeight shrink clears stale rows
 
   renderer = result.renderer
 
-  renderer.footerHeight = 3
+  renderer.footerHeight = footerHeight
   await renderer.nativeScene!.driver.idle()
-  expect(result.output()).toBe(`${ANSI.moveCursor(7, 1)}\x1b[2K`)
+  expect(renderer.footerHeight).toBe(footerHeight)
+  expect(result.output()).toBe(output)
 })
 
 // The scrub clears from the visible footer top: the settling origin, a deferred transition's source, or, after a
@@ -1674,7 +1757,8 @@ test("CliRenderer entering split capture seeds from current terminal cursor row"
   expect((renderer as any).renderOffset).toBe(4)
 })
 
-test("CliRenderer entering split capture after a committed main-screen frame clears the old pinned footer surface", async () => {
+// true: the way to main-screen passes through the alternate screen, which must not keep the split history parked.
+test.each([false, true])("CliRenderer split capture after main-screen frames clears the old footer %p", async (alt) => {
   const result = await createTestRenderer({
     width: 40,
     height: 10,
@@ -1689,6 +1773,7 @@ test("CliRenderer entering split capture after a committed main-screen frame cle
   await result.renderOnce()
 
   renderer.externalOutputMode = "passthrough"
+  if (alt) renderer.screenMode = "alternate-screen"
   renderer.screenMode = "main-screen"
   await result.renderOnce()
 

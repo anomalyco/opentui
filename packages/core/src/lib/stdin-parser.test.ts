@@ -1122,18 +1122,22 @@ describe("stdin parser", () => {
         }
       })
 
-      test("partial SGR mouse CSI stays pending after timeout", () => {
-        const { parser, clock } = createTimedParser()
-        try {
-          parser.push(Buffer.from("\x1b[<35;20"))
-          expect(snap(parser)).toEqual([])
-          clock.advance(TEST_TIMEOUT_MS)
-          expect(snap(parser)).toEqual([])
-
-          parser.push(Buffer.from(";5m"))
-          expect(snap(parser)).toEqual([sgr("\x1b[<35;20;5m", "move", 19, 4)])
-        } finally {
-          parser.destroy()
+      test("partial SGR mouse CSI and paste start stay pending after timeout (issue 615)", () => {
+        for (const [head, tail, events] of [
+          ["\x1b[<35;20", ";5m", [sgr("\x1b[<35;20;5m", "move", 19, 4)]],
+          ["\x1b[20", "0~a\rb\x1b[201~", [paste("a\rb")]],
+        ] as [string, string, Snap[]][]) {
+          const { parser, clock } = createTimedParser()
+          try {
+            parser.push(Buffer.from(head))
+            expect(snap(parser)).toEqual([])
+            clock.advance(TEST_TIMEOUT_MS)
+            expect(snap(parser)).toEqual([])
+            parser.push(Buffer.from(tail))
+            expect(snap(parser)).toEqual(events)
+          } finally {
+            parser.destroy()
+          }
         }
       })
 
