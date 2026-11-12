@@ -964,6 +964,9 @@ const Family = enum {
     open_emphasis_tokens,
     /// Openers, then their closers in reverse: each closer's match encloses the last one's.
     nested_closers,
+    /// Matches that share an opening run (`***a* ` then `b** `, or one long run then `b** `
+    /// closers): no opener between is revealed.
+    shared_openers,
     heading,
     table_rows,
     wide_rows,
@@ -1047,6 +1050,22 @@ const Families = struct {
                 while (level > 0) {
                     level -= 1;
                     try out.appendSlice(arena, try std.mem.concat(arena, u8, &.{ pick(random, &.{ "b", "`c`" }), levels[level], " " }));
+                }
+            },
+            .shared_openers => {
+                const mark = pick(random, &.{ "*", "_" });
+                try out.appendSlice(arena, pick(random, &.{ "begin ", "", "`c` " }));
+                switch (random.uintLessThan(u32, 2)) {
+                    0 => {
+                        for (0..count) |_| try out.appendSlice(arena, try std.mem.concat(arena, u8, &.{ mark, mark, mark, pick(random, &.{ "a", "`c`" }), mark, " " }));
+                        for (0..count) |_| try out.appendSlice(arena, try std.mem.concat(arena, u8, &.{ pick(random, &.{ "b", "`c`" }), mark, mark, " " }));
+                    },
+                    1 => {
+                        for (0..2 * count) |_| try out.appendSlice(arena, mark);
+                        try out.appendSlice(arena, "a ");
+                        for (0..count) |_| try out.appendSlice(arena, try std.mem.concat(arena, u8, &.{ pick(random, &.{ "b", "`c`" }), mark, mark, " " }));
+                    },
+                    else => unreachable,
                 }
             },
             .heading => {
@@ -1363,22 +1382,29 @@ test "Markdown model: a triple-star closer whose matches enclose the last ones r
     try std.testing.expect(f.doc.counters.run_token_visits <= 2 * fed.byte_count + fed.call_count + 64);
 }
 
-test "Markdown model: closers of two kinds in one call skip interiors older matches of both kinds style" {
-    // Seed 81 of the repeated-construct model at 1,000 seeds: each call closes a `~~` and the `**`
-    // around it; inside, the older `**` and `~~` give the two kinds by two matches, so a jump
-    // that asks one opener for both kinds walked every level below on every call.
+test "Markdown model: streams the reviewers found quadratic keep work linear" {
+    const Piece = struct { []const u8, usize };
+    const rows = [_][]const Piece{
+        // Seed 81 at 1,000 seeds: each call closes a `~~` and the `**` around it; inside, the
+        // older `**` and `~~` give the two kinds by two matches.
+        &.{ .{ "begin ", 1 }, .{ "**a ~~b ", 64 }, .{ "c~~ d** ", 64 } },
+        // carbon-1: each `***a* ` leaves `**` open, each `b** ` closes one (41,792 visits at 128).
+        &.{ .{ "begin ", 1 }, .{ "***a* ", 128 }, .{ "b** ", 128 } },
+        // bigboi-r4-1: 128 strong matches share one opening run (16,643 visits).
+        &.{ .{ "begin ", 1 }, .{ repeat("*", 256) ++ "a ", 1 }, .{ "b** ", 128 } },
+    };
     var families: Families = .{};
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    var commands: std.ArrayListUnmanaged(FamilyCommand) = .empty;
-    try commands.append(arena, .{ .append = "begin " });
-    for (0..64) |_| try commands.append(arena, .{ .append = "**a ~~b " });
-    for (0..64) |_| try commands.append(arena, .{ .append = "c~~ d** " });
-    try commands.append(arena, .finish);
-    if (try families.run(arena, commands.items)) |failure| {
-        std.debug.print("{s} at step {d}\n", .{ failure.property, failure.step });
-        return error.ModelFailure;
+    for (rows, 0..) |row, index| {
+        const arena = arena_state.allocator();
+        var commands: std.ArrayListUnmanaged(FamilyCommand) = .empty;
+        for (row) |piece| for (0..piece[1]) |_| try commands.append(arena, .{ .append = piece[0] });
+        try commands.append(arena, .finish);
+        if (try families.run(arena, commands.items)) |failure| {
+            std.debug.print("row {d}: {s} at step {d}\n", .{ index, failure.property, failure.step });
+            return error.ModelFailure;
+        }
     }
 }
 
