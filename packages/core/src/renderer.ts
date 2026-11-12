@@ -1234,11 +1234,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _splitHeight: number = 0
   private renderOffset: number = 0
   private splitTailColumn: number = 0
-  // While the alternate screen covers a split footer, the terminal keeps the main
-  // screen (and its history) behind it. This remembers the surface offset so the
-  // return restores it instead of re-seeding the region from the cursor, which
-  // sits at the top of the screen after the terminal is set up again.
-  private parkedSplitScrollback: { renderOffset: number } | null = null
+  // The native row count and tail belong to the normal screen behind the alternate screen.
+  private parkedSplitScrollback = false
   // The tail after the last queued commit, so each captured write reads it in O(1); a reset or a resize voids it.
   private queuedSplitTail: { column: number; width: number } | null = null
   private pendingSplitFooterTransition: PendingSplitFooterTransition | null = null
@@ -2111,17 +2108,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
       this.clearPendingSplitFooterTransition()
 
-      const parked = this.parkedSplitScrollback
-      if (parked !== null) {
-        this.parkedSplitScrollback = null
-        this.setRenderOffset(parked.renderOffset)
-        this.syncSplitScrollback()
+      if (this.parkedSplitScrollback) {
+        this.parkedSplitScrollback = false
         this.forceFullRepaintRequested = true
-        this.requestRender()
-        return
+      } else {
+        this.resetSplitScrollback(this.getSplitCursorSeedRows())
       }
-
-      this.resetSplitScrollback(this.getSplitCursorSeedRows())
 
       if (previousMode === "passthrough" && this._terminalIsSetup) {
         const nextSurfaceTopLine = this.renderOffset + 1
@@ -3139,27 +3131,19 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private syncSplitFooterState(): void {
     const splitActive = this._screenMode === "split-footer" && this._splitHeight > 0
-    // When parked, the native scrollback holds the history
-    // resetting it here would discard the row count which is needed.
-    const parked = this.parkedSplitScrollback !== null
-
     if (!splitActive) {
       this.clearPendingSplitFooterTransition()
-      if (!parked) this.resetSplitScrollback()
+      if (!this.parkedSplitScrollback) this.resetSplitScrollback()
       this.setRenderOffset(0)
       return
     }
 
-    if (this._externalOutputMode === "capture-stdout") {
+    if (this._externalOutputMode === "capture-stdout" || this.parkedSplitScrollback) {
       this.syncSplitScrollback()
     } else {
       this.clearPendingSplitFooterTransition()
-      if (parked) {
-        this.syncSplitScrollback()
-      } else {
-        this.resetSplitScrollback()
-        this.setRenderOffset(this.getSplitPinnedRenderOffset())
-      }
+      this.resetSplitScrollback()
+      this.setRenderOffset(this.getSplitPinnedRenderOffset())
     }
   }
 
@@ -3236,12 +3220,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     const leavingSplitFooter = prevSplitHeight > 0 && nextSplitHeight === 0
 
     if (prevScreenMode === "split-footer" && prevSplitHeight > 0 && nextUseAlternateScreen) {
-      const hasCapturedHistory = this.getSplitOutputOffset(this._terminalHeight) > 0
-      this.parkedSplitScrollback = hasCapturedHistory ? { renderOffset: this.renderOffset } : null
-    } else if (!nextUseAlternateScreen && screenMode !== "split-footer") {
+      this.parkedSplitScrollback = this.getSplitOutputOffset(this._terminalHeight) > 0
+    } else if (screenMode === "main-screen") {
       // Leaving the split footer for a plain main screen collapses the region
       // so any parked state is stale and the next split-footer entry re-seeds instead.
-      this.parkedSplitScrollback = null
+      this.parkedSplitScrollback = false
     }
 
     const previousSurfaceTopLine = this.renderOffset + 1
@@ -4382,7 +4365,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     )
 
     //resize invalidates any parked split scrollback
-    this.parkedSplitScrollback = null
+    this.parkedSplitScrollback = false
     const prevWidth = this._terminalWidth
     const previousTerminalHeight = this._terminalHeight
     const visiblePreviousSplitHeight =
