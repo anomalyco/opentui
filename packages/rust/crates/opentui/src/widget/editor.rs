@@ -819,7 +819,8 @@ impl EditorCore {
         result
     }
 
-    /// Moves a cursor inside an atomic mark to its edge: the one it moved toward from `before`, or the nearer one.
+    /// Moves a cursor inside atomic marks to an edge: the one it moved toward from `before`, or the nearer one, past
+    /// every mark that overlaps it.
     fn keep_cursor_outside(&self, before: u32) {
         let cursor = self.cursor().2;
         let Some(mark) = self.extmarks.borrow().atomic_around(cursor) else { return };
@@ -829,6 +830,7 @@ impl EditorCore {
             std::cmp::Ordering::Equal => mark.end - cursor <= cursor - mark.start,
         };
         self.report(self.buffer.command(EditCommand::CursorOffset(if to_end { mark.end } else { mark.start })));
+        self.keep_cursor_outside(if to_end { 0 } else { u32::MAX });
     }
 
     /// Deletes a whole atomic mark that starts at the cursor (`forward`) or ends at it. Returns whether it did.
@@ -1013,7 +1015,9 @@ impl EditorCore {
         let max = total.saturating_sub(viewport.height);
         let y = (i64::from(viewport.y) + rows).clamp(0, i64::from(max)) as u32;
         if y != viewport.y {
+            let before = self.cursor().2;
             self.report(self.view.set_viewport(Viewport { y, ..viewport }, true));
+            self.keep_cursor_outside(before);
         }
     }
 }
@@ -1068,18 +1072,19 @@ impl Behavior for EditorCore {
 
     /// Mouse selections move the cursor to their focus, as Core's do.
     fn select(&self, selection: Option<&SelectionUpdate>) -> bool {
-        let Some(selection) = selection else {
-            self.clear_selection_state();
-            return false;
-        };
-        let (anchor, focus) = selection.local(&self.element);
-        let colors = self.colors.borrow().selection;
         self.anchor.set(None);
-        let (row, col, before) = self.cursor();
-        self.report(self.view.select_local(anchor, focus, !selection.start, selection.unit, true, colors));
+        let (row, col, _) = self.cursor();
+        if let Some(selection) = selection {
+            let (anchor, focus) = selection.local(&self.element);
+            let colors = self.colors.borrow().selection;
+            self.report(self.view.select_local(anchor, focus, !selection.start, selection.unit, true, colors));
+        } else {
+            self.report(self.view.clear_selection());
+        }
         let selected = self.selection().is_some();
         if !selected {
-            self.keep_cursor_outside(before);
+            // The pointer put the cursor on its cell, or the selection that held it there is gone: the nearer edge.
+            self.keep_cursor_outside(self.cursor().2);
         }
         if let Some(app) = self.element.app() {
             self.cursor_moved_since(&mut Cx::new(&app), (row, col));

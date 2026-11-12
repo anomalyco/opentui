@@ -1967,6 +1967,54 @@ fn moves_into_an_atomic_extmark_go_to_its_nearer_edge() {
 }
 
 #[test]
+fn mouse_and_wheel_leave_the_cursor_outside_atomic_extmarks() {
+    use opentui::widget::ExtmarkOptions;
+    // One row of a 12x2 app, so a click on row 1 clears a selection left. Marks in both insertion orders where they
+    // overlap. A pointer leaves the cursor at the nearer edge; the wheel and the setter at the one they moved toward.
+    let one = &[(2, 7)][..];
+    for (text, marks, from, gesture, to) in [
+        ("x @file y", one, 9, "click 2", 2),
+        ("x @file y", one, 9, "click 3", 2),
+        ("x @file y", one, 9, "click 5", 7),
+        ("x @file y", one, 9, "double-click 4", 2),
+        ("x @file y", one, 9, "drag 0 4", 2),
+        ("x @file y", one, 9, "drag 8 6", 7),
+        ("x @file y", one, 9, "drag 0 4, right", 7),
+        ("b ca", &[(0, 3), (0, 4)], 4, "click 2", 4),
+        ("b ca", &[(0, 4), (0, 3)], 4, "click 2", 4),
+        ("b ca", &[(0, 3), (0, 4)], 0, "offset 2", 4),
+        ("b ca", &[(0, 4), (0, 3)], 4, "offset 2", 0),
+        ("ab\n@file\nc", &[(3, 8)], 2, "wheel down", 8),
+        ("ab\n@file\nc", &[(3, 8)], 10, "wheel up", 3),
+    ] {
+        let app = TestApp::new(12, 2);
+        let area = Textarea::new(&app).set_text(text).height(1);
+        app.root().add(&area);
+        area.focus();
+        for &(start, end) in marks {
+            area.add_extmark(start..end, ExtmarkOptions::default().atomic());
+        }
+        area.set_cursor_offset(from);
+        app.render();
+        let x = |at: usize| gesture.split([' ', ',']).nth(at).and_then(|x| x.parse().ok()).unwrap_or(0);
+        match gesture.split(' ').next().unwrap() {
+            "click" => app.click(x(1), 0),
+            "double-click" => (0..2).for_each(|_| app.click(x(1), 0)),
+            "drag" => app.drag((x(1), 0), (x(2), 0)),
+            "offset" => drop(area.set_cursor_offset(u32::from(x(1)))),
+            _ => app.scroll(0, 0, gesture.ends_with("down")),
+        }
+        if gesture.ends_with("right") {
+            app.press("right");
+        }
+        if area.view().selection().unwrap().is_some_and(|(start, end)| start != end) {
+            app.click(0, 1);
+        }
+        assert_eq!(area.cursor_offset(), to, "{gesture} from {from} in {text:?} with {marks:?}");
+    }
+}
+
+#[test]
 fn styled_extmarks_follow_text_across_lines_and_grow_inside() {
     use opentui::widget::ExtmarkOptions;
     let app = TestApp::new(20, 4);
