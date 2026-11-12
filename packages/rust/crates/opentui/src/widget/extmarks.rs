@@ -181,9 +181,9 @@ fn inserted(mark: &mut Extmark, at: u32, length: u32) -> bool {
     true
 }
 
-/// The highlight tags extmarks and syntax highlighting use; other highlights should use others.
+/// The highlight tag extmarks use and the layer syntax highlighting sets; other highlights and layers should use others.
 pub(crate) const HIGHLIGHT_TAG: u16 = u16::MAX;
-pub(crate) const SYNTAX_TAG: u16 = u16::MAX - 1;
+pub(crate) const SYNTAX_LAYER: u32 = 1;
 
 /// An editor's extmarks, and the style table its extmark and syntax highlights use.
 #[derive(Default)]
@@ -194,6 +194,8 @@ pub(crate) struct Extmarks {
     pub syntax: Option<SyntaxStyle>,
     /// Style ids registered in `syntax`, by style.
     pub styles: HashMap<Style, u32>,
+    /// Group sets of each style's one name, by style; only styles in `styles`, so each name is registered in `syntax`.
+    pub group_sets: HashMap<Style, u32>,
 }
 
 impl Extmarks {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import {
   createClipboard,
   createRendererClipboardAdapter,
+  type ClipboardSelection,
   type HostClipboardBackend,
   type TerminalClipboardAdapter,
 } from "./clipboard.js"
@@ -391,6 +392,61 @@ describe("createClipboard", () => {
       }
       expect(hostCalls.size).toBe(steps.filter((step) => step[0] === "settle").length)
       await service.clipboard.dispose()
+    }
+  })
+
+  it("keeps the newest copy or clear on a shared local selection in every two-writer settle order", async () => {
+    // Host and terminal take ownership of the same selection. Observe its value, not just the dispatch log.
+    for (const selection of ["clipboard", "primary"] as const) {
+      for (const success of [0, 1, 2, 3]) {
+        for (const schedule of ["0011", "0101", "0110", "1001", "1010", "1100"]) {
+          const cells = { clipboard: "initial", primary: "initial" }
+          const expected = { ...cells }
+          const release: Array<() => void> = []
+          const pending: Array<Promise<unknown>> = []
+          const host = async (id: number, key: ClipboardSelection, value: string) => {
+            await new Promise<void>((resolve) => {
+              release[id] = resolve
+            })
+            if (!(success & (1 << id))) return false
+            cells[key] = value
+            return true
+          }
+          const terminal = (key: ClipboardSelection, value: string) => {
+            cells[key] = value
+            return { status: "attempted", capability: "supported" } as const
+          }
+          const { clipboard } = createServices({
+            backend: {
+              writeText: async (text, o) => ({
+                status: (await host(0, o.selection, text)) ? "written" : "timed-out",
+              }),
+              clear: async (o) => ({
+                status: (await host(1, o.selection, "")) ? "cleared" : "timed-out",
+              }),
+            },
+            terminal: {
+              writeText: (text, key) => terminal(key, text),
+              clear: (key) => terminal(key, ""),
+            },
+          })
+          for (const token of schedule) {
+            const id = Number(token)
+            if (release[id]) {
+              release[id]!()
+              await pending[id]
+            } else if (id === 0) {
+              expected.clipboard = "A"
+              pending[id] = clipboard.writeText("A", { destination: "all-available" })
+            } else {
+              expected[selection] = ""
+              pending[id] = clipboard.clear({ destination: "all-available", selection })
+            }
+          }
+          await clipboard.dispose()
+          expect({ schedule, success, cells }).toEqual({ schedule, success, cells: expected })
+        }
+      }
     }
   })
 

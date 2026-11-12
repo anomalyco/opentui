@@ -4,6 +4,7 @@ use crate::error::{Result, check, count};
 use crate::native::CursorStyle;
 use crate::style::{Color, EncodedSpans, Span, Style};
 use crate::sys;
+use std::ops::Range;
 use std::rc::Rc;
 
 /// Default colors and attributes for text without a highlight. `None` fields stay unset.
@@ -345,11 +346,49 @@ impl EditBuffer {
         })
     }
 
+    /// Removes every highlight and empties every layer.
     pub fn clear_highlights(&self) -> Result<()> {
         let (context, handle) = self.raw();
         check("ot_edit_buffer_highlight", unsafe {
             sys::ot_edit_buffer_highlight(context, handle, sys::OT_EDIT_HIGHLIGHT_CLEAR_ALL, 0, std::ptr::null())
         })
+    }
+
+    /// Replaces layer `layer_id` inside `range` with `runs`. Both count UTF-8 bytes of [`Self::text`]; runs are sorted,
+    /// disjoint, nonempty, and on character boundaries. Runs move with edits, and replacing the whole text empties
+    /// the layer. Layers paint above highlights of priority 0 and below higher ones. The editor widgets set layer 1
+    /// for filetype syntax; other layers on their buffers need another id.
+    pub fn set_layer(&self, layer_id: u32, range: Range<u32>, runs: &[LayerRun]) -> Result<()> {
+        let length = count("ot_edit_buffer_set_layer", runs.len())?;
+        let (context, handle) = self.raw();
+        check("ot_edit_buffer_set_layer", unsafe {
+            sys::ot_edit_buffer_set_layer(context, handle, layer_id, range.start, range.end, runs.as_ptr(), length)
+        })
+    }
+}
+
+/// One run of a highlight layer: UTF-8 bytes `start_byte..end_byte`, painted with the group set `group_set`.
+pub type LayerRun = sys::ot_highlight_run;
+
+impl Context {
+    /// The id of an ordered list of style names, for [`LayerRun`]s. Equal lists give equal ids on this Context. Paint
+    /// composes the names against the buffer's style table, later names winning. Ids are never freed: a Context holds
+    /// at most 4,096 lists and 64 KiB of names in them, so 2,621 one-name lists of 25 bytes. Past that, new lists fail
+    /// with [`Status::ObjectLimit`](crate::Status::ObjectLimit).
+    pub fn group_set(&self, names: &[&str]) -> Result<u32> {
+        let mut ends = Vec::with_capacity(names.len());
+        let mut pool = String::new();
+        for name in names {
+            pool.push_str(name);
+            ends.push(count("ot_context_group_set", pool.len())?);
+        }
+        let (byte_count, name_count) =
+            (count("ot_context_group_set", pool.len())?, count("ot_context_group_set", ends.len())?);
+        let mut id = 0;
+        check("ot_context_group_set", unsafe {
+            sys::ot_context_group_set(self.as_raw(), pool.as_ptr(), byte_count, ends.as_ptr(), name_count, &mut id)
+        })?;
+        Ok(id)
     }
 }
 

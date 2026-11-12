@@ -5,6 +5,7 @@ import { LayoutEvents, Renderable } from "../Renderable.js"
 import { BoxRenderable } from "../renderables/Box.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import { createTestRenderer, type TestRenderer } from "../testing.js"
+import { shrinkSameCheck } from "./shrink-same-check.js"
 import { NativeStatus, SceneStaging, resolveRenderLib, type NativeContextHandle, type SceneNodeHandle } from "../zig.js"
 
 let renderer: TestRenderer | undefined
@@ -243,8 +244,10 @@ describe("scene staging", () => {
     state.dirty = true
   }
 
+  class StagingCheck extends Error {}
+
   function check(condition: boolean, message: string): asserts condition {
-    if (!condition) throw new Error(message)
+    if (!condition) throw new StagingCheck(message)
   }
 
   /** Borrows the stream, checks its wire layout, and returns the records without consuming any. */
@@ -350,7 +353,7 @@ describe("scene staging", () => {
   }
 
   /** Stages the operations, checks the stream after each one, and compares what native applied with what was written. */
-  function runOperations(operations: Operation[]): void {
+  function runOperations(operations: Operation[], phase?: { kind: string }): void {
     const staging = new SceneStaging(1)
     const generations = [1, 1]
     const written: StyleWrite[] = []
@@ -381,11 +384,14 @@ describe("scene staging", () => {
 
     for (const operation of operations) {
       if ("accept" in operation) {
+        if (phase) phase.kind = "accept"
         if (staging.pending) acceptPrefix(Math.floor(operation.accept * (staging.count + 1)))
       } else if ("destroy" in operation) {
+        if (phase) phase.kind = "destroy"
         staging.discard(nodeAt(operation.destroy + 1, generations[operation.destroy]))
         generations[operation.destroy]++
       } else if ("paint" in operation) {
+        if (phase) phase.kind = "paint"
         const node = nodeAt(operation.node + 1, generations[operation.node])
         const before = stream
         staging.stagePaint(context, node, operation.paint)
@@ -406,6 +412,7 @@ describe("scene staging", () => {
           )
         }
       } else {
+        if (phase) phase.kind = "style"
         const { style, unit, value } = operation
         const { group, kind, edge, flags } = style
         const node = nodeAt(operation.node + 1, generations[operation.node])
@@ -414,6 +421,7 @@ describe("scene staging", () => {
       }
       stream = readStream(staging)
     }
+    if (phase) phase.kind = "drain"
     if (staging.pending) acceptPrefix(staging.count)
     check(!staging.pending, "a full acceptance left records staged")
 
@@ -427,6 +435,7 @@ describe("scene staging", () => {
         check(sameWords(appliedPaint.get(key)?.get(bit), words), `paint ${key} field ${bit} lost its last write`)
       }
     }
+    if (phase) phase.kind = "effects"
     compareEffects(written, applied, live)
   }
 
@@ -538,6 +547,14 @@ describe("scene staging", () => {
   })
 
   test("staged streams have the same Yoga effect as the original writes", () => {
+    // The failure reducer keeps the named check, and falls back when the final replay stops reproducing it.
+    const failure = (w: string[]) => (w.includes("read") ? (w.includes("put") ? "stale" : "empty") : null)
+    const word = ["tick", "put", "tick", "read"]
+    expect(shrinkSameCheck(word, (w) => failure(w) === "stale", 16)).toEqual(["put", "read"])
+    let replays = 0
+    expect(shrinkSameCheck(word, () => ++replays < 3, 3)).toBe(word)
+    expect(replays).toBe(3)
+
     const width = (node: number, value: number): Operation => ({ style: props[0], node, unit: c.OT_UNIT_POINT, value })
     const growPaint: Operation[] = [{ paint: { zIndex: 1 }, node: 0 }, width(1, 0), width(1, 20)]
     growPaint.push({ paint: { opacity: 0.5, border: 5 }, node: 0 })
@@ -559,10 +576,30 @@ describe("scene staging", () => {
       const random = createRandom(seed)
       for (let sequence = 0; sequence < 500; sequence++) {
         const operations = randomOperations(random)
+        const phase = { kind: "setup" }
         try {
-          runOperations(operations)
+          runOperations(operations, phase)
         } catch (error) {
-          throw new Error(`seed ${seed} sequence ${sequence}: ${(error as Error).message}\n${show(operations)}`)
+          let witness = operations
+          if (error instanceof StagingCheck) {
+            witness = shrinkSameCheck(
+              operations,
+              (candidate) => {
+                const trial = { kind: "setup" }
+                try {
+                  runOperations(candidate, trial)
+                  return false
+                } catch (other) {
+                  return other instanceof StagingCheck && other.message === error.message && trial.kind === phase.kind
+                }
+              },
+              64,
+            )
+          }
+          throw new Error(
+            `seed ${seed} sequence ${sequence} (${phase.kind}): ${(error as Error).message}\n${show(witness)}`,
+            { cause: error },
+          )
         }
       }
     }

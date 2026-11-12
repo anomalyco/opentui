@@ -58,8 +58,9 @@ pub const GroupSets = struct {
         return self.name_bytes.items[start..self.name_end_bytes.items[first_name]];
     }
 
-    /// Equal lists give equal ids. No names or an empty name is `InvalidIndex`; a list past a name
-    /// bound, or a new set past the count or pool bound, is `GroupSetLimit`. Rejection changes nothing.
+    /// Equal lists give equal ids. No names, or a name that is empty or not UTF-8, is
+    /// `InvalidIndex`; a list past a name bound, or a new set past the count or pool bound, is
+    /// `GroupSetLimit`. Rejection changes nothing.
     pub fn intern(self: *GroupSets, names: []const []const u8) Error!u32 {
         if (names.len == 0) return Error.InvalidIndex;
         if (names.len > group_set_name_count_max) return Error.GroupSetLimit;
@@ -67,6 +68,7 @@ pub const GroupSets = struct {
         for (names) |value| {
             if (value.len == 0) return Error.InvalidIndex;
             if (value.len > group_set_name_byte_count_max) return Error.GroupSetLimit;
+            if (!std.unicode.utf8ValidateSlice(value)) return Error.InvalidIndex;
             byte_count += value.len;
         }
         if (self.find(names)) |id| return id;
