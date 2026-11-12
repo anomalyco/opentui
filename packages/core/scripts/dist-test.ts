@@ -190,8 +190,12 @@ function ensureBuildArtifacts(): void {
     if (!/\bgetBuildOptions\b/.test(elf)) {
       throw new Error("Packaged production native library lost its dynamic FFI exports")
     }
-    if (/\sFUNC\s+WEAK\s+DEFAULT\s+\d+\s+_ZNK?8facebook4yoga/.test(elf))
-      throw new Error("Packaged native library exports Yoga's inline C++ functions, so Yoga calls them through the PLT")
+    const plt = runCommand("objdump", ["-d", "-j", ".plt", nativeLibrary], rootDir, "Failed to read packaged PLT", {
+      stdio: "pipe",
+    }).stdout.toString("utf8")
+    const weakYoga = /\sFUNC\s+WEAK\s+DEFAULT\s+\d+\s+_ZN[rVKRO]*8facebook4yoga/
+    if (weakYoga.test(elf) || plt.includes("constrainMaxSizeForMode"))
+      throw new Error("Packaged native library calls Yoga's C++ helpers through the PLT")
     if (!elf.includes(".note.gnu.build-id") || !elf.includes(".gnu_debuglink")) {
       throw new Error("Packaged native ELF cannot be matched to its separate release symbols")
     }
