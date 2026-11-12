@@ -258,9 +258,9 @@ fn releasing_hands_the_terminal_over_and_takes_it_back() {
     run.press("\x1b[4;480;800t");
     // As in Core, the release ends the batch it came in: the q after it never quits.
     run.press("rq");
-    run.wait_for("lifecycle released");
+    run.wait_for("lifecycle released 1");
     let text = run.text();
-    let released = text.find("lifecycle released").unwrap();
+    let released = text.find("lifecycle released 1").unwrap();
     assert!(text[..released].contains(LEAVE_ALT), "the alternate screen is still active: {text:?}");
     // The program's terminal echoes what it reads.
     run.press("hello");
@@ -276,8 +276,10 @@ fn releasing_hands_the_terminal_over_and_takes_it_back() {
     let taken = || wanted.iter().all(|text| run.text()[read..].contains(text));
     let seen = run.app.wait_until(Duration::from_secs(10), taken);
     assert!(seen, "the app never took the terminal back: {:?}", run.text());
+    // The task prints its line after the hand-over drops pending input, so keys typed once it shows reach the program.
     let released = |count| {
-        run.app.wait_until(Duration::from_secs(10), || run.text().matches("lifecycle released").count() == count)
+        let line = format!("lifecycle released {count}");
+        run.app.wait_until(Duration::from_secs(10), || run.text().contains(&line))
     };
     run.press("r");
     assert!(released(2), "{:?}", run.text());
