@@ -1194,18 +1194,17 @@ pub fn tokenDisplayLength(r: Result, index: u32) u32 {
 }
 
 /// Appends the display of token `index` before content offset `cut` inside it: what B drew of
-/// it while its end was still to come (text bytes, a code span's or math's content so far).
-/// Other tokens draw nothing before their end.
+/// it while its end was still to come (text bytes, a code span's content so far, math as the
+/// undecided text it is). Other tokens draw nothing before their end.
 pub fn appendTokenDisplayBefore(r: Result, index: u32, cut: u32, allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) error{OutOfMemory}!void {
     const t = r.tokens[index];
     assert(t.start < cut and cut < t.end());
     switch (t.kind) {
         .text, .extended_autolink => try out.appendSlice(allocator, r.content[t.start..cut]),
-        .code => {
+        .code, .math => {
             var scan: PendingScan = .{};
-            try renderPending(r.content[0..cut], t.start, t.start, &scan, allocator, out);
+            try renderPending(r.content[0..cut], t.start, if (t.kind == .code) t.start else null, &scan, allocator, out);
         },
-        .math => if (cut > t.start + t.aux) try out.appendSlice(allocator, r.content[t.start + t.aux .. cut]),
         else => {},
     }
 }

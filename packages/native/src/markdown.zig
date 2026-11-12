@@ -2999,12 +2999,9 @@ pub const Doc = struct {
                 if (t.start < cut) {
                     var before: std.ArrayListUnmanaged(u8) = .empty;
                     try inline_parser.appendTokenDisplayBefore(r, i, cut, arena, &before);
-                    const span: Span = .{ .code = t.kind == .code, .math = t.kind == .math };
                     writer.base.raw = t.kind == .code;
-                    writer.base.math = t.kind == .math;
-                    try writer.write(before.items, span);
+                    try writer.write(before.items, .{ .code = t.kind == .code });
                     writer.base.raw = false;
-                    writer.base.math = false;
                 }
                 break;
             }
