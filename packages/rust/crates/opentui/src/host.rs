@@ -897,7 +897,8 @@ impl Host {
         }
         self.session.suspend()?;
         self.drive_until(TerminalState::Suspended)?;
-        restore.terminal.borrow_mut().leave_raw()?;
+        // As Core, restore errors don't stop the hand-over: conhost can apply a saved mode and still fail the call.
+        let _ = restore.terminal.borrow_mut().leave_raw();
         // As Core does once a suspension settles: drop the input the terminal sent meanwhile, such as mouse reports from
         // before restoration turned them off, so the program that takes over does not read it.
         unsafe { sys::ot_terminal_flush_input() };
