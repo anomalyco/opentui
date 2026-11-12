@@ -41,28 +41,25 @@ async function setup(options: TestRendererOptions = {}) {
 }
 
 /** A set-up split-footer terminal whose native output reaches `stdout`, so tests can read the scrollback bytes. */
-async function setupTerminal(
-  options: { columns?: number; height?: number; footerHeight?: number; maxBytes?: bigint } = {},
-) {
-  const columns = options.columns ?? 40
-  const height = options.height ?? 10
-  const stdout = new RecordingWriteStream(columns, height) as RecordingWriteStream & NodeJS.WriteStream
+async function setupTerminal({
+  columns = 40,
+  maxBytes,
+  ...options
+}: { columns?: number; maxBytes?: bigint } & TestRendererOptions = {}) {
+  const stdout = new RecordingWriteStream(columns, options.height ?? 10) as RecordingWriteStream & NodeJS.WriteStream
   const nativeSession =
-    options.maxBytes === undefined
+    maxBytes === undefined
       ? undefined
-      : new NativeSession(stdout, {
-          output: { chunkSize: 4096, spanCapacity: 128, maxBytes: options.maxBytes, controlCapacity: 4096 },
-        })
+      : new NativeSession(stdout, { output: { chunkSize: 4096, spanCapacity: 128, maxBytes, controlCapacity: 4096 } })
   const clock = new ManualClock()
   const result = await setup({
     width: columns,
-    height,
-    footerHeight: options.footerHeight ?? 3,
     stdout,
     nativeSession,
     bufferedOutput: "stdout",
     remote: true,
     clock,
+    ...options,
   })
   const driver = result.renderer.nativeScene.driver
   await result.renderer.setupTerminal()
@@ -506,17 +503,41 @@ test.each<[string, string | string[], string[], TestRendererOptions?]>([
   ["counts tab stops from the row, not the write", ["a", "bc", "\tX\n"], ["a:1", "bc:2", "     X:6\n"]],
   ["stops a tab at the last column", "\t\tb\n", ["        b:9\n"]],
   ["keeps a wide character that wraps early", ["abc", "defgh一", "x\n"], ["abc:3", "defgh:6", "一:2", "x:1\n"]],
-])("captured stdout %s", async (_name, text, commits, options) => {
-  const stdout = createTestStdout(9, 10)
-  const { renderer } = await setup({ width: 9, stdout, forwardEnvKeys: [], ...options })
+])("captured stdout %s", async (_name, text, commits, ...[options]) => {
+  const { renderer, stdout, frame } = await setupTerminal({ columns: 9, forwardEnvKeys: [], ...options })
   const written: string[] = []
   renderer.on(CliRenderEvents.EXTERNAL_OUTPUT, ({ snapshot, rowColumns, trailingNewline }) => {
     expect(snapshot.width).toBe(Math.max(1, rowColumns))
     const row = decoder.decode(snapshot.getRealCharBytes(true)).trimEnd()
     written.push(`${row}:${rowColumns}${trailingNewline ? "\n" : ""}`)
   })
-  for (const write of [text].flat()) stdout.write(write)
+  // A frame after each write: writes within one frame join into one.
+  for (const write of [text].flat()) (stdout.write(write), await frame())
   expect(written).toEqual(commits)
+})
+
+// Writes within one frame print what their bytes print in one write, wherever they are cut: inside a UTF-8 sequence,
+// an escape sequence, or a grapheme. A cut inside CRLF is left out (a terminal ends the line; captured stdout does not).
+test("captured stdout in one frame prints the same bytes however they are cut into writes", async () => {
+  const pieces = ["ab", "x".repeat(7), "e", "\u0301", "\u2764", "\ufe0f", "\u{1f468}", "\u200d", "\u{1f4bb}"]
+  pieces.push("\u{1f44d}", "\u{1f3fd}", "\u4e00", "\t", "\r\n", "\n", "\x1b[31m")
+  for (let seed = 1; seed <= 24; seed++) {
+    let state = seed
+    const random = (n: number) => Math.floor(((state = (state * 48271) % 2147483647) / 2147483647) * n)
+    const bytes = Buffer.from(Array.from({ length: 16 }, () => pieces[random(pieces.length)]).join(""))
+    const cuts = Array.from({ length: 1 + random(5) }, () => 1 + random(bytes.length - 1))
+    const printed: string[] = []
+    for (const at of [[], cuts.filter((at) => bytes[at - 1] !== 13).sort((a, b) => a - b)]) {
+      const { renderer, stdout, frame } = await setupTerminal({ columns: 9 })
+      ;[0, ...at].forEach((start, index) => stdout.write(bytes.subarray(start, at[index] ?? bytes.length)))
+      let before
+      do ((before = stdout.text()), await frame())
+      while (before !== stdout.text())
+      printed.push(stdout.text())
+      renderer.destroy()
+    }
+    expect(printed[1], JSON.stringify([bytes.toString(), cuts])).toBe(printed[0]!)
+  }
 })
 
 // Without a newline every row continues the one before it, so the rows a collapse drops move the tail. The first
@@ -559,6 +580,8 @@ test("the predicted tail column counts every cell of a trailing wide character",
   const { renderer, stdout, frame } = await setupTerminal()
   stdout.write("ab二")
   await frame()
+  // The frame prints the unfinished row and needs no other.
+  expect([stdout.text().includes("ab二"), renderer.getSchedulerState().hasScheduledRender]).toEqual([true, false])
   stdout.write("\nab二")
   let tailColumn = -1
   renderer.writeToScrollback(({ renderContext, tailColumn: tail }) => {

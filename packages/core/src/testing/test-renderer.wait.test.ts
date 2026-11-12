@@ -277,6 +277,8 @@ test("externalOutput records captured stdout in FIFO order", async () => {
     }
   })
   ;(setup.renderer as any).stdout.write("ok👍🏽 👩‍🚀\n\nout-2")
+  // An unfinished row waits for the frame.
+  await setup.renderOnce()
 
   const commits = setup.externalOutput.take()
 
@@ -285,6 +287,7 @@ test("externalOutput records captured stdout in FIFO order", async () => {
   expect(commits.map((commit) => commit.trailingNewline)).toEqual([true, true, true, false])
 
   ;(setup.renderer as any).stdout.write("again")
+  await setup.renderOnce()
   expect(setup.externalOutput.takeText()).toBe("again")
   expect(setup.externalOutput.take()).toEqual([])
 })
