@@ -1969,25 +1969,36 @@ fn moves_into_an_atomic_extmark_go_to_its_nearer_edge() {
 #[test]
 fn mouse_and_wheel_leave_the_cursor_outside_atomic_extmarks() {
     use opentui::widget::ExtmarkOptions;
-    // One row of a 12x2 app, so a click on row 1 clears a selection left. Marks in both insertion orders where they
-    // overlap. A pointer leaves the cursor at the nearer edge; the wheel and the setter at the one they moved toward.
+    // One row of a 24x2 app; a click on row 1 clears a selection left. While a selection is left the cursor and the
+    // selection are `held`. A press's handlers see the pressed cell; then a pointer leaves the cursor at the nearer
+    // outer edge of the marks around it, a cleared drag at the side it came from, the wheel and the setter at the edge
+    // they moved toward. `then` is a key, a wheel step or an offset after the gesture.
     let one = &[(2, 7)][..];
-    for (text, marks, from, gesture, to) in [
-        ("x @file y", one, 9, "click 2", 2),
-        ("x @file y", one, 9, "click 3", 2),
-        ("x @file y", one, 9, "click 5", 7),
-        ("x @file y", one, 9, "double-click 4", 2),
-        ("x @file y", one, 9, "drag 0 4", 2),
-        ("x @file y", one, 9, "drag 8 6", 7),
-        ("x @file y", one, 9, "drag 0 4, right", 7),
-        ("b ca", &[(0, 3), (0, 4)], 4, "click 2", 4),
-        ("b ca", &[(0, 4), (0, 3)], 4, "click 2", 4),
-        ("b ca", &[(0, 3), (0, 4)], 0, "offset 2", 4),
-        ("b ca", &[(0, 4), (0, 3)], 4, "offset 2", 0),
-        ("ab\n@file\nc", &[(3, 8)], 2, "wheel down", 8),
-        ("ab\n@file\nc", &[(3, 8)], 10, "wheel up", 3),
+    let pasted = "x [Pasted ~20 lines] y";
+    for (text, marks, from, gesture, held, to) in [
+        ("x @file y", one, 9, "click 2", None, 2),
+        ("x @file y", one, 9, "click 3", None, 2),
+        ("x @file y", one, 9, "click 5", None, 7),
+        (pasted, &[(2, 20)], 22, "click 15", None, 20),
+        ("x @file y", one, 9, "double-click 4", Some((4, (2, 7))), 2),
+        ("x @file y", one, 9, "double-click 4, offset 3", None, 2),
+        ("x @file y", one, 9, "drag 0 4", Some((4, (0, 5))), 2),
+        ("x @file y", one, 9, "drag 8 4", Some((4, (4, 9))), 7),
+        ("x @file y", one, 9, "drag 8 6", Some((6, (6, 9))), 7),
+        ("x @file y", one, 9, "drag 0 4, right", None, 7),
+        ("x @file y", one, 9, "drag 8 6, shift+left", Some((2, (2, 9))), 2),
+        ("b ca", &[(0, 3), (0, 4)], 4, "click 2", None, 4),
+        ("b ca", &[(0, 4), (0, 3)], 4, "click 2", None, 4),
+        ("abcdefgh", &[(0, 6), (2, 8)], 8, "click 3", None, 0),
+        ("abcdefgh", &[(2, 8), (0, 6)], 8, "click 3", None, 0),
+        ("b ca", &[(0, 3), (0, 4)], 0, "offset 2", None, 4),
+        ("b ca", &[(0, 4), (0, 3)], 4, "offset 2", None, 0),
+        ("abcd", &[(2, 4), (1, 3), (0, 2)], 0, "offset 1", None, 4),
+        ("ab\n@file\nc", &[(3, 8)], 2, "wheel down", None, 8),
+        ("ab\n@file\nc", &[(3, 8)], 10, "wheel up", None, 3),
+        ("abcd\n@file\nc", &[(5, 10)], 0, "double-click 2, wheel down", Some((7, (0, 4))), 5),
     ] {
-        let app = TestApp::new(12, 2);
+        let app = TestApp::new(24, 2);
         let area = Textarea::new(&app).set_text(text).height(1);
         app.root().add(&area);
         area.focus();
@@ -1996,18 +2007,38 @@ fn mouse_and_wheel_leave_the_cursor_outside_atomic_extmarks() {
         }
         area.set_cursor_offset(from);
         app.render();
-        let x = |at: usize| gesture.split([' ', ',']).nth(at).and_then(|x| x.parse().ok()).unwrap_or(0);
-        match gesture.split(' ').next().unwrap() {
-            "click" => app.click(x(1), 0),
-            "double-click" => (0..2).for_each(|_| app.click(x(1), 0)),
-            "drag" => app.drag((x(1), 0), (x(2), 0)),
-            "offset" => drop(area.set_cursor_offset(u32::from(x(1)))),
-            _ => app.scroll(0, 0, gesture.ends_with("down")),
+        // As OpenCode's prompt: after a press, look up the mark under the cursor.
+        let pressed = Rc::new(Cell::new(None));
+        area.on_mouse({
+            let (area, pressed) = (area.clone(), Rc::clone(&pressed));
+            move |cx, event| {
+                if event.kind == MouseEventKind::Down(MouseButton::Left) {
+                    let (area, pressed) = (area.clone(), Rc::clone(&pressed));
+                    cx.app().defer(move |_| pressed.set(Some(area.cursor_offset())));
+                }
+            }
+        });
+        let (first, then) = gesture.split_once(", ").unwrap_or((gesture, ""));
+        let n: Vec<u16> = first.split(' ').filter_map(|n| n.parse().ok()).collect();
+        match first.split(' ').next().unwrap() {
+            "click" => app.click(n[0], 0),
+            "double-click" => (0..2).for_each(|_| app.click(n[0], 0)),
+            "drag" => app.drag((n[0], 0), (n[1], 0)),
+            "offset" => drop(area.set_cursor_offset(u32::from(n[0]))),
+            _ => app.scroll(0, 0, first.ends_with("down")),
         }
-        if gesture.ends_with("right") {
-            app.press("right");
+        if first.starts_with("click") {
+            assert_eq!(pressed.get(), Some(u32::from(n[0])), "{gesture}: the press's handler");
         }
-        if area.view().selection().unwrap().is_some_and(|(start, end)| start != end) {
+        match then.split_once(' ') {
+            Some(("wheel", way)) => app.scroll(0, 0, way == "down"),
+            Some(("offset", at)) => drop(area.set_cursor_offset(at.parse().unwrap())),
+            _ if !then.is_empty() => app.press(then),
+            _ => {}
+        }
+        let selection = area.view().selection().unwrap().filter(|(start, end)| start != end);
+        assert_eq!(selection.map(|range| (area.cursor_offset(), range)), held, "{gesture} in {text:?} with {marks:?}");
+        if selection.is_some() {
             app.click(0, 1);
         }
         assert_eq!(area.cursor_offset(), to, "{gesture} from {from} in {text:?} with {marks:?}");
