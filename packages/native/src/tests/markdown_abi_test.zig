@@ -970,13 +970,27 @@ test "Markdown ABI: an option change leaves text the host wrote to a node the do
     try std.testing.expectEqualStrings("host", shown[0..count]);
 }
 
+/// A Markdown doc's engine blocks, reached through its first leaf (none: no leaf).
+fn engineBlocks(owner: *context_mod.Context, doc: anytype) ![]const markdown.Block {
+    for (0..64) |index| {
+        const read = owner.markdownReadLeaf(doc, @intCast(index)) catch |err| switch (err) {
+            error.InvalidIndex => continue,
+            else => return err,
+        };
+        return read.doc.doc.blocks.items;
+    }
+    return &.{};
+}
+
 test "Markdown ABI: a call rejected for memory lists no block again and reports no removal" {
     // bigboi-r5-3: a same-line append rebuilt the pending line's layout after the failure, and its
     // blocks (read already) were listed again. bigboi-r6-1: a multiline append aborted in its
     // rollback. bigboi-r6-2: a rejected finish listed the blocks and reported a removal from 0.
+    // The same call accepted after it leaves the blocks a fresh doc of the text has (the layout
+    // put back, and its log, are what the next call drops).
     const Context = context_mod.Context;
-    const calls = [_]Context.MarkdownCall{ .{ .append = " c* [x](https://new-link.test) " }, .{ .append = "\nnext **b**\n\nend " }, .finish };
-    for ([_]bool{ false, true }) |sustained| for (calls) |call| for ([_][]const u8{ "- item", "> quote", "para" }, [_]u32{ 2, 1, 0 }) |line, paragraph| {
+    const calls = [_]Context.MarkdownCall{ .{ .append = " c* [x](https://new-link.test) " }, .{ .append = "\nnext **b**\n\nend " }, .{ .append = "\n- c" }, .{ .append = "\n" }, .finish };
+    for ([_]bool{ false, true }) |sustained| for (calls) |call| for ([_][]const u8{ "- item", "> quote", "para", "- a\n- item", "> a\n> quote", "[x]: /u\n" }, [_]u32{ 2, 1, 0, 4, 1, 0 }) |line, paragraph| {
         var failure: OneFailure = .{ .inner = std.testing.allocator, .sustained = sustained };
         var countdown: usize = 0;
         while (true) : (countdown += 1) {
@@ -1006,6 +1020,16 @@ test "Markdown ABI: a call rejected for memory lists no block again and reports 
             try std.testing.expectEqualStrings(line, try owner.markdownSource(doc));
             try std.testing.expectEqual(@as(u32, 0), (try owner.markdownReadChanges(doc, 0)).count);
             try std.testing.expectEqual(before.removed_from_index, (try owner.markdownCall(doc, .{ .append = "" })).removed_from_index);
+            _ = try owner.markdownCall(doc, call);
+            const fresh = try owner.createMarkdown(.{});
+            _ = try owner.markdownCall(fresh, .{ .append = try owner.markdownSource(doc) });
+            if (call == .finish) _ = try owner.markdownCall(fresh, .finish);
+            const blocks = try engineBlocks(owner, doc);
+            const fresh_blocks = try engineBlocks(owner, fresh);
+            try std.testing.expectEqual(fresh_blocks.len, blocks.len);
+            for (blocks, fresh_blocks) |b, f| {
+                try std.testing.expectEqual(.{ f.kind, f.parent_index, f.source_start_byte, f.source_end_byte, f.content_start_byte, f.content_end_byte, f.flags.open }, .{ b.kind, b.parent_index, b.source_start_byte, b.source_end_byte, b.content_start_byte, b.content_end_byte, b.flags.open });
+            }
         }
     };
 }
