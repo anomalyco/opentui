@@ -1918,9 +1918,10 @@ fn atomic_extmarks_move_with_edits_and_act_as_one_unit() {
 #[test]
 fn moves_into_an_atomic_extmark_go_to_its_nearer_edge() {
     use opentui::widget::ExtmarkOptions;
-    // As Core's: nearer the start goes to the start of the character before it, even a wide one or a tab, and halfway
-    // or nearer the end to the end. The mark is on row 1 after `char`, at 11 + width..19 + width.
-    for (char, width) in [("a", 1), ("日", 2), ("👍", 2), ("\t", 2)] {
+    // As Core's: nearer the start goes to the start of the character before it, even a wide one or a tab, or with
+    // none to the end of the line above; halfway or nearer the end to the end. The mark is on row 1 after `char`, at
+    // 11 + width..19 + width.
+    for (char, width) in [("a", 1), ("日", 2), ("👍", 2), ("\t", 2), ("", 0)] {
         let app = TestApp::new(20, 4);
         let area = Textarea::new(&app).grow(1.0);
         area.set_text(format!("0123456789\n{char}@main.rs\nxxxxxxxxxx"));
@@ -1928,28 +1929,41 @@ fn moves_into_an_atomic_extmark_go_to_its_nearer_edge() {
         area.focus();
         area.add_extmark(11 + width..19 + width, ExtmarkOptions::default().atomic());
         app.render();
+        let before = if width == 0 { 10 } else { 11 };
         for (key, from, to) in [
-            ("left", 19 + width, 11),
-            ("down", width + 1, 11),
-            ("up", 20 + width + width + 1, 11),
+            ("left", 19 + width, before),
+            ("down", width + 1, before),
+            ("up", 20 + width + width + 1, before),
             ("down", width + 4, 19 + width),
+            ("down", width + 6, 19 + width),
         ] {
             area.set_cursor_offset(from);
             app.press(key);
             assert_eq!(area.cursor_offset(), to, "{key} from {from} after {char:?}");
         }
     }
-    // Down never goes back: from the empty row before a mark at a line start, it goes to the mark's end.
-    let app = TestApp::new(20, 4);
-    let area = Textarea::new(&app).grow(1.0);
-    area.set_text("a\n\n@main.rs\nb");
-    app.root().add(&area);
-    area.focus();
-    area.add_extmark(3..11, ExtmarkOptions::default().atomic());
-    app.render();
-    area.set_cursor_offset(2);
-    app.press("down");
-    assert_eq!(area.cursor_offset(), 11);
+    // Down never goes back: when the start of the character before the mark is where it started, it goes to the end,
+    // and past marks that overlap that end, but not past one that starts there.
+    let wrapped = "日@mainrsxyzuvwABCDEFGHIJKL";
+    for (text, columns, from, marks, to) in [
+        ("a\n\n@main.rs\nb", 20, 2, &[(3, 11)][..], 11),
+        (wrapped, 6, 0, &[(2, 15)], 15),
+        (wrapped, 6, 0, &[(2, 15), (14, 19), (18, 23), (22, 27)], 27),
+        (wrapped, 6, 0, &[(2, 15), (15, 17)], 15),
+    ] {
+        let app = TestApp::new(columns, 4);
+        let area = Textarea::new(&app).grow(1.0);
+        area.set_text(text);
+        app.root().add(&area);
+        area.focus();
+        for &(start, end) in marks {
+            area.add_extmark(start..end, ExtmarkOptions::default().atomic());
+        }
+        app.render();
+        area.set_cursor_offset(from);
+        app.press("down");
+        assert_eq!(area.cursor_offset(), to, "down from {from} with {marks:?}");
+    }
 }
 
 #[test]

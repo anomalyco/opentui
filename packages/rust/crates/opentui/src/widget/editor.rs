@@ -563,7 +563,14 @@ impl EditorCore {
                 return;
             }
         }
-        self.report(self.buffer.command(EditCommand::CursorOffset(mark.end)));
+        // Past later marks that overlap the end, so the cursor is not left inside one.
+        let mut end = mark.end;
+        while let Some(next) =
+            self.extmarks.borrow().marks.iter().find(|m| m.options.atomic && m.start < end && end < m.end)
+        {
+            end = next.end;
+        }
+        self.report(self.buffer.command(EditCommand::CursorOffset(end)));
     }
 
     fn goto_buffer_end(&self) {
