@@ -204,9 +204,12 @@ fn sameLeaf(a: Fixture.Leaf, b: Fixture.Leaf) bool {
 const Mirror = struct {
     blocks: std.ArrayListUnmanaged(c.ot_markdown_block) = .empty,
     leaves: std.ArrayListUnmanaged(?Fixture.Leaf) = .empty,
+    /// The top-level blocks the last call committed (no later byte changes them).
+    committed: u32 = 0,
 
     /// Takes in the changes after a call; returns them.
     fn update(self: *Mirror, f: *Fixture, arena: std.mem.Allocator, result: c.ot_markdown_result) ![]c.ot_markdown_block {
+        self.committed = result.committed_top_level_count;
         if (result.removed_from_index != std.math.maxInt(u32) and result.removed_from_index < self.blocks.items.len) {
             self.blocks.shrinkRetainingCapacity(result.removed_from_index);
             self.leaves.shrinkRetainingCapacity(result.removed_from_index);
@@ -238,10 +241,24 @@ const Mirror = struct {
             f.doc = doc;
             expectOk(md.ot_markdown_destroy(f.context, &fresh)) catch unreachable;
         }
-        var result: c.ot_markdown_result = undefined;
-        if (source.len > 0) _ = try f.append(source);
+        var result: c.ot_markdown_result = .{ .changed_block_count = 0, .committed_top_level_count = 0, .removed_from_index = 0 };
+        if (source.len > 0) result = try f.append(source);
         if (finished) try expectOk(md.ot_markdown_finish(f.context, &fresh, &result));
+        if (result.committed_top_level_count != self.committed) {
+            std.debug.print("host was told {d} blocks are committed, a fresh doc {d}\n", .{ self.committed, result.committed_top_level_count });
+            return false;
+        }
         const blocks = try f.changes(arena);
+        // A committed block is closed: its last line is not pending.
+        var top: u32 = 0;
+        for (self.blocks.items) |block| {
+            if (block.parent_index != std.math.maxInt(u32)) continue;
+            if (top < self.committed and block.flags & c.OT_MD_BLOCK_OPEN != 0) {
+                std.debug.print("committed block {d} is open\n", .{block.index});
+                return false;
+            }
+            top += 1;
+        }
         if (blocks.len != self.blocks.items.len) {
             std.debug.print("host knows {d} blocks, a fresh doc lists {d}\n", .{ self.blocks.items.len, blocks.len });
             return false;
