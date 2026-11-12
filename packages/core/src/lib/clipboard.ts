@@ -193,9 +193,13 @@ export const createClipboard = ({ host, terminal }: ClipboardOptions): Clipboard
     readonly terminal: TerminalClipboardOperationResult
   }
 
+  // All-available operations whose host write is in flight, and the newest one's terminal write.
+  const inFlight = new Map<ClipboardSelection, { count: number; newest: () => TerminalClipboardOperationResult }>()
+
   const composeMutation = async <Result extends HostMutationResult>(
     options: ClipboardWriteOptions,
     signal: AbortSignal,
+    selection: ClipboardSelection,
     hostOperation: () => Promise<Result>,
     terminalOperation: () => TerminalClipboardOperationResult,
   ): Promise<MutationResult<Result>> => {
@@ -218,18 +222,32 @@ export const createClipboard = ({ host, terminal }: ClipboardOptions): Clipboard
       return { host: hostResult, terminal: terminalResult }
     }
     // Write the terminal last: on Wayland/X11 the last writer owns the
-    // selection. A rejected host write must not suppress it.
+    // selection. A rejected host write must not suppress it. Host writes can
+    // settle out of order (timeouts), so only the newest operation per
+    // selection writes the terminal: when its own host write settles, and
+    // again when the last one in flight settles, in case an older host write
+    // took the selection after it.
     if (!canUseRemoteHost(options)) {
       return { host: { status: "not-attempted" }, terminal: terminalOperation() }
+    }
+    const state = inFlight.get(selection) ?? { count: 0, newest: terminalOperation }
+    state.count++
+    state.newest = terminalOperation
+    inFlight.set(selection, state)
+    const settled = (): TerminalClipboardOperationResult => {
+      if (--state.count === 0) inFlight.delete(selection)
+      if (state.newest === terminalOperation) return terminalOperation()
+      if (state.count === 0) state.newest()
+      return NOT_ATTEMPTED_TERMINAL
     }
     let hostResult: Result
     try {
       hostResult = await hostOperation()
     } catch (error) {
-      terminalOperation()
+      settled()
       throw error
     }
-    return { host: hostResult, terminal: terminalOperation() }
+    return { host: hostResult, terminal: settled() }
   }
   return {
     read(options) {
@@ -254,6 +272,7 @@ export const createClipboard = ({ host, terminal }: ClipboardOptions): Clipboard
           return composeMutation(
             options,
             signal,
+            selection,
             () => host.writeText(text, operationOptions),
             () => terminal.writeText(text, selection),
           )
@@ -275,6 +294,7 @@ export const createClipboard = ({ host, terminal }: ClipboardOptions): Clipboard
           return composeMutation(
             options,
             signal,
+            selection,
             () => host.clear(operationOptions),
             () => terminal.clear(selection),
           )

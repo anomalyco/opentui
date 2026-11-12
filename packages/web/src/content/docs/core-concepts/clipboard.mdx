@@ -82,6 +82,10 @@ The composed service owns the host service passed to `createClipboard()`. The re
 
 Skipped destinations report `{ status: "not-attempted" }` in the result.
 
+Host writes can settle out of order, for example when they time out. When `all-available` operations on one selection
+overlap, only the newest writes the terminal: when its host write settles, and again when the last host write settles.
+The older operations report a terminal status of `not-attempted`.
+
 ### Remote sessions
 
 In a remote session, such as SSH, the host clipboard belongs to the server host. It is not the clipboard on the SSH

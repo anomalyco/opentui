@@ -64,6 +64,7 @@ describe("createClipboard", () => {
       ["best-available", "cancelled", "cancelled", "not-attempted", ["host-write"]],
       ["best-available", "unsupported", "unsupported", "attempted", ["host-write", "terminal-write"]],
       ["all-available", undefined, "written", "attempted", ["host-write", "terminal-write"]],
+      ["all-available", "unsupported", "unsupported", "attempted", ["host-write", "terminal-write"]],
     ] as const
     for (const [destination, hostStatus, expectedHost, expectedTerminal, events] of cases) {
       const service = createServices({ hostStatus })
@@ -192,6 +193,70 @@ describe("createClipboard", () => {
     await expect(service.clipboard.writeText("text", { destination: "all-available" })).rejects.toThrow("host failed")
     expect(service.events).toEqual(["terminal-write"])
     await service.clipboard.dispose()
+  })
+
+  it("leaves the newest of rapid all-available copies in the terminal when host writes settle out of order", async () => {
+    const copies = [
+      ["clipboard", "c0"],
+      ["primary", "p0"],
+      ["clipboard", "c1"],
+      ["clipboard", "c2"],
+      ["clipboard", "c3"],
+    ] as const
+    const cases = [
+      // c3 cannot start its host write, then the older writes time out (c0 rejects) in poll order.
+      [
+        [4, "failed", ["clipboard:c3"], "attempted"],
+        [2, "timed-out", ["clipboard:c3"], "not-attempted"],
+        [1, "timed-out", ["clipboard:c3", "primary:p0"], "attempted"],
+        [0, "rejected", ["clipboard:c3", "primary:p0"], undefined],
+        [3, "timed-out", ["clipboard:c3", "primary:p0", "clipboard:c3"], "not-attempted"],
+      ],
+      // Host writes settle in order, so each selection gets its newest copy once.
+      [
+        [0, "written", [], "not-attempted"],
+        [1, "written", ["primary:p0"], "attempted"],
+        [2, "written", ["primary:p0"], "not-attempted"],
+        [3, "written", ["primary:p0"], "not-attempted"],
+        [4, "written", ["primary:p0", "clipboard:c3"], "attempted"],
+      ],
+    ] as const
+    for (const steps of cases) {
+      const hostTexts: string[] = []
+      const settle: ((status: (typeof steps)[number][1]) => void)[] = []
+      const terminalTexts: string[] = []
+      const service = createServices({
+        backend: {
+          writeText(text) {
+            hostTexts.push(text)
+            return new Promise((resolve, reject) => {
+              settle.push((status) => {
+                if (status === "rejected") reject(new Error("host failed"))
+                else resolve(status === "failed" ? { status, error: new Error("busy") } : { status })
+              })
+            })
+          },
+        },
+        terminal: {
+          writeText(text, selection) {
+            terminalTexts.push(`${selection}:${text}`)
+            return { status: "attempted", capability: "supported" }
+          },
+        },
+      })
+      const pending = copies.map(([selection, text]) =>
+        service.clipboard.writeText(text, { destination: "all-available", selection }),
+      )
+      expect(hostTexts).toEqual(copies.map(([, text]) => text))
+      expect(terminalTexts).toEqual([])
+      for (const [index, status, terminal, terminalStatus] of steps) {
+        settle[index]!(status)
+        const result = await pending[index]!.catch((error: Error) => error.message)
+        expect(terminalTexts).toEqual([...terminal])
+        expect(typeof result === "string" ? result : result.terminal.status).toBe(terminalStatus ?? "host failed")
+      }
+      await service.clipboard.dispose()
+    }
   })
 
   it("does not start a best-available terminal fallback after cancellation", async () => {
