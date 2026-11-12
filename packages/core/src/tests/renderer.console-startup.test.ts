@@ -1801,7 +1801,8 @@ test("CliRenderer accepts startup CPR before the query write callback and setup 
   })
   renderer = result.renderer
   expect(renderer.getCursorState()).toMatchObject({ x: 1, y: 5 })
-  expect(renderer.capabilities).toMatchObject({ explicit_width: true, scaled_text: true })
+  // The main screen gets no OSC 66 probe, so reports shaped like its answers are not evidence.
+  expect(renderer.capabilities).toMatchObject({ explicit_width: false, scaled_text: false })
   renderer.root.add(new TextRenderable(renderer, { content: "FOOTER", height: 1 }))
   await result.renderOnce()
   expect(result.output()).toContain(ANSI.moveCursor(6, 1))

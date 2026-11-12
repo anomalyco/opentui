@@ -1233,6 +1233,7 @@ pub const Session = struct {
             .setup_screen => {
                 try writer.writeAll(ansi.ANSI.saveCursorState);
                 if (value.useAlternateScreen) try candidate.enterAltScreen(writer);
+                if (value.useAlternateScreen and progress.phase == .setting_up) try candidate.queryExplicitWidth(writer);
                 progress.step = if (progress.rows_remaining == 0) .enable else .reserve_rows;
             },
             .reserve_rows => {
@@ -1242,7 +1243,6 @@ pub const Session = struct {
                 if (progress.rows_remaining == 0) progress.step = .enable;
             },
             .enable => {
-                if (progress.phase == .setting_up) try candidate.queryExplicitWidth(writer, value.height);
                 if (progress.rows_return != 0) try writer.print("\x1b[{d}A", .{progress.rows_return});
                 try writer.writeAll(ansi.ANSI.hideCursor);
                 try candidate.enableDetectedFeatures(writer, candidate.opts.kitty_keyboard_flags != 0);

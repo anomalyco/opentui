@@ -2346,10 +2346,11 @@ test("reply batches follow an independent model under random replies, pastes, re
 })
 
 test("startup replies after suspension are still consumed, and their DA1 reply ends the startup batch", async () => {
-  // Late cursor reports, Shift+F3 and Alt+F3 in shape: the startup cursor, then the two explicit-width probes.
+  // Late cursor reports, Shift+F3 and Alt+F3 in shape: the startup cursor, then the two explicit-width probes,
+  // which only the alternate screen sends.
   const late = "\x1b[5;5R\x1b[1;2R\x1b[1;3R" + DA1_REPLY
   for (const suspended of [false, true]) {
-    const t = await createBatchRenderer()
+    const t = await createBatchRenderer(false, { screenMode: "alternate-screen" })
     try {
       await t.renderer.suspend()
       if (suspended) t.renderer.stdin.push(Buffer.from(late))

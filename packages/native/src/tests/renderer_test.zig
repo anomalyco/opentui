@@ -2864,6 +2864,7 @@ test "renderer - frames carry the sync envelope unless a remote endpoint lacks 2
         term.reply_sentinel = sentinel;
         var writer = DiscardTerminalWriter{};
         try term.queryTerminalSend(&writer);
+        try term.queryExplicitWidth(&writer);
         // Replies come in query order: XTVERSION, the startup cursor report, DECRQM, then the width probe's report
         // or DA1. A pending reply has only the cursor report, which precedes DECRQM. A tmux on either side of the
         // link answers XTVERSION, so the answer alone does not drop the envelope.

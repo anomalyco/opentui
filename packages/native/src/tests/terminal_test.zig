@@ -677,14 +677,14 @@ test "remote detection - explicit local mode ignores SSH environment" {
     try testing.expect(!term.caps.remote);
 }
 
-test "processCapabilityResponse captures startup cursor report before the width probes" {
+test "processCapabilityResponse captures startup cursor report before home probes" {
     var term = Terminal.init(.{});
     var writer = TestWriter.init(testing.allocator);
     defer writer.deinit();
     try term.queryTerminalSend(&writer);
+    try term.queryExplicitWidth(&writer);
 
-    // kitty's replies to probes on footer row 6.
-    term.processCapabilityResponse("\x1b[7;11R\x1b[6;2R\x1b[6;3R");
+    term.processCapabilityResponse("\x1b[7;11R\x1b[1;2R\x1b[1;3R");
 
     const cursor = term.getCursorPosition();
     try testing.expectEqual(@as(u32, 11), cursor.x);
@@ -714,6 +714,7 @@ test "a DA1 reply ends startup cursor reports in sentinel mode and reports Sixel
         var writer = TestWriter.init(testing.allocator);
         defer writer.deinit();
         try term.queryTerminalSend(&writer);
+        try term.queryExplicitWidth(&writer);
         inline for (row[2]) |reply| term.processCapabilityResponse(reply);
         try testing.expectEqual(row[3], term.caps.explicit_width);
         try testing.expectEqual(row[4], term.caps.sixel);
@@ -730,6 +731,7 @@ test "processCapabilityResponse only accepts exact ordered explicit width probe 
     var startup_writer = TestWriter.init(testing.allocator);
     defer startup_writer.deinit();
     try startup_on_row_one.queryTerminalSend(&startup_writer);
+    try startup_on_row_one.queryExplicitWidth(&startup_writer);
     startup_on_row_one.processCapabilityResponse("\x1b[1;5R");
     startup_on_row_one.processCapabilityResponse("\x1b[1;2R");
     startup_on_row_one.processCapabilityResponse("\x1b[1;3R");
@@ -743,7 +745,9 @@ test "processCapabilityResponse only accepts exact ordered explicit width probe 
     var echoed_writer = TestWriter.init(testing.allocator);
     defer echoed_writer.deinit();
     try echoed.queryTerminalSend(&echoed_writer);
-    echoed.processCapabilityResponse("\x1b[7;11R\x1b[1;12R\x1b[1;8R");
+    try echoed.queryExplicitWidth(&echoed_writer);
+    // The probes start at home, so the right columns on another row are no answer.
+    echoed.processCapabilityResponse("\x1b[7;11R\x1b[4;2R\x1b[4;3R");
     try testing.expect(!echoed.caps.explicit_width);
     try testing.expect(!echoed.caps.scaled_text);
 }
@@ -1920,14 +1924,14 @@ test "queryExplicitWidth - OPENTUI_FORCE_EXPLICIT_WIDTH skips the probes or sets
         var writer = TestWriter.init(testing.allocator);
         defer writer.deinit();
         try term.queryTerminalSend(&writer);
-        try term.queryExplicitWidth(&writer, 3);
+        try term.queryExplicitWidth(&writer);
         const output = writer.getWritten();
         try testing.expectEqual(row[1], std.mem.find(u8, output, ansi.ANSI.explicitWidthQuery) != null);
         try testing.expectEqual(row[1], std.mem.find(u8, output, ansi.ANSI.scaledTextQuery) != null);
         try testing.expect(std.mem.find(u8, output, ansi.ANSI.xtversion) != null);
         try testing.expectEqual(row[2], term.caps.explicit_width);
-        // foot's replies (it draws `w` only), on the footer's row; without probes they are not evidence.
-        term.processCapabilityResponse("\x1b[7;11R\x1b[8;2R\x1b[8;2R");
+        // foot's replies (it draws `w` only); without probes they are not evidence.
+        term.processCapabilityResponse("\x1b[7;11R\x1b[1;2R\x1b[1;2R");
         try testing.expectEqual(row[1] or row[2], term.caps.explicit_width);
         try testing.expect(!term.caps.scaled_text);
     }
@@ -2049,6 +2053,7 @@ test "width method follows the environment, then the DECRPM 2027 reply and XTVER
         defer writer.deinit();
         // Session enables features before the replies arrive, and again after each reply.
         try term.queryTerminalSend(&writer);
+        try term.queryExplicitWidth(&writer);
         try term.enableDetectedFeatures(&writer, false);
         inline for (row[1]) |reply| {
             term.processCapabilityResponse(reply);

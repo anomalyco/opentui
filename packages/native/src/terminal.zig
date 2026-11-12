@@ -420,21 +420,16 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
         if (!self.reply_sentinel) try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
     }
 
-    // queryExplicitWidth sends the probes once setup has reserved the renderer's rows.
-    self.explicit_width_probe_reports_pending = if (self.skip_explicit_width_query) 0 else 2;
+    // Only queryExplicitWidth's own reports count; a key between packets is not one.
+    self.explicit_width_probe_reports_pending = 0;
 }
 
-/// OSC 66 terminals draw the probes' spaces, so they go on rows the first frame paints. Setup leaves the cursor on the
-/// last row it reserved for `rows` renderer rows; with three or more, that row and the one above hold the 2-row `s=2`
-/// space. With fewer, `w=1` goes on the row below (the cursor's own at the bottom), and `s=2` would scroll: skipped.
-pub fn queryExplicitWidth(self: *Terminal, tty: anytype, rows: u32) !void {
-    if (!self.skip_explicit_width_query) {
-        const scaled = rows >= 3;
-        try tty.writeAll(ansi.ANSI.saveCursorState ++ (if (scaled) "\x1b[A\r" else "\x1b[B\r") ++
-            ansi.ANSI.explicitWidthQuery ++ ansi.ANSI.cursorPositionRequest ++ "\r");
-        if (scaled) try tty.writeAll(ansi.ANSI.scaledTextQuery);
-        try tty.writeAll(ansi.ANSI.cursorPositionRequest ++ ansi.ANSI.restoreCursorState);
-    }
+/// OSC 66 terminals draw the probes' spaces: call only on the alternate screen just entered, cursor saved before.
+pub fn queryExplicitWidth(self: *Terminal, tty: anytype) !void {
+    if (self.skip_explicit_width_query) return;
+    self.explicit_width_probe_reports_pending = 2;
+    try tty.writeAll(ansi.ANSI.home ++ ansi.ANSI.explicitWidthQuery ++ ansi.ANSI.cursorPositionRequest ++
+        ansi.ANSI.home ++ ansi.ANSI.scaledTextQuery ++ ansi.ANSI.cursorPositionRequest ++ ansi.ANSI.restoreCursorState);
 }
 
 /// ConPTY draws 24-bit color, but a remote app's output never reaches this process's console.
@@ -1426,9 +1421,9 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
             // Terminals answer in order, and the probes follow the capability queries.
             self.sync_reply_settled = true;
 
-            if (probe_index == 0 and col == 2) {
+            if (row == 1 and probe_index == 0 and col == 2) {
                 self.caps.explicit_width = true;
-            } else if (probe_index == 1 and col == 3) {
+            } else if (row == 1 and probe_index == 1 and col == 3) {
                 self.caps.explicit_width = true;
                 self.caps.scaled_text = true;
             }

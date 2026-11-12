@@ -312,23 +312,25 @@ test "Session terminal setup reserves main-screen rows and repositions by the ac
             try testing.expectEqual(@as(u32, 2), f.cli.renderOffset);
         }
         try expectReservedRows(bytes[0..len], 2, case.moves_up);
-        // Only setup probes and ends its replies with DA1; resume keeps the capabilities.
-        try testing.expectEqual(!case.resumed, std.mem.find(u8, bytes[0..len], ansi.ANSI.explicitWidthQuery) != null);
+        // The main screen gets no drawing probe, and only setup ends its replies with DA1.
+        try testing.expect(std.mem.find(u8, bytes[0..len], "\x1b]66;") == null);
         try testing.expectEqual(!case.resumed, std.mem.find(u8, bytes[0..len], ansi.ANSI.primaryDeviceAttrs) != null);
     }
 }
 
-/// Replays setup bytes for a `height`-row split footer on a `rows`-row main screen whose cursor starts on `start_row`
-/// below history, in a terminal that draws OSC 66 as kitty does: `w=1` covers one cell, `s=2` two rows. The footer
-/// takes the rows below the cursor row, or the bottom rows; a cell drawn anywhere else changes what the user sees.
-fn expectProbeOnFooter(bytes: []const u8, rows: u32, height: u32, start_row: u32) !void {
-    const footer = @min(start_row, rows - height) + 1;
+/// Replays setup bytes on a `rows`-row screen whose cursor starts at column 5 of `start_row`, in a terminal that
+/// draws OSC 66 as kitty does (`w=1` covers one cell, `s=2` two rows and two columns) or ignores it, and writes its
+/// answer to each cursor position request. Fails when a probe draws on the main screen, which holds history, or
+/// past the bottom row, where kitty scrolls. Returns the final cursor position.
+fn replayProbe(bytes: []const u8, rows: u32, start_row: u32, draws: bool, replies: *std.Io.Writer) ![2]u32 {
     var row = start_row;
-    var saved = row;
+    var col: u32 = 5;
+    var saved: [2]u32 = .{ row, col };
     var alternate = false;
     var i: usize = 0;
     while (i < bytes.len) : (i += 1) {
         if (bytes[i] == '\n') row = @min(rows, row + 1);
+        if (bytes[i] == '\r') col = 1;
         if (bytes[i] != 0x1b) continue;
         i += 1;
         if (bytes[i] == '[') {
@@ -340,50 +342,76 @@ fn expectProbeOnFooter(bytes: []const u8, rows: u32, height: u32, start_row: u32
             switch (bytes[i]) {
                 'A' => row -= @min(n, row - 1),
                 'B' => row = @min(rows, row + n),
+                'H' => if (params.len == 0) {
+                    row = 1;
+                    col = 1;
+                } else return error.TestUnexpectedResult,
                 's' => if (params.len == 0) {
-                    saved = row;
+                    saved = .{ row, col };
                 },
                 'u' => if (params.len == 0) {
-                    row = saved;
+                    row = saved[0];
+                    col = saved[1];
                 },
+                'n' => if (std.mem.eql(u8, params, "6")) try replies.print("\x1b[{d};{d}R", .{ row, col }),
                 'h', 'l' => if (std.mem.eql(u8, params, "?1049")) {
                     alternate = bytes[i] == 'h';
                 },
-                'H' => row = std.fmt.parseInt(u32, params[0 .. std.mem.findScalar(u8, params, ';') orelse params.len], 10) catch 1,
                 // Setup bytes move the cursor no other way.
-                'f', 'd', 'E', 'F' => return error.TestUnexpectedResult,
+                'f', 'd', 'E', 'F', 'G' => return error.TestUnexpectedResult,
                 else => {},
             }
         } else if (std.mem.findScalar(u8, "]P_", bytes[i]) != null) {
             const end = i + std.mem.findAny(u8, bytes[i..], "\x07\x1b").?;
-            if (!alternate and std.mem.startsWith(u8, bytes[i..end], "]66;")) {
-                const cell_rows: u32 = if (std.mem.find(u8, bytes[i..end], "s=2") != null) 2 else 1;
-                try testing.expect(row >= footer and row + cell_rows <= footer + height);
+            if (std.mem.startsWith(u8, bytes[i..end], "]66;")) {
+                try testing.expect(alternate);
+                const scale: u32 = if (std.mem.find(u8, bytes[i..end], "s=2") != null) 2 else 1;
+                try testing.expect(row + scale - 1 <= rows);
+                if (draws) col += scale;
             }
             i = end + @intFromBool(bytes[end] == 0x1b);
         }
     }
+    return .{ row, col };
 }
 
-test "Session terminal setup probes OSC 66 only on rows the renderer paints" {
+test "Session terminal setup probes OSC 66 only on the alternate screen" {
     const screen_rows = 6;
-    // A full-height main screen keeps render offset 0; split footers start pinned to the bottom.
-    for ([_]bool{ false, true }) |alternate| for ([_]u32{ 1, 2, 3, 4, screen_rows }) |height| {
+    // The main screen with a split footer pinned to the bottom or at full height (capture and passthrough send
+    // the same setup bytes), and the alternate screen; a terminal that draws OSC 66 and one that ignores it.
+    for ([_]bool{ false, true }) |alternate| for ([_]u32{ 1, 2, 3, 4, screen_rows }) |height| for ([_]bool{ false, true }) |draws| for (1..screen_rows + 1) |start_row| {
+        errdefer std.debug.print("alternate={} height={} draws={} start_row={}\n", .{ alternate, height, draws, start_row });
         const f = try Fixture.init(testing.allocator, testing.io, 8, height);
         defer f.deinit();
         var now_ns: u64 = 0;
         var bytes: [16 * 1024]u8 = undefined;
         _ = try f.value.splitControl(.{ .render_offset = screen_rows - height });
-        // The sentinel DA1 follows the probes' replies.
         try f.owner.setupSessionTerminal(f.id, .{ .use_alternate_screen = alternate, .reply_sentinel = alternate });
-        const output = try f.driveOutput(&now_ns, .active, &bytes, 32);
+        try testing.expectEqual(.output_pending, (try f.owner.pumpSession(f.id, now_ns, 1)).status);
+        var len = (try f.drain(&bytes)).len;
+        // The startup report, then Shift+F3, which sends a cursor report's bytes, before any probe was written.
+        var startup: [16]u8 = undefined;
+        try f.value.control(.{ .capability_response = try std.fmt.bufPrint(&startup, "\x1b[{d};5R\x1b[1;2R", .{start_row}) });
+        try testing.expect(!f.cli.terminal.caps.explicit_width);
+        len += (try f.driveOutput(&now_ns, .active, bytes[len..], 32)).len;
+        const output = bytes[0..len];
+        // One DA1 either way; the sentinel's follows every other query of the setup.
+        try testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, ansi.ANSI.primaryDeviceAttrs));
         try testing.expectEqual(alternate, std.mem.endsWith(u8, output, ansi.ANSI.primaryDeviceAttrs));
-        try testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, ansi.ANSI.explicitWidthQuery));
-        try testing.expectEqual(height >= 3, std.mem.find(u8, output, ansi.ANSI.scaledTextQuery) != null);
-        for (1..screen_rows + 1) |start_row| {
-            errdefer std.debug.print("alternate={} height={} start_row={}\n", .{ alternate, height, start_row });
-            try expectProbeOnFooter(output, screen_rows, height, @intCast(start_row));
-        }
+        var reply_bytes: [64]u8 = undefined;
+        var replies: std.Io.Writer = .fixed(&reply_bytes);
+        const end = try replayProbe(output, screen_rows, @intCast(start_row), draws, &replies);
+        // The alternate screen reserves no rows, so the probe hands the cursor back where it started.
+        if (alternate) try testing.expectEqual([2]u32{ @intCast(start_row), 5 }, end);
+        const probe_replies = replies.buffered()[std.mem.findScalar(u8, replies.buffered(), 'R').? + 1 ..];
+        if (probe_replies.len != 0) try f.value.control(.{ .capability_response = probe_replies });
+        try testing.expectEqual(alternate and draws, f.cli.terminal.caps.explicit_width);
+        try testing.expectEqual(alternate and draws, f.cli.terminal.caps.scaled_text);
+        // Resume keeps the capabilities and draws no probe.
+        try f.owner.suspendSession(f.id);
+        try f.drive(&now_ns, .suspended);
+        try f.owner.resumeSession(f.id);
+        try testing.expect(std.mem.find(u8, try f.driveOutput(&now_ns, .active, &bytes, 32), "\x1b]66;") == null);
     };
 }
 
