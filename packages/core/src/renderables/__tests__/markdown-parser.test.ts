@@ -108,6 +108,28 @@ test("streamed, the stable tokens are a growing prefix of the final text's token
   expect(failures).toEqual([])
 })
 
+// An append walks only the tokens that are not stable yet, so the work per appended byte stays flat as the text grows.
+// The work counted is reads of a token's raw text, which every walk over the tokens does.
+test("streamed, the work per appended byte does not grow with the text", () => {
+  const readsPerByte = (blocks: number) => {
+    const block = (i: number) => `## Step ${i}\n\nThe parser keeps block ${i} once a later append confirms it.\n\n`
+    const doc = Array.from({ length: blocks }, (_, i) => block(i)).join("")
+    const counted = new WeakSet<object>()
+    let reads = 0
+    let state: ParseState | null = null
+    for (let end = 30; end < doc.length + 30; end += 30) {
+      state = parseMarkdownIncremental(doc.slice(0, end), state, 2)
+      for (const token of state.tokens.filter((token) => !counted.has(token))) {
+        const raw = token.raw
+        Object.defineProperty(token, "raw", { get: () => (reads++, raw) })
+        counted.add(token)
+      }
+    }
+    return reads / doc.length
+  }
+  expect(readsPerByte(240)).toBeLessThan(1.5 * readsPerByte(60))
+})
+
 test("handles content that diverges from start", () => {
   const state1 = parseMarkdownIncremental("# Hello", null)
   const state2 = parseMarkdownIncremental("## World", state1)

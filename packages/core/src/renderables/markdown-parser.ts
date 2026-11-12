@@ -6,6 +6,8 @@ export interface ParseState {
   stableTokenCount?: number
   /** The link definitions of the stable tokens. */
   links?: Links
+  /** Where the stable tokens end in `content`, for a streamed parse. */
+  stableEnd?: number
 }
 
 // A definition still open at the end of the text (label, destination or title), which marked lexes as paragraphs until
@@ -38,18 +40,17 @@ export function parseMarkdownIncremental(
   // Find how many tokens from start are unchanged by an append; any other edit parses afresh
   const prevTokens = prevState && newContent.startsWith(prevState.content) ? prevState.tokens : []
   const stable = prevState?.stableTokenCount ?? 0
-  let offset = 0
-  let reuseCount = 0
-  const starts: number[] = []
+  // Stable tokens are final, so the walk starts where the previous parse ended them; ends[i] is where token
+  // stable + i - 1 ends (the next one starts there, or after the repeated definitions marked dropped there)
+  const ends = [stable && (prevState!.stableEnd ?? 0)]
+  let reuseCount = stable
 
-  for (const token of prevTokens) {
-    starts.push(offset)
-    offset = locate(prevState!.content, token, offset, reuseCount >= stable)
+  for (const token of prevTokens.slice(stable)) {
+    const offset = locate(prevState!.content, token, ends[reuseCount - stable]!)
     if (offset < 0) break
+    ends.push(offset + token.raw.length)
     reuseCount++
-    offset += token.raw.length
   }
-  starts[reuseCount] ??= offset
 
   // A streamed parse keeps its stable tokens; a parse that did not stream has none. Tokens with N after them (e.g.
   // "# Hello" might become "# Hello World") become stable, but the last is lexed again with the tail, which can still
@@ -69,11 +70,13 @@ export function parseMarkdownIncremental(
     const links = define({ ...known }, stableTokens.slice(stable))
     const lexer = new Lexer({ gfm: true })
     Object.assign(lexer.tokens.links, links)
-    const newTokens = lexer.lex(newContent.slice(starts[reuseCount])) as MarkedToken[]
+    // A parse that keeps no token lexes it all: ends has no entry before the stable ones
+    const newTokens = lexer.lex(newContent.slice(ends[reuseCount - stable])) as MarkedToken[]
     if (confirm && newTokens[0]?.raw === prevTokens[reuseCount].raw) newTokens[0] = prevTokens[reuseCount++]
     const tokens = [...stableTokens, ...newTokens]
     const stableLinks = reuseCount > stable ? define(links, tokens.slice(stableTokens.length, reuseCount)) : known
-    return { content: newContent, tokens, stableTokenCount: reuseCount, links: stableLinks }
+    const stableEnd = ends[reuseCount - stable]
+    return { content: newContent, tokens, stableTokenCount: reuseCount, links: stableLinks, stableEnd }
   } catch {
     try {
       const fullTokens = Lexer.lex(newContent, { gfm: true }) as MarkedToken[]
@@ -85,11 +88,11 @@ export function parseMarkdownIncremental(
 }
 
 // Where `token` starts in `text`, the text it was lexed from, at `offset` or after the repeated definitions there that
-// marked dropped from the tokens; -1 if it does not, or if `hold` and a definition there is still open.
-function locate(text: string, token: MarkedToken, offset: number, hold: boolean): number {
+// marked dropped from the tokens; -1 if it does not, or if a definition there is still open.
+function locate(text: string, token: MarkedToken, offset: number): number {
   for (;;) {
     openDefinition.lastIndex = offset
-    if (hold && openDefinition.test(text)) return -1
+    if (openDefinition.test(text)) return -1
     definition.lastIndex = offset
     const dropped = definition.exec(text)?.[0]
     if (dropped === undefined || dropped === token.raw) return text.startsWith(token.raw, offset) ? offset : -1
