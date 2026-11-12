@@ -1197,6 +1197,8 @@ fn model_streamed_math_never_reverts() {
     // CI budget: 64 documents of 24 pieces, every prefix; MODEL_SEEDS widens it. Conceal on and off agree once the
     // engine stops drawing a span the held `|` cuts as math (below).
     model::check(&MathSoup { agree: false }, 64, 24);
+    // Seed 466 of 640: the `|` cuts the span after an escaped `$`, which is no closer.
+    assert_eq!(model::Model::run(&MathSoup { agree: false }, &["$", "\\$", "|", "$", " ", "x"]), None);
 }
 
 /// What the engine gets wrong until `harden/markdown-engine-fixes` reaches this branch: each row must still fail. A

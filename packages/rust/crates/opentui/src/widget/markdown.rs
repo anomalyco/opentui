@@ -393,7 +393,8 @@ fn leaf_spans(leaf: &MarkdownLeaf, conceal: bool) -> Vec<InlineSpan> {
                 let url = &leaf.urls[chunk.link_offset as usize..][..chunk.link_byte_count as usize];
                 text = text.link(String::from_utf8_lossy(url).into_owned());
             }
-            // A span the held end of a streamed line cuts lacks its closer: without conceal it is not math yet.
+            // A span the held end of a streamed line cuts lacks its closer (an escaped `$` or `\)` is none): without
+            // conceal it is not math yet.
             let tex = text.content.as_ref();
             let (open, close) = if conceal {
                 ("", "")
@@ -404,7 +405,8 @@ fn leaf_spans(leaf: &MarkdownLeaf, conceal: bool) -> Vec<InlineSpan> {
             };
             let math = (span & sys::OT_MD_SPAN_MATH != 0)
                 .then(|| Some(tex.strip_prefix(open)?.strip_suffix(close)?.to_owned()))
-                .flatten();
+                .flatten()
+                .filter(|tex| tex.bytes().rev().take_while(|&byte| byte == b'\\').count() % 2 == 0);
             InlineSpan { span: text, code: span & sys::OT_MD_SPAN_CODE != 0, target: None, math }
         })
         .collect()
