@@ -22,6 +22,9 @@ pub(super) struct HostClipboard {
     /// Set once creating the service failed, so it is not retried on every use.
     unavailable: bool,
     pending: Vec<(ClipboardOperation, Done)>,
+    /// Copies whose host write is in progress, and the newest copy's text, for the terminal once they end.
+    copies: usize,
+    copied: String,
 }
 
 impl App {
@@ -51,10 +54,10 @@ impl App {
     /// Copies text to the user's clipboard through every destination available, as Core's `all-available` policy
     /// does: when the session is local, the system clipboard, and then the terminal (OSC 52), which works over SSH. On
     /// X11 and Wayland the last writer owns the clipboard, so the terminal, which keeps the text after the app exits,
-    /// writes once the system clipboard write ends, or when the app exits. Returns `false` when neither took the text,
-    /// for empty text, or without a running terminal, as in tests. A system clipboard write is asynchronous: `true`
-    /// means it started. A running [headless](App::headless) app hands the text to its [`App::on_headless_write`]
-    /// handlers instead.
+    /// gets the newest copy once the system clipboard writes end, or when the app exits. Returns `false` when neither
+    /// took the text, for empty text, or without a running terminal, as in tests. A system clipboard write is
+    /// asynchronous: `true` means it started. A running [headless](App::headless) app hands the text to its
+    /// [`App::on_headless_write`] handlers instead.
     pub fn copy_to_clipboard(&self, text: &str) -> bool {
         if self.is_headless() {
             return !text.is_empty() && self.headless_write(super::HeadlessWrite::Clipboard(text.to_owned()));
@@ -62,16 +65,31 @@ impl App {
         if !self.0.terminal_active.get() || text.is_empty() {
             return false;
         }
-        let remote = self.is_remote()
+        if self.is_remote()
             || self
                 .report(self.0.session.capabilities())
-                .is_none_or(|capabilities| capabilities.flags.contains(CapabilityFlags::REMOTE));
+                .is_none_or(|capabilities| capabilities.flags.contains(CapabilityFlags::REMOTE))
+        {
+            return self.copy_to_terminal(text);
+        }
         let write = |service: &ClipboardService| service.write_text(text, ClipboardSelection::Clipboard, TIMEOUT);
-        let owned = text.to_owned();
-        let terminal: Done = Box::new(move |cx, _| {
-            cx.app().copy_to_terminal(&owned);
-        });
-        (!remote && self.start_clipboard(write, terminal).is_ok()) || self.copy_to_terminal(text)
+        let started = self.start_clipboard(write, Box::new(|cx, _| cx.app().copied())).is_ok();
+        let mut clipboard = self.0.clipboard.borrow_mut();
+        clipboard.copies += usize::from(started);
+        if clipboard.copies > 0 {
+            clipboard.copied = text.to_owned();
+        }
+        started || self.copy_to_terminal(text)
+    }
+
+    /// Ends a copy's host write. The last to end writes the newest copy to the terminal, so the terminal ends as the
+    /// owner with it, also when a newer copy went to the terminal at once because its host write could not start.
+    fn copied(&self) {
+        let mut clipboard = self.0.clipboard.borrow_mut();
+        clipboard.copies -= 1;
+        if clipboard.copies == 0 {
+            self.copy_to_terminal(&std::mem::take(&mut clipboard.copied));
+        }
     }
 
     fn copy_to_terminal(&self, text: &str) -> bool {
@@ -127,7 +145,7 @@ impl App {
     /// Advances host clipboard operations and runs the handlers of finished ones. Returns when it needs to run
     /// again, in real time.
     pub(crate) fn pump_clipboard(&self) -> Option<Instant> {
-        let (finished, wait) = {
+        let finished = {
             let mut clipboard = self.0.clipboard.borrow_mut();
             let clipboard = &mut *clipboard;
             let service = clipboard.service.as_ref()?;
@@ -139,27 +157,32 @@ impl App {
                     None => clipboard.pending.push((operation, done)),
                 }
             }
-            let wait = if !clipboard.pending.is_empty() {
-                Some(OPERATION_POLL)
-            } else if service.needs_drain() {
-                Some(PROVIDER_POLL)
-            } else {
-                None
-            };
-            (finished, wait)
+            finished
         };
         for (done, outcome) in finished {
             done(&mut Cx::new(self), outcome);
         }
         self.drain_deferred();
-        wait.and_then(|wait| Instant::now().checked_add(wait))
+        // The handlers may have started operations.
+        let clipboard = self.0.clipboard.borrow();
+        let wait = if !clipboard.pending.is_empty() {
+            OPERATION_POLL
+        } else if clipboard.service.as_ref()?.needs_drain() {
+            PROVIDER_POLL
+        } else {
+            return None;
+        };
+        Instant::now().checked_add(wait)
     }
 
     /// Cancels pending operations, runs their handlers, and shuts the service down.
     pub(super) fn close_clipboard(&self) {
-        let clipboard = std::mem::take(&mut *self.0.clipboard.borrow_mut());
-        if let Some(service) = &clipboard.service {
-            for (operation, done) in clipboard.pending {
+        let (service, pending) = {
+            let mut clipboard = self.0.clipboard.borrow_mut();
+            (clipboard.service.take(), std::mem::take(&mut clipboard.pending))
+        };
+        if let Some(service) = &service {
+            for (operation, done) in pending {
                 service.cancel(operation);
                 done(&mut Cx::new(self), ClipboardOutcome::Cancelled);
             }
