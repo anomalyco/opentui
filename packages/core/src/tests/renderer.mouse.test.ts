@@ -903,6 +903,13 @@ describe("renderer handleMouseData", () => {
       "down:2,2 console drag:2,17 up:2,17 down:3,17 drag:13,2 up:13,2",
       "A:down B:over B:drag B:drag-end/13 B:up",
     ],
+    // A drag looks through its source: a source that follows the pointer drops on what lies under it. A press after
+    // the release, before a frame, goes to the source again.
+    [
+      "release over the source",
+      "down:5,2 drag:2,2 frame up:2,2 down:2,2",
+      "A:down A:drag A:drag-end/2 A:up D:drop(A) D:up A:down",
+    ],
     [
       "release over a child of the source",
       "down:13,2 drag:14,2 frame drag:16,1 up:16,1",
@@ -943,7 +950,7 @@ describe("renderer handleMouseData", () => {
     [
       "prevented press after a lost selection release",
       "down:21,2 drag:22,2 down:16,1 drag:17,1 up:17,1",
-      "S:down S:drag C:down B:down@C C:drag B:drag@C C:drag-end/17 B:drag-end/17@C C:up B:up@C",
+      "S:down S:drag C:down B:down@C C:drag B:drag@C C:drag-end/17 B:drag-end/17@C C:up B:up@C B:drop(C) B:up",
     ],
     [
       "press after a lost release whose drag-end quits",

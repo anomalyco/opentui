@@ -1142,6 +1142,9 @@ ot_status ot_scene_get_layout(ot_context *, const ot_handle *node, uint32_t obse
  * OT_UNSUPPORTED_RESOURCE. Use ot_scene_frame_step_with_geometry for host hooks. */
 ot_status ot_scene_paint(ot_context *, const ot_handle *session, const uint16_t background[4], uint32_t use_mouse, uint32_t excluded_hit_num, ot_scene_frame_request *out_frame);
 ot_status ot_scene_hit_test(ot_context *, const ot_handle *session, int32_t x, int32_t y, uint32_t *out_num);
+/* ot_scene_hit_test as if the node with public number excluded_num painted no hits (zero
+ * excludes none). Its descendants still hit. A drag looks up targets through its source. */
+ot_status ot_scene_hit_test_excluding(ot_context *, const ot_handle *session, int32_t x, int32_t y, uint32_t excluded_num, uint32_t *out_num);
 ot_status ot_scene_get_stats(ot_context *, const ot_handle *session, ot_scene_stats *out_stats);
 #define OT_SCENE_DEBUG_FULL_FRAME UINT32_C(1)
 #define OT_SCENE_DEBUG_VERIFY UINT32_C(2)

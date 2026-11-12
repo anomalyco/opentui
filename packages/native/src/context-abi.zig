@@ -2525,6 +2525,16 @@ pub fn ot_scene_hit_test(context: ?*ContextHandle, session_ptr: ?*const c.ot_han
     return c.OT_OK;
 }
 
+pub fn ot_scene_hit_test_excluding(context: ?*ContextHandle, session_ptr: ?*const c.ot_handle, x: i32, y: i32, excluded_num: u32, out_ptr: ?*u32) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const id = session_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const out = out_ptr orelse return sessionError(owner, error.InvalidOptions);
+    out.* = owner.core.sceneHitTestExcluding(handleFromC(id.*), x, y, excluded_num) catch |err| return sessionError(owner, err);
+    return c.OT_OK;
+}
+
 pub fn ot_scene_get_stats(context: ?*ContextHandle, session_ptr: ?*const c.ot_handle, out_ptr: ?*c.ot_scene_stats) callconv(.c) c.ot_status {
     const status = sessionContextStatus(context);
     if (status != c.OT_OK) return status;

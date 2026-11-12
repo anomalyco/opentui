@@ -3994,7 +3994,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       return true
     }
 
-    const maybeRenderableId = this.hitTest(mouseEvent.x, mouseEvent.y)
+    // A drag looks through its source, so its over and drop events reach what is under it.
+    const maybeRenderableId = this.nativeScene.hitTest(mouseEvent.x, mouseEvent.y, this.capturedRenderable?.num ?? 0)
     const sameElement = maybeRenderableId === this.lastOverRenderableNum
     this.lastOverRenderableNum = maybeRenderableId
     const maybeRenderable = Renderable.renderablesByNumber.get(maybeRenderableId)

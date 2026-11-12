@@ -390,6 +390,11 @@ test "Scene hit tests answer from the last presented scene frame" {
         try testing.expectEqual(query[2], try f.owner.sceneHitTest(f.id, @intCast(query[0]), @intCast(query[1])));
         try testing.expectEqual(@as(u64, query[3]), f.state.test_hit_steps - before);
     }
+    // Excluding a node skips only its own hits: the member under it answers, and its child still does.
+    // Rows: x, y, excluded number, number.
+    for ([_][4]u32{ .{ 0, 0, 3, 2 }, .{ 0, 0, 2, 3 }, .{ 1, 0, 2, 0 } }) |query| {
+        try testing.expectEqual(query[3], try f.owner.sceneHitTestExcluding(f.id, @intCast(query[0]), @intCast(query[1]), query[2]));
+    }
 }
 
 fn allocationFailures(allocator: std.mem.Allocator) !void {
