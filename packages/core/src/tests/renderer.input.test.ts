@@ -1544,21 +1544,33 @@ test("explicit-width reports, OSC 10 and malformed XTGETTCAP Ms replies do not r
   currentRenderer.stdin.emit("data", Buffer.from("\x1bP1+r4d73=\x1b\\"))
   currentRenderer.stdin.emit("data", Buffer.from("\x1bP1+r4d73=abc\x1b\\"))
   currentRenderer.stdin.emit("data", Buffer.from("\x1bP1+r4d73=zz\x1b\\"))
-  currentRenderer.stdin.emit("data", Buffer.from("\x1b[1;2R"))
+  currentRenderer.stdin.emit("data", Buffer.from("\x1b[2;2R"))
   currentRenderer.stdin.emit("data", Buffer.from("\x1b]10;#ffffff\x07"))
   advanceCurrentClock()
 
   expect(received).toHaveLength(0)
 })
 
-// Rows: screen mode, then what follows the startup report: Shift+F3 on the main screen, which sends no width probe,
-// or the two probe replies (Shift+F3 and Alt+F3 in shape) on the alternate screen.
+// Rows: screen mode, the reads after setup, then what handlers and keypresses see and explicit width. The first
+// report is the startup position; the alternate screen's probe replies come from row 2, so a `CSI 1;2R` after the
+// startup report is Shift+F3, also in the same read and between probe replies.
 test.each([
-  ["main-screen", ["\x1b[5;1R", "\x1b[1;2R"], ["shift+f3"], false],
-  ["alternate-screen", ["\x1b[5;1R"], [], true],
+  ["main-screen", ["\x1b[5;1R", "\x1b[1;2R"], ["\x1b[5;1R", "\x1b[1;2R"], ["shift+f3"], false],
+  ["main-screen", ["\x1b[5;1R\x1b[1;2R"], ["\x1b[5;1R", "\x1b[1;2R"], ["shift+f3"], false],
+  // A cursor on row 1 reports in Ctrl+F3's shape; as the first report it is still the startup position.
+  ["main-screen", ["\x1b[1;5R", "\x1b[1;2R"], ["\x1b[1;5R", "\x1b[1;2R"], ["shift+f3"], false],
+  [
+    "alternate-screen",
+    ["\x1b[5;1R", "\x1b[2;2R", "\x1b[1;2R", "\x1b[2;3R"],
+    ["\x1b[5;1R", "\x1b[1;2R"],
+    ["shift+f3"],
+    true,
+  ],
+  ["alternate-screen", ["\x1b[5;1R\x1b[2;2R\x1b[1;2R\x1b[2;3R"], ["\x1b[5;1R", "\x1b[1;2R"], ["shift+f3"], true],
+  ["alternate-screen", ["\x1b[5;1R", "\x1b[5;1R", "\x1b[2;2R", "\x1b[2;3R"], ["\x1b[5;1R", "\x1b[5;1R"], [], true],
 ] as const)(
-  "startup consumes only the cursor reports a %s setup asked for",
-  async (screenMode, handled, keys, width) => {
+  "startup reads %s cursor reports %j as replies or keys",
+  async (screenMode, reads, handled, keys, width) => {
     const clock = new ManualClock()
     const { renderer } = await createTestRenderer({ clock, screenMode })
     try {
@@ -1569,12 +1581,12 @@ test.each([
         return false
       })
       const pressed: string[] = []
-      renderer.keyInput.on("keypress", (event) => pressed.push(`${event.shift ? "shift+" : ""}${event.name}`))
-      renderer.stdin.emit("data", Buffer.from("\x1b[5;1R"))
-      renderer.stdin.emit("data", Buffer.from("\x1b[1;2R"))
-      if (width) renderer.stdin.emit("data", Buffer.from("\x1b[1;3R"))
+      renderer.keyInput.on("keypress", (event) =>
+        pressed.push(`${event.meta ? "alt+" : ""}${event.shift ? "shift+" : ""}${event.name}`),
+      )
+      for (const read of reads) renderer.stdin.emit("data", Buffer.from(read))
       clock.advance(25)
-      // A standalone startup report still reaches handlers, as on main.
+      // A standalone report that answers nothing still reaches handlers, as on main.
       expect({ received, pressed, width: renderer.capabilities?.explicit_width }).toEqual({
         received: [...handled],
         pressed: [...keys],
@@ -2009,7 +2021,7 @@ test("kitty full capability response arriving in realistic chunks", async () => 
   currentRenderer.stdin.emit("data", Buffer.from("\x1b[?1016;2$y\x1b[?2027;0$y"))
   advanceCurrentClock(1)
 
-  currentRenderer.stdin.emit("data", Buffer.from("\x1b[?2031;2$y\x1b[?1004;1$y\x1b[1;2R\x1b[1;3R"))
+  currentRenderer.stdin.emit("data", Buffer.from("\x1b[?2031;2$y\x1b[?1004;1$y\x1b[3;1R\x1b[2;2R\x1b[2;3R"))
   advanceCurrentClock(1)
 
   currentRenderer.stdin.emit("data", Buffer.from("\x1bP>|kitty(0."))
@@ -2382,9 +2394,8 @@ test("reply batches follow an independent model under random replies, pastes, re
 })
 
 test("startup replies after suspension are still consumed, and their DA1 reply ends the startup batch", async () => {
-  // Late cursor reports, Shift+F3 and Alt+F3 in shape: the startup cursor, then the two explicit-width probes,
-  // which only the alternate screen sends.
-  const late = "\x1b[5;5R\x1b[1;2R\x1b[1;3R" + DA1_REPLY
+  // Late cursor reports: the startup cursor, then the two explicit-width probes, which only the alternate screen sends.
+  const late = "\x1b[5;5R\x1b[2;2R\x1b[2;3R" + DA1_REPLY
   for (const suspended of [false, true]) {
     const t = await createBatchRenderer(false, { screenMode: "alternate-screen" })
     try {

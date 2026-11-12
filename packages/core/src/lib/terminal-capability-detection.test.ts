@@ -75,10 +75,13 @@ describe("capability reply classification", () => {
     ["\x1b]99;i=other:p=?;p=title\x1b\\", false],
     ["\x1b[?1016;0$y", true],
   ]
+  // The probe runs on row 2, so Shift and Alt+F3 (row 1) are never its replies.
   const explicitWidth: [string, boolean][] = [
-    ["\x1b[1;2R", true],
-    ["\x1b[1;3R", true],
-    ["\x1b[1;1R", false],
+    ["\x1b[2;2R", true],
+    ["\x1b[2;3R", true],
+    ["\x1b[2;1R", false],
+    ["\x1b[1;2R", false],
+    ["\x1b[1;3R", false],
     ["\x1b[10;5R", false],
   ]
   const pixelResolution: [string, boolean][] = [

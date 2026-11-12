@@ -71,6 +71,7 @@ import {
 } from "./lib/terminal-capability-detection.js"
 import { type Clock, type TimerHandle, SystemClock } from "./lib/clock.js"
 import { NativeStdinParser, type StdinEvent, type StdinParserProtocolContext } from "./lib/stdin-parser-native.js"
+import { parseKeypress } from "./lib/parse.keypress.js"
 import { matchesKeyBinding } from "./lib/keybinding.internal.js"
 import { RendererThemeMode } from "./renderer-theme-mode.js"
 
@@ -1157,8 +1158,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private replyBatches: ReplyBatch[] = []
   // No missed DA1 reply yet. After a miss, batches carry no DA1 and end at their backstop.
   private replySentinel = true
-  /** Cursor reports startup still expects: its position, then the two width probes of an alternate-screen setup. */
-  private startupCursorReports = 0
+  /** The first cursor report of a setup answers its position query; later ones are probe replies or keys. */
+  private startupCursorReportPending = false
   public readonly clock: Clock
 
   private rendering: boolean = false
@@ -3454,7 +3455,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this.pendingSplitStartupCursorSeed =
       this._screenMode === "split-footer" && this._externalOutputMode === "capture-stdout"
-    this.startupCursorReports = this._screenMode === "alternate-screen" ? 3 : 1
+    this.startupCursorReportPending = true
     // The startup batch asks OSC 11; after its DA1 reply a theme wait has its answer.
     const startup = this.admitReplyBatch("startup", () => this.replySentinel && this.themeModeState.resolveWaiters())
     try {
@@ -3580,8 +3581,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.updateStdinParserProtocolContext(
       {
         privateCapabilityRepliesActive: startup,
-        // Past the expected reports, `CSI 1;2R` is Shift+F3 again.
-        explicitWidthCprActive: startup && this.startupCursorReports > 0,
+        explicitWidthCprActive: startup,
         pixelResolutionQueryActive: this.waitingForPixelResolution,
         replySentinelActive: this.replySentinel && this.replyBatches.length > 0,
       },
@@ -3660,8 +3660,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (!shouldProcessAsCapability) {
       return false
     }
-    if (hasCursorReport && this.startupCursorReports > 0 && --this.startupCursorReports === 0)
-      this.syncReplyContext(false)
 
     try {
       this.nativeSession.control({ kind: "capability-response", bytes: Buffer.from(sequence) })
@@ -3826,8 +3824,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           }
         }
 
-        if (event.protocol === "cpr" && this.processCapabilitySequence(event.sequence, true)) {
-          return
+        if (event.protocol === "cpr") {
+          // After the startup position, a report that decodes as a key (`CSI 1;m R`, a modified F3) is one: the width
+          // probe replies come from row 2, which no key reports.
+          const key = this.startupCursorReportPending ? null : parseKeypress(event.sequence)
+          this.startupCursorReportPending = false
+          if (key) return this.handleStdinEvent({ type: "key", raw: event.sequence, key })
+          if (this.processCapabilitySequence(event.sequence, true)) return
         }
 
         this.dispatchSequenceHandlers(event.sequence)
