@@ -300,6 +300,29 @@ describe("ExtmarksController - Multi-width Graphemes", () => {
       currentMockInput.pressArrow("right")
       expect(textarea.cursorOffset).toBe(end)
     })
+
+    // Left or a word left from a virtual extmark's end, and Up or Down into it nearer its start, go to the start of
+    // the character before it, not into the second cell of a wide one. Halfway goes to the end.
+    for (const char of ["a", "日", "👍", "\t"]) {
+      for (const [move, row, col, to] of [
+        ["left", 1, 8, 0],
+        ["word", 1, 8, 0],
+        ["down", 0, 1, 0],
+        ["up", 2, 1, 0],
+        ["down", 0, 4, 8],
+      ] as const) {
+        it(`${move} from column ${col} into a virtual extmark after ${JSON.stringify(char)}`, async () => {
+          await setup(`0123456789\n${char}@main.rs\nxxxxxxxxxx`)
+          const width = textarea.editBuffer.measureText(char)
+          extmarks.create({ start: 11 + width, end: 19 + width, virtual: true })
+          textarea.focus()
+          textarea.editBuffer.setCursor(row, width + col)
+          if (move === "word") textarea.moveWordBackward()
+          else currentMockInput.pressArrow(move)
+          expect(textarea.editBuffer.getCursorPosition()).toMatchObject({ row: 1, col: to && width + to })
+        })
+      }
+    }
   })
 
   describe("Visual vs Byte Offset Issues", () => {

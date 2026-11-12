@@ -120,7 +120,7 @@ export class ExtmarksController {
 
       const virtualExtmark = this.findVirtualExtmarkContaining(targetOffset)
       if (virtualExtmark && currentOffset >= virtualExtmark.end) {
-        this.editBuffer.setCursorByOffset(Math.max(0, virtualExtmark.start - 1))
+        this.moveBefore(virtualExtmark)
         return
       }
 
@@ -158,65 +158,22 @@ export class ExtmarksController {
     }
 
     this.editorView.moveUpVisual = (): void => {
-      if (this.destroyed) {
+      if (this.destroyed || this.editorView.hasSelection()) {
         this.originalMoveUpVisual()
         return
       }
-
-      const hasSelection = this.editorView.hasSelection()
-
-      if (hasSelection) {
-        this.originalMoveUpVisual()
-        return
-      }
-
-      const currentOffset = this.editBuffer.getCursorPosition().offset
       this.originalMoveUpVisual()
-      const newOffset = this.editBuffer.getCursorPosition().offset
-
-      const virtualExtmark = this.findVirtualExtmarkContaining(newOffset)
-      if (virtualExtmark) {
-        const distanceToStart = newOffset - virtualExtmark.start
-        const distanceToEnd = virtualExtmark.end - newOffset
-
-        if (distanceToStart < distanceToEnd) {
-          this.editorView.setCursorByOffset(Math.max(0, virtualExtmark.start - 1))
-        } else {
-          this.editorView.setCursorByOffset(virtualExtmark.end)
-        }
-      }
+      this.leaveVirtualExtmark()
     }
 
     this.editorView.moveDownVisual = (): void => {
-      if (this.destroyed) {
+      if (this.destroyed || this.editorView.hasSelection()) {
         this.originalMoveDownVisual()
         return
       }
-
-      const hasSelection = this.editorView.hasSelection()
-
-      if (hasSelection) {
-        this.originalMoveDownVisual()
-        return
-      }
-
       const currentOffset = this.editBuffer.getCursorPosition().offset
       this.originalMoveDownVisual()
-      const newOffset = this.editBuffer.getCursorPosition().offset
-
-      const virtualExtmark = this.findVirtualExtmarkContaining(newOffset)
-      if (virtualExtmark) {
-        const distanceToStart = newOffset - virtualExtmark.start
-        const distanceToEnd = virtualExtmark.end - newOffset
-
-        if (distanceToStart < distanceToEnd) {
-          const adjustedOffset = virtualExtmark.start - 1
-          const targetOffset = adjustedOffset <= currentOffset ? virtualExtmark.end : adjustedOffset
-          this.editorView.setCursorByOffset(targetOffset)
-        } else {
-          this.editorView.setCursorByOffset(virtualExtmark.end)
-        }
-      }
+      this.leaveVirtualExtmark(currentOffset)
     }
 
     this.editBuffer.setCursorByOffset = (offset: number): void => {
@@ -244,7 +201,7 @@ export class ExtmarksController {
       } else {
         for (const extmark of this.extmarks.values()) {
           if (extmark.virtual && currentOffset >= extmark.end && offset < extmark.end && offset >= extmark.start) {
-            this.originalSetCursorByOffset(Math.max(0, extmark.start - 1))
+            this.moveBefore(extmark)
             return
           }
         }
@@ -252,6 +209,26 @@ export class ExtmarksController {
 
       this.originalSetCursorByOffset(offset)
     }
+  }
+
+  // Left from the start lands on the start of the character before, even a wide one or a tab, or before a mark there.
+  private moveBefore(extmark: Extmark): void {
+    this.originalSetCursorByOffset(extmark.start)
+    this.originalMoveCursorLeft()
+    const inside = this.findVirtualExtmarkContaining(this.editBuffer.getCursorPosition().offset)
+    if (inside && inside.start < extmark.start) this.moveBefore(inside)
+  }
+
+  // A cursor that Up or Down put inside a virtual extmark goes to its nearer edge, but never back to `from` or before it.
+  private leaveVirtualExtmark(from = -1): void {
+    const offset = this.editBuffer.getCursorPosition().offset
+    const extmark = this.findVirtualExtmarkContaining(offset)
+    if (!extmark) return
+    if (offset - extmark.start < extmark.end - offset) {
+      this.moveBefore(extmark)
+      if (this.editBuffer.getCursorPosition().offset > from) return
+    }
+    this.originalSetCursorByOffset(extmark.end)
   }
 
   private wrapDeletion(): void {
