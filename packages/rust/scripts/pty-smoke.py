@@ -220,6 +220,8 @@ def main():
         ]
     results.append(theme_detection(binary))
     results.append(scenario("stderr capture", [binary, "--app"], write_to_stderr, 0, b"lifecycle stderr line"))
+    results.append(scenario("panic in a released task", [binary, "--app"], lambda pty: pty.send(b"P"), 101,
+                            b"lifecycle fixture panic"))
     sys.exit(0 if all(results) else 1)
 
 

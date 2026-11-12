@@ -3,10 +3,11 @@
 //!
 //! Keys: p panics, e returns an error, w writes to stderr (captured with `--app`), c (with `--app`) copies to the
 //! clipboard and then sets the title, m copies 17 times and then sets the title, v reads the clipboard, prints the
-//! outcome, and copies, Ctrl+Z suspends, r (with `--app`) releases the terminal to read one line in cooked mode, as an external
-//! editor would (the line "quit" quits), q quits. Every exit path must restore the terminal. With `--app`, the same fixture runs on the framework's [`App::run`] instead
-//! of a hand-written host loop, and shows the terminal's theme mode. With `--modes`, it only prints the console's
-//! input and output modes, on Windows, so a check can compare them before and after a run.
+//! outcome, and copies, Ctrl+Z suspends, r (with `--app`) releases the terminal to read one line in cooked mode, as an
+//! external editor would (the line "quit" quits), P (with `--app`) releases it to a task that enters raw mode and
+//! panics, q quits. Every exit path must restore the terminal. With `--app`, the same fixture runs on the framework's
+//! [`App::run`] instead of a hand-written host loop, and shows the terminal's theme mode. With `--modes`, it only prints
+//! the console's input and output modes, on Windows, so a check can compare them before and after a run.
 
 use opentui::host::{Host, HostOptions};
 use opentui::input::Event;
@@ -70,6 +71,12 @@ fn run_app() -> Result<()> {
                 if line.trim_end() == "quit" {
                     cx.quit();
                 }
+            });
+        } else if key.matches("shift+p") {
+            cx.app().release_terminal(|_| {
+                // As an editor that crashes: it changed the terminal modes and leaves them so.
+                std::mem::forget(opentui::term::Terminal::open());
+                panic!("lifecycle fixture panic");
             });
         }
     });

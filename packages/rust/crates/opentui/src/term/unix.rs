@@ -72,11 +72,10 @@ impl Terminal {
         Ok(())
     }
 
-    /// Restores the saved settings and file status flags.
+    /// Restores the saved settings and file status flags, even out of raw mode: a program the terminal was handed to
+    /// may have changed them.
     pub fn leave_raw(&mut self) -> io::Result<()> {
-        if !std::mem::replace(&mut self.raw, false) {
-            return Ok(());
-        }
+        self.raw = false;
         let restored = retry(|| unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &self.saved) });
         let flags = check(unsafe { libc::fcntl(libc::STDOUT_FILENO, libc::F_SETFL, self.output_flags) });
         restored.and(flags).map(drop)
