@@ -278,6 +278,15 @@ impl ScrollInner {
         show(&self.horizontal_bar, shown && scroll_x && content.width > viewport.width);
     }
 
+    /// Shows the scrollbars new options call for: at once between frames, and within the per-frame toggle limit while
+    /// a frame lays out, where a handler that sets options on resize could otherwise make the layout oscillate.
+    fn options_changed(&self) {
+        match self.element.app().filter(|app| app.frame_number() != app.painted_frames()) {
+            Some(app) => self.show_bars(|bar, visible| self.toggle(&app, bar, visible)),
+            None => self.show_bars(|bar, visible| drop(bar.visible(visible))),
+        }
+    }
+
     /// Refreshes scroll limits, scrollbars, and sticky scrolling after layout changed a size.
     fn refresh(&self, app: &App) {
         let viewport = self.viewport.rect();
@@ -777,7 +786,7 @@ impl ScrollBox {
     /// Shows scrollbars when content overflows. On by default.
     pub fn scrollbars(&self, show: bool) -> Self {
         self.0.scrollbars.set(show);
-        self.0.show_bars(|bar, visible| drop(bar.visible(visible)));
+        self.0.options_changed();
         self.clone()
     }
 
@@ -785,7 +794,7 @@ impl ScrollBox {
     /// does; its thumb then fills the track. Off by default.
     pub fn vertical_scrollbar_always(&self, always: bool) -> Self {
         self.0.vertical_always.set(always);
-        self.0.show_bars(|bar, visible| drop(bar.visible(visible)));
+        self.0.options_changed();
         self.clone()
     }
 

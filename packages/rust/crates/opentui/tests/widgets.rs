@@ -467,6 +467,24 @@ fn scrollbar_options_changed_after_a_frame_match_a_fresh_box() {
             assert_eq!(bars(lines, first, last), bars(lines, last, last), "{lines} lines, {first:?} then {last:?}");
         }
     }
+    // A box that fits on both axes shows no bar, and between frames the last call wins.
+    let app = TestApp::new(8, 4);
+    app.root().add(&ScrollBox::new(&app).grow(1.0).axes(true, true).child(&Text::new(&app, "a")));
+    assert_eq!(rows(&app)[3], "");
+    let scroll = ScrollBox::new(&app).grow(1.0).child(&Text::new(&app, "a\n".repeat(6)).shrink(0.0));
+    app.root().clear().add(&scroll);
+    app.render();
+    scroll.scrollbars(false).scrollbars(true).scrollbars(false);
+    app.render();
+    assert_eq!(scroll.content_view().rect().width, 8.0);
+    // Options set from a resize handler stay within the per-frame toggle limit, so the frame still lays out.
+    let app = TestApp::new(8, 4);
+    let scroll = ScrollBox::new(&app).grow(1.0).child(&Text::new(&app, "a"));
+    let handle = scroll.clone();
+    scroll.content_view().on_resize(move |_, rect| drop(handle.vertical_scrollbar_always(rect.width >= 8.0)));
+    app.root().add(&scroll);
+    app.render();
+    app.render();
 }
 
 #[test]
