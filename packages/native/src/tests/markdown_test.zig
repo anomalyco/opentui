@@ -2131,6 +2131,12 @@ test "Markdown stream: a leaf that changes kind or loses lines keeps its live di
     // A pending ATX heading's content starts after the white space that follows `#`, as a fresh
     // parse starts it (the command model over every option set found it after a task marker).
     for ([_][]const u8{ "# ", "0. [x] # " }) |text| try std.testing.expect(try streamAgreesParts(arena, "kinds", try std.mem.concat(arena, []const u8, &.{ try split(arena, text, 1), &.{ " ", "\\" } })));
+    // An entity or escape in a word that may be an extended autolink waits for the word's end:
+    // the link shows its source raw, so drawing it decoded took text back (model seeds 4,860
+    // and 63, over every option set).
+    for ([_][]const u8{ "www.a&mp;b\n", "www.a.b de&mp; \n", "x https://a\\.b y\n" }) |text| {
+        for ([_]usize{ 1, 3 }) |width| try std.testing.expect(try streamAgreesParts(arena, "kinds", try split(arena, text, width)));
+    }
     // One title scanner for definitions and inline links: a parenthesized title cannot hold an
     // unescaped `(` (cmark-gfm: both stay text).
     for ([_][]const u8{ "[a](/u (b(c)))\n", "[x]: /u (b(c))\n\n[x]\n" }) |text| {

@@ -2562,7 +2562,7 @@ pub const Doc = struct {
             std.mem.swap(std.ArrayListUnmanaged(u8), &live.pending_display, &live.previous_pending);
             live.pending_display.clearRetainingCapacity();
             old_pending = live.previous_pending.items;
-            live.pending_scan = .{ .stop = parser.position, .visits = live.pending_scan.visits };
+            live.pending_scan = .{ .stop = parser.position, .word_start = parser.position, .visits = live.pending_scan.visits };
         }
         const drawn_before = live.pending_display.items.len;
         if (!final) {
@@ -2736,7 +2736,7 @@ pub const Doc = struct {
             // Draw on from the last cut while the drawing it continues stands.
             var cut = live.cut_draw;
             if (cut.at == none or cut.at > at or cut.from != live.parser.position or !std.meta.eql(cut.code, live.pending_code_opener)) {
-                cut = .{ .from = live.parser.position, .code = live.pending_code_opener, .scan = .{ .stop = live.parser.position } };
+                cut = .{ .from = live.parser.position, .code = live.pending_code_opener, .scan = .{ .stop = live.parser.position, .word_start = live.parser.position } };
             }
             var drawn: std.ArrayListUnmanaged(u8) = .empty;
             inline_parser.renderPending(live.content.items[0..at], cut.scan.stop, cut.code, &cut.scan, self.scratch.allocator(), &drawn) catch return live.folded_display_byte_count;
@@ -2826,6 +2826,7 @@ pub const Doc = struct {
         live.content_base += drop;
         live.pending_scan.stop -= drop;
         live.pending_scan.scanned -|= drop;
+        live.pending_scan.word_start -|= drop;
         live.pending_scan.run_end -|= drop;
         if (live.pending_scan.code) |opener| live.pending_scan.code = opener - drop;
         if (live.pending_code_opener) |opener| live.pending_code_opener = opener - drop;
@@ -2883,6 +2884,7 @@ pub const Doc = struct {
         live.content_base += drop;
         live.pending_scan.stop -= drop;
         live.pending_scan.scanned -|= drop;
+        live.pending_scan.word_start -|= drop;
         live.pending_scan.run_end -|= drop;
         if (live.pending_scan.code) |opener| live.pending_scan.code = opener - drop;
         if (live.pending_code_opener) |opener| live.pending_code_opener = opener - drop;
