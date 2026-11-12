@@ -3035,11 +3035,13 @@ pub const Doc = struct {
                         try writer.write(raw, .{});
                         continue;
                     }
+                    if (styles.link != null) continue;
                     const link = r.links[t.aux - 1];
                     styles.link = try writer.url("", try inline_parser.unescapeText(arena, link.destination));
+                    styles.link_owner = t.aux;
                 },
                 .bracket_close => {
-                    if (t.aux == 0) try writer.write(raw[0..1], .{}) else styles.link = null;
+                    if (t.aux == 0) try writer.write(raw[0..1], .{}) else if (t.aux == styles.link_owner) styles.link = null;
                 },
                 .autolink, .autolink_email, .extended_autolink => {
                     const target = if (t.kind == .extended_autolink) raw else raw[1 .. raw.len - 1];
@@ -3452,7 +3454,10 @@ const Styles = struct {
     strong: i32 = 0,
     italic: i32 = 0,
     strikethrough: i32 = 0,
+    /// The outermost link's or image's target and its link index + 1 (an image inside a link
+    /// keeps the link's target).
     link: ?[2]u32 = null,
+    link_owner: u16 = 0,
 
     fn apply(self: *Styles, kind: inline_parser.MatchKind, delta: i32) void {
         switch (kind) {
