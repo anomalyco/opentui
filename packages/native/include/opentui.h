@@ -3482,9 +3482,9 @@ ot_status ot_session_input_feed(
  * Kitty disambiguate or report-all keys, so no unit has a deadline. A raw ESC and the byte after it in the same
  * feed are Alt and that key as without the flag; a raw ESC that ends a feed is the Escape key at once. If the next
  * feed, however late, begins with [ and a byte that begins a CSI such a terminal sends (a digit, ?, >, <, or one of
- * ABCDEFHIOPQS), the CSI is kept whole and is never a key; _G begins a Kitty graphics reply, which must end in that
- * feed; other bytes are typed. With SENTINEL, an OSC, DCS, or APC introducer or a lone [ after that Escape is
- * recovered as after a timeout until SENTINEL is cleared.
+ * ABCDEFHIOPQS), the CSI is kept whole and is never a key; _G begins a Kitty graphics reply, kept whole once that
+ * feed matches its key= prefix and typed otherwise; other bytes are typed. With SENTINEL, an OSC, DCS, or APC
+ * introducer or a lone [ after that Escape is recovered as after a timeout until SENTINEL is cleared.
  * A session with a renderer sets it itself once the terminal answers the CSI ? u
  * query that follows its current push (only with OT_TERMINAL_REPLY_SENTINEL).
  * Changing flags emits nothing; the next feed resolves a unit that may no longer wait. */
