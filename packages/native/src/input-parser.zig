@@ -248,6 +248,11 @@ pub const InputParser = struct {
         if (!sink.hasRoomForOneByte()) return 0;
         // A new batch never extends a unit whose deadline already passed.
         self.expire(now_ns, sink);
+        // A deferred paste start continues only into a read that begins with the rest of its marker and more.
+        if (self.state == .csi and self.state.csi.deferred and self.pastePrefix()) {
+            const rest = "200~"[self.unit_len - 2 ..];
+            if (bytes.len > rest.len and std.mem.startsWith(u8, bytes, rest)) self.state.csi = .{ .alt = false, .deferred = false };
+        }
         var consumed: usize = 0;
         while (consumed < bytes.len) {
             if (!sink.hasRoomForOneByte()) break;
@@ -839,8 +844,14 @@ pub const InputParser = struct {
         if (params.len == 0) return !self.state.csi.alt;
         if (self.kittyHeld()) return true;
         if (params[0] == '<') return allOf(params[1..], "0123456789;");
-        return std.mem.startsWith(u8, "200", params) or (self.expect.replies and self.replyShaped()) or
+        return self.pastePrefix() or (self.expect.replies and self.replyShaped()) or
             (self.expect.kitty_keyboard and params[0] != '?' and Shape.of(params, true) != null);
+    }
+
+    /// Whether a CSI is a cut paste start that owes no Escape key or recovered introducer.
+    fn pastePrefix(self: *const InputParser) bool {
+        const csi = self.state.csi;
+        return !csi.alt and !csi.recovered and std.mem.startsWith(u8, "200", self.unit[2..self.unit_len]);
     }
 
     /// Whether the CSI parameters may begin a cursor position, pixel size, or private reply.
@@ -890,13 +901,11 @@ pub const InputParser = struct {
     fn continuesDeferred(self: *const InputParser, b: u8, reply_only: bool) bool {
         const params = self.unit[2..self.unit_len];
         const digit = isDigit(b);
-        // A paste start continues only into a read that holds its rest and an end marker, so typed keys never open one.
-        const paste = std.mem.startsWith(u8, "200~", params) and b == "200~"[params.len] and self.batch_left + params.len >= 3 + paste_end_marker.len;
         // A reply prefix continues a bare unit only while the host awaits the sentinel.
-        if (params.len == 0) return paste or (b == '<' and self.batch_left >= 1) or (b == 'M' and self.batch_left >= 3) or
+        if (params.len == 0) return (b == '<' and self.batch_left >= 1) or (b == 'M' and self.batch_left >= 3) or
             (self.expect.kitty_query and b == '?' and self.batch_left >= 2) or (self.expect.sentinel and beginsReply('[', b));
         // With `sentinel`, a number continues toward a cursor or pixel size reply.
-        if (allDigits(params)) return paste or (self.expect.sentinel and (digit or b == ';'));
+        if (allDigits(params)) return self.expect.sentinel and (digit or b == ';');
         // Whether the field being read has a digit; a mode report's `$` follows its digits.
         const field = std.mem.trimEnd(u8, params, "$");
         const has_digit = isDigit(field[field.len - 1]);

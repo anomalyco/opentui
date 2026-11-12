@@ -1130,6 +1130,7 @@ describe("stdin parser", () => {
           const { parser, clock } = createTimedParser()
           try {
             parser.push(Buffer.from(head))
+            expect(snap(parser)).toEqual([])
             clock.advance(TEST_TIMEOUT_MS)
             expect(snap(parser)).toEqual([])
             parser.push(Buffer.from(tail))

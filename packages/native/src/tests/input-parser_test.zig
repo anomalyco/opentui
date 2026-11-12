@@ -1034,12 +1034,16 @@ test "input parser times out partial units unless they may be mouse reports, Kit
         .{ plain, "\x1b[<", 0, "0;1;1M", &.{down(0, 0, 0)} },
         .{ plain, "\x1b[<35;20", 0, "x", &.{ frag("\x1b[<35;20"), ch('x') } },
         .{ plain, "\x1b\x1b[<35;20", 0, "\x1b", &.{ k(K.escape, NONE), frag("\x1b[<35;20") } },
-        // A paste start waits too, wherever the pause cuts it (issue 615); a byte that does not continue it ends it.
+        // A paste start waits too, wherever the pause cuts it (issue 615), for a read that begins with the rest of its
+        // marker and more. Another read ends it, as does the rest alone; one that owes an Escape key times out.
         .{ plain, "\x1b[", 0, "200~\x1b[201~", &.{paste("")} },
         .{ plain, "\x1b[2", 0, "00~a\rb\x1b[201~", &.{paste("a\rb")} },
+        .{ plain, "\x1b[200", 0, "~\x1b[201~", &.{paste("")} },
         .{ sentinel, "\x1b[200", 0, "~\x1b[201~", &.{paste("")} },
-        .{ plain, "\x1b[20", 0, "0~\x1b[201", &([_]Expect{frag("\x1b[20")} ++ typed("0~")) },
-        .{ plain, "\x1b[20", 0, "1~abcdefg", &([_]Expect{frag("\x1b[20")} ++ typed("1~abcdefg")) },
+        .{ plain, "\x1b[20", 0, "0~", &([_]Expect{frag("\x1b[20")} ++ typed("0~")) },
+        .{ plain, "\x1b[20", 0, "1~ab", &([_]Expect{frag("\x1b[20")} ++ typed("1~ab")) },
+        .{ plain, "\x1b[", 0, "24~example", &([_]Expect{frag("\x1b[")} ++ typed("24~example")) },
+        .{ plain, "\x1b\x1b[2", 2, "x", &.{ k(K.escape, NONE), frag("\x1b[2"), ch('x') } },
         .{ kitty, "\x1b[118;5", 0, ";3u", &.{kt('v', CTRL, "v")} },
         .{ kitty, "\x1b[97;", 0, "2u", &.{kt('a', SHIFT, "A")} },
         .{ kitty, "\x1b[97:65;", 0, "6:1u", &.{k('a', mods(&.{ CTRL, SHIFT }))} },
@@ -1240,12 +1244,11 @@ test "input parser times out partial units unless they may be mouse reports, Kit
     }
     // A lone introducer after a read-end Escape is recovered as after a timeout, with or without the bit: it waits
     // only while the sentinel is out, and is typed once that clears (`true`). Reads come 25 ms apart. Without the bit
-    // a held bare `ESC [` waits for its next byte instead. A `[<` that ends the read begins no reply and ends at once.
+    // a held bare `ESC [` waits for its next byte instead. A recovered `[2` is no paste start (issue 615).
     for ([_]struct { []const []const u8, bool, []const bool, []const Expect }{
         .{ &.{ "\x1b", "]" }, true, &.{ false, true }, &.{ k(K.escape, NONE), ch(']') } },
         .{ &.{ "\x1b", "[" }, true, &.{true}, &.{ k(K.escape, NONE), ch('[') } },
-        .{ &.{ "\x1b", "[<" }, false, &.{true}, &.{ k(K.escape, NONE), frag("[<") } },
-        .{ &.{ "\x1b", "[1" }, true, &.{true}, &.{ k(K.escape, NONE), ch('['), frag("1") } },
+        .{ &.{ "\x1b", "[", "2" }, true, &.{ false, true }, &.{ k(K.escape, NONE), ch('['), frag("2") } },
         .{ &.{ "\x1b", "[", "M", " ", "!", "!" }, false, &.{ false, true }, &([_]Expect{k(K.escape, NONE)} ++ typed("[M !!")) },
     }) |case| for (case[2]) |prefix| {
         var recovery = try Harness.create();

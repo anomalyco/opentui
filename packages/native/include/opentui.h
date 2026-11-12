@@ -3443,8 +3443,8 @@ ot_status ot_session_pump(
  * at least OT_INPUT_EVENTS_MIN and payload_capacity at least
  * OT_INPUT_PAYLOAD_BYTES_MIN; the call consumes input until either runs low and
  * reports consumed. A bracketed paste arrives as one or more PASTE records from
- * START to END; a start marker cut by the timeout waits for a feed that holds its rest
- * and an end marker. Records and payload are borrowed for the call and never retained.
+ * START to END; a start marker cut by the timeout waits for a feed that begins with its
+ * rest and more bytes. Records and payload are borrowed for the call and never retained.
  * bytes, records, payload, and out_drain must not overlap.
  * Accepted in any open session state; closing, closed, failed, and cancelled
  * sessions reject. A rejected call leaves out_drain, the records, and parser
