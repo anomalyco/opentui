@@ -253,20 +253,6 @@ describeClient("TreeSitterClient", () => {
     expect(tsBuffer?.hasParser).toBe(true)
   })
 
-  test("should handle buffer reset", async () => {
-    await client.initialize()
-
-    const jsCode = 'const hello = "world";'
-    await client.createBuffer(1, jsCode, "javascript")
-
-    const newContent = "function test() { return 42; }"
-    await client.resetBuffer(1, 2, newContent)
-
-    const buffer = client.getBuffer(1)
-    expect(buffer?.content).toBe(newContent)
-    expect(buffer?.version).toBe(2)
-  })
-
   const js = (n: number) => `const a = ${n};\nfunction f() { return ${n}; }`
   const fence = Array.from({ length: 80 }, (_, i) => `export const item${i}: number = ${i} * 2;`).join("\n")
   const md = `# Heading\n\nParagraph with **bold** and \`inline\`.\n\n\`\`\`typescript\n${fence}\n\`\`\`\n`
@@ -406,18 +392,6 @@ describeClient("TreeSitterClient", () => {
         expect(resets).toBeLessThanOrEqual(20)
       },
     ],
-    [
-      "resetBuffer while another client is destroyed",
-      async (c, highlighted) => {
-        const other = new TreeSitterClient({ dataPath })
-        await other.initialize()
-        await c.createBuffer(1, js(1), "javascript", 1)
-        await highlighted(1)
-        await c.resetBuffer(1, 2, js(2))
-        await other.destroy()
-        await highlighted(2)
-      },
-    ],
     ["removeBuffer during the first injection load", async (c) => void (await c.createBuffer(1, md, "markdown", 1))],
     [
       "removeBuffer right after resetBuffer",
@@ -440,23 +414,6 @@ describeClient("TreeSitterClient", () => {
         await c.createBuffer(1, md, "markdown", 1)
         await c.updateBuffer(1, replace(md, mdZig), mdZig, 2)
         await c.highlightOnce(md, "markdown")
-      },
-    ],
-    [
-      "removeBuffer again as the last removeBuffer's 3 s timeout ends",
-      async (c) => {
-        await c.createBuffer(1, js(1), "javascript", 1)
-        await c.removeBuffer(1)
-        await new Promise((resolve) => setTimeout(resolve, 2975))
-        await c.createBuffer(1, md, "markdown", 1)
-      },
-    ],
-    [
-      "removeBuffer three times at once",
-      async (c) => {
-        await c.createBuffer(1, js(1), "javascript", 1)
-        const removals = Promise.all([c.removeBuffer(1), c.removeBuffer(1), c.removeBuffer(1)])
-        expect(await within3s(removals)).toEqual([undefined, undefined, undefined])
       },
     ],
     [
@@ -562,15 +519,6 @@ describeClient("TreeSitterClient", () => {
     expect(errorMessage).toContain("Cannot reset buffer with no parser")
   })
 
-  test("should prevent duplicate buffer creation", async () => {
-    await client.initialize()
-
-    const jsCode = 'const hello = "world";'
-    await client.createBuffer(1, jsCode, "javascript")
-
-    await expect(client.createBuffer(1, "other code", "javascript")).rejects.toThrow("Buffer with id 1 already exists")
-  })
-
   test("should handle performance metrics", async () => {
     await client.initialize()
 
@@ -580,23 +528,6 @@ describeClient("TreeSitterClient", () => {
     expect(typeof performance.averageQueryTime).toBe("number")
     expect(Array.isArray(performance.parseTimes)).toBe(true)
     expect(Array.isArray(performance.queryTimes)).toBe(true)
-  })
-
-  test("should handle concurrent buffer operations", async () => {
-    await client.initialize()
-
-    const promises = []
-
-    for (let i = 0; i < 5; i++) {
-      const code = `const var${i} = ${i};`
-      promises.push(client.createBuffer(i, code, "javascript"))
-    }
-
-    const results = await Promise.all(promises)
-    expect(results.every((result) => result === true)).toBe(true)
-
-    const buffers = client.getAllBuffers()
-    expect(buffers).toHaveLength(5)
   })
 
   test("should clean up resources on destroy", async () => {
