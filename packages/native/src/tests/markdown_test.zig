@@ -1900,6 +1900,12 @@ test "Markdown stream: a leaf that changes kind or loses lines keeps its live di
         try f.doc.finish();
         try std.testing.expectEqualStrings("===\nfoo", (try f.doc.readLeaf(arena, 0)).bytes.items);
     }
+    // One title scanner for definitions and inline links: a parenthesized title cannot hold an
+    // unescaped `(` (cmark-gfm: both stay text).
+    for ([_][]const u8{ "[a](/u (b(c)))\n", "[x]: /u (b(c))\n\n[x]\n" }) |text| {
+        const rendered = try html.normalize(arena, try wholeHtml(arena, "kinds", text));
+        try std.testing.expect(std.mem.indexOf(u8, rendered, "<a ") == null);
+    }
     // A replace after a layout that unbound nodes: every node is rebound (model trace).
     {
         var f: Fixture = undefined;
