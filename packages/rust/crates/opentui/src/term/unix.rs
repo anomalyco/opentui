@@ -57,6 +57,9 @@ impl Terminal {
         }
         let mut saved: libc::termios = unsafe { std::mem::zeroed() };
         check(unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut saved) })?;
+        // PENDIN is not a mode: macOS sets it when a restore turns canonical mode back on, until input is flushed or
+        // read. Saved, every later restore would set it again.
+        saved.c_lflag &= !libc::PENDIN;
         let output_flags = check(unsafe { libc::fcntl(libc::STDOUT_FILENO, libc::F_GETFL) })?;
         let mut terminal = Self { saved, output_flags, raw: false };
         terminal.enter_raw()?;
