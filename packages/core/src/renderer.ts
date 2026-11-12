@@ -424,8 +424,8 @@ type ExternalOutputCommit = {
   endsRow?: boolean
 }
 
-// One captured stdout row of `cells` terminal cells. The last row of a write keeps the index its text starts at.
-type StdoutRow = { line: string; cells: number; trailingNewline: boolean; endsRow: boolean; start?: number }
+// One captured stdout row of `cells` terminal cells.
+type StdoutRow = { line: string; cells: number; trailingNewline: boolean; endsRow: boolean }
 
 const STDOUT_TAB_WIDTH = 8
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" })
@@ -2863,7 +2863,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
   }
 
-  private splitStdoutRows(text: string, tailColumn: number): StdoutRow[] {
+  private splitStdoutRows(text: string, tailColumn: number, hold = false): { rows: StdoutRow[]; held: string } {
     // Captured stdout arrives as an arbitrary byte stream, but split append commits
     // are row-based (line text + whether that row ended with '\n'). We normalize
     // here because native split append expects already-decoded row intent, not raw
@@ -2926,12 +2926,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       cells += graphemeCells
     }
 
+    // With `hold`, the unfinished last row is returned as text. At most 8 code units a cell are held, so a write
+    // rescans no more than one row.
+    if (hold && line.length > 0 && text.length - start <= 8 * width) return { rows, held: text.slice(start) }
     if (line.length > 0) {
       const column = (rows.length === 0 && tailColumn < width ? tailColumn : 0) + cells
-      rows.push({ line, cells, trailingNewline: false, endsRow: column >= width, start })
+      rows.push({ line, cells, trailingNewline: false, endsRow: column >= width })
     }
 
-    return rows
+    return { rows, held: "" }
   }
 
   private createStdoutSnapshotCommits(rows: readonly StdoutRow[]): ExternalOutputCommit[] {
@@ -3031,11 +3034,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     // instead of writing directly to process stdout. Native flushing will append
     // and repaint in one controlled frame, which is what avoids footer flicker.
     const queue = this.externalOutputQueue
-    const rows = this.splitStdoutRows(text, this.getPendingSplitTailColumn())
-    const last = rows.at(-1)
-    // At most 8 code units a cell are held, so a write rescans no more than one row.
-    const holdRow = hold && last?.trailingNewline === false && text.length - last.start! <= 8 * Math.max(1, this.width)
-    const held = holdRow ? text.slice(rows.pop()!.start) : ""
+    const { rows, held } = this.splitStdoutRows(text, this.getPendingSplitTailColumn(), hold)
     // A write that overflows the bound keeps at most its newest half bound of rows: a collapse drops the rest anyway.
     let added = rows.reduce((sum, row) => sum + capturedRowBytes(Math.max(1, row.cells)), 0)
     let trimmed = 0
@@ -3072,7 +3071,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private createDroppedRowCommit(rows: number): ExternalOutputCommit {
     const text = `[${rows} lines dropped]`.slice(0, Math.max(1, this.width))
-    const [commit] = this.createStdoutSnapshotCommits(this.splitStdoutRows(text, 0))
+    const [commit] = this.createStdoutSnapshotCommits(this.splitStdoutRows(text, 0).rows)
     commit!.nativeSnapshot = commit!.snapshot._getSceneHandle(this.nativeScene)
     return { ...commit!, startOnNewLine: true, trailingNewline: true, endsRow: true }
   }
@@ -5504,6 +5503,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private async presentNativeScene(): Promise<"rendered" | "retryable-skip" | "failed" | "dropped" | "blocked"> {
     if (this.isSplitCursorSeedFrameBlocked()) return "blocked"
+    // A row a post-process hook wrote after paint goes out with this frame too.
+    if (this.stdoutRow) this.captureStdout("", false)
     const commits =
       this._splitHeight > 0 && this._externalOutputMode === "capture-stdout"
         ? this.pendingNativeReplay?.remaining === 0

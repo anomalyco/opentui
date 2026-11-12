@@ -616,6 +616,15 @@ test("a resize waits for an unfinished captured stdout row", async () => {
   await drainUntil("held")
 })
 
+// A post-process hook runs after paint; the row it writes still goes out with its frame.
+test("captured stdout written by a post-process hook reaches that frame", async () => {
+  const { renderer, stdout, frame } = await setupTerminal()
+  const hook = () => (renderer.removePostProcessFn(hook), stdout.write("ready"))
+  renderer.addPostProcessFn(hook)
+  await frame()
+  expect(stdout.text()).toContain("ready")
+})
+
 // A write after a frame has presented waits for the next frame, which a later mark can still join.
 test("captured stdout written as a frame ends joins a combining mark before the next frame", async () => {
   const { renderer, stdout, frame } = await setupTerminal()
