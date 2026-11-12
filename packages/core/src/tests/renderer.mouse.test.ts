@@ -847,8 +847,8 @@ describe("renderer handleMouseData", () => {
   })
 
   // Steps: `move|down|drag|up|scroll:x,y[:right|:ctrl]`, `frame` (render once), `kill:id` (destroy), `clear`
-  // (clearSelection), or `console` (show it). A spans x 1-6, B x 12-17, and selectable S x 20-25, all y 1-4; B's
-  // child C spans x 16-17, y 1-2.
+  // (clearSelection), `console` (show it), or `quit` (the next drag-end destroys the renderer). A spans x 1-6, B x 12-17,
+  // and selectable S x 20-25, all y 1-4; B's child C spans x 16-17, y 1-2, and prevents its presses.
   // Each node logs `id:type`, then `@target` when the event bubbled and `(source id)` when it names a drag source.
   const pointerPaths: [string, string, string][] = [
     [
@@ -876,7 +876,6 @@ describe("renderer handleMouseData", () => {
       "down:2,2 kill:A drag:13,2 drag:14,2 up:14,2",
       "A:down B:over B:drag B:drag B:drag-end B:up",
     ],
-    ["release over the source before a frame", "down:2,2 drag:3,2 up:3,2", "A:down A:drag A:drag-end A:up"],
     ["release off the pressed node without a drag report", "down:2,2 up:13,2", "A:down B:up"],
     [
       "left drag after a right release",
@@ -908,11 +907,39 @@ describe("renderer handleMouseData", () => {
       "down:13,2 drag:14,2 frame drag:16,1 up:16,1",
       "B:down B:drag C:over(B) B:over@C(B) B:drag B:drag-end B:up",
     ],
+    // A left press while a gesture is held means its release was lost: the press ends that gesture.
+    [
+      "press on the source after a lost release and a frame",
+      "down:2,2 drag:3,2 frame down:3,2 frame up:3,2",
+      "A:down A:drag A:drag-end A:down A:over A:up",
+    ],
+    [
+      "press on a child, then on the child source, after lost releases",
+      "down:13,2 drag:14,2 down:16,1 drag:17,1 frame down:16,1",
+      "B:down B:drag B:drag-end C:down B:down@C C:drag B:drag@C C:drag-end B:drag-end@C C:down B:down@C",
+    ],
+    [
+      "press beside the source after a lost release",
+      "down:2,2 drag:3,2 down:7,2 up:7,2 down:2,2 drag:3,2 down:2,5 up:2,5",
+      "A:down A:drag A:drag-end A:down A:drag A:drag-end",
+    ],
+    [
+      "press that starts a selection after a lost selection release",
+      "down:21,2 drag:22,2 down:23,2 drag:24,2 up:24,2",
+      "S:down S:drag S:down S:drag S:up",
+    ],
+    [
+      "prevented press after a lost selection release",
+      "down:21,2 drag:22,2 down:16,1 drag:17,1 up:17,1",
+      "S:down S:drag C:down B:down@C C:drag B:drag@C C:drag-end B:drag-end@C C:up B:up@C",
+    ],
+    ["press after a lost release whose drag-end quits", "down:2,2 drag:3,2 quit down:13,2", "A:down A:drag A:drag-end"],
   ]
 
   test.each(pointerPaths)("pointer path: %s", async (_, steps, expected) => {
     try {
       const log: string[] = []
+      let quit = false
       const nodes = new Map<string, TestRenderable>()
       for (const [id, left, top, width, parent] of [
         ["A", 1, 1, 6, ""],
@@ -929,10 +956,13 @@ describe("renderer handleMouseData", () => {
           height: width === 2 ? 2 : 4,
         })
         node.selectable = id === "S"
-        node.onMouse = (event) =>
+        node.onMouse = (event) => {
+          if (id === "C" && event.type === "down") event.preventDefault()
           log.push(
             `${id}:${event.type}${event.target === node ? "" : `@${event.target?.id}`}${event.source ? `(${event.source.id})` : ""}`,
           )
+          if (quit && event.type === "drag-end") renderer.destroy()
+        }
         ;(nodes.get(parent) ?? renderer.root).add(node)
         nodes.set(id, node)
       }
@@ -945,12 +975,75 @@ describe("renderer handleMouseData", () => {
         else if (kind === "kill") nodes.get(at)!.destroy()
         else if (kind === "clear") renderer.clearSelection()
         else if (kind === "console") renderer.console.show()
+        else if (kind === "quit") quit = true
         else if (kind === "scroll") await mockMouse.scroll(x, y, "up")
         else if (kind === "move" || kind === "drag") await mockMouse.moveTo(x, y)
         else if (kind === "down") await mockMouse.pressDown(x, y, pressed, { modifiers: { ctrl: button === "ctrl" } })
         else await mockMouse.release(x, y, pressed)
       }
       expect(log.join(" ")).toBe(expected)
+      expect(renderer["hasLoggedStdinParserError"]).toBe(false)
+    } finally {
+      renderer.destroy()
+    }
+  })
+
+  // The pointer moves between rows 0 and 1. A press while another is held means its release was lost. CI: every
+  // trace of MOUSE_MODEL_DEPTH (6) events, then MOUSE_MODEL_SEEDS (24) traces of 24 events.
+  test("each press owns its gesture, also after a lost release", async () => {
+    const log: string[] = []
+    const nodes = [0, 1].map((y) => {
+      const node = new TestRenderable(renderer, { id: `${y}`, position: "absolute", top: y, width: 4, height: 1 })
+      node.onMouse = (event) => !["over", "out", "move"].includes(event.type) && log.push(`${event.type}:${y}`)
+      renderer.root.add(node)
+      return node
+    })
+    await renderOnce()
+    const check = async (trace: string[]) => {
+      await mockMouse.release(0, 0)
+      let [y, owner, dragging] = [0, -1, false]
+      const [actual, model]: string[][] = [[], []]
+      for (const step of trace) {
+        const expected: string[] = []
+        log.length = 0
+        if (step === "press") {
+          if (dragging) expected.push(`drag-end:${owner}`)
+          expected.push(`down:${y}`)
+          await mockMouse.pressDown(0, y)
+          ;[owner, dragging] = [y, false]
+        } else if (step === "release") {
+          if (!dragging) expected.push(`up:${y}`)
+          else expected.push(`drag-end:${owner}`, `up:${owner}`, ...(y === owner ? [] : [`drop:${y}`, `up:${y}`]))
+          await mockMouse.release(0, y)
+          ;[owner, dragging] = [-1, false]
+        } else if (step === "wheel") {
+          expected.push(`scroll:${y}`)
+          await mockMouse.scroll(0, y, "down")
+        } else {
+          y = 1 - y
+          if (owner >= 0) expected.push(`drag:${owner}`)
+          dragging = owner >= 0
+          await mockMouse.moveTo(0, y)
+        }
+        const held = `pressed ${renderer["pressedRenderable"]?.id} captured ${renderer["capturedRenderable"]?.id}`
+        actual.push(`${step}: ${log.join(" ")}; ${held}`)
+        const [pressed, captured] = [nodes[owner]?.id, dragging ? nodes[owner]!.id : undefined]
+        model.push(`${step}: ${expected.join(" ")}; pressed ${pressed} captured ${captured}`)
+      }
+      expect(actual).toEqual(model)
+    }
+    const events = ["press", "cross", "wheel", "release"]
+    const depth = Number(process.env.MOUSE_MODEL_DEPTH ?? 6)
+    try {
+      for (let n = 0; n < events.length ** depth; n++) {
+        await check(
+          Array.from({ length: depth }, (_, i) => events[Math.floor(n / events.length ** i) % events.length]!),
+        )
+      }
+      for (let seed = 1; seed <= Number(process.env.MOUSE_MODEL_SEEDS ?? 24); seed++) {
+        let state = seed
+        await check(Array.from({ length: 24 }, () => events[(state = (48271 * state) % 2147483647) % events.length]!))
+      }
     } finally {
       renderer.destroy()
     }

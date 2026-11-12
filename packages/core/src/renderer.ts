@@ -3934,12 +3934,23 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     // Every left down or up ends the record, also one that returns early; other events keep it.
     const pressed = this.pressedRenderable
     const left = mouseEvent.button === MouseButton.LEFT
-    if (left && (mouseEvent.type === "down" || mouseEvent.type === "up")) this.pressedRenderable = undefined
+    const press = left && mouseEvent.type === "down"
+    if (press || (left && mouseEvent.type === "up")) this.pressedRenderable = undefined
     if (this._splitHeight > 0) {
       if (mouseEvent.y < this.renderOffset) {
         return false
       }
       mouseEvent.y -= this.renderOffset
+    }
+    // A left press while a gesture is held means its release was lost: end that gesture before any handler sees the
+    // press. Ctrl+press sets a selection dragging again below.
+    const lost = press ? this.capturedRenderable : undefined
+    if (press && this.currentSelection) this.currentSelection.isDragging = false
+    if (lost) {
+      this.capturedRenderable = undefined
+      this.sendMouseEvent(lost, new MouseEvent(lost, { ...mouseEvent, type: "drag-end" }))
+      if (this._isDestroyed) return true
+      this.requestRender()
     }
 
     this._latestPointer.x = mouseEvent.x
@@ -3982,14 +3993,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     const maybeRenderableId = this.hitTest(mouseEvent.x, mouseEvent.y)
     const sameElement = maybeRenderableId === this.lastOverRenderableNum
     this.lastOverRenderableNum = maybeRenderableId
-    const maybeRenderable = Renderable.renderablesByNumber.get(maybeRenderableId)
+    const hit = Renderable.renderablesByNumber.get(maybeRenderableId)
+    // Until the next frame the hits leave out the old capture, so a press on it falls through to an ancestor.
+    const { x, y } = mouseEvent
+    const onLost = lost && x >= lost.x && x < lost.x + lost.width && y >= lost.y && y < lost.y + lost.height
+    const maybeRenderable = onLost && (!hit || this.isWithinContainer(lost, hit)) ? lost : hit
 
-    if (
-      mouseEvent.type === "down" &&
-      mouseEvent.button === MouseButton.LEFT &&
-      !this.currentSelection?.isDragging &&
-      !mouseEvent.modifiers.ctrl
-    ) {
+    if (press && !mouseEvent.modifiers.ctrl) {
       const canStartSelection = Boolean(
         maybeRenderable &&
         maybeRenderable.selectable &&
@@ -4036,12 +4046,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       return true
     }
 
-    if (mouseEvent.type === "down" && mouseEvent.button === MouseButton.LEFT && this.currentSelection) {
-      if (mouseEvent.modifiers.ctrl) {
-        this.currentSelection.isDragging = true
-        this.updateSelection(maybeRenderable, mouseEvent.x, mouseEvent.y)
-        return true
-      }
+    if (press && this.currentSelection && mouseEvent.modifiers.ctrl) {
+      this.currentSelection.isDragging = true
+      this.updateSelection(maybeRenderable, mouseEvent.x, mouseEvent.y)
+      return true
     }
 
     if (!sameElement && (mouseEvent.type === "drag" || mouseEvent.type === "move")) {
@@ -4095,21 +4103,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     let event: MouseEvent | undefined
     if (target) {
       if (isLeftDrag) this.capturedRenderable = target
-      else if (left && mouseEvent.type === "down") this.pressedRenderable = target
+      else if (press) this.pressedRenderable = target
       event = this.dispatchMouseEvent(target, mouseEvent)
     } else {
       this.lastOverRenderable = undefined
     }
 
-    if (
-      !event?.defaultPrevented &&
-      mouseEvent.type === "down" &&
-      mouseEvent.button === MouseButton.LEFT &&
-      this.currentSelection
-    ) {
-      this.clearSelection()
-    }
-
+    if (press && this.currentSelection && !event?.defaultPrevented) this.clearSelection()
     return true
   }
 
