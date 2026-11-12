@@ -1287,6 +1287,7 @@ test "Markdown model: repeated constructs keep work linear, stores within limits
 }
 
 /// B's last two exceptions to P7, taken before a step: a backtick opener drawn as a code span
+/// (or, with math, inline math that closes and shows its content raw)
 /// that never closes reverts to text (its content's escapes and entities then decode), and a
 /// definition that arrives turns `[a][b]` into `a`. The check skips a step that starts with an
 /// open prose leaf holding a backtick, and a step that adds a definition.
@@ -1309,7 +1310,12 @@ fn p7Exempt(doc: *const Doc) P7Exempt {
     var code_drawn = false;
     for (doc.blocks.items) |b| {
         const prose = b.kind == .paragraph or b.kind == .heading or b.kind == .table_cell;
-        if (prose and (b.flags.open or b.source_end_byte > doc.line_start_byte) and std.mem.indexOfScalar(u8, doc.source.items[b.source_start_byte..@min(doc.source.items.len, b.source_end_byte)], '`') != null) code_drawn = true;
+        if (!prose or !(b.flags.open or b.source_end_byte > doc.line_start_byte)) continue;
+        const source = doc.source.items[b.source_start_byte..@min(doc.source.items.len, b.source_end_byte)];
+        if (std.mem.indexOfScalar(u8, source, '`') != null) code_drawn = true;
+        // Inline math that closes shows its content raw (entities and escapes undecoded): the
+        // same exception as a code span's (the model over every option set found it).
+        if (doc.options.math and (std.mem.indexOfScalar(u8, source, '$') != null or std.mem.indexOf(u8, source, "\\(") != null)) code_drawn = true;
     }
     return .{ .code_drawn = code_drawn, .definition_count = doc.definitions.items.len, .line_start = doc.line_start_byte };
 }
