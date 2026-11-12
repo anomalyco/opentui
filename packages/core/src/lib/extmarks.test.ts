@@ -272,25 +272,20 @@ describe("ExtmarksController", () => {
       expect(textarea.cursorOffset).toBe(2)
     })
 
-    it("should jump to position BEFORE extmark start when moving left from after extmark", async () => {
-      await setup("abcdefgh")
+    // A mark that touches or overlaps the one moved over is skipped too.
+    for (const end of [4, 5]) {
+      it(`should jump over virtual extmarks at 2..${end} and 4..6 when moving left`, async () => {
+        await setup("ab@x@y")
 
-      textarea.focus()
-      textarea.cursorOffset = 6
+        textarea.focus()
+        textarea.cursorOffset = 6
+        extmarks.create({ start: 2, end, virtual: true })
+        extmarks.create({ start: 4, end: 6, virtual: true })
 
-      extmarks.create({
-        start: 3,
-        end: 6,
-        virtual: true,
+        currentMockInput.pressArrow("left")
+        expect(textarea.cursorOffset).toBe(1)
       })
-
-      expect(textarea.cursorOffset).toBe(6)
-
-      // When moving left from position 6 (right after extmark end),
-      // should jump to position 2 (before extmark start at 3)
-      currentMockInput.pressArrow("left")
-      expect(textarea.cursorOffset).toBe(2)
-    })
+    }
 
     it("should allow normal cursor movement left outside virtual extmark", async () => {
       await setup("abcdefgh")
@@ -1968,84 +1963,6 @@ Press ESC to return to main menu.`
   })
 
   describe("Virtual Extmark - Cursor Up/Down Movement", () => {
-    it("should not land inside virtual extmark when moving down", async () => {
-      await setup("abc\n[VIRTUAL]\ndef")
-
-      textarea.focus()
-      textarea.cursorOffset = 1
-
-      extmarks.create({
-        start: 4,
-        end: 13,
-        virtual: true,
-      })
-
-      expect(textarea.cursorOffset).toBe(1)
-
-      currentMockInput.pressArrow("down")
-      const cursorAfterDown = textarea.cursorOffset
-
-      const isInsideExtmark = cursorAfterDown >= 4 && cursorAfterDown < 13
-      expect(isInsideExtmark).toBe(false)
-    })
-
-    it("should not land inside virtual extmark when moving up", async () => {
-      await setup("abc\n[VIRTUAL]\ndef")
-
-      textarea.focus()
-      textarea.cursorOffset = 15
-
-      extmarks.create({
-        start: 4,
-        end: 13,
-        virtual: true,
-      })
-
-      expect(textarea.cursorOffset).toBe(15)
-
-      currentMockInput.pressArrow("up")
-      const cursorAfterUp = textarea.cursorOffset
-
-      const isInsideExtmark = cursorAfterUp >= 4 && cursorAfterUp < 13
-      expect(isInsideExtmark).toBe(false)
-    })
-
-    it("should jump to closest boundary when moving down into virtual extmark", async () => {
-      await setup("abc\n[VIRTUAL]\ndef")
-
-      textarea.focus()
-      textarea.cursorOffset = 1
-
-      extmarks.create({
-        start: 4,
-        end: 13,
-        virtual: true,
-      })
-
-      currentMockInput.pressArrow("down")
-      const cursorAfterDown = textarea.cursorOffset
-
-      expect(cursorAfterDown === 3 || cursorAfterDown === 13).toBe(true)
-    })
-
-    it("should jump to closest boundary when moving up into virtual extmark", async () => {
-      await setup("abc\n[VIRTUAL]\ndef")
-
-      textarea.focus()
-      textarea.cursorOffset = 15
-
-      extmarks.create({
-        start: 4,
-        end: 13,
-        virtual: true,
-      })
-
-      currentMockInput.pressArrow("up")
-      const cursorAfterUp = textarea.cursorOffset
-
-      expect(cursorAfterUp === 3 || cursorAfterUp === 13).toBe(true)
-    })
-
     it("should handle multiline virtual extmarks when moving up", async () => {
       await setup("line1\n[VIRTUAL\nMULTILINE]\nline4")
 

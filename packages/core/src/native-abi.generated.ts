@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 97e19c628c77a4e19d2c8b6fd93a52440c4fac77e357a50c1e736e2ad1d85d9d
+// ABI audit SHA-256: 6407ad7d68344c74a21fc6896b6e3ca8d6c1b6b5fc765d4d2bc7e013b76681fb
 
 export const OT_CONTEXT_ABI_VERSION = 2
 export const OT_OK = 0
@@ -186,6 +186,7 @@ export const OT_MEASURE_AT_MOST = 2
 export const OT_LAYOUT_PUBLIC = 0
 export const OT_LAYOUT_YOGA = 1
 export const OT_LAYOUT_PAINT = 2
+export const OT_LAYOUT_CONTENT = 3
 export const OT_BORDER_NONE = 0
 export const OT_BORDER_LEFT = 1
 export const OT_BORDER_BOTTOM = 2
@@ -2581,6 +2582,7 @@ export const nativeConstants = {
   OT_LAYOUT_PUBLIC: 0,
   OT_LAYOUT_YOGA: 1,
   OT_LAYOUT_PAINT: 2,
+  OT_LAYOUT_CONTENT: 3,
   OT_BORDER_NONE: 0,
   OT_BORDER_LEFT: 1,
   OT_BORDER_BOTTOM: 2,

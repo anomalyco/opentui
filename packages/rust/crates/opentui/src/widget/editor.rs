@@ -465,12 +465,12 @@ impl EditorCore {
     }
 
     fn delete_selection(&self) -> bool {
-        if self.selection().is_none() {
-            return false;
+        let selected = self.selection().is_some();
+        if selected {
+            self.report(self.view.delete_selection());
         }
-        self.report(self.view.delete_selection());
         self.clear_selection_state();
-        true
+        selected
     }
 
     /// Moves the cursor. With `select`, extends the selection from where it started; otherwise clears it.
@@ -521,7 +521,7 @@ impl EditorCore {
     }
 
     /// Moves the cursor one column, past atomic marks as Core moves past virtual ones (`extmarks.ts`): left from a
-    /// mark's end goes to one before its start, and right from at most its start goes to its end.
+    /// mark's end goes to the start of the character before it, and right from at most its start goes to its end.
     fn step_horizontal(&self, forward: bool) {
         let before = self.cursor().2;
         let marks = self.extmarks.borrow();
@@ -532,27 +532,45 @@ impl EditorCore {
                 .checked_sub(1)
                 .and_then(|target| marks.atomic_containing(target))
                 .filter(|mark| before >= mark.end)
-                .map(|mark| mark.start.saturating_sub(1))
+                .map(|mark| mark.start)
         };
         drop(marks);
         let command = match edge {
-            Some(offset) => EditCommand::CursorOffset(offset),
+            Some(end) if forward => EditCommand::CursorOffset(end),
+            Some(start) => return self.move_before(start),
             None if forward => EditCommand::MoveRight,
             None => EditCommand::MoveLeft,
         };
         self.report(self.buffer.command(command));
     }
 
-    /// Moves the cursor one visual row. Landing in an atomic mark sends it to the nearer edge, as Core's: one before
-    /// the start, or the end. Moving down never goes back to or before where it started.
+    /// One unit step left from a mark's start, so a wide character or a tab before it is not split.
+    fn move_before(&self, start: u32) {
+        self.report(self.buffer.command(EditCommand::CursorOffset(start)));
+        self.report(self.buffer.command(EditCommand::MoveLeft));
+    }
+
+    /// Moves the cursor one visual row. Landing in an atomic mark sends it to the nearer edge, as Core's: before the
+    /// start, or the end. Moving down never goes back to or before where it started.
     fn step_vertical(&self, down: bool) {
         let before = self.cursor().2;
         self.report(if down { self.view.move_down() } else { self.view.move_up() });
         let after = self.cursor().2;
         let Some(mark) = self.extmarks.borrow().atomic_containing(after) else { return };
-        let start = mark.start.saturating_sub(1);
-        let to_start = after - mark.start < mark.end - after && !(down && start <= before);
-        self.report(self.buffer.command(EditCommand::CursorOffset(if to_start { start } else { mark.end })));
+        if after - mark.start < mark.end - after {
+            self.move_before(mark.start);
+            if !down || self.cursor().2 > before {
+                return;
+            }
+        }
+        // Past later marks that overlap the end, so the cursor is not left inside one.
+        let mut end = mark.end;
+        while let Some(next) =
+            self.extmarks.borrow().marks.iter().find(|m| m.options.atomic && m.start < end && end < m.end)
+        {
+            end = next.end;
+        }
+        self.report(self.buffer.command(EditCommand::CursorOffset(end)));
     }
 
     fn goto_buffer_end(&self) {
