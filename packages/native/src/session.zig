@@ -1242,10 +1242,13 @@ pub const Session = struct {
                 if (progress.rows_remaining == 0) progress.step = .enable;
             },
             .enable => {
+                if (progress.phase == .setting_up) try candidate.queryExplicitWidth(writer, value.height);
                 if (progress.rows_return != 0) try writer.print("\x1b[{d}A", .{progress.rows_return});
                 try writer.writeAll(ansi.ANSI.hideCursor);
                 try candidate.enableDetectedFeatures(writer, candidate.opts.kitty_keyboard_flags != 0);
                 try candidate.setMouseMode(writer, progress.mouse, progress.mouse_movement);
+                // Terminals answer in order: the DA1 reply follows every other reply of the setup.
+                if (progress.phase == .setting_up and candidate.reply_sentinel) try writer.writeAll(ansi.ANSI.primaryDeviceAttrs);
                 progress.screen_claimed = true;
                 progress.step = .activate;
             },

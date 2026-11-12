@@ -235,7 +235,6 @@ pub fn rgbaToRgb24(rgba: RGBA) u32 {
 pub const ANSI = struct {
     pub const reset = "\x1b[0m";
     pub const clear = "\x1b[2J";
-    pub const home = "\x1b[H";
     pub const eraseToEndOfLine = "\x1b[K";
     pub const hideCursor = "\x1b[?25l";
     pub const showCursor = "\x1b[?25h";

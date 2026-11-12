@@ -395,11 +395,9 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     self.state.theme_queries_sent = true;
 
     // Send xtversion first (used for tmux detection)
-    try tty.writeAll(ansi.ANSI.xtversion ++
-        ansi.ANSI.hideCursor ++
-        ansi.ANSI.saveCursorState);
+    try tty.writeAll(ansi.ANSI.xtversion ++ ansi.ANSI.hideCursor);
 
-    // Capture the current cursor position before temporary home-position queries.
+    // Capture the startup cursor position, which seeds the split scrollback.
     try tty.writeAll(ansi.ANSI.cursorPositionRequest);
 
     // Probes are never DCS wrapped, and screen prints a DCS body as text. tmux
@@ -422,21 +420,21 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
         if (!self.reply_sentinel) try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
     }
 
-    if (!self.skip_explicit_width_query) {
-        self.explicit_width_probe_reports_pending = 2;
-        try tty.writeAll(ansi.ANSI.home ++
-            ansi.ANSI.explicitWidthQuery ++
-            ansi.ANSI.cursorPositionRequest ++
-            ansi.ANSI.home ++
-            ansi.ANSI.scaledTextQuery ++
-            ansi.ANSI.cursorPositionRequest);
-    } else {
-        self.explicit_width_probe_reports_pending = 0;
-    }
+    // queryExplicitWidth sends the probes once setup has reserved the renderer's rows.
+    self.explicit_width_probe_reports_pending = if (self.skip_explicit_width_query) 0 else 2;
+}
 
-    try tty.writeAll(ansi.ANSI.restoreCursorState);
-    // Terminals answer in order: the DA1 reply follows every other reply of the batch.
-    if (self.reply_sentinel) try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
+/// OSC 66 terminals draw the probes' spaces, so they go on rows the first frame paints. Setup leaves the cursor on the
+/// last row it reserved for `rows` renderer rows; with three or more, that row and the one above hold the 2-row `s=2`
+/// space. With fewer, `w=1` goes on the row below (the cursor's own at the bottom), and `s=2` would scroll: skipped.
+pub fn queryExplicitWidth(self: *Terminal, tty: anytype, rows: u32) !void {
+    if (!self.skip_explicit_width_query) {
+        const scaled = rows >= 3;
+        try tty.writeAll(ansi.ANSI.saveCursorState ++ (if (scaled) "\x1b[A\r" else "\x1b[B\r") ++
+            ansi.ANSI.explicitWidthQuery ++ ansi.ANSI.cursorPositionRequest ++ "\r");
+        if (scaled) try tty.writeAll(ansi.ANSI.scaledTextQuery);
+        try tty.writeAll(ansi.ANSI.cursorPositionRequest ++ ansi.ANSI.restoreCursorState);
+    }
 }
 
 /// ConPTY draws 24-bit color, but a remote app's output never reaches this process's console.
@@ -1428,9 +1426,9 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
             // Terminals answer in order, and the probes follow the capability queries.
             self.sync_reply_settled = true;
 
-            if (row == 1 and probe_index == 0 and col == 2) {
+            if (probe_index == 0 and col == 2) {
                 self.caps.explicit_width = true;
-            } else if (row == 1 and probe_index == 1 and col == 3) {
+            } else if (probe_index == 1 and col == 3) {
                 self.caps.explicit_width = true;
                 self.caps.scaled_text = true;
             }

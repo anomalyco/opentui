@@ -107,7 +107,8 @@ pub const named = [_]Preset{
     .{ .name = "hangup_mid_frame", .env = with(ssh_link, .{ .chunk_size = 4096, .faults = &[_]Fault{.{ .at = .{ .byte_offset = 130_000 }, .kind = .eio }} }) },
 };
 
-const split_input: Preset = .{ .name = "split_input", .env = with(ssh_link, .{ .events = Mix{ .key_period_ns = 100 * ms, .split_gap_ns = 19 * ms } }) };
+// D3 shows in about a third of the seeds, which timing makes chaotic: six keep one in the CI set.
+const split_input: Preset = .{ .name = "split_input", .env = with(ssh_link, .{ .events = Mix{ .key_period_ns = 100 * ms, .split_gap_ns = 19 * ms } }), .ci_seeds = 6 };
 // A cancel while output is queued or a Writable write runs.
 const crash_mid: Preset = .{ .name = "crash_mid", .env = with(ssh_link, .{ .events = Mix{ .end = .crash, .settle = false } }), .ci_seeds = 2 };
 

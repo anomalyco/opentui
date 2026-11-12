@@ -266,14 +266,14 @@ test "Session terminal main-screen reservation is chunked and repositions once" 
         try testing.expectEqual(.setting_up, f.value.getTerminalState().phase);
     }
     try testing.expectEqual(.output_pending, (try f.owner.pumpSession(f.id, 0, 1)).status);
-    try testing.expect(std.mem.startsWith(u8, try f.drain(&bytes), "\x1b[8194A"));
+    try testing.expect(std.mem.find(u8, try f.drain(&bytes), "\x1b[8194A") != null);
     try testing.expectEqual(.idle, (try f.owner.pumpSession(f.id, 0, 1)).status);
     try testing.expectEqual(.active, f.value.getTerminalState().phase);
 }
 
 /// Counts the rows reserved after the last screen setup and checks the matching cursor return.
 fn expectReservedRows(output: []const u8, rows: usize, moves_up: bool) !void {
-    const start = std.mem.findLast(u8, output, ansi.ANSI.saveCursorState).?;
+    const start = std.mem.findLast(u8, output, ansi.ANSI.saveCursorState ++ "\n").?;
     try testing.expectEqual(rows, std.mem.count(u8, output[start..], "\n"));
     var up: [16]u8 = undefined;
     const sequence = try std.fmt.bufPrint(&up, "\x1b[{d}A", .{rows});
@@ -296,7 +296,7 @@ test "Session terminal setup reserves main-screen rows and repositions by the ac
         var now_ns: u64 = 0;
         var bytes: [16 * 1024]u8 = undefined;
         _ = try f.value.splitControl(.{ .render_offset = case.render_offset });
-        try f.owner.setupSessionTerminal(f.id, .{ .use_alternate_screen = false });
+        try f.owner.setupSessionTerminal(f.id, .{ .use_alternate_screen = false, .reply_sentinel = true });
         try testing.expectEqual(.output_pending, (try f.owner.pumpSession(f.id, now_ns, 1)).status);
         var len = (try f.drain(&bytes)).len;
         if (case.changed_offset) |offset| _ = try f.value.splitControl(.{ .render_offset = offset });
@@ -312,7 +312,79 @@ test "Session terminal setup reserves main-screen rows and repositions by the ac
             try testing.expectEqual(@as(u32, 2), f.cli.renderOffset);
         }
         try expectReservedRows(bytes[0..len], 2, case.moves_up);
+        // Only setup probes and ends its replies with DA1; resume keeps the capabilities.
+        try testing.expectEqual(!case.resumed, std.mem.find(u8, bytes[0..len], ansi.ANSI.explicitWidthQuery) != null);
+        try testing.expectEqual(!case.resumed, std.mem.find(u8, bytes[0..len], ansi.ANSI.primaryDeviceAttrs) != null);
     }
+}
+
+/// Replays setup bytes for a `height`-row split footer on a `rows`-row main screen whose cursor starts on `start_row`
+/// below history, in a terminal that draws OSC 66 as kitty does: `w=1` covers one cell, `s=2` two rows. The footer
+/// takes the rows below the cursor row, or the bottom rows; a cell drawn anywhere else changes what the user sees.
+fn expectProbeOnFooter(bytes: []const u8, rows: u32, height: u32, start_row: u32) !void {
+    const footer = @min(start_row, rows - height) + 1;
+    var row = start_row;
+    var saved = row;
+    var alternate = false;
+    var i: usize = 0;
+    while (i < bytes.len) : (i += 1) {
+        if (bytes[i] == '\n') row = @min(rows, row + 1);
+        if (bytes[i] != 0x1b) continue;
+        i += 1;
+        if (bytes[i] == '[') {
+            const start = i + 1;
+            i = start;
+            while (bytes[i] < 0x40 or bytes[i] > 0x7e) i += 1;
+            const params = bytes[start..i];
+            const n = std.fmt.parseInt(u32, params, 10) catch 1;
+            switch (bytes[i]) {
+                'A' => row -= @min(n, row - 1),
+                'B' => row = @min(rows, row + n),
+                's' => if (params.len == 0) {
+                    saved = row;
+                },
+                'u' => if (params.len == 0) {
+                    row = saved;
+                },
+                'h', 'l' => if (std.mem.eql(u8, params, "?1049")) {
+                    alternate = bytes[i] == 'h';
+                },
+                'H' => row = std.fmt.parseInt(u32, params[0 .. std.mem.findScalar(u8, params, ';') orelse params.len], 10) catch 1,
+                // Setup bytes move the cursor no other way.
+                'f', 'd', 'E', 'F' => return error.TestUnexpectedResult,
+                else => {},
+            }
+        } else if (std.mem.findScalar(u8, "]P_", bytes[i]) != null) {
+            const end = i + std.mem.findAny(u8, bytes[i..], "\x07\x1b").?;
+            if (!alternate and std.mem.startsWith(u8, bytes[i..end], "]66;")) {
+                const cell_rows: u32 = if (std.mem.find(u8, bytes[i..end], "s=2") != null) 2 else 1;
+                try testing.expect(row >= footer and row + cell_rows <= footer + height);
+            }
+            i = end + @intFromBool(bytes[end] == 0x1b);
+        }
+    }
+}
+
+test "Session terminal setup probes OSC 66 only on rows the renderer paints" {
+    const screen_rows = 6;
+    // A full-height main screen keeps render offset 0; split footers start pinned to the bottom.
+    for ([_]bool{ false, true }) |alternate| for ([_]u32{ 1, 2, 3, 4, screen_rows }) |height| {
+        const f = try Fixture.init(testing.allocator, testing.io, 8, height);
+        defer f.deinit();
+        var now_ns: u64 = 0;
+        var bytes: [16 * 1024]u8 = undefined;
+        _ = try f.value.splitControl(.{ .render_offset = screen_rows - height });
+        // The sentinel DA1 follows the probes' replies.
+        try f.owner.setupSessionTerminal(f.id, .{ .use_alternate_screen = alternate, .reply_sentinel = alternate });
+        const output = try f.driveOutput(&now_ns, .active, &bytes, 32);
+        try testing.expectEqual(alternate, std.mem.endsWith(u8, output, ansi.ANSI.primaryDeviceAttrs));
+        try testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, ansi.ANSI.explicitWidthQuery));
+        try testing.expectEqual(height >= 3, std.mem.find(u8, output, ansi.ANSI.scaledTextQuery) != null);
+        for (1..screen_rows + 1) |start_row| {
+            errdefer std.debug.print("alternate={} height={} start_row={}\n", .{ alternate, height, start_row });
+            try expectProbeOnFooter(output, screen_rows, height, @intCast(start_row));
+        }
+    };
 }
 
 test "Session terminal Windows cursor-row work remains bounded at the saved-row limit" {
