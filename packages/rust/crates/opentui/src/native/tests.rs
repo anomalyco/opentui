@@ -885,7 +885,14 @@ fn selections_take_each_subset_of_their_colors() -> Result<()> {
     nodes[2].set_editor_view(Some(&range))?;
     nodes[3].set_editor_view(Some(&local))?;
     let (fg, bg) = (Some(Color::rgb(255, 0, 0)), Some(Color::rgb(0, 0, 255)));
-    for colors in [(None, None), (fg, None), (None, bg), (fg, bg)].map(|(fg, bg)| SelectionColors { fg, bg }) {
+    let transparent = Some(Color::TRANSPARENT);
+    let rows = [(None, None), (fg, None), (None, bg), (fg, bg), (None, transparent)];
+    for colors in rows.map(|(fg, bg)| SelectionColors { fg, bg }) {
+        // Each row starts unselected, so a call that selects nothing cannot pass on the previous row's selection.
+        nodes[0].clear_text_selection()?;
+        text_view.clear_selection()?;
+        range.clear_selection()?;
+        local.clear_selection()?;
         nodes[0].select_text((0, 0), (1, 0), false, SelectionUnit::Cell, colors)?;
         text_view.select_local((0, 0), (1, 0), false, SelectionUnit::Cell, colors)?;
         range.select_range(0, 2, colors)?;
@@ -897,7 +904,9 @@ fn selections_take_each_subset_of_their_colors() -> Result<()> {
         let capture = session.paint(Color::BLACK, true, 0)?.capture()?;
         let cells = (0..4).map(|y| capture.cell(0, y).map(|cell| (cell.fg, cell.bg))).collect::<Vec<_>>();
         assert_eq!(cells, [cells[0]; 4], "{colors:?}");
-        assert!(colors.bg.is_none_or(|bg| cells[0].is_some_and(|cell| cell.1 == bg)), "{colors:?}");
+        // A transparent background composites onto the frame, so only an opaque one paints as itself.
+        let opaque = colors.bg.filter(|bg| bg.a == 255);
+        assert!(opaque.is_none_or(|bg| cells[0].is_some_and(|cell| cell.1 == bg)), "{colors:?}");
     }
     Ok(())
 }
