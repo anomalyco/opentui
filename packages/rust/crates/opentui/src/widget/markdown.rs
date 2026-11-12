@@ -393,10 +393,18 @@ fn leaf_spans(leaf: &MarkdownLeaf, conceal: bool) -> Vec<InlineSpan> {
                 let url = &leaf.urls[chunk.link_offset as usize..][..chunk.link_byte_count as usize];
                 text = text.link(String::from_utf8_lossy(url).into_owned());
             }
-            let math = (span & sys::OT_MD_SPAN_MATH != 0).then(|| {
-                let delimiter = if conceal { 0 } else { 2 - usize::from(text.content.starts_with('$')) };
-                text.content[delimiter..text.content.len() - delimiter].to_owned()
-            });
+            // A span the held end of a streamed line cuts lacks its closer: without conceal it is not math yet.
+            let tex = text.content.as_ref();
+            let (open, close) = if conceal {
+                ("", "")
+            } else if tex.starts_with('$') {
+                ("$", "$")
+            } else {
+                ("\\(", "\\)")
+            };
+            let math = (span & sys::OT_MD_SPAN_MATH != 0)
+                .then(|| Some(tex.strip_prefix(open)?.strip_suffix(close)?.to_owned()))
+                .flatten();
             InlineSpan { span: text, code: span & sys::OT_MD_SPAN_CODE != 0, target: None, math }
         })
         .collect()
@@ -1070,11 +1078,11 @@ impl Markdown {
         // Read without the borrow guard: a change holds it, and nothing changes the source here.
         let source = app.report(doc.source())?;
         let info = source[block.info.start as usize..block.info.end as usize].to_owned();
-        // Display math is code of the language `math`, as Core's `lang: "math"`.
-        let info = if block.has(sys::OT_MD_BLOCK_MATH) { "math".to_owned() } else { info };
         let info = (!info.is_empty()).then_some(info);
         let options = Rc::clone(&self.0.options.borrow());
-        let custom = info.as_deref().and_then(|info| {
+        // Display math is code of the language `math` for renderers, as Core's `lang: "math"`; without one it is plain.
+        let name = if block.has(sys::OT_MD_BLOCK_MATH) { Some("math") } else { info.as_deref() };
+        let custom = name.and_then(|info| {
             let language = filetype_for_info_string(info)?;
             let (_, render) = options.code_blocks.iter().find(|(key, _)| *key == language)?;
             let previous = match previous {

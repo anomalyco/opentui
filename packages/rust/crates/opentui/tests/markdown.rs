@@ -320,6 +320,9 @@ fn math_reaches_renderers_as_code_and_hooks_as_spans() {
     markdown.append("\n| \\(t\\) |\n| - |\n");
     assert_eq!(spans.borrow().last().map(String::as_str), Some("\\(t\\) t"));
     assert!(sources.borrow().iter().all(|source| !source.contains("e^x")), "{:?}", sources.borrow());
+    // Off again, `$` and `\(` are text again.
+    markdown.conceal(true).extensions(&[]);
+    assert!(frame(&app).starts_with("a $x*y$ and (z) $5\n\n│ $$\n│ e^x\n"), "{}", frame(&app));
 }
 
 fn inline_span(text: Span<'static>, code: bool, target: Option<&str>) -> InlineSpan {
@@ -1065,17 +1068,18 @@ fn model_every_three_ownership_changes_equal_a_fresh_document() {
     }
 }
 
-/// The math soup of markdown-highlight-ssot-models.md (S3).
-const MATH_PIECES: [&str; 15] =
-    ["$", "$$", "\\(", "\\)", "\\[", "\\]", "\\$", "`", "5", "x", " ", "\n", "**", "<", "]("];
+/// The math soup of markdown-highlight-ssot-models.md (S3), and `|`, which holds a streamed line that may be a
+/// table's header.
+const MATH_PIECES: [&str; 16] =
+    ["$", "$$", "\\(", "\\)", "\\[", "\\]", "\\$", "`", "5", "x", " ", "\n", "**", "<", "](", "|"];
 
-/// The inline math a fresh document of `source` shows without conceal (so its text is the source): for each span,
-/// its paragraph or heading in document order, where it starts in that text, and its TeX.
-fn math_spans(source: &str, streaming: bool) -> Vec<(usize, usize, String)> {
+/// The inline math a fresh document of `source` shows: for each span, its paragraph or heading in document order,
+/// where it starts in its text (without conceal, the source), and its TeX.
+fn math_spans(source: &str, streaming: bool, conceal: bool) -> Vec<(usize, usize, String)> {
     let app = TestApp::new(40, 24);
     let found: Rc<RefCell<Vec<(usize, usize, String)>>> = Rc::default();
     let (record, leaves) = (found.clone(), Cell::new(0));
-    let markdown = Markdown::new(&app).extensions(&[MarkdownExtension::Math]).conceal(false).streaming(streaming);
+    let markdown = Markdown::new(&app).extensions(&[MarkdownExtension::Math]).conceal(conceal).streaming(streaming);
     markdown.inline_hook(move |spans, _| {
         let leaf = leaves.replace(leaves.get() + 1);
         let mut at = 0;
@@ -1096,17 +1100,23 @@ fn math_spans(source: &str, streaming: bool) -> Vec<(usize, usize, String)> {
 /// shown, the same, after every later one and once the document ends (P17: a span changes at most once and never
 /// reverts, so a `$` is never shown as math before it is decided); each streamed frame equals a fresh streaming
 /// document's of the text so far, where native code writes the text (invariant 4); the ended stream's frame equals
-/// one shot's. The failing check and the end of the text it failed at.
-fn math_streams_like_fresh_documents(source: &str, ends: &[usize]) -> Option<(&'static str, usize)> {
+/// one shot's. With `agree`, conceal on and off show the same math too. The failing check and the end of the text it
+/// failed at.
+fn math_streams_like_fresh_documents(source: &str, ends: &[usize], agree: bool) -> Option<(&'static str, usize)> {
+    let tex =
+        |spans: Vec<(usize, usize, String)>| spans.into_iter().map(|(leaf, _, tex)| (leaf, tex)).collect::<Vec<_>>();
     let mut shown = Vec::new();
     for end in (1..=source.len()).filter(|&end| source.is_char_boundary(end)) {
-        let now = math_spans(&source[..end], true);
+        let now = math_spans(&source[..end], true, false);
         if !shown.iter().all(|span| now.contains(span)) {
             return Some(("math never reverts (P17)", end));
         }
+        if agree && tex(now.clone()) != tex(math_spans(&source[..end], true, true)) {
+            return Some(("conceal on and off show the same math", end));
+        }
         shown = now;
     }
-    let ended = math_spans(source, false);
+    let ended = math_spans(source, false, false);
     if !shown.iter().all(|span| ended.contains(span)) {
         return Some(("math never reverts (P17)", source.len()));
     }
@@ -1151,14 +1161,17 @@ fn math_rows_stream_like_fresh_documents() {
         // The spans the HTML holds, so the property below sees math where there is some.
         let tex: Vec<&str> =
             html.split("<span class=\"math\">").skip(1).map(|s| s.split("</span>").next().unwrap()).collect();
-        let ended = math_spans(&chunks.concat(), false);
+        let ended = math_spans(&chunks.concat(), false, false);
         assert_eq!(ended.iter().map(|(.., tex)| tex.as_str()).collect::<Vec<_>>(), tex, "{}", row[0]);
-        let failure = math_streams_like_fresh_documents(&chunks.concat(), &chunk_ends(&chunks));
+        let failure = math_streams_like_fresh_documents(&chunks.concat(), &chunk_ends(&chunks), true);
         assert_eq!(failure, None, "{}", row[0]);
     }
 }
 
-struct MathSoup;
+/// The math soup; with `agree`, conceal on and off must show the same math.
+struct MathSoup {
+    agree: bool,
+}
 
 impl model::Model for MathSoup {
     type Command = &'static str;
@@ -1174,13 +1187,51 @@ impl model::Model for MathSoup {
     /// Each piece is a chunk of the stream.
     fn run(&self, pieces: &[&'static str]) -> Option<model::Failure> {
         let ends = chunk_ends(pieces);
-        let (property, end) = math_streams_like_fresh_documents(&pieces.concat(), &ends)?;
+        let (property, end) = math_streams_like_fresh_documents(&pieces.concat(), &ends, self.agree)?;
         Some(model::Failure { property, step: ends.iter().position(|&e| e >= end).unwrap_or(0) })
     }
 }
 
 #[test]
 fn model_streamed_math_never_reverts() {
-    // CI budget: 64 documents of 24 pieces, every prefix; MODEL_SEEDS widens it.
-    model::check(&MathSoup, 64, 24);
+    // CI budget: 64 documents of 24 pieces, every prefix; MODEL_SEEDS widens it. Conceal on and off agree once the
+    // engine stops drawing a span the held `|` cuts as math (below).
+    model::check(&MathSoup { agree: false }, 64, 24);
+}
+
+/// What the engine gets wrong until `harden/markdown-engine-fixes` reaches this branch: each row must still fail. A
+/// row that passes has its fix: move it to the corpus math rows, and turn `agree` on in the soup for opus-2.
+#[test]
+fn math_the_engine_gets_wrong_still_fails() {
+    // The finding, the streamed chunks, and the frame after each chunk where native code writes the text (none: the
+    // property alone).
+    let rows: [(&str, &[&str], &[&str]); 4] = [
+        // A span the held `|` of a streamed line cuts is drawn, and given to a hook with conceal, as math.
+        ("opus-2, bigboi-1", &["$a", "|", "b$", " c"], &["$a", "$a", "$a", "$a"]),
+        // A split escaped backslash: the live parser reads its second half as a `\)` closer.
+        ("bigboi-2", &["\\(a b\\\\", ")", " now"], &[]),
+        // A decided closer stays literal until the next word.
+        ("bigboi-3", &["see $x$", "."], &["see $x$", "see x."]),
+        // Inline math shows in a line that becomes a display block at its newline.
+        ("bigboi-4", &["\\[a $b$ z\\]", "\n"], &[]),
+    ];
+    for (finding, chunks, frames) in rows {
+        let app = TestApp::with_hyperlinks(40, 8);
+        let markdown = Markdown::new(&app).extensions(&[MarkdownExtension::Math]).streaming(true);
+        app.root().add(&markdown);
+        let shown: Vec<String> = chunks
+            .iter()
+            .map(|chunk| {
+                markdown.append(chunk);
+                frame(&app)
+            })
+            .collect();
+        let fails = math_streams_like_fresh_documents(&chunks.concat(), &chunk_ends(chunks), true).is_some()
+            || !frames.is_empty() && shown != frames.iter().map(|frame| format!("{frame}\n")).collect::<Vec<_>>();
+        assert!(fails, "{finding} passes now: move its row to the passing rows");
+    }
+    let soup = MathSoup { agree: true };
+    use model::Model as _;
+    let disagree = (0..64).any(|seed| soup.run(&soup.generate(&mut model::Rng::new(seed), 24)).is_some());
+    assert!(disagree, "opus-2 passes now: turn `agree` on in model_streamed_math_never_reverts");
 }

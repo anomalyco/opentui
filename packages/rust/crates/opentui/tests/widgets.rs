@@ -1226,6 +1226,21 @@ fn code_without_a_grammar_shows_plain_text() {
 
 #[cfg(feature = "tree-sitter")]
 #[test]
+fn display_math_without_a_renderer_shows_plain_tex() {
+    use opentui::widget::{Markdown, MarkdownExtension};
+    // Even with a grammar named `math`, which a ```math fence takes, display math shows plain TeX, as in Core.
+    opentui::syntax::register_alias("math", "rust");
+    let app = TestApp::new(20, 4);
+    let doc = Markdown::new(&app).extensions(&[MarkdownExtension::Math]);
+    app.root().add(&doc.set_markdown("$$\nfn x\n$$\n\n```math\nfn x\n```").grow(1.0));
+    let keyword = syntax_fg(&app, "keyword");
+    assert!(app.wait_until(Duration::from_secs(10), || app.render().cell(0, 2).unwrap().fg == keyword));
+    assert_eq!(rows(&app)[..3], ["fn x", "", "fn x"]);
+    assert_eq!(app.render().cell(0, 0).unwrap().fg, app.theme().foreground);
+}
+
+#[cfg(feature = "tree-sitter")]
+#[test]
 fn highlighted_code_restyles_appends_and_theme_changes() {
     use opentui::syntax::SyntaxTheme;
     use opentui::widget::Code;
