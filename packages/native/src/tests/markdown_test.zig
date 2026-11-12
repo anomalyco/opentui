@@ -1065,6 +1065,14 @@ test "Markdown tables: a header line is at most 4,096 bytes, and only such a lin
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
+    // One cell scanner for complete and pending rows: an escaped space trims like any space.
+    {
+        var f: Fixture = undefined;
+        try f.init(.{});
+        defer f.deinit();
+        try f.doc.append("|a|b|\n|-|-|\n| c\\ | d |\n");
+        try std.testing.expectEqualStrings("c\\", f.doc.source.items[f.doc.blocks.items[5].content_start_byte..f.doc.blocks.items[5].content_end_byte]);
+    }
     for ([_]u32{ markdown.table_header_byte_count_max, markdown.table_header_byte_count_max + 1 }) |length| {
         const line = try arena.alloc(u8, length);
         @memset(line, 'x');
@@ -1380,9 +1388,12 @@ test "Markdown limits: each store stays within its limit and a rejection publish
     // tail writes still rebuild the leaf's display. With a held pipe before them too (bigboi
     // round 2: the hold kept every token), a definition title that holds them (round 3: tokens
     // were built while the title was open) and a pipe in a code span before them (round 3: the
-    // hold pinned every later token). 26,000 openers: the content copy outgrows 64 KiB, so a
-    // retire clamps its capacity (round 3: the clamp asked for more bytes than it held).
-    for ([_]struct { []const u8, usize }{ .{ "", 6000 }, .{ "text | ", 6000 }, .{ "[x]: /u '", 6000 }, .{ "text `a | b` ", 6000 }, .{ "", 26000 } }) |row| {
+    // hold pinned every later token). After a 70,000-byte word the content copy outgrows 64 KiB,
+    // so a retire clamps its capacity (round 3: the clamp asked for more bytes than it held).
+    const long_word = try arena.alloc(u8, 70000);
+    @memset(long_word, 'x');
+    const clamp_prefix = try std.mem.concat(arena, u8, &.{ "*", long_word, " " });
+    for ([_]struct { []const u8, usize }{ .{ "", 6000 }, .{ "text | ", 6000 }, .{ "[x]: /u '", 6000 }, .{ "text `a | b` ", 6000 }, .{ clamp_prefix, 6000 } }) |row| {
         const prefix = row[0];
         var f: Fixture = undefined;
         try f.init(.{});
@@ -1401,7 +1412,7 @@ test "Markdown limits: each store stays within its limit and a rejection publish
             try std.testing.expect(p.delimiters.items.len <= bound and p.delimiters.capacity <= 2 * bound);
             try std.testing.expect(p.matches.items.len <= bound and p.brackets.items.len <= inline_parser.bracket_count_max);
             try std.testing.expect(f.doc.live.display_ends.items.len <= bound and f.doc.live.display_ends.capacity <= 2 * bound);
-            try std.testing.expect(f.doc.live.content.items.len <= 8 * bound);
+            try std.testing.expect(f.doc.live.content.items.len <= 8 * bound + prefix.len);
         }
         // A possible definition builds no tokens.
         if (prefix.len == 0 or prefix[0] != '[') try std.testing.expect(high > inline_parser.token_count_max);
@@ -1846,6 +1857,30 @@ test "Markdown stream: a leaf that changes kind or loses lines keeps its live di
             try std.testing.expect(try sameDocs(arena, &f.doc, &fresh.doc));
         }
     }
+    // A paragraph of only definitions that a `===` line continues starts at that line (spec
+    // 216): its display has no empty first line.
+    {
+        var f: Fixture = undefined;
+        try f.init(.{});
+        defer f.deinit();
+        try f.doc.append("[foo]: /url\n===\n[foo]\n");
+        try f.doc.finish();
+        try std.testing.expectEqualStrings("===\nfoo", (try f.doc.readLeaf(arena, 0)).bytes.items);
+    }
+    // A replace after a layout that unbound nodes: every node is rebound (model trace).
+    {
+        var f: Fixture = undefined;
+        try f.init(.{});
+        defer f.deinit();
+        var sink: markdown.TailSink = .{ .allocator = gpa };
+        defer sink.deinit();
+        f.doc.tail_sink = &sink;
+        for ([_][]const u8{ "`\n", ">", "o" }) |part| try f.doc.append(part);
+        try std.testing.expect(try liveShowsReadLeaf(arena, &f.doc, &sink));
+        try f.doc.set("\t");
+        try f.doc.append("\n[");
+        try std.testing.expect(try liveShowsReadLeaf(arena, &f.doc, &sink));
+    }
     // A paragraph of only definitions that the pending line ends is hidden, as the completed
     // line removes it (property (c), which the model found).
     {
@@ -1866,6 +1901,20 @@ test "Markdown stream: a leaf that changes kind or loses lines keeps its live di
         try parts.append(arena, "\nnext\n");
         try std.testing.expect(try streamAgreesParts(arena, "kinds", parts.items));
     }
+    // A short held line that reaches the retire threshold (7,800 settled tokens before it):
+    // the retire keeps the tokens from the pipe on, so the line can still be written when the
+    // hold ends.
+    {
+        var parts: std.ArrayListUnmanaged([]const u8) = .empty;
+        for (0..13) |_| {
+            for (0..300) |_| try parts.append(arena, "`c` x ");
+            try parts.append(arena, "\n");
+        }
+        try parts.append(arena, "text | ");
+        for (0..300) |_| try parts.append(arena, "`c` x ");
+        try parts.append(arena, "\nnext\n");
+        try std.testing.expect(try streamAgreesParts(arena, "kinds", parts.items));
+    }
     // opus-4 (a): definitions leave the paragraph the next one's live text would follow; (b) a
     // pending table row latches each of its cells that holds the filter.
     try std.testing.expect(try streamAgreesParts(arena, "kinds", &.{ "[x]: /u\n\nnext para\n", "more [x]" }));
@@ -1877,6 +1926,20 @@ test "Markdown changes: a late definition lists again the paragraph it changes" 
     var f: Fixture = undefined;
     try f.init(.{});
     defer f.deinit();
+    // A pending row's cell and a pending paragraph that grow after a read are listed again
+    // (the growth path writes them in place).
+    for ([_][]const u8{ "|a|b|\n|-|-|\n| ab", "> some te" }) |text| {
+        var g: Fixture = undefined;
+        try g.init(.{});
+        defer g.deinit();
+        try g.doc.append(text);
+        var changes: [16]Doc.Change = undefined;
+        _ = g.doc.readChanges(&changes);
+        try g.doc.append("c");
+        const grown = g.doc.readChanges(&changes);
+        try std.testing.expect(grown.count >= 1);
+        try std.testing.expectEqual(@as(u32, @intCast(g.doc.blocks.items.len - 1)), changes[grown.count - 1].index);
+    }
     // `[y]` keeps the leaf UNRESOLVED, so only the definition's use lists it (opus-10).
     try f.doc.append("see [x] [y]\n\nother\n\n");
     var out: [8]Doc.Change = undefined;
