@@ -934,8 +934,8 @@ test "TextBufferView virtual line spans - with highlights" {
 
     try std.testing.expectEqual(@as(u32, 2), view.getVirtualLineCount());
 
-    const vline0_info = view.getVirtualLineSpans(0);
-    const vline1_info = view.getVirtualLineSpans(1);
+    const vline0_info = (try view.getVirtualLineSpans(0));
+    const vline1_info = (try view.getVirtualLineSpans(1));
 
     try std.testing.expectEqual(@as(usize, 0), vline0_info.source_line);
     try std.testing.expectEqual(@as(usize, 0), vline1_info.source_line);
@@ -2650,8 +2650,8 @@ test "TextBufferView highlights - work correctly with wrapped lines" {
 
     try std.testing.expectEqual(@as(u32, 2), view.getVirtualLineCount());
 
-    const vline0_info = view.getVirtualLineSpans(0);
-    const vline1_info = view.getVirtualLineSpans(1);
+    const vline0_info = (try view.getVirtualLineSpans(0));
+    const vline1_info = (try view.getVirtualLineSpans(1));
 
     try std.testing.expectEqual(@as(usize, 0), vline0_info.source_line);
     try std.testing.expectEqual(@as(usize, 0), vline1_info.source_line);
@@ -3486,7 +3486,7 @@ test "TextBufferView highlights - multiple highlights on wrapped line" {
     try std.testing.expect(vline_count >= 3);
 
     for (0..vline_count) |i| {
-        const vline_info = view.getVirtualLineSpans(i);
+        const vline_info = (try view.getVirtualLineSpans(i));
         try std.testing.expectEqual(@as(usize, 0), vline_info.source_line);
         try std.testing.expectEqual(@as(u32, @intCast(i * 10)), vline_info.source_col_start);
     }
@@ -3512,8 +3512,8 @@ test "TextBufferView highlights - with emojis and wrapping" {
     const vline_count = view.getVirtualLineCount();
     try std.testing.expect(vline_count >= 2);
 
-    const vline0_info = view.getVirtualLineSpans(0);
-    const vline1_info = view.getVirtualLineSpans(1);
+    const vline0_info = (try view.getVirtualLineSpans(0));
+    const vline1_info = (try view.getVirtualLineSpans(1));
 
     try std.testing.expectEqual(@as(usize, 0), vline0_info.source_line);
     try std.testing.expectEqual(@as(usize, 0), vline1_info.source_line);
@@ -3545,7 +3545,7 @@ test "TextBufferView highlights - with CJK characters and wrapping" {
     try std.testing.expect(vline_count >= 2);
 
     for (0..vline_count) |i| {
-        const vline_info = view.getVirtualLineSpans(i);
+        const vline_info = (try view.getVirtualLineSpans(i));
         try std.testing.expectEqual(@as(usize, 0), vline_info.source_line);
 
         if (i == 0) {
@@ -3576,8 +3576,8 @@ test "TextBufferView highlights - mixed ASCII and wide chars with wrapping" {
     const vline_count = view.getVirtualLineCount();
     try std.testing.expect(vline_count >= 2);
 
-    const vline0_info = view.getVirtualLineSpans(0);
-    const vline1_info = view.getVirtualLineSpans(1);
+    const vline0_info = (try view.getVirtualLineSpans(0));
+    const vline1_info = (try view.getVirtualLineSpans(1));
 
     try std.testing.expectEqual(@as(usize, 0), vline0_info.source_line);
     try std.testing.expectEqual(@as(usize, 0), vline1_info.source_line);
@@ -3609,8 +3609,8 @@ test "TextBufferView highlights - emoji at wrap boundary" {
     const vline_count = view.getVirtualLineCount();
     try std.testing.expect(vline_count >= 2);
 
-    const vline0_info = view.getVirtualLineSpans(0);
-    const vline1_info = view.getVirtualLineSpans(1);
+    const vline0_info = (try view.getVirtualLineSpans(0));
+    const vline1_info = (try view.getVirtualLineSpans(1));
 
     try std.testing.expectEqual(@as(u32, 0), vline0_info.source_col_start);
     try std.testing.expect(vline1_info.source_col_start >= 4);
@@ -3633,7 +3633,7 @@ test "TextBufferView highlights - emojis without wrapping" {
     const vline_count = view.getVirtualLineCount();
     try std.testing.expectEqual(@as(u32, 1), vline_count);
 
-    const spans = tb.getLineSpans(0);
+    const spans = (try tb.getLineSpans(0));
     try std.testing.expect(spans.len > 0);
 
     const highlights = tb.getLineHighlights(0);
@@ -3664,7 +3664,7 @@ test "TextBufferView highlights - CJK without wrapping" {
     try std.testing.expectEqual(@as(u32, 2), highlights[0].col_start);
     try std.testing.expectEqual(@as(u32, 6), highlights[0].col_end);
 
-    const spans = tb.getLineSpans(0);
+    const spans = (try tb.getLineSpans(0));
     try std.testing.expect(spans.len > 0);
 }
 
@@ -3693,7 +3693,7 @@ test "TextBufferView highlights - mixed width graphemes without wrapping" {
     try std.testing.expectEqual(@as(u32, 4), highlights[1].col_start);
     try std.testing.expectEqual(@as(u32, 7), highlights[1].col_end);
 
-    const spans = tb.getLineSpans(0);
+    const spans = (try tb.getLineSpans(0));
     try std.testing.expect(spans.len > 0);
 }
 
