@@ -1761,22 +1761,37 @@ fn accelerated_wheel_bursts_scroll_further() {
     assert_eq!(scroll.scroll_position().1, 1.0);
 }
 
+// Core's offsets: a sticky box follows only its start edge, and stays stuck after a scroll in a range of one cell.
 #[test]
-fn sticky_boxes_follow_the_edge_they_start_at() {
-    use opentui::widget::ScrollEdge;
-    let app = TestApp::new(20, 4);
-    let scroll = scroll_box_with_lines(&app, 2).sticky(true).sticky_start(ScrollEdge::Top);
-    for line in 2..10 {
-        scroll.add(&Text::new(&app, format!("line {line}")));
+fn sticky_boxes_follow_only_the_edge_they_start_at() {
+    use opentui::widget::ScrollEdge::{self, *};
+    // Edge, content size, explicit scroll, grown size, offset after growing.
+    let cases: [(ScrollEdge, u16, f64, u16, f64); 9] = [
+        (Bottom, 3, 0.0, 6, 4.0),
+        (Bottom, 6, 0.0, 7, 0.0),
+        (Bottom, 6, 2.0, 7, 2.0),
+        (Bottom, 6, f64::INFINITY, 7, 5.0),
+        (Top, 3, f64::INFINITY, 6, 0.0),
+        (Top, 6, f64::INFINITY, 7, 4.0),
+        (Top, 6, 2.0, 7, 2.0),
+        (Right, 3, 0.0, 6, 4.0),
+        (Left, 6, f64::INFINITY, 7, 4.0),
+    ];
+    for (edge, before, to, after, expected) in cases {
+        let (app, x) = (TestApp::new(4, 2), matches!(edge, Left | Right));
+        let scroll = ScrollBox::new(&app).size(2, 2).axes(x, !x).scrollbars(false).sticky(true).sticky_start(edge);
+        let size =
+            |view: &View, length: u16| if x { view.width(length).height(2) } else { view.width(2).height(length) };
+        let content = size(&View::new(&app).shrink(0.0), before);
+        app.root().add(&scroll.child(&content));
+        app.render();
+        scroll.scroll_to(if x { to } else { 0.0 }, if x { 0.0 } else { to });
+        app.render();
+        size(&content, after);
+        app.render();
+        let (offset_x, offset_y) = scroll.scroll_position();
+        assert_eq!(if x { offset_x } else { offset_y }, expected, "{edge:?} {before} {to} {after}");
     }
-    app.render();
-    assert_eq!(scroll.scroll_position().1, 0.0);
-    scroll.perform(ScrollAction::Bottom);
-    app.render();
-    scroll.add(&Text::new(&app, "line 10"));
-    app.render();
-    assert_eq!(scroll.scroll_position().1, 7.0);
-    assert!(rows(&app)[3].starts_with("line 10"));
 }
 
 #[test]
