@@ -187,6 +187,9 @@ pub const Parser = struct {
     tail_title: struct { close: u32 = std.math.maxInt(u32), at: u32 = 0, from: u32 = 0, destination: [2]u32 = .{ 0, 0 }, end: u32 = 0, newlines: u32 = 0 } = .{},
     /// A label scan after `]` that ran out of content (its `]` is `search_opener`).
     label_scan: LabelScan = .{ .at = 0, .position = 0 },
+    /// With math, the last line while it may be a one-line display math block: its start (none:
+    /// it cannot be), whether a closer came, and how far from its start it was read.
+    math_line: struct { start: u32 = std.math.maxInt(u32), closed: bool = false, scanned: u32 = 0 } = .{},
     /// The first token whose display changed since `takeChanged` (none: nothing changed).
     changed_from: u32 = std.math.maxInt(u32),
     extended_from: u32 = std.math.maxInt(u32),
@@ -261,10 +264,12 @@ pub const Parser = struct {
         self.final = final;
         if (final) {
             self.limit = @intCast(subject.len);
+            self.math_line = .{};
         } else {
             self.updateLimit(previous_len);
+            if (self.options.math) self.holdMathLine(previous_len);
         }
-        while (self.position < self.limit) {
+        while (self.position < self.heldLimit()) {
             const before = self.position;
             self.step() catch |err| switch (err) {
                 error.NeedMore => {
@@ -277,7 +282,7 @@ pub const Parser = struct {
             assert(self.position > before);
         }
         // A `$` span that starts the trailing word is decided by the byte after its closer.
-        if (!final and self.options.math and self.position == self.limit and self.position + 1 < subject.len and subject[self.position] == '$' and subject[self.position + 1] != '$') {
+        if (!final and self.options.math and self.position == self.limit and self.position < self.math_line.start and self.position + 1 < subject.len and subject[self.position] == '$' and subject[self.position + 1] != '$') {
             self.limit = @intCast(subject.len);
             self.step() catch |err| if (err == error.OutOfMemory) return error.OutOfMemory;
             self.limit = self.position;
@@ -314,6 +319,38 @@ pub const Parser = struct {
         self.tail_run_start = if (i == n) word_start else n;
     }
 
+    /// A last line that may still become a one-line display math block (`$$x$$`, `\[x\]`)
+    /// shows as B draws it, literal (D102): tokenizing stops at its start (`heldLimit`) until a byte
+    /// after its first closer rules that out or its line ends (a line held that the block parser
+    /// then rejects only shows its spans later). Reads each new byte once.
+    fn holdMathLine(self: *Parser, previous_len: u32) void {
+        const s = self.subject;
+        const m = &self.math_line;
+        // A restart (`reset` cleared this) is before the line a hold keeps: its '\n' is new here.
+        if (std.mem.lastIndexOfScalar(u8, s[previous_len..], '\n')) |at| {
+            m.* = .{ .start = previous_len + @as(u32, @intCast(at)) + 1 };
+        } else if (previous_len == 0) m.* = .{ .start = 0 };
+        if (m.start == std.math.maxInt(u32) or s.len - m.start < 2) return;
+        const line = s[m.start..];
+        const close: []const u8 = if (line[0] == '$') "$$" else "\\]";
+        var ruled_out = !std.mem.eql(u8, line[0..2], if (line[0] == '$') "$$" else "\\[");
+        var k = @max(m.scanned, 3);
+        self.byte_visits += line.len -| k;
+        while (!ruled_out and k < line.len) : (k += 1) {
+            if (m.closed) {
+                ruled_out = !isAsciiWhitespace(line[k]);
+            } else {
+                m.closed = line[k - 1] == close[0] and line[k] == close[1];
+            }
+        }
+        if (ruled_out) m.* = .{} else m.scanned = @intCast(line.len);
+    }
+
+    /// Where tokenizing stops now: the limit, or before it the start of a line holdMathLine holds.
+    fn heldLimit(self: *const Parser) u32 {
+        return @min(self.limit, self.math_line.start);
+    }
+
     /// Forgets the first `drop` bytes of the content, which the caller removed; only when
     /// `settled`, so no token or stack entry refers to them.
     pub fn rebase(self: *Parser, drop: u32) void {
@@ -321,6 +358,8 @@ pub const Parser = struct {
         self.position -= drop;
         self.limit -= drop;
         self.tail_run_start -= drop;
+        // A held line starts at or after the position.
+        if (self.math_line.start != std.math.maxInt(u32)) self.math_line.start -= drop;
         self.subject = self.subject[0 .. self.subject.len - drop];
         self.tokens.clearRetainingCapacity();
         self.delimiters.clearRetainingCapacity();
