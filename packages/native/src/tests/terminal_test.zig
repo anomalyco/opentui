@@ -741,15 +741,17 @@ test "processCapabilityResponse only accepts exact ordered explicit width probe 
     try testing.expect(startup_on_row_one.caps.explicit_width);
     try testing.expect(startup_on_row_one.caps.scaled_text);
 
-    var echoed = Terminal.init(.{});
-    var echoed_writer = TestWriter.init(testing.allocator);
-    defer echoed_writer.deinit();
-    try echoed.queryTerminalSend(&echoed_writer);
-    try echoed.queryExplicitWidth(&echoed_writer);
-    // The probes start at home, so the right columns on another row are no answer.
-    echoed.processCapabilityResponse("\x1b[7;11R\x1b[4;2R\x1b[4;3R");
-    try testing.expect(!echoed.caps.explicit_width);
-    try testing.expect(!echoed.caps.scaled_text);
+    // The probes start at home: the wrong columns on row 1 (#1383), or the right ones on another row, are no answer.
+    for ([_][]const u8{ "\x1b[7;11R\x1b[1;12R\x1b[1;8R", "\x1b[7;11R\x1b[4;2R\x1b[4;3R" }) |replies| {
+        var echoed = Terminal.init(.{});
+        var echoed_writer = TestWriter.init(testing.allocator);
+        defer echoed_writer.deinit();
+        try echoed.queryTerminalSend(&echoed_writer);
+        try echoed.queryExplicitWidth(&echoed_writer);
+        echoed.processCapabilityResponse(replies);
+        try testing.expect(!echoed.caps.explicit_width);
+        try testing.expect(!echoed.caps.scaled_text);
+    }
 }
 
 test "environment variables - should be overridden by xtversion" {

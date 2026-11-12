@@ -318,13 +318,15 @@ test "Session terminal setup reserves main-screen rows and repositions by the ac
     }
 }
 
+const Draws = enum { none, width_only, scaled };
+
 /// Replays setup bytes on a `rows`-row screen whose cursor starts at column 5 of `start_row`, in a terminal that
-/// draws OSC 66 as kitty does (`w=1` covers one cell, `s=2` two rows and two columns) or ignores it, and writes its
-/// answer to each cursor position request. Fails when a probe draws on the main screen, which holds history, or
+/// ignores OSC 66, draws its widths only as foot does (`s=2` is a 1-cell space), or draws scaled text as kitty does
+/// (`s=2` covers two rows and two columns), and writes its answer to each cursor position request. Fails when a probe draws on the main screen, which holds history, or
 /// past the bottom row, where kitty scrolls. Each screen has its own saved cursor (xterm, kitty, foot, libghostty),
 /// which holds another app's state (charset, reverse video) until setup saves its own: restoring that fails.
 /// Returns the final cursor position.
-fn replayProbe(bytes: []const u8, rows: u32, start_row: u32, draws: bool, replies: *std.Io.Writer) ![2]u32 {
+fn replayProbe(bytes: []const u8, rows: u32, start_row: u32, draws: Draws, replies: *std.Io.Writer) ![2]u32 {
     var row = start_row;
     var col: u32 = 5;
     var saved: [2]?[2]u32 = .{ null, null };
@@ -370,7 +372,11 @@ fn replayProbe(bytes: []const u8, rows: u32, start_row: u32, draws: bool, replie
                 try testing.expect(alternate);
                 const scale: u32 = if (std.mem.find(u8, bytes[i..end], "s=2") != null) 2 else 1;
                 try testing.expect(row + scale - 1 <= rows);
-                if (draws) col += scale;
+                col += switch (draws) {
+                    .none => 0,
+                    .width_only => 1,
+                    .scaled => scale,
+                };
             }
             i = end + @intFromBool(bytes[end] == 0x1b);
         }
@@ -381,15 +387,15 @@ fn replayProbe(bytes: []const u8, rows: u32, start_row: u32, draws: bool, replie
 test "Session terminal setup probes OSC 66 only on the alternate screen" {
     const screen_rows = 6;
     // The main screen with a split footer pinned to the bottom or at full height (capture and passthrough send
-    // the same setup bytes), and the alternate screen; a terminal that draws OSC 66 and one that ignores it.
-    for ([_]bool{ false, true }) |alternate| for ([_]u32{ 1, 2, 3, 4, screen_rows }) |height| for ([_]bool{ false, true }) |draws| for (1..screen_rows + 1) |start_row| {
-        errdefer std.debug.print("alternate={} height={} draws={} start_row={}\n", .{ alternate, height, draws, start_row });
+    // the same setup bytes), and the alternate screen; each kind of OSC 66 terminal; sentinel and clock mode.
+    for ([_]bool{ false, true }) |alternate| for ([_]u32{ 1, 2, 3, 4, screen_rows }) |height| for (std.enums.values(Draws)) |draws| for ([_]bool{ false, true }) |sentinel| for (1..screen_rows + 1) |start_row| {
+        errdefer std.debug.print("alternate={} height={} draws={t} sentinel={} start_row={}\n", .{ alternate, height, draws, sentinel, start_row });
         const f = try Fixture.init(testing.allocator, testing.io, 8, height);
         defer f.deinit();
         var now_ns: u64 = 0;
         var bytes: [16 * 1024]u8 = undefined;
         _ = try f.value.splitControl(.{ .render_offset = screen_rows - height });
-        try f.owner.setupSessionTerminal(f.id, .{ .use_alternate_screen = alternate, .reply_sentinel = alternate });
+        try f.owner.setupSessionTerminal(f.id, .{ .use_alternate_screen = alternate, .reply_sentinel = sentinel });
         try testing.expectEqual(.output_pending, (try f.owner.pumpSession(f.id, now_ns, 1)).status);
         var len = (try f.drain(&bytes)).len;
         // The startup report, then Shift+F3, which sends a cursor report's bytes, before any probe was written.
@@ -403,7 +409,7 @@ test "Session terminal setup probes OSC 66 only on the alternate screen" {
         const output = bytes[0..len];
         // One DA1 either way; the sentinel's follows every other query of the setup.
         try testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, ansi.ANSI.primaryDeviceAttrs));
-        try testing.expectEqual(alternate, std.mem.endsWith(u8, output, ansi.ANSI.primaryDeviceAttrs));
+        try testing.expectEqual(sentinel, std.mem.endsWith(u8, output, ansi.ANSI.primaryDeviceAttrs));
         var reply_bytes: [64]u8 = undefined;
         var replies: std.Io.Writer = .fixed(&reply_bytes);
         const end = try replayProbe(output, screen_rows, @intCast(start_row), draws, &replies);
@@ -411,8 +417,8 @@ test "Session terminal setup probes OSC 66 only on the alternate screen" {
         if (alternate) try testing.expectEqual([2]u32{ @intCast(start_row), 5 }, end);
         const probe_replies = replies.buffered()[std.mem.findScalar(u8, replies.buffered(), 'R').? + 1 ..];
         if (probe_replies.len != 0) try f.value.control(.{ .capability_response = probe_replies });
-        try testing.expectEqual(!alternate or draws, f.cli.terminal.caps.explicit_width);
-        try testing.expectEqual(!alternate or draws, f.cli.terminal.caps.scaled_text);
+        try testing.expectEqual(!alternate or draws != .none, f.cli.terminal.caps.explicit_width);
+        try testing.expectEqual(!alternate or draws == .scaled, f.cli.terminal.caps.scaled_text);
         // Resume keeps the capabilities and draws no probe.
         try f.owner.suspendSession(f.id);
         try f.drive(&now_ns, .suspended);
