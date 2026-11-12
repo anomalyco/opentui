@@ -336,6 +336,8 @@ describe("ExtmarksController", () => {
     // "press" drags through its other cells and types Z before the release. After ", " comes a key, a wheel step, an offset, a selection or a click. The
     // rows match the Rust editor's but Shift+Left, which extends a selection into a mark here, and the rejected offset.
     const pasted = "x [Pasted ~20 lines] y"
+    // Rows "@file ", "abcdefghijklmnopqrstuvwx", "yzabcdefghijklmnopqrstuv", "wxyz", "q": a wheel step lands on "wxyz".
+    const wrapped = "@file abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz\nq"
     for (const [text, marks, from, gesture, held, to] of [
       ["x @file y", "2..7", 9, "click 2", null, 2],
       ["x @file y", "2..7", 9, "click 3", null, 2],
@@ -361,6 +363,7 @@ describe("ExtmarksController", () => {
       ["abcd", "2..4 1..3 0..2", 0, "offset 1", null, 4],
       ["ab\n@file\nc", "3..8", 2, "wheel down", null, 8],
       ["ab\n@file\nc", "3..8", 10, "wheel up", null, 3],
+      [wrapped, "0..5", 60, "wheel up", null, 55],
       ["abcd\n@file\nc", "5..10", 0, "double-click 2, wheel down", "7 0..4", 5],
     ] as const) {
       it(`${gesture} from ${from} in ${JSON.stringify(text)} with ${marks} → ${to}`, async () => {

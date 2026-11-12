@@ -2077,6 +2077,8 @@ fn mouse_and_wheel_leave_the_cursor_outside_atomic_extmarks() {
     // they moved toward. "press" drags through its other cells and types Z before the release. `then` is a key, a wheel step or an offset after the gesture.
     let one = &[(2, 7)][..];
     let pasted = "x [Pasted ~20 lines] y";
+    // Rows "@file ", "abcdefghijklmnopqrstuvwx", "yzabcdefghijklmnopqrstuv", "wxyz", "q": a wheel step lands on "wxyz".
+    let wrapped = "@file abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz\nq";
     for (text, marks, from, gesture, held, to) in [
         ("x @file y", one, 9, "click 2", None, 2),
         ("x @file y", one, 9, "click 3", None, 2),
@@ -2100,6 +2102,7 @@ fn mouse_and_wheel_leave_the_cursor_outside_atomic_extmarks() {
         ("abcd", &[(2, 4), (1, 3), (0, 2)], 0, "offset 1", None, 4),
         ("ab\n@file\nc", &[(3, 8)], 2, "wheel down", None, 8),
         ("ab\n@file\nc", &[(3, 8)], 10, "wheel up", None, 3),
+        (wrapped, &[(0, 5)], 60, "wheel up", None, 55),
         ("abcd\n@file\nc", &[(5, 10)], 0, "double-click 2, wheel down", Some((7, (0, 4))), 5),
     ] {
         let app = TestApp::new(24, 2);
