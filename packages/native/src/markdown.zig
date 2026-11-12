@@ -23,6 +23,8 @@ pub const table_column_count_max: u32 = 128;
 pub const held_line_byte_count_max: u32 = 4096;
 pub const hook_filter_byte_count_max: u32 = 256;
 pub const hook_filter_item_byte_count_max: u32 = 64;
+/// Filter items at most: each is searched in every new byte (the filter's work bound).
+pub const hook_filter_item_count_max: u32 = 16;
 /// Retained capacity of the per-call scratch arena.
 pub const scratch_retained_byte_count_max: usize = 1 << 20;
 
@@ -404,11 +406,6 @@ pub const Doc = struct {
     pending_hold: struct { line: u32 = none, end: u32 = 0, hold: Hold = Hold.not, in_table: bool = false } = .{},
     filter_pool: [hook_filter_byte_count_max]u8 = undefined,
     filter_byte_count: u32 = 0,
-    /// Per filter byte, the KMP fallback of its item; per item, the bytes of it matched by the
-    /// source up to `filter_scanned` (none: start again a filter's length back).
-    filter_fallback: [hook_filter_byte_count_max]u8 = undefined,
-    filter_matched: [hook_filter_byte_count_max / 2 + 1]u8 = undefined,
-    filter_scanned: u32 = none,
     /// A filter match in the pending line, latched once its line is parsed; none otherwise.
     hook_pending_byte: u32 = none,
 
@@ -433,24 +430,6 @@ pub const Doc = struct {
         @memcpy(self.filter_pool[0..items.len], items);
         self.filter_byte_count = @intCast(items.len);
         self.options.hook_filter = "";
-        self.filter_scanned = none;
-        // KMP fallbacks, item by item.
-        var start: usize = 0;
-        while (start <= items.len) {
-            const end = std.mem.indexOfScalarPos(u8, items, start, 0) orelse items.len;
-            const item = items[start..end];
-            var k: u8 = 0;
-            for (item, 0..) |c, i| {
-                if (i == 0) {
-                    self.filter_fallback[start] = 0;
-                    continue;
-                }
-                while (k > 0 and item[k] != c) k = self.filter_fallback[start + k - 1];
-                if (item[k] == c) k += 1;
-                self.filter_fallback[start + i] = k;
-            }
-            start = end + 1;
-        }
     }
 
     pub fn deinit(self: *Doc) void {
@@ -513,7 +492,6 @@ pub const Doc = struct {
             self.source.shrinkRetainingCapacity(old_len);
             self.counters = counters;
             self.hook_pending_byte = hook_pending_byte;
-            self.filter_scanned = none;
             self.liveReset(none, none);
             self.finished_block = none;
             self.addProvisional() catch {};
@@ -746,7 +724,6 @@ pub const Doc = struct {
     }
 
     fn rollback(self: *Doc, snapshot: *const Snapshot) void {
-        self.filter_scanned = none;
         var i = self.undo.items.len;
         while (i > 0) {
             i -= 1;
@@ -850,36 +827,9 @@ pub const Doc = struct {
             self.hook_pending_byte = none;
             try self.latchRange(pending, self.line_start_byte);
         }
-        // Matches that start in the new bytes, or straddle the last call's end: the scan goes on
-        // from each item's partial match, or (after a replace or a rejected call) starts a
-        // filter's length back.
-        const end: u32 = @intCast(self.source.items.len);
-        var start = from_byte;
-        if (self.filter_scanned != from_byte) {
-            start = from_byte -| self.filterOverlap();
-            @memset(&self.filter_matched, 0);
-        }
-        self.filter_scanned = end;
-        const s = self.source.items;
-        const pool = self.filter();
-        var item_start: usize = 0;
-        var item_index: usize = 0;
-        while (item_start <= pool.len) : (item_index += 1) {
-            const item_end = std.mem.indexOfScalarPos(u8, pool, item_start, 0) orelse pool.len;
-            const item = pool[item_start..item_end];
-            defer item_start = item_end + 1;
-            if (item.len == 0) continue;
-            var k = self.filter_matched[item_index];
-            self.counters.hook_byte_visits += end - start;
-            for (s[start..end], start..) |c, i| {
-                while (k > 0 and item[k] != c) k = self.filter_fallback[item_start + k - 1];
-                if (item[k] == c) k += 1;
-                if (k < item.len) continue;
-                try self.latchMatch(@intCast(i + 1 - item.len));
-                k = self.filter_fallback[item_start + k - 1];
-            }
-            self.filter_matched[item_index] = k;
-        }
+        // Matches that start in the new bytes, or straddle the last call's end: each item is
+        // searched from a filter's length back (the stated bound: items x (bytes + overlap)).
+        try self.latchRange(from_byte -| self.filterOverlap(), @intCast(self.source.items.len));
     }
 
     fn latchMatch(self: *Doc, position: u32) Error!void {
@@ -4186,9 +4136,12 @@ fn validateFilter(filter: []const u8) Error!void {
     if (filter.len > hook_filter_byte_count_max) return error.InvalidOptions;
     var it = std.mem.splitScalar(u8, filter, 0);
     if (filter.len == 0) return;
+    var count: u32 = 0;
     while (it.next()) |item| {
         if (item.len == 0 or item.len > hook_filter_item_byte_count_max) return error.InvalidOptions;
+        count += 1;
     }
+    if (count > hook_filter_item_count_max) return error.InvalidOptions;
 }
 
 test {

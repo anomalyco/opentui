@@ -799,9 +799,10 @@ fn genericProperties(arena: std.mem.Allocator, doc: *const Doc, fed: Fed, option
         // A line is read by the scanner's block pass, its paragraph checks, the pipe scan, a
         // definition scan and once more at close: k = 6.
         .{ "(a) work: block visits <= 6n + 8 calls", c.block_byte_visits, 6 * n + 8 * calls + 64 },
-        // New bytes and the filter's overlap, plus the pending line again wherever a new layout
-        // reads it (the block counter's term): k = 6, as the block counter.
-        .{ "(a) work: hook visits <= 6n + 8 calls", c.hook_byte_visits, 6 * n + 8 * calls + 64 },
+        // Each filter item searches the new bytes and the filter's overlap (its longest item less
+        // one), plus the pending line again wherever a new layout reads it (the block counter's
+        // term): k = 6 per item, as the block counter.
+        .{ "(a) work: hook visits <= items x (6n + longest x calls)", c.hook_byte_visits, filterItems(options) * (6 * n + filterLongest(options) * calls) + 64 },
         .{ "(a) work: inline visits <= 4n", c.inline_byte_visits, 4 * n + 64 },
         .{ "(a) work: display visits <= 6n", c.display_byte_visits, 6 * n + 64 },
         // A display byte is assembled when it is drawn pending, drawn up to a hold's cut, and
@@ -841,6 +842,18 @@ fn genericProperties(arena: std.mem.Allocator, doc: *const Doc, fed: Fed, option
     // (c) Layout agreement, below a size where a fresh parse per call stays cheap.
     if (layout and doc.source.items.len <= fresh_compare_byte_count_max and !try layoutAgrees(arena, doc, options)) return "(c) pending layout equals the completed line's";
     return null;
+}
+
+fn filterItems(options: markdown.Options) u64 {
+    if (!options.hook or options.hook_filter.len == 0) return 1;
+    return std.mem.count(u8, options.hook_filter, "\x00") + 1;
+}
+
+fn filterLongest(options: markdown.Options) u64 {
+    var longest: u64 = 8;
+    var it = std.mem.splitScalar(u8, options.hook_filter, 0);
+    while (it.next()) |item| longest = @max(longest, item.len);
+    return longest;
 }
 
 /// (c) across calls for display math (D102: shown as it streams, never hidden): a math block
@@ -1037,7 +1050,7 @@ const Families = struct {
         var commands: std.ArrayListUnmanaged(Command) = .empty;
         if (random.boolean()) try commands.append(arena, .math);
         // A filter as long as one may be (its overlap is read at every call), or short ones.
-        if (random.uintLessThan(u32, 4) == 0) try commands.append(arena, .{ .filter = pick(random, &.{ "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq", "ses_", "a\x00bb\x00ccc" }) });
+        if (random.uintLessThan(u32, 4) == 0) try commands.append(arena, .{ .filter = pick(random, &.{ "q\x00r\x00s\x00t\x00u\x00v\x00w\x00x\x00y\x00z\x00b\x00c\x00d\x00e\x00f\x00g", "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq", "ses_", "a\x00bb\x00ccc" }) });
         const family = random.enumValue(Family);
         // From a few repeats to a document past the token limit (log-uniform); nesting lines
         // are long, so fewer.
@@ -1539,6 +1552,10 @@ test "Markdown limits: each store stays within its limit and a rejection publish
         const long_item = repeat("x", 65);
         try std.testing.expectError(error.InvalidOptions, Doc.init(gpa, &scratch, .{ .hook = true, .hook_filter = long_item }));
         try std.testing.expectError(error.InvalidOptions, Doc.init(gpa, &scratch, .{ .hook = true, .hook_filter = "a\x00\x00b" }));
+        // At most 16 items.
+        try std.testing.expectError(error.InvalidOptions, Doc.init(gpa, &scratch, .{ .hook = true, .hook_filter = repeat("a\x00", 16) ++ "b" }));
+        var at_limit = try Doc.init(gpa, &scratch, .{ .hook = true, .hook_filter = repeat("a\x00", 15) ++ "b" });
+        at_limit.deinit();
         const items = repeat("x" ++ repeat("x", 62) ++ "\x00", 4) ++ "y";
         try std.testing.expectError(error.InvalidOptions, Doc.init(gpa, &scratch, .{ .hook = true, .hook_filter = items }));
         var doc = try Doc.init(gpa, &scratch, .{ .hook = true, .hook_filter = items[0 .. items.len - 2] });
@@ -1782,10 +1799,11 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
         // A closed code span's display is assembled once per feed, whatever reads it (the hold's
         // cut, the comparison and the tail write); finish writes the leaf again.
         .{ .name = "a code span over lines with pipes, closed (8 appends, 8 times)", .parts = code_lines, .assembled_factor = 5, .sent_factor = 3, .display_factor = 3 },
-        // A 64-byte filter: each call reads its new bytes, not the filter's length again (bigboi
-        // round 4: 63,520 visits for 1,024 one-byte appends).
+        // A 64-byte filter, and 16 items (the limit; bigboi round 5: the bound left out the item
+        // count): each item reads the new bytes and the overlap.
         .{ .name = "a 64-byte filter, 1-byte appends", .options = .{ .hook = true, .hook_filter = "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq" }, .parts = try split(arena, try std.mem.concat(arena, u8, &.{ xs[0..1024], "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq" }), 1) },
         // An inline link's title over 1,024 words, resumed (bigboi round 4: 2.1M inline visits).
+        .{ .name = "16 filter items, 1-byte appends", .options = .{ .hook = true, .hook_filter = "q\x00r\x00s\x00t\x00u\x00v\x00w\x00x\x00y\x00z\x00b\x00c\x00d\x00e\x00f\x00g" }, .parts = try split(arena, try std.mem.concat(arena, u8, &.{ digits[0..1024], " g" }), 1) },
         .{ .name = "an inline link title, 1-byte appends", .parts = try split(arena, try std.mem.concat(arena, u8, &.{ "> see [ref](url \"", line[0..2048], "\") done" }), 1) },
         // ... and 1,024 spaces between the closed title and its `)` (bigboi round 5: 661,783
         // inline visits at half this length).
@@ -1805,7 +1823,8 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
             .{ "line", c.line_byte_visits, n + w.append_count + 1 },
             // A pending line's first byte is read again per append (its kind, its layout).
             .{ "block", c.block_byte_visits, row.block_factor * n + 4 * w.append_count + 64 },
-            .{ "hook", c.hook_byte_visits, n + 3 * w.append_count + 8 },
+            // Each item reads the new bytes and the filter's overlap (its longest item less one).
+            .{ "hook", c.hook_byte_visits, filterItems(row.options) * (n + filterLongest(row.options) * w.append_count) + 8 },
             .{ "inline", c.inline_byte_visits, row.inline_factor * n + 64 },
             .{ "display", c.display_byte_visits, row.display_factor * n + 64 },
             .{ "sent", c.tail_write_bytes, row.sent_factor * n + 64 },
