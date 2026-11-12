@@ -25,37 +25,46 @@ describe("TextareaRenderable - Visual Line Navigation", () => {
   })
 
   // 606: without wrapping, a visual line is the logical line, however narrow the field. Each field
-  // first scrolls to the line end, so column 1 is before its scroll offset and column 9 past it.
-  it("without wrapping, visual home and end are the line's in a Textarea or Input of any width", async () => {
+  // first scrolls to the line end, so column 1 is before its scroll offset and column 9 past it. A
+  // line that fits is one visual line with wrapping on too. `end` and `home` are the selections of
+  // select-to-visual-end and -home from the column; a backward cell selection keeps its anchor cell.
+  it("visual home and end of a one-line field are its logical home and end", async () => {
     const text = "Hello World"
-    const rows = [
-      ["Textarea", 40, 6],
-      ["Textarea", 4, 1],
-      ["Textarea", 4, 9],
-      ["Input", 4, 1],
-      ["Input", 4, 9],
-    ] as const
-    for (const [kind, width, col] of rows) {
+    type Range = [number, number] | null
+    const rows: [kind: string, width: number, wrapMode: "none" | "word", col: number, end: Range, home: Range][] = [
+      ["Textarea", 40, "none", 6, [6, 11], [0, 7]],
+      ["Textarea", 4, "none", 1, [1, 11], [0, 2]],
+      ["Textarea", 4, "none", 9, [9, 11], [0, 10]],
+      ["Input", 4, "none", 1, [1, 11], [0, 2]],
+      ["Input", 4, "none", 9, [9, 11], [0, 10]],
+      ["Textarea", 40, "word", 0, [0, 11], null],
+      ["Textarea", 40, "word", 11, null, [0, 11]],
+    ]
+    for (const [kind, width, wrapMode, col, end, home] of rows) {
       const field =
         kind === "Input"
           ? new InputRenderable(currentRenderer, { width, value: text })
-          : new TextareaRenderable(currentRenderer, { width, height: 2, wrapMode: "none", initialValue: text })
+          : new TextareaRenderable(currentRenderer, { width, height: 2, wrapMode, initialValue: text })
       currentRenderer.root.add(field)
       field.focus()
       field.gotoBufferEnd()
       await renderOnce()
+      const row = [kind, width, wrapMode, col]
       const after = (move: () => void) => {
         field.clearSelection()
         field.editBuffer.setCursor(0, col)
         move()
-        return [kind, width, col, field.logicalCursor.col, field.getSelectedText()]
+        const selection = field.getSelection()
+        const range = selection && selection.start !== selection.end ? [selection.start, selection.end] : null
+        return [...row, field.logicalCursor.col, range, field.getSelectedText()]
       }
-      expect(after(() => currentMockInput.pressKey("e", { meta: true }))).toEqual([kind, width, col, 11, ""])
-      expect(after(() => currentMockInput.pressKey("a", { meta: true }))).toEqual([kind, width, col, 0, ""])
-      expect(after(() => field.gotoVisualLineEnd({ select: true }))).toEqual([kind, width, col, 11, text.slice(col)])
-      // A backward cell selection keeps its anchor cell.
-      const home = after(() => field.gotoVisualLineHome({ select: true }))
-      expect(home).toEqual([kind, width, col, 0, text.slice(0, col + 1)])
+      const at = (cursor: number, range: Range = null) => [...row, cursor, range, range ? text.slice(...range) : ""]
+      expect(after(() => currentMockInput.pressKey("e", { meta: true }))).toEqual(at(11))
+      expect(after(() => field.gotoLineEnd())).toEqual(at(11))
+      expect(after(() => currentMockInput.pressKey("a", { meta: true }))).toEqual(at(0))
+      expect(after(() => field.gotoLineHome())).toEqual(at(0))
+      expect(after(() => field.gotoVisualLineEnd({ select: true }))).toEqual(at(11, end))
+      expect(after(() => field.gotoVisualLineHome({ select: true }))).toEqual(at(0, home))
       field.destroy()
     }
   })
