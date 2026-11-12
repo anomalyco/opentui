@@ -1797,8 +1797,8 @@ typedef struct ot_markdown_options {
     ot_handle syntax_style;     /* style the bound nodes and read_leaf resolve with; zero = none */
     uint32_t hook_filter_byte_count; /* <= OT_MD_HOOK_FILTER_BYTE_COUNT_MAX */
     uint32_t reserved;
-    /* NUL-separated substrings, each 1..64 bytes, in the first hook_filter_byte_count bytes;
-     * none with OT_MD_HOOK = every prose leaf is hooked. */
+    /* At most 16 NUL-separated substrings, each 1..64 bytes, in the first
+     * hook_filter_byte_count bytes; none with OT_MD_HOOK = every prose leaf is hooked. */
     uint8_t hook_filter[256];
 } ot_markdown_options;
 #define OT_MD_HOOK_FILTER_BYTE_COUNT_MAX UINT32_C(256)

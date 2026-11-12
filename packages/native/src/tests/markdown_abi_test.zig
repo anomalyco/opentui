@@ -528,6 +528,15 @@ test "Markdown ABI: options, removal, styles, and rejections that change nothing
     @memset(options.hook_filter[0..65], 'a');
     options.hook_filter_byte_count = 65;
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, md.ot_markdown_set_options(f.context, &f.doc, &options, &result));
+    // Seventeen items (sixteen are the most), at create too.
+    for (0..17) |i| options.hook_filter[2 * i ..][0..2].* = .{ 'a' + @as(u8, @intCast(i)), 0 };
+    options.hook_filter_byte_count = 2 * 17 - 1;
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, md.ot_markdown_set_options(f.context, &f.doc, &options, &result));
+    var rejected: c.ot_handle = undefined;
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, md.ot_markdown_create(f.context, &options, &rejected));
+    options.hook_filter_byte_count = 2 * 16 - 1;
+    try expectOk(md.ot_markdown_create(f.context, &options, &rejected));
+    try expectOk(md.ot_markdown_destroy(f.context, &rejected));
     try std.testing.expect(try f.nodeShowsLeaf(arena, 0, first));
     // Reads: a list block is no leaf; a short capacity writes nothing.
     var counts: [3]u32 = .{ 9, 9, 9 };
@@ -775,6 +784,31 @@ test "Markdown ABI: a span that closes in the last, undecided word of a stream i
             errdefer std.debug.print("'{s}' flags {d}: '{s}'\n", .{ text, flags, leaf.bytes });
             try std.testing.expect(styled);
             if (flags == live_flags) try std.testing.expect(try f.nodeShowsLeaf(arena, 0, node));
+        }
+    }
+}
+
+test "Markdown ABI: tear's D2 rows close a setext leaf in host-written modes" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // investigations/tear-for-opentui.md rows C (math, conceal and hyperlinks off), E (flags 0) and
+    // F (hyperlinks off): the live finish restyled a setext leaf against read_leaf's source display.
+    for ([_]struct { u32, []const []const u8 }{
+        .{ c.OT_MD_MATH, &.{"&amp;\n===\n"} },
+        .{ 0, &.{"&mp;\n=\n"} },
+        .{ c.OT_MD_CONCEAL, &.{"[x](/u) \n===\n"} },
+        .{ 0, &.{ "&mp;", "\n=\n" } },
+    }) |row| {
+        var f = try Fixture.init(row[0]);
+        defer f.deinit();
+        const node = try f.textNode();
+        var mirror: Mirror = .{};
+        for (row[1], 0..) |piece, i| {
+            const result = try f.append(piece);
+            _ = try mirror.update(&f, arena, result);
+            if (i == 0) try expectOk(md.ot_markdown_bind(f.context, &f.doc, 0, &node));
+            try std.testing.expect(try mirror.matchesFresh(&f, arena, .{ .flags = row[0] }, false));
         }
     }
 }
