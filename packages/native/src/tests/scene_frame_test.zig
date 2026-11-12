@@ -771,11 +771,11 @@ test "Scene text paints inside its padding" {
         try testing.expectEqual(@as(u32, ' '), f.cli.currentRenderBuffer.get(2, @intCast(y)).?.char);
         try testing.expectEqual(@as(u32, ' '), (try f.owner.raw().getBuffer(body)).get(1, @intCast(y - 1)).?.char);
     }
-    // A box far past the cell range keeps the view measurement saw: 512 columns, cut out before the clamp.
+    // A box far past the cell range keeps its view: 512 - 30 columns, cut out before the clamp, never through an inset.
     try f.owner.sceneSetStyle(text, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_WIDTH, 0, c.OT_UNIT_POINT, 2147484160, 1);
-    for ([_]f32{ 0, 2147483648 }, [_]u32{ c.OT_EDGE_LEFT, c.OT_EDGE_RIGHT }) |padding, edge| try f.owner.sceneSetStyle(text, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, edge, c.OT_UNIT_POINT, padding, 0);
+    for ([_]f32{ 30, 2147483648 }, [_]u32{ c.OT_EDGE_LEFT, c.OT_EDGE_RIGHT }) |padding, edge| try f.owner.sceneSetStyle(text, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, edge, c.OT_UNIT_POINT, padding, 0);
     _ = try presentWork(f, .{});
-    try testing.expectEqual(@as(f32, 512), (try f.owner.sceneGetPaintLayout(text, true)).width);
+    try testing.expectEqual(@as(f32, 482), (try f.owner.sceneGetPaintLayout(text, true)).width);
     // Without padding the view is Yoga's box, at a fractional place (edges 1.2 and 7.6 round to 7 cells)
     // and 2^28 cells out, translated back on screen; one cell of padding takes two columns there too.
     for ([_][3]f32{ .{ 0.2, 6.4, 0 }, .{ 268435456, 6, 0 }, .{ 268435456, 6, 1 } }) |place| {

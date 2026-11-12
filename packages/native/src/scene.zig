@@ -314,8 +314,8 @@ pub const Layout = struct {
     height: f32 = 0,
     screenX: f64 = 0,
     screenY: f64 = 0,
-    // The cells a text node's view leaves empty on each side (left, top, right, bottom).
-    inset: [4]f32 = @splat(0),
+    // A text node's view: its offset from the box (x, y) and its size (width, height).
+    content: [4]f32 = @splat(0),
 };
 
 pub const Paint = struct {
@@ -3603,7 +3603,7 @@ fn sameBox(a: Layout, b: Layout) bool {
     inline for (.{ "left", "top", "right", "bottom", "width", "height" }) |name| {
         if (@as(u32, @bitCast(@field(a, name))) != @as(u32, @bitCast(@field(b, name)))) return false;
     }
-    return std.mem.eql(u8, std.mem.asBytes(&a.inset), std.mem.asBytes(&b.inset));
+    return std.mem.eql(u8, std.mem.asBytes(&a.content), std.mem.asBytes(&b.content));
 }
 
 /// Public geometry keeps at least one cell per dimension; paint geometry keeps Yoga's zero. Culling
@@ -3668,7 +3668,7 @@ pub fn getPaintLayout(value: *const native.NativeRenderable, content: bool) !Lay
         }
         break :solved solved;
     };
-    return cellLayout(if (content) contentLayout(layout) else layout);
+    return cellLayout(if (content and node.text != null) contentLayout(layout) else layout);
 }
 
 /// Composes a node's local geometry through its ancestors: the observed, prepared, or solved
@@ -3725,18 +3725,18 @@ fn localLayout(value: *const native.NativeRenderable, comptime source: anytype) 
     if (node.text != null) {
         var box: [4]f32 = undefined;
         try yoga.check(yoga.yogaNodeGetContentBoxChecked(value.yoga_node, &box));
-        layout.inset = .{ box[0], box[1], @max(0, layout.width - box[0] - box[2]), @max(0, layout.height - box[1] - box[3]) };
+        layout.content = .{ box[0], box[1], @max(0, box[2]), @max(0, box[3]) };
     }
     return layout;
 }
 
-/// The rect a text node's view fills: its layout without its insets.
+/// The rect a text node's view fills.
 pub fn contentLayout(layout: Layout) Layout {
     var content = layout;
-    content.screenX += layout.inset[0];
-    content.screenY += layout.inset[1];
-    content.width = @max(0, layout.width - layout.inset[0] - layout.inset[2]);
-    content.height = @max(0, layout.height - layout.inset[1] - layout.inset[3]);
+    content.screenX += layout.content[0];
+    content.screenY += layout.content[1];
+    content.width = layout.content[2];
+    content.height = layout.content[3];
     return content;
 }
 
@@ -3810,7 +3810,7 @@ fn prepareView(work: *renderer.FrameWork, node: *Node, layout: Layout) !void {
 fn viewNeedsPrepare(node: *const Node, layout: Layout) bool {
     const view = if (node.kind == api.OT_SCENE_TEXT_VIEW) (node.control.text_view.view orelse return false).view else (node.text orelse return false).view;
     const viewport = view.getViewport() orelse return true;
-    const content = contentLayout(layout);
+    const content = if (node.text != null) contentLayout(layout) else layout;
     return viewport.width != cellSize(content.width) or viewport.height != cellSize(content.height) or view.needsPrepare();
 }
 
