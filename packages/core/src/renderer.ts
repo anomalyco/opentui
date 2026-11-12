@@ -1224,6 +1224,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _previousControlState: RendererControlState = RendererControlState.IDLE
   private capturedRenderable?: Renderable
   private pressedRenderable?: Renderable
+  private lastDrag?: RawMouseEvent
   private lastOverRenderableNum: number = 0
   private lastOverRenderable?: Renderable
 
@@ -3942,13 +3943,16 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       }
       mouseEvent.y -= this.renderOffset
     }
+    if (left && mouseEvent.type === "drag") this.lastDrag = { ...mouseEvent }
     // A left press while a gesture is held means its release was lost: end that gesture before any handler sees the
-    // press. Ctrl+press sets a selection dragging again below.
+    // press, for its owner as a release at the last drag point would, without a drop. Ctrl+press sets a selection
+    // dragging again below.
     const lost = press ? this.capturedRenderable : undefined
     if (press && this.currentSelection) this.currentSelection.isDragging = false
     if (lost) {
       this.capturedRenderable = undefined
-      this.sendMouseEvent(lost, new MouseEvent(lost, { ...mouseEvent, type: "drag-end" }))
+      this.sendMouseEvent(lost, new MouseEvent(lost, { ...this.lastDrag!, type: "drag-end" }))
+      this.sendMouseEvent(lost, new MouseEvent(lost, { ...this.lastDrag!, type: "up" }))
       if (this._isDestroyed) return true
       this.requestRender()
     }
@@ -3993,11 +3997,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     const maybeRenderableId = this.hitTest(mouseEvent.x, mouseEvent.y)
     const sameElement = maybeRenderableId === this.lastOverRenderableNum
     this.lastOverRenderableNum = maybeRenderableId
-    const hit = Renderable.renderablesByNumber.get(maybeRenderableId)
-    // Until the next frame the hits leave out the old capture, so a press on it falls through to an ancestor.
-    const { x, y } = mouseEvent
-    const onLost = lost && x >= lost.x && x < lost.x + lost.width && y >= lost.y && y < lost.y + lost.height
-    const maybeRenderable = onLost && (!hit || this.isWithinContainer(lost, hit)) ? lost : hit
+    const maybeRenderable = Renderable.renderablesByNumber.get(maybeRenderableId)
 
     if (press && !mouseEvent.modifiers.ctrl) {
       const canStartSelection = Boolean(
@@ -4088,10 +4088,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.lastOverRenderable = source
       this.lastOverRenderableNum = source.num
       this.capturedRenderable = undefined
-      // Dropping the renderable needs to push another frame when the renderer is not live
-      // to update the hits, otherwise capturedRenderable won't be in the hits and will not receive mouse events
+      // Hover is not rechecked while a node holds the capture; the next frame rechecks it.
       this.requestRender()
-      // A source does not drop onto itself or its subtree; until that frame the presented hits still hold the source.
+      // A source does not drop onto itself or its subtree.
       if (maybeRenderable && this.isWithinContainer(maybeRenderable, source)) return true
       if (maybeRenderable) {
         this.sendMouseEvent(maybeRenderable, new MouseEvent(maybeRenderable, { ...mouseEvent, type: "drop", source }))
@@ -5279,7 +5278,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         this.nativeScene.paint(deltaTime, () => ({
           background: this.backgroundColor,
           useMouse: this._useMouse,
-          excludedHitNum: this.capturedRenderable?.num ?? 0,
+          excludedHitNum: 0,
         }))
       } catch (error) {
         // Failed feedback must not schedule its own retry. The error handler can request one explicitly.

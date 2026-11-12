@@ -505,6 +505,13 @@ const scrolling: [string, object, string, string][] = [
     `press:19,0 move:${x},2 move:19,4 release:${x},4 press:5,5 move:19,5 move:19,8 release:19,8`,
     "0,0 20,0 40,0 40,0 40,0 40,0 40,0 40,0",
   ]),
+  // A press after a lost release ends the thumb drag: the content drag that follows does not scroll.
+  [
+    "press after a lost thumb release",
+    {},
+    "press:19,0 move:19,2 press:5,5 move:5,8 release:5,8",
+    "0,0 20,0 20,0 20,0 20,0",
+  ],
   // The box and its content growing in one frame clamp against that frame's range, not a stale one (338).
   ["same-frame growth keeps the position", { child: { width: 10, height: 15 } }, "#5 grow:20,25", "5,0 5,0"],
   ["same-frame growth clamps to the new range", { child: { width: 10, height: 15 } }, "#5 grow:20,22", "5,0 2,0"],
