@@ -1822,10 +1822,14 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
     try std.testing.expectEqual(@as(u64, 7), small.counters.tail_write_bytes);
 }
 
-/// Counts allocator calls that reach the backing allocator.
+/// Counts the allocator calls that obtain memory: an alloc, or a resize or remap that succeeded.
+/// A growth is one such call whether it grows in place (Linux) or falls back to alloc and copy
+/// (macOS, Windows), so the count does not depend on the backing allocator.
 const CountingAllocator = struct {
     backing: std.mem.Allocator,
     count: u64 = 0,
+    /// False: resize and remap never succeed (the fallback macOS and Windows take).
+    in_place: bool = true,
 
     fn allocator(self: *CountingAllocator) std.mem.Allocator {
         return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
@@ -1839,14 +1843,17 @@ const CountingAllocator = struct {
 
     fn resize(context: *anyopaque, memory: []u8, alignment: std.mem.Alignment, len: usize, ret: usize) bool {
         const self: *CountingAllocator = @ptrCast(@alignCast(context));
+        if (!self.in_place or !self.backing.rawResize(memory, alignment, len, ret)) return false;
         self.count += 1;
-        return self.backing.rawResize(memory, alignment, len, ret);
+        return true;
     }
 
     fn remap(context: *anyopaque, memory: []u8, alignment: std.mem.Alignment, len: usize, ret: usize) ?[*]u8 {
         const self: *CountingAllocator = @ptrCast(@alignCast(context));
+        if (!self.in_place) return null;
+        const moved = self.backing.rawRemap(memory, alignment, len, ret) orelse return null;
         self.count += 1;
-        return self.backing.rawRemap(memory, alignment, len, ret);
+        return moved;
     }
 
     fn free(context: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret: usize) void {
@@ -1864,21 +1871,24 @@ test "Markdown work: no allocation per append in steady state, capacity growth c
     var copies: [10][]const u8 = undefined;
     @memset(&copies, prose);
     const long = try std.mem.join(arena, "\n", &copies);
-    var counting: CountingAllocator = .{ .backing = gpa };
-    var scratch = std.heap.ArenaAllocator.init(counting.allocator());
-    defer scratch.deinit();
-    var doc = try Doc.init(counting.allocator(), &scratch, .{});
-    defer doc.deinit();
     const parts = try split(arena, long, 30);
     const warm_up = parts.len / 2;
-    for (parts[0..warm_up]) |part| try doc.append(part);
-    const calls_before = counting.count;
-    const growth_before = doc.counters.capacity_growth_count;
-    for (parts[warm_up..]) |part| try doc.append(part);
-    const calls = counting.count - calls_before;
-    const growth = doc.counters.capacity_growth_count - growth_before;
-    if (environment(arena, "MARKDOWN_GATES") != null) std.debug.print("steady state: {d} appends, {d} allocator calls, {d} capacity growths\n", .{ parts.len - warm_up, calls, growth });
-    try std.testing.expect(calls <= growth);
+    // With an allocator that grows in place and with one that never does.
+    for ([_]bool{ true, false }) |in_place| {
+        var counting: CountingAllocator = .{ .backing = gpa, .in_place = in_place };
+        var scratch = std.heap.ArenaAllocator.init(counting.allocator());
+        defer scratch.deinit();
+        var doc = try Doc.init(counting.allocator(), &scratch, .{});
+        defer doc.deinit();
+        for (parts[0..warm_up]) |part| try doc.append(part);
+        const calls_before = counting.count;
+        const growth_before = doc.counters.capacity_growth_count;
+        for (parts[warm_up..]) |part| try doc.append(part);
+        const calls = counting.count - calls_before;
+        const growth = doc.counters.capacity_growth_count - growth_before;
+        if (environment(arena, "MARKDOWN_GATES") != null) std.debug.print("steady state, in place {}: {d} appends, {d} allocations, {d} capacity growths\n", .{ in_place, parts.len - warm_up, calls, growth });
+        try std.testing.expect(calls <= growth);
+    }
 }
 
 test "Markdown stream: a leaf that changes kind or loses lines keeps its live display exact" {
