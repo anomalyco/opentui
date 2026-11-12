@@ -3035,7 +3035,7 @@ pub const Doc = struct {
             // Under a held pipe, only the runs before it: a run that reaches it waits for the
             // byte after it, as read_leaf's does.
             var shown_runs = live.pending_runs.items;
-            const pipe = self.liveHoldPipe();
+            const pipe = if (b.kind == .paragraph) self.liveHoldPipe() else none;
             while (pipe != none and shown_runs.len > 0 and shown_runs[shown_runs.len - 1].end >= pipe) shown_runs.len -= 1;
             var spans: std.ArrayListUnmanaged(inline_parser.PendingSpan) = .empty;
             try inline_parser.pendingSpans(shown_runs, arena, &spans);

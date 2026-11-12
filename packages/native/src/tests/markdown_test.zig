@@ -1365,7 +1365,8 @@ test "Markdown stream: nested and shared delimiters stream like a fresh doc of e
     defer arena_state.deinit();
     // CI: 60 documents, 240 streams; MARKDOWN_DIFFERENTIAL widens it.
     const count: u64 = if (environment(arena_state.allocator(), "MARKDOWN_DIFFERENTIAL")) |t| try std.fmt.parseInt(u64, t, 10) else 60;
-    const rows = [_][]const u8{ "begin *out ***a** b* tail q* e", "begin **out ***a* b** tail q** e" };
+    // A heading's pipe holds nothing, a code span's pipe included (seed 601 of the mixed fragments).
+    const rows = [_][]const u8{ "begin *out ***a** b* tail q* e", "begin **out ***a* b** tail q** e", "# h `a | b`*e*<" };
     for (0..count + rows.len) |seed| {
         _ = arena_state.reset(.retain_capacity);
         const arena = arena_state.allocator();
