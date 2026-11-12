@@ -1,6 +1,67 @@
 const std = @import("std");
 const split_scrollback = @import("../split-scrollback.zig");
 
+const TailEvent = enum { seed, scroll, newline, one_cell, full_row, two_lines };
+
+fn checkTail(_: void, events: []const TailEvent) !void {
+    var scrollback: split_scrollback.SplitScrollback = .{};
+    // A small reference terminal: each published row holds its used cell count. The last row
+    // wraps only on the *next* printable cell, not on an explicit newline or viewport scroll.
+    const width = 3;
+    var rows: [2 + 4 * 64]u8 = undefined;
+    std.debug.assert(events.len <= 64);
+    var len: usize = 0;
+    for (events) |event| {
+        switch (event) {
+            .seed => {
+                scrollback.reset(2);
+                len = 2;
+                @memset(rows[0..len], 0);
+            },
+            .scroll => {
+                scrollback.noteViewportScroll(2);
+                const removed = @min(2, len);
+                std.mem.copyForwards(u8, rows[0 .. len - removed], rows[removed..len]);
+                len -= removed;
+            },
+            .newline, .one_cell, .full_row, .two_lines => {
+                const text: []const u8 = switch (event) {
+                    .newline => "\n",
+                    .one_cell => "x",
+                    .full_row => "xxx",
+                    .two_lines => "xx\nxx\n",
+                    else => unreachable,
+                };
+                switch (event) {
+                    .newline => scrollback.noteNewline(),
+                    .one_cell, .full_row => scrollback.publishRow(@intCast(text.len), width, false),
+                    .two_lines => scrollback.publishSnapshotRows(2, 2, width, true),
+                    else => unreachable,
+                }
+                for (text) |byte| {
+                    if (len == 0) {
+                        rows[0] = 0;
+                        len = 1;
+                    }
+                    if (byte == '\n' or rows[len - 1] == width) {
+                        rows[len] = 0;
+                        len += 1;
+                    }
+                    if (byte != '\n') rows[len - 1] += 1;
+                }
+            },
+        }
+        if (scrollback.published_rows != len) return error.RowCount;
+        if (scrollback.tail_column != (if (len == 0) 0 else rows[len - 1])) return error.TailColumn;
+        if (scrollback.renderOffset(2) != @min(len, 2)) return error.FooterPosition;
+    }
+}
+
+test "native transition model: split scrollback follows the terminal tail" {
+    // CI: 6^5 short walks and 32 seeded walks of 64 events.
+    try @import("model-walk.zig").explore(TailEvent, {}, checkTail, 5, 32, 64);
+}
+
 test "split scrollback starts empty" {
     var scrollback: split_scrollback.SplitScrollback = .{};
 
