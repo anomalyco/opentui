@@ -410,8 +410,8 @@ pub const MarkdownDoc = struct {
     calls: u64 = 0,
     /// Bindings whose node a failed write or a rejected call left behind.
     stale_count: u32 = 0,
-    /// Inside a call's change: a host-written node the doc would take over waits for the call
-    /// to succeed (`Binding.handoff`).
+    /// Inside a call's change: a host-written node the doc would take over is only marked
+    /// (`Binding.handoff`).
     handing_off: bool = false,
 
     /// `skipped`: a write to the node was skipped (hooked, or not live), or its text changed
@@ -419,8 +419,9 @@ pub const MarkdownDoc = struct {
     /// it), so it does not hold the live display's earlier bytes and takes only resync writes.
     /// `stale`: the node does not show the doc (a write failed, or the call that wrote it was
     /// rejected); the next call writes it whole.
-    /// `handoff`: the host wrote the node, and the doc takes it over once the call succeeds (a
-    /// rejected call leaves the host's text, which the doc cannot rebuild).
+    /// `handoff`: the host wrote the node and the call would make the doc write it: once the call
+    /// succeeds the node is unbound and its leaf listed, so the host binds it again to hand it
+    /// over (a doc never writes over a host's text, which it could not rebuild).
     pub const Binding = struct { block: u32, node: Handle, skipped: bool = false, epoch: u64 = 0, call: u64 = 0, stale: bool = false, handoff: bool = false };
     /// The Markdown layer of a bound node's buffer (its only layer).
     pub const layer_id: u32 = 2;
@@ -540,9 +541,10 @@ pub const MarkdownDoc = struct {
         const binding = &self.bindings.items[at];
         const node = self.owner.sceneMutableNode(binding.node) catch return;
         const text = node.scene_node.?.text orelse return;
-        // A hooked leaf's flag is off while its pending line is parsed again: the node keeps
-        // what the host wrote until a resync write.
-        if (!w.resync and text.buffer.getContentEpoch() != binding.epoch) binding.skipped = true;
+        // A text change since the doc's last write is the host's: the node is the host's until a
+        // bind hands it over (a hooked leaf's flag is off while its pending line is parsed
+        // again, so a write may come for it).
+        if (text.buffer.getContentEpoch() != binding.epoch) binding.skipped = true;
         if (!doc.options.liveShown() or b.flags.hooked or (binding.skipped and !w.resync)) {
             binding.skipped = true;
             return;
@@ -575,20 +577,24 @@ pub const MarkdownDoc = struct {
         self.stale_count += 1;
     }
 
-    /// After a call: the nodes it takes over from the host are written whole, or (rejected) left
-    /// to the host. A write that fails leaves the node stale: the next call writes it.
+    /// After a call: the nodes the doc would take over from the host are unbound and their leaves
+    /// listed, or (rejected) left bound to the host. Nothing fails here.
     fn finishHandoff(self: *MarkdownDoc, rejected: bool) void {
-        for (self.bindings.items) |*binding| {
-            if (!binding.handoff) continue;
-            binding.handoff = false;
-            if (rejected or binding.block >= self.doc.blocks.items.len) continue;
-            var whole = self.doc.wholeWrite(binding.block) catch {
-                self.markStale(binding);
-                continue;
-            };
-            whole.resync = true;
-            writeNode(self, &self.doc, whole) catch {};
+        var kept: usize = 0;
+        for (self.bindings.items) |binding| {
+            var b = binding;
+            if (b.handoff) {
+                b.handoff = false;
+                if (!rejected) {
+                    if (b.block < self.doc.blocks.items.len) self.doc.blocks.items[b.block].flags.unreported = true;
+                    if (b.stale) self.stale_count -= 1;
+                    continue;
+                }
+            }
+            self.bindings.items[kept] = b;
+            kept += 1;
         }
+        self.bindings.items.len = kept;
     }
 
     /// Writes whole, from the doc as it is, the nodes a failed write left behind and (after a
@@ -633,11 +639,17 @@ pub const MarkdownDoc = struct {
             run_count += 1;
         }
         const changed = w.bytes.len > 0 or w.from != buffer.getByteSize();
-        node.scene_node.?.paint_epoch = nextPaintEpoch();
+        // The layer's storage first: once the text changes, nothing here may fail.
+        var spare = try buffer.reserveLayer(layer_id, run_count);
+        defer buffer.freeLayerSpare(&spare);
         if (changed) try buffer.replaceTail(w.from, w.bytes);
+        node.scene_node.?.paint_epoch = nextPaintEpoch();
         const end = buffer.getByteSize();
         const runs_end = if (w.runs_end == markdown.none) end else @min(w.runs_end, end);
-        try buffer.setLayer(layer_id, @min(w.runs_from, runs_end), runs_end, runs[0..run_count]);
+        buffer.setLayerWithSpare(layer_id, @min(w.runs_from, runs_end), runs_end, runs[0..run_count], &spare) catch |err| switch (err) {
+            error.OutOfMemory => unreachable,
+            else => return err,
+        };
         if (changed) Context.textResourceChanged(text) else Context.textResent(node);
         node.scene_node.?.owner.clearPreparation();
     }

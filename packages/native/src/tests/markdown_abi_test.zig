@@ -368,7 +368,15 @@ test "Markdown ABI: a host that reads changes holds a fresh doc's blocks and lea
             for (blocks) |block| {
                 const prose = block.kind == c.OT_MD_PARAGRAPH or block.kind == c.OT_MD_HEADING;
                 if (nodes.get(block.index)) |node| {
-                    if (prose) continue;
+                    if (prose) {
+                        // A leaf the host wrote that the doc writes now: the doc unbound the node
+                        // and listed the leaf; binding it again hands it over.
+                        if (host_wrote.contains(block.index) and !hostWrites(set, block)) {
+                            try expectOk(md.ot_markdown_bind(f.context, &f.doc, block.index, &node));
+                            _ = host_wrote.swapRemove(block.index);
+                        }
+                        continue;
+                    }
                     // A kind change (a paragraph that becomes a table): the host drops its node.
                     try expectOk(abi.ot_scene_destroy_node(f.context, &node));
                     _ = nodes.swapRemove(block.index);
@@ -574,7 +582,7 @@ test "Markdown ABI: options, removal, styles, and rejections that change nothing
     try std.testing.expectEqualStrings("three four", shown[0..count]);
 }
 
-test "Markdown ABI: a paragraph a table header leaves without its hook shows the doc's write" {
+test "Markdown ABI: a paragraph a table header leaves without its hook goes back to the host to hand over" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -585,8 +593,19 @@ test "Markdown ABI: a paragraph a table header leaves without its hook shows the
     try std.testing.expect(blocks[0].flags & c.OT_MD_BLOCK_HOOKED != 0);
     const node = try f.textNode();
     try expectOk(md.ot_markdown_bind(f.context, &f.doc, 0, &node));
+    try expectOk(abi.ot_scene_set_text(f.context, &node, "host", 4));
     _ = try f.append("| - | - |\n");
+    // The doc does not write over the host's text: it lists the leaf and unbinds the node.
     try std.testing.expect((try f.changes(arena))[0].flags & c.OT_MD_BLOCK_HOOKED == 0);
+    var shown: [16]u8 = undefined;
+    var count: u32 = 0;
+    try expectOk(abi.ot_scene_get_text(f.context, &node, &shown, shown.len, &count));
+    try std.testing.expectEqualStrings("host", shown[0..count]);
+    _ = try f.append("more\n");
+    try expectOk(abi.ot_scene_get_text(f.context, &node, &shown, shown.len, &count));
+    try std.testing.expectEqualStrings("host", shown[0..count]);
+    // Binding it again hands it over.
+    try expectOk(md.ot_markdown_bind(f.context, &f.doc, 0, &node));
     try std.testing.expect(try f.nodeShowsLeaf(arena, 0, node));
 }
 
@@ -725,6 +744,19 @@ test "Markdown ABI: a call that fails at any allocation changes nothing, bound n
                 else => return err,
             };
             failure.countdown = std.math.maxInt(usize);
+            if (!rejected and start.flags != live.flags) {
+                // Accepted (bigboi-r3-3): the doc hands no host node over by itself, so the host's
+                // text stands, and a later rejected call leaves it too.
+                for (nodes) |node| {
+                    var shown: [64]u8 = undefined;
+                    try std.testing.expectEqualStrings("host custom", shown[0..try owner.sceneGetText(node, &shown)]);
+                }
+                try std.testing.expectError(error.InvalidUnicode, owner.markdownCall(doc, .{ .append = "\xff" }));
+                for (nodes) |node| {
+                    var shown: [64]u8 = undefined;
+                    try std.testing.expectEqualStrings("host custom", shown[0..try owner.sceneGetText(node, &shown)]);
+                }
+            }
             if (!failure.failed) break;
             if (!rejected) continue;
             // Rejected: the source, the pending changes and every node as before.
@@ -832,5 +864,39 @@ test "Markdown ABI: a pending fence opener's info string grows with its line, li
             _ = try mirror.update(&f, arena, try f.append(piece));
             try std.testing.expect(try mirror.matchesFresh(&f, arena, .{ .flags = live_flags }, false));
         }
+    }
+}
+
+test "Markdown ABI: a bind that fails at any allocation leaves the node and the bindings as they were" {
+    const Context = context_mod.Context;
+    var failure: OneFailure = .{ .inner = std.testing.allocator };
+    var countdown: usize = 0;
+    while (true) : (countdown += 1) {
+        failure.countdown = std.math.maxInt(usize);
+        failure.failed = false;
+        const owner = try Context.init(failure.allocator(), std.testing.io, .{});
+        defer owner.deinit() catch unreachable;
+        const session = try owner.createSession(.{});
+        try owner.attachSessionRenderer(session, 40, 10, .{ .remote_mode = .remote });
+        _ = try owner.sceneCreateNode(session, c.OT_SCENE_ROOT, 1);
+        const doc = try owner.createMarkdown(.{});
+        _ = try owner.markdownCall(doc, .{ .append = "one [x](https://u.test) **two** `c`\n\nthree" });
+        _ = try owner.markdownReadChanges(doc, 64);
+        const node = try owner.sceneCreateNode(session, c.OT_SCENE_TEXT, 2);
+        try owner.sceneSetText(node, "host custom");
+        failure.countdown = countdown;
+        const rejected = if (owner.markdownBind(doc, 0, node)) |_| false else |err| switch (err) {
+            error.OutOfMemory => true,
+            else => return err,
+        };
+        failure.countdown = std.math.maxInt(usize);
+        if (!failure.failed) break;
+        if (!rejected) continue;
+        errdefer std.debug.print("bind, failing allocation {d}\n", .{countdown});
+        var shown: [64]u8 = undefined;
+        try std.testing.expectEqualStrings("host custom", shown[0..try owner.sceneGetText(node, &shown)]);
+        // Not bound: the doc's next change leaves it alone.
+        _ = try owner.markdownCall(doc, .{ .append = " four" });
+        try std.testing.expectEqualStrings("host custom", shown[0..try owner.sceneGetText(node, &shown)]);
     }
 }

@@ -1892,7 +1892,9 @@ ot_status ot_markdown_read_leaf(ot_context *, const ot_handle *doc, uint32_t blo
 /* Binds a scene text node to a paragraph or heading: the node draws with the doc's style, and
  * while the leaf is not hooked and the doc conceals and shows hyperlinks, the doc writes the
  * leaf's display and Markdown runs to it now and on every change. A removal of the block
- * unbinds it; a destroyed node is skipped. */
+ * unbinds it; a destroyed node is skipped. A node the host writes (the doc does not) is never
+ * written by another call: when a call makes the doc write such a leaf, it unbinds the node and
+ * lists the leaf, and binding the node again hands it over. */
 ot_status ot_markdown_bind(ot_context *, const ot_handle *doc, uint32_t block_index,
     const ot_handle *text_node);
 

@@ -299,6 +299,9 @@ struct Shown {
     content: Option<u64>,
     /// The click targets the inline hook gave a paragraph or heading.
     targets: Option<Targets>,
+    /// The widget wrote the text since native code last took the node: when native code writes the leaf again, the
+    /// widget binds the node again to hand it over (native code never writes over the widget's text).
+    host_wrote: bool,
 }
 
 /// A block's widget. Table rows and cells have none: their table shows them.
@@ -771,6 +774,7 @@ impl Markdown {
                 written: None,
                 content: None,
                 targets: None,
+                host_wrote: false,
             });
             if let Some(rendered) = &rendered {
                 self.attach(parent, rendered);
@@ -821,7 +825,14 @@ impl Markdown {
                 self.write_prose(app, doc, index, &text, false);
             }
             // Native code writes the text: it has no targets once a frame paints it.
-            (PARAGRAPH | HEADING, Some(Rendered::Text(_))) => self.set_targets(app, index, Vec::new()),
+            (PARAGRAPH | HEADING, Some(Rendered::Text(text))) => {
+                if std::mem::take(&mut self.0.blocks.borrow_mut()[index].host_wrote)
+                    && let Some(node) = text.element().node()
+                {
+                    app.report(doc.bind(block.index, node));
+                }
+                self.set_targets(app, index, Vec::new());
+            }
             (sys::OT_MD_HTML, Some(Rendered::Text(text))) => {
                 if let Some(leaf) = app.report(doc.read_leaf(block.index)) {
                     text.set_text(String::from_utf8_lossy(&leaf.bytes).into_owned());
@@ -969,6 +980,7 @@ impl Markdown {
             let mut blocks = self.0.blocks.borrow_mut();
             blocks[index].written = Some(written);
             blocks[index].content = hash;
+            blocks[index].host_wrote = true;
         }
         self.set_targets(app, index, ranges);
     }
@@ -1342,6 +1354,7 @@ impl Removed {
             written: old.written.take(),
             content: old.content.take(),
             targets: old.targets.take(),
+            host_wrote: false,
         })
     }
 }

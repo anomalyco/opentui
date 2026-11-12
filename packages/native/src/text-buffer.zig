@@ -1810,6 +1810,22 @@ pub const UnifiedTextBuffer = struct {
     /// inside the text, and the range ends inside the text must too, since the runs it cuts keep
     /// their outside parts; see `highlight-layers.zig` for the rest. Rejection changes nothing.
     pub fn setLayer(self: *Self, layer_id: u32, start_byte: u32, end_byte: u32, runs: []const LayerRun) TextBufferError!void {
+        return self.setLayerWithSpare(layer_id, start_byte, end_byte, runs, null);
+    }
+
+    /// Storage for layer `layer_id` after a set of `run_count` runs: with it, `setLayerWithSpare`
+    /// needs no memory (Markdown writes reserve it before they change the text).
+    pub fn reserveLayer(self: *Self, layer_id: u32, run_count: usize) TextBufferError!std.ArrayListUnmanaged(LayerRun) {
+        var spare: std.ArrayListUnmanaged(LayerRun) = .empty;
+        spare.ensureTotalCapacity(self.global_allocator, run_count + self.layers.runCount(layer_id) + 2) catch return TextBufferError.OutOfMemory;
+        return spare;
+    }
+
+    pub fn freeLayerSpare(self: *Self, spare: *std.ArrayListUnmanaged(LayerRun)) void {
+        spare.deinit(self.global_allocator);
+    }
+
+    pub fn setLayerWithSpare(self: *Self, layer_id: u32, start_byte: u32, end_byte: u32, runs: []const LayerRun, spare: ?*std.ArrayListUnmanaged(LayerRun)) TextBufferError!void {
         const sets = self.group_sets orelse return TextBufferError.InvalidId;
         const byte_count = self.getByteSize();
         for ([_]u32{ start_byte, end_byte }) |edge| {
@@ -1820,7 +1836,7 @@ pub const UnifiedTextBuffer = struct {
             if (run.end_byte > byte_count) return TextBufferError.InvalidIndex;
             if (!self.isCharBoundary(run.start_byte) or !self.isCharBoundary(run.end_byte)) return TextBufferError.InvalidIndex;
         }
-        const changed = self.layers.set(self.global_allocator, self.link_pool, layer_id, start_byte, end_byte, runs) catch |err| return switch (err) {
+        const changed = self.layers.setWithSpare(self.global_allocator, self.link_pool, layer_id, start_byte, end_byte, runs, spare) catch |err| return switch (err) {
             error.OutOfMemory => TextBufferError.OutOfMemory,
             error.InvalidIndex => TextBufferError.InvalidIndex,
             error.InvalidId => TextBufferError.InvalidId,
