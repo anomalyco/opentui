@@ -258,11 +258,19 @@ impl ScrollInner {
         self.scroll_to(x + dx, y + dy);
     }
 
+    /// Shows or hides each scrollbar with `show`, as the options call for at the last layout's sizes.
+    fn show_bars(&self, show: impl Fn(&View, bool)) {
+        let (content, viewport) = (self.content.rect(), self.viewport.rect());
+        let ((scroll_x, scroll_y), shown) = (self.axes.get(), self.scrollbars.get());
+        let overflow = content.height > viewport.height || self.vertical_always.get();
+        show(&self.vertical_bar, shown && scroll_y && overflow);
+        show(&self.horizontal_bar, shown && scroll_x && content.width > viewport.width);
+    }
+
     /// Refreshes scroll limits, scrollbars, and sticky scrolling after layout changed a size.
     fn refresh(&self, app: &App) {
-        let (content, viewport) = (self.content.rect(), self.viewport.rect());
+        let viewport = self.viewport.rect();
         let (max_x, max_y) = self.limits();
-        let (scroll_x, scroll_y) = self.axes.get();
         let ((x, y), (edge_x, edge_y), (stuck_x, stuck_y)) = (self.scroll.get(), self.edges.get(), self.stuck.get());
         let follow = |edge: Option<ScrollEdge>, stuck: bool, offset: f64, max: f64| match edge {
             Some(ScrollEdge::Top | ScrollEdge::Left) if stuck && self.sticky.get() => 0.0,
@@ -287,10 +295,7 @@ impl ScrollInner {
         };
         bar(&self.vertical, max_y, y, viewport.height);
         bar(&self.horizontal, max_x, x, viewport.width);
-        let scrollbars = self.scrollbars.get();
-        let overflow = content.height > viewport.height || self.vertical_always.get();
-        self.toggle(app, &self.vertical_bar, scrollbars && scroll_y && overflow);
-        self.toggle(app, &self.horizontal_bar, scrollbars && scroll_x && content.width > viewport.width);
+        self.show_bars(|bar, visible| self.toggle(app, bar, visible));
         // Re-apply even if unchanged: the limits may have moved under the current position.
         self.scroll.set((f64::NAN, f64::NAN));
         self.apply(x, y);
@@ -760,10 +765,7 @@ impl ScrollBox {
     /// Shows scrollbars when content overflows. On by default.
     pub fn scrollbars(&self, show: bool) -> Self {
         self.0.scrollbars.set(show);
-        if !show {
-            self.0.vertical_bar.visible(false);
-            self.0.horizontal_bar.visible(false);
-        }
+        self.0.show_bars(|bar, visible| drop(bar.visible(visible)));
         self.clone()
     }
 
@@ -771,10 +773,7 @@ impl ScrollBox {
     /// does; its thumb then fills the track. Off by default.
     pub fn vertical_scrollbar_always(&self, always: bool) -> Self {
         self.0.vertical_always.set(always);
-        let shown = self.0.scrollbars.get() && self.0.axes.get().1;
-        if always && shown {
-            self.0.vertical_bar.visible(true);
-        }
+        self.0.show_bars(|bar, visible| drop(bar.visible(visible)));
         self.clone()
     }
 

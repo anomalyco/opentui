@@ -445,6 +445,30 @@ fn an_always_shown_vertical_scrollbar_fills_its_track_until_the_content_overflow
     assert!(!column(&app).contains(&thumb));
 }
 
+// Scrollbar options set on a rendered box show what a box built with them shows, with no size change between.
+#[test]
+fn scrollbar_options_changed_after_a_frame_match_a_fresh_box() {
+    let bars = |lines: usize, (show, always): (bool, bool), last: (bool, bool)| {
+        let app = TestApp::new(8, 4);
+        let scroll = ScrollBox::new(&app).grow(1.0).scrollbars(show).vertical_scrollbar_always(always);
+        scroll.add(&Text::new(&app, "a\n".repeat(lines)).shrink(0.0));
+        app.root().add(&scroll);
+        app.render();
+        // Each setter alone, so neither covers for the other.
+        (show != last.0).then(|| scroll.scrollbars(last.0));
+        (always != last.1).then(|| scroll.vertical_scrollbar_always(last.1));
+        let capture = (app.render(), app.render()).1;
+        let column: String = (0..4).map(|y| capture.row(y).chars().nth(7).unwrap_or(' ')).collect();
+        (column, scroll.content_view().rect().width)
+    };
+    let options = [(false, false), (false, true), (true, false), (true, true)];
+    for lines in [0, 6] {
+        for (first, last) in options.iter().flat_map(|&first| options.map(|last| (first, last))) {
+            assert_eq!(bars(lines, first, last), bars(lines, last, last), "{lines} lines, {first:?} then {last:?}");
+        }
+    }
+}
+
 #[test]
 fn sticky_scroll_boxes_follow_new_content() {
     let app = TestApp::new(12, 3);
