@@ -2197,10 +2197,6 @@ test "clipboard platform operations settle at their deadline whether queued or r
     try std.testing.expectEqual(OperationStatus.timed_out, expired.pollPlatform());
     try std.testing.expectEqual(OperationStatus.cancelled, cancelled.pollPlatform());
     try std.testing.expectEqual(OperationStatus.pending, next.pollPlatform());
-    // A write stuck inside its OS call times out too, and a late commit doesn't change that.
-    try std.testing.expectEqual(OperationStatus.timed_out, committed.pollPlatform());
-    service.publishPlatformResultAt(&committed, .written, &.{}, &.{}, 0, now_ns);
-    try std.testing.expectEqual(OperationStatus.timed_out, committed.status);
     try std.testing.expectEqualSlices(*Operation, &.{&next}, service.platform_queue.items);
 
     // Destroying the settled operation leaves its storage to the worker, which drops the late
@@ -2211,8 +2207,12 @@ test "clipboard platform operations settle at their deadline whether queued or r
     try std.testing.expectEqual(OperationStatus.timed_out, running.status);
     try std.testing.expectEqual(@as(usize, 0), running.result.len);
     service.finishPlatformOperation(running);
-    service.platform_running = &next;
-    service.finishPlatformOperation(&next);
+    // The worker then blocks inside a write's OS call: it times out too, and a late commit doesn't change that.
+    service.platform_running = &committed;
+    try std.testing.expectEqual(OperationStatus.timed_out, committed.pollPlatform());
+    service.publishPlatformResultAt(&committed, .written, &.{}, &.{}, 0, now_ns);
+    try std.testing.expectEqual(OperationStatus.timed_out, committed.status);
+    service.finishPlatformOperation(&committed);
     try std.testing.expectEqual(@as(?*Operation, null), service.platform_running);
 }
 
@@ -2269,7 +2269,7 @@ test "clipboard platform result preserves out of memory after data allocation fa
     try std.testing.expectEqual(@backingInt(ErrorCode.out_of_memory), operation.error_code);
 }
 
-test "clipboard platform write keeps a cancel recorded before it and a commit nobody settled" {
+test "clipboard platform write keeps a cancel recorded before it and a result nobody settled" {
     var operation: Operation = .{
         .allocator = std.testing.allocator,
         .service = undefined,
@@ -2284,6 +2284,7 @@ test "clipboard platform write keeps a cancel recorded before it and a commit no
     operation.platform_terminal_request = null;
     operation.platform_mutation_started.store(true, .release);
     try std.testing.expectEqual(OperationStatus.written, resolvePlatformStatus(&operation, .written, late_ns));
+    try std.testing.expectEqual(OperationStatus.failed, resolvePlatformStatus(&operation, .failed, late_ns));
 }
 
 test "clipboard platform mutation callbacks mark the shared operation state" {
