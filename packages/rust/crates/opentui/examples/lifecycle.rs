@@ -1,11 +1,13 @@
 //! A fixture for terminal lifecycle checks: `scripts/pty-smoke.py` and `tests/lifecycle.rs` drive it under a
 //! pseudo-terminal.
 //!
-//! Keys: p panics, e returns an error, w writes to stderr (captured with `--app`), Ctrl+Z suspends, r (with `--app`)
-//! releases the terminal to read one line in cooked mode, as an external editor would (the line "quit" quits), q
-//! quits. Every exit path must restore the terminal. With `--app`, the same fixture runs on the framework's [`App::run`] instead
-//! of a hand-written host loop, and shows the terminal's theme mode. With `--modes`, it only prints the console's
-//! input and output modes, on Windows, so a check can compare them before and after a run.
+//! Keys: p panics, e returns an error, w writes to stderr (captured with `--app`), c (with `--app`) copies to the
+//! clipboard and then sets the title, m copies 17 times and then sets the title, v reads the clipboard, prints the
+//! outcome, and copies, Ctrl+Z suspends, r (with `--app`) releases the terminal to read one line in cooked mode, as an
+//! external editor would (the line "quit" quits), P (with `--app`) releases it to a task that enters raw mode and
+//! panics, q quits. Every exit path must restore the terminal. With `--app`, the same fixture runs on the framework's
+//! [`App::run`] instead of a hand-written host loop, and shows the terminal's theme mode. With `--modes`, it only prints
+//! the console's input and output modes, on Windows, so a check can compare them before and after a run.
 
 use opentui::host::{Host, HostOptions};
 use opentui::input::Event;
@@ -13,6 +15,7 @@ use opentui::native::{Node, NodeKind};
 use opentui::prelude::*;
 use opentui::style::Color;
 use opentui::{Error, Result};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 /// Paints the frame number and terminal size, so the driver can tell frames apart.
@@ -49,15 +52,34 @@ fn run_app() -> Result<()> {
             cx.fail(Error::Usage("lifecycle fixture error"));
         } else if key.matches("w") {
             eprintln!("lifecycle stderr line");
+        } else if key.matches("c") || key.matches("m") {
+            let copies = if key.matches("m") { 0..=16 } else { 0..=0 };
+            for copy in copies {
+                cx.app().copy_to_clipboard(&format!("lifecycle copy {copy}"));
+            }
+            cx.app().set_title("lifecycle copied");
+        } else if key.matches("v") {
+            cx.app().read_clipboard_as(&["text/plain"], |cx, outcome| {
+                println!("lifecycle clipboard {outcome:?}");
+                cx.app().copy_to_clipboard("lifecycle copy 0");
+            });
         } else if key.matches("r") {
             cx.app().release_terminal(|cx| {
-                println!("lifecycle released");
+                // Numbered: Windows' pseudoconsole repaints earlier lines, so a driver counting them would type early.
+                static RELEASES: AtomicU32 = AtomicU32::new(0);
+                println!("lifecycle released {}", RELEASES.fetch_add(1, Ordering::Relaxed) + 1);
                 let mut line = String::new();
                 let _ = std::io::stdin().read_line(&mut line);
                 println!("lifecycle read {}", line.trim_end());
                 if line.trim_end() == "quit" {
                     cx.quit();
                 }
+            });
+        } else if key.matches("shift+p") {
+            cx.app().release_terminal(|_| {
+                // As an editor that crashes: it changed the terminal modes and leaves them so.
+                std::mem::forget(opentui::term::Terminal::open());
+                panic!("lifecycle fixture panic");
             });
         }
     });

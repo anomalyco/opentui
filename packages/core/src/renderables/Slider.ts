@@ -174,23 +174,29 @@ export class SliderRenderable extends Renderable {
     })
   }
 
+  // The pointer's distance from the thumb start that the current value implies, not from the painted start, which is
+  // rounded to a half cell: a drag then moves the value by the pointer's travel from the first move. The clamp keeps
+  // the track start reachable from a press on the thumb's first cell, whose edge can lie before the exact start.
   private calculateDragOffsetVirtual(event: any): number {
     const trackStart = this.orientation === "vertical" ? this.y : this.x
+    const trackSize = this.orientation === "vertical" ? this.height : this.width
     const mousePos = (this.orientation === "vertical" ? event.y : event.x) - trackStart
-    const virtualMousePos = Math.max(
-      0,
-      Math.min((this.orientation === "vertical" ? this.height : this.width) * 2, mousePos * 2),
-    )
-    const thumb = this._ctx.nativeScene.getSliderThumb(this)
-    const virtualThumbStart = thumb.start
-    const virtualThumbSize = thumb.size
+    const virtualMousePos = Math.max(0, Math.min(trackSize, mousePos)) * 2
+    const thumbSize = this._ctx.nativeScene.getSliderThumb(this).size
+    const maxThumbStart = Math.max(0, trackSize * 2 - thumbSize)
+    const range = this._max - this._min
+    const ratio = range === 0 ? 0 : (this._value - this._min) / range
 
-    return Math.max(0, Math.min(virtualThumbSize, virtualMousePos - virtualThumbStart))
+    return Math.max(0, Math.min(thumbSize, virtualMousePos - ratio * maxThumbStart))
   }
 
   private setupMouseHandling(): void {
     let isDragging = false
     let dragOffsetVirtual = 0
+    // The pointer position the value already reflects. An event there has nothing to apply, and recomputing the value
+    // could differ from it by a rounding error: a press and release at one position would change it.
+    let appliedMousePos = 0
+    const pointerAxis = (event: any): number => (this.orientation === "vertical" ? event.y : event.x)
 
     this.onMouseDown = (event) => {
       event.stopPropagation()
@@ -200,29 +206,30 @@ export class SliderRenderable extends Renderable {
       const inThumb =
         event.x >= thumb.x && event.x < thumb.x + thumb.width && event.y >= thumb.y && event.y < thumb.y + thumb.height
 
-      if (inThumb) {
-        isDragging = true
-
-        dragOffsetVirtual = this.calculateDragOffsetVirtual(event)
-      } else {
+      if (!inThumb) {
         this.updateValueFromMouseDirect(event)
         if (this.isDestroyed) return
-        isDragging = true
-
-        dragOffsetVirtual = this.calculateDragOffsetVirtual(event)
       }
+      isDragging = true
+      dragOffsetVirtual = this.calculateDragOffsetVirtual(event)
+      appliedMousePos = pointerAxis(event)
+    }
+
+    const drag = (event: any): void => {
+      const mousePos = pointerAxis(event)
+      if (mousePos === appliedMousePos) return
+      appliedMousePos = mousePos
+      this.updateValueFromMouseWithOffset(event, dragOffsetVirtual)
     }
 
     this.onMouseDrag = (event) => {
       if (!isDragging) return
       event.stopPropagation()
-      this.updateValueFromMouseWithOffset(event, dragOffsetVirtual)
+      drag(event)
     }
 
     this.onMouseUp = (event) => {
-      if (isDragging) {
-        this.updateValueFromMouseWithOffset(event, dragOffsetVirtual)
-      }
+      if (isDragging) drag(event)
       isDragging = false
     }
   }

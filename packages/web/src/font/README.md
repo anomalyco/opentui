@@ -12,6 +12,11 @@ The live files are Regular, Bold, Italic, and Bold Italic in
 
 The plan sets glyphs, metrics, weights (100 to 900), and widths (Normal +
 SemiCondensed). Ligatures are off. The plan makes one web-subset family.
+`subset.include` sets the Unicode ranges in the files: Basic Latin, Latin-1,
+Latin Extended-A, combining marks, Cyrillic and Cyrillic Supplement
+(U+0400 to U+052F), punctuation, currency, arrows, math operators, box
+drawing, block elements, and geometric shapes. Iosevka drops a glyph that is
+not in these ranges, and the browser uses a fallback font for it.
 Change keys in the plan. Do not start from a blank UFO or FontForge file.
 
 Identity glyphs: `a g l I 1 0 8 6 9 @ { } ( ) _ *`.
@@ -21,8 +26,11 @@ These keys change the look first: `sb`, width `shape`, `xHeight`,
 
 ## Compile
 
-You need Node 18+ and a clone of [Iosevka](https://github.com/be5invis/Iosevka)
+You need Node 26 and a clone of [Iosevka](https://github.com/be5invis/Iosevka)
 at `v34.4.0`. You do not need `ttfautohint` for `webfont-unhinted`.
+Node 23 and earlier compile some outlines differently (for example `a`,
+`3`, `¤`, `Ŋ`, and some arrows), so the next compile does not match the
+live files.
 
 ```
 git clone --depth 1 --branch v34.4.0 https://github.com/be5invis/Iosevka.git

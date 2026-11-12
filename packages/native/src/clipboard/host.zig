@@ -177,7 +177,7 @@ pub const Operation = struct {
     x11_target_count: u8 = 0,
     x11_target_index: u8 = 0,
     platform_cancel: std.atomic.Value(bool) = .init(false),
-    platform_mutation_started: std.atomic.Value(bool) = .init(false),
+    platform_mutation_started: bool = false,
     platform_terminal_request: ?OperationStatus = null,
     mutation_sequence: u64 = 0,
     timeout_ms: u32 = 0,
@@ -258,7 +258,7 @@ pub const Operation = struct {
             return .requested;
         }
         if (comptime builtin.os.tag == .windows or builtin.os.tag == .macos) {
-            if (operation.platform_mutation_started.load(.acquire)) {
+            if (operation.platform_mutation_started) {
                 operation.mutex.unlock();
                 return .already_terminal;
             }
@@ -339,7 +339,6 @@ pub const Operation = struct {
     fn pollPlatform(operation: *Operation) OperationStatus {
         operation.mutex.lock();
         if (operation.status == .pending and operation.platform_terminal_request == null and
-            !operation.platform_mutation_started.load(.acquire) and
             platformDeadlineExpired(operation, clipboard_clock.nowNs()))
         {
             operation.platform_terminal_request = .timed_out;
@@ -408,7 +407,7 @@ pub const Operation = struct {
             operation.platform_cancel.store(true, .release);
             return .timed_out;
         }
-        operation.platform_mutation_started.store(true, .release);
+        operation.platform_mutation_started = true;
         return null;
     }
 
@@ -1485,10 +1484,8 @@ fn resolvePlatformStatus(
     platform_status: OperationStatus,
     now_ns: i128,
 ) OperationStatus {
-    if ((platform_status == .written or platform_status == .cleared) and
-        operation.platform_mutation_started.load(.acquire)) return platform_status;
     if (operation.platform_terminal_request) |requested| return requested;
-    if (!operation.platform_mutation_started.load(.acquire) and platformDeadlineExpired(operation, now_ns)) return .timed_out;
+    if (!operation.platform_mutation_started and platformDeadlineExpired(operation, now_ns)) return .timed_out;
     return platform_status;
 }
 
@@ -2187,7 +2184,7 @@ test "clipboard platform operations settle at their deadline whether queued or r
     var next: Operation = .{ .allocator = std.testing.allocator, .service = &service, .kind = .read, .timeout_ms = 60_000, .started_ns = now_ns };
     var cancelled: Operation = .{ .allocator = std.testing.allocator, .service = &service, .kind = .read, .timeout_ms = 60_000, .started_ns = now_ns, .platform_terminal_request = .cancelled };
     var committed: Operation = .{ .allocator = std.testing.allocator, .service = &service, .kind = .write, .timeout_ms = 1, .started_ns = now_ns - std.time.ns_per_ms };
-    committed.platform_mutation_started.store(true, .release);
+    committed.platform_mutation_started = true;
     var queue_storage: [3]*Operation = undefined;
     service.platform_queue = .initBuffer(&queue_storage);
     service.platform_queue.appendAssumeCapacity(&next);
@@ -2200,7 +2197,6 @@ test "clipboard platform operations settle at their deadline whether queued or r
     try std.testing.expectEqual(OperationStatus.timed_out, expired.pollPlatform());
     try std.testing.expectEqual(OperationStatus.cancelled, cancelled.pollPlatform());
     try std.testing.expectEqual(OperationStatus.pending, next.pollPlatform());
-    try std.testing.expectEqual(OperationStatus.pending, committed.pollPlatform());
     try std.testing.expectEqualSlices(*Operation, &.{&next}, service.platform_queue.items);
 
     // Destroying the settled operation leaves its storage to the worker, which drops the late
@@ -2211,8 +2207,12 @@ test "clipboard platform operations settle at their deadline whether queued or r
     try std.testing.expectEqual(OperationStatus.timed_out, running.status);
     try std.testing.expectEqual(@as(usize, 0), running.result.len);
     service.finishPlatformOperation(running);
-    service.platform_running = &next;
-    service.finishPlatformOperation(&next);
+    // The worker then blocks inside a write's OS call: it times out too, and a late commit doesn't change that.
+    service.platform_running = &committed;
+    try std.testing.expectEqual(OperationStatus.timed_out, committed.pollPlatform());
+    service.publishPlatformResultAt(&committed, .written, &.{}, &.{}, 0, now_ns);
+    try std.testing.expectEqual(OperationStatus.timed_out, committed.status);
+    service.finishPlatformOperation(&committed);
     try std.testing.expectEqual(@as(?*Operation, null), service.platform_running);
 }
 
@@ -2269,7 +2269,7 @@ test "clipboard platform result preserves out of memory after data allocation fa
     try std.testing.expectEqual(@backingInt(ErrorCode.out_of_memory), operation.error_code);
 }
 
-test "clipboard cancellation recorded before a platform mutation wins over late success" {
+test "clipboard platform write keeps a cancel recorded before it and a result nobody settled" {
     var operation: Operation = .{
         .allocator = std.testing.allocator,
         .service = undefined,
@@ -2278,28 +2278,13 @@ test "clipboard cancellation recorded before a platform mutation wins over late 
         .started_ns = 100,
         .platform_terminal_request = .cancelled,
     };
+    const late_ns = 100 + 100 * std.time.ns_per_ms;
 
-    try std.testing.expectEqual(
-        OperationStatus.cancelled,
-        resolvePlatformStatus(&operation, .written, 100 + std.time.ns_per_ms),
-    );
-}
-
-test "clipboard platform mutation commit wins over later cancellation" {
-    var operation: Operation = .{
-        .allocator = std.testing.allocator,
-        .service = undefined,
-        .kind = .write,
-        .timeout_ms = 100,
-        .started_ns = 100,
-        .platform_terminal_request = .cancelled,
-    };
-    operation.platform_mutation_started.store(true, .release);
-
-    try std.testing.expectEqual(
-        OperationStatus.written,
-        resolvePlatformStatus(&operation, .written, 100 + std.time.ns_per_ms),
-    );
+    try std.testing.expectEqual(OperationStatus.cancelled, resolvePlatformStatus(&operation, .written, late_ns));
+    operation.platform_terminal_request = null;
+    operation.platform_mutation_started = true;
+    try std.testing.expectEqual(OperationStatus.written, resolvePlatformStatus(&operation, .written, late_ns));
+    try std.testing.expectEqual(OperationStatus.failed, resolvePlatformStatus(&operation, .failed, late_ns));
 }
 
 test "clipboard platform mutation callbacks mark the shared operation state" {
@@ -2313,11 +2298,11 @@ test "clipboard platform mutation callbacks mark the shared operation state" {
     };
 
     try std.testing.expect(beginWindowsPlatformMutation(&operation) == null);
-    try std.testing.expect(operation.platform_mutation_started.load(.acquire));
+    try std.testing.expect(operation.platform_mutation_started);
 
-    operation.platform_mutation_started.store(false, .release);
+    operation.platform_mutation_started = false;
     try std.testing.expect(beginMacOSPlatformMutation(&operation) == null);
-    try std.testing.expect(operation.platform_mutation_started.load(.acquire));
+    try std.testing.expect(operation.platform_mutation_started);
 }
 
 test "clipboard X11 cancellation and timeout settle pending ownership confirmation" {
