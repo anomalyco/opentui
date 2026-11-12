@@ -2841,7 +2841,7 @@ pub const Doc = struct {
             write_full = self.liveTokensEnd(first) + same;
         }
         // Styles change from the first changed token, or the first opener a new match took.
-        try self.liveShow(write_full, full_end, final, @min(first, changes.matched), first);
+        try self.liveShow(write_full, full_end, final, @min(first, changes.matched), changes.linked);
         if (!final) {
             self.liveFold();
             try self.liveRetire();
@@ -2855,7 +2855,7 @@ pub const Doc = struct {
 
     /// Applies B's holds to the full display and writes what changed: the display shown now is
     /// the full display up to the hold cut.
-    fn liveShow(self: *Doc, write_full: u32, full_end: u32, final: bool, first: u32, first_display: u32) Error!void {
+    fn liveShow(self: *Doc, write_full: u32, full_end: u32, final: bool, first: u32, first_linked: u32) Error!void {
         const live = &self.live;
         // A hold inside a token shows what B drew of it, which the token's whole display need
         // not start with: the bytes from that token on are written again once it shows whole
@@ -2882,15 +2882,9 @@ pub const Doc = struct {
             while (start > 0 and self.liveTokensEnd(start) > write_start) start -= 1;
             start = self.liveStaleStart(start);
             const runs_from = @min(self.liveTokensEnd(start), shown_end);
-            // New matches all of one kind: the interiors of matches of that kind keep their styles.
-            const r = live.parser.result();
-            if (live.matches_seen > r.matches.len) live.matches_seen = 0;
-            var kind: ?inline_parser.MatchKind = null;
-            for (r.matches[live.matches_seen..], 0..) |m, n| {
-                if (n == 0) kind = m.kind else if (kind != m.kind) kind = null;
-                if (kind == null) break;
-            }
-            const skip: Skip = .{ .kind = kind, .old_matches = live.matches_seen, .before_token = first_display, .before_display = write_start };
+            // The matches the parser made in this call are the ones past those the writes saw.
+            if (live.matches_seen > live.parser.result().matches.len) live.matches_seen = 0;
+            const skip: Skip = .{ .old_matches = live.matches_seen, .before_token = first_linked, .before_display = write_start };
             const segments = try self.liveChunks(arena, start, runs_from, shown_end, skip);
             for (segments, 0..) |segment, i| {
                 const last = i + 1 == segments.len;
@@ -2937,12 +2931,11 @@ pub const Doc = struct {
     }
 
     const Skip = struct {
-        /// The kind of every match this call made, when they share one.
-        kind: ?inline_parser.MatchKind,
-        /// Matches before this one were styled by earlier writes; a new one's interior is not.
+        /// Matches from this index on are this call's: their interiors change style; the earlier
+        /// ones were written with their styles.
         old_matches: u32,
-        /// A skipped range ends before the first token whose display changed, and before the
-        /// written bytes.
+        /// A skipped range ends before the first bracket a link took in this call (its tokens
+        /// change style without changing bytes), and before the written bytes (bytes that change).
         before_token: u32,
         before_display: u32,
     };
@@ -2951,10 +2944,8 @@ pub const Doc = struct {
 
     /// The live leaf's chunks for display bytes [from, to), from live token `start` on (`from`
     /// is where it starts, or `to`): the styles read_leaf gives those bytes, counted, not copied.
-    /// Notes the styles before each token it passes. When the call's new matches are all of one
-    /// kind, the interior of a match of that kind keeps its styles (that kind was on there
-    /// already): the chunks skip it, so they come in segments, and each token is walked about
-    /// once per kind.
+    /// Notes the styles before each token it passes. The walk jumps over an interior whose styles
+    /// this call cannot change (liveSkipTo), so the chunks come in segments.
     fn liveChunks(self: *Doc, arena: Allocator, start: u32, from: u32, to: u32, skip: Skip) Error![]const Segment {
         const live = &self.live;
         var segments: std.ArrayListUnmanaged(Segment) = .empty;
@@ -2971,6 +2962,9 @@ pub const Doc = struct {
         const r = live.parser.result();
         var styler: TokenStyler = .{ .writer = &writer, .arena = arena, .r = r, .styles = live.base_styles, .references = self.references() };
         var segment_from = from;
+        // This call's matches open before the walk's start (it starts at the first opener one
+        // took): how many of each kind cover the token the walk is past.
+        var new_active: [3]u32 = .{ 0, 0, 0 };
         var link: u32 = if (live.base_styles.link != null) TokenStyle.base_link else none;
         if (start > 0) {
             const before = live.token_styles.items[start];
@@ -3001,15 +2995,14 @@ pub const Doc = struct {
                 break;
             }
             try styler.token(i);
+            noteNewMatches(r, i, skip.old_matches, &new_active);
             if (styler.styles.link == null) {
                 link = none;
             } else if (r.tokens[i].kind == .bracket_open and r.tokens[i].aux != 0) {
                 link = i;
             }
             at = live.display_ends.items[i];
-            // Matches nest and do not cross links, so the styles before the inner closer are the
-            // ones after its opener.
-            if (self.liveSkipTo(r, i, skip)) |closer| {
+            if (self.liveSkipTo(r, i, skip, new_active)) |closer| {
                 try segments.append(arena, .{ .from = segment_from, .to = at, .leaf = leaf.* });
                 try self.liveNoteStale(i + 1, closer);
                 const next = try arena.create(Leaf);
@@ -3022,6 +3015,13 @@ pub const Doc = struct {
                 leaf = next;
                 at = self.liveTokensEnd(closer);
                 segment_from = at;
+                // Before the closer, the matches open after `i` are its own matches whose openers
+                // lie in the gap (a match opened there closes by the closer: matches nest).
+                const d = r.delimiters[inline_parser.delimiterOf(r, closer).?];
+                var m = d.closer_first_match;
+                while (m < d.closer_first_match + d.closer_match_count) : (m += 1) {
+                    if (r.matches[m].opener_token > i) styler.styles.apply(r.matches[m].kind, 1);
+                }
                 i = closer - 1;
             }
         }
@@ -3047,21 +3047,44 @@ pub const Doc = struct {
         return segments.items;
     }
 
-    /// After token `i` of the walk: the closer to go on at, when `i` opens a match of the new
-    /// matches' kind whose interior no change reached.
-    fn liveSkipTo(self: *const Doc, r: inline_parser.Result, i: u32, skip: Skip) ?u32 {
-        const kind = skip.kind orelse return null;
-        if (r.tokens[i].kind != .delimiter) return null;
-        const d = inline_parser.delimiterOf(r, i) orelse return null;
-        var m = r.delimiters[d].opener_matches;
-        while (m) |mi| : (m = r.matches[mi].next_for_opener) {
-            const inner = r.matches[mi];
-            if (mi >= skip.old_matches or inner.kind != kind or inner.closer_token <= i + 1) continue;
-            if (inner.closer_token >= skip.before_token) return null;
-            if (self.live.display_ends.items[inner.closer_token] > skip.before_display) return null;
-            return inner.closer_token;
+    /// After token `i` of the walk: how many of this call's matches of each kind cover the
+    /// tokens after it (`active`): its closers end some, then its openers start some.
+    fn noteNewMatches(r: inline_parser.Result, i: u32, old_matches: u32, active: *[3]u32) void {
+        if (r.tokens[i].kind != .delimiter) return;
+        const d = r.delimiters[inline_parser.delimiterOf(r, i) orelse return];
+        var m = d.closer_first_match;
+        while (m < d.closer_first_match + d.closer_match_count) : (m += 1) {
+            if (m >= old_matches) active[@backingInt(r.matches[m].kind)] -= 1;
         }
-        return null;
+        var o = d.opener_matches;
+        while (o) |mi| : (o = r.matches[mi].next_for_opener) {
+            if (mi >= old_matches) active[@backingInt(r.matches[mi].kind)] += 1;
+        }
+    }
+
+    /// After token `i` of the walk: the token to go on at, when the tokens between cannot
+    /// change style in this call. That holds for the interior of `i`'s innermost match when it
+    /// is an earlier call's (so no match of this call starts or ends inside: matches nest), every
+    /// kind this call's matches add there is one `i`'s matches give it already, and no token's
+    /// display changed there. Matches nest and do not cross links, so the styles before that
+    /// innermost closer are the ones after `i` and those of the matches it closes whose openers
+    /// lie between: the walk goes on from there with them.
+    fn liveSkipTo(self: *const Doc, r: inline_parser.Result, i: u32, skip: Skip, active: [3]u32) ?u32 {
+        if (r.tokens[i].kind != .delimiter) return null;
+        const d = r.delimiters[inline_parser.delimiterOf(r, i) orelse return null];
+        var closer: u32 = none;
+        var kinds: [3]bool = .{ false, false, false };
+        var m = d.opener_matches;
+        while (m) |mi| : (m = r.matches[mi].next_for_opener) {
+            const match = r.matches[mi];
+            if (mi >= skip.old_matches and match.closer_token <= closer) return null;
+            closer = @min(closer, match.closer_token);
+            kinds[@backingInt(match.kind)] = true;
+        }
+        if (closer == none or closer <= i + 1) return null;
+        for (active, kinds) |count, given| if (count > 0 and !given) return null;
+        if (closer >= skip.before_token or self.live.display_ends.items[closer] > skip.before_display) return null;
+        return closer;
     }
 
     /// The styles in force after the first `count` live tokens, from the base styles: what the

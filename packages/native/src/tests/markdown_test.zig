@@ -980,6 +980,8 @@ const FamilyCommand = union(enum) {
     filter: []const u8,
 };
 
+const nested_marks = [_][]const u8{ "*", "**", "***", "_", "__", "~~" };
+
 const Families = struct {
     pub const Command = FamilyCommand;
 
@@ -1032,10 +1034,18 @@ const Families = struct {
                 for (0..count) |_| try out.appendSlice(arena, pick(random, &.{ "`c` ", "&amp; ", "\\* ", "<b> " }));
             },
             .nested_closers => {
-                const marks = pick(random, &.{ "*", "**", "_", "~~" });
+                // One mark for every level, or (mixed) one per level, closed in reverse.
+                const mixed = random.boolean();
+                const one = pick(random, &nested_marks);
+                const levels = try arena.alloc([]const u8, count);
+                for (levels) |*mark| mark.* = if (mixed) pick(random, &nested_marks) else one;
                 try out.appendSlice(arena, pick(random, &.{ "begin ", "", "`c` " }));
-                for (0..count) |_| try out.appendSlice(arena, try std.mem.concat(arena, u8, &.{ marks, pick(random, &.{ "a ", "`c` a ", "&amp; a " }) }));
-                for (0..count) |_| try out.appendSlice(arena, try std.mem.concat(arena, u8, &.{ pick(random, &.{ "b", "`c`" }), marks, " " }));
+                for (levels) |mark| try out.appendSlice(arena, try std.mem.concat(arena, u8, &.{ mark, pick(random, &.{ "a ", "`c` a ", "&amp; a " }) }));
+                var level = count;
+                while (level > 0) {
+                    level -= 1;
+                    try out.appendSlice(arena, try std.mem.concat(arena, u8, &.{ pick(random, &.{ "b", "`c`" }), levels[level], " " }));
+                }
             },
             .heading => {
                 try out.appendSlice(arena, pick(random, &.{ "# ", "###### ", "> ## " }));
@@ -1325,6 +1335,53 @@ test "Markdown model: tokens after an opener that never closes are restyled once
     if (try families.run(arena, commands.items)) |failure| {
         std.debug.print("{s} at step {d}\n", .{ failure.property, failure.step });
         return error.ModelFailure;
+    }
+}
+
+// bigboi's prefix-frame differential over nested and shared delimiters (round 3): openers of mixed
+// marks, their closers in reverse, adjacent closers sometimes run together (`**` then `*` as `***`,
+// so one run closes two matches), interiors of text, code and links; each document streamed at
+// strides 1, 3, 5 and 8, every prefix against a fresh doc and every node against read_leaf.
+test "Markdown stream: nested and shared delimiters stream like a fresh doc of each prefix (seeded)" {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    // CI: 60 documents, 240 streams; MARKDOWN_DIFFERENTIAL widens it.
+    const count: u64 = if (environment(arena_state.allocator(), "MARKDOWN_DIFFERENTIAL")) |t| try std.fmt.parseInt(u64, t, 10) else 60;
+    const rows = [_][]const u8{ "begin *out ***a** b* tail q* e", "begin **out ***a* b** tail q** e" };
+    for (0..count + rows.len) |seed| {
+        _ = arena_state.reset(.retain_capacity);
+        const arena = arena_state.allocator();
+        var text: std.ArrayListUnmanaged(u8) = .empty;
+        if (seed < rows.len) {
+            try text.appendSlice(arena, rows[seed]);
+        } else {
+            var prng = std.Random.DefaultPrng.init(seed);
+            const random = prng.random();
+            const depth = 1 + random.uintLessThan(usize, 6);
+            const levels = try arena.alloc([]const u8, depth);
+            const interiors = [_][]const u8{ "a ", "`c` ", "[l](u) ", "x" };
+            try text.appendSlice(arena, (&[_][]const u8{ "begin ", "", "w " })[random.uintLessThan(usize, 3)]);
+            for (levels) |*mark| {
+                mark.* = nested_marks[random.uintLessThan(usize, nested_marks.len)];
+                try text.appendSlice(arena, mark.*);
+                try text.appendSlice(arena, interiors[random.uintLessThan(usize, interiors.len)]);
+            }
+            var level = depth;
+            while (level > 0) {
+                level -= 1;
+                try text.appendSlice(arena, (&[_][]const u8{ "b", "`c`", "" })[random.uintLessThan(usize, 3)]);
+                try text.appendSlice(arena, levels[level]);
+                // Run the next closer into this one now and then, or end the pair with a space.
+                if (random.uintLessThan(u32, 3) != 0) try text.appendSlice(arena, (&[_][]const u8{ " ", " t " })[random.uintLessThan(usize, 2)]);
+            }
+            try text.appendSlice(arena, (&[_][]const u8{ " e", " tail q* e", "" })[random.uintLessThan(usize, 3)]);
+        }
+        for ([_]usize{ 1, 3, 5, 8 }) |width| {
+            if (!try streamAgreesParts(arena, "kinds", try split(arena, text.items, width))) {
+                std.debug.print("nested seed {d}, width {d}: \"{f}\"\n", .{ seed, width, std.zig.fmtString(text.items) });
+                return error.StreamMismatch;
+            }
+        }
     }
 }
 
