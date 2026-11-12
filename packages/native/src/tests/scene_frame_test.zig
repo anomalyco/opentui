@@ -776,12 +776,16 @@ test "Scene text paints inside its padding" {
     for ([_]f32{ 0, 2147483648 }, [_]u32{ c.OT_EDGE_LEFT, c.OT_EDGE_RIGHT }) |padding, edge| try f.owner.sceneSetStyle(text, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, edge, c.OT_UNIT_POINT, padding, 0);
     _ = try presentWork(f, .{});
     try testing.expectEqual(@as(f32, 512), (try f.owner.sceneGetPaintLayout(text, true)).width);
-    // Without padding the view is Yoga's box, also at a fractional place: edges 1.2 and 7.6 round to 7 cells.
-    for (c.OT_EDGE_LEFT..c.OT_EDGE_START) |edge| try f.owner.sceneSetStyle(text, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, @intCast(edge), c.OT_UNIT_POINT, 0, 0);
-    try f.owner.sceneSetStyle(text, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_WIDTH, 0, c.OT_UNIT_POINT, 6.4, 1);
-    try f.owner.sceneSetPositions(text, 3, .{ 1, 1, 0, 0 }, .{ 0.2, 0, 0, 0 });
-    _ = try presentWork(f, .{});
-    try testing.expectEqual((try f.owner.sceneGetPaintLayout(text, false)).width, (try f.owner.sceneGetPaintLayout(text, true)).width);
+    // Without padding the view is Yoga's box, at a fractional place (edges 1.2 and 7.6 round to 7 cells)
+    // and 2^28 cells out, translated back on screen; one cell of padding takes two columns there too.
+    for ([_][3]f32{ .{ 0.2, 6.4, 0 }, .{ 268435456, 6, 0 }, .{ 268435456, 6, 1 } }) |place| {
+        for (c.OT_EDGE_LEFT..c.OT_EDGE_START) |edge| try f.owner.sceneSetStyle(text, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, @intCast(edge), c.OT_UNIT_POINT, place[2], 0);
+        try f.owner.sceneSetStyle(text, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_WIDTH, 0, c.OT_UNIT_POINT, place[1], 1);
+        try f.owner.sceneSetPositions(text, 3, .{ 1, 1, 0, 0 }, .{ place[0], 0, 0, 0 });
+        try f.owner.scenePatchPaint(text, c.OT_SCENE_PROPERTY_TRANSLATE_X, .{ .translateX = @floor(-place[0]) });
+        _ = try presentWork(f, .{});
+        try testing.expectEqual((try f.owner.sceneGetPaintLayout(text, false)).width - 2 * place[2], (try f.owner.sceneGetPaintLayout(text, true)).width);
+    }
 }
 
 const BandCase = enum { space_border_tall, space_border_tracker, hooked_body, hooked_after, surface, offscreen_view, offscreen_view_self };

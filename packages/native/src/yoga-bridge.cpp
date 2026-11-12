@@ -270,6 +270,17 @@ uint32_t otYogaNodeGetContentBox(YGNodeConstRef node, float* out) noexcept {
     const double scale = target->getConfig()->getPointScaleFactor();
     const float pad[4] = {layout.padding(PhysicalEdge::Left), layout.padding(PhysicalEdge::Top),
                           layout.padding(PhysicalEdge::Right), layout.padding(PhysicalEdge::Bottom)};
+    if (pad[0] == 0 && pad[1] == 0 && pad[2] == 0 && pad[3] == 0) {
+      // Without padding the view is the box itself.
+      out[0] = out[1] = 0;
+      out[2] = layout.dimension(Dimension::Width);
+      out[3] = layout.dimension(Dimension::Height);
+      return;
+    }
+    // Scene configs round at scale 1, which sees only the fraction: whole cells off the origin keep
+    // the edges small, exact floats.
+    left -= std::floor(left);
+    top -= std::floor(top);
     // Rounded as Yoga rounds the node's own edges (PixelGrid.cpp), so no padding gives the box.
     // Natively measured nodes keep the default node type (yoga.zig), whose edges round to nearest.
     auto edge = [&](double value) { return roundValueToPixelGrid(value, scale, false, false); };
