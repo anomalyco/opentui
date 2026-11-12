@@ -45,7 +45,7 @@ test("streamed, the stable tokens are a growing prefix of the final text's token
   const random = (n: number) => ((seed = (Math.imul(seed, 48271) + 11) % 2147483647) >>> 0) % n
   const failures: string[] = []
   const progress = [
-    "a\n\nb\n\nc\n\nd\n\ne\n\nf\n",
+    "😀a\n\nb\n\nc\n\nd\n\ne\n\nf\n", // the end of the stable tokens counts UTF-16 units
     "Summary.\n\n1\n\n2\n\n3\n\nend\n",
     "- one\n- two\n- three\n- four\n- five\n- six\n\nDone.\n",
     "1. a\n2. b\n\nText one.\n\n- c\n- d\n- e\n\nText two.\n\n* f\n* g\n\nend\n",
