@@ -840,8 +840,9 @@ fn genericProperties(arena: std.mem.Allocator, doc: *const Doc, fed: Fed, option
 /// the completed parse only extends each leaf's display (P7's comparison) except for B's four
 /// accepted exceptions: link brackets and math delimiters (framesGrow skips them), an opener
 /// drawn as closed that reverts (its marks are extra bytes), and a backtick opener's content
-/// decoding when it reverts (a leaf that holds a backtick is not compared). A held line (no
-/// layout) shows nothing new and passes.
+/// decoding when it reverts (a leaf that holds a backtick is not compared), and a definition the
+/// completed line adds (displays are not compared then). A held line (no layout) shows nothing new
+/// and passes.
 fn layoutAgrees(arena: std.mem.Allocator, doc: *const Doc, options: markdown.Options) !bool {
     const s = doc.source.items;
     if (doc.finished or s.len == doc.line_start_byte or doc.provisional_from == markdown.none) return true;
@@ -860,7 +861,7 @@ fn layoutAgrees(arena: std.mem.Allocator, doc: *const Doc, options: markdown.Opt
                 agrees = false;
                 break;
             }
-            if (!markdown.Doc.isInlineLeaf(a)) continue;
+            if (!markdown.Doc.isInlineLeaf(a) or whole.doc.definitions.items.len != doc.definitions.items.len) continue;
             if (std.mem.indexOfScalar(u8, s[a.source_start_byte..@min(s.len, a.source_end_byte)], '`') != null) continue;
             const x = (try doc.readLeaf(arena, @intCast(i))).bytes.items;
             const y = (try whole.doc.readLeaf(arena, @intCast(i))).bytes.items;
