@@ -752,6 +752,51 @@ test("CliRenderer preserves split render offset when switching to passthrough", 
   expect((renderer as any).renderOffset).toBe(before)
 })
 
+// After the round trip the footer sits below the history rows, and the next write starts where the history ends.
+// Before capture resumes, "frame" draws a frame and "narrow" also narrows the terminal.
+test.each([
+  ["one", "", 1, 4],
+  ["one\ntwo\nthree", "", 3, 6],
+  ["one\ntwo\nthree", "frame", 3, 6],
+  ["one\ntwo\nthree", "narrow", 3, 6],
+] as const)("CliRenderer keeps split history %j across an alternate-screen trip %j", async (text, step, rows, col) => {
+  const result = await createTestRenderer({
+    width: 30,
+    height: 8,
+    screenMode: "split-footer",
+    footerHeight: 2,
+    externalOutputMode: "capture-stdout",
+    consoleMode: "disabled",
+  })
+
+  renderer = result.renderer
+  renderer.root.add(new TextRenderable(renderer, { content: "[footer]" }))
+  // The last cursor move before `text` in the output: the cell where it was drawn.
+  const cellOf = (text: string) => /.*(\x1b\[\d+;\d+H)/s.exec(result.output().split(text)[0]!)?.[1]
+
+  ;(renderer as any).stdout.write(text)
+  await result.renderOnce()
+
+  renderer.externalOutputMode = "passthrough"
+  renderer.screenMode = "alternate-screen"
+  renderer.screenMode = "split-footer"
+  if (step) await result.renderOnce()
+  if (step === "narrow") result.resize(20, 8)
+  await renderer.nativeScene.driver.idle()
+  result.writes.length = 0
+  renderer.externalOutputMode = "capture-stdout"
+  await result.renderOnce()
+  expect(result.output()).not.toContain(ANSI.clearScreen)
+  expect(cellOf("[footer]")).toBe(`\x1b[${rows + 1};1H`)
+
+  result.writes.length = 0
+  ;(renderer as any).stdout.write("\nfour")
+  await result.renderOnce()
+  expect(cellOf("\r\n")).toBe(`\x1b[${rows};${col}H`)
+  expect(cellOf("four")).toBe(`\x1b[${rows + 1};1H`)
+  expect(cellOf("[footer]")).toBe(`\x1b[${rows + 2};1H`)
+})
+
 test("CliRenderer does not force split repaint when switching to passthrough with no pending output", async () => {
   const result = await createTestRenderer({
     screenMode: "split-footer",
@@ -1712,7 +1757,8 @@ test("CliRenderer entering split capture seeds from current terminal cursor row"
   expect((renderer as any).renderOffset).toBe(4)
 })
 
-test("CliRenderer entering split capture after a committed main-screen frame clears the old pinned footer surface", async () => {
+// true: the way to main-screen passes through the alternate screen, which must not keep the split history parked.
+test.each([false, true])("CliRenderer split capture after main-screen frames clears the old footer %p", async (alt) => {
   const result = await createTestRenderer({
     width: 40,
     height: 10,
@@ -1727,6 +1773,7 @@ test("CliRenderer entering split capture after a committed main-screen frame cle
   await result.renderOnce()
 
   renderer.externalOutputMode = "passthrough"
+  if (alt) renderer.screenMode = "alternate-screen"
   renderer.screenMode = "main-screen"
   await result.renderOnce()
 

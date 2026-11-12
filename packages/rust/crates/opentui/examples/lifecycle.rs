@@ -1,9 +1,10 @@
 //! A fixture for terminal lifecycle checks: `scripts/pty-smoke.py` and `tests/lifecycle.rs` drive it under a
 //! pseudo-terminal.
 //!
-//! Keys: p panics, e returns an error, w writes to stderr (captured with `--app`), Ctrl+Z suspends, r (with `--app`)
-//! releases the terminal to read one line in cooked mode, as an external editor would (the line "quit" quits), q
-//! quits. Every exit path must restore the terminal. With `--app`, the same fixture runs on the framework's [`App::run`] instead
+//! Keys: p panics, e returns an error, w writes to stderr (captured with `--app`), c (with `--app`) copies to the
+//! clipboard and then sets the title, m copies 17 times and then sets the title, v reads the clipboard, prints the
+//! outcome, and copies, Ctrl+Z suspends, r (with `--app`) releases the terminal to read one line in cooked mode, as an external
+//! editor would (the line "quit" quits), q quits. Every exit path must restore the terminal. With `--app`, the same fixture runs on the framework's [`App::run`] instead
 //! of a hand-written host loop, and shows the terminal's theme mode. With `--modes`, it only prints the console's
 //! input and output modes, on Windows, so a check can compare them before and after a run.
 
@@ -49,6 +50,17 @@ fn run_app() -> Result<()> {
             cx.fail(Error::Usage("lifecycle fixture error"));
         } else if key.matches("w") {
             eprintln!("lifecycle stderr line");
+        } else if key.matches("c") || key.matches("m") {
+            let copies = if key.matches("m") { 0..=16 } else { 0..=0 };
+            for copy in copies {
+                cx.app().copy_to_clipboard(&format!("lifecycle copy {copy}"));
+            }
+            cx.app().set_title("lifecycle copied");
+        } else if key.matches("v") {
+            cx.app().read_clipboard_as(&["text/plain"], |cx, outcome| {
+                println!("lifecycle clipboard {outcome:?}");
+                cx.app().copy_to_clipboard("lifecycle copy 0");
+            });
         } else if key.matches("r") {
             cx.app().release_terminal(|cx| {
                 println!("lifecycle released");
