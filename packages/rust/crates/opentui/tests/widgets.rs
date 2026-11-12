@@ -956,10 +956,11 @@ fn code_highlights_numbers_lines_and_scrolls() {
 fn followed_code_keeps_appended_text_in_view() {
     use opentui::widget::Code;
     let app = TestApp::new(12, 3);
-    let log = Code::new(&app).follow(true).grow(1.0);
+    // Text given before follow and before the first frame is followed too.
+    let log = Code::new(&app).grow(1.0).append("line 0\nline 1\nline 2\nline 3\n").follow(true);
     app.root().add(&log);
     app.render();
-    for line in 0..6 {
+    for line in 4..6 {
         log.append(&format!("line {line}\n"));
         app.render();
     }
@@ -2249,6 +2250,11 @@ fn the_console_shows_messages_from_any_thread() {
     // Following new messages; moving and resizing; Escape hides it.
     console.log(LogLevel::Error, "failed");
     assert!(rows(&app)[9].ends_with("ERROR failed"));
+    // Scrolled up, it keeps its place as messages arrive.
+    console.focus();
+    app.press("home");
+    console.log(LogLevel::Info, "later");
+    assert!(rows(&app)[8].ends_with("starting"), "{:?}", rows(&app));
     console.position(ConsolePosition::Right).size_percent(50.0);
     assert!(rows(&app)[0].starts_with("app content         "), "{:?}", rows(&app));
     console.focus();

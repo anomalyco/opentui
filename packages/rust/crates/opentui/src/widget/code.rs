@@ -283,8 +283,10 @@ impl CodeInner {
         self.keep_in_view();
     }
 
-    /// Keeps the view within the text, or at the end when following and the last scroll reached it.
+    /// Keeps the view within the text, or at the end when following and the last scroll reached it. Before the first
+    /// layout there is no view to keep: the first resize does it.
     fn keep_in_view(&self) {
+        let Some(_) = self.laid_out_height.get() else { return };
         let follow = self.follow.get() && self.pinned.get();
         self.scroll_to(if follow { i64::from(u32::MAX) } else { i64::from(self.scroll.get()) });
     }

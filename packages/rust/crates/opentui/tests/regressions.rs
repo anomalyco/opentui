@@ -168,8 +168,8 @@ fn set_timeout_with_a_huge_delay_panics() {
     app.advance(Duration::from_secs(1));
 }
 
-// Expected: follow stops after the user scrolls up, so new text or a resize keeps the view at the top, and a view at
-// the end stays there.
+// Expected: follow stops after the user scrolls up, so new text or a resize keeps the view where the user left it,
+// and a view at the end stays there.
 // Actual: `CodeInner::resized`, and later `Code::set_code` (record 647), jumped to the bottom whenever follow is on.
 #[test]
 fn followed_code_jumps_to_the_bottom_after_the_user_scrolled_up() {
@@ -185,13 +185,13 @@ fn followed_code_jumps_to_the_bottom_after_the_user_scrolled_up() {
         app.root().add(&log);
         app.render();
         if scrolled_up {
-            log.scroll_to(0);
+            log.scroll_to(3);
         }
         changes[index](&app, &log);
         app.render();
         let row = log.scroll_position();
         let end = log.perform(ScrollAction::Bottom).scroll_position();
-        assert_eq!(row, if scrolled_up { 0 } else { end }, "change {index}, scrolled up: {scrolled_up}");
+        assert_eq!(row, if scrolled_up { 3 } else { end }, "change {index}, scrolled up: {scrolled_up}");
     }
 }
 
