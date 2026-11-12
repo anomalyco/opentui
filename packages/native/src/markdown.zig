@@ -2905,32 +2905,24 @@ pub const Doc = struct {
             // The matches the parser made in this call are the ones past those the writes saw.
             if (live.matches_seen > live.parser.result().matches.len) live.matches_seen = 0;
             for (live.parser.result().matches[live.matches_seen..]) |m| self.counters.restyled_kinds |= @as(u64, 1) << @intCast(@backingInt(m.kind));
-            const skip: Skip = .{ .old_matches = live.matches_seen, .before_display = write_start };
-            const ranges = try self.liveChunks(arena, start, runs_from, shown_end, skip);
+            const ranges = try self.liveChunks(arena, start, runs_from, shown_end, live.matches_seen, write_start);
             try self.emit(.{ .block = live.block, .from = write_start, .bytes = tail.items, .ranges = ranges });
         }
         live.matches_seen = @intCast(live.parser.result().matches.len);
         live.shown_byte_count = shown_end;
     }
 
-    const Skip = struct {
-        /// Matches from this index on are this call's: their interiors change style; the earlier
-        /// ones were written with their styles.
-        old_matches: u32,
-        /// A skipped range ends before the written bytes.
-        before_display: u32,
-    };
-
     /// The live leaf's chunks for display bytes [from, to), from live token `start` on (`from`
     /// is where it starts, or `to`): the styles read_leaf gives those bytes, counted, not copied.
-    /// Notes the styles before each token it passes. The walk jumps over an interior whose styles
-    /// this call cannot change, so the chunks come in segments: from inside earlier calls' matches
-    /// (`open_old`, outermost first), it jumps to the closer of the outermost, or of the outermost
-    /// of a kind this call's matches add there (`new_active`) when that one ends sooner. Matches
-    /// nest and do not cross links, and the matches this call made have their closers in the
-    /// written bytes, so none starts or ends in the gap, and every token there has the kinds
-    /// those matches add already.
-    fn liveChunks(self: *Doc, arena: Allocator, start: u32, from: u32, to: u32, skip: Skip) Error![]const RunRange {
+    /// Matches from `old_matches` on are this call's (the earlier ones were written with their
+    /// styles), and bytes from `written` on are written now. Notes the styles before each token
+    /// it passes. The walk jumps over an interior whose styles this call cannot change, so the
+    /// chunks come in segments: from inside earlier calls' matches (`open_old`, outermost first),
+    /// it jumps to the closer of the outermost, or of the outermost of a kind this call's matches
+    /// add there (`new_active`) when that one ends sooner. Matches nest and do not cross links,
+    /// and the matches this call made have their closers in the written bytes, so none starts or
+    /// ends in the gap, and every token there has the kinds those matches add already.
+    fn liveChunks(self: *Doc, arena: Allocator, start: u32, from: u32, to: u32, old_matches: u32, written: u32) Error![]const RunRange {
         const live = &self.live;
         var segments: std.ArrayListUnmanaged(RunRange) = .empty;
         var leaf = try arena.create(Leaf);
@@ -2966,7 +2958,7 @@ pub const Doc = struct {
         } else if (link != none) {
             styler.styles.link = try writer.url("", try styler.destination(link));
         }
-        for (r.matches[skip.old_matches..]) |m| {
+        for (r.matches[old_matches..]) |m| {
             self.counters.match_reads += 1;
             if (m.opener_token >= start or m.closer_token < start) continue;
             new_active[@backingInt(m.kind)] += 1;
@@ -2995,7 +2987,7 @@ pub const Doc = struct {
                 const d = r.delimiters[di];
                 self.counters.match_reads += d.closer_match_count;
                 for (d.closer_first_match..d.closer_first_match + d.closer_match_count) |m| {
-                    if (m >= skip.old_matches) new_active[@backingInt(r.matches[m].kind)] -= 1;
+                    if (m >= old_matches) new_active[@backingInt(r.matches[m].kind)] -= 1;
                 }
                 while (open_old.items.len > 0 and open_old.items[open_old.items.len - 1].closer == i) {
                     old_count[@backingInt(open_old.pop().?.kind)] -= 1;
@@ -3006,7 +2998,7 @@ pub const Doc = struct {
                     self.counters.match_reads += 1;
                     const match = r.matches[mi];
                     const k = @backingInt(match.kind);
-                    if (mi >= skip.old_matches) {
+                    if (mi >= old_matches) {
                         new_active[k] += 1;
                         continue;
                     }
@@ -3025,7 +3017,7 @@ pub const Doc = struct {
             for (new_active, old_count, old_end) |count, old, end| {
                 if (count > 0) closer = if (old == 0) 0 else @min(closer, end);
             }
-            if (closer > i + 1 and live.display_ends.items[closer] <= skip.before_display) {
+            if (closer > i + 1 and live.display_ends.items[closer] <= written) {
                 try segments.append(arena, .{ .from = segment_from, .end = at, .chunks = leaf.chunks.items, .urls = leaf.urls.items });
                 const next = try arena.create(Leaf);
                 next.* = .{};
@@ -3045,9 +3037,8 @@ pub const Doc = struct {
                     styler.styles.apply(gone.kind, -1);
                 }
                 const d = r.delimiters[inline_parser.delimiterOf(r, closer).?];
-                var m = d.closer_first_match;
-                while (m < d.closer_first_match + d.closer_match_count) : (m += 1) {
-                    if (r.matches[m].opener_token > i) styler.styles.apply(r.matches[m].kind, 1);
+                for (r.matches[d.closer_first_match..][0..d.closer_match_count]) |match| {
+                    if (match.opener_token > i) styler.styles.apply(match.kind, 1);
                 }
                 i = closer - 1;
             }
@@ -3073,7 +3064,7 @@ pub const Doc = struct {
             spans.fresh = false;
             self.counters.run_token_visits += shown_runs.len - spans.resolved;
             const first_span = try spans.add(shown_runs, self.allocator, &self.counters.run_token_visits);
-            const keep_end = pending_start + @min(first_span, skip.before_display -| pending_start);
+            const keep_end = pending_start + @min(first_span, written -| pending_start);
             if (extends and keep_end > at) {
                 try segments.append(arena, .{ .from = segment_from, .end = at, .chunks = leaf.chunks.items, .urls = leaf.urls.items });
                 leaf = try arena.create(Leaf);
