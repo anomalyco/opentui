@@ -2226,6 +2226,18 @@ test "occupancy - EditorView forwards occupancy and replays stored endpoints" {
     ev.setSelectionOccupancy(.cell);
     ev.gotoVisualLineEnd();
     try std.testing.expectEqual(@as(u32, 2), ev.getPrimaryCursor().offset);
+
+    // A full soft-wrapped row keeps its wrap-edge cell under cell occupancy, so the
+    // boundary end of row 0 shows as the start of row 1 after the switch.
+    try eb.setText("abcd");
+    ev.setWrapMode(.char);
+    ev.setViewportSize(2, 24);
+    ev.setSelectionOccupancy(.boundary);
+    try eb.setCursor(0, 0);
+    ev.gotoVisualLineEnd();
+    ev.setSelectionOccupancy(.cell);
+    const vcursor = ev.getVisualCursor();
+    try std.testing.expectEqual([3]u32{ 2, 1, 0 }, [3]u32{ vcursor.offset, vcursor.visual_row, vcursor.visual_col });
 }
 
 test "EditorView - word press keeps cursor on the clicked grapheme" {
