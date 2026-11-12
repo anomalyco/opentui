@@ -1338,6 +1338,24 @@ test "Markdown model: tokens after an opener that never closes are restyled once
     }
 }
 
+test "Markdown model: a triple-star closer whose matches enclose the last ones restyles only what they add" {
+    // bigboi-r3-2: `begin `, 64 times `***a `, then 64 times `b*** `, one piece per call: 8,385 run token
+    // visits where the work property allows 1,485.
+    var families: Families = .{};
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var commands: std.ArrayListUnmanaged(FamilyCommand) = .empty;
+    try commands.append(arena, .{ .append = "begin " });
+    for (0..64) |_| try commands.append(arena, .{ .append = "***a " });
+    for (0..64) |_| try commands.append(arena, .{ .append = "b*** " });
+    try commands.append(arena, .finish);
+    if (try families.run(arena, commands.items)) |failure| {
+        std.debug.print("{s} at step {d}\n", .{ failure.property, failure.step });
+        return error.ModelFailure;
+    }
+}
+
 // bigboi's prefix-frame differential over nested and shared delimiters (round 3): openers of mixed
 // marks, their closers in reverse, adjacent closers sometimes run together (`**` then `*` as `***`,
 // so one run closes two matches), interiors of text, code and links; each document streamed at

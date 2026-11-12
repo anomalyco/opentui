@@ -719,11 +719,8 @@ pub const Parser = struct {
                     .{ .strong, 2 }
                 else
                     .{ .emphasis, 1 };
-                // The display showed the opener as closed by this kind already (optimistic) only
-                // when this match uses all of it with the kind its length implied.
-                if (opener.count != used or opener.opener_matches != null or kind != optimisticKind(opener.char, opener.original_count)) {
-                    self.markChanged(opener.token_index);
-                }
+                // The opener's bytes stay concealed (matched, or still waiting with what is left):
+                // what the match changes is the styles from it on, which `matched_from` reports.
                 opener.count -= used;
                 closer.count -= used;
                 self.markChanged(closer.token_index);
@@ -1166,11 +1163,6 @@ pub fn delimiterOf(r: Result, index: u32) ?u32 {
         if (t < index) low = mid + 1 else high = mid;
     }
     return null;
-}
-
-fn optimisticKind(c: u8, count: u32) MatchKind {
-    if (c == '~') return .strikethrough;
-    return if (count >= 2) .strong else .emphasis;
 }
 
 /// Display bytes of token `index` (read_leaf's text; the live display conceals an opener that
