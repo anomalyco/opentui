@@ -970,11 +970,13 @@ test "Markdown ABI: an option change leaves text the host wrote to a node the do
     try std.testing.expectEqualStrings("host", shown[0..count]);
 }
 
-test "Markdown ABI: an append rejected for memory lists no block again" {
-    // bigboi-r5-3: the pending line's layout was rebuilt after the failure, and its blocks (read
-    // already) were listed again: a list, its item and paragraph; a quote and its paragraph.
+test "Markdown ABI: a call rejected for memory lists no block again and reports no removal" {
+    // bigboi-r5-3: a same-line append rebuilt the pending line's layout after the failure, and its
+    // blocks (read already) were listed again. bigboi-r6-1: a multiline append aborted in its
+    // rollback. bigboi-r6-2: a rejected finish listed the blocks and reported a removal from 0.
     const Context = context_mod.Context;
-    for ([_]bool{ false, true }) |sustained| for ([_][]const u8{ "- item", "> quote" }, [_]u32{ 2, 1 }) |line, paragraph| {
+    const calls = [_]Context.MarkdownCall{ .{ .append = " c* [x](https://new-link.test) " }, .{ .append = "\nnext **b**\n\nend " }, .finish };
+    for ([_]bool{ false, true }) |sustained| for (calls) |call| for ([_][]const u8{ "- item", "> quote", "para" }, [_]u32{ 2, 1, 0 }) |line, paragraph| {
         var failure: OneFailure = .{ .inner = std.testing.allocator, .sustained = sustained };
         var countdown: usize = 0;
         while (true) : (countdown += 1) {
@@ -986,12 +988,12 @@ test "Markdown ABI: an append rejected for memory lists no block again" {
             try owner.attachSessionRenderer(session, 40, 10, .{ .remote_mode = .remote });
             _ = try owner.sceneCreateNode(session, c.OT_SCENE_ROOT, 1);
             const doc = try owner.createMarkdown(.{});
-            _ = try owner.markdownCall(doc, .{ .append = line });
+            const before = try owner.markdownCall(doc, .{ .append = line });
             _ = try owner.markdownReadChanges(doc, 64);
             try owner.markdownBind(doc, paragraph, try owner.sceneCreateNode(session, c.OT_SCENE_TEXT, 2));
             try std.testing.expectEqual(@as(u32, 0), (try owner.markdownReadChanges(doc, 0)).count);
             failure.countdown = countdown;
-            const rejected = if (owner.markdownCall(doc, .{ .append = " c* [x](https://new-link.test) " })) |_| false else |err| switch (err) {
+            const rejected = if (owner.markdownCall(doc, call)) |_| false else |err| switch (err) {
                 error.OutOfMemory => true,
                 else => return err,
             };
@@ -1000,8 +1002,10 @@ test "Markdown ABI: an append rejected for memory lists no block again" {
             failure.failed = false;
             if (!failed) break;
             if (!rejected) continue;
-            errdefer std.debug.print("{s}: append, failing allocation {d} (sustained {})\n", .{ line, countdown, sustained });
+            errdefer std.debug.print("{s}: {t}, failing allocation {d} (sustained {})\n", .{ line, call, countdown, sustained });
+            try std.testing.expectEqualStrings(line, try owner.markdownSource(doc));
             try std.testing.expectEqual(@as(u32, 0), (try owner.markdownReadChanges(doc, 0)).count);
+            try std.testing.expectEqual(before.removed_from_index, (try owner.markdownCall(doc, .{ .append = "" })).removed_from_index);
         }
     };
 }

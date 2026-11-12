@@ -511,6 +511,10 @@ pub const Doc = struct {
     /// The previous layout's blocks and their first index, compared after the next call.
     provisional_previous: std.ArrayListUnmanaged(Block) = .empty,
     provisional_previous_from: u32 = none,
+    /// The dropped layout's writes to real blocks: their log, and the values they wrote (put
+    /// back if the call that dropped it is rejected).
+    kept_undo: std.ArrayListUnmanaged(UndoEntry) = .empty,
+    kept_values: std.ArrayListUnmanaged(Block) = .empty,
     /// The prose leaf that takes the pending line in the layout, and where its line starts.
     pending_leaf: u32 = none,
     pending_content_start: u32 = 0,
@@ -565,6 +569,8 @@ pub const Doc = struct {
         self.live.previous_pending.deinit(self.allocator);
         self.provisional_undo.deinit(self.allocator);
         self.provisional_previous.deinit(self.allocator);
+        self.kept_undo.deinit(self.allocator);
+        self.kept_values.deinit(self.allocator);
         self.source.deinit(self.allocator);
         self.blocks.deinit(self.allocator);
         self.definitions.deinit(self.allocator);
@@ -578,7 +584,7 @@ pub const Doc = struct {
         defer self.resetScratch();
         if (self.source.items.len + bytes.len > self.options.limits.source_byte_count) return error.SourceLimit;
         if (try self.appendToLine(bytes)) return;
-        self.dropProvisional();
+        const kept = try self.dropKeptProvisional();
         if (self.finished) {
             // N2: re-opening is a fresh parse of the whole resulting source.
             const whole = try self.scratch.allocator().alloc(u8, self.source.items.len + bytes.len);
@@ -589,8 +595,7 @@ pub const Doc = struct {
         var snapshot = self.beginMutation();
         errdefer {
             self.rollback(&snapshot);
-            // The pending line's layout as it was before the call.
-            self.restoreProvisional();
+            self.restoreProvisional(&kept);
         }
         try self.reserveSource(@intCast(self.source.items.len + bytes.len));
         self.source.appendSliceAssumeCapacity(bytes);
@@ -658,11 +663,11 @@ pub const Doc = struct {
 
     fn finishInternal(self: *Doc) Error!void {
         if (self.finished) return;
-        self.dropProvisional();
+        const kept = try self.dropKeptProvisional();
         var snapshot = self.beginMutation();
         errdefer {
             self.rollback(&snapshot);
-            self.restoreProvisional();
+            self.restoreProvisional(&kept);
         }
         try self.scanLines(true, @as(u32, @intCast(self.source.items.len)) -| 1);
         while (self.open_count > 0) try self.closeBlock(self.open[self.open_count - 1], self.previous_line_end_byte);
@@ -1991,7 +1996,7 @@ pub const Doc = struct {
             error.BlockLimit => {
                 self.provisional_limited = true;
                 self.provisional = false;
-                self.dropProvisional();
+                self.dropProvisional(false);
                 self.pending_leaf = none;
                 return;
             },
@@ -2177,17 +2182,65 @@ pub const Doc = struct {
         return index;
     }
 
+    /// The pending line's layout state, as a call found it.
+    const KeptLayout = struct {
+        from: u32,
+        removed: bool,
+        limited: bool,
+        extension: Extension,
+        leaf: u32,
+        content_start: u32,
+        row_line: u32,
+        row_scanned: u32,
+        row: @FieldType(Doc, "pending_row"),
+        blank_line: u32,
+        blank_end: u32,
+        hold: @FieldType(Doc, "pending_hold"),
+    };
+
+    /// Drops the pending line's layout for a call, kept to put back if the call is rejected:
+    /// the room to keep it is made first, so a failure here changes nothing.
+    fn dropKeptProvisional(self: *Doc) Error!KeptLayout {
+        const kept: KeptLayout = .{
+            .from = self.provisional_from,
+            .removed = self.provisional_removed,
+            .limited = self.provisional_limited,
+            .extension = self.extension,
+            .leaf = self.pending_leaf,
+            .content_start = self.pending_content_start,
+            .row_line = self.pending_row_line,
+            .row_scanned = self.pending_row_scanned,
+            .row = self.pending_row,
+            .blank_line = self.pending_blank_line,
+            .blank_end = self.pending_blank_end,
+            .hold = self.pending_hold,
+        };
+        if (kept.from == none) return kept;
+        const undo = self.provisional_undo.items;
+        try self.provisional_previous.ensureTotalCapacity(self.allocator, self.blocks.items.len - kept.from);
+        try self.kept_undo.ensureTotalCapacity(self.allocator, undo.len);
+        try self.kept_values.ensureTotalCapacity(self.allocator, undo.len);
+        self.kept_undo.clearRetainingCapacity();
+        self.kept_values.clearRetainingCapacity();
+        for (undo) |entry| self.kept_values.appendAssumeCapacity(self.blocks.items[entry.index]);
+        self.kept_undo.appendSliceAssumeCapacity(undo);
+        self.dropProvisional(true);
+        return kept;
+    }
+
     /// Undoes the provisional layout: real blocks get their values back, provisional blocks go
-    /// (kept aside to compare with the next layout).
-    fn dropProvisional(self: *Doc) void {
+    /// (kept aside, `keep`, to compare with the next layout and to put back).
+    fn dropProvisional(self: *Doc, keep: bool) void {
         if (self.provisional_from == none) return;
         const from = self.provisional_from;
-        self.provisional_previous.clearRetainingCapacity();
-        self.provisional_previous.appendSlice(self.allocator, self.blocks.items[from..]) catch {
-            // Without the copy, a provisional block the host read is reported removed.
-            self.noteRemoved(from);
-        };
-        self.provisional_previous_from = from;
+        if (keep) {
+            self.provisional_previous.clearRetainingCapacity();
+            self.provisional_previous.appendSlice(self.allocator, self.blocks.items[from..]) catch {
+                // Without the copy, a provisional block the host read is reported removed.
+                self.noteRemoved(from);
+            };
+            self.provisional_previous_from = from;
+        }
         // A real block the layout hid comes back (its slot is in capacity; the undo log holds
         // its value).
         self.blocks.items.len = from + @intFromBool(self.provisional_removed);
@@ -2203,23 +2256,33 @@ pub const Doc = struct {
         self.extension = .{};
     }
 
-    /// After a call: a block of the previous provisional layout that the host read and that no
-    /// block of the same identity replaced is reported removed.
-    /// After a rejected call: the pending line's layout as before the call, its blocks listed
-    /// only if they were before (a rejected call changes nothing).
-    fn restoreProvisional(self: *Doc) void {
-        self.addProvisional() catch {};
-        const from = self.provisional_previous_from;
-        if (from == none) return;
+    /// After a rejected call, rolled back: the pending line's layout as the call found it, its
+    /// change flags included, from what was kept (no memory: the blocks and the logs had room).
+    /// A layout the call made goes with the rollback (its writes to real blocks were logged).
+    fn restoreProvisional(self: *Doc, kept: *const KeptLayout) void {
+        self.provisional_undo.clearRetainingCapacity();
         self.provisional_previous_from = none;
-        for (self.provisional_previous.items, from..) |old, index| {
-            if (index >= self.blocks.items.len) break;
-            const b = &self.blocks.items[index];
-            if (b.kind == old.kind and b.parent_index == old.parent_index and b.source_start_byte == old.source_start_byte and
-                b.source_end_byte == old.source_end_byte and b.content_end_byte == old.content_end_byte) b.flags.unreported = old.flags.unreported;
-        }
+        self.provisional_from = kept.from;
+        self.provisional_removed = kept.removed;
+        self.provisional_limited = kept.limited;
+        self.extension = kept.extension;
+        self.pending_leaf = kept.leaf;
+        self.pending_content_start = kept.content_start;
+        self.pending_row_line = kept.row_line;
+        self.pending_row_scanned = kept.row_scanned;
+        self.pending_row = kept.row;
+        self.pending_blank_line = kept.blank_line;
+        self.pending_blank_end = kept.blank_end;
+        self.pending_hold = kept.hold;
+        if (kept.from == none) return;
+        for (self.kept_undo.items, self.kept_values.items) |entry, value| self.blocks.items[entry.index] = value;
+        self.blocks.items.len = kept.from;
+        self.blocks.appendSliceAssumeCapacity(self.provisional_previous.items);
+        self.provisional_undo.appendSliceAssumeCapacity(self.kept_undo.items);
     }
 
+    /// After a call: a block of the previous provisional layout that the host read and that no
+    /// block of the same identity replaced is reported removed.
     fn reconcileProvisional(self: *Doc) void {
         const from = self.provisional_previous_from;
         if (from == none) return;
