@@ -13,6 +13,7 @@ import { CodeRenderable } from "../Code.js"
 import { BoxRenderable } from "../Box.js"
 import { TextRenderable } from "../Text.js"
 import { TextTableRenderable } from "../TextTable.js"
+import { ScrollBoxRenderable } from "../ScrollBox.js"
 import { SyntaxStyle } from "../../syntax-style.js"
 import { RGBA } from "../../lib/RGBA.js"
 import { TreeSitterClient } from "../../lib/tree-sitter/index.js"
@@ -4899,6 +4900,173 @@ function sessionLinks(titles: Map<string, string>, calls: MarkdownInlineContext[
     })
   }
 }
+
+// Session links whose targets draw underlined, so a frame shows where `targetAt` should answer.
+function underlinedLinks(titles: Map<string, string>): MarkdownInlineHook {
+  const hook = sessionLinks(titles)
+  return (spans, context) =>
+    hook(spans, context).map((span) =>
+      span.target ? { ...span, attributes: (span.attributes ?? 0) | TextAttributes.UNDERLINE } : span,
+    )
+}
+
+// Checks `targetAt` at every cell: it answers exactly where the frame draws an underlined cell, with `id` of its row.
+function expectTargets(md: MarkdownRenderable, id: (row: string) => string) {
+  const frame = captureSpans()
+  frame.lines.forEach((line, y) => {
+    const row = line.spans.map((span) => span.text).join("")
+    let x = 0
+    for (const span of line.spans) {
+      const linked = (span.attributes & TextAttributes.UNDERLINE) !== 0
+      for (const char of span.text) {
+        expect([x, y, md.targetAt(x, y)]).toEqual([x, y, linked ? id(row) : undefined])
+        x += stringWidth(char) || 1
+      }
+    }
+  })
+}
+
+test("targetAt answers exactly where the last frame drew a target", async () => {
+  const titles = new Map([
+    ["ses_a", "LongSessionTitle"],
+    ["ses_b", "SecondLink"],
+    ["ses_cjk", "中文タイトル"],
+    ["ses_top", "TopLink"],
+    ["ses_mid", "MidLink"],
+    ["ses_bot", "BotLink"],
+  ])
+  const mount = (content: string) => {
+    const md = createMarkdownRenderable({ content, syntaxStyle, inlineHook: underlinedLinks(titles) })
+    renderer.root.add(md)
+    return md
+  }
+  // Wrap padding before and after a wrapped title, and the gap a wide character leaves, have no target.
+  resizeRenderer(12, 6)
+  let md = mount("hi ses_a ses_b")
+  await renderOnce()
+  expect(frameText()).toBe("hi\n@LongSession\nTitle\n@SecondLink")
+  expectTargets(md, (row) => (row.includes("Second") ? "ses_b" : "ses_a"))
+  md.destroyRecursively()
+  resizeRenderer(10, 4)
+  md = mount("1234567:ses_cjk")
+  await renderOnce()
+  expect(frameText()).toBe("1234567:\n@中文タイ\nトル")
+  expectTargets(md, () => "ses_cjk")
+  md.destroyRecursively()
+
+  // Rows a scroll box clips and cells an overlay covers answer as the screen shows.
+  resizeRenderer(24, 8)
+  const box = new ScrollBoxRenderable(renderer, { height: 4, marginTop: 2 })
+  md = createMarkdownRenderable({
+    content: "ses_top\n\nplain\n\nses_mid\n\nses_bot",
+    syntaxStyle,
+    inlineHook: underlinedLinks(titles),
+  })
+  box.add(md)
+  renderer.root.add(box)
+  box.scrollTo(1)
+  await renderOnce()
+  const row = (row: string) => ({ "@MidLink": "ses_mid", "@BotLink": "ses_bot" })[row.trim()] ?? "ses_top"
+  expect(frameText()).toContain("@MidLink")
+  expectTargets(md, row)
+  const overlay = new BoxRenderable(renderer, {
+    position: "absolute",
+    width: 24,
+    height: 8,
+    backgroundColor: "#000000",
+  })
+  renderer.root.add(overlay)
+  await renderOnce()
+  expectTargets(md, () => "none")
+  overlay.destroy()
+  box.destroyRecursively()
+
+  // Until a frame shows replaced text, its targets do not answer. Unlike Rust, Core answers nothing there even for equal
+  // text with another target: the replace moves the text's node, which a frame must paint again (carbon-4.2's window).
+  resizeRenderer(12, 2)
+  md = mount("ses_top")
+  await renderOnce()
+  md.content = "ses_bot"
+  expect(md.targetAt(0, 0)).toBeUndefined()
+  await renderOnce()
+  expectTargets(md, () => "ses_bot")
+  titles.set("ses_mid", "BotLink")
+  md.content = "ses_mid"
+  expect(md.targetAt(0, 0)).toBeUndefined()
+  await renderOnce()
+  expectTargets(md, () => "ses_mid")
+})
+
+test("targetAt counts bytes as the hook returned them", async () => {
+  // A hook's CRLF stays in the text, so the target after it lines up.
+  resizeRenderer(20, 3)
+  const md = createMarkdownRenderable({
+    content: "anything",
+    syntaxStyle,
+    inlineHook: ([span]) => [
+      { ...span!, text: "hi\r\n" },
+      { ...span!, text: "@Known", target: "ses_a", attributes: TextAttributes.UNDERLINE },
+      { ...span!, text: " plain" },
+    ],
+  })
+  renderer.root.add(md)
+  await renderOnce()
+  expect(frameText()).toBe("hi\n@Known plain")
+  expectTargets(md, () => "ses_a")
+})
+
+test("math extension: inline math reaches the hook and display math is a math code block", async () => {
+  const seen: MarkdownInlineSpan[] = []
+  const blocks: { lang?: string; text: string; closed: boolean }[] = []
+  const md = createMarkdownRenderable({
+    content: "Area $\\pi r^2$ and \\(a*b\\) cost $5.\n\n$$\nx^2\n$$\n",
+    syntaxStyle,
+    extensions: ["math"],
+    inlineHook: (spans) => (seen.push(...spans), spans),
+    renderBlock: createMarkdownCodeBlockRenderer({
+      math: (block) => (blocks.push({ lang: block.lang, text: block.text, closed: block.closed }), null),
+    }),
+  })
+  renderer.root.add(md)
+  await renderOnce()
+  expect(seen.filter((span) => span.math !== undefined).map((span) => span.math)).toEqual(["\\pi r^2", "a*b"])
+  // A dollar with no closer stays text.
+  expect(seen.some((span) => span.math === undefined && span.text.includes("$5."))).toBe(true)
+  expect(blocks).toEqual([{ lang: "math", text: "x^2", closed: true }])
+  // Display math without a renderer's result shows its TeX at once.
+  expect(frameText()).toContain("x^2")
+
+  // Without the extension, dollars are text and `$$` is a paragraph.
+  seen.length = 0
+  blocks.length = 0
+  md.extensions = []
+  await renderOnce()
+  expect(seen.every((span) => span.math === undefined)).toBe(true)
+  expect(blocks).toEqual([])
+  expect(frameText()).toContain("$$")
+})
+
+test("math extension: an open display math block is not closed, even after the stream ends", async () => {
+  const blocks: { text: string; closed: boolean }[] = []
+  const md = createMarkdownRenderable({
+    content: "$$\na+b\n",
+    syntaxStyle,
+    streaming: true,
+    extensions: ["math"],
+    renderBlock: createMarkdownCodeBlockRenderer({
+      math: (block) => (blocks.push({ text: block.text, closed: block.closed }), null),
+    }),
+  })
+  renderer.root.add(md)
+  await renderOnce()
+  md.content += "c\n"
+  md.streaming = false
+  await renderOnce()
+  expect(blocks.at(-1)).toEqual({ text: "a+b\nc", closed: false })
+  md.content = "$$\na+b\n$$\n"
+  await renderOnce()
+  expect(blocks.at(-1)).toEqual({ text: "a+b", closed: true })
+})
 
 const frameText = () =>
   captureFrame()

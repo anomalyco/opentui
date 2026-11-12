@@ -303,12 +303,11 @@ const sameChunks = (a: TextChunk[], b: TextChunk[]) =>
       chunk.link?.url === b[index]!.link?.url,
   )
 
-/** The click targets of a text the host writes: display-byte ranges, as the latest finished frame painted them. */
-interface Targets {
-  ranges: [start: number, end: number, target: string][]
-  painted: [start: number, end: number, target: string][]
-  since: number
-}
+/**
+ * The click targets of a text the host writes, as display-byte ranges. They change only with the text, and native code
+ * answers no byte of a text until a frame paints it, so they are always those of the text a lookup reads.
+ */
+type Targets = [start: number, end: number, target: string][]
 
 /** What shows block i (document order); table rows and cells have none: their table shows them. */
 interface Shown {
@@ -621,8 +620,7 @@ export class MarkdownRenderable extends Renderable {
     if (!hit || !shown?.targets) return undefined
     const byte = scene.textByteAt(hit, x, y)
     if (byte === undefined) return undefined
-    const { ranges, painted, since } = shown.targets
-    return (this.ctx.frameId > since ? ranges : painted).find(([start, end]) => start <= byte && byte < end)?.[2]
+    return shown.targets.find(([start, end]) => start <= byte && byte < end)?.[2]
   }
 
   public clearCache(): void {
@@ -1047,7 +1045,7 @@ export class MarkdownRenderable extends Renderable {
     shown.written = written
     const spans = this.spans(leaf.chunks, leaf.spans)
     const output = hooked ? this.hook(spans, source!, false) : spans
-    const ranges: Targets["ranges"] = []
+    const ranges: Targets = []
     let end = 0
     const chunks = output.map(({ text, fg, bg, attributes, link, target }) => {
       const start = end
@@ -1056,12 +1054,7 @@ export class MarkdownRenderable extends Renderable {
       return { __isChunk: true as const, text, fg, bg, attributes, link }
     })
     text.content = new StyledText(chunks)
-    const painted = shown.targets
-      ? shown.targets.since < this.ctx.frameId
-        ? shown.targets.ranges
-        : shown.targets.painted
-      : []
-    shown.targets = ranges.length > 0 || painted.length > 0 ? { ranges, painted, since: this.ctx.frameId } : undefined
+    shown.targets = ranges.length > 0 ? ranges : undefined
   }
 
   private spans(chunks: TextChunk[], flags: Uint32Array): MarkdownInlineSpan[] {
