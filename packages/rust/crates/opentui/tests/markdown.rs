@@ -455,6 +455,7 @@ fn targets_answer_only_where_the_last_frame_drew_them() {
         ("ses_a", "LongSessionTitle"),
         ("ses_b", "SecondLink"),
         ("ses_cjk", "中文タイトル"),
+        ("ses_kana", "中文タイト"),
         ("ses_top", "TopLink"),
         ("ses_mid", "MidLink"),
         ("ses_bot", "BotLink"),
@@ -468,12 +469,15 @@ fn targets_answer_only_where_the_last_frame_drew_them() {
     let capture = app.render();
     assert_eq!(capture.text(), "hi\n@LongSession\nTitle\n@SecondLink\n\n");
     assert_targets(&capture, &markdown, |row| if row.contains("Second") { "ses_b" } else { "ses_a" });
-    let app = TestApp::new(10, 4);
-    let markdown = hooked(&app).set_markdown("1234567:ses_cjk");
-    app.root().add(&markdown);
-    let capture = app.render();
-    assert_eq!(capture.text(), "1234567:\n@中文タイ\nトル\n");
-    assert_targets(&capture, &markdown, |_| "ses_cjk");
+    // The blank right after a wrapped wide glyph has no target either.
+    for (id, last) in [("ses_cjk", "トル"), ("ses_kana", "ト")] {
+        let app = TestApp::new(10, 4);
+        let markdown = hooked(&app).set_markdown(format!("1234567:{id}"));
+        app.root().add(&markdown);
+        let capture = app.render();
+        assert_eq!(capture.text(), format!("1234567:\n@中文タイ\n{last}\n"));
+        assert_targets(&capture, &markdown, |_| id);
+    }
 
     // Rows a scroll box clips, cells an overlay covers, and moves not painted yet answer as the screen shows.
     let app = TestApp::new(24, 8);

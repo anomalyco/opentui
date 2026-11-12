@@ -513,6 +513,7 @@ test "TextBuffer highlights - clear line highlights" {
 
     const highlights = tb.getLineHighlights(0);
     try std.testing.expectEqual(@as(usize, 0), highlights.len);
+    try std.testing.expectEqual(@as(usize, 0), (try tb.getLineSpans(0)).len);
 }
 
 test "TextBuffer highlights - clear all highlights" {

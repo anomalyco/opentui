@@ -291,6 +291,7 @@ test "EditBuffer - random edit sequences match an undo history model" {
         for (0..400) |step| {
             errdefer std.debug.print("history model failed: seed 0x{x} {s} step {d}\n", .{ seed, @tagName(method), step });
             const before: Entry = .{ .text = text, .cursor = eb.getPrimaryCursor() };
+            const epoch = eb.tb.getContentEpoch();
             const piece = pieces[random.uintLessThan(usize, pieces.len)];
             const Change = enum { none, if_changed, stored, reset, restored };
             var change: Change = .if_changed;
@@ -362,6 +363,7 @@ test "EditBuffer - random edit sequences match an undo history model" {
                 },
                 .restored => {
                     text = current.?.text;
+                    if (!std.mem.eql(u8, text, before.text)) try std.testing.expect(eb.tb.getContentEpoch() != epoch);
                     try std.testing.expectEqualDeep(current.?.cursor, eb.getPrimaryCursor());
                 },
             }
