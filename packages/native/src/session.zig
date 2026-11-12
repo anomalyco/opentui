@@ -681,6 +681,7 @@ pub const Session = struct {
         value.useAlternateScreen = options.use_alternate_screen;
         value.clearOnShutdown = options.clear_on_close;
         value.terminal.reply_sentinel = options.reply_sentinel;
+        value.terminal.explicit_width_probed = options.use_alternate_screen;
         value.terminal.synchronized_output = options.synchronized_output;
         value.terminal.multiplexer_on_host = options.host_multiplexer;
         value.terminal.opts.kitty_keyboard_flags = options.kitty_keyboard_flags;

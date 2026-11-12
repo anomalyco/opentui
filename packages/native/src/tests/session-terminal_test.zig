@@ -396,6 +396,9 @@ test "Session terminal setup probes OSC 66 only on the alternate screen" {
         var startup: [16]u8 = undefined;
         try f.value.control(.{ .capability_response = try std.fmt.bufPrint(&startup, "\x1b[{d};5R\x1b[1;2R", .{start_row}) });
         try testing.expect(!f.cli.terminal.caps.explicit_width);
+        // A kitty XTVERSION before the probe: it decides only where no probe runs.
+        try f.value.control(.{ .capability_response = "\x1bP>|kitty(0.40.0)\x1b\\" });
+        try testing.expectEqual(!alternate, f.cli.terminal.caps.explicit_width);
         len += (try f.driveOutput(&now_ns, .active, bytes[len..], 32)).len;
         const output = bytes[0..len];
         // One DA1 either way; the sentinel's follows every other query of the setup.
@@ -408,8 +411,8 @@ test "Session terminal setup probes OSC 66 only on the alternate screen" {
         if (alternate) try testing.expectEqual([2]u32{ @intCast(start_row), 5 }, end);
         const probe_replies = replies.buffered()[std.mem.findScalar(u8, replies.buffered(), 'R').? + 1 ..];
         if (probe_replies.len != 0) try f.value.control(.{ .capability_response = probe_replies });
-        try testing.expectEqual(alternate and draws, f.cli.terminal.caps.explicit_width);
-        try testing.expectEqual(alternate and draws, f.cli.terminal.caps.scaled_text);
+        try testing.expectEqual(!alternate or draws, f.cli.terminal.caps.explicit_width);
+        try testing.expectEqual(!alternate or draws, f.cli.terminal.caps.scaled_text);
         // Resume keeps the capabilities and draws no probe.
         try f.owner.suspendSession(f.id);
         try f.drive(&now_ns, .suspended);

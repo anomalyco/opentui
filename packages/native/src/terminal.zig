@@ -232,6 +232,8 @@ skip_explicit_width_query: bool = false,
 startup_cursor_query_pending: bool = false,
 startup_cursor_query_captured: bool = false,
 explicit_width_probe_reports_pending: u8 = 0,
+/// Setup probes OSC 66 (on the alternate screen), so the probe's answer, not XTVERSION, decides explicit width.
+explicit_width_probed: bool = false,
 /// The host ends each query batch with DA1 and waits for its reply (sentinel mode).
 reply_sentinel: bool = false,
 synchronized_output: SynchronizedOutput = .auto,
@@ -1455,7 +1457,7 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
         self.caps.bracketed_paste = true;
         self.caps.hyperlinks = true;
         // Text sizing (OSC 66) since 0.40: the answer the main screen, which gets no probe, cannot ask for.
-        if (!self.skip_explicit_width_query and semanticVersionAtLeast(self.getTerminalVersion(), 0, 40)) {
+        if (!self.skip_explicit_width_query and !self.explicit_width_probed and semanticVersionAtLeast(self.getTerminalVersion(), 0, 40)) {
             self.caps.explicit_width = true;
             self.caps.scaled_text = true;
         }
