@@ -1782,7 +1782,8 @@ ot_status ot_edit_buffer_set_layer(ot_context *, const ot_handle *, uint32_t lay
  * ending are laid out provisionally, held while their kind can still change. Limits: source
  * 64 MiB, 1,048,576 blocks, 4,096 link definitions, 32 levels of nesting, hook filter 256
  * bytes. A rejected call changes nothing: the document, its bound nodes and its pending
- * changes stay as they were. */
+ * changes stay as they were. An accepted call writes its bound nodes after its change; a node
+ * write that runs out of memory leaves that node behind until a later call writes it whole. */
 #define OT_MD_CONCEAL UINT32_C(1)    /* hide markers; off, a leaf shows its source, styled */
 #define OT_MD_HYPERLINKS UINT32_C(2) /* the terminal shows links; off, a label that is not its
                                         URL is followed by " (url)" */

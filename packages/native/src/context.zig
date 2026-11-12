@@ -406,29 +406,27 @@ pub const MarkdownDoc = struct {
     /// The group set of each scope combination written so far (Context ids, never freed).
     scope_sets: std.AutoHashMapUnmanaged(u16, u32) = .empty,
 
-    /// The calls on the doc so far: a binding notes the call that last wrote its node.
-    calls: u64 = 0,
-    /// Bindings whose node a failed write or a rejected call left behind.
+    /// Bindings whose node a failed write left behind.
     stale_count: u32 = 0,
-    /// Inside a call's change: a host-written node the doc would take over is only marked
-    /// (`Binding.handoff`).
-    handing_off: bool = false,
+    /// The writes of the call in progress (`writeNode`), in `stage`.
+    staged: std.ArrayListUnmanaged(markdown.NodeWrite) = .empty,
+    stage: std.heap.ArenaAllocator,
 
     /// `skipped`: a write to the node was skipped (hooked, or not live), or its text changed
     /// since the doc's last write (`epoch`, the buffer's content epoch then: the host wrote
     /// it), so it does not hold the live display's earlier bytes and takes only resync writes.
-    /// `stale`: the node does not show the doc (a write failed, or the call that wrote it was
-    /// rejected); the next call writes it whole.
-    /// `handoff`: the host wrote the node and the call would make the doc write it: once the call
-    /// succeeds the node is unbound and its leaf listed, so the host binds it again to hand it
-    /// over (a doc never writes over a host's text, which it could not rebuild).
-    pub const Binding = struct { block: u32, node: Handle, skipped: bool = false, epoch: u64 = 0, call: u64 = 0, stale: bool = false, handoff: bool = false };
+    /// `stale`: the node does not show the doc (a write failed); the next call writes it whole.
+    /// `handoff`: the host wrote the node and the call would make the doc write it: the node is
+    /// unbound and its leaf listed, so the host binds it again to hand it over (a doc never
+    /// writes over a host's text, which it could not rebuild).
+    pub const Binding = struct { block: u32, node: Handle, skipped: bool = false, epoch: u64 = 0, stale: bool = false, handoff: bool = false };
     /// The Markdown layer of a bound node's buffer (its only layer).
     pub const layer_id: u32 = 2;
 
     fn deinit(self: *MarkdownDoc) void {
         const allocator = self.owner.allocator;
         self.doc.deinit();
+        self.stage.deinit();
         self.bindings.deinit(allocator);
         self.scope_sets.deinit(allocator);
         allocator.destroy(self);
@@ -527,12 +525,41 @@ pub const MarkdownDoc = struct {
         const id = (try self.scopeSet(scope)) orelse return none_style;
         return style.resolveGroupSet(&self.owner.group_sets, id);
     }
-
-    /// The engine's write to a bound leaf: the node's text tail and its Markdown runs. Leaves the
-    /// host writes (hooked, or a doc whose read_leaf differs from the live display), unbound
-    /// blocks and destroyed nodes are skipped.
-    fn writeNode(context: *anyopaque, doc: *const markdown.Doc, w: markdown.NodeWrite) markdown.Error!void {
+    /// The engine's write to a bound leaf, inside a call: copied and kept until the call is
+    /// accepted (`applyStaged`), so a rejected call writes no node.
+    fn writeNode(context: *anyopaque, _: *const markdown.Doc, w: markdown.NodeWrite) markdown.Error!void {
         const self: *MarkdownDoc = @ptrCast(@alignCast(context));
+        const arena = self.stage.allocator();
+        var copy = w;
+        copy.bytes = try arena.dupe(u8, w.bytes);
+        copy.ranges = try arena.dupe(markdown.RunRange, w.ranges);
+        for (@constCast(copy.ranges)) |*range| {
+            range.chunks = try arena.dupe(markdown.Chunk, range.chunks);
+            range.urls = try arena.dupe(u8, range.urls);
+        }
+        try self.staged.append(arena, copy);
+    }
+
+    /// After an accepted call: its writes, in order. A write that fails leaves its node stale
+    /// (the next accepted call writes it whole).
+    fn applyStaged(self: *MarkdownDoc) void {
+        for (self.staged.items) |w| {
+            if (w.block < self.writer.unbound_from) self.write(w) catch {};
+        }
+        self.dropStaged();
+    }
+
+    fn dropStaged(self: *MarkdownDoc) void {
+        self.staged = .empty;
+        _ = self.stage.reset(.{ .retain_with_limit = markdown.scratch_retained_byte_count_max });
+    }
+
+    /// Writes a bound leaf's node: its text tail and its Markdown runs. Leaves the host writes
+    /// (hooked, or a doc whose read_leaf differs from the live display), unbound blocks and
+    /// destroyed nodes are skipped. A node the host wrote is never written: a whole write the
+    /// doc would make to it marks it `handoff` instead.
+    fn write(self: *MarkdownDoc, w: markdown.NodeWrite) markdown.Error!void {
+        const doc = &self.doc;
         if (w.block >= doc.blocks.items.len) return;
         const b = doc.blocks.items[w.block];
         if (!markdown.Doc.isBound(b)) return;
@@ -541,21 +568,21 @@ pub const MarkdownDoc = struct {
         const binding = &self.bindings.items[at];
         const node = self.owner.sceneMutableNode(binding.node) catch return;
         const text = node.scene_node.?.text orelse return;
-        // A text change since the doc's last write is the host's: the node is the host's until a
-        // bind hands it over (a hooked leaf's flag is off while its pending line is parsed
-        // again, so a write may come for it).
+        // A text change since the doc's last write is the host's (a hooked leaf's flag is off
+        // while its pending line is parsed again, so a write may come for it).
         if (text.buffer.getContentEpoch() != binding.epoch) binding.skipped = true;
-        if (!doc.options.liveShown() or b.flags.hooked or (binding.skipped and !w.resync)) {
+        const live = doc.options.liveShown() and !b.flags.hooked;
+        if (!live or binding.skipped) {
+            if (live and w.resync) binding.handoff = true;
             binding.skipped = true;
+            self.clearStale(binding);
             return;
         }
-        if (binding.skipped and self.handing_off) {
-            binding.handoff = true;
-            return;
-        }
-        binding.call = self.calls;
+        // A node a failed write left behind takes only a whole write.
+        if (binding.stale and !w.resync) return;
         self.writeText(node, text, w) catch |err| {
-            self.markStale(binding);
+            if (!binding.stale) self.stale_count += 1;
+            binding.stale = true;
             return switch (err) {
                 error.OutOfMemory => error.OutOfMemory,
                 error.TextLimit => error.SourceLimit,
@@ -563,53 +590,40 @@ pub const MarkdownDoc = struct {
                 else => error.InvalidOptions,
             };
         };
-        binding.skipped = false;
         binding.epoch = text.buffer.getContentEpoch();
-        if (binding.stale) {
-            binding.stale = false;
-            self.stale_count -= 1;
-        }
+        self.clearStale(binding);
     }
 
-    fn markStale(self: *MarkdownDoc, binding: *Binding) void {
-        if (binding.stale) return;
-        binding.stale = true;
-        self.stale_count += 1;
+    fn clearStale(self: *MarkdownDoc, binding: *Binding) void {
+        if (!binding.stale) return;
+        binding.stale = false;
+        self.stale_count -= 1;
     }
 
-    /// After a call: the nodes the doc would take over from the host are unbound and their leaves
-    /// listed, or (rejected) left bound to the host. Nothing fails here.
-    fn finishHandoff(self: *MarkdownDoc, rejected: bool) void {
+    /// After an accepted call: the nodes the doc would take over from the host are unbound and
+    /// their leaves listed, so the host binds them again to hand them over.
+    fn finishHandoff(self: *MarkdownDoc) void {
         var kept: usize = 0;
         for (self.bindings.items) |binding| {
-            var b = binding;
-            if (b.handoff) {
-                b.handoff = false;
-                if (!rejected) {
-                    if (b.block < self.doc.blocks.items.len) self.doc.blocks.items[b.block].flags.unreported = true;
-                    if (b.stale) self.stale_count -= 1;
-                    continue;
-                }
+            if (binding.handoff) {
+                if (binding.block < self.doc.blocks.items.len) self.doc.blocks.items[binding.block].flags.unreported = true;
+                continue;
             }
-            self.bindings.items[kept] = b;
+            self.bindings.items[kept] = binding;
             kept += 1;
         }
         self.bindings.items.len = kept;
     }
 
-    /// Writes whole, from the doc as it is, the nodes a failed write left behind and (after a
-    /// rejected call, `rejected`) the nodes that call wrote; one that fails again stays stale.
-    fn resyncNodes(self: *MarkdownDoc, rejected: bool) void {
-        if (!rejected and self.stale_count == 0) return;
-        for (self.bindings.items) |*binding| {
-            if (!binding.stale and !(rejected and binding.call == self.calls)) continue;
-            if (binding.block >= self.doc.blocks.items.len) continue;
-            var whole = self.doc.wholeWrite(binding.block) catch {
-                self.markStale(binding);
-                continue;
-            };
+    /// After an accepted call: the nodes a failed write left behind, written whole from the doc;
+    /// one that fails again stays stale.
+    fn resyncNodes(self: *MarkdownDoc) void {
+        if (self.stale_count == 0) return;
+        for (self.bindings.items) |binding| {
+            if (!binding.stale or binding.block >= self.doc.blocks.items.len) continue;
+            var whole = self.doc.wholeWrite(binding.block) catch continue;
             whole.resync = true;
-            writeNode(self, &self.doc, whole) catch {};
+            self.write(whole) catch {};
         }
     }
 
@@ -618,38 +632,55 @@ pub const MarkdownDoc = struct {
         const buffer = text.buffer;
         try Context.validateTextBytes(buffer.tabWidth(), w.bytes, w.from);
         const arena = owner.markdown_scratch.allocator();
-        const runs = try arena.alloc(highlight_layers.LayerRun, w.chunks.len);
-        var run_count: usize = 0;
+        // Each range's runs, then storage for every layer set: once the text changes, nothing
+        // here may fail.
+        const runs = try arena.alloc([]highlight_layers.LayerRun, w.ranges.len);
+        var run_total: usize = 0;
+        for (runs, w.ranges) |*list, range| {
+            list.* = try arena.alloc(highlight_layers.LayerRun, range.chunks.len);
+            run_total += range.chunks.len;
+        }
+        const counts = try arena.alloc(usize, w.ranges.len);
+        @memset(counts, 0);
         // Each run holds a link reference while it is set; the layer takes its own.
-        defer for (runs[0..run_count]) |run| if (run.link_id != 0) owner.links.decref(run.link_id) catch unreachable;
-        var at = w.runs_from;
-        for (w.chunks) |chunk| {
-            defer at += chunk.byte_count;
-            const url = w.urls[chunk.link_offset..][0..chunk.link_byte_count];
-            const link_id: u32 = if (url.len == 0 or !link.isWritableUrl(url)) 0 else owner.links.acquire(url) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                else => 0,
-            };
-            // A linked chunk has the link scope, so only a full group-set table drops its run.
-            const group_set = (try self.scopeSet(chunk.scope)) orelse {
-                if (link_id != 0) owner.links.decref(link_id) catch unreachable;
-                continue;
-            };
-            runs[run_count] = .{ .start_byte = at, .end_byte = at + chunk.byte_count, .group_set = group_set, .link_id = link_id };
-            run_count += 1;
+        defer for (runs, counts) |list, count| for (list[0..count]) |run| if (run.link_id != 0) owner.links.decref(run.link_id) catch unreachable;
+        for (w.ranges, runs, counts) |range, list, *count| {
+            var at = range.from;
+            for (range.chunks) |chunk| {
+                defer at += chunk.byte_count;
+                const url = range.urls[chunk.link_offset..][0..chunk.link_byte_count];
+                const link_id: u32 = if (url.len == 0 or !link.isWritableUrl(url)) 0 else owner.links.acquire(url) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => 0,
+                };
+                // A linked chunk has the link scope, so only a full group-set table drops its run.
+                const group_set = (try self.scopeSet(chunk.scope)) orelse {
+                    if (link_id != 0) owner.links.decref(link_id) catch unreachable;
+                    continue;
+                };
+                list[count.*] = .{ .start_byte = at, .end_byte = at + chunk.byte_count, .group_set = group_set, .link_id = link_id };
+                count.* += 1;
+            }
+        }
+        const spares = try arena.alloc(std.ArrayListUnmanaged(highlight_layers.LayerRun), w.ranges.len);
+        var reserved: usize = 0;
+        defer for (spares[0..reserved]) |*spare| buffer.freeLayerSpare(spare);
+        // Each set may split one run the earlier ones left.
+        for (spares) |*spare| {
+            spare.* = try buffer.reserveLayer(layer_id, run_total + 2 * w.ranges.len);
+            reserved += 1;
         }
         const changed = w.bytes.len > 0 or w.from != buffer.getByteSize();
-        // The layer's storage first: once the text changes, nothing here may fail.
-        var spare = try buffer.reserveLayer(layer_id, run_count);
-        defer buffer.freeLayerSpare(&spare);
         if (changed) try buffer.replaceTail(w.from, w.bytes);
         node.scene_node.?.paint_epoch = nextPaintEpoch();
         const end = buffer.getByteSize();
-        const runs_end = if (w.runs_end == markdown.none) end else @min(w.runs_end, end);
-        buffer.setLayerWithSpare(layer_id, @min(w.runs_from, runs_end), runs_end, runs[0..run_count], &spare) catch |err| switch (err) {
-            error.OutOfMemory => unreachable,
-            else => return err,
-        };
+        for (w.ranges, runs, counts, spares) |range, list, count, *spare| {
+            const range_end = if (range.end == markdown.none) end else @min(range.end, end);
+            buffer.setLayerWithSpare(layer_id, @min(range.from, range_end), range_end, list[0..count], spare) catch |err| switch (err) {
+                error.OutOfMemory => unreachable,
+                else => return err,
+            };
+        }
         if (changed) Context.textResourceChanged(text) else Context.textResent(node);
         node.scene_node.?.owner.clearPreparation();
     }
@@ -3993,6 +4024,7 @@ pub const Context = struct {
             .doc = markdown.Doc.init(self.allocator, &self.markdown_scratch, try options.engine()) catch |err| return markdownError(err),
             .writer = .{ .context = value, .write_fn = MarkdownDoc.writeNode },
             .syntax_style = options.syntax_style,
+            .stage = std.heap.ArenaAllocator.init(self.allocator),
         };
         value.doc.writer = &value.writer;
         errdefer value.doc.deinit();
@@ -4017,28 +4049,23 @@ pub const Context = struct {
         defer self.mutating = false;
         defer self.resetMarkdownScratch();
         const value = try self.getMarkdown(handle);
-        errdefer value.writer.unbound_from = markdown.none;
-        value.calls += 1;
-        value.resyncNodes(false);
-        errdefer value.resyncNodes(true);
-        errdefer value.finishHandoff(true);
-        value.handing_off = true;
-        defer value.handing_off = false;
         switch (call) {
-            .append => |bytes| {
-                if (!std.unicode.utf8ValidateSlice(bytes)) return error.InvalidUnicode;
-                value.doc.append(bytes) catch |err| return markdownError(err);
-            },
-            .set => |bytes| {
-                if (!std.unicode.utf8ValidateSlice(bytes)) return error.InvalidUnicode;
-                value.doc.set(bytes) catch |err| return markdownError(err);
-            },
+            .append, .set => |bytes| if (!std.unicode.utf8ValidateSlice(bytes)) return error.InvalidUnicode,
+            else => {},
+        }
+        // The doc's writes wait for the call to be accepted: a rejected one writes no node.
+        errdefer value.writer.unbound_from = markdown.none;
+        errdefer value.dropStaged();
+        switch (call) {
+            .append => |bytes| value.doc.append(bytes) catch |err| return markdownError(err),
+            .set => |bytes| value.doc.set(bytes) catch |err| return markdownError(err),
             .finish => value.doc.finish() catch |err| return markdownError(err),
             .options => |options| try value.setOptions(options),
         }
+        value.applyStaged();
         value.unbindRemoved();
-        value.handing_off = false;
-        value.finishHandoff(false);
+        value.resyncNodes();
+        value.finishHandoff();
         return value.result();
     }
 
@@ -4099,10 +4126,12 @@ pub const Context = struct {
         const rebind = at < value.bindings.items.len and value.bindings.items[at].block == index;
         const previous = if (rebind) value.bindings.items[at] else undefined;
         if (rebind and previous.stale) value.stale_count -= 1;
+        // The node's text as it is now is what the bind hands over.
+        const binding: MarkdownDoc.Binding = .{ .block = index, .node = node_handle, .epoch = text.buffer.getContentEpoch() };
         if (rebind) {
-            value.bindings.items[at] = .{ .block = index, .node = node_handle };
+            value.bindings.items[at] = binding;
         } else {
-            value.bindings.insertAssumeCapacity(at, .{ .block = index, .node = node_handle });
+            value.bindings.insertAssumeCapacity(at, binding);
         }
         // A rejected bind leaves the bindings as they were.
         errdefer {
@@ -4112,13 +4141,14 @@ pub const Context = struct {
                 if (previous.stale) value.stale_count += 1;
             } else _ = value.bindings.orderedRemove(at);
         }
+        // The node shows the leaf now, if the doc writes it; then the doc's style (a rejected
+        // bind leaves both as they were).
+        var whole = value.doc.wholeWrite(index) catch |err| return markdownError(err);
+        whole.resync = true;
+        value.write(whole) catch |err| return markdownError(err);
         text.buffer.style_binding.dependent = .{ .scene_text = node };
         text.buffer.setSyntaxStyle(style);
         node.scene_node.?.paint_epoch = nextPaintEpoch();
-        // The node shows the leaf now, if the doc writes it.
-        var whole = value.doc.wholeWrite(index) catch |err| return markdownError(err);
-        whole.resync = true;
-        MarkdownDoc.writeNode(value, &value.doc, whole) catch |err| return markdownError(err);
     }
 
     pub fn editSetSyntaxStyle(self: *Context, handle: Handle, style_handle: ?Handle) !void {

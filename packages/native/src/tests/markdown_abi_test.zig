@@ -657,12 +657,16 @@ const OneFailure = struct {
     inner: std.mem.Allocator,
     countdown: usize = std.math.maxInt(usize),
     failed: bool = false,
+    /// From the failing allocation on, every one fails until `failed` is cleared (memory that
+    /// stays short: recovery code cannot allocate either).
+    sustained: bool = false,
 
     fn allocator(self: *OneFailure) std.mem.Allocator {
         return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
     }
 
     fn fails(self: *OneFailure) bool {
+        if (self.sustained and self.failed) return true;
         if (self.countdown == std.math.maxInt(usize)) return false;
         if (self.countdown > 0) {
             self.countdown -= 1;
@@ -879,7 +883,7 @@ test "Markdown ABI: a bind that fails at any allocation leaves the node and the 
         const session = try owner.createSession(.{});
         try owner.attachSessionRenderer(session, 40, 10, .{ .remote_mode = .remote });
         _ = try owner.sceneCreateNode(session, c.OT_SCENE_ROOT, 1);
-        const doc = try owner.createMarkdown(.{});
+        const doc = try owner.createMarkdown(.{ .syntax_style = try owner.createSyntaxStyle() });
         _ = try owner.markdownCall(doc, .{ .append = "one [x](https://u.test) **two** `c`\n\nthree" });
         _ = try owner.markdownReadChanges(doc, 64);
         const node = try owner.sceneCreateNode(session, c.OT_SCENE_TEXT, 2);
@@ -895,8 +899,73 @@ test "Markdown ABI: a bind that fails at any allocation leaves the node and the 
         errdefer std.debug.print("bind, failing allocation {d}\n", .{countdown});
         var shown: [64]u8 = undefined;
         try std.testing.expectEqualStrings("host custom", shown[0..try owner.sceneGetText(node, &shown)]);
+        // carbon-3: the node keeps the style it drew with too.
+        try std.testing.expect((try owner.raw().getRenderable(node)).scene_node.?.text.?.buffer.getSyntaxStyle() == null);
         // Not bound: the doc's next change leaves it alone.
         _ = try owner.markdownCall(doc, .{ .append = " four" });
         try std.testing.expectEqualStrings("host custom", shown[0..try owner.sceneGetText(node, &shown)]);
     }
+}
+
+test "Markdown ABI: a call rejected while memory stays short writes no node, nor does a rejected call after it" {
+    // carbon-3: with every allocation failing from one on, the rejected call's node writes could
+    // not be undone, the node stayed stale, and a rejected invalid append wrote it over the host's
+    // text.
+    const Context = context_mod.Context;
+    var failure: OneFailure = .{ .inner = std.testing.allocator, .sustained = true };
+    var countdown: usize = 0;
+    while (true) : (countdown += 1) {
+        failure.countdown = std.math.maxInt(usize);
+        failure.failed = false;
+        const owner = try Context.init(failure.allocator(), std.testing.io, .{});
+        defer owner.deinit() catch unreachable;
+        const session = try owner.createSession(.{});
+        try owner.attachSessionRenderer(session, 40, 10, .{ .remote_mode = .remote });
+        _ = try owner.sceneCreateNode(session, c.OT_SCENE_ROOT, 1);
+        const doc = try owner.createMarkdown(.{});
+        _ = try owner.markdownCall(doc, .{ .append = "begin *a *b* mid " });
+        _ = try owner.markdownReadChanges(doc, 64);
+        const node = try owner.sceneCreateNode(session, c.OT_SCENE_TEXT, 2);
+        try owner.markdownBind(doc, 0, node);
+        var before: [64]u8 = undefined;
+        const before_len = try owner.sceneGetText(node, &before);
+        failure.countdown = countdown;
+        const rejected = if (owner.markdownCall(doc, .{ .append = "c* [x](https://new-link.test) " })) |_| false else |err| switch (err) {
+            error.OutOfMemory => true,
+            else => return err,
+        };
+        const failed = failure.failed;
+        failure.countdown = std.math.maxInt(usize);
+        failure.failed = false;
+        if (!failed) break;
+        if (!rejected) continue;
+        errdefer std.debug.print("append, memory short from allocation {d}\n", .{countdown});
+        var shown: [64]u8 = undefined;
+        try std.testing.expectEqualStrings(before[0..before_len], shown[0..try owner.sceneGetText(node, &shown)]);
+        try owner.sceneSetText(node, "host custom");
+        try std.testing.expectError(error.InvalidUnicode, owner.markdownCall(doc, .{ .append = "\xff" }));
+        try std.testing.expectEqualStrings("host custom", shown[0..try owner.sceneGetText(node, &shown)]);
+    }
+}
+
+test "Markdown ABI: an option change leaves text the host wrote to a node the doc writes" {
+    // cmut-9: a rewrite after an option change took the host's text.
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var f = try Fixture.initWith(.{ .flags = live_flags });
+    defer f.deinit();
+    _ = try f.append("one $x$ two\n");
+    _ = try f.changes(arena);
+    const node = try f.textNode();
+    try expectOk(md.ot_markdown_bind(f.context, &f.doc, 0, &node));
+    try std.testing.expect(try f.nodeShowsLeaf(arena, 0, node));
+    try expectOk(abi.ot_scene_set_text(f.context, &node, "host", 4));
+    var options = optionsWith(live_flags | c.OT_MD_MATH, f.style);
+    var result: c.ot_markdown_result = undefined;
+    try expectOk(md.ot_markdown_set_options(f.context, &f.doc, &options, &result));
+    var shown: [16]u8 = undefined;
+    var count: u32 = 0;
+    try expectOk(abi.ot_scene_get_text(f.context, &node, &shown, shown.len, &count));
+    try std.testing.expectEqualStrings("host", shown[0..count]);
 }

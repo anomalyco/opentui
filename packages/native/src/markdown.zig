@@ -355,22 +355,20 @@ const Live = struct {
     email_possible: bool = false,
 };
 
-/// One write to a bound leaf's node: its text from byte `from` on becomes `bytes`, and its
-/// Markdown runs from `runs_from` (at most `from`) to the new end become `chunks` (styles of
-/// those bytes, links into `urls`).
+/// A node's Markdown runs from byte `from` to `end` (none: the text's end) become `chunks`
+/// (styles of those bytes, links into `urls`).
+pub const RunRange = struct { from: u32, end: u32 = none, chunks: []const Chunk, urls: []const u8 };
+
+/// One write to a bound leaf's node: its text from byte `from` on becomes `bytes`, and its runs
+/// over each of `ranges` (in order, the first from at most `from`; the runs between them stay).
 pub const NodeWrite = struct {
     block: u32,
     from: u32,
     bytes: []const u8,
-    runs_from: u32,
-    chunks: []const Chunk,
-    urls: []const u8,
-    /// The leaf's whole display for a node just bound, or for nodes an option change left
-    /// behind: it also writes a node whose earlier writes were skipped (a hooked leaf's, which
-    /// the host writes; its flag is off while its pending line is parsed again).
+    ranges: []const RunRange,
+    /// The leaf's whole display, for a node just bound or one a failed write left behind; the
+    /// doc would take over a node the host wrote with it (`handoff`).
     resync: bool = false,
-    /// The runs end here instead of at the text's end (none): the runs after it stay.
-    runs_end: u32 = none,
 };
 
 /// Where the engine writes bound leaves (M2: the Context's binding of scene text nodes).
@@ -442,12 +440,14 @@ pub const TailSink = struct {
         // New bytes have no style until a run covers them (a key no chunk makes).
         m.styles.shrinkRetainingCapacity(@min(m.styles.items.len, w.from));
         try m.styles.appendNTimes(self.allocator, std.math.maxInt(u64), m.bytes.items.len - m.styles.items.len);
-        assert(w.runs_from <= w.from);
-        var at = w.runs_from;
-        for (w.chunks) |chunk| {
-            const key = styleKey(chunk, w.urls);
-            for (m.styles.items[at..@min(at + chunk.byte_count, m.styles.items.len)]) |*style| style.* = key;
-            at += chunk.byte_count;
+        assert(w.ranges.len == 0 or w.ranges[0].from <= w.from);
+        for (w.ranges) |range| {
+            var at = range.from;
+            for (range.chunks) |chunk| {
+                const key = styleKey(chunk, range.urls);
+                for (m.styles.items[at..@min(at + chunk.byte_count, m.styles.items.len)]) |*style| style.* = key;
+                at += chunk.byte_count;
+            }
         }
     }
 
@@ -2427,8 +2427,10 @@ pub const Doc = struct {
 
     /// Leaf `index`'s whole display and styles, as one write.
     pub fn wholeWrite(self: *const Doc, index: u32) Error!NodeWrite {
-        const leaf = try self.readLeaf(self.scratch.allocator(), index);
-        return .{ .block = index, .from = 0, .bytes = leaf.bytes.items, .runs_from = 0, .chunks = leaf.chunks.items, .urls = leaf.urls.items };
+        const arena = self.scratch.allocator();
+        const leaf = try self.readLeaf(arena, index);
+        const ranges = try arena.dupe(RunRange, &.{.{ .from = 0, .chunks = leaf.chunks.items, .urls = leaf.urls.items }});
+        return .{ .block = index, .from = 0, .bytes = leaf.bytes.items, .ranges = ranges };
     }
 
     /// Sends one write to the test sink and to the node writer.
@@ -2901,19 +2903,8 @@ pub const Doc = struct {
             if (live.matches_seen > live.parser.result().matches.len) live.matches_seen = 0;
             for (live.parser.result().matches[live.matches_seen..]) |m| self.counters.restyled_kinds |= @as(u64, 1) << @intCast(@backingInt(m.kind));
             const skip: Skip = .{ .old_matches = live.matches_seen, .before_display = write_start };
-            const segments = try self.liveChunks(arena, start, runs_from, shown_end, skip);
-            for (segments, 0..) |segment, i| {
-                const last = i + 1 == segments.len;
-                try self.emit(.{
-                    .block = live.block,
-                    .from = if (i == 0) write_start else shown_end,
-                    .bytes = if (i == 0) tail.items else "",
-                    .runs_from = segment.from,
-                    .runs_end = if (last) none else segment.to,
-                    .chunks = segment.leaf.chunks.items,
-                    .urls = segment.leaf.urls.items,
-                });
-            }
+            const ranges = try self.liveChunks(arena, start, runs_from, shown_end, skip);
+            try self.emit(.{ .block = live.block, .from = write_start, .bytes = tail.items, .ranges = ranges });
         }
         live.matches_seen = @intCast(live.parser.result().matches.len);
         live.shown_byte_count = shown_end;
@@ -2927,8 +2918,6 @@ pub const Doc = struct {
         before_display: u32,
     };
 
-    const Segment = struct { from: u32, to: u32, leaf: Leaf };
-
     /// The live leaf's chunks for display bytes [from, to), from live token `start` on (`from`
     /// is where it starts, or `to`): the styles read_leaf gives those bytes, counted, not copied.
     /// Notes the styles before each token it passes. The walk jumps over an interior whose styles
@@ -2938,13 +2927,13 @@ pub const Doc = struct {
     /// nest and do not cross links, and the matches this call made have their closers in the
     /// written bytes, so none starts or ends in the gap, and every token there has the kinds
     /// those matches add already.
-    fn liveChunks(self: *Doc, arena: Allocator, start: u32, from: u32, to: u32, skip: Skip) Error![]const Segment {
+    fn liveChunks(self: *Doc, arena: Allocator, start: u32, from: u32, to: u32, skip: Skip) Error![]const RunRange {
         const live = &self.live;
-        var segments: std.ArrayListUnmanaged(Segment) = .empty;
+        var segments: std.ArrayListUnmanaged(RunRange) = .empty;
         var leaf = try arena.create(Leaf);
         leaf.* = .{};
         if (from >= to) {
-            try segments.append(arena, .{ .from = from, .to = from, .leaf = leaf.* });
+            try segments.append(arena, .{ .from = from, .chunks = &.{}, .urls = "" });
             return segments.items;
         }
         assert(from == self.liveTokensEnd(start) and (start == 0 or start < live.styled_count));
@@ -3025,7 +3014,7 @@ pub const Doc = struct {
                 if (count > 0) closer = if (old == 0) 0 else @min(closer, end);
             }
             if (closer > i + 1 and live.display_ends.items[closer] <= skip.before_display) {
-                try segments.append(arena, .{ .from = segment_from, .to = at, .leaf = leaf.* });
+                try segments.append(arena, .{ .from = segment_from, .end = at, .chunks = leaf.chunks.items, .urls = leaf.urls.items });
                 const next = try arena.create(Leaf);
                 next.* = .{};
                 // A link open across the gap: its URL in the next segment's URLs.
@@ -3073,7 +3062,7 @@ pub const Doc = struct {
             const first_span = try spans.add(shown_runs, self.allocator);
             const keep_end = pending_start + @min(first_span, skip.before_display -| pending_start);
             if (extends and keep_end > at) {
-                try segments.append(arena, .{ .from = segment_from, .to = at, .leaf = leaf.* });
+                try segments.append(arena, .{ .from = segment_from, .end = at, .chunks = leaf.chunks.items, .urls = leaf.urls.items });
                 leaf = try arena.create(Leaf);
                 leaf.* = .{};
                 writer.leaf = leaf;
@@ -3086,7 +3075,7 @@ pub const Doc = struct {
             try writer.writePending(null, at - pending_start, to - pending_start, shown, .{ .code = code });
         }
         assert(writer.byte_count == to - segment_from);
-        try segments.append(arena, .{ .from = segment_from, .to = to, .leaf = leaf.* });
+        try segments.append(arena, .{ .from = segment_from, .chunks = leaf.chunks.items, .urls = leaf.urls.items });
         return segments.items;
     }
 
@@ -3281,7 +3270,8 @@ pub const Doc = struct {
         const b = self.blocks.items[self.live.block];
         const chunk: Chunk = .{ .byte_count = @intCast(bytes.len), .scope = .{ .heading_level = @intCast(b.payload[0]) }, .span = .{} };
         const at = self.live.shown_byte_count;
-        try self.emit(.{ .block = self.live.block, .from = at, .bytes = bytes, .runs_from = at, .chunks = if (bytes.len > 0) &.{chunk} else &.{}, .urls = "" });
+        const ranges = try self.scratch.allocator().dupe(RunRange, &.{.{ .from = at, .chunks = if (bytes.len > 0) &.{chunk} else &.{}, .urls = "" }});
+        try self.emit(.{ .block = self.live.block, .from = at, .bytes = bytes, .ranges = ranges });
         self.live.shown_byte_count += @intCast(bytes.len);
     }
 

@@ -5,7 +5,7 @@ use core::ffi::c_void;
 
 /// FNV-1a 64-bit hash of the `opentui.h` these declarations were generated from.
 /// The build script rejects native artifacts whose header has a different hash.
-pub const OPENTUI_HEADER_FNV1A64: u64 = 0x15a1ab0657cf41c3;
+pub const OPENTUI_HEADER_FNV1A64: u64 = 0x1559203783078c78;
 
 pub type ot_status = i32;
 
