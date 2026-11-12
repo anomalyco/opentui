@@ -1,5 +1,7 @@
-//! The Markdown ABI (step M2): bound scene text nodes show read_leaf, bytes and styles, after
-//! every call; host-written modes, removals, styles and rejections.
+//! The Markdown ABI (step M2): a host that learns blocks only from read_changes holds what a
+//! fresh document given the whole text lists, under every option set; bound scene text nodes
+//! show read_leaf, bytes and styles, after every call; host-written modes, removals, styles and
+//! rejections.
 const std = @import("std");
 const c = @import("context_abi_c");
 const abi = @import("../context-abi.zig");
@@ -16,6 +18,10 @@ const Fixture = struct {
     next_num: u32 = 1,
 
     fn init(flags: u32) !Fixture {
+        return initWith(.{ .flags = flags });
+    }
+
+    fn initWith(set: OptionSet) !Fixture {
         const context = try abi.createTestContext(.{ .object_capacity = 64, .render_cells_max = 800 });
         errdefer _ = abi.ot_context_destroy(context);
         const session = try context.core.createSession(.{});
@@ -33,7 +39,7 @@ const Fixture = struct {
             .{ "string.escape", 0, .{ 5, 5, 5, 255 } },    .{ "markup.link", 0, .{ 6, 0, 0, 255 } },
             .{ "markup.link.url", 0, .{ 3, 3, 3, 255 } },
         }) |entry| try self.register(entry[0], entry[1], entry[2]);
-        var options = optionsWith(flags, self.style);
+        var options = set.options(self.style);
         try expectOk(md.ot_markdown_create(context, &options, &self.doc));
         return self;
     }
@@ -146,23 +152,141 @@ fn optionsWith(flags: u32, style: c.ot_handle) c.ot_markdown_options {
 
 const live_flags = c.OT_MD_CONCEAL | c.OT_MD_HYPERLINKS;
 
-test "Markdown ABI: bound nodes show read_leaf, bytes and styles, after every call (seeded)" {
-    const pieces = soup ++ [_][]const u8{ "a@b.co ", "[x](/u) ", "\u{e9}", "e\u{301}", "\n===\n" };
+/// A document's options: its OT_MD_* flags and hook filter.
+const OptionSet = struct {
+    flags: u32,
+    filter: []const u8 = "",
+
+    fn options(self: OptionSet, style: c.ot_handle) c.ot_markdown_options {
+        var result = optionsWith(self.flags, style);
+        @memcpy(result.hook_filter[0..self.filter.len], self.filter);
+        result.hook_filter_byte_count = @intCast(self.filter.len);
+        return result;
+    }
+
+    /// Whether the doc writes bound nodes of leaves that are not hooked.
+    fn live(self: OptionSet) bool {
+        return self.flags & live_flags == live_flags;
+    }
+};
+
+/// Every OT_MD_* combination; with the hook, every leaf hooked and only leaves with `ses_`.
+const option_sets = sets: {
+    var sets: [24]OptionSet = undefined;
+    var count = 0;
+    for (0..16) |flags| {
+        sets[count] = .{ .flags = flags };
+        count += 1;
+        if (flags & c.OT_MD_HOOK != 0) {
+            sets[count] = .{ .flags = flags, .filter = "ses_" };
+            count += 1;
+        }
+    }
+    break :sets sets;
+};
+
+const pieces = soup ++ [_][]const u8{ "a@b.co ", "[x](/u) ", "\u{e9}", "e\u{301}", "\n===\n" };
+
+fn isLeaf(kind: u16) bool {
+    return switch (kind) {
+        c.OT_MD_PARAGRAPH, c.OT_MD_HEADING, c.OT_MD_CODE, c.OT_MD_HTML, c.OT_MD_TABLE_CELL => true,
+        else => false,
+    };
+}
+
+fn sameLeaf(a: Fixture.Leaf, b: Fixture.Leaf) bool {
+    return std.mem.eql(u8, a.bytes, b.bytes) and std.mem.eql(u32, a.spans, b.spans) and std.mem.eql(u8, a.urls, b.urls) and
+        std.mem.eql(u8, std.mem.sliceAsBytes(a.chunks), std.mem.sliceAsBytes(b.chunks));
+}
+
+/// What a host knows of a doc, learned only from read_changes and the result's
+/// removed_from_index: the blocks, and each leaf's read_leaf when it was listed.
+const Mirror = struct {
+    blocks: std.ArrayListUnmanaged(c.ot_markdown_block) = .empty,
+    leaves: std.ArrayListUnmanaged(?Fixture.Leaf) = .empty,
+
+    /// Takes in the changes after a call; returns them.
+    fn update(self: *Mirror, f: *Fixture, arena: std.mem.Allocator, result: c.ot_markdown_result) ![]c.ot_markdown_block {
+        if (result.removed_from_index != std.math.maxInt(u32) and result.removed_from_index < self.blocks.items.len) {
+            self.blocks.shrinkRetainingCapacity(result.removed_from_index);
+            self.leaves.shrinkRetainingCapacity(result.removed_from_index);
+        }
+        const changes = try f.changes(arena);
+        for (changes) |block| {
+            // Preorder: a listed block is known or the next one.
+            try std.testing.expect(block.index <= self.blocks.items.len);
+            if (block.index == self.blocks.items.len) {
+                try self.blocks.append(arena, block);
+                try self.leaves.append(arena, null);
+            }
+            self.blocks.items[block.index] = block;
+            self.leaves.items[block.index] = if (isLeaf(block.kind)) try f.readLeaf(arena, block.index) else null;
+        }
+        return changes;
+    }
+
+    /// Whether the mirror holds what a fresh doc with the same options, given the whole
+    /// source (and finished when `finished`), lists on its first read: P1, P5.
+    fn matchesFresh(self: *const Mirror, f: *Fixture, arena: std.mem.Allocator, set: OptionSet, finished: bool) !bool {
+        const source = try arena.dupe(u8, try f.source());
+        var options = set.options(f.style);
+        var fresh: c.ot_handle = undefined;
+        try expectOk(md.ot_markdown_create(f.context, &options, &fresh));
+        const doc = f.doc;
+        f.doc = fresh;
+        defer {
+            f.doc = doc;
+            expectOk(md.ot_markdown_destroy(f.context, &fresh)) catch unreachable;
+        }
+        var result: c.ot_markdown_result = undefined;
+        if (source.len > 0) _ = try f.append(source);
+        if (finished) try expectOk(md.ot_markdown_finish(f.context, &fresh, &result));
+        const blocks = try f.changes(arena);
+        if (blocks.len != self.blocks.items.len) {
+            std.debug.print("host knows {d} blocks, a fresh doc lists {d}\n", .{ self.blocks.items.len, blocks.len });
+            return false;
+        }
+        for (blocks, self.blocks.items, self.leaves.items) |expected, known, leaf| {
+            if (!std.meta.eql(expected, known)) {
+                std.debug.print("block {d}: host knows {any}, a fresh doc lists {any}\n", .{ expected.index, known, expected });
+                return false;
+            }
+            if (leaf) |shown| {
+                const want = try f.readLeaf(arena, expected.index);
+                if (!sameLeaf(shown, want)) {
+                    std.debug.print("leaf {d}: host read '{s}', a fresh doc shows '{s}'\n", .{ expected.index, shown.bytes, want.bytes });
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+};
+
+test "Markdown ABI: a host that reads changes holds a fresh doc's blocks and leaves; bound nodes show read_leaf (seeded)" {
     var env_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer env_arena.deinit();
-    // CI runs 48 seeds of 40 calls; MODEL_SEEDS widens it.
-    const seeds = if (@import("model.zig").environment(env_arena.allocator(), "MODEL_SEEDS")) |text| try std.fmt.parseInt(usize, text, 10) else 48;
-    for (0..seeds) |seed| {
+    // CI runs 48 seeds of 40 calls; MODEL_SEEDS widens it. Seed n starts with option set n % 24.
+    // MODEL_SEED runs one seed.
+    const model = @import("model.zig");
+    const seeds = if (model.environment(env_arena.allocator(), "MODEL_SEEDS")) |text| try std.fmt.parseInt(usize, text, 10) else 48;
+    const only = if (model.environment(env_arena.allocator(), "MODEL_SEED")) |text| try std.fmt.parseInt(usize, text, 10) else null;
+    const first = only orelse 0;
+    for (first..if (only) |seed| seed + 1 else seeds) |seed| {
         var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        var f = try Fixture.init(live_flags);
+        var set = option_sets[seed % option_sets.len];
+        var f = try Fixture.initWith(set);
         defer f.deinit();
         var prng = std.Random.DefaultPrng.init(seed);
         const random = prng.random();
+        var mirror: Mirror = .{};
+        var finished = false;
         // The host's bindings: block index -> node.
         var nodes: std.AutoArrayHashMapUnmanaged(u32, c.ot_handle) = .empty;
         var trace: std.ArrayListUnmanaged(u8) = .empty;
+        try trace.print(arena, "  options {d} \"{s}\"\n", .{ set.flags, set.filter });
         for (0..40) |step| {
             errdefer std.debug.print("seed {d}, step {d}, source \"{f}\"\ncalls:\n{s}", .{ seed, step, std.zig.fmtString(f.source() catch ""), trace.items });
             const roll = random.uintLessThan(u8, 20);
@@ -170,6 +294,7 @@ test "Markdown ABI: bound nodes show read_leaf, bytes and styles, after every ca
             if (roll == 0) {
                 try trace.appendSlice(arena, "  finish\n");
                 try expectOk(md.ot_markdown_finish(f.context, &f.doc, &result));
+                finished = true;
             } else if (roll == 1) {
                 // A replace that keeps a prefix, as OpenCode's trim() does.
                 const old = try arena.dupe(u8, try f.source());
@@ -178,13 +303,21 @@ test "Markdown ABI: bound nodes show read_leaf, bytes and styles, after every ca
                 while (cut > 0 and cut < old.len and old[cut] & 0xC0 == 0x80) cut -= 1;
                 try trace.print(arena, "  set \"{f}\"\n", .{std.zig.fmtString(old[0..cut])});
                 try expectOk(md.ot_markdown_set(f.context, &f.doc, old.ptr, @intCast(cut), &result));
+                finished = false;
+            } else if (roll == 2) {
+                set = option_sets[random.uintLessThan(usize, option_sets.len)];
+                try trace.print(arena, "  options {d} \"{s}\"\n", .{ set.flags, set.filter });
+                var options = set.options(f.style);
+                try expectOk(md.ot_markdown_set_options(f.context, &f.doc, &options, &result));
             } else {
                 var bytes: std.ArrayListUnmanaged(u8) = .empty;
                 for (0..random.uintAtMost(usize, 3) + 1) |_| try bytes.appendSlice(arena, pieces[random.uintLessThan(usize, pieces.len)]);
                 try trace.print(arena, "  append \"{f}\"\n", .{std.zig.fmtString(bytes.items)});
                 result = try f.append(bytes.items);
+                finished = false;
             }
-            const blocks = try f.changes(arena);
+            const blocks = try mirror.update(&f, arena, result);
+            if (!try mirror.matchesFresh(&f, arena, set, finished)) return error.HostDiffers;
             // Removed blocks' nodes are gone; listed paragraphs and headings get a node.
             if (result.removed_from_index != std.math.maxInt(u32)) {
                 var i: usize = nodes.count();
@@ -210,8 +343,50 @@ test "Markdown ABI: bound nodes show read_leaf, bytes and styles, after every ca
                 try expectOk(md.ot_markdown_bind(f.context, &f.doc, block.index, &node));
                 try nodes.put(arena, block.index, node);
             }
+            // The doc writes the nodes of leaves that are not hooked while its display is live.
+            if (!set.live()) continue;
             for (nodes.keys(), nodes.values()) |index, node| {
+                if (mirror.blocks.items[index].flags & c.OT_MD_BLOCK_HOOKED != 0) continue;
                 if (!try f.nodeShowsLeaf(arena, index, node)) return error.NodeDiffers;
+            }
+        }
+    }
+}
+
+test "Markdown ABI: every two calls from the soup, under every option set (exhaustive)" {
+    // Depth 2 over the pieces and finish: about 2,300 sequences per option set.
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const actions = pieces.len + 1;
+    for (option_sets) |set| {
+        var f = try Fixture.initWith(set);
+        defer f.deinit();
+        for (0..actions * actions) |sequence| {
+            _ = arena_state.reset(.retain_capacity);
+            const arena = arena_state.allocator();
+            var options = set.options(f.style);
+            var doc: c.ot_handle = undefined;
+            try expectOk(md.ot_markdown_create(f.context, &options, &doc));
+            const saved = f.doc;
+            f.doc = doc;
+            defer {
+                f.doc = saved;
+                expectOk(md.ot_markdown_destroy(f.context, &doc)) catch unreachable;
+            }
+            var mirror: Mirror = .{};
+            var finished = false;
+            for ([_]usize{ sequence / actions, sequence % actions }) |action| {
+                errdefer std.debug.print("options {d} \"{s}\", calls {d} then {d} ({s})\n", .{ set.flags, set.filter, sequence / actions, sequence % actions, if (action < pieces.len) pieces[action] else "finish" });
+                var result: c.ot_markdown_result = undefined;
+                if (action == pieces.len) {
+                    try expectOk(md.ot_markdown_finish(f.context, &f.doc, &result));
+                    finished = true;
+                } else {
+                    result = try f.append(pieces[action]);
+                    finished = false;
+                }
+                _ = try mirror.update(&f, arena, result);
+                if (!try mirror.matchesFresh(&f, arena, set, finished)) return error.HostDiffers;
             }
         }
     }

@@ -406,7 +406,9 @@ pub const MarkdownDoc = struct {
     /// The group set of each scope combination written so far (Context ids, never freed).
     scope_sets: std.AutoHashMapUnmanaged(u16, u32) = .empty,
 
-    pub const Binding = struct { block: u32, node: Handle };
+    /// `skipped`: a write to the node was skipped (hooked, or not live), so it does not hold
+    /// the live display's earlier bytes and takes only whole writes.
+    pub const Binding = struct { block: u32, node: Handle, skipped: bool = false };
     /// The Markdown layer of a bound node's buffer (its only layer).
     pub const layer_id: u32 = 2;
 
@@ -515,13 +517,22 @@ pub const MarkdownDoc = struct {
     /// blocks and destroyed nodes are skipped.
     fn writeNode(context: *anyopaque, doc: *const markdown.Doc, w: markdown.NodeWrite) markdown.Error!void {
         const self: *MarkdownDoc = @ptrCast(@alignCast(context));
-        if (!doc.options.liveShown() or w.block >= doc.blocks.items.len) return;
+        if (w.block >= doc.blocks.items.len) return;
         const b = doc.blocks.items[w.block];
-        if (!markdown.Doc.isBound(b) or b.flags.hooked) return;
+        if (!markdown.Doc.isBound(b)) return;
         const at = self.bindingIndex(w.block);
         if (at == self.bindings.items.len or self.bindings.items[at].block != w.block) return;
+        const binding = &self.bindings.items[at];
+        // A hooked leaf's flag is off while its pending line is parsed again: the node keeps
+        // what the host wrote until a whole write.
+        if (!doc.options.liveShown() or b.flags.hooked) {
+            binding.skipped = true;
+            return;
+        }
+        if (binding.skipped and !w.whole) return;
+        binding.skipped = false;
         const owner = self.owner;
-        const node = owner.sceneMutableNode(self.bindings.items[at].node) catch return;
+        const node = owner.sceneMutableNode(binding.node) catch return;
         const text = node.scene_node.?.text orelse return;
         self.writeText(node, text, w) catch |err| return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
@@ -4000,7 +4011,7 @@ pub const Context = struct {
         try value.bindings.ensureUnusedCapacity(self.allocator, 1);
         const at = value.bindingIndex(index);
         if (at < value.bindings.items.len and value.bindings.items[at].block == index) {
-            value.bindings.items[at].node = node_handle;
+            value.bindings.items[at] = .{ .block = index, .node = node_handle };
         } else {
             value.bindings.insertAssumeCapacity(at, .{ .block = index, .node = node_handle });
         }

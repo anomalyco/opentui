@@ -325,6 +325,9 @@ pub const NodeWrite = struct {
     runs_from: u32,
     chunks: []const Chunk,
     urls: []const u8,
+    /// The leaf's whole display from 0 (read_leaf), not a step of the live display: it also
+    /// writes a node whose earlier writes were skipped.
+    whole: bool = false,
 };
 
 /// Where the engine writes bound leaves (M2: the Context's binding of scene text nodes).
@@ -691,15 +694,17 @@ pub const Doc = struct {
         // A leaf with the same bytes shows otherwise when a definition or an option did.
         const outputs_may_change = fresh.options.math != self.options.math or fresh.options.conceal != self.options.conceal or
             fresh.options.hyperlinks != self.options.hyperlinks or !try self.sameDefinitions(fresh);
+        // Nodes bound while the display was not live hold the host's text: the doc writes them.
+        // (A leaf whose hook changes is not equal: the host binds it again.)
+        const turned_live = fresh.options.liveShown() and !self.options.liveShown();
         var rewrite: std.ArrayListUnmanaged(u32) = .empty;
         for (fresh.blocks.items[0..equal], self.blocks.items[0..equal], 0..) |*new, old, i| {
             new.flags.unreported = old.flags.unreported;
             // An open leaf's display also depends on whether its last line is complete (B holds
             // a trailing `]` only in the pending line).
-            if ((outputs_may_change or old.flags.open) and isInlineLeaf(old) and !try self.sameLeafOutput(fresh, @intCast(i))) {
-                new.flags.unreported = true;
-                if (isBound(old)) try rewrite.append(self.scratch.allocator(), @intCast(i));
-            }
+            const changed = (outputs_may_change or old.flags.open) and isInlineLeaf(old) and !try self.sameLeafOutput(fresh, @intCast(i));
+            if (changed) new.flags.unreported = true;
+            if ((changed or turned_live) and isBound(old)) try rewrite.append(self.scratch.allocator(), @intCast(i));
         }
         const removed = if (equal < self.read_block_count) @min(self.removed_from_index, equal) else self.removed_from_index;
         fresh.removed_from_index = removed;
@@ -2399,7 +2404,7 @@ pub const Doc = struct {
     /// Leaf `index`'s whole display and styles, as one write.
     pub fn wholeWrite(self: *const Doc, index: u32) Error!NodeWrite {
         const leaf = try self.readLeaf(self.scratch.allocator(), index);
-        return .{ .block = index, .from = 0, .bytes = leaf.bytes.items, .runs_from = 0, .chunks = leaf.chunks.items, .urls = leaf.urls.items };
+        return .{ .block = index, .from = 0, .bytes = leaf.bytes.items, .runs_from = 0, .chunks = leaf.chunks.items, .urls = leaf.urls.items, .whole = true };
     }
 
     /// Sends one write to the test sink and to the node writer.
@@ -3047,16 +3052,20 @@ pub const Doc = struct {
         live.shown_byte_count = @intCast(whole.bytes.len);
         whole.bytes = whole.bytes[from..];
         whole.from = from;
+        whole.whole = from == 0;
         try self.emit(whole);
     }
 
     /// Writes the closing leaf's runs again from its start, from a whole parse.
     fn liveRestyle(self: *Doc, index: u32) Error!void {
+        // Host-written modes: read_leaf is not the live display, and no node takes the runs.
+        if (!self.options.liveShown()) return;
         var whole = try self.wholeWrite(index);
         assert(whole.bytes.len == self.live.shown_byte_count);
         self.counters.display_byte_visits += whole.bytes.len;
         whole.from = @intCast(whole.bytes.len);
         whole.bytes = "";
+        whole.whole = false;
         try self.emit(whole);
     }
 
