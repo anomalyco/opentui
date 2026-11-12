@@ -3719,8 +3719,11 @@ fn localLayout(value: *const native.NativeRenderable, comptime source: anytype) 
     try yoga.check(yoga.yogaNodeGetComputedLayoutChecked(value.yoga_node, &computed));
     var layout: Layout = .{ .left = computed.left, .top = computed.top, .right = computed.right, .bottom = computed.bottom, .width = computed.width, .height = computed.height };
     // Edge kind 1 is padding. Only text nodes paint inside theirs; boxes place children there.
+    // Yoga rounds the box but not the padding: whole cells, rounded down, leave the view at
+    // least the size Yoga measured the text at, so every measured row shows.
     if (node.text != null) for (&layout.padding, api.OT_EDGE_LEFT..) |*padding, edge| {
         try yoga.check(yoga.yogaNodeLayoutGetEdgeChecked(value.yoga_node, 1, @intCast(edge), padding));
+        padding.* = @floor(padding.*);
     };
     return layout;
 }

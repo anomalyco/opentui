@@ -716,6 +716,9 @@ test "Scene text paints inside its padding" {
         .{ .padding = .{ 1, 0, 1, 0 }, .height = 3, .lines = &.{ " ab   ", " cd   ", " ef   " } },
         .{ .padding = .{ 0, 1, 0, 0 }, .height = 3, .lines = &.{ "      ", "ab cd ", "ef    " } },
         .{ .padding = .{ 0, 0, 0, 1 }, .height = 3, .lines = &.{ "ab cd ", "ef    ", "      " } },
+        // Yoga rounds the box to 2 rows, not its padding; the content keeps both measured rows.
+        .{ .padding = .{ 0, 0, 0, 0.3 }, .height = 2, .lines = &.{ "ab cd ", "ef    " } },
+        .{ .padding = .{ 0, 0.5, 0, 0.5 }, .height = 3, .lines = &.{ "ab cd ", "ef    ", "      " } },
         .{ .padding = .{ 1, 1, 1, 1 }, .height = 5, .lines = &.{ "      ", " ab   ", " cd   ", " ef   ", "      " } },
         // A fixed height cuts the third line at the bottom padding.
         .{ .padding = .{ 1, 0, 1, 1 }, .height = 3, .lines = &.{ " ab   ", " cd   ", "      " }, .fixed = true },
