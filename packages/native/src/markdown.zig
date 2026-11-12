@@ -1424,6 +1424,7 @@ pub const Doc = struct {
             // Only definitions: the exact parse removes it (below), so the layout hides it until
             // the layout is undone (it is the last real block).
             if (index + 1 == self.blocks.items.len and index + 1 == self.provisional_from and
+                self.source.items[block.content_start_byte] == '[' and
                 (try self.leafSubject(self.scratch.allocator(), index)).len == 0)
             {
                 self.blocks.items.len = index;
