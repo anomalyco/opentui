@@ -1075,6 +1075,15 @@ test "layers: setLayer rejects bad ids, ranges and boundaries, and failed memory
     }
     try testing.expect(succeeded);
     try testing.expectEqual(@as(u8, 2), tb.layers.count);
+    // A reserved spare covers a split of a held run: no allocation is needed.
+    var spare = try tb.reserveLayer(2, 0);
+    defer tb.freeLayerSpare(&spare);
+    var no_memory = std.testing.FailingAllocator.init(gpa, .{ .fail_index = 0, .resize_fail_index = 0 });
+    tb.global_allocator = no_memory.allocator();
+    const split = tb.setLayerWithSpare(2, 5, 6, &.{}, &spare);
+    tb.global_allocator = gpa;
+    try split;
+    try expectRuns(&.{ .{ 1, 4, 1 }, .{ 4, 5, 2 }, .{ 6, 8, 2 } }, runsOf(&tb.layers, 2));
 }
 
 // Every text change empties the layers or moves their runs with it, so a run the layer holds lies
@@ -1906,7 +1915,7 @@ test "layers: seeded span model, from-scratch cells and a forced full repaint ag
                             end = max;
                         }
                         try expectModelPaint(&setup, &model, &target, styles[0..]);
-                        for (runsOf(&tb.layers, layer_ids[layer])) |run| if (run.end_byte > start and run.start_byte < end and kept < buffer.len) {
+                        if (start < end) for (runsOf(&tb.layers, layer_ids[layer])) |run| if (run.end_byte > start and run.start_byte < end and kept < buffer.len) {
                             buffer[kept] = .{ .start_byte = @max(run.start_byte, start), .end_byte = @min(run.end_byte, end), .group_set = run.group_set, .link_id = run.link_id };
                             kept += 1;
                         };
