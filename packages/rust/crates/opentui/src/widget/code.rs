@@ -57,6 +57,9 @@ pub(crate) struct CodeInner {
     selectable: Cell<bool>,
     selection_colors: Cell<SelectionColors>,
     selection: Cell<Option<LocalSelection>>,
+    /// Whether the text changed under a selection since the last frame, which applies it again once following,
+    /// scrolling and wrapping settled, as Core's Code does when it sets its text in the frame.
+    reselect: Cell<bool>,
 }
 
 impl CodeInner {
@@ -200,6 +203,7 @@ impl CodeInner {
         self.gutter.changed();
         if self.selection.get().is_some() {
             self.apply_selection(true);
+            self.reselect.set(true);
         }
     }
 
@@ -241,6 +245,9 @@ impl Behavior for CodeInner {
     /// paints.
     fn update(&self, _cx: &mut Cx<'_>) {
         self.land();
+        if self.reselect.take() {
+            self.apply_selection(true);
+        }
         if !self.stale.get() || self.pending.borrow().is_some() {
             return;
         }
@@ -405,6 +412,7 @@ impl Code {
                     bg: Some(theme.selection_bg),
                 }),
                 selection: Cell::new(None),
+                reselect: Cell::new(false),
             }
         });
         inner.element.register();
