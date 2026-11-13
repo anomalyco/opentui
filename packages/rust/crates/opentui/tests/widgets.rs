@@ -1529,7 +1529,7 @@ fn mouse_selection_spans_widgets_in_reading_order() {
     // A press on a widget that cannot select ends the selection.
     app.click(3, 2);
     assert_eq!(app.selected_text(), None);
-    assert_eq!(first.selected_text(), "");
+    assert_eq!(first.set_text("first line").selected_text(), "");
 }
 
 #[test]
@@ -1548,6 +1548,117 @@ fn double_and_triple_clicks_select_words_and_lines() {
     app.advance(Duration::from_millis(600));
     app.click(8, 0);
     assert_eq!(app.selected_text(), None);
+}
+
+// As in Core, a text whose content changes applies the selection again at the same cells of the text, during the
+// gesture or after it, even after the text moved, so it selects what a fresh gesture on the new content selects.
+#[test]
+fn a_selection_follows_its_gesture_when_the_content_changes() {
+    use opentui::widget::Code;
+    let [down, drag, up] =
+        [MouseEventKind::Down, MouseEventKind::Drag, MouseEventKind::Up].map(|kind| kind(MouseButton::Left));
+    // Presses at (1, 1) of "ab cd\ncd" in a 4x2 text above "def": a drag to (0, 2) in "def", a double click, a
+    // triple click. Each change replaces the text, appends to it, or sets it again after a wrap change, which wraps
+    // "cd" of the first line to the second row. Expected: the text's selection and the app's, from Core.
+    let changes = [("xab cd\nxcd", WrapMode::None), ("ab cd\ncde", WrapMode::None), ("ab cd\ncd", WrapMode::Word)];
+    let rows: [(u16, [&str; 3]); 3] =
+        [(1, ["cd", "de", "d\nc"]), (2, ["xcd", "cde", "cd"]), (3, ["xcd", "cde", "ab cd"])];
+    for is_code in [false, true] {
+        for (presses, expected) in rows {
+            for ((content, wrap), expected) in changes.into_iter().zip(expected) {
+                // Core's Code ignores equal text, so it keeps the selection made under the old wrap mode.
+                if is_code && wrap == WrapMode::Word {
+                    continue;
+                }
+                for when in ["fresh", "after", "during", "moved"] {
+                    let app = TestApp::new(8, 4);
+                    let first = if when == "fresh" { (content, wrap) } else { ("ab cd\ncd", WrapMode::None) };
+                    let text = Text::new(&app, first.0).wrap(first.1).size(4, 2);
+                    let code = Code::new(&app).wrap(first.1).size(4, 2).set_code(first.0);
+                    let change = || match (when, is_code) {
+                        ("fresh", _) => {}
+                        (_, false) => drop(text.wrap(wrap).set_text(content)),
+                        (_, true) => drop(code.wrap(wrap).set_code(content)),
+                    };
+                    let root = if is_code { app.root().add(&code) } else { app.root().add(&text) };
+                    root.add(&Text::new(&app, "def"));
+                    app.render();
+                    let (x, y) = if presses == 1 { (0, 2) } else { (1, 1) };
+                    for press in 1..=presses {
+                        app.mouse(down, 1, 1);
+                        if presses == 1 {
+                            app.mouse(drag, x, y);
+                        }
+                        if when == "during" && press == presses {
+                            change();
+                        }
+                        app.mouse(up, x, y);
+                    }
+                    if when == "moved" {
+                        app.root().insert(0, &Text::new(&app, "top"));
+                        app.render();
+                    }
+                    if matches!(when, "after" | "moved") {
+                        change();
+                    }
+                    app.render();
+                    let at = format!("code {is_code}, {presses} presses, {content:?} {wrap:?} {when}");
+                    assert_eq!(if is_code { code.selected_text() } else { text.selected_text() }, expected, "{at}");
+                    assert_eq!(app.selected_text().as_deref(), Some(expected), "{at}");
+                }
+            }
+        }
+    }
+    // One widget, a gesture at (x, y) (one press: a drag four cells right; three: a triple click), then each step
+    // sets the text and the wrap mode, with the app's selection after the next frame, from Core: a followed log,
+    // a replace that clamps the scroll, a wrap set after the text, a drag that selected nothing at release (Core
+    // paints "ew " but copies nothing; the app copies what is painted), and a line that goes and comes back.
+    type Step = (&'static str, Option<WrapMode>, Option<&'static str>);
+    let log = "aa\nbb\ncc\ndd";
+    let regrow: &[Step] = &[("ab", None, None), ("ab\ntwo words", None, Some("two words"))];
+    type Row = (bool, bool, &'static str, (u16, u16), u16, (u16, u16), &'static [Step]);
+    let rows: &[Row] = &[
+        (true, true, log, (4, 2), 3, (1, 1), &[("aa\nbb\ncc\ndd\nee", None, Some("ee"))]),
+        (true, true, log, (4, 2), 3, (1, 0), &[("one\ntwo", None, Some("one"))]),
+        (true, false, "ab cd\nxy", (4, 2), 3, (1, 1), &[("xab cd\nxcd", Some(WrapMode::Word), Some("xab cd"))]),
+        (false, false, "old", (6, 2), 1, (1, 1), &[("old\nnew stuff", None, Some("ew "))]),
+        (true, false, "old", (6, 2), 1, (1, 1), &[("old\nnew stuff", None, Some("ew st"))]),
+        (false, false, "ab\ncd", (8, 2), 3, (1, 1), regrow),
+        (true, false, "ab\ncd", (8, 2), 3, (1, 1), regrow),
+    ];
+    for &(is_code, follow, first, (width, height), presses, (x, y), steps) in rows {
+        let app = TestApp::new(8, 4);
+        let text = Text::new(&app, first).size(width, height);
+        let code = Code::new(&app).size(width, height).follow(follow).set_code(first);
+        let _ = if is_code { app.root().add(&code) } else { app.root().add(&text) };
+        app.render();
+        let end = if presses == 1 { x + 4 } else { x };
+        for _ in 0..presses {
+            app.mouse(down, x, y);
+            if presses == 1 {
+                app.mouse(drag, end, y);
+            }
+            app.mouse(up, end, y);
+        }
+        for &(content, wrap, expected) in steps {
+            if is_code {
+                code.set_code(content);
+                if let Some(wrap) = wrap {
+                    code.wrap(wrap);
+                }
+            } else {
+                text.set_text(content);
+            }
+            app.render();
+            assert_eq!(app.selected_text().as_deref(), expected, "code {is_code}, {first:?} then {content:?}");
+        }
+        // Scrolling afterwards leaves the selection on its text.
+        if is_code {
+            code.perform(ScrollAction::Up);
+            app.render();
+            assert_eq!(app.selected_text().as_deref(), steps[steps.len() - 1].2, "{first:?} scrolled");
+        }
+    }
 }
 
 #[test]
@@ -1584,7 +1695,7 @@ fn code_views_and_textareas_join_a_selection() {
     // Shift+arrow in the textarea keeps only its own part.
     notes.focus();
     app.press("shift+right");
-    assert_eq!(code.selected_text(), "");
+    assert_eq!(code.set_code("let a = 3;").selected_text(), "");
     assert_eq!(title.selected_text(), "");
     assert_eq!(notes.selected_text(), "note ");
 }

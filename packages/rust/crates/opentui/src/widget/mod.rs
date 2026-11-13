@@ -247,6 +247,20 @@ impl SelectionUpdate {
         let (x, y) = (rect.screen_x.trunc() as i32, rect.screen_y.trunc() as i32);
         ((self.anchor.0 - x, self.anchor.1 - y), (self.focus.0 - x, self.focus.1 - y))
     }
+
+    pub fn local_selection(&self, element: &Element) -> LocalSelection {
+        let (anchor, focus) = self.local(element);
+        LocalSelection { anchor, focus, unit: self.unit }
+    }
+}
+
+/// The app's selection relative to a widget's top-left cell. Text widgets keep the last one and apply it again when
+/// their content changes, as Core's do.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LocalSelection {
+    pub anchor: (i32, i32),
+    pub focus: (i32, i32),
+    pub unit: SelectionUnit,
 }
 
 /// Owned box titles, so the element can resend all box details after one changes.
