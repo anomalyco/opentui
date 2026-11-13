@@ -45,9 +45,9 @@ jobs:
         with:
           zig-cache-save: ${{ github.event_name == 'push' }}
 
-      - name: Build
+      - name: Build and test packed distribution
         working-directory: packages/react
-        run: bun run build --ci
+        run: bun run test:dist
 
       - name: Enable Linux core dumps
         uses: ./.github/actions/enable-linux-coredumps

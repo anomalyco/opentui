@@ -43,7 +43,8 @@
     "build:examples": "bun examples/build.ts",
     "build:dev": "bun run scripts/build.ts --dev",
     "publish": "bun ../../scripts/npm-publish.ts publish @opentui/react",
-    "test": "bun test"
+    "test": "bun test",
+    "test:dist": "bun run build --ci && NODE_ENV=production bun scripts/test-dist.ts"
   },
   "devDependencies": {
     "@opentui/keymap": "workspace:*",
