@@ -135,44 +135,30 @@ describe("runtime plugin", () => {
     })
   })
 
-  it("registers additional runtime modules with sync and async loaders", async () => {
+  it.each([true, false])("registers runtime modules with node_modules runtime rewriting %s", async (enabled) => {
     const { build, resolveHandlers, modules } = createMockBuild()
-
     createRuntimePlugin({
       core: { marker: "core" },
       additional: {
         "fixture-sync": { value: "sync-value" },
         "@fixture/async-module": async () => ({ value: "async-value" }),
+        "./local.ts": { value: "local" },
       },
+      preserve: ["fixture-sync"],
+      rewrite: { nodeModulesRuntimeSpecifiers: enabled },
     }).setup(build as any)
 
-    const coreResolution = await resolveSpecifier(resolveHandlers, "@opentui/core")
-    const syncResolution = await resolveSpecifier(resolveHandlers, "fixture-sync")
-    const asyncResolution = await resolveSpecifier(resolveHandlers, "@fixture/async-module")
-
-    expect(coreResolution).toEqual({ path: runtimeModuleIdForSpecifier("@opentui/core") })
-    expect(syncResolution).toEqual({ path: runtimeModuleIdForSpecifier("fixture-sync") })
-    expect(asyncResolution).toEqual({ path: runtimeModuleIdForSpecifier("@fixture/async-module") })
-
-    if (!coreResolution || !syncResolution || !asyncResolution) {
-      throw new Error("Expected runtime module resolutions")
+    for (const [specifier, exports, bare] of [
+      ["@opentui/core", { marker: "core" }, enabled],
+      ["fixture-sync", { value: "sync-value" }, false],
+      ["@fixture/async-module", { value: "async-value" }, false],
+      ["./local.ts", { value: "local" }, false],
+    ] as const) {
+      const path = runtimeModuleIdForSpecifier(specifier)
+      expect(await resolveSpecifier(resolveHandlers, specifier)).toEqual({ path })
+      expect(await modules.get(path)?.()).toEqual({ exports, loader: "object" })
+      expect(await modules.get(specifier)?.()).toEqual(bare ? { exports, loader: "object" } : undefined)
     }
-
-    const coreModuleFactory = modules.get(coreResolution.path)
-    const syncModuleFactory = modules.get(syncResolution.path)
-    const asyncModuleFactory = modules.get(asyncResolution.path)
-
-    expect(coreModuleFactory).toBeDefined()
-    expect(syncModuleFactory).toBeDefined()
-    expect(asyncModuleFactory).toBeDefined()
-
-    if (!coreModuleFactory || !syncModuleFactory || !asyncModuleFactory) {
-      throw new Error("Expected runtime module factories")
-    }
-
-    expect(await coreModuleFactory()).toEqual({ exports: { marker: "core" }, loader: "object" })
-    expect(await syncModuleFactory()).toEqual({ exports: { value: "sync-value" }, loader: "object" })
-    expect(await asyncModuleFactory()).toEqual({ exports: { value: "async-value" }, loader: "object" })
   })
 
   it("escapes exact-match resolver filters for special characters", async () => {

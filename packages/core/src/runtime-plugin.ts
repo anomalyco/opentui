@@ -106,14 +106,6 @@ export const runtimeModuleIdForSpecifier = (specifier: string): string => {
   return `${RUNTIME_MODULE_PREFIX}${encodeURIComponent(specifier)}`
 }
 
-const resolveRuntimeModuleExports = async (moduleEntry: RuntimeModuleEntry): Promise<RuntimeModuleExports> => {
-  if (typeof moduleEntry === "function") {
-    return await moduleEntry()
-  }
-
-  return moduleEntry
-}
-
 const sourcePath = (path: string): string => {
   const searchIndex = path.indexOf("?")
   const hashIndex = path.indexOf("#")
@@ -460,16 +452,12 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
     runtimeModules.set(specifier, moduleEntry)
   }
 
-  const runtimeModuleIdsBySpecifier = new Map<string, string>()
-  for (const specifier of runtimeModules.keys()) {
-    runtimeModuleIdsBySpecifier.set(specifier, runtimeModuleIdForSpecifier(specifier))
-  }
-
   const isPreservedSpecifier = createPreservePredicate(input.preserve)
 
   return {
     name: "bun-plugin-opentui-runtime-modules",
     setup: (build) => {
+      const runtimeModuleIdsBySpecifier = new Map<string, string>()
       const resolveParentsByRecency: string[] = []
       const installedRewriteLoaders = new Set<string>()
       const nodeModulesBareRewritePackageRoots = new Set<string>()
@@ -602,18 +590,23 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
         return resolvedRewritePaths
       }
 
-      for (const [specifier, moduleEntry] of runtimeModules.entries()) {
-        const moduleId = runtimeModuleIdsBySpecifier.get(specifier)
-
-        if (!moduleId) {
-          continue
-        }
-
+      for (const [specifier, moduleEntry] of runtimeModules) {
+        const moduleId = runtimeModuleIdForSpecifier(specifier)
+        runtimeModuleIdsBySpecifier.set(specifier, moduleId)
         build.module(moduleId, async () => ({
-          exports: await resolveRuntimeModuleExports(moduleEntry),
+          exports: typeof moduleEntry === "function" ? await moduleEntry() : moduleEntry,
           loader: "object",
         }))
 
+        // Bare imports can bypass onResolve. A lazy loader may itself import this name.
+        if (
+          rewriteOptions.nodeModulesRuntimeSpecifiers &&
+          typeof moduleEntry !== "function" &&
+          isBareSpecifier(specifier) &&
+          !isPreservedSpecifier(specifier)
+        ) {
+          build.module(specifier, () => ({ exports: moduleEntry, loader: "object" }))
+        }
         build.onResolve({ filter: exactSpecifierFilter(specifier) }, () => ({ path: moduleId }))
       }
 
