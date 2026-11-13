@@ -105,125 +105,29 @@ describe("ExtmarksController - Multi-width Graphemes", () => {
       expect(lines).toEqual(expected)
     })
 
-    it("should correctly highlight text BEFORE multi-width characters", async () => {
-      await setup("hello 前后端分离")
-
+    // Offsets and highlight columns count cells, so they match around wide text. Marks rest on cursor stops: an
+    // offset inside a wide character moves to its start.
+    it.each<[string, number, number, number[]]>([
+      ["hello 前后端分离", 0, 5, [0, 5]],
+      ["前后 test 端分离", 5, 9, [5, 9]],
+      ["hello 前后端分离 world", 6, 16, [6, 16]],
+      ["前后 🌟 test", 8, 12, [8, 12]],
+      ["前后 test 端分离", 3, 11, [2, 10]],
+    ])("highlights %j from %d to %d", async (text, start, end, [column, endColumn]) => {
+      await setup(text)
       const style = SyntaxStyle.create(currentRenderer.nativeScene)
-      const styleId = style.registerStyle("test", {
-        fg: RGBA.fromValues(1, 0, 0, 1),
-      })
-
       textarea.syntaxStyle = style
-
-      // Highlight "hello" which is at offsets 0-5
-      extmarks.create({
-        start: 0,
-        end: 5,
-        styleId,
+      const id = extmarks.create({
+        start,
+        end,
+        styleId: style.registerStyle("test", { fg: RGBA.fromValues(1, 0, 0, 1) }),
       })
-
-      const highlights = textarea.getLineHighlights(0)
-
-      expect(highlights.length).toBe(1)
-      expect(highlights[0].start).toBe(0)
-      expect(highlights[0].end).toBe(5)
-    })
-
-    it("should correctly highlight BETWEEN multi-width characters", async () => {
-      await setup("前后 test 端分离")
-
-      const style = SyntaxStyle.create(currentRenderer.nativeScene)
-      const styleId = style.registerStyle("test", {
-        fg: RGBA.fromValues(1, 0, 0, 1),
-      })
-
-      textarea.syntaxStyle = style
-
-      // "前后 test 端分离"
-      // Offsets: 前=0, 后=1, space=2, t=3, e=4, s=5, t=6, space=7, 端=8, 分=9, 离=10
-      const testStart = 3
-      const testEnd = 7
-
-      extmarks.create({
-        start: testStart,
-        end: testEnd,
-        styleId,
-      })
-
-      const highlights = textarea.getLineHighlights(0)
-
-      if (highlights.length > 0) {
-        const lineText = textarea.plainText.split("\n")[0]
-        const actualHighlightedText = lineText.substring(highlights[0].start, highlights[0].end)
-        expect(actualHighlightedText).toBe("test")
-      }
-
-      expect(highlights.length).toBe(1)
-    })
-
-    it("should correctly highlight the multi-width characters themselves", async () => {
-      await setup("hello 前后端分离 world")
-
-      const style = SyntaxStyle.create(currentRenderer.nativeScene)
-      const styleId = style.registerStyle("test", {
-        fg: RGBA.fromValues(1, 0, 0, 1),
-      })
-
-      textarea.syntaxStyle = style
-
-      // "hello 前后端分离 world"
-      // Offsets: h=0,e=1,l=2,l=3,o=4,space=5,前=6,后=7,端=8,分=9,离=10,space=11,w=12...
-      const chineseStart = 6
-      const chineseEnd = 11
-
-      extmarks.create({
-        start: chineseStart,
-        end: chineseEnd,
-        styleId,
-      })
-
-      const highlights = textarea.getLineHighlights(0)
-
-      if (highlights.length > 0) {
-        const lineText = textarea.plainText.split("\n")[0]
-        const actualHighlightedText = lineText.substring(highlights[0].start, highlights[0].end)
-        expect(actualHighlightedText).toBe("前后端分离")
-      }
-
-      expect(highlights.length).toBe(1)
+      expect(textarea.getLineHighlights(0)).toMatchObject([{ start: column, end: endColumn }])
+      expect(extmarks.get(id)).toMatchObject({ start: column, end: endColumn })
     })
   })
 
   describe("Complex Multi-width Scenarios", () => {
-    it("should handle emoji and multi-width characters together", async () => {
-      await setup("前后 🌟 test")
-
-      const style = SyntaxStyle.create(currentRenderer.nativeScene)
-      const styleId = style.registerStyle("test", {
-        fg: RGBA.fromValues(1, 0, 0, 1),
-      })
-
-      textarea.syntaxStyle = style
-
-      // Highlight "test" at the end
-      const text = textarea.plainText
-      const testPos = text.indexOf("test")
-
-      extmarks.create({
-        start: testPos,
-        end: testPos + 4,
-        styleId,
-      })
-
-      const highlights = textarea.getLineHighlights(0)
-
-      expect(highlights.length).toBe(1)
-
-      const lineText = textarea.plainText.split("\n")[0]
-      const actualHighlightedText = lineText.substring(highlights[0].start, highlights[0].end)
-      expect(actualHighlightedText).toBe("test")
-    })
-
     it("should handle multiple highlights with multi-width characters", async () => {
       await setup("前后端 @user1 分离 @user2 end")
 
@@ -456,14 +360,15 @@ describe("ExtmarksController - Multi-width Graphemes", () => {
       expect(extmarks.get(id)).toBeNull()
     })
 
-    // Deleting the line break joins U+263A and U+FE0F into one 2-cell grapheme, so `Z` keeps its offset.
+    // Deleting the line break joins U+263A and U+FE0F into one 2-cell grapheme, so `Y` keeps its offset. A mark at 2
+    // would start at the zero-width U+FE0F, which joins the grapheme before it.
     it("Delete before a widening join keeps the marks after it", async () => {
-      await setup("\u263a\n\ufe0fZ")
-      const id = extmarks.create({ start: 2, end: 3 })
+      await setup("\u263a\n\ufe0fZY")
+      const id = extmarks.create({ start: 3, end: 4 })
       textarea.editBuffer.setCursor(0, 1)
       textarea.editBuffer.deleteChar()
-      expect(textarea.plainText).toBe("\u263a\ufe0fZ")
-      expect(extmarks.get(id)).toMatchObject({ start: 2, end: 3 })
+      expect(textarea.plainText).toBe("\u263a\ufe0fZY")
+      expect(extmarks.get(id)).toMatchObject({ start: 3, end: 4 })
     })
   })
 })

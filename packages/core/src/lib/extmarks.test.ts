@@ -694,6 +694,38 @@ describe("ExtmarksController", () => {
       expect(extmark?.start).toBe(0)
       expect(extmark?.end).toBe(3)
     })
+
+    // An edit that changes part of a virtual extmark drops it and changes exactly the text it asked for; a plain one
+    // grows or is clipped. Q1: insert inside; Q2: a range delete that cuts in; Q2b: a selection delete that cuts in.
+    it.each<[string, () => void, string, [number, number]]>([
+      [
+        "Q1 insert inside",
+        () => (textarea.editBuffer.setCursor(0, 8), textarea.editBuffer.insertText("X")),
+        "Hello WoXrld",
+        [6, 12],
+      ],
+      ["Q2 deleteRange", () => textarea.deleteRange(0, 4, 0, 8), "Hellrld", [4, 7]],
+      [
+        "Q2b selection delete",
+        () => (textarea.editorView.setSelection(4, 8), textarea.editorView.deleteSelectedText()),
+        "Hellrld",
+        [4, 7],
+      ],
+      [
+        "Q2b selection replace",
+        () => (textarea.editorView.setSelection(4, 8), textarea.editorView._replaceSelectedText("_")),
+        "Hell_rld",
+        [5, 8],
+      ],
+    ])("%s drops a virtual extmark and moves a plain one", async (_, edit, text, plain) => {
+      await setup("Hello World")
+      const virtual = extmarks.create({ start: 6, end: 11, virtual: true })
+      const id = extmarks.create({ start: 6, end: 11 })
+      edit()
+      expect(textarea.plainText).toBe(text)
+      expect(extmarks.get(virtual)).toBeNull()
+      expect(extmarks.get(id)).toMatchObject({ start: plain[0], end: plain[1] })
+    })
   })
 
   describe("Highlighting Integration", () => {
@@ -888,6 +920,35 @@ describe("ExtmarksController", () => {
       } finally {
         errors.mockRestore()
       }
+    })
+
+    // A typed key makes the same native calls whatever the number of styled marks after it.
+    it("should make the same FFI calls per key at 0, 10 and 40 styled marks", async () => {
+      const calls: number[] = []
+      for (const count of [0, 10, 40]) {
+        if (count) currentRenderer.destroy()
+        await setup("ab".repeat(40))
+        const style = SyntaxStyle.create(currentRenderer.nativeScene)
+        const styleId = style.registerStyle("link", { fg: RGBA.fromValues(0, 0, 1, 1) })
+        textarea.syntaxStyle = style
+        for (let i = 0; i < count; i++) extmarks.create({ start: 2 * i, end: 2 * i + 1, styleId })
+        textarea.focus()
+        textarea.cursorOffset = 0
+        const symbols = (currentRenderer.nativeScene.driver.renderLib as any).opentui.symbols
+        const originals = { ...symbols }
+        let made = 0
+        for (const name of Object.keys(originals))
+          symbols[name] = (...args: any[]) => (made++, originals[name](...args))
+        try {
+          currentMockInput.pressKey("X")
+          await new Promise((resolve) => setTimeout(resolve, 0))
+        } finally {
+          Object.assign(symbols, originals)
+        }
+        calls.push(made)
+        if (count) expect(extmarks.getAll().at(-1)).toMatchObject({ start: 2 * count - 1, end: 2 * count })
+      }
+      expect(calls).toEqual([calls[0], calls[0], calls[0]])
     })
   })
 
@@ -1568,7 +1629,7 @@ Press ESC to return to main menu.`
 
   describe("deleteLine() Operations", () => {
     // Offsets count display cells. Wide text and controls take more cells than string units, and the last line goes
-    // with the line break before it.
+    // with the line break before it. A mark past the text ends at its end, so deleting all of it drops the mark.
     it.each<[string, number, number, number, [number, number] | null, string]>([
       ["Line1\nLine2\nLine3", 3, 12, 17, [6, 11], "Line2\nLine3"],
       ["Line1\nLine2\nLine3", 8, 6, 11, null, "Line1\nLine3"],
@@ -1576,7 +1637,7 @@ Press ESC to return to main menu.`
       ["日日日\nxyz", 0, 7, 10, [0, 3], "xyz"],
       ["\f\f\f\nxyz", 0, 7, 10, [0, 3], "xyz"],
       ["ab\ncd", 4, 0, 3, [0, 2], "ab"],
-      ["\f\f", 2, 0, 6, [0, 2], ""],
+      ["\f\f", 2, 0, 6, null, ""],
     ])("deletes the line of %j at %d and moves [%d, %d) to %j", async (text, cursor, start, end, expected, rest) => {
       await setup(text)
       const id = extmarks.create({ start, end })

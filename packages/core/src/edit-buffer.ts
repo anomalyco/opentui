@@ -3,8 +3,10 @@ import {
   NativeEditPositionQuery,
   NativeEditorStyleMask,
   NativeEditHighlightOperation,
+  NativeEditMarkOperation,
   resolveRenderLib,
   type LogicalCursor,
+  type NativeEditMark,
   type RenderLib,
   type ContextEditBufferHandle,
   type NativeEditorStyle,
@@ -105,9 +107,13 @@ export class EditBuffer extends EventEmitter {
     this.lib.contextEditBufferSetDefaults(this.native.handle.context, this.native.handle, mask, style)
   }
 
+  /** @internal Called after text replacement drops the marks with the history, so nothing can restore them. */
+  public _onHistoryReset?: () => void
+
   private setNativeText(text: string, preserveHistory = false): void {
     const textBytes = this.lib.encoder.encode(text)
     this.lib.contextEditBufferSetText(this.native.handle.context, this.native.handle, textBytes, preserveHistory)
+    if (!preserveHistory) this._onHistoryReset?.()
   }
 
   /**
@@ -256,14 +262,16 @@ export class EditBuffer extends EventEmitter {
     return this.position(NativeEditPositionQuery.Eol)!
   }
 
-  /** @internal Extmarks read the end without moving the cursor. */
-  public _getEOF(): LogicalCursor {
-    return this.position(NativeEditPositionQuery.End)!
+  /** @internal Extmarks are stored in the native buffer, which moves them with edits, undo and redo. */
+  public _mark(operation: NativeEditMarkOperation, mark?: Partial<NativeEditMark>): number {
+    this.guard()
+    return this.lib.contextEditBufferMark(this.native.handle.context, this.native.handle, operation, mark)
   }
 
-  /** @internal Extmarks read where Left would move without moving the cursor. */
-  public _getPrevCharBoundary(): LogicalCursor {
-    return this.position(NativeEditPositionQuery.PrevChar)!
+  /** @internal */
+  public _getMarks(id?: number, kind?: number): NativeEditMark[] {
+    this.guard()
+    return this.lib.contextEditBufferGetMarks(this.native.handle.context, this.native.handle, id, kind)
   }
 
   public offsetToPosition(offset: number): { row: number; col: number } | null {
