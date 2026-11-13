@@ -10,6 +10,7 @@ import {
   parseMeasureMode,
   parseUnit,
   parseAlign,
+  parseAlignContent,
   parseAlignItems,
   parseFlexDirection,
   parseJustify,
@@ -353,112 +354,24 @@ describe("parseUnit", () => {
   })
 })
 
-describe("parseAlign", () => {
-  test("parses auto", () => {
-    expect(parseAlign("auto")).toBe(Align.Auto)
-  })
-
-  test("parses flex-start", () => {
-    expect(parseAlign("flex-start")).toBe(Align.FlexStart)
-  })
-
-  test("parses center", () => {
-    expect(parseAlign("center")).toBe(Align.Center)
-  })
-
-  test("parses flex-end", () => {
-    expect(parseAlign("flex-end")).toBe(Align.FlexEnd)
-  })
-
-  test("parses stretch", () => {
-    expect(parseAlign("stretch")).toBe(Align.Stretch)
-  })
-
-  test("parses baseline", () => {
-    expect(parseAlign("baseline")).toBe(Align.Baseline)
-  })
-
-  test("parses space-between", () => {
-    expect(parseAlign("space-between")).toBe(Align.SpaceBetween)
-  })
-
-  test("parses space-around", () => {
-    expect(parseAlign("space-around")).toBe(Align.SpaceAround)
-  })
-
-  test("parses space-evenly", () => {
-    expect(parseAlign("space-evenly")).toBe(Align.SpaceEvenly)
-  })
-
-  test("handles null", () => {
-    expect(parseAlign(null)).toBe(Align.Auto)
-  })
-
-  test("handles undefined", () => {
-    expect(parseAlign(undefined)).toBe(Align.Auto)
-  })
-
-  test("handles uppercase", () => {
-    expect(parseAlign("CENTER")).toBe(Align.Center)
-  })
-
-  test("returns default for invalid value", () => {
-    expect(parseAlign("invalid")).toBe(Align.Auto)
-  })
-})
-
-describe("parseAlignItems", () => {
-  test("parses auto", () => {
-    expect(parseAlignItems("auto")).toBe(Align.Auto)
-  })
-
-  test("parses flex-start", () => {
-    expect(parseAlignItems("flex-start")).toBe(Align.FlexStart)
-  })
-
-  test("parses center", () => {
-    expect(parseAlignItems("center")).toBe(Align.Center)
-  })
-
-  test("parses flex-end", () => {
-    expect(parseAlignItems("flex-end")).toBe(Align.FlexEnd)
-  })
-
-  test("parses stretch", () => {
-    expect(parseAlignItems("stretch")).toBe(Align.Stretch)
-  })
-
-  test("parses baseline", () => {
-    expect(parseAlignItems("baseline")).toBe(Align.Baseline)
-  })
-
-  test("parses space-between", () => {
-    expect(parseAlignItems("space-between")).toBe(Align.SpaceBetween)
-  })
-
-  test("parses space-around", () => {
-    expect(parseAlignItems("space-around")).toBe(Align.SpaceAround)
-  })
-
-  test("parses space-evenly", () => {
-    expect(parseAlignItems("space-evenly")).toBe(Align.SpaceEvenly)
-  })
-
-  test("returns Stretch for null", () => {
-    expect(parseAlignItems(null)).toBe(Align.Stretch)
-  })
-
-  test("returns Stretch for undefined", () => {
-    expect(parseAlignItems(undefined)).toBe(Align.Stretch)
-  })
-
-  test("handles uppercase", () => {
-    expect(parseAlignItems("CENTER")).toBe(Align.Center)
-  })
-
-  test("returns Stretch for invalid value", () => {
-    expect(parseAlignItems("invalid")).toBe(Align.Stretch)
-  })
+test.each([
+  ["auto", Align.Auto],
+  ["flex-start", Align.FlexStart],
+  ["center", Align.Center],
+  ["CENTER", Align.Center],
+  ["flex-end", Align.FlexEnd],
+  ["stretch", Align.Stretch],
+  ["baseline", Align.Baseline],
+  ["space-between", Align.SpaceBetween],
+  ["space-around", Align.SpaceAround],
+  ["space-evenly", Align.SpaceEvenly],
+  [null, undefined],
+  [undefined, undefined],
+  ["invalid", undefined],
+] as const)("alignment %s uses the named value or the property's default", (input, expected) => {
+  expect(parseAlign(input)).toBe(expected ?? Align.Auto)
+  expect(parseAlignItems(input)).toBe(expected ?? Align.Stretch)
+  expect(parseAlignContent(input)).toBe(expected ?? Align.FlexStart)
 })
 
 describe("parseFlexDirection", () => {
