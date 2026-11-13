@@ -576,6 +576,11 @@ impl Incremental {
         }
     }
 
+    /// Whether the filetype has a grammar that compiles, as [`Self::update`] needs.
+    pub(crate) fn has_grammar(&self) -> bool {
+        prewarm(&self.filetype)
+    }
+
     /// The text highlighted last.
     pub(crate) fn text(&self) -> &str {
         &self.text[..self.text.len() - usize::from(self.padded)]

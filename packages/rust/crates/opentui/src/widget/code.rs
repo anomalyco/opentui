@@ -226,13 +226,18 @@ impl CodeInner {
     fn highlight_now(&self) {
         let filetype = self.filetype.borrow();
         let Some(filetype) = filetype.as_deref() else { return };
+        let mut incremental = Incremental::new(filetype);
+        // Plain text stays plain without copying it.
+        if !incremental.has_grammar() {
+            return self.highlighted.set(None);
+        }
         let source = self.source.borrow().clone();
         #[cfg(test)]
         {
             self.work.set((self.work.get().0 + 1, self.work.get().1));
             self.handed.set(self.handed.get() + source.len());
         }
-        let (len, mut incremental) = (source.len(), Incremental::new(filetype));
+        let len = source.len();
         match incremental.update(source) {
             Some(named) => self.keep(incremental, named, len),
             None => self.highlighted.set(None),
@@ -834,7 +839,8 @@ pub(crate) mod tests {
                     let since = (code.0.handed.get() - replaced, own.as_ref().map(|own| own.fresh_parses));
                     assert_eq!(since, (source.len(), Some(1)), "seed {seed}: highlights since {source:?} was replaced");
                 } else if settled {
-                    assert!(own.is_none(), "seed {seed}: plain text keeps a tree");
+                    // Without a grammar nothing is copied for a highlight (bigboi-2).
+                    assert_eq!((own.is_none(), code.0.handed.get()), (true, replaced), "seed {seed}: plain text");
                 }
                 let paint = |ranges: Vec<(std::ops::Range<usize>, Style)>| {
                     let mut spans: Vec<Span<'static>> = ranges

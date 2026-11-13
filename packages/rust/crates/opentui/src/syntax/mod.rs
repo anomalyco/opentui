@@ -312,6 +312,10 @@ impl Incremental {
         Self
     }
 
+    pub(crate) fn has_grammar(&self) -> bool {
+        false
+    }
+
     pub(crate) fn text(&self) -> &str {
         ""
     }
