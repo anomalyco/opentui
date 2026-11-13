@@ -79,7 +79,7 @@ use crate::layout::{
     Align, Display, Edge, FlexDirection, Gutter, Justify, LayoutMode, LayoutProperty, Length, Overflow, PositionType,
     Rect, Wrap,
 };
-use crate::native::{BoxDetails, Hooks, Node, NodeKind, Observation, Paint, SelectionUnit, TextOptions};
+use crate::native::{BoxDetails, BoxSides, Hooks, Node, NodeKind, Observation, Paint, SelectionUnit, TextOptions};
 use crate::post::{Filter, FilterCell, FilterId};
 use crate::style::{Alignment, Color};
 use std::cell::{Cell, RefCell};
@@ -295,6 +295,7 @@ pub struct Element {
     /// values above no longer show its state and setters write even an equal value.
     bypassed: Cell<bool>,
     titles: RefCell<Titles>,
+    box_sides: Cell<BoxSides>,
     /// The hooks the widget itself registers; filters add [`Hooks::RENDER_BEFORE`] to learn the painted area.
     hooks: Cell<Hooks>,
     registered: Cell<Hooks>,
@@ -332,6 +333,7 @@ impl Element {
             text_options: Cell::new(TextOptions::default()),
             bypassed: Cell::new(false),
             titles: RefCell::new(Titles::default()),
+            box_sides: Cell::new(BoxSides::default()),
             hooks: Cell::new(Hooks::NONE),
             registered: Cell::new(Hooks::NONE),
             hook_generation: Cell::new(0),
@@ -423,6 +425,15 @@ impl Element {
         }
         self.text_options.set(options);
         self.apply(|node| node.set_text_options(&options));
+    }
+
+    pub(crate) fn update_box_sides(&self, change: impl FnOnce(BoxSides) -> BoxSides) {
+        let sides = change(self.box_sides.get());
+        if self.cached() && sides == self.box_sides.get() {
+            return;
+        }
+        self.box_sides.set(sides);
+        self.apply(|node| node.set_box_sides(&sides));
     }
 
     pub(crate) fn update_titles(&self, change: impl FnOnce(&mut Titles)) {

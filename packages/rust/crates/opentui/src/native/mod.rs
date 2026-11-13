@@ -48,8 +48,8 @@ pub(crate) use markdown::{MarkdownBlock, MarkdownDoc, MarkdownLeaf, MarkdownOpti
 pub(crate) use measure::resume_measure_panic;
 pub use measure::{Constraint, Measure};
 pub use node::{
-    ArrowDirection, ArrowOptions, BoxDetails, Node, NodeKind, Observation, Paint, SliderOptions, TextInfo, TextOptions,
-    WrapMode,
+    ArrowDirection, ArrowOptions, BoxDetails, BoxSides, Node, NodeKind, Observation, Paint, SliderOptions, TextInfo,
+    TextOptions, WrapMode,
 };
 pub use record::{BoxSpec, GridSpec, Phase, Recorder};
 pub(crate) use resource::Resource;

@@ -84,6 +84,34 @@ impl View {
         self.clone()
     }
 
+    /// The border style of each side in `sides`, over the style [`Self::border`] set; `None` lets them take that
+    /// style again. It draws no side: [`Self::border`] and [`Self::border_sides`] choose which sides draw.
+    ///
+    /// Where sides of unlike styles meet, the corner takes Unicode's mixed single/double or light/heavy glyph
+    /// (rounded lines are light), otherwise the top or bottom side's corner. Glyphs from [`Self::border_chars`] win.
+    ///
+    /// ```no_run
+    /// # use opentui::prelude::*;
+    /// # let app = App::new(AppOptions::default())?;
+    /// // ╒══════╕
+    /// // │      │
+    /// // └──────┘
+    /// let panel = View::new(&app).border(BorderStyle::Single).border_style_for(Sides::TOP, Some(BorderStyle::Double));
+    /// # Ok::<(), opentui::Error>(())
+    /// ```
+    pub fn border_style_for(&self, sides: Sides, style: Option<BorderStyle>) -> Self {
+        self.0.element.update_box_sides(|box_sides| box_sides.style(sides, style));
+        self.clone()
+    }
+
+    /// The border color of each side in `sides`, over [`Self::border_color`]; `None` lets them take that color
+    /// again. A corner takes its top or bottom side's color; a title without [`Self::title_color`] takes its own
+    /// side's. While focused, [`Self::focus_border_color`] colors every side.
+    pub fn border_color_for(&self, sides: Sides, color: Option<Color>) -> Self {
+        self.0.element.update_box_sides(|box_sides| box_sides.color(sides, color));
+        self.clone()
+    }
+
     /// The border color while this view or a descendant has focus. Makes the view track focus.
     pub fn focus_border_color(&self, color: Color) -> Self {
         self.0.element.update_paint(|paint| {
