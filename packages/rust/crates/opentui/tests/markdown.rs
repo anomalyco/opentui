@@ -541,6 +541,17 @@ fn clicks_on_hook_targets_reach_the_app_without_hyperlinks() {
     drop(owner);
 }
 
+#[test]
+fn selecting_a_wrapped_fence_line_copies_the_line() {
+    let app = TestApp::new(24, 4);
+    let markdown = Markdown::new(&app);
+    app.root().add(&markdown);
+    markdown.set_markdown("> ```sh\n> one two three four five six\n> ```\n");
+    assert_eq!(frame(&app), "│ one two three four\n│ five six\n");
+    app.drag((2, 0), (9, 1));
+    assert_eq!(app.app().selected_text().as_deref(), Some("one two three four five six"));
+}
+
 /// Checks [`Markdown::target_at`] at every cell of `capture`: a cell answers exactly when it draws an underlined
 /// grapheme, which the hooks here give only target spans, and then with `id` of the cell's row.
 fn assert_targets(capture: &Capture, markdown: &Markdown, id: impl Fn(&str) -> &'static str) {
