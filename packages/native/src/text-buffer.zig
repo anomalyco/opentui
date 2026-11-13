@@ -1407,8 +1407,11 @@ pub const UnifiedTextBuffer = struct {
         return self.mem_registry.register(data, owned);
     }
 
+    /// The text reading the slot changes under the layers, so they empty as on a whole-text change.
     pub fn replaceMemBuffer(self: *Self, mem_id: u8, data: []const u8, owned: bool) TextBufferError!void {
         try self.mem_registry.replace(mem_id, data, owned);
+        self.resetLayers();
+        self.span_generation += 1;
     }
 
     pub fn clearMemRegistry(self: *Self) void {
@@ -1892,7 +1895,7 @@ pub const UnifiedTextBuffer = struct {
     /// needs no memory (Markdown writes reserve it before they change the text).
     pub fn reserveLayer(self: *Self, layer_id: u32, run_count: usize) TextBufferError!std.ArrayListUnmanaged(LayerRun) {
         var spare: std.ArrayListUnmanaged(LayerRun) = .empty;
-        spare.ensureTotalCapacity(self.global_allocator, run_count + self.layers.runCount(layer_id) + 2) catch return TextBufferError.OutOfMemory;
+        spare.ensureTotalCapacity(self.global_allocator, run_count + self.layers.runsOf(layer_id).len + 2) catch return TextBufferError.OutOfMemory;
         return spare;
     }
 
@@ -1906,9 +1909,16 @@ pub const UnifiedTextBuffer = struct {
         for ([_]u32{ start_byte, end_byte }) |edge| {
             if (edge < byte_count and !self.isCharBoundary(edge)) return TextBufferError.InvalidIndex;
         }
+        // A run the layer already holds lies on boundaries, so setting a layer again seeks only
+        // the edges that changed.
+        const old = self.layers.runsOf(layer_id);
+        var held = hl.Layers.firstEndingAfter(old, start_byte);
         for (runs) |run| {
             if (run.group_set == 0 or run.group_set > sets.count()) return TextBufferError.InvalidId;
             if (run.end_byte > byte_count) return TextBufferError.InvalidIndex;
+            while (held < old.len and old[held].end_byte <= run.start_byte) : (text_work.add(.layer_runs_walked, 1)) held += 1;
+            if (held < old.len and old[held].start_byte == run.start_byte and old[held].end_byte == run.end_byte) continue;
+            text_work.add(.layer_run_seeks, 1);
             if (!self.isCharBoundary(run.start_byte) or !self.isCharBoundary(run.end_byte)) return TextBufferError.InvalidIndex;
         }
         const changed = self.layers.setWithSpare(self.global_allocator, self.link_pool, layer_id, start_byte, end_byte, runs, spare) catch |err| return switch (err) {
