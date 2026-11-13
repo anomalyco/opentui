@@ -182,7 +182,8 @@ export function treeSitterToTextChunks(
         // A theme that defines neither `markup.strikethrough` nor `markup` strikes it with the default's colors here;
         // native adds only the attribute, so the default goes before it.
         const strikes = (group: string) =>
-          group === "markup.strikethrough" && !syntaxStyle.getRegisteredNames().some((name) => name === group || name === "markup")
+          group === "markup.strikethrough" &&
+          !syntaxStyle.getRegisteredNames().some((name) => name === group || name === "markup")
         options?.names?.push(
           merged ? sortedGroups.flatMap(({ group }) => (strikes(group) ? ["default", group] : [group])) : ["default"],
         )

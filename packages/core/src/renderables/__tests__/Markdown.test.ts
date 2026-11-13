@@ -4307,7 +4307,12 @@ test("a streamed fence sends the appends made during a reply as one delta", asyn
       (held: MarkdownRenderable) => (held.content = "```ts\nlet c"),
       (held: MarkdownRenderable) => (held.concealCode = true),
     ]) {
-      const held = createMarkdownRenderable({ content: "```js\nlet c", syntaxStyle, streaming: true, treeSitterClient: client })
+      const held = createMarkdownRenderable({
+        content: "```js\nlet c",
+        syntaxStyle,
+        streaming: true,
+        treeSitterClient: client,
+      })
       renderer.root.add(held)
       await renderOnce()
       change(held)
@@ -4386,7 +4391,9 @@ test("a streamed fence paints as a fresh highlight at every step", async () => {
         await twin.renderOnce()
         expect({ label, step, spans: captureSpans().lines }).toEqual({ label, step, spans: twin.captureSpans().lines })
         if (step === 0 && label.startsWith("seed")) {
-          expect(captureSpans().lines[0]!.spans.some((span) => span.text === "const" && span.fg.equals(keyword))).toBe(true)
+          expect(captureSpans().lines[0]!.spans.some((span) => span.text === "const" && span.fg.equals(keyword))).toBe(
+            true,
+          )
         }
         fresh.destroy()
       }

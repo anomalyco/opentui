@@ -486,7 +486,9 @@ describeClient("TreeSitterClient", () => {
       "createBuffer whose first parse returns null",
       async (c) => {
         expect(await c.createBuffer(1, "null-parse", "javascript", 1)).toBe(false)
-        expect(await c.highlightAppend(7, 0, "null-parse", "javascript")).toMatchObject({ error: "Failed to parse buffer" })
+        expect(await c.highlightAppend(7, 0, "null-parse", "javascript")).toMatchObject({
+          error: "Failed to parse buffer",
+        })
         return ["Failed to parse buffer"]
       },
     ],
@@ -528,9 +530,9 @@ describeClient("TreeSitterClient", () => {
         // Waits on the same grammar loads, so a buffer pass suspended on them has resumed before the count. It also
         // leaves the four cached parsers: markdown, markdown_inline, typescript and zig.
         await within3s(c.highlightOnce(mdZig, "markdown"))
-        const trees = (await within3s(Promise.all([c.getPerformance(), treeCount]).then(([, count]) => count))) as {
-          reused: number
-        }
+        const trees = (await within3s(
+          Promise.all([c.getPerformance(), treeCount]).then(([, count]) => count),
+        )) as Record<"live" | "freedReads" | "parsers" | "reused", number>
         expect({ removed, errors, trees }).toEqual({
           removed: undefined,
           errors: expectedErrors,
