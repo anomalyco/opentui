@@ -7,12 +7,11 @@ use crate::app::{App, Cx};
 use crate::error::Result;
 use crate::input::{KeyEvent, Keymap, MouseEvent, MouseEventKind};
 use crate::native::{
-    EditBuffer, EditCommand, EditQuery, EditorOptions, EditorQuery, EditorView, Highlight, Hooks, LayerRun, NodeKind,
+    EditBuffer, EditCommand, EditQuery, EditorOptions, EditorQuery, EditorView, Highlight, Hooks, NodeKind,
     SelectionColors, SelectionUnit, SyntaxStyle, Viewport, WrapMode,
 };
 use crate::style::{Color, Span, Style};
 use crate::syntax::{self, SyntaxTheme};
-use crate::sys;
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::rc::Rc;
@@ -921,23 +920,6 @@ impl EditorCore {
         Some(id)
     }
 
-    /// The group set of a piece's capture names, registered first with the table's palette. A name over the
-    /// group-set name bound is left out, and past the name count bound the outermost names go. Past the Context's
-    /// group-set bound there is none, and the piece paints plain rather than ending the app.
-    fn group_set(&self, names: Vec<&'static str>) -> Option<u32> {
-        if let Some(&id) = self.extmarks.borrow().group_sets.get(&names) {
-            return Some(id);
-        }
-        self.report(self.table()?.register_captures(&names))?;
-        let prefixed: Vec<String> = (names.iter().map(|name| format!("opentui.{name}")))
-            .filter(|name| name.len() <= sys::OT_GROUP_SET_NAME_BYTE_COUNT_MAX as usize)
-            .collect();
-        let kept = &prefixed[prefixed.len().saturating_sub(sys::OT_GROUP_SET_NAME_COUNT_MAX as usize)..];
-        let id = self.buffer.context().group_set(&kept.iter().map(String::as_str).collect::<Vec<_>>()).ok()?;
-        self.extmarks.borrow_mut().group_sets.insert(names, id);
-        Some(id)
-    }
-
     /// Uses `style` as the buffer's style table, registering extmark and syntax styles in it as needed.
     pub fn set_syntax_style(&self, style: &SyntaxStyle) {
         self.report(self.buffer.set_syntax_style(Some(style)));
@@ -947,9 +929,9 @@ impl EditorCore {
             extmarks.styles.clear();
         }
         // The table takes this editor's theme and names; editors sharing it paint the theme set last.
-        let names: Vec<&'static str> = self.extmarks.borrow().group_sets.keys().flatten().copied().collect();
+        let lists = self.extmarks.borrow().group_sets.lists();
         self.report(style.set_capture_theme(&self.syntax_theme.borrow()));
-        self.report(style.register_captures(&names));
+        lists.iter().for_each(|names| drop(self.report(style.capture_group(names))));
         self.refresh_extmarks();
     }
 
@@ -1035,13 +1017,14 @@ impl EditorCore {
             return;
         }
         let text = self.text();
-        let (lists, pieces) = syntax::highlight_names(&text, filetype).unwrap_or_default();
-        let sets: Vec<Option<u32>> = lists.into_iter().map(|names| self.group_set(names)).collect();
-        let runs: Vec<LayerRun> = (pieces.into_iter())
-            .filter_map(|(range, list)| {
-                Some(LayerRun { start_byte: range.start as u32, end_byte: range.end as u32, group_set: sets[list]? })
-            })
-            .collect();
+        let named = syntax::highlight_names(&text, filetype).unwrap_or_default();
+        // Without pieces the editor makes no table, so one the app bound on the buffer stays.
+        let table = if named.0.is_empty() { None } else { self.table() };
+        let runs = match table {
+            Some(table) => self.extmarks.borrow_mut().group_sets.runs(&table, self.buffer.context(), named, |at| at),
+            None => Ok(Vec::new()),
+        };
+        let Some(runs) = self.report(runs) else { return };
         self.report(self.buffer.set_layer(extmarks::SYNTAX_LAYER, 0..u32::MAX, &runs));
     }
 
@@ -1160,6 +1143,8 @@ impl Behavior for EditorCore {
 #[cfg(all(test, feature = "tree-sitter"))]
 mod tests {
     use super::*;
+    use crate::native::LayerRun;
+    use crate::sys;
     use crate::testing::TestApp;
     use crate::widget::{Container, Textarea, Widget};
     use std::collections::HashMap;
@@ -1385,18 +1370,18 @@ mod tests {
         assert_eq!(app.render().cell(0, 0).unwrap().fg, Color::GREEN);
     }
 
-    // A list of capture names past the group-set bounds still paints: a name over the byte bound is left out, and
-    // past the name count bound the outermost names go (`default` first), so the innermost capture keeps its style.
+    // A list of capture names past the group-set bounds keeps every style, in the editor and in `Code`: a name over
+    // the byte bound, or more names than a group set holds, paint as one name for the whole list (bigboi-4).
     #[test]
-    fn capture_lists_past_the_group_set_bounds_drop_names_not_pieces() {
+    fn capture_lists_past_the_group_set_bounds_keep_their_styles() {
         let bytes = sys::OT_GROUP_SET_NAME_BYTE_COUNT_MAX as usize - "opentui.".len();
         let count = sys::OT_GROUP_SET_NAME_COUNT_MAX as usize - 1;
         let default = Style::new().fg(Color::BLUE);
         for (captures, want) in [
             (vec!["n".repeat(bytes)], Style::new().fg(Color::RED)),
-            (vec!["n".repeat(bytes + 1)], default),
+            (vec!["n".repeat(bytes + 1)], Style::new().fg(Color::RED)),
             ((1..=count).map(|index| format!("c{index}")).collect(), default.bold()),
-            ((1..=count + 1).map(|index| format!("c{index}")).collect(), Style::new().bold()),
+            ((1..=count + 1).map(|index| format!("c{index}")).collect(), default.bold()),
         ] {
             let query: String = captures.iter().map(|name| format!("(\"let\" @{name})")).collect();
             let filetype = format!("g7-bounds-{}-{}", captures.len(), captures[0].len());
@@ -1405,20 +1390,26 @@ mod tests {
             let last = captures.last().unwrap();
             let style = if captures.len() == 1 { Style::new().fg(Color::RED) } else { Style::new().bold() };
             let theme = SyntaxTheme::new().style("default", default).style(last.as_str(), style);
-            let app = TestApp::new(20, 1);
-            let area = Textarea::new(&app).filetype(filetype.as_str()).syntax_theme(theme).grow(1.0);
+            let app = TestApp::new(20, 2);
+            // Highlighted first under a theme without these styles, then switched to it.
+            let area = Textarea::new(&app).filetype(filetype.as_str()).syntax_theme(SyntaxTheme::new()).height(1);
             area.set_text("let a = 1;");
-            app.root().add(&area);
+            let code = crate::widget::Code::new(&app).filetype(filetype.as_str()).syntax_theme(SyntaxTheme::new());
+            app.root().add(&area).add(&code.set_code("let a = 1;").height(1));
+            app.render();
+            area.syntax_theme(theme.clone());
+            code.syntax_theme(theme);
             let capture = app.render();
-            let cell = capture.cell(0, 0).unwrap();
             let fg = want.fg.unwrap_or(app.theme().foreground);
-            assert_eq!(
-                (cell.fg, cell.attributes),
-                (fg, want.attributes),
-                "{} names of {} bytes",
-                captures.len(),
-                last.len()
-            );
+            for row in 0..2 {
+                let cell = capture.cell(0, row).unwrap();
+                let (count, bytes) = (captures.len(), last.len());
+                assert_eq!(
+                    (cell.fg, cell.attributes),
+                    (fg, want.attributes),
+                    "row {row}: {count} names of {bytes} bytes"
+                );
+            }
         }
     }
 

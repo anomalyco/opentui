@@ -29,11 +29,12 @@ fn encode_style(style: Style) -> sys::ot_editor_style {
 #[derive(Clone)]
 pub struct SyntaxStyle(Rc<Resource>, Rc<RefCell<CapturePalette>>);
 
-/// The syntax theme an editor last set on a table, and the capture names registered from it.
+/// The syntax theme an editor last set on a table, and the capture names and whole lists registered from it.
 #[derive(Default)]
 struct CapturePalette {
     theme: SyntaxTheme,
     names: BTreeSet<&'static str>,
+    lists: BTreeSet<Vec<&'static str>>,
 }
 
 impl SyntaxStyle {
@@ -55,7 +56,30 @@ impl SyntaxStyle {
         }
         self.1.borrow_mut().theme = theme.clone();
         self.1.borrow().names.iter().try_for_each(|name| self.register_capture(name).map(drop))?;
+        self.1.borrow().lists.iter().try_for_each(|names| self.register_list(names).map(drop))?;
         Ok(true)
+    }
+
+    /// The style names a group set of the capture-name list `names` composes, registered with the palette:
+    /// `opentui.<name>` for each, or, for a list past the group-set bounds, one name for the whole list with its
+    /// merged style, so no style is lost.
+    pub(crate) fn capture_group(&self, names: &[&'static str]) -> Result<Vec<String>> {
+        let prefixed: Vec<String> = names.iter().map(|name| format!("opentui.{name}")).collect();
+        let bytes = sys::OT_GROUP_SET_NAME_BYTE_COUNT_MAX as usize;
+        if names.len() <= sys::OT_GROUP_SET_NAME_COUNT_MAX as usize && prefixed.iter().all(|name| name.len() <= bytes) {
+            self.register_captures(names)?;
+            return Ok(prefixed);
+        }
+        if !self.1.borrow().lists.contains(names) {
+            self.register_list(names)?;
+            self.1.borrow_mut().lists.insert(names.to_vec());
+        }
+        Ok(vec![list_name(names)])
+    }
+
+    fn register_list(&self, names: &[&'static str]) -> Result<u32> {
+        let style = self.1.borrow().theme.merge(names.iter().copied());
+        self.register(&list_name(names), style)
     }
 
     /// Registers the capture names the table has not seen as `opentui.<name>`, with its palette's style.
@@ -103,6 +127,14 @@ impl SyntaxStyle {
         })?;
         Ok((id != 0).then_some(id))
     }
+}
+
+/// The style name of a capture-name list past the group-set bounds: the same in every table.
+fn list_name(names: &[&str]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    names.hash(&mut hasher);
+    format!("opentui.~{:016x}", hasher.finish())
 }
 
 /// A highlight over a range of display columns.
