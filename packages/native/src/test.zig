@@ -13,6 +13,7 @@ const text_buffer_segment_tests = @import("tests/text-buffer-segment_test.zig");
 const text_buffer_iterators_tests = @import("tests/text-buffer-iterators_test.zig");
 const edit_buffer_tests = @import("tests/edit-buffer_test.zig");
 const edit_buffer_history_tests = @import("tests/edit-buffer-history_test.zig");
+const edit_marks_tests = @import("tests/edit-marks_test.zig");
 const editor_view_tests = @import("tests/editor-view_test.zig");
 const grapheme_tests = @import("tests/grapheme_test.zig");
 const link_tests = @import("tests/link_test.zig");
@@ -112,6 +113,7 @@ comptime {
     _ = text_buffer_iterators_tests;
     _ = edit_buffer_tests;
     _ = edit_buffer_history_tests;
+    _ = edit_marks_tests;
     _ = editor_view_tests;
     _ = grapheme_tests;
     _ = link_tests;

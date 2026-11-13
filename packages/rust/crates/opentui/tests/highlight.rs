@@ -104,6 +104,15 @@ fn extmark_styles_draw_over_highlighting() {
     let area = rust_area(&app, "let a = 1;");
     area.add_extmark(0..3, ExtmarkOptions::default().style(Style::new().fg(Color::CYAN)));
     assert_eq!(fg(&app, 0, 0), Color::CYAN);
+    // A new style table keeps the mark's color, and so does the undo that brings back a deleted mark.
+    area.syntax_style(&opentui::native::SyntaxStyle::new(app.session().context()).unwrap());
+    assert_eq!(fg(&app, 0, 0), Color::CYAN);
+    area.focus();
+    area.set_cursor_offset(3);
+    (0..3).for_each(|_| app.press("backspace"));
+    assert_eq!((area.text().as_str(), area.extmarks().len()), (" a = 1;", 0));
+    (0..3).for_each(|_| app.press("ctrl+-"));
+    assert_eq!(fg(&app, 0, 0), Color::CYAN);
     area.clear_extmarks();
     assert_eq!(fg(&app, 0, 0), syntax_fg(&app, "keyword"));
 }

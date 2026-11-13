@@ -126,6 +126,8 @@ Public members:
 | `getActiveCamera()` / `setActiveCamera(camera)` | Read or replace the active camera             |
 | `setAutoAspect(enabled)`                        | Enable or disable perspective aspect updates  |
 
+Writing `view.aspectRatio` sets the Yoga layout ratio. Read that value with `view.getAspectRatio()`.
+
 Base renderable cleanup runs first. `destroySelf()` then removes the frame callback and calls
 `ThreeCliRenderer.destroy()`.
 

@@ -148,7 +148,7 @@ fn newlines(metrics: *const UnifiedRope.Metrics) u32 {
     return metrics.custom.newline_count;
 }
 
-fn weight(metrics: *const UnifiedRope.Metrics) u32 {
+pub fn weight(metrics: *const UnifiedRope.Metrics) u32 {
     return metrics.weight();
 }
 
