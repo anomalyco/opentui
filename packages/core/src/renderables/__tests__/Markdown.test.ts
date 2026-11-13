@@ -4204,6 +4204,12 @@ test.each([1024, 4096])("a %i-byte streamed fence sends work linear in its size"
     expect([counts.oneshots, counts.disposes]).toEqual([1, 1])
     expect(counts.units).toBeLessThanOrEqual(2.2 * n)
     expect(counts.bytes).toBeLessThanOrEqual(2.2 * n)
+    // A fence destroyed while it streams frees its copy too.
+    const open = createMarkdownRenderable({ content: doc.slice(0, 64), syntaxStyle, streaming: true })
+    renderer.root.add(open)
+    await renderMarkdownRenderable(open, true)
+    open.destroyRecursively()
+    expect(counts.disposes).toBe(2)
   } finally {
     restore()
   }
