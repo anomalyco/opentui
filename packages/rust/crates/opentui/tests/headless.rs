@@ -156,13 +156,15 @@ fn timers_fire_on_the_real_clock() {
 }
 
 /// Where the timer that ends a run is armed: while a widget paints, from a task it defers while painting, from an
-/// animation such a task starts, or from a timer callback.
+/// animation such a task starts, from a timer callback, or by the animation clock for a spinner that starts ticking
+/// on the widget while it paints.
 #[derive(Clone, Copy, Debug)]
 enum Arm {
     Paint,
     Defer,
     Animate,
     Timer,
+    Tick,
 }
 
 /// A widget that arms a timer the first time it paints.
@@ -170,6 +172,9 @@ struct Arming {
     app: App,
     arm: Arm,
     armed: Cell<bool>,
+    /// The widget itself, for [`Arm::Tick`], and its spinner.
+    widget: RefCell<Option<AnyWidget>>,
+    spinner: RefCell<Option<AnimationTick>>,
 }
 
 /// Arms a 20 ms timer that quits.
@@ -190,6 +195,17 @@ impl Component for Arming {
                 })
             }),
             Arm::Timer => {}
+            Arm::Tick => {
+                let widget = self.widget.take().expect("the widget");
+                let mut ticks = 0;
+                *self.spinner.borrow_mut() = Some(widget.on_animation_tick(50.0, move |cx, tick| {
+                    ticks += tick.ticks;
+                    if ticks >= 3 {
+                        cx.quit();
+                    }
+                    cx.request_redraw();
+                }));
+            }
         }
     }
 }
@@ -209,8 +225,10 @@ fn timers_armed_while_painting_fire_on_time() {
             if let Arm::Timer = arm {
                 app.set_timeout(Duration::ZERO, |cx| arm_quit(cx.app()));
             }
-            let arming = Arming { app: app.clone(), arm, armed: Cell::new(false) };
-            app.root().add(&Custom::new(&app, arming).height(1).grow(1.0));
+            let (widget, spinner) = (RefCell::new(None), RefCell::new(None));
+            let arming = Custom::new(&app, Arming { app: app.clone(), arm, armed: Cell::new(false), widget, spinner });
+            arming.with(|component| *component.widget.borrow_mut() = Some(arming.as_any()));
+            app.root().add(&arming.height(1).grow(1.0));
             app.run()
         };
         let started = Instant::now();
@@ -224,7 +242,7 @@ fn timers_armed_while_painting_fire_on_time() {
     };
     let rows = [false, true]
         .into_iter()
-        .flat_map(|remote| [Arm::Paint, Arm::Defer, Arm::Animate, Arm::Timer].map(|arm| (arm, remote)));
+        .flat_map(|remote| [Arm::Paint, Arm::Defer, Arm::Animate, Arm::Timer, Arm::Tick].map(|arm| (arm, remote)));
     let late: Vec<_> = rows.filter(late).collect();
     assert!(late.is_empty(), "{late:?}");
 }

@@ -1,0 +1,34 @@
+{
+  "format": [
+    "Animation tick conformance vectors. Core (renderer.scheduling.test.ts) and Rust (tests/animation.rs) run this file.",
+    "Each subscriber requests a frame in its tick, on a manual clock that steps 1 ms at a time, with frames at up to 60 per second.",
+    "A frame row is [name, rates, offsets, options, frames, ticks]: subscribers at rates (fps) mounted at offsets (ms) count frames and ticks per second over the 5 s after the first. Slower subscribers tick up to half an interval late, so close rates that never align share frames.",
+    "options: tolerance (ms) and early (timers fire 1 ms early) are Core only: Rust has no tolerance option and its timers fire on time. live adds a frame source at the frame rate cap: Core's requestLive, Rust's animate.",
+    "rust: Rust's [frames, ticks] where the frame rate cap decides them. Core's manual clock floors timer delays to whole ms, so its 60 fps cap paces frames 16 ms apart; Rust's paces them 1/60 s apart.",
+    "bound: trials of random rates, mount offsets and content frames from a Park-Miller generator; frames per second never exceed the fastest rate (at most 60) plus the content frames alone, and each subscriber gets its rate within 1 tick per second."
+  ],
+  "frames": [
+    ["idle", [], [], {}, 0, []],
+    ["one at 20 fps", [20], [0], {}, 20, [20]],
+    ["one at 12.5 fps", [12.5], [0], {}, 12.6, [12.6]],
+    ["issue 350: 20, 12.5 and 10 fps share the 20 fps frames", [20, 12.5, 10], [0, 17, 31], {}, 20, [20, 12.4, 10]],
+    ["10 and 12.5 fps", [10, 12.5], [0, 23], {}, 12.6, [10, 12.6]],
+    ["25 and 20 fps", [25, 20], [0, 9], {}, 25, [25, 20]],
+    ["equal rates mounted apart tick together", [12.5, 12.5], [0, 30], {}, 12.6, [12.6, 12.6]],
+    ["OpenCode's spinners", [25, 12.5, 12.5], [0, 13, 57], {}, 25, [25, 12.4, 12.4]],
+    ["tolerance 0 keeps exact due times", [20, 12.5, 10], [0, 17, 31], { "tolerance": 0 }, 30, [20, 12.6, 10]],
+    ["tolerance 0 with timers that fire 1 ms early", [20], [0], { "tolerance": 0, "early": true }, 20, [20]],
+    ["close rates 20, 19 and 18 fps", [20, 19, 18], [0, 7, 13], {}, 20, [20, 19, 18]],
+    ["close rates 25, 24 and 23 fps", [25, 24, 23], [0, 7, 13], {}, 25, [25, 24, 23]],
+    ["above maxFps, ticks arrive as counts", [100], [0], { "rust": [60, [100]] }, 62.6, [100.2]],
+    ["a live loop adds no frames for ticks", [20], [0], { "live": true, "rust": [60, [20]] }, 62.4, [20]]
+  ],
+  "bound": {
+    "seed": 350,
+    "trials": 12,
+    "seconds": 2,
+    "bases": [50, 25, 20, 12.5],
+    "divisors": [1, 2, 4],
+    "mixed": [60, 33, 25, 24, 23, 20, 19, 18, 15, 13.3, 12, 11.5, 10, 4]
+  }
+}

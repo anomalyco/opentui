@@ -30,6 +30,7 @@ mod proxy;
 mod selection;
 #[cfg(feature = "tokio")]
 mod tasks;
+mod tick;
 mod timer;
 
 pub use crate::native::Corner;
@@ -38,6 +39,7 @@ pub use proxy::{AppProxy, PROXY_CAPACITY, ProxyError};
 
 #[cfg(feature = "tokio")]
 pub use tasks::TaskHandle;
+pub use tick::{AnimationTick, Tick};
 pub use timer::TimerId;
 
 use crate::error::{Error, Result, Status};
@@ -280,6 +282,17 @@ struct Animation {
     step: AnimationStep,
 }
 
+/// Work before each frame: [`App::animate`] steps, and the tick clock once anything subscribes. One cell, so a frame
+/// checks both in one borrow.
+#[derive(Default)]
+struct Animations {
+    steps: Vec<Animation>,
+    ticks: Option<Box<tick::Ticks>>,
+}
+
+// An app that never animates pays one pointer for the tick clock.
+const _: () = assert!(size_of::<Animations>() == size_of::<Vec<Animation>>() + size_of::<usize>());
+
 pub(crate) struct AppInner {
     session: Session,
     options: AppOptions,
@@ -309,7 +322,7 @@ pub(crate) struct AppInner {
     error: RefCell<Option<Error>>,
     clock: Clock,
     timers: RefCell<timer::Timers>,
-    animations: RefCell<Vec<Animation>>,
+    animations: RefCell<Animations>,
     timelines: RefCell<Vec<Weak<crate::animation::TimelineInner>>>,
     deferred: RefCell<VecDeque<Deferred>>,
     handlers: AppHandlers,
@@ -540,7 +553,7 @@ impl App {
             error: RefCell::new(None),
             clock,
             timers: RefCell::new(timer::Timers::default()),
-            animations: RefCell::new(Vec::new()),
+            animations: RefCell::default(),
             timelines: RefCell::new(Vec::new()),
             deferred: RefCell::new(VecDeque::new()),
             handlers: AppHandlers::default(),
@@ -916,14 +929,16 @@ impl App {
 
     /// Cancels a timer. Returns whether it was still scheduled.
     pub fn cancel_timer(&self, timer: TimerId) -> bool {
-        self.0.timers.borrow_mut().cancel(timer)
+        // The callback drops after the borrow: it may own a widget, whose drop ends its animation ticks.
+        let cancelled = self.0.timers.borrow_mut().cancel(timer);
+        cancelled.is_some()
     }
 
     /// Calls `step` before every frame with the time since its previous call, until it returns `false`. Frames run
     /// at up to [`AppOptions::max_fps`] while any animation is active. [`Timeline`](crate::animation::Timeline)
     /// builds eased tweens on this.
     pub fn animate(&self, step: impl FnMut(&mut Cx<'_>, Duration) -> bool + 'static) {
-        self.0.animations.borrow_mut().push(Animation { last: self.now(), step: Box::new(step) });
+        self.0.animations.borrow_mut().steps.push(Animation { last: self.now(), step: Box::new(step) });
         self.0.dirty.set(true);
     }
 
@@ -1397,21 +1412,32 @@ impl App {
     }
 
     fn wants_frame(&self) -> bool {
-        self.0.dirty.get() || !self.0.animations.borrow().is_empty()
+        self.0.dirty.get() || !self.0.animations.borrow().steps.is_empty()
     }
 
+    /// Runs the ticks due by this frame, then the animation steps. An app that never animates returns at the check.
     fn run_animations(&self) {
+        let (mut steps, ticking) = {
+            let mut animations = self.0.animations.borrow_mut();
+            let ticking = animations.ticks.is_some();
+            if !ticking && animations.steps.is_empty() {
+                return;
+            }
+            (std::mem::take(&mut animations.steps), ticking)
+        };
+        if ticking {
+            self.run_ticks();
+        }
         let now = self.now();
-        let mut animations = std::mem::take(&mut *self.0.animations.borrow_mut());
-        animations.retain_mut(|animation| {
+        steps.retain_mut(|animation| {
             let elapsed = now.saturating_duration_since(animation.last);
             animation.last = now;
             (animation.step)(&mut Cx::new(self), elapsed)
         });
         // Animations started during this pass were pushed to the emptied list.
         let mut current = self.0.animations.borrow_mut();
-        animations.append(&mut current);
-        *current = animations;
+        steps.append(&mut current.steps);
+        current.steps = steps;
     }
 
     // Frames.
@@ -1470,6 +1496,7 @@ impl App {
     fn host_request(&self, request: HostRequest<'_>) -> Result<()> {
         match request {
             HostRequest::Update { num, .. } => {
+                self.mark_drawn(num);
                 if let Some(widget) = self.lookup(num) {
                     widget.update(&mut Cx::new(self));
                 }
@@ -1561,7 +1588,7 @@ impl App {
             self.publish_palette(&palette);
         }
         self.request_redraw();
-        let interval = Duration::from_secs(1) / self.0.options.max_fps.max(1);
+        let interval = self.frame_interval();
         let mut last_frame: Option<Instant> = None;
         let mut presenting = false;
         let mut events = Vec::new();
@@ -1659,7 +1686,7 @@ impl App {
         }
         self.0.messages.borrow_mut().clear();
         self.0.timers.borrow_mut().clear();
-        self.0.animations.borrow_mut().clear();
+        self.0.animations.take();
         self.0.filter_areas.borrow_mut().clear();
         let timelines = std::mem::take(&mut *self.0.timelines.borrow_mut());
         for timeline in timelines.iter().filter_map(Weak::upgrade) {
@@ -1723,6 +1750,11 @@ impl App {
 
     pub(crate) fn needs_frame(&self) -> bool {
         self.wants_frame()
+    }
+
+    /// The shortest time between frames, from [`AppOptions::max_fps`].
+    pub(crate) fn frame_interval(&self) -> Duration {
+        Duration::from_secs(1) / self.0.options.max_fps.max(1)
     }
 
     pub(crate) fn set_size(&self, width: u16, height: u16) -> Result<()> {
