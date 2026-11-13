@@ -555,11 +555,15 @@ pub(crate) struct Incremental {
     /// The text of the tree: the text highlighted last, with Markdown's added line ending if `padded`.
     text: String,
     padded: bool,
-    /// Parses without a tree, and the last highlight, a whole query of the tree, for tests.
-    #[cfg(test)]
-    pub(crate) fresh_parses: usize,
+    /// The last highlight, a whole query of the tree, for tests.
     #[cfg(test)]
     pub(crate) last: Option<super::NamedRanges>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Parses without a tree on this thread, for tests: a highlighter replaced since still counts.
+    pub(crate) static FRESH_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 impl Incremental {
@@ -569,8 +573,6 @@ impl Incremental {
             tree: None,
             text: String::new(),
             padded: false,
-            #[cfg(test)]
-            fresh_parses: 0,
             #[cfg(test)]
             last: None,
         }
@@ -605,9 +607,7 @@ impl Incremental {
             tree
         });
         #[cfg(test)]
-        {
-            self.fresh_parses += usize::from(reused.is_none());
-        }
+        FRESH_PARSES.set(FRESH_PARSES.get() + usize::from(reused.is_none()));
         let (captures, tree) = captures(&registry, compiled, &text, len, reused.as_ref())?;
         self.padded = text.len() > len;
         (self.tree, self.text) = (Some((Arc::clone(entry), tree)), text);

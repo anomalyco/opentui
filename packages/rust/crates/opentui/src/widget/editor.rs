@@ -1519,7 +1519,8 @@ mod tests {
                     area.insert(piece);
                 }
             };
-            let mut layers = 0;
+            // Whether the next highlight is the filetype's first, the one parse without a tree.
+            let (mut layers, mut first) = (0, true);
             for step in 0..24 {
                 let command = match (row, step) {
                     (Some(row), 0) => {
@@ -1552,7 +1553,7 @@ mod tests {
                         let filetype = FILETYPES[next(FILETYPES.len())];
                         areas[0].filetype(filetype);
                         if twin.filetype != filetype {
-                            (twin.filetype, twin.highlighted) = (filetype, None);
+                            (twin.filetype, twin.highlighted, first) = (filetype, None, true);
                             if filetype.is_none() {
                                 areas[1].buffer().set_layer(extmarks::SYNTAX_LAYER, 0..u32::MAX, &[]).unwrap();
                             }
@@ -1617,7 +1618,9 @@ mod tests {
                         let core = &areas[0].0;
                         let epoch = core.epoch();
                         let due = core.filetype.borrow().is_some() && core.highlighted.get() != Some(epoch);
+                        let parses = syntax::FRESH_PARSES.get();
                         let got = named.render();
+                        let parses = syntax::FRESH_PARSES.get() - parses;
                         let error = twin.refresh(areas[1].buffer(), None);
                         let mut want = valued.render();
                         let own = core.incremental.borrow();
@@ -1635,8 +1638,13 @@ mod tests {
                         // the first text of its filetype.
                         assert_eq!(core.layers.get() - layers, usize::from(due), "seed {seed} step {step}");
                         layers = core.layers.get();
-                        let fresh_parses = own.as_ref().map_or(0, |own| own.fresh_parses);
-                        assert!(fresh_parses <= 1, "seed {seed} step {step}: a parse lost its tree");
+                        let parsed = due && core.filetype.borrow().as_deref().is_some_and(syntax::has_grammar);
+                        assert_eq!(
+                            parses,
+                            usize::from(parsed && first),
+                            "seed {seed} step {step}: parses without a tree"
+                        );
+                        first &= !parsed;
                         compared += 1;
                     }
                 }

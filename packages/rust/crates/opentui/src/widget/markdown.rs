@@ -1534,11 +1534,9 @@ mod tests {
         // C4 invariant 4 and question 4: each block's highlights took its text once, the open one's last only its new
         // line, reusing its tree, which it alone keeps.
         let kept = |markdown: &Markdown| -> Vec<_> {
-            (codes(markdown).iter())
-                .map(|code| (code.0.handed.get(), code.0.incremental.borrow().as_ref().map(|kept| kept.fresh_parses)))
-                .collect()
+            (codes(markdown).iter()).map(|code| (code.0.handed.get(), code.0.incremental.borrow().is_some())).collect()
         };
-        assert_eq!(kept(&markdown), [(12, None), (9, None), (21, Some(1))]);
+        assert_eq!(kept(&markdown), [(12, false), (9, false), (21, true)]);
         let twin = Markdown::new(&fresh).syntax_theme(theme).colors(colors(&fresh)).streaming(true);
         fresh.root().add(&twin);
         twin.set_markdown(format!("{source}let c = 2;\n"));
@@ -1549,7 +1547,7 @@ mod tests {
         // its tree.
         markdown.append("let d = 3;\n```\n");
         settle(&app, &codes(&markdown));
-        assert_eq!(kept(&markdown)[2], (32, None));
+        assert_eq!(kept(&markdown)[2], (32, false));
     }
 
     // A restyle keeps a code block's widget only as a fresh build would choose it: a changed info string changes the

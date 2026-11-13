@@ -300,7 +300,7 @@ pub(crate) type NamedRanges = (Vec<Vec<&'static str>>, Vec<(Range<usize>, usize)
 #[cfg(feature = "tree-sitter")]
 pub(crate) use highlight::Incremental;
 #[cfg(all(test, feature = "tree-sitter"))]
-pub(crate) use highlight::injective_theme;
+pub(crate) use highlight::{FRESH_PARSES, injective_theme};
 
 /// Without the `tree-sitter` feature nothing has a grammar.
 #[cfg(not(feature = "tree-sitter"))]

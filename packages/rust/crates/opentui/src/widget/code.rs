@@ -837,14 +837,17 @@ pub(crate) mod tests {
             fresh.root().add(&twin);
             // The theme the reference takes its styles and defaults from, never through the view under test.
             let theme = RefCell::new(themes[0].clone());
-            // The bytes handed to highlights at the last replacement, which starts the highlighter afresh. Only
-            // `compare` and a write by another caller render, and that write's append replaces the text too.
-            let mut replaced = 0;
+            // The bytes handed to highlights at the last replacement, which starts the highlighter afresh, and the
+            // parses without a tree on this thread since. Only `compare` and a write by another caller render, and
+            // that write's append replaces the text too.
+            let mut replaced = (0, 0);
             let mut compare = |settled: bool| {
                 if code.0.highlighted.get().is_none() && code.0.pending.borrow().is_none() {
-                    replaced = code.0.handed.get();
+                    replaced = (code.0.handed.get(), 0);
                 }
+                let parses = syntax::FRESH_PARSES.get();
                 let got = if settled { settle(&app, std::slice::from_ref(&code)) } else { app.render() };
+                replaced.1 += syntax::FRESH_PARSES.get() - parses;
                 let source = code.code();
                 let filetype = code.0.filetype.borrow().clone();
                 let start = code.0.highlighted.get().unwrap_or(0);
@@ -856,11 +859,11 @@ pub(crate) mod tests {
                 let (ranges, error) = expected(None).unwrap_or_default();
                 if settled && filetype.as_deref().is_some_and(syntax::has_grammar) {
                     assert_eq!(start, source.len(), "seed {seed}: settled with a plain tail");
-                    let since = (code.0.handed.get() - replaced, own.as_ref().map(|own| own.fresh_parses));
-                    assert_eq!(since, (source.len(), Some(1)), "seed {seed}: highlights since {source:?} was replaced");
+                    let since = (code.0.handed.get() - replaced.0, replaced.1, own.is_some());
+                    assert_eq!(since, (source.len(), 1, true), "seed {seed}: highlights since {source:?} was replaced");
                 } else if settled {
                     // Without a grammar nothing is copied for a highlight (bigboi-2).
-                    assert_eq!((own.is_none(), code.0.handed.get()), (true, replaced), "seed {seed}: plain text");
+                    assert_eq!((own.is_none(), code.0.handed.get()), (true, replaced.0), "seed {seed}: plain text");
                 }
                 let paint = |ranges: Vec<(std::ops::Range<usize>, Style)>| {
                     let mut spans: Vec<Span<'static>> = ranges
