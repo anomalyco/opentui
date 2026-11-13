@@ -459,7 +459,7 @@ pub const EditBuffer = struct {
         const span = try candidate.insertSliceByWeight(insert_offset, insertBias(cursor), result.segments.items, &self.segment_splitter);
         const added_lines = iter_mod.getLineCount(&candidate) - self.tb.lineCount();
         const end = endCursor(.{ .row = cursor.row, .col = cursor.col, .offset = insert_offset }, added_lines, &candidate, span.end);
-        var splice = self.editSplice(cursor.row, cursor.col, insert_offset);
+        var splice = self.editSplice(cursor.row, cursor.col, insert_offset, false);
         const marks = try splice.nextMarks(self.tb.rope().allocator, &candidate);
         try self.autoStoreUndo();
         self.tb.rope().root = candidate.root;
@@ -491,7 +491,7 @@ pub const EditBuffer = struct {
         errdefer checkpoint.restore(self.tb, &self.add_buffer);
         var candidate = rope.*;
         const span = try self.replaceByWeight(&candidate, start_offset, end_offset, &.{});
-        var splice = self.editSplice(start.row, start.col, start_offset);
+        var splice = self.editSplice(start.row, start.col, start_offset, false);
         const marks = try splice.nextMarks(rope.allocator, &candidate);
         try self.autoStoreUndo();
         self.tb.rope().root = candidate.root;
@@ -551,7 +551,8 @@ pub const EditBuffer = struct {
         var history_allocator = std.heap.FixedBufferAllocator.init(history_storage);
         // One splice byte for both steps: seeking the cell again in the deleted text can land
         // elsewhere when the deletion joined graphemes. Both mark versions precede publication.
-        var splice = self.editSplice(start.row, start.col, start.offset);
+        // after_delete may set a layer, which the insertion must move too.
+        var splice = self.editSplice(start.row, start.col, start.offset, true);
         const deleted_marks = if (has_deletion) try splice.nextMarks(self.tb.rope().allocator, &deleted) else 0;
         const inserted_marks = if (bytes.len > 0) try splice.nextMarks(self.tb.rope().allocator, &inserted) else 0;
         if (has_deletion) {
@@ -575,6 +576,8 @@ pub const EditBuffer = struct {
         /// The marks after the steps that `nextMarks` prepared, and the text bytes after them.
         marks: usize = 0,
         marks_byte_count: u32 = 0,
+        /// Whether the edit started with marks: only then does it publish their next version.
+        marked: bool = false,
 
         /// The marks once the text becomes `after`, one step on from the last call: built before
         /// the step publishes, so publishing cannot fail.
@@ -608,23 +611,24 @@ pub const EditBuffer = struct {
 
         fn published(self: *EditSplice, text_buffer: *UnifiedTextBuffer, byte_count: u32, marks: usize) void {
             self.byte_count = byte_count;
-            text_buffer.rope().aux = marks;
+            if (self.marked) text_buffer.rope().aux = marks;
             text_buffer.assertLayerBoundaries();
             text_buffer.assertMarks();
         }
     };
 
-    inline fn editSplice(self: *const EditBuffer, row: u32, col: u32, offset: u32) EditSplice {
-        if (self.tb.layers.isEmpty() and self.tb.marks().len == 0) return .{ .active = false };
+    inline fn editSplice(self: *const EditBuffer, row: u32, col: u32, offset: u32, always: bool) EditSplice {
+        if (!always and self.tb.layers.isEmpty() and self.tb.marks().len == 0) return .{ .active = false };
         return self.activeSplice(row, col, offset);
     }
 
     fn activeSplice(self: *const EditBuffer, row: u32, col: u32, offset: u32) EditSplice {
+        const marks = self.tb.rope().aux;
         // At a line start an edit goes before zero-width text (`insertBias`, `replaceByWeight`);
         // elsewhere after it, where the weight seek lands.
         const start_byte = if (col == 0) self.tb.lineStartByte(row) else self.tb.byteOffsetAtWeight(offset);
         const marks_byte_count = iter_mod.textBytes(&self.tb.rope().root.metrics());
-        return .{ .active = true, .start_byte = start_byte, .byte_count = self.tb.getByteSize(), .marks = self.tb.rope().aux, .marks_byte_count = marks_byte_count };
+        return .{ .active = true, .start_byte = start_byte, .byte_count = self.tb.getByteSize(), .marks = marks, .marks_byte_count = marks_byte_count, .marked = marks != 0 };
     }
 
     fn publishReplacementStep(self: *EditBuffer, candidate: *const UnifiedRope, cursor: Cursor, history_allocator: Allocator) void {

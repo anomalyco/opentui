@@ -48,12 +48,15 @@ impl ExtmarkOptions {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Extmark {
     pub id: ExtmarkId,
+    /// Inclusive document cell offset, counting one cell per newline.
     pub start: u32,
+    /// Exclusive document cell offset, counting one cell per newline.
     pub end: u32,
     pub options: ExtmarkOptions,
 }
 
 impl Extmark {
+    /// Half-open range in document display cells, counting each newline as one.
     pub fn range(&self) -> Range<u32> {
         self.start..self.end
     }

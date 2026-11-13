@@ -4,7 +4,9 @@ import { ExtmarksHistory, type ExtmarksSnapshot } from "./extmarks-history.js"
 
 export interface Extmark {
   id: number
+  /** Inclusive document cell offset, counting one cell per newline. */
   start: number // Display-width offset (including newlines), NOT JS string index
+  /** Exclusive document cell offset, counting one cell per newline. */
   end: number // Display-width offset (including newlines), NOT JS string index
   virtual: boolean
   styleId?: number
@@ -14,7 +16,9 @@ export interface Extmark {
 }
 
 export interface ExtmarkOptions {
+  /** Inclusive document cell offset, counting one cell per newline. */
   start: number // Display-width offset (including newlines), NOT JS string index
+  /** Exclusive document cell offset, counting one cell per newline. */
   end: number // Display-width offset (including newlines), NOT JS string index
   virtual?: boolean
   styleId?: number
@@ -529,6 +533,7 @@ export class ExtmarksController {
     if (updateHighlights) this.updateHighlights()
   }
 
+  /** Both the deletion offset and length count display cells, including one per newline. */
   public adjustExtmarksAfterDeletion(deleteOffset: number, length: number, updateHighlights = true): void {
     const toDelete: number[] = []
 
@@ -608,6 +613,7 @@ export class ExtmarksController {
     return offset - (this.editBuffer.offsetToPosition(offset)?.row ?? 0)
   }
 
+  /** Marks a half-open document cell range, counting one cell per newline. Returns a mark ID. */
   public create(options: ExtmarkOptions): number {
     if (this.destroyed) {
       throw new Error("ExtmarksController is destroyed")
@@ -678,6 +684,7 @@ export class ExtmarksController {
     return Array.from(this.extmarks.values()).filter((e) => e.virtual)
   }
 
+  /** Looks up marks covering a document cell offset, counting one cell per newline. */
   public getAtOffset(offset: number): Extmark[] {
     if (this.destroyed) return []
     return Array.from(this.extmarks.values()).filter((e) => offset >= e.start && offset < e.end)

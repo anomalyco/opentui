@@ -20,7 +20,8 @@ use std::rc::Rc;
 /// `bind`, or run one directly with `perform`.
 ///
 /// Movement collapses a selection; the `Select` variants extend it from where it started. Lines are logical lines
-/// (between line breaks); visual lines are the rows wrapping produces.
+/// (between line breaks); visual lines are the rows wrapping produces. Left/right step by cursor stops, not bytes;
+/// up/down step by wrapped rows. Selection offsets count display cells, one per newline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EditorAction {
     MoveLeft,
@@ -73,8 +74,8 @@ macro_rules! extmark_methods {
     () => {
         /// Marks a range of the text so it moves with edits: a styled decoration, or with
         /// [`ExtmarkOptions::atomic`], a token the cursor and deletions treat as one unit, such as a mention. Offsets
-        /// count as the cursor's do and past the text mean its end; see [`Extmark`]. Replacing the text with `set_text`
-        /// or `set_value` removes all marks; undoing an edit brings back the marks it removed.
+        /// count display cells (one per newline) and past the text mean its end; see [`Extmark`]. Replacing the text
+        /// with `set_text` or `set_value` removes all marks; undoing an edit brings back the marks it removed.
         pub fn add_extmark(&self, range: std::ops::Range<u32>, options: ExtmarkOptions) -> ExtmarkId {
             self.0.add_extmark(range, options)
         }
@@ -99,13 +100,13 @@ macro_rules! extmark_methods {
             self.0.extmarks().into_iter().find(|mark| mark.id == id)
         }
 
-        /// The marks that cover `offset`: they start at or before it and end after it.
+        /// The marks that cover a document cell offset (one cell per newline): `start <= offset < end`.
         pub fn extmarks_at(&self, offset: u32) -> Vec<Extmark> {
             self.0.extmarks().into_iter().filter(|mark| mark.start <= offset && offset < mark.end).collect()
         }
 
-        /// Moves the cursor to a document offset, clearing the selection. An offset inside an atomic mark moves to
-        /// its nearer edge.
+        /// Moves the cursor in document display cells (one per newline), clearing the selection. An offset inside
+        /// an atomic mark moves to its nearer edge.
         pub fn set_cursor_offset(&self, offset: u32) -> Self {
             self.0.set_cursor_offset(offset);
             self.clone()
@@ -216,13 +217,13 @@ macro_rules! editor_methods {
             self.clone()
         }
 
-        /// The cursor as a document offset: display columns, with one position per line break. For plain ASCII on
-        /// one line, this is the character index.
+        /// Display cells from the document start, one per newline. Convert with
+        /// [`EditBuffer::cell_offset_to_byte_index`](crate::native::EditBuffer::cell_offset_to_byte_index) before slicing the text.
         pub fn cursor_offset(&self) -> u32 {
             self.0.report(self.0.buffer.info()).map_or(0, |info| info.cursor_offset)
         }
 
-        /// The selected text, or an empty string.
+        /// The selected UTF-8 text, or an empty string. String slice bounds are bytes, not selection cells.
         pub fn selected_text(&self) -> String {
             use super::Behavior;
             self.0.selected_text().unwrap_or_default()
