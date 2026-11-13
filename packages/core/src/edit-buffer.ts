@@ -1,4 +1,5 @@
 import {
+  NativeEditAtomic,
   NativeEditCommand,
   NativeEditPositionQuery,
   NativeEditorStyleMask,
@@ -190,12 +191,19 @@ export class EditBuffer extends EventEmitter {
     )
   }
 
+  /** @internal Set by extmarks controllers: whether the cursor rules around virtual extmarks apply now. */
+  public _atomic?: () => boolean
+
+  private rules(): number {
+    return this._atomic?.() ? NativeEditAtomic : 0
+  }
+
   public deleteChar(): void {
-    this.command(NativeEditCommand.DeleteForward)
+    this.command(NativeEditCommand.DeleteForward, this.rules())
   }
 
   public deleteCharBackward(): void {
-    this.command(NativeEditCommand.Backspace)
+    this.command(NativeEditCommand.Backspace, this.rules())
   }
 
   /** Deletes a half-open range between (zero-based logical line, display-cell column) pairs. */
@@ -221,12 +229,12 @@ export class EditBuffer extends EventEmitter {
 
   /** Moves to the previous cursor stop, not necessarily one display cell or UTF-16 code unit. */
   public moveCursorLeft(): void {
-    this.command(NativeEditCommand.MoveLeft)
+    this.command(NativeEditCommand.MoveLeft, this.rules())
   }
 
   /** Moves to the next cursor stop, not necessarily one display cell or UTF-16 code unit. */
   public moveCursorRight(): void {
-    this.command(NativeEditCommand.MoveRight)
+    this.command(NativeEditCommand.MoveRight, this.rules())
   }
 
   /** Moves up one logical line using the desired display-cell column. */
@@ -258,7 +266,12 @@ export class EditBuffer extends EventEmitter {
 
   /** Sets the cursor in display cells from the document start, counting each newline as one cell. */
   public setCursorByOffset(offset: number): void {
-    this.command(NativeEditCommand.CursorOffset, offset)
+    this.command(this.rules() ? NativeEditCommand.CursorOffsetAtomic : NativeEditCommand.CursorOffset, offset)
+  }
+
+  /** @internal Moves a cursor inside virtual extmarks to their outer edge: the end (> 0), the start (< 0) or nearer. */
+  public _keepOutside(direction: number): void {
+    this.command(NativeEditCommand.KeepOutside, direction > 0 ? 1 : direction < 0 ? 2 : 0)
   }
 
   /** Returns the logical line, display-cell column, and document cell offset (one cell per newline). */

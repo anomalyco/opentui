@@ -5,7 +5,7 @@ use core::ffi::c_void;
 
 /// FNV-1a 64-bit hash of the `opentui.h` these declarations were generated from.
 /// The build script rejects native artifacts whose header has a different hash.
-pub const OPENTUI_HEADER_FNV1A64: u64 = 0x1ded0b12245f57df;
+pub const OPENTUI_HEADER_FNV1A64: u64 = 0xfeac74aa4c2acf0d;
 
 pub type ot_status = i32;
 
@@ -439,6 +439,9 @@ pub const OT_EDIT_CURSOR_OFFSET: u32 = 9;
 pub const OT_EDIT_CLEAR: u32 = 10;
 pub const OT_EDIT_CLEAR_HISTORY: u32 = 11;
 pub const OT_EDIT_DEBUG_ROPE: u32 = 12;
+pub const OT_EDIT_CURSOR_OFFSET_ATOMIC: u32 = 13;
+pub const OT_EDIT_KEEP_OUTSIDE: u32 = 14;
+pub const OT_EDIT_ATOMIC: u32 = 1;
 pub const OT_EDIT_POSITION_CURSOR: u32 = 0;
 pub const OT_EDIT_POSITION_NEXT_WORD: u32 = 1;
 pub const OT_EDIT_POSITION_PREV_WORD: u32 = 2;
@@ -448,10 +451,6 @@ pub const OT_EDIT_POSITION_COORDS: u32 = 5;
 pub const OT_EDIT_POSITION_LINE_START: u32 = 6;
 pub const OT_EDIT_POSITION_END: u32 = 7;
 pub const OT_EDIT_POSITION_PREV_CHAR: u32 = 8;
-pub const OT_EDIT_BYTE_TO_CELL: u32 = 0;
-pub const OT_EDIT_CELL_TO_BYTE: u32 = 1;
-pub const OT_EDIT_UTF16_TO_CELL: u32 = 2;
-pub const OT_EDIT_CELL_TO_UTF16: u32 = 3;
 pub const OT_EDITOR_STYLE_FOREGROUND: u32 = 1;
 pub const OT_EDITOR_STYLE_BACKGROUND: u32 = 2;
 pub const OT_EDITOR_STYLE_ATTRIBUTES: u32 = 4;
@@ -4578,7 +4577,6 @@ unsafe extern "C" {
     pub fn ot_edit_buffer_history(context: *mut ot_context, handle: *const ot_handle, redo: u32, bytes: *mut u8, capacity: u32, out_count: *mut u32) -> ot_status;
     pub fn ot_edit_buffer_get_position(context: *mut ot_context, handle: *const ot_handle, query: u32, a: u32, b: u32, out_position: *mut ot_edit_position) -> ot_status;
     pub fn ot_edit_buffer_get_range(context: *mut ot_context, handle: *const ot_handle, by_coords: u32, start_row: u32, start_col: u32, end_row: u32, end_col: u32, bytes: *mut u8, capacity: u32, out_count: *mut u32) -> ot_status;
-    pub fn ot_edit_buffer_convert_offset(context: *mut ot_context, edit_buffer: *const ot_handle, conversion: u32, value: u32, out_value: *mut u32) -> ot_status;
     pub fn ot_edit_buffer_measure_text(context: *mut ot_context, edit_buffer: *const ot_handle, bytes: *const u8, byte_count: u32, out_width: *mut u32) -> ot_status;
     pub fn ot_edit_measure_text(context: *mut ot_context, bytes: *const u8, byte_count: u32, width_method: u32, tab_width: u32, out_width: *mut u32) -> ot_status;
     pub fn ot_edit_buffer_set_defaults(context: *mut ot_context, handle: *const ot_handle, mask: u32, editor_style: *const ot_editor_style) -> ot_status;

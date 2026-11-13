@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 97917ede92ba227c12108734d27733895bbbb4906e52ee02a869652e6d99bfcf
+// ABI audit SHA-256: 2073cb38e3f3c17f7db56d25f2ad3f855d96752c168e5b66b0056079edaf3bcd
 
 export const OT_CONTEXT_ABI_VERSION = 2
 export const OT_OK = 0
@@ -426,6 +426,9 @@ export const OT_EDIT_CURSOR_OFFSET = 9
 export const OT_EDIT_CLEAR = 10
 export const OT_EDIT_CLEAR_HISTORY = 11
 export const OT_EDIT_DEBUG_ROPE = 12
+export const OT_EDIT_CURSOR_OFFSET_ATOMIC = 13
+export const OT_EDIT_KEEP_OUTSIDE = 14
+export const OT_EDIT_ATOMIC = 1
 export const OT_EDIT_POSITION_CURSOR = 0
 export const OT_EDIT_POSITION_NEXT_WORD = 1
 export const OT_EDIT_POSITION_PREV_WORD = 2
@@ -435,10 +438,6 @@ export const OT_EDIT_POSITION_COORDS = 5
 export const OT_EDIT_POSITION_LINE_START = 6
 export const OT_EDIT_POSITION_END = 7
 export const OT_EDIT_POSITION_PREV_CHAR = 8
-export const OT_EDIT_BYTE_TO_CELL = 0
-export const OT_EDIT_CELL_TO_BYTE = 1
-export const OT_EDIT_UTF16_TO_CELL = 2
-export const OT_EDIT_CELL_TO_UTF16 = 3
 export const OT_EDITOR_STYLE_FOREGROUND = 1
 export const OT_EDITOR_STYLE_BACKGROUND = 2
 export const OT_EDITOR_STYLE_ATTRIBUTES = 4
@@ -953,7 +952,6 @@ export const nativeSymbols = {
     args: ["ptr", "buffer", "u32", "u32", "u32", "u32", "u32", "ptr", "u32", "buffer"],
     returns: "i32",
   },
-  ot_edit_buffer_convert_offset: { args: ["ptr", "buffer", "u32", "u32", "buffer"], returns: "i32" },
   ot_edit_buffer_measure_text: { args: ["ptr", "buffer", "ptr", "u32", "buffer"], returns: "i32" },
   ot_edit_measure_text: { args: ["ptr", "ptr", "u32", "u32", "u32", "buffer"], returns: "i32" },
   ot_edit_buffer_set_defaults: { args: ["ptr", "buffer", "u32", "buffer"], returns: "i32" },
@@ -2941,6 +2939,9 @@ export const nativeConstants = {
   OT_EDIT_CLEAR: 10,
   OT_EDIT_CLEAR_HISTORY: 11,
   OT_EDIT_DEBUG_ROPE: 12,
+  OT_EDIT_CURSOR_OFFSET_ATOMIC: 13,
+  OT_EDIT_KEEP_OUTSIDE: 14,
+  OT_EDIT_ATOMIC: 1,
   OT_EDIT_POSITION_CURSOR: 0,
   OT_EDIT_POSITION_NEXT_WORD: 1,
   OT_EDIT_POSITION_PREV_WORD: 2,
@@ -2950,10 +2951,6 @@ export const nativeConstants = {
   OT_EDIT_POSITION_LINE_START: 6,
   OT_EDIT_POSITION_END: 7,
   OT_EDIT_POSITION_PREV_CHAR: 8,
-  OT_EDIT_BYTE_TO_CELL: 0,
-  OT_EDIT_CELL_TO_BYTE: 1,
-  OT_EDIT_UTF16_TO_CELL: 2,
-  OT_EDIT_CELL_TO_UTF16: 3,
   OT_EDITOR_STYLE_FOREGROUND: 1,
   OT_EDITOR_STYLE_BACKGROUND: 2,
   OT_EDITOR_STYLE_ATTRIBUTES: 4,
