@@ -25,7 +25,7 @@ runs:
         echo "Native host bottle key: $key"
 
     - id: restore
-      uses: actions/cache/restore@v5
+      uses: actions/cache/restore@v5.1.0
       continue-on-error: true
       with:
         path: packages/native/lib
@@ -50,7 +50,7 @@ runs:
     # Native video statically links FFmpeg. Its static libraries depend only on the pinned build script.
     - name: Restore FFmpeg build cache
       if: steps.decide.outputs.hit != 'true' && inputs.ffmpeg == 'true'
-      uses: actions/cache@v5
+      uses: actions/cache@v5.1.0
       with:
         path: |
           packages/native/.cache/ffmpeg/prefix

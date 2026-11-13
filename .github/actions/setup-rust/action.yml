@@ -10,23 +10,23 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: ./.github/actions/setup-zig
+    - uses: $/.github/actions/setup-zig
 
     # Bun runs native-bottle.ts.
-    - uses: oven-sh/setup-bun@v2
+    - uses: oven-sh/setup-bun@v2.2.0
       with:
         bun-version-file: package.json
 
     # The bottle holds the files of the npm package, without libopentui.a. A miss restores the FFmpeg cache that
     # Core's jobs save, so the library built below has video for tests/video.rs.
     - id: bottle
-      uses: ./.github/actions/restore-native-host-bottle
+      uses: $/.github/actions/restore-native-host-bottle
       with:
         zig-version: ${{ env.ZIG_VERSION }}
 
     # No wait for "Build Native Libraries", which a Rust-only pull request skips: build this runner's library instead.
     - if: steps.bottle.outputs.cache-hit != 'true'
-      uses: ./.github/actions/restore-zig-cache
+      uses: $/.github/actions/restore-zig-cache
       with:
         zig-version: ${{ env.ZIG_VERSION }}
         kind: lib
@@ -53,7 +53,7 @@ runs:
           echo "CARGO_PROFILE_TEST_DEBUG=0"
         } >> "$GITHUB_ENV"
 
-    - uses: Swatinem/rust-cache@v2
+    - uses: Swatinem/rust-cache@v2.9.3
       with:
         workspaces: packages/rust
         save-if: ${{ github.ref == 'refs/heads/main' }}

@@ -92,7 +92,7 @@ runs:
 
     - name: Upload Linux core dumps
       if: runner.os == 'Linux'
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@v7.0.2
       with:
         name: ${{ inputs.name }}
         path: ${{ github.workspace }}/.crash-dumps

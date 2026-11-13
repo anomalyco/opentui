@@ -29,7 +29,7 @@ runs:
 
     # Entries are per package version, so an older entry is safe to restore; bun install adds what bun.lock needs.
     - id: restore
-      uses: actions/cache/restore@v5
+      uses: actions/cache/restore@v5.1.0
       with:
         path: ~/.bun/install/cache
         key: bun-install-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock') }}

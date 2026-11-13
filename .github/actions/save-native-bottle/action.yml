@@ -14,7 +14,7 @@ runs:
       working-directory: ${{ github.workspace }}
       run: bun scripts/native-bottle.ts stage --zig "${{ inputs.zig-version }}"
 
-    - uses: actions/cache/save@v5
+    - uses: actions/cache/save@v5.1.0
       continue-on-error: true
       with:
         path: packages/native/lib

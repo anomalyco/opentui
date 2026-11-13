@@ -18,7 +18,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: useblacksmith/checkout@v1
+        uses: useblacksmith/checkout@v1.8.2
         with:
           fetch-depth: 0
 
@@ -40,23 +40,23 @@ jobs:
           fi
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@v2.2.0
         with:
           bun-version-file: package.json
 
       - name: Setup Zig
         if: steps.changes.outputs.build_native == 'true'
-        uses: ./.github/actions/setup-zig
+        uses: $/.github/actions/setup-zig
 
       - name: Restore Zig cache
         if: steps.changes.outputs.build_native == 'true'
-        uses: ./.github/actions/restore-zig-cache
+        uses: $/.github/actions/restore-zig-cache
         with:
           zig-version: ${{ env.ZIG_VERSION }}
           kind: lib
 
       - name: Restore Bun install cache
-        uses: ./.github/actions/restore-bun-cache
+        uses: $/.github/actions/restore-bun-cache
 
       - name: Install dependencies
         run: bun install
@@ -64,7 +64,7 @@ jobs:
       # Native video statically links FFmpeg. Its static libraries depend only on the pinned build script.
       - name: Restore FFmpeg build cache
         if: steps.changes.outputs.build_native == 'true'
-        uses: actions/cache@v5
+        uses: actions/cache@v5.1.0
         with:
           path: |
             packages/native/.cache/ffmpeg/prefix

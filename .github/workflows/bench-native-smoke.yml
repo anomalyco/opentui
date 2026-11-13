@@ -24,22 +24,22 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.1.0
 
       - name: Setup Zig
-        uses: ./.github/actions/setup-zig
+        uses: $/.github/actions/setup-zig
 
       - name: Restore Zig cache
-        uses: ./.github/actions/restore-zig-cache
+        uses: $/.github/actions/restore-zig-cache
         with:
           zig-version: ${{ env.ZIG_VERSION }}
           kind: lib
 
       - name: Restore Bun install cache
-        uses: ./.github/actions/restore-bun-cache
+        uses: $/.github/actions/restore-bun-cache
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@v2.2.0
         with:
           bun-version-file: package.json
 

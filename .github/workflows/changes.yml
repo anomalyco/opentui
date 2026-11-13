@@ -49,7 +49,7 @@ jobs:
     steps:
       # The pull request's merge commit and its parents, without file contents outside scripts/.
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.1.0
         with:
           fetch-depth: 2
           filter: blob:none

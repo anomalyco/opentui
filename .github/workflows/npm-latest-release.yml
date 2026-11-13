@@ -43,12 +43,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.1.0
         with:
           fetch-depth: 0
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v6.5.0
         with:
           node-version-file: .node-version
           registry-url: https://registry.npmjs.org
@@ -57,7 +57,7 @@ jobs:
         run: npm install --global npm@^11.15.0
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@v2.2.0
         with:
           bun-version-file: package.json
 
@@ -66,7 +66,7 @@ jobs:
         run: bun run prepare-release "${{ inputs.prepareVersion }}" --no-install
 
       - name: Extract npm packages
-        uses: ./.github/actions/extract-npm-packages
+        uses: $/.github/actions/extract-npm-packages
         with:
           artifact: ${{ inputs.npmPackagesArtifact || format('npm-packages-{0}', inputs.version) }}
           smoke-test: ${{ inputs.smokeTest }}

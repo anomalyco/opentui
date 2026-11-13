@@ -26,13 +26,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.1.0
 
       - name: Setup Zig
-        uses: ./.github/actions/setup-zig
+        uses: $/.github/actions/setup-zig
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@v2.2.0
         with:
           bun-version-file: package.json
 
@@ -44,11 +44,11 @@ jobs:
         run: bun install
 
       - name: Setup cross-platform symbol tools
-        uses: ./.github/actions/setup-native-symbol-tools
+        uses: $/.github/actions/setup-native-symbol-tools
 
       # Native video statically links FFmpeg. Its static libraries depend only on the pinned build script.
       - name: Restore FFmpeg build cache
-        uses: actions/cache@v5
+        uses: actions/cache@v5.1.0
         with:
           path: |
             packages/native/.cache/ffmpeg/prefix
@@ -77,7 +77,7 @@ jobs:
         run: bun packages/core/scripts/package-native-symbols.ts
 
       - name: Upload separate release symbols
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: native-symbols-${{ inputs.version }}
           path: artifacts/native-symbols/*.zip
@@ -350,7 +350,7 @@ jobs:
           ls -lah artifacts/*.zip
 
       - name: Upload native binaries artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: native-binaries-${{ inputs.version }}
           path: |
@@ -366,7 +366,7 @@ jobs:
           retention-days: 30
 
       - name: Upload npm packages artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: npm-packages-${{ inputs.version }}
           path: artifacts/npm-packages.zip

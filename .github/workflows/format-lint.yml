@@ -18,13 +18,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: useblacksmith/checkout@v1
+        uses: useblacksmith/checkout@v1.8.2
 
       - name: Restore Bun install cache
-        uses: ./.github/actions/restore-bun-cache
+        uses: $/.github/actions/restore-bun-cache
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@v2.2.0
         with:
           bun-version-file: package.json
 
@@ -47,13 +47,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: useblacksmith/checkout@v1
+        uses: useblacksmith/checkout@v1.8.2
 
       - name: Restore Bun install cache
-        uses: ./.github/actions/restore-bun-cache
+        uses: $/.github/actions/restore-bun-cache
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@v2.2.0
         with:
           bun-version-file: package.json
 

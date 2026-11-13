@@ -32,7 +32,7 @@ runs:
     # Each change to the C dependencies or the native sources gets a new key, and every job restores the nearest
     # older entry. Zig's cache is content-addressed, so older objects are reused or ignored, never wrong.
     - id: restore
-      uses: actions/cache/restore@v5
+      uses: actions/cache/restore@v5.1.0
       with:
         path: .zig-cache
         key: zig-cache-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ inputs.kind }}-${{ hashFiles('packages/native/build.zig.zon', 'packages/native/scripts/prepare-zig-deps.sh', 'packages/native/src/vendor/zig-deps.tar.gz') }}-${{ hashFiles('packages/native/build.zig', 'packages/native/scripts/bundle-libcxx.zig', 'packages/native/src/**', 'packages/native/include/**', 'packages/native/examples/**', 'packages/core/scripts/native-abi.zig') }}

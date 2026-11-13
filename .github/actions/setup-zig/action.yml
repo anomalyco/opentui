@@ -40,7 +40,7 @@ runs:
         } >> "$GITHUB_OUTPUT"
 
     # Every use checks the hash, so a cache entry saved by any run is safe to restore.
-    - uses: actions/cache@v5
+    - uses: actions/cache@v5.1.0
       with:
         path: ${{ runner.temp }}/zig-archive
         key: zig-archive-${{ steps.resolve.outputs.file }}

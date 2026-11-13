@@ -38,10 +38,10 @@ jobs:
         shell: bash
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.1.0
 
       - name: Set up
-        uses: ./.github/actions/setup-build
+        uses: $/.github/actions/setup-build
         with:
           zig-cache-save: ${{ github.event_name == 'push' }}
 
@@ -50,7 +50,7 @@ jobs:
         run: bun run build --ci
 
       - name: Enable Linux core dumps
-        uses: ./.github/actions/enable-linux-coredumps
+        uses: $/.github/actions/enable-linux-coredumps
 
       - name: Run tests
         working-directory: packages/react
@@ -60,7 +60,7 @@ jobs:
 
       - name: Upload Linux core dumps
         if: failure()
-        uses: ./.github/actions/upload-linux-coredumps
+        uses: $/.github/actions/upload-linux-coredumps
         with:
           name: crash-dumps-react-${{ github.run_attempt }}
 
@@ -74,17 +74,17 @@ jobs:
         shell: bash
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.1.0
 
       - name: Set up
-        uses: ./.github/actions/setup-build
+        uses: $/.github/actions/setup-build
 
       - name: Build
         working-directory: packages/solid
         run: bun run build --ci
 
       - name: Enable Linux core dumps
-        uses: ./.github/actions/enable-linux-coredumps
+        uses: $/.github/actions/enable-linux-coredumps
 
       - name: Run tests
         working-directory: packages/solid
@@ -104,7 +104,7 @@ jobs:
 
       - name: Upload Linux core dumps
         if: failure()
-        uses: ./.github/actions/upload-linux-coredumps
+        uses: $/.github/actions/upload-linux-coredumps
         with:
           name: crash-dumps-solid-${{ github.run_attempt }}
 
@@ -118,10 +118,10 @@ jobs:
         shell: bash
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.1.0
 
       - name: Set up
-        uses: ./.github/actions/setup-build
+        uses: $/.github/actions/setup-build
 
       # The packed consumer resolves @opentui/solid from its build.
       - name: Build solid
@@ -133,7 +133,7 @@ jobs:
         run: bun run build --ci
 
       - name: Enable Linux core dumps
-        uses: ./.github/actions/enable-linux-coredumps
+        uses: $/.github/actions/enable-linux-coredumps
 
       - name: Run tests
         working-directory: packages/keymap
@@ -147,7 +147,7 @@ jobs:
 
       - name: Upload Linux core dumps
         if: failure()
-        uses: ./.github/actions/upload-linux-coredumps
+        uses: $/.github/actions/upload-linux-coredumps
         with:
           name: crash-dumps-keymap-${{ github.run_attempt }}
 
@@ -161,17 +161,17 @@ jobs:
         shell: bash
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.1.0
 
       - name: Set up
-        uses: ./.github/actions/setup-build
+        uses: $/.github/actions/setup-build
 
       - name: Build
         working-directory: packages/qrcode
         run: bun run build
 
       - name: Enable Linux core dumps
-        uses: ./.github/actions/enable-linux-coredumps
+        uses: $/.github/actions/enable-linux-coredumps
 
       - name: Run tests
         working-directory: packages/qrcode
@@ -181,7 +181,7 @@ jobs:
 
       - name: Upload Linux core dumps
         if: failure()
-        uses: ./.github/actions/upload-linux-coredumps
+        uses: $/.github/actions/upload-linux-coredumps
         with:
           name: crash-dumps-qrcode-${{ github.run_attempt }}
 
@@ -195,10 +195,10 @@ jobs:
         shell: bash
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.1.0
 
       - name: Set up
-        uses: ./.github/actions/setup-build
+        uses: $/.github/actions/setup-build
 
       - name: Build framework declarations
         run: |
@@ -216,7 +216,7 @@ jobs:
         run: bun run typecheck
 
       - name: Enable Linux core dumps
-        uses: ./.github/actions/enable-linux-coredumps
+        uses: $/.github/actions/enable-linux-coredumps
 
       - name: Run tests
         working-directory: packages/ssh
@@ -230,7 +230,7 @@ jobs:
 
       - name: Upload Linux core dumps
         if: failure()
-        uses: ./.github/actions/upload-linux-coredumps
+        uses: $/.github/actions/upload-linux-coredumps
         with:
           name: crash-dumps-ssh-${{ github.run_attempt }}
 
@@ -245,10 +245,10 @@ jobs:
         shell: bash
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.1.0
 
       - name: Set up
-        uses: ./.github/actions/setup-build
+        uses: $/.github/actions/setup-build
 
       - name: Build framework declarations
         run: |

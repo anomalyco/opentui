@@ -24,7 +24,7 @@ runs:
         echo "Native bottle key: $key"
 
     - id: restore
-      uses: actions/cache/restore@v5
+      uses: actions/cache/restore@v5.1.0
       continue-on-error: true
       with:
         path: packages/native/lib

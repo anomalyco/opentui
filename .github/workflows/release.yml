@@ -39,7 +39,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.1.0
 
       # Every push of packages/core/package.json to a release branch runs this job. Only a version change
       # needs Bun.
@@ -64,7 +64,7 @@ jobs:
 
       - name: Setup Bun
         if: steps.versions.outputs.current != steps.versions.outputs.previous
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@v2.2.0
         with:
           bun-version-file: package.json
 
@@ -179,10 +179,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.1.0
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v6.5.0
         with:
           node-version-file: .node-version
 
@@ -314,20 +314,20 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.1.0
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v6.5.0
         with:
           node-version-file: .node-version
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@v2.2.0
         with:
           bun-version-file: package.json
 
       - name: Extract and test npm packages
-        uses: ./.github/actions/extract-npm-packages
+        uses: $/.github/actions/extract-npm-packages
         with:
           artifact: npm-packages-${{ needs.prepare.outputs.fullTag }}
           smoke-test: "true"
@@ -376,14 +376,14 @@ jobs:
 
       - name: Download native binaries artifact
         if: needs.prepare.outputs.isDryRun != 'true'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v8.0.2
         with:
           name: native-binaries-${{ needs.prepare.outputs.fullTag }}
           path: artifacts/native
 
       - name: Download npm packages artifact
         if: needs.prepare.outputs.isDryRun != 'true'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v8.0.2
         with:
           name: npm-packages-${{ needs.prepare.outputs.fullTag }}
           path: artifacts/npm
@@ -404,7 +404,7 @@ jobs:
 
       - name: Azure login
         if: needs.prepare.outputs.isDryRun != 'true'
-        uses: azure/login@v3
+        uses: azure/login@v3.1.0
         with:
           client-id: ${{ env.AZURE_CLIENT_ID }}
           tenant-id: ${{ env.AZURE_TENANT_ID }}
@@ -412,7 +412,7 @@ jobs:
 
       - name: Sign Windows DLLs
         if: needs.prepare.outputs.isDryRun != 'true'
-        uses: azure/artifact-signing-action@v2
+        uses: azure/artifact-signing-action@v2.0.0
         with:
           endpoint: ${{ env.AZURE_TRUSTED_SIGNING_ENDPOINT }}
           signing-account-name: ${{ env.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
@@ -486,7 +486,7 @@ jobs:
 
       - name: Upload signed native binaries artifact
         if: needs.prepare.outputs.isDryRun != 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: native-binaries-${{ needs.prepare.outputs.fullTag }}
           path: |
@@ -504,7 +504,7 @@ jobs:
 
       - name: Upload signed npm packages artifact
         if: needs.prepare.outputs.isDryRun != 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: npm-packages-signed-${{ needs.prepare.outputs.fullTag }}
           path: artifacts/npm/npm-packages.zip
@@ -564,21 +564,21 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.1.0
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v6.5.0
         with:
           node-version-file: .node-version
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@v2.2.0
         with:
           bun-version-file: package.json
 
       # The packages that npm-publish published, to compare npm's contents with.
       - name: Extract npm packages
-        uses: ./.github/actions/extract-npm-packages
+        uses: $/.github/actions/extract-npm-packages
         with:
           artifact: ${{ needs.sign-windows-artifacts.outputs.npmPackagesArtifact }}
 
@@ -595,10 +595,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.1.0
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@v2.2.0
         with:
           bun-version-file: package.json
 
@@ -645,10 +645,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.1.0
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v8.0.2
         with:
           path: artifacts
 
@@ -748,7 +748,7 @@ jobs:
           ls -lah release-assets/
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@v2.2.0
         with:
           bun-version-file: package.json
 
@@ -760,7 +760,7 @@ jobs:
         run: bun packages/web/scripts/release-notes.ts github "$VERSION" --out release-notes.md
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@v3.0.4
         with:
           # A release from main is not a tag push, so name the tag. The prepare job created it.
           tag_name: v${{ needs.prepare.outputs.fullTag }}

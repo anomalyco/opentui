@@ -17,7 +17,7 @@ runs:
         echo "Native host bottle key: $key"
 
     - id: lookup
-      uses: actions/cache/restore@v5
+      uses: actions/cache/restore@v5.1.0
       continue-on-error: true
       with:
         path: packages/native/lib
@@ -30,7 +30,7 @@ runs:
       run: bun scripts/native-bottle.ts host-stage --zig "${{ inputs.zig-version }}"
 
     - if: steps.lookup.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v5
+      uses: actions/cache/save@v5.1.0
       continue-on-error: true
       with:
         path: packages/native/lib
