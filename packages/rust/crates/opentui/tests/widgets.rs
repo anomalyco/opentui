@@ -2314,6 +2314,29 @@ fn moves_into_an_atomic_extmark_go_to_its_nearer_edge() {
     area.set_cursor_offset(4);
     app.press("backspace");
     assert_eq!(area.text(), "a");
+    // One mark at a time: chips whose separator spaces were deleted are stepped over and deleted one by one; an older
+    // mark around the cursor does not hide a newer one whose edge is there; the second cell of a wide character is
+    // not a stop; Up from the end of a wrapped mark does not stay there. The cursor is set before the marks.
+    for (text, columns, marks, from, keys, to, after) in [
+        ("xx @a@b@c yy", 20, &[(3, 5), (5, 7), (7, 9)][..], 2, &["right", "delete", "backspace"][..], 3, "xx @c yy"),
+        ("abcdefghijklmno", 20, &[(1, 8), (3, 6)], 3, &["delete"], 3, "abcghijklmno"),
+        ("abcdefghijklmno", 20, &[(1, 8), (3, 6)], 6, &["backspace"], 3, "abcghijklmno"),
+        ("a日b", 20, &[], 2, &[], 1, "a日b"),
+        (wrapped, 6, &[(2, 15)], 15, &["up"], 0, wrapped),
+    ] {
+        let app = TestApp::new(columns, 4);
+        let area = Textarea::new(&app).grow(1.0);
+        area.set_text(text);
+        app.root().add(&area);
+        area.focus();
+        app.render();
+        area.set_cursor_offset(from);
+        for &(start, end) in marks {
+            area.add_extmark(start..end, ExtmarkOptions::default().atomic());
+        }
+        keys.iter().for_each(|key| app.press(key));
+        assert_eq!((area.cursor_offset(), area.text().as_str()), (to, after), "{keys:?} from {from} in {text:?}");
+    }
 }
 
 #[test]

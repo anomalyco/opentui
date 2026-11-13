@@ -135,44 +135,29 @@ describe("runtime plugin", () => {
     })
   })
 
-  it("registers additional runtime modules with sync and async loaders", async () => {
+  it("exposes mapped runtime modules only under their virtual IDs", async () => {
     const { build, resolveHandlers, modules } = createMockBuild()
-
     createRuntimePlugin({
       core: { marker: "core" },
       additional: {
         "fixture-sync": { value: "sync-value" },
         "@fixture/async-module": async () => ({ value: "async-value" }),
+        "./local.ts": { value: "local" },
       },
+      preserve: ["fixture-sync"],
     }).setup(build as any)
 
-    const coreResolution = await resolveSpecifier(resolveHandlers, "@opentui/core")
-    const syncResolution = await resolveSpecifier(resolveHandlers, "fixture-sync")
-    const asyncResolution = await resolveSpecifier(resolveHandlers, "@fixture/async-module")
-
-    expect(coreResolution).toEqual({ path: runtimeModuleIdForSpecifier("@opentui/core") })
-    expect(syncResolution).toEqual({ path: runtimeModuleIdForSpecifier("fixture-sync") })
-    expect(asyncResolution).toEqual({ path: runtimeModuleIdForSpecifier("@fixture/async-module") })
-
-    if (!coreResolution || !syncResolution || !asyncResolution) {
-      throw new Error("Expected runtime module resolutions")
+    for (const [specifier, exports] of [
+      ["@opentui/core", { marker: "core" }],
+      ["fixture-sync", { value: "sync-value" }],
+      ["@fixture/async-module", { value: "async-value" }],
+      ["./local.ts", { value: "local" }],
+    ] as const) {
+      const path = runtimeModuleIdForSpecifier(specifier)
+      expect(await resolveSpecifier(resolveHandlers, specifier)).toEqual({ path })
+      expect(await modules.get(path)?.()).toEqual({ exports, loader: "object" })
+      expect(modules.has(specifier)).toBe(false)
     }
-
-    const coreModuleFactory = modules.get(coreResolution.path)
-    const syncModuleFactory = modules.get(syncResolution.path)
-    const asyncModuleFactory = modules.get(asyncResolution.path)
-
-    expect(coreModuleFactory).toBeDefined()
-    expect(syncModuleFactory).toBeDefined()
-    expect(asyncModuleFactory).toBeDefined()
-
-    if (!coreModuleFactory || !syncModuleFactory || !asyncModuleFactory) {
-      throw new Error("Expected runtime module factories")
-    }
-
-    expect(await coreModuleFactory()).toEqual({ exports: { marker: "core" }, loader: "object" })
-    expect(await syncModuleFactory()).toEqual({ exports: { value: "sync-value" }, loader: "object" })
-    expect(await asyncModuleFactory()).toEqual({ exports: { value: "async-value" }, loader: "object" })
   })
 
   it("escapes exact-match resolver filters for special characters", async () => {
@@ -227,9 +212,9 @@ describe("runtime plugin", () => {
     expect(stdout).toContain("marker=resolved-from-external-root")
   })
 
-  it("rewrites runtime specifiers in node_modules modules by default", () => {
+  it.each(["default", "disabled", "bare-only"])("resolves runtime specifiers in node_modules (%s)", (mode) => {
     const fixturePath = join(import.meta.dir, "runtime-plugin-node-modules-runtime-specifier.fixture.ts")
-    const result = Bun.spawnSync([process.execPath, fixturePath], {
+    const result = Bun.spawnSync([process.execPath, fixturePath, mode], {
       cwd: join(import.meta.dir, "..", ".."),
       stdout: "pipe",
       stderr: "pipe",
@@ -239,7 +224,7 @@ describe("runtime plugin", () => {
     const stdout = result.stdout.toString().trim()
 
     expect(result.exitCode).toBe(0)
-    expect(stdout).toContain("marker=resolved-from-node-modules-runtime-specifier")
+    expect(stdout).toBe(`marker=${mode === "default" ? "host" : "private"}`)
   })
 
   it("does not crash when prescan sees import-like strings for missing files", () => {

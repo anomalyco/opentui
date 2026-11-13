@@ -3,11 +3,14 @@
 //! inside a mark's cells is covered by it (or drops it when atomic), a delete removes cells and
 //! drops a mark left without cells or an atomic mark it touched. Its history copies whole states
 //! and reuses nodes exactly as `rope.zig` does, so undo and redo must restore the paired marks.
+//! Cursor moves under the atomic rules must end on a stop that no atomic mark surrounds
+//! (invariant 7), and the atomic deletes must delete what the model's rule picks.
 const std = @import("std");
 const model = @import("model.zig");
 const TestPools = @import("test-pools.zig").TestPools;
 const edit_buffer = @import("../edit-buffer.zig");
 const iter = @import("../text-buffer-iterators.zig");
+const work = @import("../text-work.zig");
 const ss = @import("../syntax-style.zig");
 const c = @import("context_abi_c");
 const abi = @import("../context-abi.zig");
@@ -36,6 +39,11 @@ const Op = union(enum) {
     add: struct { at: u32, len: u32, atomic: bool },
     remove: u32,
     clear_marks,
+    /// Raw, so the cursor can start inside an atomic mark.
+    cursor: u32,
+    /// The cursor rules (C5.3, invariant 7); `keep` and `set` take the edge or the offset.
+    move: union(enum) { left, right, up, down, set: u32, keep: EditBuffer.Toward },
+    delete_atomic: bool,
 };
 
 const Cell = struct { byte: u8, cover: u64 };
@@ -193,7 +201,17 @@ const Harness = struct {
             const text = random.uintLessThan(u8, strings.len);
             const at = random.int(u32);
             const len = random.uintLessThan(u32, 6);
-            command.* = switch (random.uintLessThan(u8, 20)) {
+            command.* = switch (random.uintLessThan(u8, 26)) {
+                20, 21 => .{ .cursor = at },
+                22...24 => .{ .move = switch (random.uintLessThan(u8, 6)) {
+                    0 => .left,
+                    1 => .right,
+                    2 => .up,
+                    3 => .down,
+                    4 => .{ .set = at },
+                    else => .{ .keep = random.enumValue(EditBuffer.Toward) },
+                } },
+                25 => .{ .delete_atomic = random.boolean() },
                 0...3 => .{ .insert = .{ .at = at, .text = text } },
                 4...6 => .{ .delete = .{ .at = at, .len = len } },
                 7 => .{ .replace = .{ .at = at, .len = len, .text = text } },
@@ -227,7 +245,10 @@ const Harness = struct {
         defer eb.deinit();
         var m: Model = .{ .arena = arena };
         for (commands, 0..) |command, step| {
+            const plain = eb.tb.marks().len == 0;
+            _ = work.take();
             if (try apply(eb, &m, arena, command)) |property| return .{ .property = property, .step = step };
+            if (plain and work.take().mark_preparations != 0) return .{ .property = "empty mark work", .step = step };
             if (try check(eb, &m, arena)) |property| return .{ .property = property, .step = step };
         }
         return null;
@@ -327,6 +348,66 @@ const Harness = struct {
                 const marks = try arena.alloc(?ModelMark, m.live.marks.len);
                 @memset(marks, null);
                 m.live = Model.dropped(.{ .cells = try arena.dupe(Cell, m.live.cells), .marks = marks });
+            },
+            // An odd `at` is any cell offset, a stop or not, as the raw setter allows.
+            .cursor => |at| try eb.setCursorByOffset(if (at & 1 == 1) (at >> 1) % (stops[stops.len - 1][1] + 1) else range(stops, at, 0)[0][1]),
+            .move => |move| {
+                const before = eb.getPrimaryCursor().offset;
+                const surrounded = surrounds(eb, before);
+                const on_stop = for (stops) |stop| {
+                    if (stop[1] == before) break true;
+                } else false;
+                switch (move) {
+                    .left, .right => try eb.moveAtomic(move == .right),
+                    .up, .down => {
+                        if (move == .up) eb.moveUp() else eb.moveDown();
+                        try eb.leaveAtomic(before, move == .down);
+                    },
+                    .set => |at| try eb.setCursorByOffsetAtomic(range(stops, at, 0)[0][1]),
+                    .keep => |toward| try eb.keepOutside(toward),
+                }
+                const after = eb.getPrimaryCursor().offset;
+                for (stops) |stop| {
+                    if (stop[1] == after) break;
+                } else return "stop";
+                if (surrounds(eb, after)) return "inside";
+                if (on_stop and (((move == .left or move == .up) and after > before) or ((move == .right or move == .down) and after < before))) return "direction";
+                if (move == .keep and on_stop and !surrounded and after != before) return "keep";
+            },
+            .delete_atomic => |forward| {
+                // Of the atomic marks on the cell before the cursor (Backspace) or at it (Delete), the oldest
+                // that ends (starts) at the cursor goes whole; with none, one code point.
+                const cursor = eb.getPrimaryCursor().offset;
+                const b = for (stops) |stop| {
+                    if (stop[1] == cursor) break stop[0];
+                } else return null;
+                const cells = m.live.cells;
+                if (if (forward) b == cells.len else b == 0) {
+                    try eb.deleteAtomic(forward);
+                    return null;
+                }
+                const cell = if (forward) b else b - 1;
+                var start = cell;
+                while (start > 0 and cells[start].byte & 0xC0 == 0x80) start -= 1;
+                var end = cell + 1;
+                while (end < cells.len and cells[end].byte & 0xC0 == 0x80) end += 1;
+                var oldest: u32 = std.math.maxInt(u32);
+                for (m.live.marks, 0..) |slot, index| {
+                    const mark = slot orelse continue;
+                    const bit = @as(u64, 1) << @intCast(index);
+                    if (!mark.atomic or cells[cell].cover & bit == 0 or mark.id > oldest) continue;
+                    var first = cell;
+                    while (first > 0 and cells[first - 1].cover & bit != 0) first -= 1;
+                    var last = cell + 1;
+                    while (last < cells.len and cells[last].cover & bit != 0) last += 1;
+                    if ((if (forward) first else last) != b) continue;
+                    oldest = mark.id;
+                    start = first;
+                    end = last;
+                }
+                try eb.deleteAtomic(forward);
+                try m.storeUndo();
+                m.publish(try m.deleteCells(start, end));
             },
         }
         return null;
@@ -474,7 +555,7 @@ test "styled edit marks paint and report as legacy range highlights do" {
                 } else unreachable else mark.style;
                 const start_row = iter.offsetToCoords(legacy.tb.rope(), offsets.start).?.row;
                 const end_row = iter.offsetToCoords(legacy.tb.rope(), offsets.end).?.row;
-                try legacy.tb.addHighlightByCharRange(offsets.start - start_row, offsets.end - end_row, id, mark.priority, @truncate(mark.id));
+                try legacy.tb.addHighlightByCharRange(offsets.start - start_row, offsets.end - end_row, id, @intCast(mark.priority), @truncate(mark.id));
             }
             try expectSameLines(marked, legacy);
             legacy.tb.clearAllHighlights();
@@ -538,6 +619,8 @@ test "edit marks through the C ABI reject malformed records and round-trip" {
     plain.kind = 4;
     plain.start = 0;
     plain.end = 9;
+    // Only a styled mark paints at its priority, so only a styled one is limited to 255.
+    plain.priority = 300;
     try std.testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_mark(&owner, &id, c.OT_EDIT_MARK_ADD, &plain, &out));
     try std.testing.expectEqual(@as(u32, 2), out);
     var marks: [2]c.ot_edit_mark = undefined;
@@ -550,7 +633,7 @@ test "edit marks through the C ABI reject malformed records and round-trip" {
     expected.start_byte = 1;
     expected.end_byte = 5;
     try std.testing.expectEqual(@as(u32, 2), marks[0].id);
-    try std.testing.expectEqual(@as(u32, 5), marks[0].end);
+    try std.testing.expectEqual([2]u32{ 5, 300 }, [2]u32{ marks[0].end, marks[0].priority });
     try std.testing.expectEqualDeep(expected, marks[1]);
     try std.testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_get_marks(&owner, &id, 1, 4, &marks, 2, &count));
     try std.testing.expectEqual(@as(u32, 0), count);
@@ -584,6 +667,8 @@ test "edit marks through the C ABI reject malformed records and round-trip" {
     plain.end = 4;
     plain.flags = c.OT_EDIT_MARK_STYLE_VALUE;
     plain.value = value;
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, editor_abi.ot_edit_buffer_mark(&owner, &id, c.OT_EDIT_MARK_ADD, &plain, &out));
+    plain.priority = 2;
     try std.testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_mark(&owner, &id, c.OT_EDIT_MARK_ADD, &plain, &out));
     try std.testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_command(&owner, &id, c.OT_EDIT_CURSOR_OFFSET, 2));
     try std.testing.expectEqual(c.OT_OK, abi.ot_edit_buffer_insert_text(&owner, &id, "\u{200d}", 3));
@@ -593,6 +678,161 @@ test "edit marks through the C ABI reject malformed records and round-trip" {
     try std.testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_get_highlights(&owner, &id, 0, &highlights, 2, &count));
     try std.testing.expectEqual(@as(u32, 1), count);
     try std.testing.expectEqual([2]u32{ 0, 2 }, [2]u32{ highlights[0].start, highlights[0].end });
+}
+
+// The cursor rules around atomic marks (C5.3): the vectors of Core's `extmarks*.test.ts` and Rust's
+// `tests/widgets.rs`, and record 636's in both insertion orders. Marks are listed in creation order.
+// `set` is the hosts' offset setter (raw, then KEEP_OUTSIDE toward the move), `atomic_set` Core's
+// buffer setter, `keep` a pointer or wheel landing at `from` (KEEP_OUTSIDE toward the edge given).
+test "atomic marks: cursor rules match the hosts' tables" {
+    var owner: abi.ContextHandle = .{ .gpa = .init, .io_threaded = .init_single_threaded, .core = undefined, .owner_thread = std.Thread.getCurrentId() };
+    defer owner.io_threaded.deinit();
+    owner.core = try context_mod.Context.init(std.testing.allocator, owner.io_threaded.io(), .{});
+    defer owner.core.deinit() catch unreachable;
+    const buffer_handle = try owner.core.createEditBuffer(.unicode);
+    const view_handle = try owner.core.createEditorView(buffer_handle, 40, 4);
+    try owner.core.editorCommand(view_handle, .{ .wrap_mode = .word });
+    const id = abi.handleToC(buffer_handle);
+    const view = abi.handleToC(view_handle);
+    const eb = (try owner.core.raw().getEditBuffer(buffer_handle)).buffer;
+    const Move = union(enum) { left, right, up, down, word, backspace, delete, set: u32, atomic_set: u32, keep: EditBuffer.Toward };
+    const Row = struct { text: []const u8, marks: []const [2]u32, from: u32, move: Move, to: u32, after: ?[]const u8 = null, width: u32 = 40 };
+    var rows: std.ArrayListUnmanaged(Row) = .empty;
+    defer rows.deinit(std.testing.allocator);
+    // 607: before the mark is a unit, even a wide one or a tab, or with none the end of the line above.
+    var texts: [5][40]u8 = undefined;
+    var marks: [5][1][2]u32 = undefined;
+    for ([_][]const u8{ "a", "\u{65e5}", "\u{1f44d}", "\t", "" }, &texts, &marks) |char, *buffer, *mark| {
+        const text = try std.fmt.bufPrint(buffer, "0123456789\n{s}@main.rs\nxxxxxxxxxx", .{char});
+        const w = try owner.core.editMeasureText(buffer_handle, char);
+        mark.* = .{.{ 11 + w, 19 + w }};
+        const at: u32 = if (w == 0) 10 else 11;
+        for ([_]struct { Move, u32, u32 }{
+            .{ .left, 19 + w, at },   .{ .word, 19 + w, at },    .{ .down, w + 1, at },
+            .{ .up, 21 + 2 * w, at }, .{ .down, w + 4, 19 + w }, .{ .down, w + 6, 19 + w },
+        }) |move| try rows.append(std.testing.allocator, .{ .text = text, .marks = mark, .from = move[1], .move = move[0], .to = move[2] });
+    }
+    const wrapped = "\u{65e5}@mainrsxyzuvwABCDEFGHIJKL";
+    const file = "x @file y";
+    try rows.appendSlice(std.testing.allocator, &.{
+        // Down never goes back, and past marks that overlap the end, not one that starts there.
+        .{ .text = wrapped, .width = 6, .marks = &.{.{ 2, 15 }}, .from = 0, .move = .down, .to = 15 },
+        .{ .text = wrapped, .width = 6, .marks = &.{ .{ 2, 15 }, .{ 14, 19 } }, .from = 0, .move = .down, .to = 19 },
+        .{ .text = wrapped, .width = 6, .marks = &.{ .{ 2, 15 }, .{ 14, 19 }, .{ 18, 23 }, .{ 22, 27 } }, .from = 0, .move = .down, .to = 27 },
+        .{ .text = wrapped, .width = 6, .marks = &.{ .{ 2, 15 }, .{ 15, 17 } }, .from = 0, .move = .down, .to = 15 },
+        .{ .text = "a\n\n@main.rs\nb", .marks = &.{.{ 3, 11 }}, .from = 2, .move = .down, .to = 11 },
+        // Down leaving nearer the start goes past the mark it is in, toward the move; Up never goes forward.
+        .{ .text = "0123456789\nabcdefghij\nxyz", .marks = &.{ .{ 14, 20 }, .{ 12, 15 } }, .from = 4, .move = .down, .to = 20 },
+        .{ .text = wrapped, .width = 6, .marks = &.{.{ 2, 15 }}, .from = 15, .move = .up, .to = 0 },
+        // Overlapping marks: Up and Backspace take the mark added first, in either order.
+        .{ .text = "0123456789\n0123456789\n0123456789", .marks = &.{ .{ 14, 20 }, .{ 11, 16 } }, .from = 26, .move = .up, .to = 11 },
+        .{ .text = "0123456789\n0123456789\n0123456789", .marks = &.{ .{ 11, 16 }, .{ 14, 20 } }, .from = 26, .move = .up, .to = 20 },
+        .{ .text = "abcd", .marks = &.{ .{ 1, 4 }, .{ 0, 4 } }, .from = 4, .move = .backspace, .to = 1, .after = "a" },
+        .{ .text = "abcd", .marks = &.{ .{ 0, 4 }, .{ 1, 4 } }, .from = 4, .move = .backspace, .to = 0, .after = "" },
+        // Left and Right jump over a mark, and Left over marks that overlap it; a touching one stops it at the edge.
+        .{ .text = "abcdefgh", .marks = &.{.{ 3, 6 }}, .from = 2, .move = .right, .to = 6 },
+        .{ .text = "abcdefgh", .marks = &.{.{ 3, 6 }}, .from = 0, .move = .right, .to = 1 },
+        .{ .text = "abcdefgh", .marks = &.{.{ 3, 6 }}, .from = 7, .move = .left, .to = 6 },
+        .{ .text = "abcdefgh", .marks = &.{.{ 3, 6 }}, .from = 6, .move = .left, .to = 2 },
+        .{ .text = "abcdefgh", .marks = &.{.{ 3, 6 }}, .from = 2, .move = .left, .to = 1 },
+        .{ .text = "abcdefghij", .marks = &.{ .{ 2, 4 }, .{ 5, 7 } }, .from = 1, .move = .right, .to = 4 },
+        .{ .text = "abcdefghij", .marks = &.{ .{ 2, 4 }, .{ 5, 7 } }, .from = 4, .move = .right, .to = 7 },
+        // Chips that touch (a prompt whose separator spaces were deleted) are stepped over and deleted one at a time.
+        .{ .text = "abcdefghij", .marks = &.{ .{ 1, 3 }, .{ 3, 5 } }, .from = 0, .move = .right, .to = 3 },
+        .{ .text = "xx @a@b@c yy", .marks = &.{ .{ 3, 5 }, .{ 5, 7 }, .{ 7, 9 } }, .from = 2, .move = .right, .to = 5 },
+        .{ .text = "xx @a@b@c yy", .marks = &.{ .{ 3, 5 }, .{ 5, 7 }, .{ 7, 9 } }, .from = 9, .move = .left, .to = 7 },
+        .{ .text = "xx @a@b@c yy", .marks = &.{ .{ 3, 5 }, .{ 5, 7 }, .{ 7, 9 } }, .from = 5, .move = .backspace, .to = 3, .after = "xx @b@c yy" },
+        .{ .text = "xx @a@b@c yy", .marks = &.{ .{ 3, 5 }, .{ 5, 7 }, .{ 7, 9 } }, .from = 5, .move = .delete, .to = 5, .after = "xx @a@c yy" },
+        // Of overlapping marks, Delete and Backspace take the oldest with that edge at the cursor.
+        .{ .text = "abcdefghijklmno", .marks = &.{ .{ 1, 8 }, .{ 3, 6 } }, .from = 3, .move = .delete, .to = 3, .after = "abcghijklmno" },
+        .{ .text = "abcdefghijklmno", .marks = &.{ .{ 1, 8 }, .{ 3, 6 } }, .from = 6, .move = .backspace, .to = 3, .after = "abcghijklmno" },
+        // Backspace over `x` joins the wave and the skin tone, so the mark on `🏻Z` grows back over the cursor: it leaves.
+        .{ .text = "\u{1f44b}x\u{1f3fb}Z", .marks = &.{.{ 3, 6 }}, .from = 3, .move = .backspace, .to = 3, .after = "\u{1f44b}\u{1f3fb}Z" },
+        // A cell inside a wide unit is not a stop: the atomic setter and KEEP_OUTSIDE go to the unit's start.
+        .{ .text = "a\u{65e5}b", .marks = &.{.{ 0, 1 }}, .from = 0, .move = .{ .atomic_set = 2 }, .to = 1 },
+        .{ .text = "a\u{65e5}b", .marks = &.{}, .from = 2, .move = .{ .keep = .nearer }, .to = 1 },
+        .{ .text = "ab@x@y", .marks = &.{ .{ 2, 4 }, .{ 4, 6 } }, .from = 6, .move = .left, .to = 4 },
+        .{ .text = "ab@x@y", .marks = &.{ .{ 2, 5 }, .{ 4, 6 } }, .from = 6, .move = .left, .to = 1 },
+        .{ .text = "\u{65e5}\u{65e5}\u{65e5}\u{65e5}@ab", .marks = &.{.{ 8, 11 }}, .from = 8, .move = .right, .to = 11 },
+        .{ .text = "\u{65e5}\u{65e5}\u{65e5}\u{65e5}@ab", .marks = &.{.{ 8, 11 }}, .from = 11, .move = .right, .to = 11 },
+        .{ .text = "see @main.rs now", .marks = &.{.{ 4, 12 }}, .from = 12, .move = .left, .to = 3 },
+        .{ .text = "see @main.rs now", .marks = &.{.{ 4, 12 }}, .from = 3, .move = .right, .to = 12 },
+        .{ .text = "see @main.rs now", .marks = &.{.{ 4, 12 }}, .from = 4, .move = .right, .to = 12 },
+        // The hosts' setter goes to the nearer edge the way it moved (4, not 3); Core's buffer setter steps as Left.
+        .{ .text = "see @main.rs now", .marks = &.{.{ 4, 12 }}, .from = 12, .move = .{ .set = 5 }, .to = 4 },
+        .{ .text = "see @main.rs now", .marks = &.{.{ 4, 12 }}, .from = 12, .move = .{ .atomic_set = 5 }, .to = 3 },
+        .{ .text = "see @main.rs now", .marks = &.{.{ 4, 12 }}, .from = 0, .move = .{ .atomic_set = 5 }, .to = 12 },
+        // Backspace at the end and Delete at the start delete the whole mark; elsewhere one character.
+        .{ .text = "abc[LINK]def", .marks = &.{.{ 3, 9 }}, .from = 9, .move = .backspace, .to = 3, .after = "abcdef" },
+        .{ .text = "abc[LINK]def", .marks = &.{.{ 3, 9 }}, .from = 2, .move = .backspace, .to = 1, .after = "ac[LINK]def" },
+        .{ .text = "abc[LINK]def", .marks = &.{.{ 3, 9 }}, .from = 5, .move = .backspace, .to = 4, .after = "abc[INK]def" },
+        .{ .text = "abc[LINK]def", .marks = &.{.{ 3, 9 }}, .from = 3, .move = .delete, .to = 3, .after = "abcdef" },
+        // 634, 635, 636: a pointer, the wheel and the setter leave the cursor at the outer edge of all marks.
+        .{ .text = file, .marks = &.{.{ 2, 7 }}, .from = 3, .move = .{ .keep = .nearer }, .to = 2 },
+        .{ .text = file, .marks = &.{.{ 2, 7 }}, .from = 5, .move = .{ .keep = .nearer }, .to = 7 },
+        .{ .text = file, .marks = &.{.{ 2, 7 }}, .from = 2, .move = .{ .keep = .nearer }, .to = 2 },
+        .{ .text = "x [Pasted ~20 lines] y", .marks = &.{.{ 2, 20 }}, .from = 15, .move = .{ .keep = .nearer }, .to = 20 },
+        .{ .text = "ab\n@file\nc", .marks = &.{.{ 3, 8 }}, .from = 4, .move = .{ .keep = .end }, .to = 8 },
+        .{ .text = "ab\n@file\nc", .marks = &.{.{ 3, 8 }}, .from = 7, .move = .{ .keep = .start }, .to = 3 },
+        .{ .text = "b ca", .marks = &.{ .{ 0, 3 }, .{ 0, 4 } }, .from = 2, .move = .{ .keep = .nearer }, .to = 4 },
+        .{ .text = "b ca", .marks = &.{ .{ 0, 4 }, .{ 0, 3 } }, .from = 2, .move = .{ .keep = .nearer }, .to = 4 },
+        .{ .text = "b ca", .marks = &.{ .{ 0, 3 }, .{ 0, 4 } }, .from = 0, .move = .{ .set = 2 }, .to = 4 },
+        .{ .text = "b ca", .marks = &.{ .{ 0, 4 }, .{ 0, 3 } }, .from = 0, .move = .{ .set = 2 }, .to = 4 },
+        .{ .text = "b ca", .marks = &.{ .{ 0, 3 }, .{ 0, 4 } }, .from = 4, .move = .{ .set = 2 }, .to = 0 },
+        .{ .text = "b ca", .marks = &.{ .{ 0, 4 }, .{ 0, 3 } }, .from = 4, .move = .{ .set = 2 }, .to = 0 },
+        .{ .text = "b ca", .marks = &.{ .{ 0, 3 }, .{ 0, 4 } }, .from = 0, .move = .right, .to = 4 },
+        .{ .text = "b ca", .marks = &.{ .{ 0, 4 }, .{ 0, 3 } }, .from = 0, .move = .right, .to = 4 },
+        .{ .text = "b ca", .marks = &.{ .{ 0, 3 }, .{ 0, 4 } }, .from = 4, .move = .left, .to = 0 },
+        .{ .text = "b ca", .marks = &.{ .{ 0, 4 }, .{ 0, 3 } }, .from = 4, .move = .left, .to = 0 },
+        .{ .text = "abcdefgh", .marks = &.{ .{ 0, 6 }, .{ 2, 8 } }, .from = 3, .move = .{ .keep = .nearer }, .to = 0 },
+        .{ .text = "abcdefgh", .marks = &.{ .{ 2, 8 }, .{ 0, 6 } }, .from = 3, .move = .{ .keep = .nearer }, .to = 0 },
+        .{ .text = "abcd", .marks = &.{ .{ 2, 4 }, .{ 1, 3 }, .{ 0, 2 } }, .from = 0, .move = .{ .set = 1 }, .to = 4 },
+        // Touching edges are stops.
+        .{ .text = "ab@x@y", .marks = &.{ .{ 2, 4 }, .{ 4, 6 } }, .from = 4, .move = .{ .keep = .nearer }, .to = 4 },
+    });
+    for (rows.items) |row| {
+        try std.testing.expectEqual(c.OT_OK, abi.ot_edit_buffer_set_text(&owner, &id, row.text.ptr, @intCast(row.text.len), 0));
+        try owner.core.editorSetViewport(view_handle, .{ .x = 0, .y = 0, .width = row.width, .height = 4 }, true, false);
+        for (row.marks) |mark| _ = try eb.addMark(.{ .start = mark[0], .end = mark[1], .atomic = true });
+        try eb.setCursorByOffset(row.from);
+        const command: [3]u32 = switch (row.move) {
+            .left => .{ 0, c.OT_EDIT_MOVE_LEFT, c.OT_EDIT_ATOMIC },
+            .right => .{ 0, c.OT_EDIT_MOVE_RIGHT, c.OT_EDIT_ATOMIC },
+            .backspace => .{ 0, c.OT_EDIT_BACKSPACE, c.OT_EDIT_ATOMIC },
+            .delete => .{ 0, c.OT_EDIT_DELETE_FORWARD, c.OT_EDIT_ATOMIC },
+            .word => .{ 0, c.OT_EDIT_CURSOR_OFFSET_ATOMIC, eb.getPrevWordBoundary().offset },
+            .atomic_set => |x| .{ 0, c.OT_EDIT_CURSOR_OFFSET_ATOMIC, x },
+            .set => |x| set: {
+                try std.testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_command(&owner, &id, c.OT_EDIT_CURSOR_OFFSET, x));
+                break :set .{ 0, c.OT_EDIT_KEEP_OUTSIDE, if (x > row.from) 1 else 2 };
+            },
+            .keep => |toward| .{ 0, c.OT_EDIT_KEEP_OUTSIDE, @backingInt(toward) },
+            .up => .{ 1, c.OT_EDITOR_MOVE_UP, c.OT_EDIT_ATOMIC },
+            .down => .{ 1, c.OT_EDITOR_MOVE_DOWN, c.OT_EDIT_ATOMIC },
+        };
+        const status = if (command[0] == 1) editor_abi.ot_editor_view_command(&owner, &view, command[1], command[2]) else editor_abi.ot_edit_buffer_command(&owner, &id, command[1], command[2]);
+        try std.testing.expectEqual(c.OT_OK, status);
+        std.testing.expectEqual(row.to, eb.getPrimaryCursor().offset) catch |err| {
+            std.debug.print("{s} {any} from {d} with {any}\n", .{ row.text, row.move, row.from, row.marks });
+            return err;
+        };
+        var text: [64]u8 = undefined;
+        try std.testing.expectEqualStrings(row.after orelse row.text, text[0..eb.getText(&text)]);
+    }
+    // The flag is only for the commands that take it, and KEEP_OUTSIDE has three edges.
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, editor_abi.ot_edit_buffer_command(&owner, &id, c.OT_EDIT_KEEP_OUTSIDE, 3));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, editor_abi.ot_edit_buffer_command(&owner, &id, c.OT_EDIT_MOVE_UP, c.OT_EDIT_ATOMIC));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, editor_abi.ot_editor_view_command(&owner, &view, c.OT_EDITOR_GOTO_LINE_END, c.OT_EDIT_ATOMIC));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, editor_abi.ot_editor_view_command(&owner, &view, c.OT_EDITOR_MOVE_UP, c.OT_EDIT_ATOMIC + 1));
+}
+
+/// Whether an atomic mark strictly contains cursor offset `offset`.
+fn surrounds(eb: *const EditBuffer, offset: u32) bool {
+    for (eb.tb.marks()) |mark| {
+        const span = eb.markOffsets(mark);
+        if (mark.atomic and span.start < offset and offset < span.end) return true;
+    }
+    return false;
 }
 
 fn expectSameLines(marked: *EditBuffer, legacy: *EditBuffer) !void {

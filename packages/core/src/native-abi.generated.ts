@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 75cc041e51a1e0dc74a375caef9228342b0947afa00fb75088612dd7cddc93f3
+// ABI audit SHA-256: 3deecd0062b4cc3190a6b40c4bd24ea0aff477d675d172e5cd0b783ce9d722d1
 
 export const OT_CONTEXT_ABI_VERSION = 2
 export const OT_OK = 0
@@ -426,6 +426,9 @@ export const OT_EDIT_CURSOR_OFFSET = 9
 export const OT_EDIT_CLEAR = 10
 export const OT_EDIT_CLEAR_HISTORY = 11
 export const OT_EDIT_DEBUG_ROPE = 12
+export const OT_EDIT_CURSOR_OFFSET_ATOMIC = 13
+export const OT_EDIT_KEEP_OUTSIDE = 14
+export const OT_EDIT_ATOMIC = 1
 export const OT_EDIT_POSITION_CURSOR = 0
 export const OT_EDIT_POSITION_NEXT_WORD = 1
 export const OT_EDIT_POSITION_PREV_WORD = 2
@@ -2959,6 +2962,9 @@ export const nativeConstants = {
   OT_EDIT_CLEAR: 10,
   OT_EDIT_CLEAR_HISTORY: 11,
   OT_EDIT_DEBUG_ROPE: 12,
+  OT_EDIT_CURSOR_OFFSET_ATOMIC: 13,
+  OT_EDIT_KEEP_OUTSIDE: 14,
+  OT_EDIT_ATOMIC: 1,
   OT_EDIT_POSITION_CURSOR: 0,
   OT_EDIT_POSITION_NEXT_WORD: 1,
   OT_EDIT_POSITION_PREV_WORD: 2,

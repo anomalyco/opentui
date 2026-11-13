@@ -37,6 +37,7 @@ describe("react runtime plugin support", () => {
 
     expect(result.exitCode).toBe(0)
     expect(stdout).toContain("first=true")
+    expect(stdout).toContain("hostReconciler=true")
     expect(stdout).toContain("second=false")
     expect(stdout).toContain(
       "mismatch=OpenTUI React runtime plugin support is already installed with different preserve options.",
