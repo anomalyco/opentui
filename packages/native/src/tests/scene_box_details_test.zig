@@ -111,7 +111,6 @@ test "Scene box sides color each side, corners and titles by their top or bottom
     const green = ansi.rgbColor(0, 255, 0, 255);
     const blue = ansi.rgbColor(0, 0, 255, 255);
     const yellow = ansi.rgbColor(255, 255, 0, 255);
-    try owner.sceneSetPaint(fixture.box, .{ .borderSides = 15, .focusable = true });
     try owner.sceneSetBoxSides(fixture.box, .{ .color_sides = c.OT_BORDER_ALL, .colors = .{ yellow, blue, green, red } });
     try owner.sceneSetBoxDetails(fixture.box, .{ .title = "t", .bottom_title = "b" });
     // Cells: top line, right line, bottom line, left line, the four corners, both titles.
@@ -122,13 +121,24 @@ test "Scene box sides color each side, corners and titles by their top or bottom
         .{ .title_color = green, .colors = .{ red, green, blue, yellow, red, red, blue, blue, green, green } },
         .{ .focused = true, .colors = @splat(focus) },
     };
-    for (rows) |row| {
-        try owner.sceneSetBoxDetails(fixture.box, .{ .title = "t", .bottom_title = "b", .title_color = row.title_color });
-        try owner.sceneSetFocus(fixture.box, row.focused);
-        try repaint(owner, fixture.session, options.background, true, 0);
-        try testing.expectEqual('t', target.get(2, 0).?.char);
-        for (cells, row.colors) |cell, color| try testing.expectEqual(color, target.get(cell[0], cell[1]).?.fg);
+    // A transparent background takes the transparent fast path; an opaque one writes whole cells.
+    for ([_]ansi.RGBA{ .{ 0, 0, 0, 0 }, .{ 20, 20, 20, 255 } }) |background| {
+        try owner.sceneSetPaint(fixture.box, .{ .borderSides = 15, .focusable = true, .background = background });
+        for (rows) |row| {
+            try owner.sceneSetBoxDetails(fixture.box, .{ .title = "t", .bottom_title = "b", .title_color = row.title_color });
+            try owner.sceneSetFocus(fixture.box, row.focused);
+            try repaint(owner, fixture.session, options.background, true, 0);
+            try testing.expectEqual('t', target.get(2, 0).?.char);
+            for (cells, row.colors) |cell, color| try testing.expectEqual(color, target.get(cell[0], cell[1]).?.fg);
+        }
     }
+    // A side without a color override shows the paint's current color, not the default white.
+    const purple = ansi.rgbColor(128, 0, 128, 255);
+    try owner.sceneSetFocus(fixture.box, false);
+    try owner.sceneSetPaint(fixture.box, .{ .borderSides = 15, .borderColor = purple });
+    try owner.sceneSetBoxSides(fixture.box, .{ .color_sides = c.OT_BORDER_TOP, .colors = .{ @splat(0), @splat(0), @splat(0), red } });
+    try repaint(owner, fixture.session, options.background, true, 0);
+    for (cells[0..4], [_]ansi.RGBA{ red, purple, purple, purple }) |cell, color| try testing.expectEqual(color, target.get(cell[0], cell[1]).?.fg);
 }
 
 test "Scene box sides blend a translucent side as a uniform box of its color does" {
