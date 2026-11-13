@@ -721,6 +721,8 @@ test "Scene text paints inside its padding" {
         .{ .padding = .{ 1, 0, 1, 0 }, .height = 3, .lines = &.{ " ab   ", " cd   ", " ef   " } },
         .{ .padding = .{ 0, 1, 0, 0 }, .height = 3, .lines = &.{ "      ", "ab cd ", "ef    " } },
         .{ .padding = .{ 0, 0, 0, 1 }, .height = 3, .lines = &.{ "ab cd ", "ef    ", "      " } },
+        .{ .padding = .{ 0, 0, 2, 0 }, .height = 3, .lines = &.{ "ab    ", "cd    ", "ef    " } },
+        .{ .padding = .{ 0, 0, 0, 1 }, .height = 2, .lines = &.{ "ab cd ", "      " }, .fixed = true },
         // Yoga rounds the box to 2 rows, not its padding; the content keeps both measured rows.
         .{ .padding = .{ 0, 0, 0, 0.3 }, .height = 2, .lines = &.{ "ab cd ", "ef    " } },
         // Fractions round where Yoga rounds a child's edges; the view is as wide as measurement saw.
@@ -733,7 +735,7 @@ test "Scene text paints inside its padding" {
     const f = try Fixture.init(testing.allocator, 8, 8, .{});
     defer f.deinit();
     try f.owner.sceneSetDebugFlags(f.id, c.OT_SCENE_DEBUG_VERIFY);
-    const box = try placedAt(f, f.root, c.OT_SCENE_BOX, 2, 0, 0, 8, 8);
+    const box = try placedAt(f, f.root, c.OT_SCENE_BOX, 2, 0.25, 0, 8, 8);
     try f.owner.sceneSetPaint(box, .{ .borderSides = c.OT_BORDER_ALL });
     // A culling parent prepares only the views whose observed box changed.
     try f.owner.sceneSetScroll(box, .{ .culling = true });
@@ -781,9 +783,10 @@ test "Scene text paints inside its padding" {
     for ([_]f32{ 30, 2147483648 }, [_]u32{ c.OT_EDGE_LEFT, c.OT_EDGE_RIGHT }) |padding, edge| try f.owner.sceneSetStyle(text, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, edge, c.OT_UNIT_POINT, padding, 0);
     _ = try presentWork(f, .{});
     try testing.expectEqual(@as(f32, 482), (try f.owner.sceneGetPaintLayout(text, true)).width);
-    // Without padding the view is Yoga's box, at a fractional place (edges 1.2 and 7.6 round to 7 cells)
+    // Without padding the view is Yoga's box, at a fractional place (edges 1.45 and 7.85 round to 7 cells)
     // and 2^28 cells out, translated back on screen; one cell of padding takes two columns there too.
-    for ([_][3]f32{ .{ 0.2, 6.4, 0 }, .{ 268435456, 6, 0 }, .{ 268435456, 6, 1 } }) |place| {
+    // Padded content rounds from the absolute edges: 1.25 + 6.4 rounds to 7 cells, 5 inside the padding.
+    for ([_][3]f32{ .{ 0.2, 6.4, 0 }, .{ 0, 6.4, 1 }, .{ 268435456, 6, 0 }, .{ 268435456, 6, 1 } }) |place| {
         for (c.OT_EDGE_LEFT..c.OT_EDGE_START) |edge| try f.owner.sceneSetStyle(text, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, @intCast(edge), c.OT_UNIT_POINT, place[2], 0);
         try f.owner.sceneSetStyle(text, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_WIDTH, 0, c.OT_UNIT_POINT, place[1], 1);
         try f.owner.sceneSetPositions(text, 3, .{ 1, 1, 0, 0 }, .{ place[0], 0, 0, 0 });

@@ -35,6 +35,7 @@ import type { MouseEventType } from "./lib/parse.mouse.js"
 import type { Selection } from "./lib/selection.js"
 import {
   parseAlign,
+  parseAlignContent,
   parseAlignItems,
   parseFlexDirection,
   parseJustify,
@@ -137,6 +138,8 @@ export interface LayoutOptions extends BaseRenderableOptions {
   /** `"list"` stacks children as a column with `overflow: "scroll"` does, without a flex pass over them. */
   layoutMode?: LayoutModeString
   alignItems?: AlignString
+  alignContent?: AlignString
+  aspectRatio?: number
   justifyContent?: JustifyString
   alignSelf?: AlignString
   flexBasis?: number | "auto" | undefined
@@ -1145,6 +1148,14 @@ export abstract class Renderable extends BaseRenderable {
     return this.yogaGetEnum(YogaEnumKind.AlignItems, Align.Stretch) as Align
   }
 
+  getAlignContent(): Align {
+    return this.yogaGetEnum(YogaEnumKind.AlignContent, Align.FlexStart) as Align
+  }
+
+  getAspectRatio(): number {
+    return this.yogaGetFloat(YogaFloatKind.AspectRatio)
+  }
+
   getJustifyContent(): Justify {
     return this.yogaGetEnum(YogaEnumKind.JustifyContent, Justify.FlexStart) as Justify
   }
@@ -1246,6 +1257,8 @@ export abstract class Renderable extends BaseRenderable {
     node.setFlexDirection(parseFlexDirection(options.flexDirection))
     node.setFlexWrap(parseWrap(options.flexWrap))
     if (options.layoutMode !== undefined) node.layoutMode = options.layoutMode
+    if (options.alignContent !== undefined) node.alignContent = options.alignContent
+    if (options.aspectRatio !== undefined) node.aspectRatio = options.aspectRatio
     node.setAlignItems(parseAlignItems(options.alignItems))
     node.setJustifyContent(parseJustify(options.justifyContent))
     node.setAlignSelf(parseAlign(options.alignSelf))
@@ -1432,6 +1445,16 @@ export abstract class Renderable extends BaseRenderable {
 
   public set alignItems(alignItems: AlignString | null | undefined) {
     this.setAlignItems(parseAlignItems(alignItems))
+    this.requestRender()
+  }
+
+  public set alignContent(alignContent: AlignString | null | undefined) {
+    this.yogaSetEnum(YogaEnumKind.AlignContent, parseAlignContent(alignContent))
+    this.requestRender()
+  }
+
+  public set aspectRatio(aspectRatio: number | null | undefined) {
+    this.yogaSetFloat(YogaFloatKind.AspectRatio, aspectRatio ?? undefined)
     this.requestRender()
   }
 
