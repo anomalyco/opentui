@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test"
 import { ASCIIFontRenderable } from "../renderables/ASCIIFont.js"
 import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
 import { ASCIIFontSelectionHelper, type LocalSelectionBounds } from "./selection.js"
+import { RGBA } from "./RGBA.js"
 
 function helper() {
   return new ASCIIFontSelectionHelper(
@@ -70,7 +71,10 @@ describe("ASCIIFontRenderable selection", () => {
 
   afterEach(() => renderer?.destroy())
 
-  it("keeps unchanged active selections in renderer copy state", async () => {
+  it.each([
+    ["selectionBg", "bg"],
+    ["selectionFg", "fg"],
+  ] as const)("repaints an active selection on %s", async (prop, channel) => {
     const test = await createTestRenderer({ width: 20, height: 4 })
     renderer = test.renderer
     const font = new ASCIIFontRenderable(renderer, { text: "HI", font: "tiny" })
@@ -82,5 +86,16 @@ describe("ASCIIFontRenderable selection", () => {
     renderer.updateSelection(font, font.x + 4, font.y, { finishDragging: true })
 
     expect(renderer.getSelection()?.getSelectedText()).toBe("HI")
+    const painted = () => font.frameBuffer.getSpanLines()[0]!.spans[0]![channel]
+    const initial = painted()
+    const red = RGBA.fromHex("#ff0000")
+    font[prop] = red
+    red.r = 0
+    expect(font[prop]).toEqual(RGBA.fromHex("#ff0000"))
+    font[prop]!.r = 0
+    expect(font[prop]).toEqual(RGBA.fromHex("#ff0000"))
+    expect(painted()).toEqual(RGBA.fromHex("#ff0000"))
+    font[prop] = undefined
+    expect(painted()).toEqual(initial)
   })
 })
