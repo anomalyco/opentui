@@ -1,7 +1,7 @@
 import { expect, spyOn, test } from "bun:test"
 import { Renderable } from "../Renderable.js"
 import { CliRenderEvents } from "../renderer.js"
-import { settle } from "../testing/harness.js"
+import { serviceReadyFrames } from "../testing/harness.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { createTestRenderer } from "../testing/test-renderer.js"
 import type { AnimationTickOptions } from "../types.js"
@@ -67,7 +67,7 @@ async function animate(
     if (options.live && ms === 0) renderer.requestLive()
     while (content.length > 0 && content[0] <= ms) (content.shift(), renderer.requestRender())
     clock.advance(1)
-    await settle(4)
+    await serviceReadyFrames(renderer)
   }
   renderer.destroy()
   await renderer.closed
@@ -144,7 +144,7 @@ test("animation ticks: animationFps ticks only while drawn, and unsubscribes ins
   renderer.on(CliRenderEvents.FRAME, () => frames++)
   const run = async (ms: number) => {
     frames = 0
-    for (let i = 0; i < ms; i++) (clock.advance(1), await settle(4))
+    for (let i = 0; i < ms; i++) (clock.advance(1), await serviceReadyFrames(renderer))
     return frames
   }
   // A callback that throws, first in tick order, costs neither the others' ticks nor the frame.
@@ -206,10 +206,10 @@ test("animation ticks reject bad rates and tolerances, catch up after a late fra
   clock.advance(50)
   const stop = renderer.onAnimationTick(12.5, (deltaTime, ticks) => counts.push([deltaTime, ticks]))
   renderer.requestRender()
-  await settle(4)
+  await serviceReadyFrames(renderer)
   clock.advance(310)
-  await settle(4)
-  for (let ms = 0; ms < 120; ms++) (clock.advance(1), await settle(4))
+  await serviceReadyFrames(renderer)
+  for (let ms = 0; ms < 120; ms++) (clock.advance(1), await serviceReadyFrames(renderer))
   stop()
   expect(counts).toEqual([
     [310, 4],
@@ -243,7 +243,7 @@ for (const [fps, time, due] of boundaryRows) {
     })
     clock.advance(time)
     renderer.onAnimationTick(fps, () => calls.push("added before the frame"))
-    await settle(4)
+    await serviceReadyFrames(renderer)
     expect(calls).toEqual([`first ${due}`])
     renderer.destroy()
     await renderer.closed

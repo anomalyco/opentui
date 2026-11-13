@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { createTimeline, engine, getTimelineEngine, Timeline } from "./Timeline.js"
 import { createTestRenderer } from "../testing/test-renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
-import { settle } from "../testing/harness.js"
+import { serviceReadyFrames } from "../testing/harness.js"
 
 test("renderer-owned timelines advance independently and release only their owner's callbacks", async () => {
   const firstClock = new ManualClock()
@@ -81,7 +81,7 @@ for (const [name, targetFps, defaultRate, rates, frames, live, after] of rateRow
       )
       const run = async (ms: number) => {
         count = 0
-        for (let i = 0; i < ms; i++) (clock.advance(1), await settle(4))
+        for (let i = 0; i < ms; i++) (clock.advance(1), await serviceReadyFrames(renderer))
         return count
       }
       const playing = await run(1000)
