@@ -222,7 +222,7 @@ impl CaptureSets {
         self.0.keys().cloned().collect()
     }
 
-    /// The layer runs of [`highlight_names`]' pieces, each edge mapped to the buffer's bytes by `edge`, and empty runs
+    /// The layer runs of [`Incremental`]'s pieces, each edge mapped to the buffer's bytes by `edge`, and empty runs
     /// left out. Past the Context's group-set bound a list has no set, and its pieces paint plain rather than ending
     /// the app.
     pub(crate) fn runs(
@@ -254,21 +254,34 @@ impl CaptureSets {
     }
 }
 
-/// The styled byte ranges of `source` as `filetype` with `theme`, covering it in order as `highlight` styles it,
-/// or `None` without a grammar for it or without the `tree-sitter` feature. Widgets paint capture names instead;
-/// tests compare them with these styles.
+/// C4 invariant 1, for tests: the styled byte ranges a widget's syntax layer over `text` shows with `theme`, covering
+/// it in order as `highlight` styles it. They are a fresh highlight's (1a), and where a fresh parse has an error,
+/// with `own`, the widget's highlighter that highlighted `text` last, the whole query of its own tree (1b). Also
+/// returns whether the fresh parse had an error. `None` without a grammar.
 #[cfg(all(test, feature = "tree-sitter"))]
-pub(crate) fn highlight_ranges(
-    source: &str,
+pub(crate) fn expected_ranges(
+    text: &str,
     filetype: &str,
+    own: Option<&Incremental>,
     theme: &SyntaxTheme,
-) -> Option<Vec<(Range<usize>, Style)>> {
-    Some(styled_ranges(highlight_names(source, filetype)?, theme))
+) -> Option<(StyledRanges, bool)> {
+    let named = highlight::named_ranges(text, &highlights(text, filetype)?);
+    let mut fresh = Incremental::new(filetype);
+    fresh.update(text.to_owned());
+    let error = fresh.has_error();
+    let own = own.filter(|_| error).map(|own| {
+        assert_eq!(own.text(), text, "the highlighter's tree is of another text");
+        own.last.clone().expect("a highlight")
+    });
+    Some((styled_ranges(own.unwrap_or(named), theme), error))
 }
+
+#[cfg(feature = "tree-sitter")]
+type StyledRanges = Vec<(Range<usize>, Style)>;
 
 /// The pieces of named ranges with their lists' styles merged, neighbors of one style joined.
 #[cfg(feature = "tree-sitter")]
-fn styled_ranges((lists, named): NamedRanges, theme: &SyntaxTheme) -> Vec<(Range<usize>, Style)> {
+fn styled_ranges((lists, named): NamedRanges, theme: &SyntaxTheme) -> StyledRanges {
     let styles: Vec<Style> = lists.into_iter().map(|names| theme.merge(names)).collect();
     let mut pieces: Vec<(Range<usize>, Style)> = Vec::new();
     for (range, list) in named {
@@ -280,16 +293,30 @@ fn styled_ranges((lists, named): NamedRanges, theme: &SyntaxTheme) -> Vec<(Range
     pieces
 }
 
+/// The lists of capture names whose styles a theme merges, in order, and the byte ranges of the source with the index
+/// of their list.
 pub(crate) type NamedRanges = (Vec<Vec<&'static str>>, Vec<(Range<usize>, usize)>);
 
-/// The lists of capture names whose styles [`highlight_ranges`] would merge with any theme, in order, and the byte
-/// ranges of `source` as `filetype` with the index of their list; `None` as there.
-pub(crate) fn highlight_names(source: &str, filetype: &str) -> Option<NamedRanges> {
-    #[cfg(feature = "tree-sitter")]
-    return Some(highlight::named_ranges(source, &highlights(source, filetype)?));
-    #[cfg(not(feature = "tree-sitter"))]
-    {
-        let _ = (source, filetype);
+#[cfg(feature = "tree-sitter")]
+pub(crate) use highlight::Incremental;
+#[cfg(all(test, feature = "tree-sitter"))]
+pub(crate) use highlight::injective_theme;
+
+/// Without the `tree-sitter` feature nothing has a grammar.
+#[cfg(not(feature = "tree-sitter"))]
+pub(crate) struct Incremental;
+
+#[cfg(not(feature = "tree-sitter"))]
+impl Incremental {
+    pub(crate) fn new(_filetype: &str) -> Self {
+        Self
+    }
+
+    pub(crate) fn text(&self) -> &str {
+        ""
+    }
+
+    pub(crate) fn update(&mut self, _text: String) -> Option<NamedRanges> {
         None
     }
 }

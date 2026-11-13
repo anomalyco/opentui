@@ -24,7 +24,7 @@ use std::rc::Rc;
 /// # Ok::<(), opentui::Error>(())
 /// ```
 #[derive(Clone)]
-pub struct Textarea(Rc<EditorCore>);
+pub struct Textarea(pub(crate) Rc<EditorCore>);
 
 impl Widget for Textarea {
     fn element(&self) -> &Element {

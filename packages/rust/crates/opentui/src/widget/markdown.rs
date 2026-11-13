@@ -1082,6 +1082,7 @@ impl Markdown {
         let options = Rc::clone(&self.0.options.borrow());
         // Display math is code of the language `math` for renderers, as Core's `lang: "math"`; without one it is plain.
         let name = if block.has(sys::OT_MD_BLOCK_MATH) { Some("math") } else { info.as_deref() };
+        let closed = block.has(sys::OT_MD_BLOCK_CLOSED);
         let custom = name.and_then(|info| {
             let language = filetype_for_info_string(info)?;
             let (_, render) = options.code_blocks.iter().find(|(key, _)| *key == language)?;
@@ -1089,7 +1090,6 @@ impl Markdown {
                 Some(Rendered::Custom(widget)) => Some(widget),
                 _ => None,
             };
-            let closed = block.has(sys::OT_MD_BLOCK_CLOSED);
             let (conceal, streaming) = (options.conceal, options.streaming);
             if !streaming {
                 self.0.rendered_code.borrow_mut().push(block.index);
@@ -1100,8 +1100,9 @@ impl Markdown {
             return Some(Rendered::Custom(widget));
         }
         let language = info.as_deref().and_then(|info| info.split_whitespace().next());
+        // A closed fence's text no longer grows, so its view keeps no tree once highlighted.
         if let Some(Rendered::Code(container, view)) = previous {
-            view.filetype(language).set_code(code.as_str());
+            view.filetype(language).set_code(code.as_str()).0.set_closed(closed);
             return Some(Rendered::Code(container.clone(), view.clone()));
         }
         let base = self.base(block.parent);
@@ -1113,6 +1114,7 @@ impl Markdown {
             .set_code(code)
             .wrap(WrapMode::Word)
             .focusable(false);
+        view.0.set_closed(closed);
         Some(Rendered::Code(View::new(app).bg(colors.code_bg).child(&view), view))
     }
 
@@ -1529,12 +1531,25 @@ mod tests {
         let got = settle(&app, &codes(&markdown));
         let parses: Vec<_> = codes(&markdown).iter().map(|code| code.0.work.get().0).collect();
         assert_eq!(parses, before.iter().map(|(_, work)| work.0).collect::<Vec<_>>());
+        // C4 invariant 4 and question 4: each block's highlights took its text once, the open one's last only its new
+        // line, reusing its tree, which it alone keeps.
+        let kept = |markdown: &Markdown| -> Vec<_> {
+            (codes(markdown).iter())
+                .map(|code| (code.0.handed.get(), code.0.incremental.borrow().as_ref().map(|kept| kept.fresh_parses)))
+                .collect()
+        };
+        assert_eq!(kept(&markdown), [(12, None), (9, None), (21, Some(1))]);
         let twin = Markdown::new(&fresh).syntax_theme(theme).colors(colors(&fresh)).streaming(true);
         fresh.root().add(&twin);
         twin.set_markdown(format!("{source}let c = 2;\n"));
         let want = settle(&fresh, &codes(&twin));
         let differ = want.cells.iter().zip(&got.cells).position(|(want, got)| want != got);
         assert!(differ.is_none(), "cell {differ:?}");
+        // A line and the closing fence in one append: the block's last highlight takes only that line, then it drops
+        // its tree.
+        markdown.append("let d = 3;\n```\n");
+        settle(&app, &codes(&markdown));
+        assert_eq!(kept(&markdown)[2], (32, None));
     }
 
     // A restyle keeps a code block's widget only as a fresh build would choose it: a changed info string changes the
