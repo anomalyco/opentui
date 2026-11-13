@@ -90,9 +90,7 @@ impl Textarea {
     /// filetype; without them the text is plain. See [`syntax`](crate::syntax).
     ///
     /// The whole text is highlighted at the start of the next frame after it changes, so any number of edits between
-    /// frames costs one highlight, and frames without edits cost none. Extmark styles draw over highlighting. A piece
-    /// of text under more than 16 capture names keeps the innermost 16 (`default` goes first), and a capture name
-    /// over 56 bytes is left out of the piece's styles.
+    /// frames costs one highlight, and frames without edits cost none. Extmark styles draw over highlighting.
     pub fn filetype<'a>(&self, filetype: impl Into<Option<&'a str>>) -> Self {
         self.0.set_filetype(filetype.into());
         self.clone()

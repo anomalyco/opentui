@@ -71,6 +71,8 @@ const layoutSamples: Record<string, unknown> = {
   flexWrap: "wrap",
   layoutMode: "list",
   alignItems: "center",
+  alignContent: "space-evenly",
+  aspectRatio: 1.5,
   alignSelf: "center",
   justifyContent: "center",
   position: "absolute",
@@ -86,9 +88,8 @@ const layoutSamples: Record<string, unknown> = {
 
 const edges = [Edge.Left, Edge.Top, Edge.Right, Edge.Bottom, Edge.Horizontal, Edge.Vertical, Edge.All]
 const styleGetters = `getWidth getHeight getMinWidth getMinHeight getMaxWidth getMaxHeight getFlexBasis getFlexGrow
-  getFlexShrink getFlexDirection getFlexWrap getAlignItems getAlignSelf getJustifyContent getPositionType`.split(
-  /\s+/,
-) as (keyof Renderable)[]
+  getFlexShrink getFlexDirection getFlexWrap getAlignItems getAlignContent getAspectRatio getAlignSelf getJustifyContent
+  getPositionType`.split(/\s+/) as (keyof Renderable)[]
 
 // The constructor overrides these options.
 const constructorOverrides = { "DiffRenderable.flexDirection": "view", "MarkdownRenderable.flexDirection": "column" }

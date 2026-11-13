@@ -27,27 +27,19 @@ export function registerTimedLeader<TTarget extends object, TEvent extends Keyma
   let timeout: ReturnType<typeof setTimeout> | undefined
 
   const clearTimer = (): void => {
-    if (!timeout) {
-      return
-    }
-
+    if (timeout === undefined) return
     clearTimeout(timeout)
     timeout = undefined
   }
 
-  const scheduleTimeout = (): void => {
-    clearTimer()
-    timeout = setTimeout(() => {
-      keymap.clearPendingSequence()
-    }, timeoutMs)
-  }
-
   const syncArmedState = (sequence: readonly KeySequencePart[]): void => {
     const nextArmed = matchesTrigger(sequence[0])
+    clearTimer()
     if (nextArmed) {
-      scheduleTimeout()
-    } else {
-      clearTimer()
+      timeout = setTimeout(() => {
+        // An overdue timer can run before the host reads a queued continuation.
+        timeout = setTimeout(() => keymap.clearPendingSequence(), 0)
+      }, timeoutMs)
     }
 
     if (nextArmed === armed) {

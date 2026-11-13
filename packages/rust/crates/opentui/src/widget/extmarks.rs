@@ -3,7 +3,6 @@
 use crate::native::SyntaxStyle;
 use crate::style::Style;
 use crate::sys;
-use std::collections::HashMap;
 use std::ops::Range;
 
 /// Identifies an extmark within one editor.
@@ -95,6 +94,6 @@ pub(crate) const SYNTAX_LAYER: u32 = 1;
 pub(crate) struct Extmarks {
     /// The buffer's style table: the editor's own, or one set with `syntax_style`.
     pub syntax: Option<SyntaxStyle>,
-    /// Group sets of capture-name lists, by list; each name is registered in `syntax` from the table's palette.
-    pub group_sets: HashMap<Vec<&'static str>, u32>,
+    /// Group sets of capture-name lists; each name is registered in `syntax` from the table's palette.
+    pub group_sets: crate::syntax::CaptureSets,
 }

@@ -1,5 +1,4 @@
-// Checks the copies of build facts that cannot derive from their owner: the native targets, the toolchain versions,
-// and the Zig module's version. Each fact has one owner; this script fails when a copy disagrees with it.
+// Checks copies of build facts and package notices against their owners.
 // Usage: bun scripts/check-sources.ts [<repository root>]
 
 import { readdirSync, readFileSync } from "node:fs"
@@ -131,6 +130,18 @@ if (optional.length !== packages.size || !optional.every((name) => packages.has(
   problems.add(
     `packages/core/package.json: optionalDependencies ${optional.join(", ")}, expected ${[...packages].join(", ")}`,
   )
+}
+
+for (const [name, source] of Object.entries({
+  "LICENSE-FFMPEG": "COPYING.LGPLv2.1",
+  "FFMPEG-SOURCE.md": "README.md",
+  "LICENSE-ZLIB": "LICENSE-ZLIB",
+})) {
+  const copy = `packages/rust/crates/opentui-sys/${name}`
+  const owner = `packages/native/src/vendor/ffmpeg/${source}`
+  if (!readFileSync(join(root, copy)).equals(readFileSync(join(root, owner)))) {
+    problems.add(`${copy}: differs from ${owner}`)
+  }
 }
 
 for (const problem of problems) console.error(problem)

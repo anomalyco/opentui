@@ -108,6 +108,7 @@ const buildResult = await Bun.build({
   ],
   target: "bun",
   format: "esm",
+  jsx: { development: isDev },
   outdir: join(rootDir, "dist"),
   external: externalDeps,
   splitting: true,

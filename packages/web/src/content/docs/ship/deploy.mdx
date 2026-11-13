@@ -30,6 +30,14 @@ process.
 Read [Runtime and platform support](/docs/getting-started/runtime-support) before you select a target. Read
 [Environment variables](/docs/reference/env-vars) for stable runtime and build configuration.
 
+## Native library and FFmpeg
+
+The default native library includes FFmpeg under LGPL-2.1-or-later, even if your app never plays video. If you ship that library, including inside a `bun build --compile` executable, include the platform package's `LICENSE-FFMPEG` and `FFMPEG-SOURCE.md` (or their contents) with your release. The latter identifies the matching source and how to rebuild the library.
+
+Users can load a compatible replacement by setting `OPENTUI_LIB_PATH` to the shared library's path before starting the app. This works with compiled Bun executables too. It changes which library runs, not which library the executable contains.
+
+To ship OpenTUI without FFmpeg, open the [native package directory](https://github.com/anomalyco/opentui/tree/main/packages/native) in the matching OpenTUI checkout. Run `sh scripts/prepare-zig-deps.sh` and `zig build -Dvideo=false -Doptimize=ReleaseFast`. Ship the resulting shared library from `lib/<target>` and load it with `OPENTUI_LIB_PATH` or call `setRenderLibPath(path)` before creating a renderer. For a Bun executable that ships the library separately, add `--external '@opentui/core-*'` to the compile command so it doesn't also embed the default platform libraries.
+
 ## Build Bun executables
 
 Build a separate executable for each release target. Linux glibc and Linux musl are different targets.

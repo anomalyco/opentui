@@ -1787,10 +1787,10 @@ ot_status ot_edit_buffer_set_layer(ot_context *, const ot_handle *, uint32_t lay
     uint32_t start_byte, uint32_t end_byte, const ot_highlight_run *runs, uint32_t run_count);
 
 /* Edit marks: ranges of the text that move with edits. Text inserted at a mark's start shifts it,
- * at its end leaves it (so an empty mark stays), and strictly inside grows it. A delete clips a mark and drops it once
- * none of its text is left. An OT_EDIT_MARK_ATOMIC mark is one unit: an edit that changes part
- * of its text drops it, and the edit changes exactly the text it asked for. set_text and clear
- * drop every mark. Undo and redo restore the marks of the text they restore. Ids start at 1 and
+ * at its end leaves it (so an empty mark stays), and strictly inside grows it. A delete clips a
+ * mark and drops it once none of its text is left. An OT_EDIT_MARK_ATOMIC mark is one unit: an
+ * edit that changes part of its text drops it, and the edit changes exactly the text it asked
+ * for. set_text and clear drop every mark. Undo and redo restore the marks of the text they restore. Ids start at 1 and
  * are never reused, undo included. At most 65,536 marks per buffer (OT_OBJECT_LIMIT).
  * start and end are cursor offsets, start <= end; past the text they mean its end. On output a
  * start rounds down and an end up to a cursor stop, and start_byte/end_byte give the mark in
@@ -1820,9 +1820,9 @@ typedef struct ot_edit_mark {
     uint32_t start_byte;
     uint32_t end_byte;
 } ot_edit_mark;
-/* ADD takes mark (id 0, priority <= 255 when styled) and writes the new id. REMOVE takes mark->id (the rest
- * zero) and writes it back, or 0 when there was no such mark. CLEAR drops every mark; mark and
- * out_id are NULL. */
+/* ADD takes mark (id 0, priority <= 255 when styled) and writes the new id. REMOVE takes
+ * mark->id (the rest zero) and writes it back, or 0 when there was no such mark. CLEAR drops
+ * every mark; mark and out_id are NULL. */
 ot_status ot_edit_buffer_mark(ot_context *, const ot_handle *, uint32_t operation,
     const ot_edit_mark *mark, uint32_t *out_id);
 /* Copies the marks in (start, id) order: mark id, or all for id 0, of kind kind, or any for
@@ -2456,6 +2456,11 @@ ot_status ot_text_buffer_highlight(ot_context *, const ot_handle *, uint32_t ope
     uint32_t argument, const ot_edit_highlight *);
 ot_status ot_text_buffer_get_highlights(ot_context *, const ot_handle *, uint32_t line,
     ot_edit_highlight *, uint32_t capacity, uint32_t *out_count);
+/* Same arguments, validation, transaction and paint as ot_edit_buffer_set_layer. Appending
+ * keeps the layers; set_text, set_styled_text, clear and the CLEAR_ALL highlight operation
+ * empty them. */
+ot_status ot_text_buffer_set_layer(ot_context *, const ot_handle *, uint32_t layer_id,
+    uint32_t start_byte, uint32_t end_byte, const ot_highlight_run *runs, uint32_t run_count);
 ot_status ot_text_buffer_view_set_viewport(ot_context *, const ot_handle *, const ot_editor_viewport *, uint32_t size_only);
 ot_status ot_text_buffer_view_command(ot_context *, const ot_handle *, uint32_t command, uint32_t argument);
 ot_status ot_text_buffer_view_set_tab_color(ot_context *, const ot_handle *, const uint16_t color[4]);

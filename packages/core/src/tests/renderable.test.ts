@@ -369,6 +369,8 @@ describe("Renderable - declared style getters", () => {
     ["getFlexDirection", (box) => box.getFlexDirection(), { flexDirection: "row-reverse" }, FlexDirection.RowReverse],
     ["getFlexWrap", (box) => box.getFlexWrap(), { flexWrap: "wrap-reverse" }, Wrap.WrapReverse],
     ["getAlignItems", (box) => box.getAlignItems(), { alignItems: "center" }, Align.Center],
+    ["getAlignContent", (box) => box.getAlignContent(), { alignContent: "space-around" }, Align.SpaceAround],
+    ["getAspectRatio", (box) => box.getAspectRatio(), { aspectRatio: 1.5 }, 1.5],
     ["getJustifyContent", (box) => box.getJustifyContent(), { justifyContent: "space-between" }, Justify.SpaceBetween],
     ["getAlignSelf", (box) => box.getAlignSelf(), { alignSelf: "flex-end" }, Align.FlexEnd],
     ["getPositionType", (box) => box.getPositionType(), { position: "absolute" }, PositionType.Absolute],
@@ -462,6 +464,43 @@ test.each([
     expect([constructed.read(), assigned.read()]).toEqual([expected, expected])
   },
 )
+
+test.each(["box", "scroll content"])("%s lays out wrapped lines at the requested aspect ratio", async (kind) => {
+  const options: BoxOptions = {
+    width: 12,
+    minHeight: 6,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignContent: "space-between",
+    aspectRatio: 1.5,
+  }
+  const box =
+    kind === "box"
+      ? new BoxRenderable(testRenderer, options)
+      : new ScrollBoxRenderable(testRenderer, {
+          width: 12,
+          height: 4,
+          scrollbarOptions: { visible: false },
+          contentOptions: options,
+        })
+  const target = box instanceof ScrollBoxRenderable ? box.content : box
+  const first = new BoxRenderable(testRenderer, { width: 8, height: 2 })
+  const second = new BoxRenderable(testRenderer, { width: 8, height: 2 })
+  box.add(first)
+  box.add(second)
+  testRenderer.root.add(box)
+  const geometry = async () => {
+    await renderOnce()
+    return [target.height, first.y - target.y, second.y - target.y]
+  }
+  expect(await geometry()).toEqual([8, 0, 6])
+  target.alignContent = "center"
+  target.aspectRatio = 1
+  expect(await geometry()).toEqual([12, 4, 6])
+  target.alignContent = undefined
+  target.aspectRatio = null
+  expect(await geometry()).toEqual([6, 0, 2])
+})
 
 describe("Renderable - Child Management", () => {
   test("can add and remove children", () => {
