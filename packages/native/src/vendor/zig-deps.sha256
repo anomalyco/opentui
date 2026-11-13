@@ -1,7 +1,7 @@
-ac7c507f3f6bc55efbace760af99710acb8727790a0372a998f5e3b453383693  zig-deps.tar.gz
+de92bd26313e41054eae6798440833b073ba44fc0aae50ee58f0fefb00234c78  zig-deps.tar.gz
 21eb65ef2e55e9c726d1bf65d97debcdf75db68993045d9d275ea58797bb6bda  update-zig-deps.sh
 7ca5be7c38dd7fd8cdbe886d54c92b7a123dd83d1f23bf77fb6383342e7c2058  zig-deps/ghostty-build.zig
-51d286e9b6388e344ee2a3adbba953f96e937bca586a99d5c2069d33e6779862  zig-deps/ghostty-build.zig.zon
+8d6c5c849413a91ffd9eb31d3a9ca67a0b54419c7f689d22db1f196fe5f438d1  zig-deps/ghostty-build.zig.zon
 2116b6cfc3b1100737e2c89cf73a61633256a6f3984ef86e281cf4288923ff99  zig-deps/ghostty-shared-deps.patch
 8ce83f9f08e9549ffab6a074884287d5199ec0528a8775c1af20183a83de79a0  zig-deps/ghostty-zig-0.17.patch
 7be127a4771daef583a23c2774f956edcaa4026c3e39c289bae4666b51b8292f  zig-deps/yoga-absolute-edge-rounding.patch
