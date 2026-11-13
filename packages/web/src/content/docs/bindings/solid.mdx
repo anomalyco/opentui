@@ -106,6 +106,9 @@ Solid JSX intrinsic elements map to Core renderables. Multi-word intrinsic names
 `<ascii_font>` and `<tab_select>`. See the [Components overview](/docs/components) for availability and
 registration requirements.
 
+Per-side border overrides such as `borderTopStyle` and `borderLeftColor` work as `<box>` props and as `style` keys. A
+value that becomes `undefined` removes the override; see [Per-side borders](/docs/components/box#per-side-borders).
+
 ## API reference
 
 ### `render(node, rendererOrConfig?)`

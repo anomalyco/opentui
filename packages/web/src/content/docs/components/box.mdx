@@ -76,6 +76,42 @@ renderer.root.add(panel)
 ╰────────────────╯  ┗━━━━━━━━━━━━━━━━┛
 ```
 
+## Per-side borders
+
+Each side can override the box's `borderStyle` and `borderColor`, as CSS's `border-top-style` and `border-top-color` do:
+
+```typescript
+const panel = new BoxRenderable(renderer, {
+  width: 12,
+  height: 4,
+  border: true,
+  borderStyle: "rounded",
+  borderColor: "#808080",
+  title: "ab",
+  borderTopStyle: "double",
+  borderTopColor: "#ff0000",
+  borderLeftStyle: "heavy",
+})
+```
+
+```text
+╔═ab═══════╕
+┃          │
+┃          │
+┖──────────╯
+```
+
+The longhands are `borderTopStyle`, `borderRightStyle`, `borderBottomStyle`, `borderLeftStyle`, `borderTopColor`, `borderRightColor`, `borderBottomColor`, and `borderLeftColor`, as options and as properties:
+
+- A side without an override uses `borderStyle` and `borderColor`. Setting a longhand to `undefined` removes the override, and the side then shows the current `borderStyle` and `borderColor`, including changes made after the override was set.
+- A longhand draws no side and changes no layout. `border` still chooses which sides draw, and an override is kept while its side is hidden.
+- Where two sides with different styles meet, the corner uses Unicode's mixed single/double or light/heavy glyph (`╒`, `┎`, …; rounded counts as light). Double and heavy have no mixed glyph, so that corner is the top or bottom side's own corner. A corner takes the top or bottom side's color.
+- Without `titleColor`, the title takes the top side's color and the bottom title the bottom side's.
+- `customBorderChars` replace every side's glyphs until a `borderStyle` write clears them, and `focusedBorderColor` colors every side while the box is focused.
+- Reads return the override you set, or `undefined`: `borderStyle` and `borderColor` still read the box's own values.
+
+In React and Solid, the longhands are `<box>` props and `style` keys. Removing the prop or the key removes the override.
+
 ## Titles
 
 Add a title and bottom title to the box border:
@@ -171,24 +207,26 @@ const button = new BoxRenderable(renderer, {
 
 ## Properties
 
-| Property               | Type               | Default        | Description                             |
-| ---------------------- | ------------------ | -------------- | --------------------------------------- |
-| `width`                | `number \| string` | -              | Width in terminal columns or percentage |
-| `height`               | `number \| string` | -              | Height in rows or percentage            |
-| `backgroundColor`      | `string \| RGBA`   | `transparent`  | Background fill color                   |
-| `border`               | `boolean`          | `false`        | Show border                             |
-| `borderStyle`          | `string`           | `"single"`     | Border style                            |
-| `borderColor`          | `string \| RGBA`   | `#FFFFFF`      | Border color                            |
-| `title`                | `string`           | -              | Title text in border                    |
-| `titleColor`           | `string \| RGBA`   | `borderColor`  | Color of the title text                 |
-| `titleAlignment`       | `string`           | `"left"`       | Title position                          |
-| `bottomTitle`          | `string`           | -              | Bottom title text in border             |
-| `bottomTitleAlignment` | `string`           | `"left"`       | Bottom title position                   |
-| `padding`              | `number`           | `0`            | Internal padding                        |
-| `gap`                  | `number \| string` | -              | Gap between children                    |
-| `flexDirection`        | `string`           | `"column"`     | Child layout direction                  |
-| `justifyContent`       | `string`           | `"flex-start"` | Main axis alignment                     |
-| `alignItems`           | `string`           | `"stretch"`    | Cross axis alignment                    |
+| Property                                                                     | Type                                                    | Default        | Description                               |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------- | -------------- | ----------------------------------------- |
+| `width`                                                                      | `number \| string`                                      | -              | Width in terminal columns or percentage   |
+| `height`                                                                     | `number \| string`                                      | -              | Height in rows or percentage              |
+| `backgroundColor`                                                            | `string \| RGBA`                                        | `transparent`  | Background fill color                     |
+| `border`                                                                     | `boolean \| ("top" \| "right" \| "bottom" \| "left")[]` | `false`        | Show the border, or only the listed sides |
+| `borderStyle`                                                                | `"single" \| "double" \| "rounded" \| "heavy"`          | `"single"`     | Border style                              |
+| `borderColor`                                                                | `string \| RGBA`                                        | `#FFFFFF`      | Border color                              |
+| `borderTopStyle`, `borderRightStyle`, `borderBottomStyle`, `borderLeftStyle` | `BorderStyle \| undefined`                              | -              | One side's style over `borderStyle`       |
+| `borderTopColor`, `borderRightColor`, `borderBottomColor`, `borderLeftColor` | `string \| RGBA \| undefined`                           | -              | One side's color over `borderColor`       |
+| `title`                                                                      | `string`                                                | -              | Title text in border                      |
+| `titleColor`                                                                 | `string \| RGBA`                                        | `borderColor`  | Color of the title text                   |
+| `titleAlignment`                                                             | `string`                                                | `"left"`       | Title position                            |
+| `bottomTitle`                                                                | `string`                                                | -              | Bottom title text in border               |
+| `bottomTitleAlignment`                                                       | `string`                                                | `"left"`       | Bottom title position                     |
+| `padding`                                                                    | `number`                                                | `0`            | Internal padding                          |
+| `gap`                                                                        | `number \| string`                                      | -              | Gap between children                      |
+| `flexDirection`                                                              | `string`                                                | `"column"`     | Child layout direction                    |
+| `justifyContent`                                                             | `string`                                                | `"flex-start"` | Main axis alignment                       |
+| `alignItems`                                                                 | `string`                                                | `"stretch"`    | Cross axis alignment                      |
 
 ## Example: card component
 

@@ -307,6 +307,9 @@ Style components with props or the `style` prop:
 </box>
 ```
 
+Per-side border overrides such as `borderTopStyle` and `borderLeftColor` work as props and as `style` keys. Removing the
+prop or the key, or passing `undefined`, removes the override; see [Per-side borders](/docs/components/box#per-side-borders).
+
 ## Testing
 
 `@opentui/react/test-utils` exports `testRender(node, options)`. It is a React-aware wrapper around

@@ -176,6 +176,8 @@ const scrollbox = new ScrollBoxRenderable(renderer, {
 })
 ```
 
+The root is a [Box](/docs/components/box), so it takes the box's border options, including the per-side longhands such as `borderTopStyle`, directly or in `rootOptions`. To remove a longhand that `rootOptions` set, pass it again as `undefined`. The wrapper, viewport, and content options do not draw borders.
+
 For long content, such as a log or a transcript, `contentOptions: { layoutMode: "list" }` lays out only the rows that change instead of every row. It has the rules in [List layout](/docs/core-concepts/layout#list-layout).
 
 ## Scroll methods
