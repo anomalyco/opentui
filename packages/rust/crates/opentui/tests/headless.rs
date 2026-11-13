@@ -3,6 +3,7 @@
 use opentui::app::{HeadlessOptions, HeadlessWrite};
 use opentui::input::Event;
 use opentui::prelude::*;
+use opentui::remote::{RemoteOptions, RemoteTerminal};
 use opentui::testing::TestApp;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -152,6 +153,80 @@ fn timers_fire_on_the_real_clock() {
         }
     });
     app.run().expect("run");
+}
+
+/// Where the timer that ends a run is armed: while a widget paints, from a task it defers while painting, from an
+/// animation such a task starts, or from a timer callback.
+#[derive(Clone, Copy, Debug)]
+enum Arm {
+    Paint,
+    Defer,
+    Animate,
+    Timer,
+}
+
+/// A widget that arms a timer the first time it paints.
+struct Arming {
+    app: App,
+    arm: Arm,
+    armed: Cell<bool>,
+}
+
+/// Arms a 20 ms timer that quits.
+fn arm_quit(app: &App) {
+    app.set_timeout(Duration::from_millis(20), |cx| cx.quit());
+}
+
+impl Component for Arming {
+    fn paint(&self, _painter: &mut Painter<'_>) {
+        match self.arm {
+            _ if self.armed.replace(true) => {}
+            Arm::Paint => arm_quit(&self.app),
+            Arm::Defer => self.app.defer(|cx| arm_quit(cx.app())),
+            Arm::Animate => self.app.defer(|cx| {
+                cx.animate(|cx, _| {
+                    arm_quit(cx.app());
+                    false
+                })
+            }),
+            Arm::Timer => {}
+        }
+    }
+}
+
+#[test]
+fn timers_armed_while_painting_fire_on_time() {
+    // Runs an app whose only wakeup after its first frame is the timer `arm` sets up, headless or on a remote terminal
+    // that never reads its output. A timer the loop misses waits for the next unrelated wakeup: the watchdog, or a
+    // remote terminal's 5 s capability window closing.
+    let late = |&(arm, remote): &(Arm, bool)| {
+        let run = move |terminal: Option<RemoteTerminal>| {
+            let app = match terminal {
+                Some(terminal) => App::remote(terminal, AppOptions::default().with_theme(Theme::dark()))?,
+                None => headless(10, 1),
+            };
+            watchdog(&app);
+            if let Arm::Timer = arm {
+                app.set_timeout(Duration::ZERO, |cx| arm_quit(cx.app()));
+            }
+            let arming = Arming { app: app.clone(), arm, armed: Cell::new(false) };
+            app.root().add(&Custom::new(&app, arming).height(1).grow(1.0));
+            app.run()
+        };
+        let started = Instant::now();
+        let ended = if remote {
+            let (terminal, _link) = RemoteTerminal::new(RemoteOptions::default(), || {}).expect("a remote terminal");
+            std::thread::spawn(move || run(Some(terminal))).join().expect("the app thread")
+        } else {
+            run(None)
+        };
+        ended.is_err() || started.elapsed() > Duration::from_secs(2)
+    };
+    let rows = [false, true]
+        .into_iter()
+        .flat_map(|remote| [Arm::Paint, Arm::Defer, Arm::Animate, Arm::Timer].map(|arm| (arm, remote)));
+    let late: Vec<_> = rows.filter(late).collect();
+    assert!(late.is_empty(), "{late:?}");
 }
 
 #[test]

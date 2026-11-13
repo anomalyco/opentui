@@ -1593,39 +1593,47 @@ impl App {
                 continue;
             }
             let now = Instant::now();
-            let mut deadline = match (self.next_timer(), clipboard) {
-                (Some(timer), Some(clipboard)) => Some(timer.min(clipboard)),
-                (timer, clipboard) => timer.or(clipboard),
-            };
-            if self.wants_frame() || host.wants_frame() {
-                let earliest = last_frame.map_or(now, |last| last + interval);
-                if now >= earliest && host.can_render()? {
-                    let draft = self.paint()?;
-                    let outcome = host.present(draft)?;
-                    self.committed(outcome)?;
-                    last_frame = Some(now);
-                    presenting = outcome.accepted();
-                }
-                if self.wants_frame() || host.wants_frame() {
-                    // The frame cap applies, or output is still draining: check back shortly. A terminal that stopped
-                    // taking output wakes the host itself when it takes more.
-                    let retry = if now < earliest {
-                        Some(earliest)
-                    } else if host.output_blocked() {
-                        None
-                    } else {
-                        Some(now + Duration::from_millis(2))
-                    };
-                    if let Some(retry) = retry {
-                        deadline = Some(deadline.map_or(retry, |deadline| deadline.min(retry)));
-                    }
-                }
+            // The frame cap's next slot, while a frame is wanted.
+            let earliest =
+                (self.wants_frame() || host.wants_frame()).then(|| last_frame.map_or(now, |last| last + interval));
+            let mut framed = false;
+            if earliest.is_some_and(|earliest| now >= earliest) && host.can_render()? {
+                let draft = self.paint()?;
+                let outcome = host.present(draft)?;
+                self.committed(outcome)?;
+                last_frame = Some(now);
+                presenting = outcome.accepted();
+                framed = true;
             }
             if presenting {
                 let renderer = self.0.session.renderer_state()?;
                 if !renderer.frame_pending {
                     presenting = false;
                     self.presented(renderer);
+                    framed = true;
+                }
+            }
+            // Tasks a frame deferred run now, so the deadline sees the timers and frames that it and they asked for.
+            let wants = if framed {
+                self.drain_deferred();
+                self.wants_frame() || host.wants_frame()
+            } else {
+                earliest.is_some()
+            };
+            let mut deadline = match (self.next_timer(), clipboard) {
+                (Some(timer), Some(clipboard)) => Some(timer.min(clipboard)),
+                (timer, clipboard) => timer.or(clipboard),
+            };
+            if wants {
+                // The frame cap applies, or output is still draining: check back shortly. A terminal that stopped
+                // taking output wakes the host itself when it takes more.
+                let retry = match earliest {
+                    Some(earliest) if now < earliest => Some(earliest),
+                    _ if host.output_blocked() => None,
+                    _ => Some(now + Duration::from_millis(2)),
+                };
+                if let Some(retry) = retry {
+                    deadline = Some(deadline.map_or(retry, |deadline| deadline.min(retry)));
                 }
             }
             host.poll(deadline, &mut events)?;
