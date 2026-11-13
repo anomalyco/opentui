@@ -3848,6 +3848,15 @@ pub const Context = struct {
         text.invalidate(false);
     }
 
+    pub fn textBufferSetLayer(self: *Context, handle: Handle, layer: LayerReplacement) !void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const text = try self.getTextBuffer(handle);
+        try text.checkMutable();
+        try text.buffer.setLayer(layer.layer_id, layer.start_byte, layer.end_byte, layer.runs);
+        text.invalidate(false);
+    }
+
     /// Group set ids are Context-wide: a buffer composes them against whatever style it binds.
     pub fn groupSet(self: *Context, names: []const []const u8) !u32 {
         try self.beginMutation();

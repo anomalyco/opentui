@@ -33,10 +33,10 @@ pub use highlight::{
 };
 
 use crate::error::Result;
-use crate::native::{Context, SyntaxStyle};
+use crate::native::{Context, LayerRun, SyntaxStyle};
 use crate::style::{Color, Style};
 use crate::theme::{Theme, ThemeMode};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 
 /// Styles for capture names, kept in Rust. Core's TypeScript calls this a `SyntaxStyle`.
@@ -211,8 +211,53 @@ impl Palette {
     };
 }
 
+/// Group sets of capture-name lists, by list, as a widget's syntax layer names its pieces: each name is registered as
+/// `opentui.<name>` in the widget's style table, with the table's palette.
+#[derive(Default)]
+pub(crate) struct CaptureSets(HashMap<Vec<&'static str>, u32>);
+
+impl CaptureSets {
+    /// The lists seen.
+    pub(crate) fn lists(&self) -> Vec<Vec<&'static str>> {
+        self.0.keys().cloned().collect()
+    }
+
+    /// The layer runs of [`highlight_names`]' pieces, each edge mapped to the buffer's bytes by `edge`, and empty runs
+    /// left out. Past the Context's group-set bound a list has no set, and its pieces paint plain rather than ending
+    /// the app.
+    pub(crate) fn runs(
+        &mut self,
+        table: &SyntaxStyle,
+        context: &Context,
+        (lists, pieces): NamedRanges,
+        edge: impl Fn(usize) -> usize,
+    ) -> Result<Vec<LayerRun>> {
+        let mut sets = Vec::with_capacity(lists.len());
+        for names in lists {
+            if let Some(&id) = self.0.get(&names) {
+                sets.push(Some(id));
+                continue;
+            }
+            let group = table.capture_group(&names)?;
+            let id = context.group_set(&group.iter().map(String::as_str).collect::<Vec<_>>()).ok();
+            if let Some(id) = id {
+                self.0.insert(names, id);
+            }
+            sets.push(id);
+        }
+        Ok((pieces.into_iter())
+            .filter_map(|(range, list)| {
+                let (start_byte, end_byte) = (edge(range.start) as u32, edge(range.end) as u32);
+                (start_byte < end_byte).then_some(LayerRun { start_byte, end_byte, group_set: sets[list]? })
+            })
+            .collect())
+    }
+}
+
 /// The styled byte ranges of `source` as `filetype` with `theme`, covering it in order as `highlight` styles it,
-/// or `None` without a grammar for it or without the `tree-sitter` feature.
+/// or `None` without a grammar for it or without the `tree-sitter` feature. Widgets paint capture names instead;
+/// tests compare them with these styles.
+#[cfg(all(test, feature = "tree-sitter"))]
 pub(crate) fn highlight_ranges(
     source: &str,
     filetype: &str,
@@ -222,6 +267,7 @@ pub(crate) fn highlight_ranges(
 }
 
 /// The pieces of named ranges with their lists' styles merged, neighbors of one style joined.
+#[cfg(feature = "tree-sitter")]
 fn styled_ranges((lists, named): NamedRanges, theme: &SyntaxTheme) -> Vec<(Range<usize>, Style)> {
     let styles: Vec<Style> = lists.into_iter().map(|names| theme.merge(names)).collect();
     let mut pieces: Vec<(Range<usize>, Style)> = Vec::new();
