@@ -282,11 +282,13 @@ describeClient("TreeSitterClient", () => {
   const within3s = <T>(promise: Promise<T>) =>
     Promise.race([promise, new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 3000))])
   // Each row ends with removeBuffer. The markdown rows edit or remove while the worker loads the injected typescript
-  // or zig grammar, which a new worker has not loaded yet. A row returns the errors and warnings it expects.
+  // or zig grammar, which a new worker has not loaded yet. A row returns the errors and warnings it expects; a cold row
+  // starts on a client that has not initialized, and `reused` counts the parses that must reuse an old tree.
   test.each<
     [
       string,
       (c: TreeSitterClient, highlighted: (version: number, line?: number) => Promise<void>) => Promise<string[] | void>,
+      { cold?: boolean; reused?: number }?,
     ]
   >([
     [
@@ -420,6 +422,38 @@ describeClient("TreeSitterClient", () => {
       },
     ],
     [
+      "removeCopy during an append's injection load",
+      async (c) => {
+        // A streamed fence's appends: one that does not continue the copy is refused and changes nothing.
+        expect((await c.highlightAppend(1, 0, md, "markdown")).highlights?.length).toBeGreaterThan(0)
+        expect(await c.highlightAppend(1, 1, "x", "markdown")).toMatchObject({ error: expect.any(String) })
+        void c.highlightAppend(1, md.length, mdZig.slice(md.length), "markdown")
+        await c.removeCopy(1)
+      },
+      { reused: 1 },
+    ],
+    [
+      "removeCopy of an append sent before the client initialized",
+      async (c) => {
+        const append = c.highlightAppend(7, 0, js(1), "javascript")
+        await c.removeCopy(7)
+        await append
+      },
+      { cold: true },
+    ],
+    [
+      "a copy beside a buffer of the same number",
+      async (c, highlighted) => {
+        // Copies have their own ids: removing copy 1 leaves buffer 1 to its owner.
+        await c.createBuffer(1, js(1), "javascript", 1)
+        await highlighted(1)
+        expect((await c.highlightAppend(1, 0, js(2), "javascript")).highlights?.length).toBeGreaterThan(0)
+        await c.removeCopy(1)
+        await c.resetBuffer(1, 2, js(3))
+        await highlighted(2)
+      },
+    ],
+    [
       "clearCache after highlighting",
       async (c) => {
         await c.highlightOnce(mdZig, "markdown")
@@ -444,19 +478,23 @@ describeClient("TreeSitterClient", () => {
         const abi = "Error: Incompatible language version 16. Compatibility range 13 through 15."
         await expect(c.createBuffer(1, "const a = 1;", "abi16", 1)).rejects.toThrow(abi)
         await expect(c.highlightOnce("const a = 1;", "abi16")).rejects.toThrow(abi)
-        return [abi, abi]
+        await expect(c.highlightAppend(7, 0, "const a = 1;", "abi16")).rejects.toThrow(abi)
+        return [abi, abi, abi]
       },
     ],
     [
       "createBuffer whose first parse returns null",
       async (c) => {
         expect(await c.createBuffer(1, "null-parse", "javascript", 1)).toBe(false)
+        expect(await c.highlightAppend(7, 0, "null-parse", "javascript")).toMatchObject({
+          error: "Failed to parse buffer",
+        })
         return ["Failed to parse buffer"]
       },
     ],
   ])(
     "should delete every replaced tree and parser once no message reads it: %s",
-    async (_name, run) => {
+    async (_name, run, options = {}) => {
       const workerPath = new URL(
         existsSync(new URL("./tree-count-worker.fixture.js", import.meta.url))
           ? "./tree-count-worker.fixture.js"
@@ -486,17 +524,19 @@ describeClient("TreeSitterClient", () => {
         }
       }
       try {
-        await c.initialize()
+        if (!options.cold) await c.initialize()
         const expectedErrors = (await run(c, highlighted)) ?? []
         const removed = await within3s(c.removeBuffer(1))
         // Waits on the same grammar loads, so a buffer pass suspended on them has resumed before the count. It also
         // leaves the four cached parsers: markdown, markdown_inline, typescript and zig.
         await within3s(c.highlightOnce(mdZig, "markdown"))
-        const trees = await within3s(Promise.all([c.getPerformance(), treeCount]).then(([, count]) => count))
+        const trees = (await within3s(
+          Promise.all([c.getPerformance(), treeCount]).then(([, count]) => count),
+        )) as Record<"live" | "freedReads" | "parsers" | "reused", number>
         expect({ removed, errors, trees }).toEqual({
           removed: undefined,
           errors: expectedErrors,
-          trees: { live: 0, freedReads: 0, parsers: 4 },
+          trees: { live: 0, freedReads: 0, parsers: 4, reused: options.reused ?? trees.reused },
         })
       } finally {
         await within3s(c.destroy())
