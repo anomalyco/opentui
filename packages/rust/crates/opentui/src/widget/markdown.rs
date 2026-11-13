@@ -1091,6 +1091,7 @@ impl Markdown {
         let options = Rc::clone(&self.0.options.borrow());
         // Display math is code of the language `math` for renderers, as Core's `lang: "math"`; without one it is plain.
         let name = if block.has(sys::OT_MD_BLOCK_MATH) { Some("math") } else { info.as_deref() };
+        let closed = block.has(sys::OT_MD_BLOCK_CLOSED);
         let custom = name.and_then(|info| {
             let language = filetype_for_info_string(info)?;
             let (_, render) = options.code_blocks.iter().find(|(key, _)| *key == language)?;
@@ -1098,7 +1099,6 @@ impl Markdown {
                 Some(Rendered::Custom(widget)) => Some(widget),
                 _ => None,
             };
-            let closed = block.has(sys::OT_MD_BLOCK_CLOSED);
             let (conceal, streaming) = (options.conceal, options.streaming);
             if !streaming {
                 self.0.rendered_code.borrow_mut().push(block.index);
@@ -1109,8 +1109,9 @@ impl Markdown {
             return Some(Rendered::Custom(widget));
         }
         let language = info.as_deref().and_then(|info| info.split_whitespace().next());
+        // A closed fence's text no longer grows, so its view keeps no tree once highlighted.
         if let Some(Rendered::Code(container, view)) = previous {
-            view.filetype(language).set_code(code.as_str());
+            view.filetype(language).set_code(code.as_str()).0.set_closed(closed);
             return Some(Rendered::Code(container.clone(), view.clone()));
         }
         let base = self.base(block.parent);
@@ -1122,6 +1123,7 @@ impl Markdown {
             .set_code(code)
             .wrap(WrapMode::Word)
             .focusable(false);
+        view.0.set_closed(closed);
         Some(Rendered::Code(View::new(app).bg(colors.code_bg).child(&view), view))
     }
 
@@ -1558,6 +1560,12 @@ mod tests {
             let doc = setup(&app, calls.clone()).set_markdown(source);
             app.root().add(&doc);
             settle(&app, &codes(&doc));
+            // C4 invariant 4 and question 4: each fence's highlights took its text once, and only the open one keeps
+            // its tree, also where a fence is built closed (opus-2).
+            let kept = |doc: &Markdown| -> Vec<_> {
+                (codes(doc).iter()).map(|c| (c.0.handed.get(), c.0.incremental.borrow().is_some())).collect()
+            };
+            assert_eq!(kept(&doc), [(12, false), (9, false), (10, true)], "{change}");
             let tail = "let c = 2;\n";
             doc.append(tail);
             app.render(); // Start the tail's highlight before changing the option.
@@ -1578,6 +1586,10 @@ mod tests {
             let expected = usize::from(change == "remove");
             let builtins = 3 + expected - usize::from(change == "renderer");
             assert_eq!((after.len(), new, parses), (builtins, expected, expected), "{change}: (Code, new, parses)");
+            // The open fence kept its tree through the change: its highlights took only the tail's line.
+            let (open, closed) = kept(&doc).split_last().map(|(open, closed)| (*open, closed.to_vec())).unwrap();
+            assert_eq!(open, (21, true), "{change}: the open fence");
+            assert!(closed.iter().all(|(_, tree)| !tree), "{change}: a closed fence kept its tree");
             if matches!(change, "color" | "reset" | "layout" | "renderer" | "remove") {
                 assert_eq!(calls.get(), if change == "renderer" { 4 } else { 0 }, "{change}: renderer calls");
                 assert_eq!(quote, id(&doc, sys::OT_MD_QUOTE), "{change}: replaced the table's parent");
@@ -1594,6 +1606,16 @@ mod tests {
                     apply(&setup(&fresh, Rc::default()), Rc::default()).set_markdown(format!("{source}{tail}{chunk}"));
                 fresh.root().add(&twin);
                 assert!(settle(&app, &codes(&doc)) == settle(&fresh, &codes(&twin)), "{change}, append {chunk:?}");
+            }
+            // A line and the closer in one append: the last highlight took only that line, then the tree went.
+            assert_eq!(kept(&doc).last(), Some(&(32, false)), "{change}: closed");
+            // Reopened (its closer gone), the fence parses its text again once, then keeps its tree for each new line
+            // (bigboi-4); a closer alone releases the tree with no highlight to land (opus-2).
+            doc.set_markdown(format!("{source}{tail}let d = 3;\n"));
+            for (line, handed, open) in [("// z\n", 69, true), ("// y\n", 74, true), ("```\n", 74, false)] {
+                doc.append(line);
+                settle(&app, &codes(&doc));
+                assert_eq!(kept(&doc).last(), Some(&(handed, open)), "{change}: after {line:?}");
             }
         }
     }
