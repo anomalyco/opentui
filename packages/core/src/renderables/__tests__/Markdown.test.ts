@@ -32,7 +32,8 @@ import { ManualClock } from "../../testing/manual-clock.js"
 import { createTestStdout } from "../../testing/test-streams.js"
 import { NativeSession } from "../../NativeSession.js"
 import { TextAttributes, type CapturedFrame } from "../../types.js"
-import type { SimpleHighlight } from "../../lib/tree-sitter/types.js"
+import type { SimpleHighlight, TreeSitterWorkerRequest } from "../../lib/tree-sitter/types.js"
+import { TextBuffer } from "../../text-buffer.js"
 import { stringWidth } from "../../platform/runtime.js"
 import { resolveRenderLib } from "../../zig.js"
 import corpus from "../markdown.conformance.json" with { type: "json" }
@@ -4139,6 +4140,180 @@ The fenced block above appears near the top so streaming mode exercises a larger
   expect(visibleCodeFrames.filter((frame) => frame.exportFg!.join(",") !== expectedKeywordFg.join(","))).toEqual([])
 })
 
+/** Counts the string units of every message a client posts, and the bytes and layers written to text buffers. */
+function countStreamWork(client: TreeSitterClient) {
+  const counts = { units: 0, bytes: 0, layers: [] as number[], oneshots: 0 }
+  const target = client as unknown as { sendWorkerMessage(message: TreeSitterWorkerRequest): void }
+  const send = target.sendWorkerMessage
+  target.sendWorkerMessage = function (message) {
+    counts.units += "content" in message ? message.content.length : "text" in message ? message.text.length : 0
+    counts.oneshots += Number(message.type === "ONESHOT_HIGHLIGHT")
+    return send.call(this, message)
+  }
+  const { setText, append, setStyledText, _setLayer } = TextBuffer.prototype
+  TextBuffer.prototype.setText = function (text) {
+    counts.bytes += Buffer.byteLength(text)
+    return setText.call(this, text)
+  }
+  TextBuffer.prototype.append = function (text) {
+    counts.bytes += Buffer.byteLength(text)
+    return append.call(this, text)
+  }
+  TextBuffer.prototype.setStyledText = function (text) {
+    for (const chunk of text.chunks) counts.bytes += Buffer.byteLength(chunk.text)
+    return setStyledText.call(this, text)
+  }
+  TextBuffer.prototype._setLayer = function (layer, start, end, runs) {
+    counts.layers.push(end)
+    return _setLayer.call(this, layer, start, end, runs)
+  }
+  const restore = () => {
+    target.sendWorkerMessage = send
+    Object.assign(TextBuffer.prototype, { setText, append, setStyledText, _setLayer })
+  }
+  return { counts, restore }
+}
+
+const fenceLine = (i: number) => `  const value${i} = compute(input.items[${i}], "é ${i % 7} 😀") // step ${i}\n`
+
+// Record 312: each byte of a streamed fence reaches the worker and native about once, so the work grows with the fence,
+// not its square (on the base, 4 KB sent 74x its size to the worker). Each reply queries the whole tree (C4 rule (b)).
+test.each([1024, 4096])("a %i-byte streamed fence sends work linear in its size", async (size) => {
+  let body = ""
+  for (let i = 0; body.length < size; i++) body += fenceLine(i)
+  const doc = "```typescript\n" + body + "```\n"
+  const md = createMarkdownRenderable({ content: "", syntaxStyle, streaming: true })
+  renderer.root.add(md)
+  const { counts, restore } = countStreamWork(markdownTreeSitterClient)
+  try {
+    for (let end = 32; end < doc.length + 32; end += 32) {
+      md.content = doc.slice(0, end)
+      await renderMarkdownRenderable(md, true)
+    }
+    const streamed = { ...counts, layers: counts.layers.length }
+    md.streaming = false
+    await renderMarkdownRenderable(md, true)
+    const n = Buffer.byteLength(doc)
+    // Streaming: about n each way; the stream end highlights the fence once more, as before.
+    expect(streamed.units).toBeLessThanOrEqual(1.1 * n)
+    expect(streamed.bytes).toBeLessThanOrEqual(1.1 * n)
+    expect(streamed.layers).toBeGreaterThan(size / 64)
+    expect(streamed.oneshots).toBe(0)
+    expect(counts.units).toBeLessThanOrEqual(2.2 * n)
+    expect(counts.bytes).toBeLessThanOrEqual(2.2 * n)
+  } finally {
+    restore()
+  }
+})
+
+// One request in flight: appends made while it runs go to native at once and to the worker together in the next one;
+// each reply writes the layer for the prefix it covers. A streaming fence has no syntax highlight records (C4 question 9).
+test("a streamed fence sends the appends made during a reply as one delta", async () => {
+  const client = createMockTreeSitterClient()
+  const sent: string[] = []
+  const highlightAppend = client.highlightAppend.bind(client)
+  client.highlightAppend = (id, offset, text, filetype) => (
+    sent.push(text), highlightAppend(id, offset, text, filetype)
+  )
+  const { counts, restore } = countStreamWork(client)
+  try {
+    const md = createMarkdownRenderable({
+      content: "```js\nlet a",
+      syntaxStyle,
+      streaming: true,
+      treeSitterClient: client,
+    })
+    renderer.root.add(md)
+    await renderOnce()
+    for (const content of ["```js\nlet a = 1", "```js\nlet a = 1 + 2"]) {
+      md.content = content
+      await renderOnce()
+    }
+    expect(sent).toEqual(["let a"])
+    expect(counts.bytes).toBe("let a = 1 + 2".length)
+    client.resolveAllHighlightOnce()
+    await flushAsync()
+    await renderOnce()
+    expect(sent).toEqual(["let a", " = 1 + 2"])
+    expect(counts.layers).toEqual([5])
+    client.resolveAllHighlightOnce()
+    await waitForHighlight(md.getChildren()[0] as CodeRenderable)
+    expect(counts.layers).toEqual([5, 13])
+    expect(counts.units).toBe(0)
+    expect((md.getChildren()[0] as CodeRenderable).getLineHighlights(0)).toEqual([])
+  } finally {
+    restore()
+  }
+})
+
+// Oracle (D97): at each step, once its highlight lands, a streamed fence paints as a fresh Code highlighted whole, and
+// after the stream as a fresh Markdown. Seeded pieces cover multibyte text, strings, comments and partial tokens.
+test("a streamed fence paints as a fresh highlight at every step", async () => {
+  const pieces = ["const ", "x", " = ", '"é😀', '"', "// c", "\n", "{", "}", "(a, b) => ", "1", ";", "/*", "*/", "  "]
+  const styles = {
+    default: { fg: "#ffffff" },
+    keyword: { fg: "#ff0000" },
+    string: { fg: "#00ff00", bold: true },
+    comment: { fg: "#0000ff", italic: true },
+    number: { fg: "#ffff00" },
+    variable: { fg: "#00ffff" },
+    "variable.parameter": { fg: "#ff00ff" },
+    operator: { fg: "#808080" },
+    punctuation: { fg: "#c0c0c0" },
+    function: { fg: "#804000" },
+  }
+  const style = SyntaxStyle.fromStyles(styles, renderer.nativeScene)
+  const twin = await createTestRenderer({ width: 60, height: 40 })
+  const twinStyle = SyntaxStyle.fromStyles(styles, twin.renderer.nativeScene)
+  // A failed delta falls back to a whole highlight, which paints right too: the fence must never send one.
+  const { counts, restore } = countStreamWork(markdownTreeSitterClient)
+  try {
+    for (let seed = 1; seed <= 6; seed++) {
+      let state = seed
+      const random = (n: number) => ((state = (state * 1103515245 + 12345) % 2 ** 31), state % n)
+      let doc = "```javascript\n"
+      const md = createMarkdownRenderable({ content: doc, syntaxStyle: style, streaming: true })
+      renderer.root.add(md)
+      for (let step = 0; step < 24; step++) {
+        doc += pieces[random(pieces.length)]! + (random(3) === 0 ? pieces[random(pieces.length)]! : "")
+        md.content = doc
+        const oneshots = counts.oneshots
+        await renderMarkdownRenderable(md, true)
+        expect(counts.oneshots).toBe(oneshots)
+        const fence = md.getChildren()[0] as CodeRenderable
+        const fresh = new CodeRenderable(twin.renderer, {
+          content: fence.content,
+          filetype: "javascript",
+          syntaxStyle: twinStyle,
+          treeSitterClient: markdownTreeSitterClient,
+          conceal: false,
+          width: "100%",
+        })
+        twin.renderer.root.add(fresh)
+        await twin.renderOnce()
+        await waitForHighlight(fresh)
+        await twin.renderOnce()
+        expect({ seed, step, spans: captureSpans().lines }).toEqual({ seed, step, spans: twin.captureSpans().lines })
+        fresh.destroy()
+      }
+      md.streaming = false
+      await renderMarkdownRenderable(md, true)
+      const streamed = captureSpans().lines
+      md.destroyRecursively()
+      const settled = createMarkdownRenderable({ content: doc, syntaxStyle: style })
+      renderer.root.add(settled)
+      await renderMarkdownRenderable(settled, true)
+      expect({ seed, spans: streamed }).toEqual({ seed, spans: captureSpans().lines })
+      settled.destroyRecursively()
+    }
+  } finally {
+    restore()
+    twin.renderer.destroy()
+    style.destroy()
+    twinStyle.destroy()
+  }
+})
+
 test("non-streaming content commits every top-level block", async () => {
   const md = createMarkdownRenderable({
     id: "markdown",
@@ -5646,6 +5821,13 @@ class FakeWorker extends TreeSitterClient {
     const { promise, resolve, reject } = Promise.withResolvers<{ highlights: SimpleHighlight[] }>()
     this.pending.push({ content, resolve, reject: () => reject(new Error("worker failed")) })
     return promise
+  }
+
+  // A streamed fence appends to a copy the worker keeps; the reply covers the whole copy.
+  private copies = new Map<number, string>()
+  override async highlightAppend(id: number, offset: number, text: string) {
+    this.copies.set(id, (this.copies.get(id) ?? "").slice(0, offset) + text)
+    return this.highlightOnce(this.copies.get(id)!)
   }
 
   reply(index = 0) {

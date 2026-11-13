@@ -971,6 +971,7 @@ export class MarkdownRenderable extends Renderable {
           width: "100%",
           flexShrink: 0,
         })
+        code._streamsDeltas = true
         this.setCode(index, code)
         return code
       }

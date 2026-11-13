@@ -12,6 +12,8 @@ interface TextChunkOptions {
   enabled?: boolean
   baseHighlight?: string
   ranges?: Array<{ start: number; end: number }>
+  /** Receives, per chunk, the style names it merges in order (a native group set). */
+  names?: string[][]
 }
 
 interface Boundary {
@@ -175,7 +177,9 @@ export function treeSitterToTextChunks(
         }
 
         // Use merged style, falling back to default if nothing was merged
-        const finalStyle = Object.keys(mergedStyle).length > 0 ? mergedStyle : defaultStyle
+        const merged = Object.keys(mergedStyle).length > 0
+        const finalStyle = merged ? mergedStyle : defaultStyle
+        options?.names?.push(merged ? sortedGroups.map(({ group }) => group) : ["default"])
 
         chunks.push({
           __isChunk: true,
@@ -189,6 +193,7 @@ export function treeSitterToTextChunks(
     } else if (currentOffset < boundary.offset) {
       const text = content.slice(currentOffset, boundary.offset)
       const style = baseStyle ?? defaultStyle
+      options?.names?.push(["default"])
       chunks.push({
         __isChunk: true,
         text,
@@ -241,6 +246,7 @@ export function treeSitterToTextChunks(
   if (currentOffset < content.length) {
     const text = content.slice(currentOffset)
     const style = baseStyle ?? defaultStyle
+    options?.names?.push(["default"])
     chunks.push({
       __isChunk: true,
       text,

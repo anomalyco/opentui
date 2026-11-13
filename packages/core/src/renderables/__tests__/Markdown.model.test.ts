@@ -36,6 +36,13 @@ class FakeWorker extends TreeSitterClient {
     return promise
   }
 
+  // A streamed fence appends to a copy the worker keeps; the reply covers the whole copy.
+  private copies = new Map<number, string>()
+  override async highlightAppend(id: number, offset: number, text: string, filetype: string) {
+    this.copies.set(id, (this.copies.get(id) ?? "").slice(0, offset) + text)
+    return this.highlightOnce(this.copies.get(id)!, filetype)
+  }
+
   reply(index = 0) {
     const [item] = this.pending.splice(index, 1)
     if (item) FakeWorker.replied++

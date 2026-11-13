@@ -384,6 +384,32 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
     content: string,
     filetype: string,
   ): Promise<{ highlights?: SimpleHighlight[]; warning?: string; error?: string }> {
+    return this.request({
+      type: "ONESHOT_HIGHLIGHT",
+      content,
+      filetype,
+      messageId: `oneshot_${this.messageIdCounter++}`,
+    })
+  }
+
+  /**
+   * @internal Appends `text` at `offset` to the worker's copy of buffer `bufferId` (created by the first append, at
+   * offset 0; free it with `removeBuffer`), parses it with the tree it kept, and answers the highlights of the whole
+   * copy. An offset that differs from the copy's length is an error.
+   */
+  public async highlightAppend(
+    bufferId: number,
+    offset: number,
+    text: string,
+    filetype: string,
+  ): Promise<{ highlights?: SimpleHighlight[]; warning?: string; error?: string }> {
+    const messageId = `append_${this.messageIdCounter++}`
+    return this.request({ type: "APPEND_HIGHLIGHT", bufferId, offset, text, filetype, messageId })
+  }
+
+  private async request(
+    message: Extract<TreeSitterWorkerRequest, { type: "ONESHOT_HIGHLIGHT" | "APPEND_HIGHLIGHT" }>,
+  ): Promise<{ highlights?: SimpleHighlight[]; warning?: string; error?: string }> {
     if (!this.initialized) {
       try {
         await this.initialize()
@@ -391,17 +417,11 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
         return { error: "Could not highlight because of initialization error" }
       }
     }
-
-    const messageId = `oneshot_${this.messageIdCounter++}`
+    const messageId = message.messageId
     return new Promise((resolve, reject) => {
       this.messageCallbacks.set(messageId, { resolve, reject })
       try {
-        this.sendWorkerMessage({
-          type: "ONESHOT_HIGHLIGHT",
-          content,
-          filetype,
-          messageId,
-        })
+        this.sendWorkerMessage(message)
       } catch (error) {
         this.messageCallbacks.delete(messageId)
         reject(error instanceof Error ? error : new Error(String(error)))

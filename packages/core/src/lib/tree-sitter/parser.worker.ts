@@ -878,35 +878,62 @@ class ParserWorker {
     }
 
     try {
-      const matches = reusableState.filetypeParser.queries.highlights.captures(tree.rootNode)
-
-      let injectionRanges = new Map<string, Array<{ start: number; end: number }>>()
-      if (reusableState.filetypeParser.queries.injections) {
-        const parserState: ParserState = {
-          parser: reusableState.parser,
-          tree,
-          queries: reusableState.filetypeParser.queries,
-          filetype,
-          content,
-          injectionMapping: reusableState.filetypeParser.injectionMapping,
-        }
-        const injectionResult = await this.processInjections(parserState)
-
-        matches.push(...injectionResult.captures)
-        injectionRanges = injectionResult.injectionRanges
-      }
-
-      const highlights = this.getSimpleHighlights(matches, injectionRanges)
-
-      postWorkerMessage({
-        type: "ONESHOT_HIGHLIGHT_RESPONSE",
-        messageId,
-        hasParser: true,
-        highlights,
+      const highlights = await this.simpleHighlights({
+        parser: reusableState.parser,
+        tree,
+        queries: reusableState.filetypeParser.queries,
+        filetype,
+        content,
+        injectionMapping: reusableState.filetypeParser.injectionMapping,
       })
+      postWorkerMessage({ type: "ONESHOT_HIGHLIGHT_RESPONSE", messageId, hasParser: true, highlights })
     } finally {
       tree.delete()
     }
+  }
+
+  // Appends to a buffer's copy and parses it with the kept tree; the whole tree is queried again, since an append can
+  // change captures before it (C4 rule (b)).
+  async handleAppendHighlight(bufferId: number, offset: number, text: string, filetype: string, messageId: string) {
+    const reply = (answer: { hasParser?: boolean; highlights?: SimpleHighlight[]; warning?: string; error?: string }) =>
+      postWorkerMessage({ type: "ONESHOT_HIGHLIGHT_RESPONSE", messageId, hasParser: true, ...answer })
+    let state = this.bufferParsers.get(bufferId)
+    if ((state?.content.length ?? 0) !== offset) return reply({ error: "Append does not continue the buffer" })
+    if (!state) {
+      const filetypeParser = await this.resolveFiletypeParser(filetype)
+      if (!filetypeParser) return reply({ hasParser: false, warning: `No parser available for filetype ${filetype}` })
+      const parser = new Parser()
+      parser.setLanguage(filetypeParser.language)
+      const tree = parser.parse(text)
+      if (!tree) return (parser.delete(), reply({ error: "Failed to parse buffer" }))
+      const { queries, injectionMapping } = filetypeParser
+      state = { parser, tree, queries, filetype, content: text, injectionMapping }
+      this.bufferParsers.set(bufferId, state)
+    } else if (text) {
+      const content = state.content + text
+      const position = endPosition(state.content)
+      state.tree.edit({
+        startIndex: offset,
+        oldEndIndex: offset,
+        newEndIndex: content.length,
+        startPosition: position,
+        oldEndPosition: position,
+        newEndPosition: endPosition(content),
+      })
+      const tree = state.parser.parse(content, state.tree)
+      if (!tree) return reply({ error: "Failed to parse buffer" })
+      state.tree.delete()
+      state.tree = tree
+      state.content = content
+    }
+    reply({ highlights: await this.simpleHighlights(state) })
+  }
+
+  private async simpleHighlights(parserState: ParserState): Promise<SimpleHighlight[]> {
+    const matches = parserState.queries.highlights.captures(parserState.tree.rootNode)
+    const { captures, injectionRanges } = await this.processInjections(parserState)
+    matches.push(...captures)
+    return this.getSimpleHighlights(matches, injectionRanges)
   }
 
   async updateDataPath(dataPath: string): Promise<void> {
@@ -945,6 +972,13 @@ class ParserWorker {
       throw new Error(`Failed to clear cache: ${error}`)
     }
   }
+}
+
+// The point after `text`, with columns in UTF-16 units as web-tree-sitter counts them.
+function endPosition(text: string): { row: number; column: number } {
+  let row = 0
+  for (let at = text.indexOf("\n"); at !== -1; at = text.indexOf("\n", at + 1)) row++
+  return { row, column: text.length - text.lastIndexOf("\n") - 1 }
 }
 
 function logMessage(type: TreeSitterWorkerLogType, ...args: unknown[]): void {
@@ -1081,6 +1115,16 @@ if (isWorkerRuntime) {
 
         case "ONESHOT_HIGHLIGHT":
           await worker.handleOneShotHighlight(message.content, message.filetype, message.messageId)
+          break
+
+        case "APPEND_HIGHLIGHT":
+          await worker.handleAppendHighlight(
+            message.bufferId,
+            message.offset,
+            message.text,
+            message.filetype,
+            message.messageId,
+          )
           break
 
         case "UPDATE_DATA_PATH":

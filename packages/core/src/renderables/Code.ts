@@ -48,6 +48,8 @@ export interface CodeOptions extends TextBufferOptions {
 type ConcealLineRange = [start: number, end: number]
 
 const PREVIEW = -2
+// The layer a streamed fence's syntax goes in, as in Rust's editor.
+const SYNTAX_LAYER = 1
 
 export class CodeRenderable extends TextBufferRenderable {
   static override readonly nativeIntegration: NativeRenderableIntegration = {
@@ -89,6 +91,13 @@ export class CodeRenderable extends TextBufferRenderable {
   // Temporary rendered-line -> source-line map for concealment; native extmarks should replace this.
   private _renderedLineSources?: number[]
   private _mappedLineInfo?: LineInfo
+  // While set, the buffer holds `_content` and grows only by appends; the worker's copy of buffer `id` holds its first
+  // `sent` units, and each reply writes the syntax layer for the prefix it covers (record 312).
+  private _deltas?: { client: TreeSitterClient; id: number; filetype: string; sent: number }
+  private _groupSets = new Map<string, number>()
+  private static nextDeltaBuffer = -1
+  /** @internal Markdown sets it on its fences: while one streams, its appends go to the highlighter as deltas. */
+  public _streamsDeltas = false
 
   protected _contentDefaultOptions = {
     content: "",
@@ -218,7 +227,18 @@ export class CodeRenderable extends TextBufferRenderable {
   }
 
   private writeContent(value: string): void {
+    // Native stores a line break as one byte, so text with a carriage return goes the whole-text way.
+    const delta = this._deltas && value.startsWith(this._content) ? value.slice(this._content.length) : undefined
     this._content = value
+    if (delta !== undefined && !delta.includes("\r")) {
+      this.textBuffer.append(delta)
+      this._version++
+      this.setHighlightsDirty(true)
+      this.updateTextInfo()
+      this.requestRender()
+      return
+    }
+    this.stopDeltas()
     // Streaming keeps a painted highlight until the next one lands.
     if (this._streaming && this._shouldRenderTextBuffer && this._shownVersion >= 0 && !this._drawUnstyledText) {
       this.invalidateHighlights()
@@ -231,13 +251,39 @@ export class CodeRenderable extends TextBufferRenderable {
     } else {
       this.textBuffer.setText(value)
       this._shownVersion = -1
+      if (this.deltasAllowed() && !value.includes("\r")) {
+        const id = CodeRenderable.nextDeltaBuffer--
+        this._deltas = { client: this._treeSitterClient, id, filetype: this._filetype!, sent: 0 }
+      }
     }
     this.invalidateHighlights()
     this.setRenderedLineSources(undefined)
     this.updateTextInfo()
   }
 
+  // Only a streamed Markdown fence on the default path: no hook, no conceal, no preview.
+  private deltasAllowed(): boolean {
+    return (
+      this._streamsDeltas &&
+      this._streaming &&
+      !!this._filetype &&
+      !this._conceal &&
+      !this._onHighlight &&
+      !this._onChunks &&
+      !this._baseHighlight &&
+      !this._initialStyledText
+    )
+  }
+
+  private stopDeltas(): void {
+    const deltas = this._deltas
+    this._deltas = undefined
+    // A destroyed client has freed its buffers.
+    if (deltas && deltas.sent > 0) deltas.client.removeBuffer(deltas.id).catch(() => {})
+  }
+
   public updateStreamingPreview(content: string, initialStyledText: StyledText): void {
+    this.stopDeltas()
     this._content = content
     this._initialStyledText = initialStyledText
     this._shownVersion = PREVIEW
@@ -352,6 +398,7 @@ export class CodeRenderable extends TextBufferRenderable {
     const previewed = this._shownVersion === PREVIEW
     if (!this._content || !(this._shownVersion < 0 || replaces) || (!value && previewed)) return
     this.runMutation(() => {
+      if (shows) this.stopDeltas()
       if (shows) this.textBuffer.setStyledText(value)
       else this.textBuffer.setText(this._content)
       if (!shows && previewed && !this._drawUnstyledText && this._filetype) this.setShouldRenderTextBuffer(false)
@@ -454,6 +501,10 @@ export class CodeRenderable extends TextBufferRenderable {
   }
 
   private async startHighlight(): Promise<void> {
+    const deltas = this._deltas
+    if (deltas?.client === this._treeSitterClient && deltas.filetype === this._filetype && this.deltasAllowed())
+      return this.highlightDelta(deltas)
+    this.stopDeltas()
     const content = this._content
     const filetype = this._filetype
     const version = this._version
@@ -535,6 +586,48 @@ export class CodeRenderable extends TextBufferRenderable {
       if (this.isDestroyed) return
       this.settle(-1, undefined, undefined, !!this._onChunks)
     }
+  }
+
+  // Sends the text the worker has not seen; the reply covers that prefix and is never stale: text appended meanwhile
+  // stays plain until the next step sends it. A failure, or a name native rejects, goes back to whole highlights.
+  private async highlightDelta(deltas: NonNullable<CodeRenderable["_deltas"]>): Promise<void> {
+    const version = this._version
+    const offset = deltas.sent
+    const content = this._content
+    deltas.sent = content.length
+    this._isHighlighting = true
+    const answer = await deltas.client
+      .highlightAppend(deltas.id, offset, content.slice(offset), deltas.filetype)
+      .catch((error: unknown) => ({ highlights: undefined, error: String(error) }))
+    if (this._deltas !== deltas || this.isDestroyed) return
+    try {
+      if (!answer.highlights) throw new Error(answer.error)
+      const names: string[][] = []
+      const chunks = treeSitterToTextChunks(content, answer.highlights, this._syntaxStyle, { enabled: false, names })
+      const runs = new Uint32Array(chunks.length * 3)
+      let end = 0
+      chunks.forEach((chunk, index) => {
+        const start = end
+        // UTF-8 as native stores it (a lone surrogate becomes U+FFFD, 3 bytes).
+        end += Buffer.byteLength(chunk.text)
+        // Native composes at most 16 names; the last ones win.
+        const key = names[index]!.slice(-16)
+        let set = this._groupSets.get(key.join("\n"))
+        if (set === undefined) this._groupSets.set(key.join("\n"), (set = this.textBuffer._groupSet(key)))
+        runs.set([start, end, set], index * 3)
+      })
+      if (this.textBuffer.getSyntaxStyle() !== this._syntaxStyle) this.textBuffer.setSyntaxStyle(this._syntaxStyle)
+      this.textBuffer._setLayer(SYNTAX_LAYER, 0, end, runs)
+    } catch {
+      this.stopDeltas()
+      this._highlightRerun = true
+      return
+    }
+    this._shownVersion = version
+    this._isHighlighting = false
+    this.setShouldRenderTextBuffer(true)
+    // A layer changes no text, so nothing else asks for the frame that shows it.
+    this.requestRender()
   }
 
   // Without styled text the highlight is the plain content; version -1 marks a failed highlight. A block that keeps what
@@ -693,6 +786,7 @@ export class CodeRenderable extends TextBufferRenderable {
 
     const hasContent = this._content.length > 0
     if (!hasContent || !this._filetype) {
+      this.stopDeltas()
       this.setShouldRenderTextBuffer(hasContent)
       this.setHighlightsDirty(false)
       this.clearPendingHighlight()
@@ -726,6 +820,7 @@ export class CodeRenderable extends TextBufferRenderable {
   protected override destroyOwnedResources(): void {
     this.runCleanup((run) => {
       run(() => this.clearPendingHighlight())
+      run(() => this.stopDeltas())
       run(() => super.destroyOwnedResources())
     })
   }
