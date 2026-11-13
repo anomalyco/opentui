@@ -4324,11 +4324,13 @@ test("a streamed fence sends the appends made during a reply as one delta", asyn
 })
 
 // Oracle (D97): at each step, once its highlight lands, a streamed fence paints as a fresh Code highlighted whole, and
-// after the stream as a fresh Markdown. Seeded pieces cover multibyte text, strings, comments and partial tokens.
+// after the stream as a fresh Markdown. Seeded pieces cover multibyte text, strings, comments and partial tokens; the
+// fixed rows cover text with no captures, a fallback style and a nested fence's last backticks. The theme's default
+// has its own look and leaves `punctuation` unstyled, so a chunk that merges no style shows which one it paints.
 test("a streamed fence paints as a fresh highlight at every step", async () => {
   const pieces = ["const ", "x", " = ", '"é😀', '"', "// c", "\n", "{", "}", "(a, b) => ", "1", ";", "/*", "*/", "  "]
   const styles = {
-    default: { fg: "#ffffff" },
+    default: { fg: "#fefefe", italic: true },
     keyword: { fg: "#ff0000" },
     string: { fg: "#00ff00", bold: true },
     comment: { fg: "#0000ff", italic: true },
@@ -4336,31 +4338,43 @@ test("a streamed fence paints as a fresh highlight at every step", async () => {
     variable: { fg: "#00ffff" },
     "variable.parameter": { fg: "#ff00ff" },
     operator: { fg: "#808080" },
-    punctuation: { fg: "#c0c0c0" },
     function: { fg: "#804000" },
+    "markup.raw": { fg: "#00aa00" },
+    "punctuation.delimiter": { fg: "#aa0000" },
   }
   const style = SyntaxStyle.fromStyles(styles, renderer.nativeScene)
   const twin = await createTestRenderer({ width: 60, height: 40 })
   const twinStyle = SyntaxStyle.fromStyles(styles, twin.renderer.nativeScene)
+  const keyword = RGBA.fromHex("#ff0000")
+  const rows: Array<[label: string, opener: string, filetype: string, pieces: string[]]> = []
+  for (let seed = 1; seed <= 6; seed++) {
+    let state = seed
+    const random = (n: number) => ((state = (state * 1103515245 + 12345) % 2 ** 31), state % n)
+    const steps = Array.from({ length: 24 }, () =>
+      pieces[random(pieces.length)]!.concat(random(3) === 0 ? pieces[random(pieces.length)]! : ""),
+    )
+    // Each seed starts with a keyword, so a query that returns no captures fails the color check below.
+    rows.push([`seed ${seed}`, "```javascript\n", "javascript", ["const ", ...steps]])
+  }
+  rows.push(["no captures", "```javascript\n", "javascript", ["@", " ", "#"]])
+  rows.push(["strikethrough", "~~~~markdown\n", "markdown", ["~~strike~~", " and", "\n"]])
+  rows.push(["nested fence", "~~~~markdown\n", "markdown", ["```js\n", "let n=1\n", "```"]])
   // A failed delta falls back to a whole highlight, which paints right too: the fence must never send one.
   const { counts, restore } = countStreamWork(markdownTreeSitterClient)
   try {
-    for (let seed = 1; seed <= 6; seed++) {
-      let state = seed
-      const random = (n: number) => ((state = (state * 1103515245 + 12345) % 2 ** 31), state % n)
-      let doc = "```javascript\n"
+    for (const [label, opener, filetype, steps] of rows) {
+      let doc = opener
       const md = createMarkdownRenderable({ content: doc, syntaxStyle: style, streaming: true })
       renderer.root.add(md)
-      for (let step = 0; step < 24; step++) {
-        doc += pieces[random(pieces.length)]! + (random(3) === 0 ? pieces[random(pieces.length)]! : "")
-        md.content = doc
+      for (const [step, piece] of steps.entries()) {
+        md.content = doc += piece
         const oneshots = counts.oneshots
         await renderMarkdownRenderable(md, true)
-        expect(counts.oneshots).toBe(oneshots)
+        expect({ label, step, oneshots: counts.oneshots }).toEqual({ label, step, oneshots })
         const fence = md.getChildren()[0] as CodeRenderable
         const fresh = new CodeRenderable(twin.renderer, {
           content: fence.content,
-          filetype: "javascript",
+          filetype,
           syntaxStyle: twinStyle,
           treeSitterClient: markdownTreeSitterClient,
           conceal: false,
@@ -4370,7 +4384,10 @@ test("a streamed fence paints as a fresh highlight at every step", async () => {
         await twin.renderOnce()
         await waitForHighlight(fresh)
         await twin.renderOnce()
-        expect({ seed, step, spans: captureSpans().lines }).toEqual({ seed, step, spans: twin.captureSpans().lines })
+        expect({ label, step, spans: captureSpans().lines }).toEqual({ label, step, spans: twin.captureSpans().lines })
+        if (step === 0 && label.startsWith("seed")) {
+          expect(captureSpans().lines[0]!.spans.some((span) => span.text === "const" && span.fg.equals(keyword))).toBe(true)
+        }
         fresh.destroy()
       }
       md.streaming = false
@@ -4380,7 +4397,7 @@ test("a streamed fence paints as a fresh highlight at every step", async () => {
       const settled = createMarkdownRenderable({ content: doc, syntaxStyle: style })
       renderer.root.add(settled)
       await renderMarkdownRenderable(settled, true)
-      expect({ seed, spans: streamed }).toEqual({ seed, spans: captureSpans().lines })
+      expect({ label, spans: streamed }).toEqual({ label, spans: captureSpans().lines })
       settled.destroyRecursively()
     }
   } finally {

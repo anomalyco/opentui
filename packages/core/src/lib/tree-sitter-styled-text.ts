@@ -179,7 +179,13 @@ export function treeSitterToTextChunks(
         // Use merged style, falling back to default if nothing was merged
         const merged = Object.keys(mergedStyle).length > 0
         const finalStyle = merged ? mergedStyle : defaultStyle
-        options?.names?.push(merged ? sortedGroups.map(({ group }) => group) : ["default"])
+        // A theme that defines neither `markup.strikethrough` nor `markup` strikes it with the default's colors here;
+        // native adds only the attribute, so the default goes before it.
+        const strikes = (group: string) =>
+          group === "markup.strikethrough" && !syntaxStyle.getRegisteredNames().some((name) => name === group || name === "markup")
+        options?.names?.push(
+          merged ? sortedGroups.flatMap(({ group }) => (strikes(group) ? ["default", group] : [group])) : ["default"],
+        )
 
         chunks.push({
           __isChunk: true,

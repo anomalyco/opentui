@@ -618,20 +618,25 @@ export class CodeRenderable extends TextBufferRenderable {
     try {
       if (!answer.highlights) throw new Error(answer.error)
       const names: string[][] = []
-      const chunks = treeSitterToTextChunks(content, answer.highlights, this._syntaxStyle, { enabled: false, names })
-      const runs = new Uint32Array(chunks.length * 3)
+      // No captures paint the buffer's defaults, as a whole highlight without any does: an empty layer.
+      const { highlights } = answer
+      const options = { enabled: false, names }
+      const chunks = highlights.length ? treeSitterToTextChunks(content, highlights, this._syntaxStyle, options) : []
+      const runs: number[] = []
       let end = 0
       chunks.forEach((chunk, index) => {
+        // A capture past the text (Markdown's closing backticks parse with a line break after them) leaves an empty one.
+        if (!chunk.text) return
         const start = end
         // UTF-8 as native stores it (a lone surrogate becomes U+FFFD, 3 bytes).
         end += Buffer.byteLength(chunk.text)
         const key = names[index]!
         let set = this._groupSets.get(key.join("\n"))
         if (set === undefined) this._groupSets.set(key.join("\n"), (set = this.textBuffer._groupSet(key)))
-        runs.set([start, end, set], index * 3)
+        runs.push(start, end, set)
       })
       if (this.textBuffer.getSyntaxStyle() !== this._syntaxStyle) this.textBuffer.setSyntaxStyle(this._syntaxStyle)
-      this.textBuffer._setLayer(SYNTAX_LAYER, 0, end, runs)
+      this.textBuffer._setLayer(SYNTAX_LAYER, 0, Buffer.byteLength(content), new Uint32Array(runs))
     } catch {
       this.stopDeltas()
       this._highlightRerun = true

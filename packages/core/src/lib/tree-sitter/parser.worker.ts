@@ -936,6 +936,10 @@ class ParserWorker {
       state.tree = tree
       state.content = content
     }
+    // Closing backticks at the end parse as a fence only with a line break after them, which the whole highlight adds.
+    if (filetype === "markdown" && state.content.endsWith("```")) {
+      return this.handleOneShotHighlight(state.content, filetype, messageId)
+    }
     reply({ highlights: await this.simpleHighlights(state) })
   }
 
