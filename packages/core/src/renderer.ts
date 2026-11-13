@@ -1263,6 +1263,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private externalOutputQueue: ExternalOutputQueue
   private pendingExternalOutputMode: ExternalOutputMode | null = null
   private readonly stdoutDecoder = new StringDecoder("utf8")
+  // Captured text a later write continues, in stream order: the unfinished last row, then a cut-off escape's kind.
+  private stdoutRow = ""
   private stdoutEscape = ""
   private realStdoutWrite: (chunk: any, encoding?: any, callback?: any) => boolean
 
@@ -2077,6 +2079,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       if (mode === "passthrough") this.applyExternalOutputMode(mode)
       return
     }
+    // A held stdout row is queued output: it was written before the mode changed.
+    if (mode === "passthrough" && this.stdoutRow) this.captureStdout("", false)
     if (mode === "passthrough" && !this.rendering && !this.pendingNativeMode && this.externalOutputQueue.size === 0) {
       this.flushStdoutDecoder()
     }
@@ -2152,6 +2156,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private applyPendingExternalOutputModeIfReady(): void {
     if (this.rendering) return
+    if (this.stdoutRow && this.pendingExternalOutputMode !== null) this.captureStdout("", false)
     const pendingMode = this.pendingExternalOutputMode
     if (
       pendingMode === null ||
@@ -2803,6 +2808,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   private getPendingSplitTailColumn(): number {
+    // Queued output ends after a held stdout row, so the row joins the queue before anything is placed after it.
+    while (this.stdoutRow) this.captureStdout("", false)
     const width = Math.max(this.width, 1)
     const skipped = this.pendingNativeReplay?.remaining ?? 0
     const cached = this.queuedSplitTail
@@ -2859,7 +2866,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
   }
 
-  private splitStdoutRows(text: string, tailColumn: number): StdoutRow[] {
+  private splitStdoutRows(text: string, tailColumn: number, hold = false): { rows: StdoutRow[]; held: string } {
     // Captured stdout arrives as an arbitrary byte stream, but split append commits
     // are row-based (line text + whether that row ended with '\n'). We normalize
     // here because native split append expects already-decoded row intent, not raw
@@ -2877,14 +2884,16 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     let rowStart = 0
     let line = ""
     let cells = 0
+    let start = 0
     const widthMethod = this.widthMethod
     const widths = new Map<string, number>()
 
-    for (const { segment } of graphemeSegmenter.segment(text)) {
+    for (const { segment, index } of graphemeSegmenter.segment(text)) {
       if (segment === "\r") {
         rows.length = rowStart
         line = ""
         cells = 0
+        start = index + 1
         continue
       }
 
@@ -2894,6 +2903,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         rowStart = rows.length
         line = ""
         cells = 0
+        start = index + segment.length
         continue
       }
 
@@ -2913,17 +2923,21 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         rows.push({ line: line + " ".repeat(padding), cells: cells + padding, trailingNewline: false, endsRow: true })
         line = ""
         cells = 0
+        start = index
       }
       line += grapheme
       cells += graphemeCells
     }
 
+    // With `hold`, the unfinished last row is returned as text. At most 8 code units a cell are held, so a write
+    // rescans no more than one row.
+    if (hold && line.length > 0 && text.length - start <= 8 * width) return { rows, held: text.slice(start) }
     if (line.length > 0) {
       const column = (rows.length === 0 && tailColumn < width ? tailColumn : 0) + cells
       rows.push({ line, cells, trailingNewline: false, endsRow: column >= width })
     }
 
-    return rows
+    return { rows, held: "" }
   }
 
   private createStdoutSnapshotCommits(rows: readonly StdoutRow[]): ExternalOutputCommit[] {
@@ -2982,7 +2996,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private flushStdoutDecoder(): void {
     const text = this.stdoutDecoder.end()
     if (text && this.nativeSession.open) this.interceptStdoutWrite(text)
-    this.stdoutEscape = ""
+    // A listener's write during the commit is held again; it goes out too.
+    while (this.stdoutRow && this.nativeSession.open) this.captureStdout("", false)
+    this.stdoutRow = this.stdoutEscape = ""
   }
 
   private interceptStdoutWrite = (chunk: any, encoding?: any, callback?: any): boolean => {
@@ -2994,51 +3010,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       const bytes = ArrayBuffer.isView(chunk)
         ? new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength)
         : Buffer.from(String(chunk ?? ""), Buffer.isEncoding(encoding) ? encoding : undefined)
-      const decoded = this.stdoutEscape + this.stdoutDecoder.write(bytes)
-      this.stdoutEscape = ""
-      // Rows are plain text. A sequence cut off by the end of the write waits for the next; its kind is all it needs.
-      const text = decoded.replace(STDOUT_ESCAPE, (match, csi, bel, esc, offset) => {
-        if (offset + match.length === decoded.length && (csi ?? bel ?? esc) === undefined) {
-          this.stdoutEscape = match.slice(0, 2)
-        }
-        return ""
-      })
-      // Capture mode intentionally diverts stdout into split commit snapshots
-      // instead of writing directly to process stdout. Native flushing will append
-      // and repaint in one controlled frame, which is what avoids footer flicker.
-      const queue = this.externalOutputQueue
-      const rows = this.splitStdoutRows(text, this.getPendingSplitTailColumn())
-      // A write that overflows the bound keeps at most its newest half bound of rows: a collapse drops the rest anyway.
-      let added = rows.reduce((sum, row) => sum + capturedRowBytes(Math.max(1, row.cells)), 0)
-      let trimmed = 0
-      if (queue.capturedBytes + added > CAPTURED_STDOUT_MAX_BYTES) {
-        while (added > CAPTURED_STDOUT_HIGH_WATER_BYTES) added -= capturedRowBytes(Math.max(1, rows[trimmed++]!.cells))
-      }
-      const commits = this.createStdoutSnapshotCommits(rows.slice(trimmed))
-      try {
-        this.enqueueSplitCommits(commits, true)
-      } catch (error) {
-        for (const commit of commits) {
-          if (!queue.owns(commit.snapshot)) commit.snapshot.destroy()
-        }
-        throw error
-      }
-      // Rows handed to native stay. Rows ahead of a replay reset go like others; the reset's count follows them.
-      const limits = {
-        start: this.nativeSplitAcceptedCount,
-        boundary: this.pendingNativeReplay?.remaining ?? Infinity,
-        incoming: queue.size - commits.length,
-        trimmed,
-      }
-      const collapsed = queue.collapse(limits, (rows) => this.createDroppedRowCommit(rows))
-      if (collapsed) {
-        this.queuedSplitTail = null
-        if (this.pendingNativeReplay) this.pendingNativeReplay.remaining = collapsed.boundary
-      }
-      // Reported in queue order, after the collapse: a listener may write again.
-      this.emitExternalOutput(collapsed?.markers ?? [])
-      this.emitExternalOutput(commits.filter((commit) => !collapsed?.removed.has(commit.snapshot)))
-      writable = queue.writable()
+      writable = this.captureStdout(this.stdoutDecoder.write(bytes), true)
     }
 
     if (typeof resolvedCallback === "function") {
@@ -3048,9 +3020,61 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     return writable
   }
 
+  /** With `hold`, an unfinished last row waits for the frame: a later write may still extend its last grapheme. */
+  private captureStdout(input: string, hold: boolean): boolean {
+    // A lone CR extends no grapheme, and it clears only the row of its own write.
+    if (this.stdoutRow && /^\r(?!\n)/.test(input)) this.captureStdout("", false)
+    const decoded = this.stdoutRow + this.stdoutEscape + input
+    this.stdoutRow = this.stdoutEscape = ""
+    // Rows are plain text. A sequence cut off by the end of the write waits for the next; its kind is all it needs.
+    const text = decoded.replace(STDOUT_ESCAPE, (match, csi, bel, esc, offset) => {
+      if (offset + match.length === decoded.length && (csi ?? bel ?? esc) === undefined) {
+        this.stdoutEscape = match.slice(0, 2)
+      }
+      return ""
+    })
+    // Capture mode intentionally diverts stdout into split commit snapshots
+    // instead of writing directly to process stdout. Native flushing will append
+    // and repaint in one controlled frame, which is what avoids footer flicker.
+    const queue = this.externalOutputQueue
+    const { rows, held } = this.splitStdoutRows(text, this.getPendingSplitTailColumn(), hold)
+    // A write that overflows the bound keeps at most its newest half bound of rows: a collapse drops the rest anyway.
+    let added = rows.reduce((sum, row) => sum + capturedRowBytes(Math.max(1, row.cells)), 0)
+    let trimmed = 0
+    if (queue.capturedBytes + added > CAPTURED_STDOUT_MAX_BYTES) {
+      while (added > CAPTURED_STDOUT_HIGH_WATER_BYTES) added -= capturedRowBytes(Math.max(1, rows[trimmed++]!.cells))
+    }
+    const commits = this.createStdoutSnapshotCommits(rows.slice(trimmed))
+    try {
+      this.enqueueSplitCommits(commits, true)
+    } catch (error) {
+      for (const commit of commits) {
+        if (!queue.owns(commit.snapshot)) commit.snapshot.destroy()
+      }
+      throw error
+    }
+    // Rows handed to native stay. Rows ahead of a replay reset go like others; the reset's count follows them.
+    const limits = {
+      start: this.nativeSplitAcceptedCount,
+      boundary: this.pendingNativeReplay?.remaining ?? Infinity,
+      incoming: queue.size - commits.length,
+      trimmed,
+    }
+    const collapsed = queue.collapse(limits, (rows) => this.createDroppedRowCommit(rows))
+    if (collapsed) {
+      this.queuedSplitTail = null
+      if (this.pendingNativeReplay) this.pendingNativeReplay.remaining = collapsed.boundary
+    }
+    this.stdoutRow = held
+    // Reported in queue order, after the collapse: a listener may write again.
+    this.emitExternalOutput(collapsed?.markers ?? [])
+    this.emitExternalOutput(commits.filter((commit) => !collapsed?.removed.has(commit.snapshot)))
+    return queue.writable()
+  }
+
   private createDroppedRowCommit(rows: number): ExternalOutputCommit {
     const text = `[${rows} lines dropped]`.slice(0, Math.max(1, this.width))
-    const [commit] = this.createStdoutSnapshotCommits(this.splitStdoutRows(text, 0))
+    const [commit] = this.createStdoutSnapshotCommits(this.splitStdoutRows(text, 0).rows)
     commit!.nativeSnapshot = commit!.snapshot._getSceneHandle(this.nativeScene)
     return { ...commit!, startOnNewLine: true, trailingNewline: true, endsRow: true }
   }
@@ -4357,6 +4381,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       return
     }
 
+    // Written before the resize, a held stdout row goes out at the old width.
+    if (this.stdoutRow) this.captureStdout("", false)
     const terminalWritable = this._terminalIsSetup && this._controlState !== RendererControlState.EXPLICIT_SUSPENDED
     if (terminalWritable && !this.isSplitCursorSeedFrameBlocked() && this.externalOutputQueue.size > 0) {
       this.pendingNativeResize = { width, height }
@@ -5284,6 +5310,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       // Callbacks can start terminal setup; a frame step is invalid until it settles.
       if (this.nativeTerminalTransition && !(await this.waitForTerminalTransition())) return
       if (!this.canRender || this.currentControlState === RendererControlState.EXPLICIT_SUSPENDED) return
+      // A held stdout row goes out with this frame. The paint below draws what its listeners change; a row they
+      // write is held for the next frame.
+      const requestedBeforeRow = this.immediateRerenderRequested
+      if (this.stdoutRow) this.captureStdout("", false)
+      this.immediateRerenderRequested = requestedBeforeRow || this.stdoutRow !== ""
       const sceneStart = performance.now()
       const requestedBeforeScene = this.immediateRerenderRequested
       try {
@@ -5483,6 +5514,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private async presentNativeScene(): Promise<"rendered" | "retryable-skip" | "failed" | "dropped" | "blocked"> {
     if (this.isSplitCursorSeedFrameBlocked()) return "blocked"
+    // A row a post-process hook wrote after paint goes out with this frame too.
+    if (this.stdoutRow) this.captureStdout("", false)
     const commits =
       this._splitHeight > 0 && this._externalOutputMode === "capture-stdout"
         ? this.pendingNativeReplay?.remaining === 0

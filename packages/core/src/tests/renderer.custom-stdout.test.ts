@@ -1941,6 +1941,8 @@ const processExit = (renderer: CliRenderer) => {
   renderer.nativeScene.driver.dispose()
   expect(flushed).toBe(0)
 }
+const listenerWrites = (renderer: CliRenderer, stdout: CollectingStdout) =>
+  renderer.once(CliRenderEvents.EXTERNAL_OUTPUT, () => stdout.write("B"))
 const sessionClose = async (renderer: CliRenderer) => {
   const closing = renderer.nativeScene.driver.close()
   renderer.destroy()
@@ -1959,6 +1961,13 @@ test.each<[string, StdoutStep[], string]>([
   ["2-byte split across a frame", splitBytes("caf\u00e9", 4, (renderer) => renderer.idle()), "caf\u00e9"],
   ["3-byte split", splitBytes("\u4e00", 1), "\u4e00"],
   ["4-byte split", splitBytes("\u{10437}", 1), "\u{10437}"],
+  ["a combining mark in a later write", ["xe", "\u0301y\n"], "xe\u0301y"],
+  ["VS16 in a later write", ["\u2764", "\ufe0f\n"], "\u2764\ufe0f"],
+  ["a combining mark after the last column", ["x".repeat(79) + "e", "\u0301\n"], `${"x".repeat(79)}e\u0301`],
+  ["capture set again before a combining mark", ["e", capture, "\u0301\n"], "e\u0301"],
+  ["a CR between a row and its LF", ["OK", "\r", "\n"], "OK"],
+  ["a listener write during a frame", [listenerWrites, "A"], "AB"],
+  ["a listener write during destroy", [listenerWrites, "A", destroy], "AB|"],
   ["empty writes inside a split", splitBytes("\u00e9", 1, "", null as never, ["", ""], ["", "bogus"]), "\u00e9"],
   ["string inside a split", splitBytes("\u00e9", 1, "x"), "\ufffdx\ufffd"],
   ["capture set again inside a split", splitBytes("\u00e9", 1, capture), "\u00e9"],
@@ -1978,7 +1987,7 @@ test.each<[string, StdoutStep[], string]>([
   ["split across suspend during a deferred passthrough", ["a", passthrough, suspendInSplit], "a|caf\u00e9"],
   ["passthrough during a pending native mode", [pendingModeInSplit], "|\u00e9"],
   ["exit after a lead byte", [lead, processExit], ""],
-  ["destroy after the session closes", ["a", lead, sessionClose], ""],
+  ["destroy after the session closes", ["a\n", lead, sessionClose], ""],
   ["output failure after a lead byte", ["a", lead, outputFailure], ""],
   ["SGR", ["\x1b[31mred\x1b[0m [1m]\x1b[m\x1b[38;2;1;2;3mx\x1b[2@\x1b[?25h\x1b[ q\x1b[3~~\n"], "red [1m]x~"],
   ["SGR across a newline", ["\x1b[1mbold\nnext\x1b[22m\n"], "bold\r\nnext"],
