@@ -1099,11 +1099,11 @@ impl Markdown {
         if let Some(widget) = custom {
             return Some(Rendered::Custom(widget));
         }
+        let language = info.as_deref().and_then(|info| info.split_whitespace().next());
         if let Some(Rendered::Code(container, view)) = previous {
-            view.set_code(code.as_str());
+            view.filetype(language).set_code(code.as_str());
             return Some(Rendered::Code(container.clone(), view.clone()));
         }
-        let language = info.as_deref().and_then(|info| info.split_whitespace().next());
         let base = self.base(block.parent);
         let colors = *self.0.colors.borrow();
         // It shows all its lines, wrapped as Core's, so it has nothing to scroll and takes no focus: Tab passes over it.
@@ -1343,14 +1343,17 @@ impl Markdown {
                     text.fg(base.fg.unwrap_or(self.0.colors.borrow().text)).attributes(base.attributes);
                     Some(Rendered::Text(text))
                 }
-                (&sys::OT_MD_CODE, Some(Rendered::Code(container, code))) if keep_code => {
-                    let colors = *self.0.colors.borrow();
-                    container.detach();
-                    container.bg(colors.code_bg);
-                    code.fg(self.base(block.parent).fg.unwrap_or(colors.text))
-                        .0
-                        .restyle(Arc::clone(&self.0.syntax.borrow()));
-                    Some(Rendered::Code(container, code))
+                // A registered renderer chooses again; a built-in view it declines restyles as it is.
+                (&sys::OT_MD_CODE, Some(old @ Rendered::Code(..))) if keep_code => {
+                    let new = self.code_block(&app, doc, &block, Some(&old));
+                    if let Some(Rendered::Code(container, code)) = &new {
+                        let colors = *self.0.colors.borrow();
+                        container.detach();
+                        container.bg(colors.code_bg);
+                        let fg = self.base(block.parent).fg.unwrap_or(colors.text);
+                        code.0.restyle(Arc::clone(&self.0.syntax.borrow()), fg);
+                    }
+                    new
                 }
                 _ => self.build_block(&app, doc, &block),
             };
@@ -1532,5 +1535,36 @@ mod tests {
         let want = settle(&fresh, &codes(&twin));
         let differ = want.cells.iter().zip(&got.cells).position(|(want, got)| want != got);
         assert!(differ.is_none(), "cell {differ:?}");
+    }
+
+    // A restyle keeps a code block's widget only as a fresh build would choose it: a changed info string changes the
+    // filetype, and a registered renderer that declined before is asked again (bigboi-1, bigboi-2).
+    #[cfg(feature = "tree-sitter")]
+    #[test]
+    fn a_restyled_code_block_follows_its_info_string_and_renderer() {
+        use crate::widget::Text;
+        use crate::widget::code::tests::settle;
+        let theme = SyntaxTheme::new().style("keyword", Style::new().fg(Color::RED));
+        let custom = Rc::new(Cell::new(false));
+        let build = |app: &TestApp, source: &str| {
+            let custom = Rc::clone(&custom);
+            let markdown = Markdown::new(app).code_block_renderer("mermaid", move |block| {
+                custom.get().then(|| Text::new(block.app, "diagram").as_any())
+            });
+            app.root().add(&markdown);
+            markdown.set_markdown(source);
+            markdown
+        };
+        let source = "```unknown\r\nlet a = 42;\r\n```\r\n\r\n```mermaid\nflow\n```\n";
+        let (app, fresh) = (TestApp::new(30, 8), TestApp::new(30, 8));
+        let markdown = build(&app, &source.replacen("unknown", "rust", 1));
+        settle(&app, &[]);
+        markdown.set_markdown(source);
+        custom.set(true);
+        markdown.syntax_theme(theme.clone());
+        build(&fresh, source).syntax_theme(theme);
+        let (want, got) = (fresh.render(), app.render());
+        let differ = want.cells.iter().zip(&got.cells).position(|(want, got)| want != got);
+        assert!(differ.is_none(), "cell {differ:?}: {:?}", app.text());
     }
 }

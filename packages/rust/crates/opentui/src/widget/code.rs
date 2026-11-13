@@ -269,9 +269,11 @@ impl CodeInner {
     }
 
     /// Makes `syntax` the table's capture palette, which every code view and editor sharing the table paints.
-    pub(crate) fn restyle(&self, syntax: Arc<SyntaxTheme>) {
+    /// The text color `fg` goes under the theme's `default` style.
+    pub(crate) fn restyle(&self, syntax: Arc<SyntaxTheme>, fg: Color) {
         self.report(self.table.set_capture_theme(&syntax));
         *self.syntax.borrow_mut() = syntax;
+        self.fg.set(fg);
         self.apply_defaults();
         self.element.app().inspect(App::request_redraw);
     }
@@ -573,7 +575,7 @@ impl Code {
     /// restyles the shown highlight without highlighting again.
     pub fn syntax_theme(&self, theme: SyntaxTheme) -> Self {
         if **self.0.syntax.borrow() != theme {
-            self.0.restyle(Arc::new(theme));
+            self.0.restyle(Arc::new(theme), self.0.fg.get());
         }
         self.clone()
     }
