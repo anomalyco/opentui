@@ -651,6 +651,11 @@ test "EditorView - small viewport cursor movement preserves scrolling margins" {
             try std.testing.expectEqual(@as(u32, 3), ev.getPrimaryCursor().col);
             try std.testing.expectEqual(@as(u32, 0), ev.getViewport().?.y);
 
+            // The first row inside the bottom margin belongs to the margin too.
+            try eb.setCursor(height - margin_lines, 3);
+            ev.setViewport(.{ .x = 0, .y = 0, .width = 20, .height = height }, true);
+            try std.testing.expectEqual(height - margin_lines - 1, ev.getPrimaryCursor().row);
+
             try eb.setCursor(0, 3);
             ev.setViewport(.{ .x = 0, .y = 3, .width = 20, .height = height }, true);
             try std.testing.expectEqual(3 + margin_lines, ev.getPrimaryCursor().row);
@@ -696,6 +701,15 @@ test "EditorView - small viewport keeps a visible wrapped cursor in place" {
         try std.testing.expectEqual(@as(u32, 1), ev.getPrimaryCursor().col);
         try std.testing.expectEqual(@as(u32, 0), ev.getViewport().?.y);
     }
+
+    // The first row outside the top margin is visible. A viewport write must
+    // not shorten the preferred column of a cursor parked on a shorter line.
+    try eb.setText("abcd\nx\nabcd\ny");
+    try eb.setCursor(0, 3);
+    eb.moveDown();
+    ev.setViewport(.{ .x = 0, .y = 0, .width = 5, .height = 4 }, true);
+    eb.moveDown();
+    try std.testing.expectEqual(@as(u32, 3), eb.getPrimaryCursor().col);
 }
 
 test "EditorView - small viewport accepts empty buffers and zero dimensions" {
@@ -2229,6 +2243,9 @@ test "occupancy - EditorView forwards occupancy and replays stored endpoints" {
     // The oversized CJK grapheme remains atomic, so its visual end is after
     // the complete width-2 cursor unit rather than inside it at the viewport edge.
     try std.testing.expectEqual(@as(u32, 2), ev.getPrimaryCursor().offset);
+    const before = ev.getVisualCursor();
+    ev.setViewportSize(1, 25);
+    try std.testing.expectEqualDeep(before, ev.getVisualCursor());
 
     ev.setSelectionOccupancy(.cell);
     ev.gotoVisualLineEnd();

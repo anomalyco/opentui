@@ -280,11 +280,15 @@ impl CodeInner {
     /// Keeps the scroll position within the text after the text column changed size, following the end if pinned.
     fn text_resized(&self, height: u32) {
         self.laid_out_height.set(Some(height));
-        if self.follow.get() && self.pinned.get() {
-            self.scroll_to(i64::from(u32::MAX));
-        } else {
-            self.scroll_to(i64::from(self.scroll.get()));
-        }
+        self.keep_in_view();
+    }
+
+    /// Keeps the view within the text, or at the end when following and the last scroll reached it. Before the first
+    /// layout there is no view to keep: the first resize does it.
+    fn keep_in_view(&self) {
+        let Some(_) = self.laid_out_height.get() else { return };
+        let follow = self.follow.get() && self.pinned.get();
+        self.scroll_to(if follow { i64::from(u32::MAX) } else { i64::from(self.scroll.get()) });
     }
 }
 
@@ -440,7 +444,7 @@ impl Code {
             *self.0.styled.borrow_mut() = None;
             self.0.render_source();
         }
-        self.keep_in_view();
+        self.0.keep_in_view();
         self.clone()
     }
 
@@ -450,25 +454,16 @@ impl Code {
         *self.0.source.borrow_mut() = spans.iter().map(|span| &*span.content).collect();
         *self.0.styled.borrow_mut() = Some(spans);
         self.0.render_source();
-        self.keep_in_view();
-    }
-
-    /// Keeps the view within shorter text, or at the end when following.
-    fn keep_in_view(&self) {
-        let row = if self.0.follow.get() { i64::from(u32::MAX) } else { i64::from(self.0.scroll.get()) };
-        self.0.scroll_to(row);
+        self.0.keep_in_view();
     }
 
     /// Appends text, keeping the view at the bottom when following. With a filetype, the whole text is highlighted
     /// again: the first time before the next frame paints, and once highlighted on a worker thread, showing the new
     /// text plain until that highlight lands.
     pub fn append(&self, text: &str) -> Self {
-        let follow = self.0.follow.get() && self.0.pinned.get();
         *self.0.styled.borrow_mut() = None;
         self.0.extend(text);
-        if follow {
-            self.0.scroll_to(i64::from(u32::MAX));
-        }
+        self.0.keep_in_view();
         self.clone()
     }
 
