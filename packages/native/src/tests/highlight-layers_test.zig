@@ -1074,6 +1074,26 @@ fn faultyLayerCall(random: std.Random, text: []const u8, fault: Fault, range: *[
     }
 }
 
+/// The layer calls on an edit buffer or, `on_text`, a text buffer.
+const Calls = struct {
+    fn setText(o: *abi.ContextHandle, on_text: bool, id: *const c.ot_handle, bytes: []const u8) c.ot_status {
+        if (on_text) return text_abi.ot_text_buffer_set_text(o, id, bytes.ptr, @intCast(bytes.len));
+        return abi.ot_edit_buffer_set_text(o, id, bytes.ptr, @intCast(bytes.len), 0);
+    }
+    fn getText(o: *abi.ContextHandle, on_text: bool, id: *const c.ot_handle, bytes: []u8, out: *u32) c.ot_status {
+        if (on_text) return text_abi.ot_text_buffer_get_text(o, id, bytes.ptr, @intCast(bytes.len), out);
+        return abi.ot_edit_buffer_get_text(o, id, bytes.ptr, @intCast(bytes.len), out);
+    }
+    fn highlight(o: *abi.ContextHandle, on_text: bool, id: *const c.ot_handle, operation: u32) c.ot_status {
+        if (on_text) return text_abi.ot_text_buffer_highlight(o, id, operation, 0, null);
+        return editor_abi.ot_edit_buffer_highlight(o, id, operation, 0, null);
+    }
+    fn setLayer(o: *abi.ContextHandle, on_text: bool, id: *const c.ot_handle, layer: u32, start: u32, end: u32, runs: ?[*]const c.ot_highlight_run, count: u32) c.ot_status {
+        if (on_text) return text_abi.ot_text_buffer_set_layer(o, id, layer, start, end, runs, count);
+        return editor_abi.ot_edit_buffer_set_layer(o, id, layer, start, end, runs, count);
+    }
+};
+
 // P14 through the C ABI: a malformed range or run list rejects with no change to the layers or
 // the span stamp, a fifth layer fails with OT_OBJECT_LIMIT, NULL with no runs clears, CLEAR_ALL
 // empties every layer, REMOVE_REF and CLEAR_LINE keep them, and accepted calls match the byte
@@ -1119,24 +1139,6 @@ test "layers: seeded C ABI calls reject malformed runs atomically and match the 
     const text_handle = try owner.core.createTextBuffer(.unicode);
     const ids = [_]c.ot_handle{ abi.handleToC(edit_handle), abi.handleToC(text_handle) };
     const tbs = [_]*text_buffer.UnifiedTextBuffer{ (try owner.core.raw().getEditBuffer(edit_handle)).buffer.tb, (try owner.core.raw().getTextBuffer(text_handle)).buffer };
-    const Calls = struct {
-        fn setText(o: *abi.ContextHandle, on_text: bool, id: *const c.ot_handle, bytes: []const u8) c.ot_status {
-            if (on_text) return text_abi.ot_text_buffer_set_text(o, id, bytes.ptr, @intCast(bytes.len));
-            return abi.ot_edit_buffer_set_text(o, id, bytes.ptr, @intCast(bytes.len), 0);
-        }
-        fn getText(o: *abi.ContextHandle, on_text: bool, id: *const c.ot_handle, bytes: []u8, out: *u32) c.ot_status {
-            if (on_text) return text_abi.ot_text_buffer_get_text(o, id, bytes.ptr, @intCast(bytes.len), out);
-            return abi.ot_edit_buffer_get_text(o, id, bytes.ptr, @intCast(bytes.len), out);
-        }
-        fn highlight(o: *abi.ContextHandle, on_text: bool, id: *const c.ot_handle, operation: u32) c.ot_status {
-            if (on_text) return text_abi.ot_text_buffer_highlight(o, id, operation, 0, null);
-            return editor_abi.ot_edit_buffer_highlight(o, id, operation, 0, null);
-        }
-        fn setLayer(o: *abi.ContextHandle, on_text: bool, id: *const c.ot_handle, layer: u32, start: u32, end: u32, runs: ?[*]const c.ot_highlight_run, count: u32) c.ot_status {
-            if (on_text) return text_abi.ot_text_buffer_set_layer(o, id, layer, start, end, runs, count);
-            return editor_abi.ot_edit_buffer_set_layer(o, id, layer, start, end, runs, count);
-        }
-    };
     const pieces = [_][]const u8{ "ab", "c", " ", "\t", "\n", "\r\n", "\u{e9}", "\u{4e16}", "\u{1f642}" };
     const layer_ids = [_]u32{ 7, 1, 4, 2, 9, 3 };
     var rejected: std.EnumArray(Fault, u32) = .initFill(0);
@@ -1236,6 +1238,67 @@ test "layers: seeded C ABI calls reject malformed runs atomically and match the 
         try testing.expectEqual(c.OT_OK, Calls.setLayer(&owner, on_text, id, 2, 0, 3, null, 0));
         try testing.expect(tb.layers.isEmpty());
     }
+
+    // More runs than text bytes reject before the copy: with the next allocation failing, both handles still
+    // answer OT_INVALID_ARGUMENT, not OT_OUT_OF_MEMORY.
+    var failing = std.testing.FailingAllocator.init(gpa, .{});
+    var bounded: abi.ContextHandle = .{ .gpa = .init, .io_threaded = .init_single_threaded, .core = undefined, .owner_thread = std.Thread.getCurrentId() };
+    defer bounded.io_threaded.deinit();
+    bounded.core = try context_mod.Context.init(failing.allocator(), bounded.io_threaded.io(), .{});
+    defer bounded.core.deinit() catch unreachable;
+    const empty = [_]c.ot_handle{ abi.handleToC(try bounded.core.createEditBuffer(.unicode)), abi.handleToC(try bounded.core.createTextBuffer(.unicode)) };
+    for (&empty, [_]bool{ false, true }) |*id, on_text| {
+        failing.fail_index = failing.alloc_index;
+        try testing.expectEqual(c.OT_INVALID_ARGUMENT, Calls.setLayer(&bounded, on_text, id, 2, 0, 0, &.{.{ .start_byte = 0, .end_byte = 1, .group_set = 1 }}, 1));
+        try testing.expect(!failing.has_induced_failure);
+    }
+    failing.fail_index = std.math.maxInt(usize);
+}
+
+// C4 invariant 7 in the frame protocol: a layer set while a frame waits for its UPDATE reply costs a text buffer
+// the same layout rounds as an edit buffer.
+test "layers: a layer set during an update reply takes the same rounds on text and edit buffers" {
+    var statuses: [2]c.ot_status = undefined;
+    for (&statuses, [_]bool{ false, true }) |*status, on_text| {
+        const handle = try abi.createTestContext(.{ .object_capacity = 8, .render_cells_max = 18 });
+        defer testing.expectEqual(c.OT_OK, abi.ot_context_destroy(handle)) catch unreachable;
+        const session = try handle.core.createSession(.{});
+        try handle.core.attachSessionRenderer(session, 6, 3, .{ .remote_mode = .remote });
+        const id = abi.handleToC(session);
+        var root: c.ot_handle = undefined;
+        var node: c.ot_handle = undefined;
+        try testing.expectEqual(c.OT_OK, abi.ot_scene_create_node(handle, &id, c.OT_SCENE_ROOT, 1, &root));
+        try testing.expectEqual(c.OT_OK, abi.ot_scene_create_node(handle, &id, if (on_text) c.OT_SCENE_TEXT_VIEW else c.OT_SCENE_EDITOR, 2, &node));
+        try testing.expectEqual(c.OT_OK, abi.ot_scene_move_node(handle, &node, &root, 0));
+        const hooks: c.ot_scene_hooks = .{ .struct_size = @sizeOf(c.ot_scene_hooks), .abi_version = c.OT_CONTEXT_ABI_VERSION, .flags = 1, .reserved = 0, .generation = 1, .initial_width = 0, .initial_height = 0 };
+        try testing.expectEqual(c.OT_OK, abi.ot_scene_set_hooks(handle, &node, &hooks));
+        var buffer: c.ot_handle = undefined;
+        if (on_text) {
+            buffer = abi.handleToC(try handle.core.createTextBuffer(.unicode));
+            const view = abi.handleToC(try handle.core.createTextBufferView(abi.handleFromC(buffer)));
+            try testing.expectEqual(c.OT_OK, text_abi.ot_scene_set_text_view(handle, &node, &view));
+            try testing.expectEqual(c.OT_OK, text_abi.ot_text_buffer_set_text(handle, &buffer, "let", 3));
+        } else {
+            buffer = abi.handleToC(try handle.core.createEditBuffer(.unicode));
+            const view = abi.handleToC(try handle.core.createEditorView(abi.handleFromC(buffer), 6, 3));
+            try testing.expectEqual(c.OT_OK, abi.ot_scene_set_editor_view(handle, &node, &view));
+            try testing.expectEqual(c.OT_OK, abi.ot_edit_buffer_set_text(handle, &buffer, "let", 3, 0));
+        }
+        var group_set: u32 = 0;
+        try testing.expectEqual(c.OT_OK, abi.ot_context_group_set(handle, "a", 1, &.{1}, 1, &group_set));
+        const options: c.ot_scene_frame_options = .{ .struct_size = @sizeOf(c.ot_scene_frame_options), .abi_version = c.OT_CONTEXT_ABI_VERSION, .background = .{ 0, 0, 0, 255 }, .use_mouse = 1, .excluded_hit_num = 0, .max_layout_rounds = 1, .max_host_requests = 8, .preserve_unwritten = 0 };
+        var output = std.mem.zeroes(c.ot_scene_frame_request);
+        output.struct_size = @sizeOf(c.ot_scene_frame_request);
+        output.abi_version = c.OT_CONTEXT_ABI_VERSION;
+        var geometry = std.mem.zeroes(c.ot_scene_frame_geometry);
+        geometry.struct_size = @sizeOf(c.ot_scene_frame_geometry);
+        geometry.abi_version = c.OT_CONTEXT_ABI_VERSION;
+        try testing.expectEqual(c.OT_OK, abi.ot_scene_frame_step_with_geometry(handle, &id, null, &options, null, 0, &output, &geometry));
+        try testing.expectEqual(c.OT_SCENE_FRAME_UPDATE, output.kind);
+        try testing.expectEqual(c.OT_OK, Calls.setLayer(handle, on_text, &buffer, 1, 0, 3, &.{.{ .start_byte = 0, .end_byte = 3, .group_set = group_set }}, 1));
+        status.* = abi.ot_scene_frame_step_with_geometry(handle, &id, &output, &options, null, 0, &output, &geometry);
+    }
+    try testing.expectEqual(statuses[0], statuses[1]);
 }
 
 // Invariant 3: one layer of k runs, or k mutually overlapping records, on one line costs one

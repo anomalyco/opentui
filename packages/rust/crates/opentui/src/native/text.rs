@@ -1,9 +1,10 @@
-use super::editor::{EditorInfo, Viewport};
+use super::editor::{EditorInfo, LayerRun, SyntaxStyle, Viewport};
 use super::resource::{Resource, read_string};
 use super::{Context, Node, WidthMethod, WrapMode};
 use crate::error::{Result, check, count};
 use crate::style::{EncodedSpans, Span, Style};
 use crate::sys;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 /// Text buffer counts. Widths count display columns.
@@ -39,7 +40,7 @@ pub struct TextMeasure {
 
 /// Shared, read-only styled text. Views of it wrap and scroll independently.
 #[derive(Clone)]
-pub struct TextBuffer(Rc<Resource>);
+pub struct TextBuffer(Rc<Resource>, Rc<RefCell<Option<SyntaxStyle>>>);
 
 impl TextBuffer {
     /// `width_method` is normally the Session's detected method, such as
@@ -52,7 +53,7 @@ impl TextBuffer {
             ("ot_text_buffer_destroy", sys::ot_text_buffer_destroy),
             |context, handle| unsafe { sys::ot_text_buffer_create(context, &options, handle) },
         )?;
-        Ok(Self(Rc::new(resource)))
+        Ok(Self(Rc::new(resource), Rc::default()))
     }
 
     pub fn context(&self) -> &Context {
@@ -109,28 +110,26 @@ impl TextBuffer {
         })
     }
 
-    /// Replaces the text with `source`, styled by byte ranges that cover it in order, as highlighting gives them.
-    pub(crate) fn set_styled_ranges(&self, source: &str, ranges: &[(std::ops::Range<usize>, Style)]) -> Result<()> {
-        const OPERATION: &str = "ot_text_buffer_set_styled_text";
-        let chunks: Vec<sys::ot_styled_text_chunk> = ranges
-            .iter()
-            .filter(|(range, _)| !range.is_empty())
-            .map(|(range, style)| EncodedSpans::chunk(*style, range.len()))
-            .collect();
-        debug_assert_eq!(ranges.iter().map(|(range, _)| range.len()).sum::<usize>(), source.len());
-        let (bytes, count_chunks) = (count(OPERATION, source.len())?, count(OPERATION, chunks.len())?);
+    /// Uses `style` as the table layer runs' group sets and highlights' style ids resolve against, or none. The
+    /// buffer keeps the table alive while it is bound.
+    pub fn set_syntax_style(&self, style: Option<&SyntaxStyle>) -> Result<()> {
+        let handle_of = style.map(SyntaxStyle::handle);
         let (context, handle) = self.raw();
-        check(OPERATION, unsafe {
-            sys::ot_text_buffer_set_styled_text(
-                context,
-                handle,
-                source.as_ptr(),
-                bytes,
-                chunks.as_ptr(),
-                count_chunks,
-                b"".as_ptr(),
-                0,
-            )
+        check("ot_text_buffer_set_syntax_style", unsafe {
+            sys::ot_text_buffer_set_syntax_style(context, handle, handle_of.as_ref().map_or(std::ptr::null(), |s| s))
+        })?;
+        *self.1.borrow_mut() = style.cloned();
+        Ok(())
+    }
+
+    /// Replaces layer `layer_id` inside `range` with `runs`, as [`EditBuffer::set_layer`](super::EditBuffer::set_layer)
+    /// does: bytes count one per line break, as [`Self::text`] returns them. Appending keeps the layers; replacing or
+    /// clearing the text empties them. [`Code`](crate::widget::Code) sets layer 1 for filetype syntax.
+    pub fn set_layer(&self, layer_id: u32, range: std::ops::Range<u32>, runs: &[LayerRun]) -> Result<()> {
+        let length = count("ot_text_buffer_set_layer", runs.len())?;
+        let (context, handle) = self.raw();
+        check("ot_text_buffer_set_layer", unsafe {
+            sys::ot_text_buffer_set_layer(context, handle, layer_id, range.start, range.end, runs.as_ptr(), length)
         })
     }
 

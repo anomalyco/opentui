@@ -885,9 +885,14 @@ pub export fn yogaNodeGetComputedLayout(node: YGNodeConstRef, out_ptr: *External
 }
 
 pub export fn yogaNodeGetComputedLayoutChecked(node: YGNodeConstRef, out: ?*ExternalYogaLayout) Status {
+    return yogaNodeGetLayoutChecked(node, out, null);
+}
+
+/// The computed layout and, given `content`, the node's content box in the same call.
+pub fn yogaNodeGetLayoutChecked(node: YGNodeConstRef, out: ?*ExternalYogaLayout, content: ?[*]f32) Status {
     const status = nodeStatus(node, false, false);
     if (status != .ok) return status;
-    return @fromBackingInt(@intCast(c.otYogaNodeGetComputedLayout(node, out)));
+    return @fromBackingInt(@intCast(c.otYogaNodeGetComputedLayout(node, out, content)));
 }
 
 export fn yogaNodeLayoutGetEdge(node: YGNodeConstRef, kind: u32, edge: u32) f32 {
@@ -900,12 +905,6 @@ pub export fn yogaNodeLayoutGetEdgeChecked(node: YGNodeConstRef, kind: u32, edge
     const status = nodeStatus(node, false, false);
     if (status != .ok) return status;
     return @fromBackingInt(@intCast(c.otYogaNodeLayoutGetEdge(node, kind, edge, out)));
-}
-
-pub fn yogaNodeGetContentBoxChecked(node: YGNodeConstRef, out: *[4]f32) Status {
-    const status = nodeStatus(node, false, false);
-    if (status != .ok) return status;
-    return @fromBackingInt(@intCast(c.otYogaNodeGetContentBox(node, out)));
 }
 
 pub export fn yogaNodeStyleSetEnum(node: YGNodeRef, kind: u32, value: u32) void {

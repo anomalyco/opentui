@@ -362,6 +362,7 @@ fn addMacOSSystemLibraries(b: *std.Build, module: *std.Build.Module, sdk_path: [
 
 // Set by -Drequire-video. Release builds pass it so a missing FFmpeg prefix fails instead of shipping without video.
 var require_video = false;
+var video_enabled = true;
 var video_unavailable_warned: std.StringHashMapUnmanaged(void) = .empty;
 
 // Names the FFmpeg prefix that scripts/build-ffmpeg.ts builds for this target, if any.
@@ -386,7 +387,7 @@ fn addVideoDependencies(b: *std.Build, module: *std.Build.Module, target: std.Bu
         else => &.{ "-std=c11", "-fvisibility=hidden" },
     };
     const unavailable_flags = appendCFlags(b, base_flags, &.{"-DOTV_NO_FFMPEG"});
-    const target_name = ffmpegTargetName(b, target) orelse {
+    const target_name = (if (video_enabled) ffmpegTargetName(b, target) else null) orelse {
         module.addCSourceFile(.{ .file = b.path("src/video-shim.c"), .flags = unavailable_flags });
         return;
     };
@@ -613,6 +614,11 @@ pub fn build(b: *std.Build) void {
     const build_all = b.option(bool, "all", "Build for all supported targets") orelse false;
     const gpa_safe_stats = b.option(bool, "gpa-safe-stats", "Enable GPA safety checks for trustworthy allocator stats") orelse false;
     require_video = b.option(bool, "require-video", "Fail when a target's FFmpeg prefix is missing instead of building without video") orelse false;
+    video_enabled = b.option(bool, "video", "Enable FFmpeg video decoding when available") orelse true;
+    if (require_video and !video_enabled) {
+        std.debug.print("error: -Drequire-video conflicts with -Dvideo=false\n", .{});
+        std.process.exit(1);
+    }
     const macos_sdk_path = resolveMacOSSDKPath(b);
     const build_options = b.addOptions();
     build_options.addOption(bool, "gpa_safe_stats", gpa_safe_stats);

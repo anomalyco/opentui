@@ -1339,6 +1339,9 @@ fn highlighted_code_restyles_appends_and_theme_changes() {
     assert_eq!(capture.cell(0, 1).unwrap().fg, app.theme().foreground);
     let keyword = syntax_fg(&app, "keyword");
     assert!(app.wait_until(Duration::from_secs(10), || app.render().cell(0, 1).unwrap().fg == keyword));
+    // Two appends keep the shown highlight: the tail stays plain until the worker's lands.
+    code.append(" let c;").append(" let d;");
+    assert_eq!(app.render().cell(7, 1).unwrap().fg, app.theme().foreground);
     code.syntax_theme(SyntaxTheme::new().style("keyword", Style::new().fg(Color::RED)));
     let capture = app.render();
     assert_eq!(capture.cell(0, 0).unwrap().fg, Color::RED);

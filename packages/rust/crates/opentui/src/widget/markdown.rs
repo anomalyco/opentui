@@ -543,7 +543,7 @@ impl Markdown {
         if self.0.options.borrow().conceal != conceal {
             Rc::make_mut(&mut self.0.options.borrow_mut()).conceal = conceal;
             self.change_options();
-            self.rebuild_all();
+            self.rebuild_all(false);
         }
         self.clone()
     }
@@ -573,7 +573,7 @@ impl Markdown {
     pub fn table_options(&self, options: MarkdownTableOptions) -> Self {
         if self.0.options.borrow().table != options {
             Rc::make_mut(&mut self.0.options.borrow_mut()).table = options;
-            self.rebuild_all();
+            self.rebuild_all(false);
         }
         self.clone()
     }
@@ -594,7 +594,7 @@ impl Markdown {
         code_blocks.retain(|(key, _)| *key != language);
         code_blocks.push((language, Rc::new(render)));
         drop(options);
-        self.rebuild_all();
+        self.rebuild_all(false);
         self.clone()
     }
 
@@ -602,7 +602,7 @@ impl Markdown {
     pub fn remove_code_block_renderer(&self, language: &str) -> Self {
         let language = filetype_for_info_string(language).unwrap_or_else(|| language.to_owned());
         Rc::make_mut(&mut self.0.options.borrow_mut()).code_blocks.retain(|(key, _)| *key != language);
-        self.rebuild_all();
+        self.rebuild_all(false);
         self.clone()
     }
 
@@ -618,7 +618,7 @@ impl Markdown {
     pub fn inline_hook(&self, hook: impl Fn(Vec<InlineSpan>, &InlineContext<'_>) -> Vec<InlineSpan> + 'static) -> Self {
         let had = Rc::make_mut(&mut self.0.options.borrow_mut()).inline_hook.replace(Rc::new(hook)).is_some();
         if had {
-            self.rebuild_all();
+            self.rebuild_all(false);
         } else {
             self.change_options();
         }
@@ -668,7 +668,7 @@ impl Markdown {
             selected
         };
         for top in selected {
-            self.rebuild_subtree(top);
+            self.rebuild_subtree(top, false);
         }
         self.clone()
     }
@@ -1099,15 +1099,15 @@ impl Markdown {
         if let Some(widget) = custom {
             return Some(Rendered::Custom(widget));
         }
+        let language = info.as_deref().and_then(|info| info.split_whitespace().next());
         if let Some(Rendered::Code(container, view)) = previous {
-            view.set_code(code.as_str());
+            view.filetype(language).set_code(code.as_str());
             return Some(Rendered::Code(container.clone(), view.clone()));
         }
-        let language = info.as_deref().and_then(|info| info.split_whitespace().next());
         let base = self.base(block.parent);
         let colors = *self.0.colors.borrow();
         // It shows all its lines, wrapped as Core's, so it has nothing to scroll and takes no focus: Tab passes over it.
-        let view = Code::themed(app, Arc::clone(&self.0.syntax.borrow()))
+        let view = Code::themed(app, Arc::clone(&self.0.syntax.borrow()), self.0.style.as_ref())
             .fg(base.fg.unwrap_or(colors.text))
             .filetype(language)
             .set_code(code)
@@ -1302,20 +1302,21 @@ impl Markdown {
         if let (Some(app), Some(style)) = (self.app(), &self.0.style) {
             app.report(styles.register(style));
         }
-        self.rebuild_all();
+        self.rebuild_all(true);
     }
 
-    fn rebuild_all(&self) {
+    fn rebuild_all(&self, keep_code: bool) {
         let tops: Vec<u32> =
             self.0.blocks.borrow().iter().filter(|shown| shown.block.parent.is_none()).map(|s| s.block.index).collect();
         for top in tops {
-            self.rebuild_subtree(top);
+            self.rebuild_subtree(top, keep_code);
         }
     }
 
     /// Builds top-level block `top` and its descendants again, keeping the text widgets of paragraphs and headings
-    /// (the doc writes them, or the widget writes them again here).
-    fn rebuild_subtree(&self, top: u32) {
+    /// (the doc writes them, or the widget writes them again here), and with `keep_code`, for new styles, the code
+    /// widgets, which restyle their highlight as it is.
+    fn rebuild_subtree(&self, top: u32, keep_code: bool) {
         let (Some(app), Some(doc)) = (self.app(), &self.0.doc) else { return };
         let end = {
             let blocks = self.0.blocks.borrow();
@@ -1341,6 +1342,18 @@ impl Markdown {
                     text.detach();
                     text.fg(base.fg.unwrap_or(self.0.colors.borrow().text)).attributes(base.attributes);
                     Some(Rendered::Text(text))
+                }
+                // A registered renderer chooses again; a built-in view it declines restyles as it is.
+                (&sys::OT_MD_CODE, Some(old @ Rendered::Code(..))) if keep_code => {
+                    let new = self.code_block(&app, doc, &block, Some(&old));
+                    if let Some(Rendered::Code(container, code)) = &new {
+                        let colors = *self.0.colors.borrow();
+                        container.detach();
+                        container.bg(colors.code_bg);
+                        let fg = self.base(block.parent).fg.unwrap_or(colors.text);
+                        code.0.restyle(Arc::clone(&self.0.syntax.borrow()), fg);
+                    }
+                    new
                 }
                 _ => self.build_block(&app, doc, &block),
             };
@@ -1474,5 +1487,84 @@ mod tests {
         assert!(blocks.iter().all(|shown| matches!(shown.rendered, Some(Rendered::Text(_)))));
         drop(blocks);
         assert_eq!(app.text().trim_end(), "para\n===\n\nother");
+    }
+
+    // C4 invariant 3 (P11): new colors and a new syntax theme keep every code block's widget and restyle its
+    // highlight, a running one included: no highlight starts and no layer is written. The settled frame equals a
+    // document built with them, with the new code background, a quoted block's text color and the streamed tail.
+    #[cfg(feature = "tree-sitter")]
+    #[test]
+    fn a_theme_switch_keeps_code_blocks_and_highlights_nothing() {
+        use crate::widget::code::tests::settle;
+        let source = "```rust\nlet a = \"s\";\n```\n\n> ```rust\n> fn q() {}\n> ```\n\n```rust\nlet b = 1;\n";
+        let theme = SyntaxTheme::new()
+            .style("keyword", Style::new().fg(Color::RED).bold())
+            .style("string", Style::new().fg(Color::GREEN))
+            .style("default", Style::new().italic());
+        let colors = |app: &TestApp| MarkdownColors {
+            code_bg: Color::BLUE,
+            quote: Color::YELLOW,
+            ..MarkdownColors::from_theme(&app.theme())
+        };
+        let codes = |markdown: &Markdown| -> Vec<Code> {
+            let blocks = markdown.0.blocks.borrow();
+            (blocks.iter().filter_map(|shown| match &shown.rendered {
+                Some(Rendered::Code(_, code)) => Some(code.clone()),
+                _ => None,
+            }))
+            .collect()
+        };
+        let (app, fresh) = (TestApp::new(30, 12), TestApp::new(30, 12));
+        let markdown = Markdown::new(&app).streaming(true);
+        app.root().add(&markdown);
+        markdown.set_markdown(source);
+        settle(&app, &codes(&markdown));
+        markdown.append("let c = 2;\n");
+        app.render();
+        let before: Vec<_> = codes(&markdown).iter().map(|code| (code.element().id(), code.0.work.get())).collect();
+        assert_eq!(before.len(), 3);
+        markdown.syntax_theme(theme.clone()).colors(colors(&app));
+        let after: Vec<_> = codes(&markdown).iter().map(|code| (code.element().id(), code.0.work.get())).collect();
+        assert_eq!(after, before, "the switch built or highlighted a code block");
+        let got = settle(&app, &codes(&markdown));
+        let parses: Vec<_> = codes(&markdown).iter().map(|code| code.0.work.get().0).collect();
+        assert_eq!(parses, before.iter().map(|(_, work)| work.0).collect::<Vec<_>>());
+        let twin = Markdown::new(&fresh).syntax_theme(theme).colors(colors(&fresh)).streaming(true);
+        fresh.root().add(&twin);
+        twin.set_markdown(format!("{source}let c = 2;\n"));
+        let want = settle(&fresh, &codes(&twin));
+        let differ = want.cells.iter().zip(&got.cells).position(|(want, got)| want != got);
+        assert!(differ.is_none(), "cell {differ:?}");
+    }
+
+    // A restyle keeps a code block's widget only as a fresh build would choose it: a changed info string changes the
+    // filetype, and a registered renderer that declined before is asked again (bigboi-1, bigboi-2).
+    #[cfg(feature = "tree-sitter")]
+    #[test]
+    fn a_restyled_code_block_follows_its_info_string_and_renderer() {
+        use crate::widget::Text;
+        use crate::widget::code::tests::settle;
+        let theme = SyntaxTheme::new().style("keyword", Style::new().fg(Color::RED));
+        let custom = Rc::new(Cell::new(false));
+        let build = |app: &TestApp, source: &str| {
+            let custom = Rc::clone(&custom);
+            let markdown = Markdown::new(app).code_block_renderer("mermaid", move |block| {
+                custom.get().then(|| Text::new(block.app, "diagram").as_any())
+            });
+            app.root().add(&markdown);
+            markdown.set_markdown(source);
+            markdown
+        };
+        let source = "```unknown\r\nlet a = 42;\r\n```\r\n\r\n```mermaid\nflow\n```\n";
+        let (app, fresh) = (TestApp::new(30, 8), TestApp::new(30, 8));
+        let markdown = build(&app, &source.replacen("unknown", "rust", 1));
+        settle(&app, &[]);
+        markdown.set_markdown(source);
+        custom.set(true);
+        markdown.syntax_theme(theme.clone());
+        build(&fresh, source).syntax_theme(theme);
+        let (want, got) = (fresh.render(), app.render());
+        let differ = want.cells.iter().zip(&got.cells).position(|(want, got)| want != got);
+        assert!(differ.is_none(), "cell {differ:?}: {:?}", app.text());
     }
 }

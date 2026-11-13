@@ -68,6 +68,7 @@ The same layout properties work across the built-in renderable classes.
 | Position      | `position`                                                                                      | `"relative"` or `"absolute"`                                | `"relative"`                                        |
 | Edges         | `top`, `right`, `bottom`, `left`                                                                | number, `"auto"`, or percentage                             | unset                                               |
 | Dimensions    | `width`, `height`                                                                               | number, `"auto"`, or percentage                             | `"auto"`                                            |
+| Dimensions    | `aspectRatio`                                                                                   | number (width in columns divided by height in rows)         | unset                                               |
 | Limits        | `minWidth`, `minHeight`, `maxWidth`, `maxHeight`                                                | number or percentage                                        | unset                                               |
 | Margin        | `margin`, `marginX`, `marginY`, `marginTop`, `marginRight`, `marginBottom`, `marginLeft`        | number, `"auto"`, or percentage                             | `0`                                                 |
 | Padding       | `padding`, `paddingX`, `paddingY`, `paddingTop`, `paddingRight`, `paddingBottom`, `paddingLeft` | number or percentage                                        | `0`                                                 |
@@ -78,6 +79,7 @@ The same layout properties work across the built-in renderable classes.
 | Flow          | `flexWrap`                                                                                      | `"no-wrap"`, `"wrap"`, or `"wrap-reverse"`                  | `"no-wrap"`                                         |
 | Flow          | `layoutMode`                                                                                    | `"flex"` or `"list"`, see [List layout](#list-layout)       | `"flex"`                                            |
 | Alignment     | `alignItems`                                                                                    | Yoga align value                                            | `"stretch"`                                         |
+| Alignment     | `alignContent`                                                                                  | Yoga align value                                            | `"flex-start"`                                      |
 | Alignment     | `alignSelf`                                                                                     | Yoga align value                                            | `"auto"`                                            |
 | Alignment     | `justifyContent`                                                                                | start, end, center, or space distribution                   | `"flex-start"`                                      |
 | Gaps on `Box` | `gap`, `rowGap`, `columnGap`                                                                    | number or percentage                                        | `0`                                                 |
@@ -98,6 +100,8 @@ Margin, padding, edge (`top`, `right`, `bottom`, `left`), and gap values beyond 
 ## Alignment
 
 In a row, `justifyContent` distributes horizontal space and `alignItems` positions children vertically. A child can override the vertical alignment with `alignSelf`.
+
+When children wrap onto multiple lines, `alignContent` distributes the lines along the cross axis. For example, `alignContent: "space-between"` leaves the extra height between the lines of a wrapped row.
 
 ```typescript
 const row = new BoxRenderable(renderer, {
@@ -145,6 +149,8 @@ Yoga alignment positions child boxes. It does not align characters inside a text
 ## Automatic and intrinsic size
 
 An `"auto"` dimension lets Yoga derive size from children or from a renderable's measure function. Text and editor renderables measure their content in native code.
+
+Set `aspectRatio` to derive one dimension from the other. For example, a box with `width: 12` and `aspectRatio: 1.5` is 8 rows high when its height is otherwise unconstrained.
 
 Yoga calls a measure function with exact, at-most, or unconstrained dimensions. Text measurement uses display-cell width and the active wrap mode.
 
@@ -237,6 +243,7 @@ box.width // the computed width from the last layout pass
 | `flexGrow`, `flexShrink`, `flexBasis`            | `getFlexGrow()`, `getFlexShrink()`, `getFlexBasis()`                 |
 | `flexDirection`, `flexWrap`                      | `getFlexDirection()`, `getFlexWrap()`                                |
 | `alignItems`, `alignSelf`, `justifyContent`      | `getAlignItems()`, `getAlignSelf()`, `getJustifyContent()`           |
+| `alignContent`, `aspectRatio`                    | `getAlignContent()`, `getAspectRatio()`                              |
 | `position`                                       | `getPositionType()`                                                  |
 
 An edge or gutter getter reads only the value set for that edge or gutter. `padding` sets `Edge.All`, `paddingX` sets
