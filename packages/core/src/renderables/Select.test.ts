@@ -132,6 +132,37 @@ describe("SelectRenderable", () => {
   })
 
   describe("Selection Indicator", () => {
+    test("moving the selection reads only a window of options", async () => {
+      const height = 5
+      for (const count of [32, 64, 128, 256]) {
+        let reads = 0
+        const options = new Proxy(
+          Array.from({ length: count }, (_, i) => ({ name: `item-${i}`, description: "" })),
+          {
+            get(target, key, receiver) {
+              if (typeof key === "string" && /^\d+$/.test(key)) reads++
+              return Reflect.get(target, key, receiver)
+            },
+          },
+        )
+        const { select } = await createSelectRenderable(currentRenderer, {
+          options,
+          width: 20,
+          height,
+          showDescription: false,
+        })
+        for (const index of [count - 1, 1, count >> 1]) {
+          reads = 0
+          select.setSelectedIndex(index)
+          await renderOnce()
+          expect(captureCharFrame()).toContain(`▶ item-${index}`)
+          // One option for the selection event, at most one per painted row.
+          expect(reads).toBeLessThanOrEqual(height + 1)
+        }
+        select.destroy()
+      }
+    })
+
     test("should hide the indicator and reclaim its gutter", async () => {
       const { select } = await createSelectRenderable(currentRenderer, {
         width: 20,

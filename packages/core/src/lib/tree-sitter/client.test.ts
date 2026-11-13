@@ -342,6 +342,26 @@ describeClient("TreeSitterClient", () => {
       },
     ],
     [
+      "resetBuffer before the first reply, beside a buffer with no reset",
+      async (c, highlighted) => {
+        // The first reply is stale, but this buffer's own reset already covers it: the other buffer's lack of one
+        // must not post a second reset.
+        const internals = c as unknown as { sendWorkerMessage(message: { type: string }): void }
+        const send = internals.sendWorkerMessage.bind(c)
+        let resets = 0
+        internals.sendWorkerMessage = (message) => {
+          if (message.type === "RESET_BUFFER") resets++
+          send(message)
+        }
+        await c.createBuffer(0, js(1), "javascript", 1)
+        await c.createBuffer(1, js(1), "javascript", 1)
+        await c.resetBuffer(1, 2, js(2))
+        await highlighted(2)
+        await c.removeBuffer(0)
+        expect(resets).toBe(1)
+      },
+    ],
+    [
       "updateBuffer right after resetBuffer",
       async (c, highlighted) => {
         await c.createBuffer(1, streamed(6), "markdown", 1)
