@@ -24,6 +24,53 @@ export interface ExtmarkOptions {
   metadata?: any
 }
 
+type BufferRules = Pick<
+  EditBuffer,
+  "moveCursorLeft" | "moveCursorRight" | "setCursorByOffset" | "deleteCharBackward" | "deleteChar"
+>
+
+// Payloads and type names belong to the buffer, as its marks do, so every controller of the buffer shares them and
+// they outlive a controller. The newest live controller's rules are the ones installed on the buffer.
+interface BufferState {
+  payloads: Map<number, { data?: any; metadata?: any }>
+  typeNameToId: Map<string, number>
+  typeIdToName: Map<number, string>
+  nextTypeId: number
+  originals: BufferRules
+  controllers: ExtmarksController[]
+}
+
+const states = new WeakMap<EditBuffer, BufferState>()
+
+function bufferState(editBuffer: EditBuffer): BufferState {
+  let state = states.get(editBuffer)
+  if (state) return state
+  const bind = <K extends keyof BufferRules>(name: K) => editBuffer[name].bind(editBuffer) as BufferRules[K]
+  state = {
+    payloads: new Map(),
+    typeNameToId: new Map(),
+    typeIdToName: new Map(),
+    nextTypeId: 1,
+    originals: {
+      moveCursorLeft: bind("moveCursorLeft"),
+      moveCursorRight: bind("moveCursorRight"),
+      setCursorByOffset: bind("setCursorByOffset"),
+      deleteCharBackward: bind("deleteCharBackward"),
+      deleteChar: bind("deleteChar"),
+    },
+    controllers: [],
+  }
+  states.set(editBuffer, state)
+  const payloads = state.payloads
+  editBuffer._onHistoryReset = () => payloads.clear()
+  return state
+}
+
+// A u32, as native ids, kinds, styles, priorities and offsets are.
+function isU32(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) >= 0 && (value as number) <= 0xffffffff
+}
+
 /**
  * Extmarks live in the native edit buffer, which moves them with edits and restores them with undo and redo. Ids are
  * never reused. Text inserted strictly inside a virtual extmark, or an edit that removes part of it, drops it.
@@ -33,11 +80,9 @@ export class ExtmarksController {
   private editBuffer: EditBuffer
   private editorView: EditorView
   // Payloads stay while undo can restore their marks; only live ids read them.
-  private payloads = new Map<number, { data?: any; metadata?: any }>()
+  private state: BufferState
+  private rules = {} as BufferRules
   private destroyed = false
-  private typeNameToId = new Map<string, number>()
-  private typeIdToName = new Map<number, string>()
-  private nextTypeId = 1
 
   private originalMoveCursorLeft: typeof EditBuffer.prototype.moveCursorLeft
   private originalMoveCursorRight: typeof EditBuffer.prototype.moveCursorRight
@@ -50,22 +95,25 @@ export class ExtmarksController {
   constructor(editBuffer: EditBuffer, editorView: EditorView) {
     this.editBuffer = editBuffer
     this.editorView = editorView
+    this.state = bufferState(editBuffer)
 
-    this.originalMoveCursorLeft = editBuffer.moveCursorLeft.bind(editBuffer)
-    this.originalMoveCursorRight = editBuffer.moveCursorRight.bind(editBuffer)
-    this.originalSetCursorByOffset = editBuffer.setCursorByOffset.bind(editBuffer)
+    const originals = this.state.originals
+    this.originalMoveCursorLeft = originals.moveCursorLeft
+    this.originalMoveCursorRight = originals.moveCursorRight
+    this.originalSetCursorByOffset = originals.setCursorByOffset
     this.originalMoveUpVisual = editorView.moveUpVisual.bind(editorView)
     this.originalMoveDownVisual = editorView.moveDownVisual.bind(editorView)
-    this.originalDeleteCharBackward = editBuffer.deleteCharBackward.bind(editBuffer)
-    this.originalDeleteChar = editBuffer.deleteChar.bind(editBuffer)
+    this.originalDeleteCharBackward = originals.deleteCharBackward
+    this.originalDeleteChar = originals.deleteChar
 
     this.wrapCursorMovement()
     this.wrapDeletion()
-    editBuffer._onHistoryReset = () => this.payloads.clear()
+    this.state.controllers.push(this)
+    Object.assign(editBuffer, this.rules)
   }
 
   private wrapCursorMovement(): void {
-    this.editBuffer.moveCursorLeft = (): void => {
+    this.rules.moveCursorLeft = (): void => {
       const currentOffset = this.editBuffer.getCursorPosition().offset
       const hasSelection = this.editorView.hasSelection()
 
@@ -90,7 +138,7 @@ export class ExtmarksController {
       this.originalMoveCursorLeft()
     }
 
-    this.editBuffer.moveCursorRight = (): void => {
+    this.rules.moveCursorRight = (): void => {
       const currentOffset = this.editBuffer.getCursorPosition().offset
       const hasSelection = this.editorView.hasSelection()
 
@@ -134,7 +182,7 @@ export class ExtmarksController {
       this.leaveVirtualExtmark(currentOffset)
     }
 
-    this.editBuffer.setCursorByOffset = (offset: number): void => {
+    this.rules.setCursorByOffset = (offset: number): void => {
       const currentOffset = this.editBuffer.getCursorPosition().offset
       const hasSelection = this.editorView.hasSelection()
 
@@ -215,11 +263,10 @@ export class ExtmarksController {
       this.editBuffer.deleteRange(start.row, start.col, end.row, end.col)
     }
 
-    this.editBuffer.deleteCharBackward = (): void =>
+    this.rules.deleteCharBackward = (): void =>
       this.editBuffer.runMutation(() => deleteWhole("end", this.originalDeleteCharBackward))
 
-    this.editBuffer.deleteChar = (): void =>
-      this.editBuffer.runMutation(() => deleteWhole("start", this.originalDeleteChar))
+    this.rules.deleteChar = (): void => this.editBuffer.runMutation(() => deleteWhole("start", this.originalDeleteChar))
   }
 
   // The rules see overlapping marks in creation order.
@@ -238,7 +285,7 @@ export class ExtmarksController {
       virtual: mark.atomic,
       styleId: mark.style || undefined,
       priority: mark.priority,
-      data: this.payloads.get(mark.id)?.data,
+      data: this.state.payloads.get(mark.id)?.data,
       typeId: mark.kind,
     }
   }
@@ -248,16 +295,22 @@ export class ExtmarksController {
       throw new Error("ExtmarksController is destroyed")
     }
 
+    const { start, end, typeId = 0, styleId = 0, priority = 0 } = options
+    // A malformed range or field adds nothing, as a lookup of a missing mark finds nothing; offsets past the text mean
+    // its end.
+    const offset = (value: number) => (Number.isInteger(value) && value >= 0 ? Math.min(value, 0xffffffff) : -1)
+    const [from, to] = [offset(start), offset(end)]
+    if (from < 0 || to < from || !isU32(typeId) || !isU32(styleId) || !isU32(priority)) return 0
     const id = this.editBuffer._mark(NativeEditMarkOperation.Add, {
-      kind: options.typeId ?? 0,
+      kind: typeId,
       atomic: options.virtual ?? false,
-      style: options.styleId,
-      priority: options.priority,
-      start: options.start,
-      end: options.end,
+      style: styleId,
+      priority,
+      start: from,
+      end: to,
     })
     if (options.data !== undefined || options.metadata !== undefined) {
-      this.payloads.set(id, { data: options.data, metadata: options.metadata })
+      this.state.payloads.set(id, { data: options.data, metadata: options.metadata })
     }
     return id
   }
@@ -266,17 +319,18 @@ export class ExtmarksController {
     if (this.destroyed) {
       throw new Error("ExtmarksController is destroyed")
     }
-    return this.editBuffer._mark(NativeEditMarkOperation.Remove, { id }) !== 0
+    return isU32(id) && id !== 0 && this.editBuffer._mark(NativeEditMarkOperation.Remove, { id }) !== 0
   }
 
+  // Native reads id 0 and kind 0xffffffff as wildcards; the public queries are exact.
   public get(id: number): Extmark | null {
-    if (this.destroyed) return null
+    if (this.gone || !isU32(id) || id === 0) return null
     const [mark] = this.editBuffer._getMarks(id)
     return mark ? this.toExtmark(mark) : null
   }
 
   public getAll(): Extmark[] {
-    if (this.destroyed) return []
+    if (this.gone) return []
     return this.editBuffer._getMarks().map((mark) => this.toExtmark(mark))
   }
 
@@ -289,12 +343,15 @@ export class ExtmarksController {
   }
 
   public getAllForTypeId(typeId: number): Extmark[] {
-    if (this.destroyed) return []
-    return this.editBuffer._getMarks(0, typeId).map((mark) => this.toExtmark(mark))
+    if (this.gone || !isU32(typeId)) return []
+    return this.editBuffer
+      ._getMarks(0, typeId)
+      .filter((mark) => mark.kind === typeId)
+      .map((mark) => this.toExtmark(mark))
   }
 
   public clear(): void {
-    if (this.destroyed) return
+    if (this.gone) return
     this.editBuffer._mark(NativeEditMarkOperation.Clear)
   }
 
@@ -303,47 +360,46 @@ export class ExtmarksController {
       throw new Error("ExtmarksController is destroyed")
     }
 
-    const existing = this.typeNameToId.get(typeName)
+    const state = this.state
+    const existing = state.typeNameToId.get(typeName)
     if (existing !== undefined) {
       return existing
     }
 
-    const typeId = this.nextTypeId++
-    this.typeNameToId.set(typeName, typeId)
-    this.typeIdToName.set(typeId, typeName)
+    const typeId = state.nextTypeId++
+    state.typeNameToId.set(typeName, typeId)
+    state.typeIdToName.set(typeId, typeName)
     return typeId
   }
 
   public getTypeId(typeName: string): number | null {
     if (this.destroyed) return null
-    return this.typeNameToId.get(typeName) ?? null
+    return this.state.typeNameToId.get(typeName) ?? null
   }
 
   public getTypeName(typeId: number): string | null {
     if (this.destroyed) return null
-    return this.typeIdToName.get(typeId) ?? null
+    return this.state.typeIdToName.get(typeId) ?? null
   }
 
   public getMetadataFor(extmarkId: number): any {
-    if (this.destroyed || !this.get(extmarkId)) return undefined
-    return this.payloads.get(extmarkId)?.metadata
+    if (!this.get(extmarkId)) return undefined
+    return this.state.payloads.get(extmarkId)?.metadata
   }
 
+  private get gone(): boolean {
+    return this.destroyed || this.editBuffer.isDestroyed
+  }
+
+  /** Restores the methods it wrapped. The marks, their payloads and the type names stay with the buffer. */
   public destroy(): void {
     if (this.destroyed) return
 
-    this.editBuffer.moveCursorLeft = this.originalMoveCursorLeft
-    this.editBuffer.moveCursorRight = this.originalMoveCursorRight
-    this.editBuffer.setCursorByOffset = this.originalSetCursorByOffset
     this.editorView.moveUpVisual = this.originalMoveUpVisual
     this.editorView.moveDownVisual = this.originalMoveDownVisual
-    this.editBuffer.deleteCharBackward = this.originalDeleteCharBackward
-    this.editBuffer.deleteChar = this.originalDeleteChar
-    this.editBuffer._onHistoryReset = undefined
-
-    this.payloads.clear()
-    this.typeNameToId.clear()
-    this.typeIdToName.clear()
+    const { controllers, originals } = this.state
+    controllers.splice(controllers.indexOf(this), 1)
+    Object.assign(this.editBuffer, controllers.at(-1)?.rules ?? originals)
     this.destroyed = true
   }
 }

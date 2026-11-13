@@ -76,7 +76,63 @@ describe("Extmark history metadata", () => {
     expect(mark && [mark.start, mark.end, mark.data, extmarks.getMetadataFor(id)]).toEqual(
       range && [...range, "world", "meta"],
     )
-    expect((extmarks as any).payloads.size).toBe(range ? 1 : 0)
+    expect((extmarks as any).state.payloads.size).toBe(range ? 1 : 0)
+  })
+
+  // Two views of one buffer share its marks, payloads and type names, and closing either, in either order, leaves the
+  // other's rules and then the buffer's own methods working.
+  it.each([
+    ["first", [0, 1]],
+    ["second", [1, 0]],
+  ] as const)("keeps a buffer with two views working after the %s view goes", (_, order) => {
+    const second = EditorView.create(buffer, 40, 10)
+    const views = [view, second]
+    const file = extmarks.registerType("file")
+    expect(second.extmarks.registerType("other")).not.toBe(file)
+    const id = extmarks.create({ start: 3, end: 9, virtual: true, typeId: file, data: "A", metadata: 12 })
+    expect(second.extmarks.get(id)).toMatchObject({ typeId: file, data: "A" })
+    expect(second.extmarks.getTypeName(file)).toBe("file")
+    views[order[0]].destroy()
+    const live = views[order[1]].extmarks
+    buffer.setCursor(0, 3)
+    buffer.moveCursorRight()
+    expect([buffer.getCursorPosition().offset, live.getMetadataFor(id)]).toEqual([9, 12])
+    views[order[1]].destroy()
+    buffer.setCursor(0, 3)
+    buffer.moveCursorRight()
+    buffer.deleteChar()
+    expect([buffer.getCursorPosition().offset, buffer.getText()]).toEqual([4, "abc[INK]def"])
+    // Payloads live as long as the buffer.
+    buffer.destroy()
+    expect([live.get(id), (live as any).state.payloads.size]).toEqual([null, 0])
+  })
+
+  // Native reads id 0 and kind 0xffffffff as "any"; the public lookups are exact. Malformed input is an ordinary miss:
+  // a reversed, negative or fractional range adds nothing, an end past the text means its end. An unstyled mark keeps
+  // any priority.
+  it("treats wildcard ids and kinds, malformed ranges and unstyled priorities as base did", () => {
+    const kind = 0xffffffff
+    const other = extmarks.create({ start: 2, end: 3, typeId: 4 })
+    const wild = extmarks.create({ start: 0, end: 1, typeId: kind, priority: 300 })
+    expect([extmarks.get(0), extmarks.get(-1), extmarks.get(1.5), extmarks.delete(0), extmarks.delete(-1)]).toEqual([
+      null,
+      null,
+      null,
+      false,
+      false,
+    ])
+    expect(extmarks.getAllForTypeId(kind).map((mark) => mark.id)).toEqual([wild])
+    expect(extmarks.getAllForTypeId(-1)).toEqual([])
+    expect(extmarks.get(wild)?.priority).toBe(300)
+    const created = [
+      { start: 3, end: 1 },
+      { start: -1, end: 2 },
+      { start: 0.5, end: 2 },
+      { start: 1, end: 2, typeId: -1 },
+    ].map((range) => extmarks.create(range))
+    expect(created).toEqual([0, 0, 0, 0])
+    expect(extmarks.getAll().map((mark) => mark.id)).toEqual([wild, other])
+    expect(extmarks.get(extmarks.create({ start: 4, end: 2 ** 40 }))).toMatchObject({ start: 4, end: 12 })
   })
 
   // Invariant 5 as a model: a live mark returns the payload it was created with, a dead id reads as absent, marks stay
@@ -121,7 +177,7 @@ describe("Extmark history metadata", () => {
         for (const id of ids) {
           if (!live.has(id) && (extmarks.get(id) || extmarks.getMetadataFor(id) !== undefined)) fail("dead", `${id}`)
         }
-        const kept = [...(extmarks as any).payloads.keys()]
+        const kept = [...(extmarks as any).state.payloads.keys()]
         if (kept.some((id: number) => !created.has(id))) fail("reset", `payloads ${kept} after setText`)
       }
     })

@@ -64,6 +64,10 @@ export class EditBuffer extends EventEmitter {
     }
   }
 
+  public get isDestroyed(): boolean {
+    return this._destroyed
+  }
+
   private guard(): void {
     if (this._destroyed) throw new Error("EditBuffer is destroyed")
     this.native.owner.assertAlive()
@@ -107,7 +111,7 @@ export class EditBuffer extends EventEmitter {
     this.lib.contextEditBufferSetDefaults(this.native.handle.context, this.native.handle, mask, style)
   }
 
-  /** @internal Called after text replacement drops the marks with the history, so nothing can restore them. */
+  /** @internal Called when text replacement drops the marks with the history, or on destroy: nothing can restore them. */
   public _onHistoryReset?: () => void
 
   private setNativeText(text: string, preserveHistory = false): void {
@@ -426,6 +430,7 @@ export class EditBuffer extends EventEmitter {
           this.lib.destroyContextEditBuffer(this.native.handle.context, this.native.handle),
         )
       this._destroyed = true
+      this._onHistoryReset?.()
       this.unsubscribe?.()
       this.unsubscribe = undefined
       this.removeAllListeners()
