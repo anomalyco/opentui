@@ -709,6 +709,8 @@ test "Markdown ABI: a call that fails at any allocation changes nothing, bound n
     const calls = [_]struct { context_mod.MarkdownOptions, Context.MarkdownCall }{
         .{ live, .{ .options = .{ .flags = live.flags | c.OT_MD_MATH } } },
         .{ live, .{ .append = " more **e** and `f` text\n\nnext *g*" } },
+        // A kept layer that outgrows its storage: the set must take the reserved spare.
+        .{ live, .{ .append = " *a* *b* *c* *d* *e* *f* *g* *h* *i* *j* *k* *l* *m* *n* *o* *p* *q* *r* *s* *t*" } },
         .{ live, .{ .set = "one $x$ **two**\n\nthree **d** four" } },
         .{ live, .finish },
         .{ host, .{ .options = live } },

@@ -159,6 +159,21 @@ pub fn ot_edit_buffer_get_range(context: ?*Owner, id: ?*const c.ot_handle, by_co
     return c.OT_OK;
 }
 
+pub fn ot_edit_buffer_convert_offset(context: ?*Owner, id: ?*const c.ot_handle, conversion: u32, value: u32, out: ?*u32) callconv(.c) c.ot_status {
+    const owner = admit(context, true) catch |err| return fail(context, err);
+    if (out == null) return fail(owner, error.InvalidOptions);
+    const editor = edit(owner, id) catch |err| return fail(owner, err);
+    const tb = editor.buffer.tb;
+    out.?.* = switch (conversion) {
+        c.OT_EDIT_BYTE_TO_CELL => tb.weightAtByte(value, true),
+        c.OT_EDIT_CELL_TO_BYTE => tb.byteAtCell(value, true),
+        c.OT_EDIT_UTF16_TO_CELL => tb.weightAtByte(tb.convertUtf16(value, true), true),
+        c.OT_EDIT_CELL_TO_UTF16 => tb.convertUtf16(tb.byteAtCell(value, true), false),
+        else => return fail(owner, error.InvalidOptions),
+    };
+    return c.OT_OK;
+}
+
 pub fn ot_edit_buffer_measure_text(context: ?*Owner, id: ?*const c.ot_handle, bytes: ?[*]const u8, byte_count: u32, out: ?*u32) callconv(.c) c.ot_status {
     const owner = admit(context, true) catch |err| return fail(context, err);
     if (id == null or out == null or (byte_count != 0 and bytes == null)) return fail(owner, error.InvalidOptions);
@@ -777,7 +792,7 @@ test "Context editor ABI rejects malformed arguments without side effects" {
     const tabs = try std.testing.allocator.alloc(u8, (std.math.maxInt(u32) - 1) / 254 + 1);
     defer std.testing.allocator.free(tabs);
     @memset(tabs, '\t');
-    for (0..28) |row| {
+    for (0..30) |row| {
         const status = switch (row) {
             0 => ot_edit_buffer_set_tab_width(&owner, &edit_id, 256),
             1 => ot_edit_buffer_command(&owner, &edit_id, c.OT_EDIT_DEBUG_ROPE + 1, 0),
@@ -808,6 +823,8 @@ test "Context editor ABI rejects malformed arguments without side effects" {
             25 => ot_edit_measure_text(&owner, "a", 1, c.OT_WIDTH_METHOD_UNICODE, 0, null),
             26 => ot_edit_measure_text(&owner, tabs.ptr, @intCast(tabs.len), c.OT_WIDTH_METHOD_UNICODE, 255, &count),
             27 => ot_edit_buffer_get_position(&owner, &edit_id, c.OT_EDIT_POSITION_END, 1, 0, &position),
+            28 => ot_edit_buffer_convert_offset(&owner, &edit_id, c.OT_EDIT_CELL_TO_UTF16 + 1, 0, &count),
+            29 => ot_edit_buffer_convert_offset(&owner, &edit_id, c.OT_EDIT_CELL_TO_BYTE, 0, null),
             else => unreachable,
         };
         try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, status);
