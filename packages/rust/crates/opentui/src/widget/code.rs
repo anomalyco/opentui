@@ -1,5 +1,8 @@
 use super::line_numbers::GutterInner;
-use super::{Behavior, Callbacks, Element, ScrollAction, SelectionUpdate, VisibleLines, Widget, build, keymap_methods};
+use super::{
+    Behavior, Callbacks, Element, LocalSelection, ScrollAction, SelectionUpdate, VisibleLines, Widget, build,
+    keymap_methods,
+};
 use crate::app::{App, Cx, ProxyError};
 use crate::input::{KeyEvent, Keymap, MouseEvent, MouseEventKind};
 use crate::layout::{FlexDirection, LayoutProperty, Length};
@@ -53,6 +56,7 @@ pub(crate) struct CodeInner {
     laid_out_height: Cell<Option<u32>>,
     selectable: Cell<bool>,
     selection_colors: Cell<SelectionColors>,
+    selection: Cell<Option<LocalSelection>>,
 }
 
 impl CodeInner {
@@ -116,8 +120,7 @@ impl CodeInner {
         };
         self.report(result);
         self.forget_highlight();
-        self.mark_stale();
-        self.gutter.changed();
+        self.changed();
     }
 
     /// Shows appended text plain after the shown highlight until the next one lands.
@@ -127,8 +130,7 @@ impl CodeInner {
         }
         self.source.borrow_mut().push_str(text);
         self.report(self.buffer.append(text));
-        self.mark_stale();
-        self.gutter.changed();
+        self.changed();
     }
 
     /// The next highlight runs on the UI thread, and a running one never lands.
@@ -192,6 +194,28 @@ impl CodeInner {
         self.highlighted.set(true);
     }
 
+    /// Highlights changed text at the next frame. As in Core, the selection starts over at the same cells.
+    fn changed(&self) {
+        self.mark_stale();
+        self.gutter.changed();
+        if self.selection.get().is_some() {
+            self.apply_selection(true);
+        }
+    }
+
+    /// Applies the selection kept from the app, or clears the view's.
+    fn apply_selection(&self, start: bool) -> bool {
+        let colors = self.selection_colors.get();
+        self.report(match self.selection.get() {
+            Some(LocalSelection { anchor, focus, unit }) => {
+                self.view.select_local(anchor, focus, !start, unit, colors).map(drop)
+            }
+            None => self.view.clear_selection(),
+        });
+        self.element.app().inspect(App::request_redraw);
+        self.report(self.view.selection()).flatten().is_some()
+    }
+
     fn mark_stale(&self) {
         let stale = self.styled.borrow().is_none() && self.filetype.borrow().is_some();
         self.stale.set(stale);
@@ -252,17 +276,9 @@ impl Behavior for CodeInner {
     }
 
     /// Selects in the text column: coordinates are relative to it, not to the gutter.
-    fn select(&self, selection: Option<&SelectionUpdate>) -> bool {
-        let Some(selection) = selection else {
-            self.report(self.view.clear_selection());
-            self.element.app().inspect(App::request_redraw);
-            return false;
-        };
-        let (anchor, focus) = selection.local(&self.text.element);
-        let colors = self.selection_colors.get();
-        self.report(self.view.select_local(anchor, focus, !selection.start, selection.unit, colors));
-        self.element.app().inspect(App::request_redraw);
-        self.report(self.view.selection()).flatten().is_some()
+    fn select(&self, update: Option<&SelectionUpdate>) -> bool {
+        self.selection.set(update.map(|update| update.local_selection(&self.text.element)));
+        self.apply_selection(update.is_none_or(|update| update.start))
     }
 
     fn selected_text(&self) -> Option<String> {
@@ -388,6 +404,7 @@ impl Code {
                     fg: Some(theme.selection_fg),
                     bg: Some(theme.selection_bg),
                 }),
+                selection: Cell::new(None),
             }
         });
         inner.element.register();
