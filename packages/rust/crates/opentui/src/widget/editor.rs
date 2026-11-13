@@ -1442,7 +1442,7 @@ mod tests {
             }
             area.set_cursor_offset(0);
             app.render();
-            let keys = ["x", "left", "right", "backspace", "delete", "up", "down"];
+            let keys = ["x", "left", "right", "backspace", "delete", "up", "down", "home"];
             let counters = [&crate::native::TEXT_READS, &crate::native::MARK_READS, &crate::native::RULE_CALLS];
             let reads: Vec<_> = keys
                 .iter()
@@ -1452,7 +1452,7 @@ mod tests {
                     counters.map(|counter| counter.with(Cell::get))
                 })
                 .collect();
-            assert_eq!(reads, [[0, 0, 1]; 7], "{keys:?} with {count} marks");
+            assert_eq!(reads, [[0, 0, 1]; 8], "{keys:?} with {count} marks");
             assert_eq!(area.extmarks()[0].range(), 2..7);
         }
     }
