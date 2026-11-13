@@ -187,10 +187,8 @@ async function run(commands: Command[]): Promise<void> {
   ])
   const options = { style: 0, conceal: true, links: true, filter: true, streaming: true }
   const worker = new FakeWorker()
-  const mount = (content: string, streaming = options.streaming, client = worker) => {
-    const box = new ScrollBoxRenderable(target, { width: "100%", height: target.height })
-    box.verticalScrollBar.visible = false
-    const md = new MarkdownRenderable(target, {
+  const markdown = (content: string, streaming: boolean, client: TreeSitterClient) =>
+    new MarkdownRenderable(target, {
       content,
       syntaxStyle: styles[options.style]!,
       streaming,
@@ -200,9 +198,13 @@ async function run(commands: Command[]): Promise<void> {
       inlineHookFilter: options.filter ? ["ses_"] : undefined,
       tableOptions: { style: "columns" },
     })
+  // The subject scrolls among 16 siblings, so the scene culls it when scrolled away; a twin is drawn alone.
+  const mount = (content: string, streaming = options.streaming) => {
+    const md = markdown(content, streaming, worker)
+    const box = new ScrollBoxRenderable(target, { width: "100%", height: target.height })
+    box.verticalScrollBar.visible = false
     box.add(md)
-    // A twin is drawn alone; the subject has siblings, so the scene culls it when scrolled away.
-    if (client === worker) for (let i = 0; i < 16; i++) box.add(new BoxRenderable(target, { height: 3, flexShrink: 0 }))
+    for (let i = 0; i < 16; i++) box.add(new BoxRenderable(target, { height: 3, flexShrink: 0 }))
     target.root.add(box)
     return { box, md }
   }
@@ -228,7 +230,8 @@ async function run(commands: Command[]): Promise<void> {
   const twin = async (streaming: boolean, hidden: Set<number>, plain: Set<number>) => {
     box.visible = false
     const own = new FakeWorker()
-    const fresh = mount(md.content, streaming, own)
+    const fresh = markdown(md.content, streaming, own)
+    target.root.add(fresh)
     await renderOnce()
     for (let pass = 0; pass < 4 && own.pending.length > 0; pass++) {
       while (own.pending.length > 0) own.reply()
@@ -236,7 +239,7 @@ async function run(commands: Command[]): Promise<void> {
       await renderOnce()
     }
     const shot = snapshot(hidden, plain)
-    fresh.box.destroyRecursively()
+    fresh.destroyRecursively()
     box.visible = true
     return shot
   }
