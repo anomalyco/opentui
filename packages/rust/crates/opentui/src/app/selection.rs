@@ -84,15 +84,15 @@ impl App {
         let point = (i32::from(event.x), i32::from(event.y));
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                // Ctrl+press extends the current selection to the pointer.
-                if event.modifiers.contains(Modifiers::CTRL)
-                    && let Some(selection) = self.0.selection.borrow_mut().as_mut()
-                {
-                    selection.dragging = true;
-                } else if self.selection_dragging() || event.modifiers.contains(Modifiers::CTRL) {
+                // Ctrl+press extends the selection to the pointer. A plain press ends a drag whose release was lost.
+                let ctrl = event.modifiers.contains(Modifiers::CTRL);
+                if let Some(selection) = self.0.selection.borrow_mut().as_mut() {
+                    selection.dragging = ctrl;
+                }
+                if ctrl && !self.selection_dragging() {
                     // As in Core, Ctrl+press without a selection starts none.
                     return false;
-                } else {
+                } else if !ctrl {
                     let selectable = hit
                         .and_then(|hit| {
                             std::iter::successors(Some(Rc::clone(hit)), |widget| widget.element().parent_behavior())

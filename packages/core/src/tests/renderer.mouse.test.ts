@@ -847,14 +847,15 @@ describe("renderer handleMouseData", () => {
   })
 
   // Steps: `move|down|drag|up|scroll:x,y[:right|:ctrl]`, `frame` (render once), `kill:id` (destroy), `clear`
-  // (clearSelection), or `console` (show it). A spans x 1-6, B x 12-17, and selectable S x 20-25, all y 1-4; B's
-  // child C spans x 16-17, y 1-2.
-  // Each node logs `id:type`, then `@target` when the event bubbled and `(source id)` when it names a drag source.
+  // (clearSelection), `console` (show it), `hide:id`, or `quit` (the next drag-end destroys the renderer). A spans x 1-6
+  // above D at x 1-3, B x 12-17, and selectable S x 20-25, all y 1-4; B clips its child C at x 16-19, y 1-2, which
+  // prevents its presses. Each node logs `id:type`, `/x` for a drag-end, then `@target` when the event bubbled and
+  // `(source id)` when it names a drag source.
   const pointerPaths: [string, string, string][] = [
     [
       "left drag captures the source until release",
       "move:2,2 down:2,2 drag:3,2 drag:13,2 drag:14,2 up:14,2",
-      "A:over A:move A:down A:drag B:over(A) A:drag A:drag A:drag-end A:up B:drop(A) B:up",
+      "A:over A:move A:down A:drag B:over(A) A:drag A:drag A:drag-end/14 A:up B:drop(A) B:up",
     ],
     [
       "right drag routes by hit test",
@@ -864,61 +865,111 @@ describe("renderer handleMouseData", () => {
     [
       "release on empty space skips drop",
       "down:2,2 drag:3,2 drag:39,19 up:39,19",
-      "A:down A:drag A:drag A:drag-end A:up",
+      "A:down A:drag A:drag A:drag-end/39 A:up",
     ],
     [
       "first drag report off the pressed node",
       "down:2,2 scroll:13,2 drag:13,2 frame drag:14,2 up:14,2",
-      "A:down B:scroll B:over A:drag A:drag A:drag-end A:up B:drop(A) B:up",
+      "A:down B:scroll B:over A:drag A:drag A:drag-end/14 A:up B:drop(A) B:up",
     ],
     [
       "destroyed pressed node falls back to the hit",
       "down:2,2 kill:A drag:13,2 drag:14,2 up:14,2",
-      "A:down B:over B:drag B:drag B:drag-end B:up",
+      "A:down B:over B:drag B:drag B:drag-end/14 B:up",
     ],
-    ["release over the source before a frame", "down:2,2 drag:3,2 up:3,2", "A:down A:drag A:drag-end A:up"],
     ["release off the pressed node without a drag report", "down:2,2 up:13,2", "A:down B:up"],
     [
       "left drag after a right release",
       "down:2,2 up:2,2:right drag:13,2 up:13,2",
-      "A:down A:up B:over A:drag A:drag-end A:up B:drop(A) B:up",
+      "A:down A:up B:over A:drag A:drag-end/13 A:up B:drop(A) B:up",
     ],
     [
       "right press during a left press",
       "down:2,2 down:13,2:right drag:14,2 up:14,2 up:14,2:right",
-      "A:down B:down A:drag A:drag-end A:up B:drop(A) B:up B:up",
+      "A:down B:down A:drag A:drag-end/14 A:up B:drop(A) B:up B:up",
     ],
     [
       "press that starts a selection",
       "down:2,2 down:21,2 clear drag:13,2 up:13,2",
-      "A:down S:down B:over B:drag B:drag-end B:up",
+      "A:down S:down B:over B:drag B:drag-end/13 B:up",
     ],
     [
       "ctrl press that extends a selection",
       "down:21,2 drag:22,2 up:22,2 down:2,2:ctrl clear drag:13,2 up:13,2",
-      "S:down S:drag S:up B:over B:drag B:drag-end B:up",
+      "S:down S:drag S:up B:over B:drag B:drag-end/13 B:up",
     ],
     [
       "release in the console ends the press",
       "down:2,2 console drag:2,17 up:2,17 down:3,17 drag:13,2 up:13,2",
-      "A:down B:over B:drag B:drag-end B:up",
+      "A:down B:over B:drag B:drag-end/13 B:up",
+    ],
+    // A drag looks through its source: a source that follows the pointer drops on what lies under it. A press after
+    // the release, before a frame, goes to the source again.
+    [
+      "release over the source",
+      "down:5,2 drag:2,2 frame up:2,2 down:2,2",
+      "A:down A:drag A:drag-end/2 A:up D:drop(A) D:up A:down",
     ],
     [
       "release over a child of the source",
       "down:13,2 drag:14,2 frame drag:16,1 up:16,1",
-      "B:down B:drag C:over(B) B:over@C(B) B:drag B:drag-end B:up",
+      "B:down B:drag C:over(B) B:over@C(B) B:drag B:drag-end/16 B:up",
+    ],
+    // A left press while a gesture is held means its release was lost: the press ends that gesture as a release at the
+    // last drag point would, without a drop, and goes to the node the presented frame shows under the pointer.
+    [
+      "press on a covering source after a lost release and a frame",
+      "down:5,2 drag:4,2 frame down:2,2 up:2,2",
+      "A:down A:drag A:drag-end/4 A:up A:down A:up",
+    ],
+    [
+      "press where a hidden source was after a lost release",
+      "down:5,2 drag:4,2 hide:A frame down:5,2",
+      "A:down A:drag A:drag-end/4 A:up",
+    ],
+    [
+      "press outside a clipped source after a lost release",
+      "down:16,1 drag:17,1 frame down:18,1",
+      "C:down B:down@C C:drag B:drag@C C:drag-end/17 B:drag-end/17@C C:up B:up@C",
+    ],
+    [
+      "press on a child, then on the child source, after lost releases",
+      "down:13,2 drag:14,2 down:16,1 drag:17,1 frame down:16,1",
+      "B:down B:drag B:drag-end/14 B:up C:down B:down@C C:drag B:drag@C C:drag-end/17 B:drag-end/17@C C:up B:up@C C:down B:down@C",
+    ],
+    [
+      "ctrl press after a lost release",
+      "down:2,2 drag:3,2 down:13,2:ctrl up:13,2",
+      "A:down A:drag A:drag-end/3 A:up B:down B:up",
+    ],
+    [
+      "press that starts a selection after a lost selection release",
+      "down:21,2 drag:22,2 down:23,2 drag:24,2 up:24,2",
+      "S:down S:drag S:down S:drag S:up",
+    ],
+    [
+      "prevented press after a lost selection release",
+      "down:21,2 drag:22,2 down:16,1 drag:17,1 up:17,1",
+      "S:down S:drag C:down B:down@C C:drag B:drag@C C:drag-end/17 B:drag-end/17@C C:up B:up@C B:drop(C) B:up",
+    ],
+    [
+      "press after a lost release whose drag-end quits",
+      "down:2,2 drag:3,2 quit down:13,2",
+      "A:down A:drag A:drag-end/3",
     ],
   ]
 
   test.each(pointerPaths)("pointer path: %s", async (_, steps, expected) => {
     try {
       const log: string[] = []
+      let quit = false
       const nodes = new Map<string, TestRenderable>()
       for (const [id, left, top, width, parent] of [
+        ["D", 1, 1, 3, ""],
         ["A", 1, 1, 6, ""],
         ["B", 12, 1, 6, ""],
         ["S", 20, 1, 6, ""],
-        ["C", 4, 0, 2, "B"],
+        ["C", 4, 0, 4, "B"],
       ] as const) {
         const node = new TestRenderable(renderer, {
           id,
@@ -926,13 +977,17 @@ describe("renderer handleMouseData", () => {
           left,
           top,
           width,
-          height: width === 2 ? 2 : 4,
+          height: id === "C" ? 2 : 4,
+          overflow: id === "B" ? "hidden" : "visible",
         })
         node.selectable = id === "S"
-        node.onMouse = (event) =>
+        node.onMouse = (event) => {
+          if (id === "C" && event.type === "down") event.preventDefault()
           log.push(
-            `${id}:${event.type}${event.target === node ? "" : `@${event.target?.id}`}${event.source ? `(${event.source.id})` : ""}`,
+            `${id}:${event.type}${event.type === "drag-end" ? `/${event.x}` : ""}${event.target === node ? "" : `@${event.target?.id}`}${event.source ? `(${event.source.id})` : ""}`,
           )
+          if (quit && event.type === "drag-end") renderer.destroy()
+        }
         ;(nodes.get(parent) ?? renderer.root).add(node)
         nodes.set(id, node)
       }
@@ -943,14 +998,78 @@ describe("renderer handleMouseData", () => {
         const pressed = button === "right" ? MouseButtons.RIGHT : MouseButtons.LEFT
         if (kind === "frame") await renderOnce()
         else if (kind === "kill") nodes.get(at)!.destroy()
+        else if (kind === "hide") nodes.get(at)!.visible = false
         else if (kind === "clear") renderer.clearSelection()
         else if (kind === "console") renderer.console.show()
+        else if (kind === "quit") quit = true
         else if (kind === "scroll") await mockMouse.scroll(x, y, "up")
         else if (kind === "move" || kind === "drag") await mockMouse.moveTo(x, y)
         else if (kind === "down") await mockMouse.pressDown(x, y, pressed, { modifiers: { ctrl: button === "ctrl" } })
         else await mockMouse.release(x, y, pressed)
       }
       expect(log.join(" ")).toBe(expected)
+      expect(renderer["hasLoggedStdinParserError"]).toBe(false)
+    } finally {
+      renderer.destroy()
+    }
+  })
+
+  // The pointer moves between rows 0 and 1. A press while another is held means its release was lost. CI: every
+  // trace of MOUSE_MODEL_DEPTH (6) events, then MOUSE_MODEL_SEEDS (24) traces of 24 events.
+  test("each press owns its gesture, also after a lost release", async () => {
+    const log: string[] = []
+    const nodes = [0, 1].map((y) => {
+      const node = new TestRenderable(renderer, { id: `${y}`, position: "absolute", top: y, width: 4, height: 1 })
+      node.onMouse = (event) => !["over", "out", "move"].includes(event.type) && log.push(`${event.type}:${y}`)
+      renderer.root.add(node)
+      return node
+    })
+    await renderOnce()
+    const check = async (trace: string[]) => {
+      await mockMouse.release(0, 0)
+      let [y, owner, dragging] = [0, -1, false]
+      const [actual, model]: string[][] = [[], []]
+      for (const step of trace) {
+        const expected: string[] = []
+        log.length = 0
+        if (step === "press") {
+          if (dragging) expected.push(`drag-end:${owner}`, `up:${owner}`)
+          expected.push(`down:${y}`)
+          await mockMouse.pressDown(0, y)
+          ;[owner, dragging] = [y, false]
+        } else if (step === "release") {
+          if (!dragging) expected.push(`up:${y}`)
+          else expected.push(`drag-end:${owner}`, `up:${owner}`, ...(y === owner ? [] : [`drop:${y}`, `up:${y}`]))
+          await mockMouse.release(0, y)
+          ;[owner, dragging] = [-1, false]
+        } else if (step === "wheel") {
+          expected.push(`scroll:${y}`)
+          await mockMouse.scroll(0, y, "down")
+        } else {
+          y = 1 - y
+          if (owner >= 0) expected.push(`drag:${owner}`)
+          dragging = owner >= 0
+          await mockMouse.moveTo(0, y)
+        }
+        const held = `pressed ${renderer["pressedRenderable"]?.id} captured ${renderer["capturedRenderable"]?.id}`
+        actual.push(`${step}: ${log.join(" ")}; ${held}`)
+        const [pressed, captured] = [nodes[owner]?.id, dragging ? nodes[owner]!.id : undefined]
+        model.push(`${step}: ${expected.join(" ")}; pressed ${pressed} captured ${captured}`)
+      }
+      expect(actual).toEqual(model)
+    }
+    const events = ["press", "cross", "wheel", "release"]
+    const depth = Number(process.env.MOUSE_MODEL_DEPTH ?? 6)
+    try {
+      for (let n = 0; n < events.length ** depth; n++) {
+        await check(
+          Array.from({ length: depth }, (_, i) => events[Math.floor(n / events.length ** i) % events.length]!),
+        )
+      }
+      for (let seed = 1; seed <= Number(process.env.MOUSE_MODEL_SEEDS ?? 24); seed++) {
+        let state = seed
+        await check(Array.from({ length: 24 }, () => events[(state = (48271 * state) % 2147483647) % events.length]!))
+      }
     } finally {
       renderer.destroy()
     }
