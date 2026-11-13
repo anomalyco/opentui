@@ -281,10 +281,19 @@ pub const Parser = struct {
             };
             assert(self.position > before);
         }
-        // A `$` span that starts the trailing word is decided by the byte after its closer.
-        if (!final and self.options.math and self.position == self.limit and self.position < self.math_line.start and self.position + 1 < subject.len and subject[self.position] == '$' and subject[self.position + 1] != '$') {
-            self.limit = @intCast(subject.len);
-            self.step() catch |err| if (err == error.OutOfMemory) return error.OutOfMemory;
+        // The trailing word's decided prefix: plain bytes, `!` before no `[`, and single `$` spans,
+        // which the byte after their closer decides; the word's last byte waits for the next.
+        if (!final and self.options.math and self.tail_run_start < subject.len and self.position >= self.limit and self.position < self.math_line.start) {
+            self.limit = @intCast(subject.len - 1);
+            while (self.position < self.limit) {
+                const c = subject[self.position];
+                const next = subject[self.position + 1];
+                if (if (c == '$') next == '$' else if (c == '!') next == '[' else self.isSpecial(c)) break;
+                self.step() catch |err| switch (err) {
+                    error.NeedMore => break,
+                    error.OutOfMemory => return error.OutOfMemory,
+                };
+            }
             self.limit = self.position;
         }
         if (!final) return;

@@ -1207,9 +1207,9 @@ test "Markdown sweep: every pair of appends, then finish, under every option set
     }
     // The tear prototype's repros (math on): A aborted in M2 before fd4ab4e19; B and D pass.
     // Then a task marker before more text (M3-a, M2 F9), an escaped backslash that ends an
-    // append inside `\(` (bigboi-2), a `$` run that ends an append (bigboi-3), and a held display
+    // append inside `\(` (bigboi-2), a `$` run that ends an append and a span decided after a prefix (bigboi-3, -5), and a held display
     // math line after a fold and when its line ends (bigboi-4).
-    for ([_][]const []const u8{ &.{ "@\n$$_", "$$\n" }, &.{"&amp;\n===\n"}, &.{ "&amp;", "\n===\n" }, &.{ "- [x] - [x] ", "**" }, &.{ "- [x] ", "- [x] ", "word " }, &.{ "\\(a b\\\\", ")", " now" }, &.{ "$ $$", "$x$" }, &.{ "some text\n\\[a $b$", " z\\]", "\n" }, &.{ "$$_s_s_ ", "\n" } }) |parts| {
+    for ([_][]const []const u8{ &.{ "@\n$$_", "$$\n" }, &.{"&amp;\n===\n"}, &.{ "&amp;", "\n===\n" }, &.{ "- [x] - [x] ", "**" }, &.{ "- [x] ", "- [x] ", "word " }, &.{ "\\(a b\\\\", ")", " now" }, &.{ "$ $$", "$x$" }, &.{ "pay ($2", "$", ")." }, &.{ "some text\n\\[a $b$", " z\\]", "\n" }, &.{ "$$_s_s_ ", "\n" } }) |parts| {
         try std.testing.expect(try streamAgreesParts(arena_state.allocator(), "math tear", parts));
     }
     // E and F's inputs with the options M1 has (conceal and hyperlinks are M2's).
@@ -1491,6 +1491,9 @@ test "Markdown read_leaf: display bytes, chunk styles, spans and the URL pool" {
         .{ .source = "See [Updated](https://target)\n", .pending = true, .block = 0, .chunks = &.{ .{ "See ", "", "" }, .{ "Updated", "link", "https://target" } } },
         // A `$` span that starts the last word shows once the byte after it decides it (bigboi-3).
         .{ .source = "see $x$.", .math = true, .pending = true, .block = 0, .chunks = &.{ .{ "see ", "", "" }, .{ "x", "math", "" }, .{ ".", "", "" } } },
+        // ... after a decided prefix, each span (bigboi-5; a digit inside the TeX is not after it).
+        .{ .source = "pay ($2$).", .math = true, .pending = true, .block = 0, .chunks = &.{ .{ "pay (", "", "" }, .{ "2", "math", "" }, .{ ").", "", "" } } },
+        .{ .source = "A $x$!$y$.", .math = true, .pending = true, .block = 0, .chunks = &.{ .{ "A ", "", "" }, .{ "x", "math", "" }, .{ "!", "", "" }, .{ "y", "math", "" }, .{ ".", "", "" } } },
         // A line that may still be a one-line display math block shows literal, the first or a
         // later one, until a byte after its closer rules that out (bigboi-4).
         .{ .source = "\\[b $c$ d\\]", .math = true, .pending = true, .block = 0, .chunks = &.{.{ "[b $c$ d]", "", "" }} },
