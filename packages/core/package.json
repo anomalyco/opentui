@@ -32,6 +32,7 @@
     "vendor:update:images": "cd ../native && sh src/vendor/update.sh",
     "vendor:update:zig": "cd ../native && sh src/vendor/update-zig-deps.sh",
     "test:native": "cd ../native && bun run test",
+    "test:video-build": "sh scripts/test-video-build.sh",
     "test:native:lifetime": "cd ../native && bun run test:lifetime",
     "bench:native": "cd ../native && bun run bench --",
     "bench:native:ffi": "cd ../native && bun run bench:ffi",

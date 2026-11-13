@@ -120,12 +120,14 @@ describe("VideoRenderable", () => {
   })
 
   test("open failures report the native detail", async () => {
+    const noVideo = process.env.OPENTUI_TEST_NO_VIDEO === "1"
     const errors: Error[] = []
-    const video = new VideoRenderable(renderer, { source: MISSING, onError: (error) => errors.push(error) })
+    const video = new VideoRenderable(renderer, { source: noVideo ? FIXTURE : MISSING, onError: (e) => errors.push(e) })
     expect(video.ready).toBe(false)
     await Promise.resolve()
     expect(errors).toHaveLength(1)
     expect(errors[0].message).toContain("ot_video_open")
+    if (noVideo) expect(errors[0].message).toContain("video decoding is unavailable")
     expect(errors[0].message).toContain(": ")
     expect(errors[0].message.length).toBeGreaterThan("ot_video_open failed: VideoFailed".length)
   })
