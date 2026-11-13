@@ -596,8 +596,9 @@ export class MarkdownRenderable extends Renderable {
   }
 
   /**
-   * How many top-level blocks are final: their rows never change again, and equal those a render of the finished
-   * document draws. It counts from the first block and never goes down while the content only grows.
+   * How many top-level blocks are final: their rows equal those a render of the finished document draws, except
+   * that a link definition arriving after a committed block used its label makes that label a link. It counts from
+   * the first block and never goes down while the content only grows.
    */
   get committedBlockCount(): number {
     return this._doc.committed

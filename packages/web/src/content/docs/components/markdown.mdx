@@ -94,13 +94,13 @@ markdown.content += "- line 1\n"
 markdown.streaming = false
 ```
 
-Content that extends the previous content is appended: the engine reads only the new text, and when it only grows a paragraph or heading, it writes that block's text natively with no work in JavaScript. Other content is parsed again, and blocks equal to the shown ones keep their renderables.
+Content that extends the previous content is appended: the engine reads only the new text, and when it only grows a paragraph or heading, it writes that block's text natively with no text work in JavaScript (in a terminal that shows links, with `conceal` on, and for blocks the inline hook does not rewrite; otherwise JavaScript writes the block's styled text). Other content is parsed again, and blocks equal to the shown ones keep their renderables.
 
 While streaming, the last line shows as far as it is decided. A line that may still become a table row, a fence's end, a rule or a heading's underline waits for its end, and an emphasis or code span that has not closed yet draws as if it had. So a block's kind never flips back and forth on screen.
 
 ### Committed blocks
 
-`markdown.committedBlockCount` is the number of top-level blocks at the start of the document whose rows can no longer change: they equal the rows a render of the finished document draws. It never goes down while content only grows. `markdown.blocks` lists every block in document order (the index is the block's id) with its kind and the renderable that shows it. Together they let an app write finished rows out once, for example to terminal scrollback with [`ScrollbackSurface`](/docs/core-concepts/renderer#writing-to-scrollback): write each committed block's rows together with the blank row above it.
+`markdown.committedBlockCount` is the number of top-level blocks at the start of the document whose rows are final: they equal the rows a render of the finished document draws, with one exception: a link reference definition that arrives after a committed block used its label turns that label into a link on screen, while rows already written out keep the old text. It never goes down while content only grows. `markdown.blocks` lists every block in document order (the index is the block's id) with its kind and the renderable that shows it. Together they let an app write finished rows out once, for example to terminal scrollback with [`ScrollbackSurface`](/docs/core-concepts/renderer#writing-to-scrollback): write each committed block's rows together with the blank row above it.
 
 ```typescript
 md.content = "# Title\n\nPara 1"
@@ -252,7 +252,7 @@ A code-block renderer gets a `MarkdownCodeBlock`: `type: "code"`, `lang`, `info`
 
 ## Inline hooks and math
 
-`inlineHook` rewrites the display text of every paragraph, heading and table cell before it shows, for example to show IDs as titled links. It gets the parser's spans (`text`, styles, `link`, `code`, `math`) and the block's source, and returns the spans to show; a span's `target` makes it clickable through `markdown.targetAt(x, y)`. `inlineHookFilter: ["ses_"]` runs the hook only on blocks whose source holds one of the strings, so other blocks stay on the native path. `rerunInlineHook(select)` runs it again for the blocks whose source `select` accepts, without parsing anything.
+`inlineHook` rewrites the display text of every paragraph, heading and table cell before it shows, for example to show IDs as titled links. It gets the parser's spans (`text`, styles, `link`, `code`, `math`) and the block's source, and returns the spans to show; a span's `target` in a paragraph or heading makes it clickable through `markdown.targetAt(x, y)` (targets in table cells are not). `targetAt` answers for what the last frame drew: after the text changes (a new `content`, a rename through `rerunInlineHook`), it answers from the next frame. `inlineHookFilter: ["ses_"]` runs the hook only on blocks whose source holds one of the strings, so other blocks stay on the native path; an empty filter runs it on none. The filter holds at most 16 strings of 1 to 64 bytes, 256 bytes in all, and the source at most 64 MiB. `rerunInlineHook(select)` runs it again for the blocks whose source `select` accepts, without parsing anything.
 
 `extensions: ["math"]` parses `$…$` and `\(…\)` as inline math (a span with `math` set) and `$$` or `\[` lines as display math, a code block of the language `math`, so `createMarkdownCodeBlockRenderer({ math })` renders it.
 
@@ -288,6 +288,9 @@ Markdown applies `content`, `streaming`, `conceal`, `syntaxStyle` and the hook o
 - Paragraphs and headings are `TextRenderable`s written natively, not `CodeRenderable`s with `filetype: "markdown"`, and prose no longer goes to the Tree-sitter client. Code that set `onChunks` or `onHighlight` on them should use `inlineHook`.
 - Parsing follows CommonMark 0.31.2 and GFM: `[x]` without a definition keeps its brackets, a backslash escape hides its backslash, a code span loses one space at each end, a link reference definition applies anywhere in the document, a header with its delimiter row is a table before any row arrives, task items show ☐ or ☑ (`[ ]` or `[x]` without conceal), and a list with a blank line between items shows a blank row between them.
 - While streaming, a line that may still change kind waits for its end (see [Streaming updates](#streaming-updates)).
+- The inline hook runs when its content or options change (`content`, `inlineHook`, `inlineHookFilter`, `rerunInlineHook`, a new `syntaxStyle`), not when a highlight arrives, so a renamed title shows at once and a failed highlight no longer keeps an old one. Its output is written in the current style: a hook that reads `context.syntaxStyle` is run again on a theme change.
+- `targetAt` answers from the next frame after a rename or other text change; until then it answers nothing.
+- A `markup.strikethrough` style strikes its text through unless the style sets `strikethrough: false`.
 
 OpenTUI bundles a limited parser set. See the [Tree-sitter reference](/docs/reference/tree-sitter) before you highlight other fenced-code languages.
 
