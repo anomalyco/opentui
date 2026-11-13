@@ -1877,6 +1877,10 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
         .{ .name = "list.md, 30-byte appends", .parts = try split(arena, try fixture(arena, "fixture list"), 30), .display_factor = 2 },
         .{ .name = "prose.md, 30-byte appends", .parts = try split(arena, try fixture(arena, "fixture prose"), 30), .display_factor = 2 },
         .{ .name = "an 8,192-byte line, 1-byte appends", .parts = try split(arena, line, 1) },
+        // A line that may become a display math block is held whole, drawn by B and parsed at
+        // finish: the worst per-byte series of the review round (512 to 16,384 bytes: inline 2.0,
+        // display 3.2, assembled 1.0 a byte; the copy holds the line).
+        .{ .name = "a held display math line, 3-byte appends", .options = .{ .math = true }, .parts = try split(arena, try std.mem.concat(arena, u8, &.{ "$$", line[0..4096] }), 3), .display_factor = 4, .held_max = 4098 },
         // Settled words fold away at word ends too (bigboi-2: the copy kept the whole paragraph).
         .{ .name = "an 8,192-byte line, word-sized appends", .parts = try split(arena, line, 5), .held_max = 16 },
         .{ .name = "some **x + 8,192 one-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"some **x"}, try split(arena, xs, 1) }), .sent_factor = 2 },
