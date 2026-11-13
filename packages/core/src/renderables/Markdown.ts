@@ -842,7 +842,7 @@ export class MarkdownRenderable extends Renderable {
       const parent = this.parentOf(index)
       const position = old ? parent.getChildren().indexOf(old) : -1
       // The default the new result shows leaves the old result before it goes.
-      if (fallback && old && holds(old, fallback)) fallback.parent?.remove(fallback)
+      if (fallback && old && old !== fallback && holds(old, fallback)) fallback.parent?.remove(fallback)
       if (old !== fallback) old?.destroyRecursively()
       shown.renderable = renderable
       if (renderable) parent.add(renderable, position === -1 ? undefined : position)
@@ -931,8 +931,8 @@ export class MarkdownRenderable extends Renderable {
       throw error
     }
     if (!custom) return { renderable: defaultRender(), fallback }
-    // A result that holds the default (a wrapper) keeps it shown.
-    if (custom === fallback || fallback?.parent) return { renderable: custom, fallback }
+    // A result that is or holds the default (a wrapper) keeps it shown.
+    if (fallback && holds(custom, fallback)) return { renderable: custom, fallback }
     unused()
     return { renderable: custom, fallback: undefined }
   }

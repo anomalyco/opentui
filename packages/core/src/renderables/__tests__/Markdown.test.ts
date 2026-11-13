@@ -3162,7 +3162,34 @@ test("a renderer's switches between its own result, a wrapper and the default ke
   wrapped.syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: RGBA.fromValues(1, 1, 1, 1) } }, renderer.nativeScene!)
   await renderMarkdownRenderable(wrapped)
   expect(frameText()).toBe("plain")
+  // And back: the shown default moves into a new wrapper (bigboi-r2-1).
+  wrap = true
+  wrapped.refreshStyles()
+  await renderMarkdownRenderable(wrapped)
+  expect(frameText()).toBe("plain")
+  const shownDefault = wrapped.blocks[0]!.renderable!.getChildren()[0]!
   wrapped.destroyRecursively()
+  expect(shownDefault.isDestroyed).toBe(true)
+
+  // A renderer that asks for the shown default but returns its own text: the default goes with the Markdown.
+  let own = false
+  const replaced = createMarkdownRenderable({
+    content: "plain",
+    syntaxStyle,
+    renderBlock: (_block, context) => {
+      const fallback = context.defaultRender()
+      return own ? new TextRenderable(renderer, { content: "CUSTOM" }) : fallback
+    },
+  })
+  renderer.root.add(replaced)
+  await renderMarkdownRenderable(replaced)
+  const first = replaced.blocks[0]!.renderable!
+  own = true
+  replaced.refreshStyles()
+  await renderMarkdownRenderable(replaced)
+  expect(frameText()).toBe("CUSTOM")
+  replaced.destroyRecursively()
+  expect(first.isDestroyed).toBe(true)
 
   // A quote shown by the renderer alone, then by the default, which shows its children.
   let custom = true
