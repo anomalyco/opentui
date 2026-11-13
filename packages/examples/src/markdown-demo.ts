@@ -693,7 +693,6 @@ Other:
     fg: getThemeTextColor(theme),
     bg: theme.bg,
     conceal: concealEnabled,
-    internalBlockMode: "top-level",
     tableOptions: { style: "grid", widthMode: "content", cellPaddingX: 1 },
     width: "100%",
   })

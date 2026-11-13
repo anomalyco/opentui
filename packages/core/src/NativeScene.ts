@@ -417,6 +417,17 @@ export class NativeScene {
     }
   }
 
+  /** @internal A Markdown document binds the text node after its staged writes. */
+  textNode(renderable: Renderable): SceneNodeHandle {
+    this.flushStaged()
+    return renderable._getSceneHandle(this)
+  }
+
+  /** @internal The byte of the text the latest finished frame drew at a cell, or undefined. */
+  textByteAt(renderable: Renderable, x: number, y: number): number | undefined {
+    return this.driver.renderLib.sceneGetTextByteAt(this.driver.context, this.textNode(renderable), x, y)
+  }
+
   /** @internal Text options commit together without exposing the node-owned buffer or view. */
   setTextOptions(renderable: Renderable, options: NativeSceneTextOptions): void {
     this.flushStaged()

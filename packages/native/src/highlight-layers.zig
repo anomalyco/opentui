@@ -21,6 +21,8 @@ pub const group_set_pool_byte_count_max = 64 * 1024;
 
 pub const Error = error{ OutOfMemory, InvalidIndex, InvalidId, LayerLimit, GroupSetLimit };
 
+const strike: u8 = @import("ansi.zig").TextAttributes.STRIKETHROUGH;
+
 /// The Context's interned group sets. Id = index + 1, so 0 names no set.
 pub const GroupSets = struct {
     allocator: Allocator,
@@ -104,16 +106,22 @@ pub const GroupSets = struct {
 
 /// Later names win per field: fg and bg when set, and each attribute bit the definition supplies.
 /// A missing name falls back to its first dotted component, as Core's `SyntaxStyle.getStyle` does.
+/// `markup.strikethrough` strikes through unless its definition says otherwise, as in Core and Rust.
 /// The result supplies the bits any name supplied; one that supplies no field paints as no run.
 pub fn compose(style: *const ss.SyntaxStyle, sets: *const GroupSets, id: u32) ss.StyleDefinition {
     var result: ss.StyleDefinition = .{ .fg = null, .bg = null, .attributes = 0, .supplied_attributes = 0 };
     var index: u32 = 0;
     while (index < sets.nameCount(id)) : (index += 1) {
         const value = sets.name(id, index);
-        const definition = style.getStyleByName(value) orelse fallback: {
-            const dot = std.mem.indexOfScalar(u8, value, '.') orelse continue;
-            break :fallback style.getStyleByName(value[0..dot]) orelse continue;
+        const none: ss.StyleDefinition = .{ .fg = null, .bg = null, .attributes = 0, .supplied_attributes = 0 };
+        var definition = style.getStyleByName(value) orelse fallback: {
+            const dot = std.mem.indexOfScalar(u8, value, '.') orelse break :fallback none;
+            break :fallback style.getStyleByName(value[0..dot]) orelse none;
         };
+        if (std.mem.eql(u8, value, "markup.strikethrough") and definition.supplied_attributes & strike == 0) {
+            definition.attributes |= strike;
+            definition.supplied_attributes |= strike;
+        }
         if (definition.fg) |fg| result.fg = fg;
         if (definition.bg) |bg| result.bg = bg;
         result.attributes = (result.attributes & ~@as(u32, definition.supplied_attributes)) | definition.attributes;

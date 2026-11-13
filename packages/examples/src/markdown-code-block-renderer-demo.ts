@@ -38,7 +38,7 @@ step Open pull request queued
 Everything around the custom fence is still rendered by the normal markdown pipeline, including **bold text**, links, and ordinary code fences.
 
 \`\`\`ts
-const renderNode = createMarkdownCodeBlockRenderer({ taskflow: renderTaskFlow })
+const renderBlock = createMarkdownCodeBlockRenderer({ taskflow: renderTaskFlow })
 \`\`\`
 `
 
@@ -105,8 +105,8 @@ function stepStyle(status: TaskFlowStep["status"]): { marker: string; color: str
 }
 
 function createTaskFlowRenderer(renderer: CliRenderer): MarkdownCodeBlockRenderer {
-  return (token) => {
-    const flow = parseTaskFlow(token.text)
+  return (block) => {
+    const flow = parseTaskFlow(block.text)
     const card = new BoxRenderable(renderer, {
       id: "taskflow-card",
       width: "100%",
@@ -169,7 +169,7 @@ export function run(renderer: CliRenderer): void {
       fg: "#DDE7FF",
       bg: "#020617",
       width: "100%",
-      renderNode: createMarkdownCodeBlockRenderer({
+      renderBlock: createMarkdownCodeBlockRenderer({
         taskflow: createTaskFlowRenderer(renderer),
       }),
     }),

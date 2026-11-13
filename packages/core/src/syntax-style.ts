@@ -134,6 +134,11 @@ export class SyntaxStyle {
     this.native.owner.assertAlive()
   }
 
+  /** @internal Whether the style lives in the Context of `scene`, so it can bind there. */
+  public _ownedBy(scene: NativeResourceOwner): boolean {
+    return this.native.owner === scene.resourceContext
+  }
+
   /** @internal Attachment borrows the Context-owned style; it never allocates a copy. */
   public _getSceneHandle(scene: NativeResourceOwner): ContextSyntaxStyleHandle {
     this.guard()

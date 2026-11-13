@@ -1,6 +1,7 @@
 import { test, expect, beforeEach, afterEach } from "bun:test"
 import { MarkdownRenderable, type MarkdownOptions } from "../Markdown.js"
 import { CodeRenderable } from "../Code.js"
+import { TextRenderable } from "../Text.js"
 import { SyntaxStyle } from "../../syntax-style.js"
 import { RGBA } from "../../lib/RGBA.js"
 import { createTestRenderer, type TestRenderer, MockTreeSitterClient } from "../../testing.js"
@@ -114,7 +115,7 @@ test("unlabeled fenced code blocks inherit markdown fg/bg defaults", async () =>
   renderer.root.add(md)
   await renderer.idle()
 
-  const codeBlock = md._blockStates[0]?.renderable as CodeRenderable
+  const codeBlock = md.getChildren()[0] as CodeRenderable
   expect(codeBlock).toBeInstanceOf(CodeRenderable)
   expect(codeBlock.filetype).toBeUndefined()
   expect(codeBlock.fg.equals(fg)).toBe(true)
@@ -144,7 +145,7 @@ test("unsupported fenced code blocks keep inherited markdown fg/bg after highlig
   await renderer.idle()
   expect(mockTreeSitterClient.isHighlighting()).toBe(true)
 
-  const codeBlock = md._blockStates[0]?.renderable as CodeRenderable
+  const codeBlock = md.getChildren()[0] as CodeRenderable
 
   mockTreeSitterClient.resolveAllHighlightOnce()
   await waitForHighlight(codeBlock)
@@ -170,7 +171,7 @@ test("fenced tsx code blocks normalize the language before highlighting", async 
   renderer.root.add(md)
   await renderer.idle()
 
-  const codeBlock = md._blockStates[0]?.renderable as CodeRenderable
+  const codeBlock = md.getChildren()[0] as CodeRenderable
   expect(codeBlock).toBeInstanceOf(CodeRenderable)
   expect(codeBlock.filetype).toBe("typescriptreact")
   expect(mockTreeSitterClient.highlightCalls[0]?.filetype).toBe("typescriptreact")
@@ -193,7 +194,7 @@ test("updating fenced code blocks reapplies normalized filetypes", async () => {
   renderer.root.add(md)
   await renderer.idle()
 
-  const codeBlock = md._blockStates[0]?.renderable as CodeRenderable
+  const codeBlock = md.getChildren()[0] as CodeRenderable
   expect(codeBlock).toBeInstanceOf(CodeRenderable)
   expect(codeBlock.filetype).toBe("javascriptreact")
 
@@ -204,7 +205,7 @@ test("updating fenced code blocks reapplies normalized filetypes", async () => {
   md.content = "```tsx\nconst view = <div>Hello</div>\n```"
   await renderer.idle()
 
-  expect(md._blockStates[0]?.renderable).toBe(codeBlock)
+  expect(md.getChildren()[0]).toBe(codeBlock)
   expect(codeBlock.filetype).toBe("typescriptreact")
   expect(mockTreeSitterClient.highlightCalls.at(-1)?.filetype).toBe("typescriptreact")
 
@@ -230,7 +231,7 @@ test("updating markdown fg/bg rerenders existing fenced code block renderables",
   renderer.root.add(md)
   await renderer.idle()
 
-  const codeBlock = md._blockStates[0]?.renderable as CodeRenderable
+  const codeBlock = md.getChildren()[0] as CodeRenderable
   expect(codeBlock).toBeInstanceOf(CodeRenderable)
   expectSpanColors("plain code block", initialFg, initialBg)
 
@@ -239,51 +240,40 @@ test("updating markdown fg/bg rerenders existing fenced code block renderables",
   renderer.requestRender()
   await renderer.idle()
 
-  expect(md._blockStates[0]?.renderable).toBe(codeBlock)
+  expect(md.getChildren()[0]).toBe(codeBlock)
   expect(codeBlock.fg.equals(nextFg)).toBe(true)
   expect(codeBlock.bg.equals(nextBg)).toBe(true)
   expectSpanColors("plain code block", nextFg, nextBg)
 })
 
-test("updating markdown fg/bg rerenders markdown fallback renderables", async () => {
+test("updating markdown fg/bg recolors paragraphs", async () => {
   const initialFg = RGBA.fromValues(0.15, 0.15, 0.15, 1)
   const initialBg = RGBA.fromValues(0.94, 0.94, 0.94, 1)
   const nextFg = RGBA.fromValues(0.75, 0.75, 0.75, 1)
   const nextBg = RGBA.fromValues(0.18, 0.18, 0.18, 1)
-  const mockTreeSitterClient = createMockTreeSitterClient()
-  mockTreeSitterClient.highlightOnce = async () => {
-    throw new Error("Highlighting failed")
-  }
 
   const md = createMarkdownRenderable({
     id: "markdown-paragraph-color-update",
     content: "Plain paragraph text",
-    // A failed highlight draws prose as one without captures, so a theme default would color it.
+    // Without a theme default, the paragraph's text takes the Markdown's colors.
     syntaxStyle: SyntaxStyle.fromStyles({}, renderer.nativeScene!),
     fg: initialFg,
     bg: initialBg,
-    treeSitterClient: mockTreeSitterClient,
   })
 
   renderer.root.add(md)
   await renderer.idle()
 
-  const paragraphBlock = md._blockStates[0]?.renderable as CodeRenderable
-  await waitForHighlight(paragraphBlock)
-  await renderer.idle()
-
-  expect(paragraphBlock).toBeInstanceOf(CodeRenderable)
-  expect(paragraphBlock.filetype).toBe("markdown")
+  const paragraphBlock = md.getChildren()[0] as TextRenderable
+  expect(paragraphBlock).toBeInstanceOf(TextRenderable)
   expectSpanColors("Plain paragraph text", initialFg, initialBg)
 
   md.fg = nextFg
   md.bg = nextBg
   renderer.requestRender()
   await renderer.idle()
-  await waitForHighlight(paragraphBlock)
-  await renderer.idle()
 
-  expect(md._blockStates[0]?.renderable).toBe(paragraphBlock)
+  expect(md.getChildren()[0]).toBe(paragraphBlock)
   expect(paragraphBlock.fg.equals(nextFg)).toBe(true)
   expect(paragraphBlock.bg.equals(nextBg)).toBe(true)
   expectSpanColors("Plain paragraph text", nextFg, nextBg)
