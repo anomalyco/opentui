@@ -994,6 +994,126 @@ pub const EditBuffer = struct {
         return .{ .start = self.tb.weightAtByte(mark.start_byte, true), .end = self.tb.weightAtByte(mark.end_byte, false) };
     }
 
+    // The cursor rules around atomic marks (tracks/c5-native-marks.md, C5.3). Of overlapping marks the
+    // rules take the oldest (lowest id) first; every move ends outside all of them.
+
+    pub const Toward = enum { nearer, end, start };
+    const Span = struct { start: u32, end: u32 };
+
+    /// The oldest atomic mark that contains `at`, starts at or after `start_min` and ends at or before `end_max`.
+    fn oldestAtomic(self: *const EditBuffer, at: u32, start_min: u32, end_max: u32) ?Span {
+        var found: ?Span = null;
+        var found_id: u32 = std.math.maxInt(u32);
+        for (self.tb.marks()) |mark| {
+            if (!mark.atomic or mark.id > found_id) continue;
+            const span = self.markOffsets(mark);
+            if (span.start <= at and at < span.end and span.start >= start_min and span.end <= end_max) {
+                found = .{ .start = span.start, .end = span.end };
+                found_id = mark.id;
+            }
+        }
+        return found;
+    }
+
+    /// Where a plain Left from `offset` goes: a unit back, or to the end of the line above.
+    fn prevStop(self: *EditBuffer, offset: u32) u32 {
+        const at = iter_mod.offsetToCoords(self.tb.rope(), offset) orelse return offset;
+        return if (at.col > 0) offset - self.tb.getPrevGraphemeWidth(at.row, at.col) else offset -| 1;
+    }
+
+    /// One unit before `start`, and before every atomic mark that unit is in.
+    fn unitBefore(self: *EditBuffer, start: u32) u32 {
+        var s = start;
+        while (true) {
+            const p = self.prevStop(s);
+            if (p == s) return p;
+            s = (self.oldestAtomic(p, 0, std.math.maxInt(u32)) orelse return p).start;
+        }
+    }
+
+    /// Past every atomic mark from `c` on that contains `end`.
+    fn forward(self: *const EditBuffer, c: u32, end: u32) u32 {
+        var e = end;
+        while (self.oldestAtomic(e, c, std.math.maxInt(u32))) |mark| e = mark.end;
+        return e;
+    }
+
+    /// The first offset from `offset` toward the end or the start that no atomic mark surrounds.
+    fn outside(self: *const EditBuffer, offset: u32, to_end: bool) u32 {
+        var x = offset;
+        var moved = true;
+        while (moved) {
+            moved = false;
+            for (self.tb.marks()) |mark| {
+                if (!mark.atomic) continue;
+                const span = self.markOffsets(mark);
+                if (span.start < x and x < span.end) {
+                    x = if (to_end) span.end else span.start;
+                    moved = true;
+                }
+            }
+        }
+        return x;
+    }
+
+    /// Moves a cursor that atomic marks surround to the outer edge of them toward `toward`.
+    pub fn keepOutside(self: *EditBuffer, toward: Toward) !void {
+        const c = self.cursor.offset;
+        const start = self.outside(c, false);
+        if (start == c) return;
+        const end = self.outside(c, true);
+        const to_end = switch (toward) {
+            .nearer => end - c <= c - start,
+            .end => true,
+            .start => false,
+        };
+        try self.setCursorByOffset(if (to_end) end else start);
+    }
+
+    /// Left from an atomic mark's end goes one unit before it; Right from at most a unit before its start to its end.
+    pub fn moveAtomic(self: *EditBuffer, right: bool) !void {
+        const c = self.cursor.offset;
+        const mark = if (right) self.oldestAtomic(c + 1, c, std.math.maxInt(u32)) else if (c > 0) self.oldestAtomic(c - 1, 0, c) else null;
+        if (mark) |m| {
+            try self.setCursorByOffset(if (right) self.forward(c, m.end) else self.unitBefore(m.start));
+        } else if (right) self.moveRight() else self.moveLeft();
+        try self.keepOutside(if (right) .end else .start);
+    }
+
+    /// Moves to `offset`, past an atomic mark there as Left and Right do.
+    pub fn setCursorByOffsetAtomic(self: *EditBuffer, offset: u32) !void {
+        const c = self.cursor.offset;
+        const mark = if (offset > c) self.oldestAtomic(offset, c, std.math.maxInt(u32)) else if (offset < c) self.oldestAtomic(offset, 0, c) else null;
+        try self.setCursorByOffset(if (mark) |m| (if (offset > c) self.forward(c, m.end) else self.unitBefore(m.start)) else offset);
+        try self.keepOutside(if (offset > c) .end else if (offset < c) .start else .nearer);
+    }
+
+    /// After a vertical move from `from` (null for Up) into an atomic mark: nearer its start, one unit before it,
+    /// unless Down would go back to or before `from`; otherwise its end. Then outside the marks there, toward the
+    /// move.
+    pub fn leaveAtomic(self: *EditBuffer, from: ?u32) !void {
+        const c = self.cursor.offset;
+        const mark = self.oldestAtomic(c, 0, std.math.maxInt(u32)) orelse return;
+        const p = self.prevStop(mark.start);
+        if (c - mark.start < mark.end - c and (from == null or p > from.?)) {
+            return self.setCursorByOffset(self.outside(p, from != null));
+        }
+        try self.setCursorByOffset(self.outside(mark.end, true));
+    }
+
+    /// Backspace at an atomic mark's end or Delete at its start deletes the whole mark as one edit.
+    pub fn deleteAtomic(self: *EditBuffer, forward_delete: bool) !void {
+        const c = self.cursor.offset;
+        const mark = if (forward_delete) self.oldestAtomic(c, 0, std.math.maxInt(u32)) else if (c > 0) self.oldestAtomic(c - 1, 0, std.math.maxInt(u32)) else null;
+        if (mark) |m| if ((if (forward_delete) m.start else m.end) == c) {
+            const rope = self.tb.rope();
+            const start = iter_mod.offsetToCoords(rope, m.start).?;
+            const end = iter_mod.offsetToCoords(rope, m.end).?;
+            return self.deleteRange(.{ .row = start.row, .col = start.col }, .{ .row = end.row, .col = end.col });
+        };
+        if (forward_delete) try self.deleteForward() else try self.backspace();
+    }
+
     pub fn getNextWordBoundary(self: *EditBuffer) Cursor {
         const cursor = self.cursor;
 

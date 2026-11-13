@@ -3196,7 +3196,7 @@ test "Context editor transport commands preserve provider unset and reject reent
     try std.testing.expectEqual(c.OT_OK, editor_transport.ot_edit_buffer_command(handle, &edit, c.OT_EDIT_MOVE_RIGHT, 0));
     try std.testing.expectEqual(1, (try core.raw().getEditBuffer(handleFromC(edit))).buffer.getPrimaryCursor().col);
     try std.testing.expect(!try core.sceneHasMeasure(node));
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, editor_transport.ot_edit_buffer_command(handle, &edit, c.OT_EDIT_MOVE_RIGHT, 1));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, editor_transport.ot_edit_buffer_command(handle, &edit, c.OT_EDIT_MOVE_RIGHT, c.OT_EDIT_ATOMIC + 1));
     core.mutating = true;
     try std.testing.expectEqual(c.OT_CONTEXT_BUSY, editor_transport.ot_edit_buffer_command(handle, &edit, c.OT_EDIT_DELETE_FORWARD, 0));
     core.mutating = false;
