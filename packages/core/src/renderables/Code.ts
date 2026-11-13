@@ -283,7 +283,6 @@ export class CodeRenderable extends TextBufferRenderable {
   }
 
   public updateStreamingPreview(content: string, initialStyledText: StyledText): void {
-    this.stopDeltas()
     this._content = content
     this._initialStyledText = initialStyledText
     this._shownVersion = PREVIEW
@@ -398,7 +397,6 @@ export class CodeRenderable extends TextBufferRenderable {
     const previewed = this._shownVersion === PREVIEW
     if (!this._content || !(this._shownVersion < 0 || replaces) || (!value && previewed)) return
     this.runMutation(() => {
-      if (shows) this.stopDeltas()
       if (shows) this.textBuffer.setStyledText(value)
       else this.textBuffer.setText(this._content)
       if (!shows && previewed && !this._drawUnstyledText && this._filetype) this.setShouldRenderTextBuffer(false)
