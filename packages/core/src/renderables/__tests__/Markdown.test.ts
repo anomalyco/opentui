@@ -4244,6 +4244,14 @@ test("a streamed fence sends the appends made during a reply as one delta", asyn
     expect(counts.layers).toEqual([5, 13])
     expect(counts.units).toBe(0)
     expect((md.getChildren()[0] as CodeRenderable).getLineHighlights(0)).toEqual([])
+    // A change that is not an append drops the request in flight: its reply writes no layer, and the text goes whole.
+    md.content = "```js\nlet a = 1 + 2;"
+    await renderOnce()
+    md.content = "```js\nlet b = 1 + 2;"
+    await renderOnce()
+    client.resolveHighlightOnce()
+    await flushAsync()
+    expect([sent.slice(2), counts.layers]).toEqual([[";"], [5, 13]])
   } finally {
     restore()
   }
