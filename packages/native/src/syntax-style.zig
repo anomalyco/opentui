@@ -30,6 +30,8 @@ pub const Borrower = struct {
     previous: ?*Borrower = null,
     next: ?*Borrower = null,
     dependent: Dependent = .none,
+    /// Counts rebinds and definition changes, for caches built from resolved definitions.
+    changes: u32 = 0,
 
     pub const Dependent = union(enum) { none, text: *anyopaque, edit: *anyopaque };
 
@@ -38,7 +40,7 @@ pub const Borrower = struct {
         if (self.style == style) return;
         self.unbind();
         const next = style orelse return;
-        self.* = .{ .style = next, .next = next.borrowers, .dependent = self.dependent };
+        self.* = .{ .style = next, .next = next.borrowers, .dependent = self.dependent, .changes = self.changes +% 1 };
         if (next.borrowers) |head| head.previous = self;
         next.borrowers = self;
     }
@@ -47,7 +49,7 @@ pub const Borrower = struct {
         const style = self.style orelse return;
         if (self.previous) |previous| previous.next = self.next else style.borrowers = self.next;
         if (self.next) |next| next.previous = self.previous;
-        self.* = .{ .dependent = self.dependent };
+        self.* = .{ .dependent = self.dependent, .changes = self.changes +% 1 };
     }
 };
 
@@ -110,7 +112,7 @@ pub const SyntaxStyle = struct {
         std.debug.assert(definition.attributes & ~@as(u32, definition.supplied_attributes) == 0);
         if (self.name_to_id.get(name)) |existing_id| {
             self.id_to_style.getPtr(existing_id).?.* = definition;
-            self.group_set_cache.clearRetainingCapacity();
+            self.definitionsChanged();
             return existing_id;
         }
 
@@ -127,9 +129,15 @@ pub const SyntaxStyle = struct {
         self.id_to_style.putAssumeCapacity(id, definition);
         self.next_id += 1;
         // A new name can be a fallback target or a set member, so compositions may change.
-        self.group_set_cache.clearRetainingCapacity();
+        self.definitionsChanged();
 
         return id;
+    }
+
+    fn definitionsChanged(self: *SyntaxStyle) void {
+        self.group_set_cache.clearRetainingCapacity();
+        var next = self.borrowers;
+        while (next) |borrower| : (next = borrower.next) borrower.changes +%= 1;
     }
 
     /// Group set `id` composed against this style, cached until the next registration. Without

@@ -41,14 +41,14 @@ test "group sets: malformed lists and each name bound reject without interning" 
     defer sets.deinit();
     const long_bytes: [hl.group_set_name_byte_count_max + 1]u8 = @splat('x');
     const long: []const u8 = &long_bytes;
-    const nine: [hl.group_set_name_count_max + 1][]const u8 = @splat("a");
-    const eight: [hl.group_set_name_count_max][]const u8 = @splat("a");
+    const too_many: [hl.group_set_name_count_max + 1][]const u8 = @splat("a");
+    const most: [hl.group_set_name_count_max][]const u8 = @splat("a");
     // No names or an empty name is malformed; past a name bound is a limit.
     for ([_]struct { []const []const u8, anyerror }{
         .{ &.{}, error.InvalidIndex },
         .{ &.{""}, error.InvalidIndex },
         .{ &.{ "a", "" }, error.InvalidIndex },
-        .{ &nine, error.GroupSetLimit },
+        .{ &too_many, error.GroupSetLimit },
         .{ &.{long}, error.GroupSetLimit },
         .{ &.{ "a", long }, error.GroupSetLimit },
     }) |row| {
@@ -57,8 +57,8 @@ test "group sets: malformed lists and each name bound reject without interning" 
         try testing.expectEqual(@as(usize, 0), sets.name_bytes.items.len);
     }
     // Exactly at each name bound is accepted, and equal lists share an id.
-    const id = try sets.intern(&eight);
-    try testing.expectEqual(id, try sets.intern(&eight));
+    const id = try sets.intern(&most);
+    try testing.expectEqual(id, try sets.intern(&most));
     try testing.expectEqual(try sets.intern(&.{long[1..]}), try sets.intern(&.{long[1..]}));
     try testing.expectEqual(@as(u32, 2), sets.count());
     try testing.expect(id != try sets.intern(&.{ "a", "b" }));
@@ -1070,9 +1070,14 @@ test "layers: seeded C ABI calls reject malformed runs atomically and match the 
     // Over the length bound and not UTF-8: the bound is checked first, without a scan.
     var long_invalid = long;
     long_invalid[long.len - 1] = 0xff;
-    const nine_ends = [_]u32{ 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    const one_too_many: [hl.group_set_name_count_max + 1]u8 = @splat('a');
+    const one_too_many_ends = comptime ends: {
+        var ends: [one_too_many.len]u32 = undefined;
+        for (&ends, 1..) |*end, index| end.* = index;
+        break :ends ends;
+    };
     for ([_]struct { c.ot_status, []const u8, []const u32 }{
-        .{ c.OT_OBJECT_LIMIT, "abcdefghi", &nine_ends },
+        .{ c.OT_OBJECT_LIMIT, &one_too_many, &one_too_many_ends },
         .{ c.OT_OBJECT_LIMIT, &long, &.{long.len} },
         .{ c.OT_OBJECT_LIMIT, &long_invalid, &.{long.len} },
         .{ c.OT_INVALID_ARGUMENT, "ab", &.{1} },
@@ -1270,6 +1275,70 @@ test "layers: priority and ties order records and layers" {
     }
 }
 
+// A layer run whose set supplies no field is absent: the priority-0 record under it shows, through
+// redefinitions and a style swap. A linked run and an empty legacy record still win.
+test "layers: a run whose set supplies nothing shows what lies under it" {
+    var setup: Setup = undefined;
+    try setup.init();
+    defer setup.deinit();
+    const tb = try setup.buffer(.unicode);
+    defer tb.deinit();
+    try tb.setText("abcdefgh");
+    const nothing: ss.StyleDefinition = .{ .fg = null, .bg = null, .attributes = 0, .supplied_attributes = 0 };
+    const blue_fg: ss.StyleDefinition = .{ .fg = blue, .bg = null, .attributes = 0, .supplied_attributes = 0 };
+    const empty = try setup.sets.intern(&.{ "e", "unknown" });
+    try tb.addHighlight(0, 0, 7, 2, 0, 0);
+    const url = try setup.pools.links.acquire("https://example.com");
+    defer setup.pools.links.decref(url) catch unreachable;
+    try tb.setLayer(1, 0, 8, &.{ .{ .start_byte = 0, .end_byte = 4, .group_set = empty }, .{ .start_byte = 5, .end_byte = 6, .group_set = empty, .link_id = url } });
+    const other = try ss.SyntaxStyle.init(gpa);
+    defer other.deinit();
+    // Column 1 under the empty run, against column 7 (no input); a null color is column 7's.
+    for ([_]struct { *ss.SyntaxStyle, ss.StyleDefinition, ?ansi.RGBA }{
+        .{ setup.style, nothing, green },
+        .{ setup.style, blue_fg, blue },
+        // A supplied attribute bit, even one set to 0, is a field: the run wins.
+        .{ setup.style, .{ .fg = null, .bg = null, .attributes = 0, .supplied_attributes = 1 }, null },
+        .{ setup.style, nothing, green },
+        .{ other, blue_fg, blue },
+        .{ setup.style, nothing, green },
+    }) |row| {
+        _ = try row[0].registerStyleDefinition("e", row[1]);
+        tb.setSyntaxStyle(row[0]);
+        const screen = try paint(&setup, tb, 8, 1);
+        defer screen.deinit();
+        try testing.expectEqual(row[2] orelse screen.get(7, 0).?.fg, screen.get(1, 0).?.fg);
+        try testing.expectEqual(url, ansi.TextAttributes.getLinkId(screen.get(5, 0).?.attributes));
+    }
+    // Spans built without a style rebuild once one is bound.
+    tb.setSyntaxStyle(null);
+    for ([_]?*ss.SyntaxStyle{ null, setup.style }, [_]?ansi.RGBA{ null, blue }) |style, want| {
+        if (style) |bound| _ = try bound.registerStyleDefinition("e", blue_fg);
+        tb.setSyntaxStyle(style);
+        const screen = try paint(&setup, tb, 8, 1);
+        defer screen.deinit();
+        try testing.expectEqual(want orelse screen.get(7, 0).?.fg, screen.get(1, 0).?.fg);
+    }
+    _ = try setup.style.registerStyleDefinition("e", nothing);
+    const blank = try setup.style.registerStyleDefinition("z", nothing);
+    try tb.addHighlight(0, 0, 7, blank, 0, 0);
+    const screen = try paint(&setup, tb, 8, 1);
+    defer screen.deinit();
+    try testing.expectEqual(screen.get(7, 0).?.fg, screen.get(1, 0).?.fg);
+    // Without records: a higher layer's run shows the lower layer's while it supplies nothing.
+    const layered = try setup.buffer(.unicode);
+    defer layered.deinit();
+    try layered.setText("abcdefgh");
+    try layered.setLayer(1, 0, 8, &.{.{ .start_byte = 0, .end_byte = 4, .group_set = 1 }});
+    try layered.setLayer(2, 0, 8, &.{.{ .start_byte = 0, .end_byte = 4, .group_set = empty }});
+    for ([_]struct { ss.StyleDefinition, ansi.RGBA }{ .{ nothing, red }, .{ blue_fg, blue }, .{ nothing, red } }) |row| {
+        _ = try setup.style.registerStyleDefinition("e", row[0]);
+        const top = try paint(&setup, layered, 8, 1);
+        defer top.deinit();
+        try testing.expectEqual(row[1], top.get(1, 0).?.fg);
+    }
+}
+
 // A span build that runs out of memory fails the checked paint and leaves the line stale, so
 // the next read builds it again and gets what a clean build gets.
 test "layers: a span build without memory fails and leaves the line to rebuild" {
@@ -1328,6 +1397,8 @@ test "layers: theme changes rebuild no spans and unpainted lines stay unbuilt" {
     defer screen.deinit();
     try screen.drawTextBufferChecked(view, 0, 0);
     try tb.setLayer(1, 0, tb.getByteSize(), &.{ .{ .start_byte = 0, .end_byte = 2, .group_set = 1 }, .{ .start_byte = 200, .end_byte = 202, .group_set = 2 } });
+    // A second layer off the painted lines makes no painted line depend on definitions.
+    try tb.setLayer(2, 0, tb.getByteSize(), &.{.{ .start_byte = 204, .end_byte = 206, .group_set = 3 }});
     _ = text_work.take();
     try screen.drawTextBufferChecked(view, 0, 0);
     try testing.expectEqual(@as(u64, 10), text_work.take().line_span_builds);

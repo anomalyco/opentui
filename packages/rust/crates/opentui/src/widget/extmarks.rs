@@ -194,8 +194,8 @@ pub(crate) struct Extmarks {
     pub syntax: Option<SyntaxStyle>,
     /// Style ids registered in `syntax`, by style.
     pub styles: HashMap<Style, u32>,
-    /// Group sets of each style's one name, by style; only styles in `styles`, so each name is registered in `syntax`.
-    pub group_sets: HashMap<Style, u32>,
+    /// Group sets of capture-name lists, by list; each name is registered in `syntax` from the table's palette.
+    pub group_sets: HashMap<Vec<&'static str>, u32>,
 }
 
 impl Extmarks {

@@ -59,6 +59,9 @@ pub const LineSpans = struct {
     spans: std.ArrayListUnmanaged(StyleSpan) = .empty,
     /// 0 never matches a buffer's `span_generation`, so a new entry is stale.
     generation: u64 = 0,
+    /// The style binding's `changes` when the spans depend on definitions (a layer run over
+    /// another input, which shows if the run's set supplies nothing), else null.
+    style_changes: ?u32 = null,
 };
 
 /// One input of a line's span build: a legacy record or a layer run, in columns.
@@ -1392,8 +1395,9 @@ pub const UnifiedTextBuffer = struct {
             added.value_ptr.* = .{};
             break :entry added.value_ptr;
         };
-        if (entry.generation != self.span_generation) {
-            try self.buildLineSpans(line_idx, &entry.spans);
+        const restyled = if (entry.style_changes) |changes| changes != self.style_binding.changes else false;
+        if (entry.generation != self.span_generation or restyled) {
+            entry.style_changes = try self.buildLineSpans(line_idx, &entry.spans);
             entry.generation = self.span_generation;
         }
         return entry.spans.items;
@@ -1414,6 +1418,11 @@ pub const UnifiedTextBuffer = struct {
         }
     }
 
+    fn suppliesNothing(self: *Self, group_set: u32) bool {
+        const style = self.style_binding.style orelse return true;
+        return hl.suppliesNothing(style.resolveGroupSet(self.group_sets.?, group_set));
+    }
+
     fn freeLineSpans(self: *Self) void {
         var entries = self.line_spans.valueIterator();
         while (entries.next()) |entry| entry.spans.deinit(self.global_allocator);
@@ -1432,9 +1441,11 @@ pub const UnifiedTextBuffer = struct {
     }
 
     /// One sweep over the line's inputs: the highest priority wins each column; on a tie the later
-    /// input wins (records in line order, then layers in `layer_id` order). Spans start at column 0,
-    /// include gaps, and end with a default tail that unstyles text added later.
-    fn buildLineSpans(self: *Self, line_idx: usize, out: *std.ArrayListUnmanaged(StyleSpan)) TextBufferError!void {
+    /// input wins (records in line order, then layers in `layer_id` order). A layer run whose set
+    /// supplies nothing and has no link is left out when other inputs could show under it. Spans
+    /// start at column 0, include gaps, and end with a default tail that unstyles text added later.
+    /// Returns the binding's `changes` when the spans depend on definitions.
+    fn buildLineSpans(self: *Self, line_idx: usize, out: *std.ArrayListUnmanaged(StyleSpan)) TextBufferError!?u32 {
         const allocator = self.global_allocator;
         const scratch = &self.span_scratch;
         scratch.inputs.clearRetainingCapacity();
@@ -1447,10 +1458,11 @@ pub const UnifiedTextBuffer = struct {
             .link_id_and_kind = 0,
             .priority = record.priority,
         });
-        if (!self.layers.isEmpty()) try self.appendLayerInputs(@intCast(line_idx));
+        const restylable = !self.layers.isEmpty() and try self.appendLayerInputs(@intCast(line_idx));
         text_work.add(.line_span_builds, 1);
         text_work.add(.line_span_highlights, scratch.inputs.items.len);
         try sweepSpans(allocator, scratch, out);
+        return if (restylable) self.style_binding.changes else null;
     }
 
     fn sweepSpans(allocator: Allocator, scratch: *SpanScratch, out: *std.ArrayListUnmanaged(StyleSpan)) TextBufferError!void {
@@ -1540,15 +1552,19 @@ pub const UnifiedTextBuffer = struct {
     }
 
     /// Adds the layer runs that cover line `row`, converted from bytes to columns in one forward
-    /// walk of the line's chunks per layer.
-    fn appendLayerInputs(self: *Self, row: u32) TextBufferError!void {
-        const line_start_byte = iter_mod.lineStartByte(&self._rope, row) orelse return;
+    /// walk of the line's chunks per layer. Over nothing, a run that supplies nothing paints as no
+    /// run, so it is left out only over earlier inputs of the line. Returns whether such a run could
+    /// be left out, so that the line's spans depend on definitions.
+    fn appendLayerInputs(self: *Self, row: u32) TextBufferError!bool {
+        const line_start_byte = iter_mod.lineStartByte(&self._rope, row) orelse return false;
         try self.collectLineChunks(row);
         const chunks = self.span_scratch.chunks.items;
         const line_byte_count: u32 = if (chunks.len == 0) 0 else chunks[chunks.len - 1].start_byte + chunks[chunks.len - 1].chunk.byte_end - chunks[chunks.len - 1].chunk.byte_start;
         const line_end_byte = line_start_byte + line_byte_count;
         const group_set_kind = @as(u32, @backingInt(StyleSpan.Kind.group_set)) << 24;
+        var restylable = false;
         for (self.layers.slice()) |layer| {
+            const lower = self.span_scratch.inputs.items.len != 0;
             var cursor: ColumnCursor = .{ .buffer = self, .chunks = chunks };
             const runs = layer.runs.items;
             var index = hl.Layers.firstEndingAfter(runs, line_start_byte);
@@ -1558,6 +1574,10 @@ pub const UnifiedTextBuffer = struct {
                 // A run past the line ends at its last column.
                 const col_end = cursor.colAt(run.end_byte - line_start_byte);
                 if (col_start >= col_end) continue;
+                if (lower and run.link_id == 0) {
+                    restylable = true;
+                    if (self.suppliesNothing(run.group_set)) continue;
+                }
                 std.debug.assert(run.link_id & ~StyleSpan.link_id_mask == 0);
                 try self.span_scratch.inputs.append(self.global_allocator, .{
                     .col_start = col_start,
@@ -1568,6 +1588,7 @@ pub const UnifiedTextBuffer = struct {
                 });
             }
         }
+        return restylable;
     }
 
     /// Fills the scratch with the text chunks of line `row`, with line-relative bytes and columns.

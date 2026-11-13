@@ -90,7 +90,9 @@ impl Textarea {
     /// filetype; without them the text is plain. See [`syntax`](crate::syntax).
     ///
     /// The whole text is highlighted at the start of the next frame after it changes, so any number of edits between
-    /// frames costs one highlight, and frames without edits cost none. Extmark styles draw over highlighting.
+    /// frames costs one highlight, and frames without edits cost none. Extmark styles draw over highlighting. A piece
+    /// of text under more than 16 capture names keeps the innermost 16 (`default` goes first), and a capture name
+    /// over 56 bytes is left out of the piece's styles.
     pub fn filetype<'a>(&self, filetype: impl Into<Option<&'a str>>) -> Self {
         self.0.set_filetype(filetype.into());
         self.clone()
@@ -106,8 +108,10 @@ impl Textarea {
     /// [`SyntaxTheme::to_syntax_style`]. Without one, the textarea makes its own.
     ///
     /// The textarea registers the styles of [`Self::filetype`] highlighting and of extmarks in this table, under
-    /// names that start with `opentui.`, and adds their highlights under tags 65534 and 65535. Highlighting draws at
-    /// priority 0 and extmarks above it.
+    /// names that start with `opentui.`: each capture name as `opentui.<capture>`, with its [`Self::syntax_theme`]
+    /// style. Textareas that share a table share one syntax theme: the one set last on any of them, here or with
+    /// [`Self::syntax_theme`], restyles them all. Highlighting draws on layer 1 and extmarks above it, under tag 65535;
+    /// text the theme leaves plain lets your own priority-0 highlights show.
     pub fn syntax_style(&self, style: &SyntaxStyle) -> Self {
         self.0.set_syntax_style(style);
         self.clone()
