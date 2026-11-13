@@ -1312,8 +1312,10 @@ pub const Doc = struct {
                 block.content_end_byte = line.end;
                 container.* = item;
                 matched.* = self.open_count;
-                try self.detectTask(item, line);
-                return .container;
+                // GFM: a task marker starts the item's paragraph; the rest of the line is its text.
+                if (!try self.detectTask(item, line)) return .container;
+                line.findNextNonspace();
+                return .leaf;
             }
         }
         // Indented code.
@@ -1616,22 +1618,23 @@ pub const Doc = struct {
         return .{ .ordered = ordered, .marker = marker, .number = number, .indent = marker_offset + padding, .start_byte = at };
     }
 
-    fn detectTask(self: *Doc, item: u32, line: *Line) Error!void {
+    fn detectTask(self: *Doc, item: u32, line: *Line) Error!bool {
         const s = self.source.items;
         var i = line.offset;
         // A partly consumed tab still counts as the space after the marker.
         while (i < line.end and isSpaceOrTab(s[i])) i += 1;
-        if (i + 3 > line.end or s[i] != '[' or s[i + 2] != ']') return;
+        if (i + 3 > line.end or s[i] != '[' or s[i + 2] != ']') return false;
         const mark = s[i + 1];
-        if (mark != ' ' and mark != 'x' and mark != 'X') return;
-        if (i + 3 >= line.end or !isSpaceOrTab(s[i + 3])) return;
-        if (isBlankRange(s, i + 3, line.end)) return;
+        if (mark != ' ' and mark != 'x' and mark != 'X') return false;
+        if (i + 3 >= line.end or !isSpaceOrTab(s[i + 3])) return false;
+        if (isBlankRange(s, i + 3, line.end)) return false;
         const block = try self.blockMut(item);
         block.flags.task = true;
         block.flags.checked = mark != ' ';
         line.offset = i + 3;
         line.column = 0;
         line.partially_consumed_tab = false;
+        return true;
     }
 
     // ---- Tables ----
@@ -3604,10 +3607,8 @@ fn heldMarker(rest: []const u8, after_item: bool, in_table: bool) HeldMarker {
     // Nothing after the markers yet: spaces keep it so.
     if (rest.len == 0) return .{ .decided = Hold.keeping(" \t") };
     const c = rest[0];
-    // A task marker after a list item marker: `[`, `[x`, `[x]` and spaces may still be one. A
-    // whole one before more bytes is read past like a container marker.
+    // A task marker after a list item marker: `[`, `[x`, `[x]` and spaces may still be one.
     if (after_item and c == '[') {
-        if (rest.len > 4 and taskPrefix(rest[0..4])) return .{ .container = 3 };
         if (!taskPrefix(rest)) return .{ .decided = Hold.not };
         return .{ .decided = if (rest.len >= 3) Hold.keeping(" \t") else Hold.again };
     }

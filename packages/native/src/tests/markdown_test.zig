@@ -1198,8 +1198,15 @@ const sweep_pieces = [_][]const u8{ "@\n", "$$_", "$$\n", "&mp;", "&amp;", "\n=\
 test "Markdown sweep: every pair of appends, then finish, under every option set" {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
+    // GFM (cmark-gfm): a task marker starts the item's paragraph; the rest of its line is that
+    // paragraph's text, not another block start (bigboi-1).
+    for ([_][2][]const u8{ .{ "- [x] - [x] word\n", "- [x] word" }, .{ "- [x] # hi\n", "# hi" } }) |row| {
+        const arena = arena_state.allocator();
+        const expected = try std.mem.concat(arena, u8, &.{ "<ul>\n<li><input checked=\"\" disabled=\"\" type=\"checkbox\"> ", row[1], "</li>\n</ul>\n" });
+        try std.testing.expectEqualStrings(try html.normalize(arena, expected), try html.normalize(arena, try wholeHtml(arena, "kinds", row[0])));
+    }
     // The tear prototype's repros (math on): A aborted in M2 before fd4ab4e19; B and D pass.
-    // Then a task marker before a nested one (M3-a, M2 F9), an escaped backslash that ends an
+    // Then a task marker before more text (M3-a, M2 F9), an escaped backslash that ends an
     // append inside `\(` (bigboi-2), a `$` run that ends an append (bigboi-3), and a held display
     // math line after a fold and when its line ends (bigboi-4).
     for ([_][]const []const u8{ &.{ "@\n$$_", "$$\n" }, &.{"&amp;\n===\n"}, &.{ "&amp;", "\n===\n" }, &.{ "- [x] - [x] ", "**" }, &.{ "- [x] ", "- [x] ", "word " }, &.{ "\\(a b\\\\", ")", " now" }, &.{ "$ $$", "$x$" }, &.{ "some text\n\\[a $b$", " z\\]", "\n" }, &.{ "$$_s_s_ ", "\n" } }) |parts| {
