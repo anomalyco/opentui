@@ -2883,7 +2883,8 @@ function drawRecordBottomTitle(options: NativeBufferDraw): string {
 }
 
 const drawTextEncoder = new TextEncoder()
-const markdownDecoder = new TextDecoder()
+// Markdown text is the engine's bytes as given: a leading U+FEFF is text, not a byte order mark.
+const markdownDecoder = new TextDecoder("utf-8", { ignoreBOM: true })
 
 /** Encodes into a buffer sized to the native limit; text that does not fit exceeds that limit. */
 function encodeDrawText(text: string, output: Uint8Array): number {

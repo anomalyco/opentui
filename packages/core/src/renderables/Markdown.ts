@@ -292,7 +292,7 @@ const sameRecord = (a: NativeMarkdownBlock, b: NativeMarkdownBlock) =>
   a.infoEnd === b.infoEnd &&
   a.number === b.number
 const textEncoder = new TextEncoder()
-const textDecoder = new TextDecoder()
+const textDecoder = new TextDecoder("utf-8", { ignoreBOM: true })
 const sameChunks = (a: TextChunk[], b: TextChunk[]) =>
   a.length === b.length &&
   a.every(

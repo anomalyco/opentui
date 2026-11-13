@@ -17,6 +17,8 @@ const create = (options: NativeMarkdownOptions) => new MarkdownDocument(resource
 test("the host's blocks and content equal a fresh document's after every call", () => {
   const pieces = ["- ", "> ", "```\n", "| a | b |\n", "|--|--|\n", "[x]", "[x]: /u\n", "**", "`", "$", "$$\n"]
   pieces.push("10. ", "===\n", "\t", "\r\n", "\n", "\n\n", "word ", "ses_a ", "# ", "~~", "<a>\n", "- [x] ")
+  // An emoji split between its UTF-16 halves, and U+FEFF, which is text, not a byte order mark.
+  pieces.push("\uD83D", "\uDE00 ", "\uFEFF")
   const seeds = process.env.MODEL_SEED
     ? [Number(process.env.MODEL_SEED)]
     : Array.from({ length: Number(process.env.MODEL_SEEDS ?? 64) }, (_, i) => i + 1)
@@ -72,7 +74,8 @@ test("the host's blocks and content equal a fresh document's after every call", 
       fresh.write(doc.source(), !finished)
       const failure = `seed ${seed} after ${trace.join(" | ")}`
       expect(doc.finished, failure).toBe(finished)
-      expect(doc.content, failure).toBe(doc.source())
+      // A half pair still waiting for its other half is U+FFFD in UTF-8.
+      expect(doc.source(), failure).toBe(doc.content.toWellFormed())
       expect(doc.blocks, failure).toEqual(fresh.blocks)
       expect(doc.committed, failure).toBe(fresh.committed)
       fresh.destroy()

@@ -55,7 +55,8 @@ export class MarkdownDocument {
   write(content: string, streaming: boolean): MarkdownChanges {
     let result: NativeMarkdownResult | undefined
     if (content !== this._content || this._finished === streaming) {
-      const extends_ = !this._finished && content.startsWith(this._content)
+      // A high surrogate at the end may pair with the appended text: UTF-8 cannot hold half a pair, so parse it whole.
+      const extends_ = !this._finished && content.startsWith(this._content) && !/[\uD800-\uDBFF]$/.test(this._content)
       const bytes = this.encoder.encode(extends_ ? content.slice(this._content.length) : content)
       if (!extends_ || bytes.length > 0) {
         result = this.lib.markdownWrite(this.context, this.doc, bytes, !extends_)
