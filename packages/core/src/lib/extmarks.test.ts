@@ -934,40 +934,55 @@ describe("ExtmarksController", () => {
       }
     })
 
-    // A typed key, and a prompt's typed query after it, make the same native calls whatever the number of styled marks
-    // after it; the query is one call.
+    // A typed key, a prompt's typed query after it, and Left, Right, Backspace and Delete, the last two once at a
+    // virtual mark, make the same native calls whatever the number of styled marks after them; the query is one call.
     it("should make the same FFI calls per key at 0, 10 and 40 styled marks", async () => {
       const calls: number[][] = []
       for (const count of [0, 10, 40]) {
         if (count) currentRenderer.destroy()
-        await setup("ab".repeat(40))
+        await setup("ab".repeat(60))
         const style = SyntaxStyle.create(currentRenderer.nativeScene)
         const styleId = style.registerStyle("link", { fg: RGBA.fromValues(0, 0, 1, 1) })
         textarea.syntaxStyle = style
-        for (let i = 0; i < count; i++) extmarks.create({ start: 2 * i, end: 2 * i + 1, styleId })
+        extmarks.create({ start: 4, end: 6, virtual: true })
+        extmarks.create({ start: 8, end: 10, virtual: true })
+        for (let i = 0; i < count; i++) extmarks.create({ start: 20 + 2 * i, end: 21 + 2 * i, styleId, virtual: true })
         textarea.focus()
         textarea.cursorOffset = 0
+        // The query's record buffer grows once, to the largest list read.
+        extmarks.getAll()
         const symbols = (currentRenderer.nativeScene.driver.renderLib as any).opentui.symbols
         const originals = { ...symbols }
         let made = 0
         for (const name of Object.keys(originals))
           symbols[name] = (...args: any[]) => (made++, originals[name](...args))
+        const counted = (key: () => void) => {
+          const before = made
+          key()
+          calls.at(-1)!.push(made - before)
+        }
         try {
-          currentMockInput.pressKey("X")
+          calls.push([])
+          counted(() => currentMockInput.pressKey("X"))
           await new Promise((resolve) => setTimeout(resolve, 0))
-          calls.push([made])
-          extmarks.getAllForTypeId(0)
-          calls.at(-1)!.push(made - calls.at(-1)![0])
+          counted(() => extmarks.getAllForTypeId(0))
+          counted(() => currentMockInput.pressArrow("left"))
+          counted(() => currentMockInput.pressArrow("right"))
+          textarea.cursorOffset = 5
+          counted(() => currentMockInput.pressKey("DELETE"))
+          counted(() => currentMockInput.pressBackspace())
+          textarea.cursorOffset = 8
+          counted(() => currentMockInput.pressArrow("left"))
         } finally {
           Object.assign(symbols, originals)
         }
-        if (count) expect(extmarks.getAll().at(-1)).toMatchObject({ start: 2 * count - 1, end: 2 * count })
+        expect(textarea.plainText.slice(0, 6)).toBe("Xabaab")
+        expect(textarea.cursorOffset).toBe(5)
+        if (count) expect(extmarks.getAll().at(-1)).toMatchObject({ start: 2 * count + 16, end: 2 * count + 17 })
       }
-      expect(calls).toEqual([
-        [calls[0][0], 1],
-        [calls[0][0], 1],
-        [calls[0][0], 1],
-      ])
+      // Each rule is one native call after the view's selection check (with the rules in TypeScript: Left 16, Right 17,
+      // Delete 8, Backspace 6, Left over a mark 18).
+      expect(calls).toEqual([0, 10, 40].map(() => [3, 1, 12, 12, 4, 4, 12]))
     })
   })
 
@@ -1030,6 +1045,9 @@ describe("ExtmarksController", () => {
       textarea.cursorOffset = 2
       currentMockInput.pressArrow("right")
       expect(textarea.cursorOffset).toBe(3)
+      // The view's rules stop too: the setter leaves the cursor inside the mark.
+      textarea.cursorOffset = 4
+      expect(textarea.cursorOffset).toBe(4)
     })
 
     it("should clear all extmarks on destroy", async () => {
