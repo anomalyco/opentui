@@ -2532,6 +2532,7 @@ pub const Doc = struct {
         live.token_display = .{};
         const parser = &live.parser;
         parser.references = self.references();
+        parser.options.math_blocks = self.options.math and self.blocks.items[live.block].kind == .paragraph;
         const tokens_before: u32 = @intCast(parser.tokens.items.len);
         const position_before = parser.position;
         const visits_before = parser.byte_visits;
@@ -2956,7 +2957,7 @@ pub const Doc = struct {
         }
         // An open prose leaf shows what B shows of it: its tokens so far (an opener that waits is
         // concealed as if closed), the untokenized bytes it may draw, minus what B holds back.
-        var parser: inline_parser.Parser = .{ .allocator = arena, .references = self.references(), .options = .{ .math = self.options.math } };
+        var parser: inline_parser.Parser = .{ .allocator = arena, .references = self.references(), .options = .{ .math = self.options.math, .math_blocks = self.options.math and b.kind == .paragraph } };
         var cut: u32 = none;
         // A table cell of the pending row is drawn the same way.
         // (A cell of a row that ended is closed; one of the pending row stays open.)

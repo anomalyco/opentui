@@ -1208,8 +1208,8 @@ test "Markdown sweep: every pair of appends, then finish, under every option set
     // The tear prototype's repros (math on): A aborted in M2 before fd4ab4e19; B and D pass.
     // Then a task marker before more text (M3-a, M2 F9), an escaped backslash that ends an
     // append inside `\(` (bigboi-2), a `$` run that ends an append and a span decided after a prefix (bigboi-3, -5), and a held display
-    // math line after a fold and when its line ends (bigboi-4).
-    for ([_][]const []const u8{ &.{ "@\n$$_", "$$\n" }, &.{"&amp;\n===\n"}, &.{ "&amp;", "\n===\n" }, &.{ "- [x] - [x] ", "**" }, &.{ "- [x] ", "- [x] ", "word " }, &.{ "\\(a b\\\\", ")", " now" }, &.{ "$ $$", "$x$" }, &.{ "pay ($2", "$", ")." }, &.{ "some text\n\\[a $b$", " z\\]", "\n" }, &.{ "$$_s_s_ ", "\n" } }) |parts| {
+    // math line after a fold, when its line ends and after its closer (bigboi-4).
+    for ([_][]const []const u8{ &.{ "@\n$$_", "$$\n" }, &.{"&amp;\n===\n"}, &.{ "&amp;", "\n===\n" }, &.{ "- [x] - [x] ", "**" }, &.{ "- [x] ", "- [x] ", "word " }, &.{ "\\(a b\\\\", ")", " now" }, &.{ "$ $$", "$x$" }, &.{ "pay ($2", "$", ")." }, &.{ "some text\n\\[a $b$", " z\\]", "\n" }, &.{ "$$_s_s_ ", "\n" }, &.{ "$$a $b$ c$$", " " } }) |parts| {
         try std.testing.expect(try streamAgreesParts(arena_state.allocator(), "math tear", parts));
     }
     // E and F's inputs with the options M1 has (conceal and hyperlinks are M2's).
@@ -1498,7 +1498,12 @@ test "Markdown read_leaf: display bytes, chunk styles, spans and the URL pool" {
         // later one, until a byte after its closer rules that out (bigboi-4).
         .{ .source = "\\[b $c$ d\\]", .math = true, .pending = true, .block = 0, .chunks = &.{.{ "[b $c$ d]", "", "" }} },
         .{ .source = "a\n\\[b $c$ d\\]", .math = true, .pending = true, .block = 0, .chunks = &.{.{ "a\n[b $c$ d]", "", "" }} },
-        .{ .source = "$$b$$ $c$ d", .math = true, .pending = true, .block = 0, .chunks = &.{ .{ "$$b$$ ", "", "" }, .{ "c", "math", "" }, .{ " d", "", "" } } },
+        .{ .source = "$$$$ $c$ d", .math = true, .pending = true, .block = 0, .chunks = &.{ .{ "$$$$ ", "", "" }, .{ "c", "math", "" }, .{ " d", "", "" } } },
+        // A `$$` closer may take one more `$` (the body ends in it); no span from an earlier line
+        // reads into the held line; a heading cannot become a block, so it is not held (bigboi-3).
+        .{ .source = "$$cost$ $b$ z$$$", .math = true, .pending = true, .block = 0, .chunks = &.{.{ "$$cost$ $b$ z$$$", "", "" }} },
+        .{ .source = "a $x\n\\[a$ b\\]", .math = true, .pending = true, .block = 0, .chunks = &.{.{ "a $x\n[a$ b]", "", "" }} },
+        .{ .source = "# \\[x $b$ y", .math = true, .pending = true, .block = 0, .chunks = &.{ .{ "[", "heading escape", "" }, .{ "x ", "heading", "" }, .{ "b", "headingmath", "" }, .{ " y", "heading", "" } } },
     };
     for (rows) |row| {
         var f: Fixture = undefined;

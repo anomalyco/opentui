@@ -116,6 +116,8 @@ pub const References = struct {
 
 pub const Options = struct {
     math: bool = false,
+    /// With math, the content is a paragraph's: its last line may still be a display math block.
+    math_blocks: bool = false,
 };
 
 pub const Result = struct {
@@ -187,9 +189,9 @@ pub const Parser = struct {
     tail_title: struct { close: u32 = std.math.maxInt(u32), at: u32 = 0, from: u32 = 0, destination: [2]u32 = .{ 0, 0 }, end: u32 = 0, newlines: u32 = 0 } = .{},
     /// A label scan after `]` that ran out of content (its `]` is `search_opener`).
     label_scan: LabelScan = .{ .at = 0, .position = 0 },
-    /// With math, the last line while it may be a one-line display math block: its start (none:
-    /// it cannot be), whether a closer came, and how far from its start it was read.
-    math_line: struct { start: u32 = std.math.maxInt(u32), closed: bool = false, scanned: u32 = 0 } = .{},
+    /// With `math_blocks`, the last line while it may be a one-line display math block: its start
+    /// (none: it cannot be) and the end of its first closer from there (none: none yet).
+    math_line: struct { start: u32 = std.math.maxInt(u32), closer: u32 = std.math.maxInt(u32) } = .{},
     /// The first token whose display changed since `takeChanged` (none: nothing changed).
     changed_from: u32 = std.math.maxInt(u32),
     extended_from: u32 = std.math.maxInt(u32),
@@ -267,8 +269,10 @@ pub const Parser = struct {
             self.math_line = .{};
         } else {
             self.updateLimit(previous_len);
-            if (self.options.math) self.holdMathLine(previous_len);
+            if (self.options.math_blocks) self.holdMathLine(previous_len) else self.math_line = .{};
         }
+        // No construct reads a held line's bytes, its searches included.
+        self.subject = subject[0..@min(subject.len, self.math_line.start)];
         while (self.position < self.heldLimit()) {
             const before = self.position;
             self.step() catch |err| switch (err) {
@@ -281,6 +285,7 @@ pub const Parser = struct {
             };
             assert(self.position > before);
         }
+        self.subject = subject;
         // The trailing word's decided prefix: plain bytes, `!` before no `[`, and single `$` spans,
         // which the byte after their closer decides; the word's last byte waits for the next.
         if (!final and self.options.math and self.tail_run_start < subject.len and self.position >= self.limit and self.position < self.math_line.start) {
@@ -328,10 +333,11 @@ pub const Parser = struct {
         self.tail_run_start = if (i == n) word_start else n;
     }
 
-    /// A last line that may still become a one-line display math block (`$$x$$`, `\[x\]`)
-    /// shows as B draws it, literal (D102): tokenizing stops at its start (`heldLimit`) until a byte
-    /// after its first closer rules that out or its line ends (a line held that the block parser
-    /// then rejects only shows its spans later). Reads each new byte once.
+    /// A paragraph's last line that may still become a one-line display math block (`$$x$$`,
+    /// `\[x\]`) shows as B draws it, literal (D102): tokenizing stops at its start (`heldLimit`)
+    /// and no search reads into it, until a byte after its first closer rules that out or its
+    /// line ends (a line held that the block parser then rejects only shows its spans later).
+    /// Reads each new byte once.
     fn holdMathLine(self: *Parser, previous_len: u32) void {
         const s = self.subject;
         const m = &self.math_line;
@@ -341,18 +347,21 @@ pub const Parser = struct {
         } else if (previous_len == 0) m.* = .{ .start = 0 };
         if (m.start == std.math.maxInt(u32) or s.len - m.start < 2) return;
         const line = s[m.start..];
-        const close: []const u8 = if (line[0] == '$') "$$" else "\\]";
-        var ruled_out = !std.mem.eql(u8, line[0..2], if (line[0] == '$') "$$" else "\\[");
-        var k = @max(m.scanned, 3);
+        const dollars = line[0] == '$';
+        const close: []const u8 = if (dollars) "$$" else "\\]";
+        var ruled_out = !std.mem.eql(u8, line[0..2], if (dollars) "$$" else "\\[");
+        var k = @max(previous_len -| m.start, 3);
         self.byte_visits += line.len -| k;
+        // After the first closer only whitespace, and one `$` right after a `$$` closer (`$$a$$$`
+        // is the body `a$`).
         while (!ruled_out and k < line.len) : (k += 1) {
-            if (m.closed) {
-                ruled_out = !isAsciiWhitespace(line[k]);
-            } else {
-                m.closed = line[k - 1] == close[0] and line[k] == close[1];
+            if (m.closer != std.math.maxInt(u32)) {
+                ruled_out = !isAsciiWhitespace(line[k]) and !(dollars and line[k] == '$' and k == m.closer + 1);
+            } else if (line[k - 1] == close[0] and line[k] == close[1]) {
+                m.closer = k;
             }
         }
-        if (ruled_out) m.* = .{} else m.scanned = @intCast(line.len);
+        if (ruled_out) m.* = .{};
     }
 
     /// Where tokenizing stops now: the limit, or before it the start of a line holdMathLine holds.
