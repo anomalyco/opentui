@@ -1976,6 +1976,28 @@ describe("TextRenderable Selection", () => {
       expect(frame).toMatchSnapshot()
     })
 
+    it("should keep closing punctuation attached across styled chunks", async () => {
+      for (const tail of [", ww", ". ww", "] ww"]) {
+        for (const content of [
+          `Hello (new World)${tail}`,
+          new StyledText([
+            { __isChunk: true, text: "Hello (new World)", fg: RGBA.fromHex("#ff0000") },
+            { __isChunk: true, text: tail, fg: RGBA.fromHex("#00ff00") },
+          ]),
+        ]) {
+          const { text } = await createTextRenderable(currentRenderer, { content, wrapMode: "word", width: 17 })
+          expect(
+            captureFrame()
+              .split("\n")
+              .map((line) => line.trimEnd())
+              .filter((line) => line.length > 0),
+          ).toEqual(["Hello (new", `World)${tail}`])
+          currentRenderer.root.remove(text)
+          text.destroy()
+        }
+      }
+    })
+
     it("should handle word wrapping with hyphens and dashes", async () => {
       await createTextRenderable(currentRenderer, {
         content: "self-contained multi-line text-wrapping example",
