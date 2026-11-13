@@ -1075,7 +1075,8 @@ export class MarkdownRenderable extends Renderable {
     const leaf = this._doc.readLeaf(index)
     const hooked = this._inlineHook && (this._doc.blocks[index]!.flags & md.OT_MD_BLOCK_HOOKED) !== 0
     const source = hooked ? this._doc.readSource(index) : undefined
-    const written = JSON.stringify([leaf.chunks, source])
+    // The span flags too: a code span decided at the end of a line changes only its flag.
+    const written = JSON.stringify([leaf.chunks, [...leaf.spans], source])
     if (!force && shown.written === written) return
     shown.written = written
     const spans = this.spans(leaf.chunks, leaf.spans)

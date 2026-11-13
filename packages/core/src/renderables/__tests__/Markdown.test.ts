@@ -5515,6 +5515,28 @@ test("inlineHookFilter limits the hook to blocks and cells that hold one of its 
   expect(frameText()).toContain("see ses_a")
 })
 
+// Model seed 1188 of 10,000: a pending line's code span is decided when its paragraph closes; only the span's flag
+// changes, and the hook must see it.
+test("the hook runs again when only a span's kind changes", async () => {
+  const seen: [string, boolean][] = []
+  const md = createMarkdownRenderable({
+    // Trimmed, as OpenCode does: the pending and the closed paragraph hold the same characters.
+    content: "> `ses_a`",
+    syntaxStyle,
+    streaming: true,
+    conceal: false,
+    inlineHook: (spans, context) => (seen.push([context.source, spans.some((span) => span.code)]), spans),
+  })
+  renderer.root.add(md)
+  await renderMarkdownRenderable(md)
+  md.content += "\n\nafter"
+  await renderMarkdownRenderable(md)
+  expect(seen.filter(([source]) => source.startsWith("`"))).toEqual([
+    ["`ses_a`", false],
+    ["`ses_a`", true],
+  ])
+})
+
 test("hooked and host-written text takes a new style, and header cells keep what the hook returns", async () => {
   setRendererCapabilities(renderer, { hyperlinks: true })
   const [red, green] = [RGBA.fromInts(255, 0, 0, 255), RGBA.fromInts(0, 255, 0, 255)]
