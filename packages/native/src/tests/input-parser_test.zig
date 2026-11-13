@@ -1803,7 +1803,7 @@ test "input parser passes Core's conformance vectors, whole and one byte at a ti
                 .string => |text| text,
                 .array => |values| bytes: {
                     const bytes = try allocator.alloc(u8, values.items.len);
-                    for (values.items, bytes) |value, *byte| byte.* = utils.unsigned(u8, value.integer);
+                    for (values.items, bytes) |value, *byte| byte.* = @intCast(value.integer);
                     break :bytes bytes;
                 },
                 else => return error.InvalidConformanceStep,
