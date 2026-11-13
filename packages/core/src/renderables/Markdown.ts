@@ -971,7 +971,7 @@ export class MarkdownRenderable extends Renderable {
           width: "100%",
           flexShrink: 0,
         })
-        code._streamsDeltas = true
+        code._setStreamsDeltas(true)
         this.setCode(index, code)
         return code
       }
@@ -1044,6 +1044,7 @@ export class MarkdownRenderable extends Renderable {
     code.drawUnstyledText = (block.flags & md.OT_MD_BLOCK_MATH) !== 0 || !this._streaming
     code.streaming = this._streaming
     code.content = this.leafText(index)
+    code._setStreamsDeltas((block.flags & md.OT_MD_BLOCK_CLOSED) === 0)
   }
 
   /** What a changed block changes besides its own renderable: text the host writes, the table or list around it. */

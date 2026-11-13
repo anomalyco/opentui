@@ -91,13 +91,12 @@ export class CodeRenderable extends TextBufferRenderable {
   // Temporary rendered-line -> source-line map for concealment; native extmarks should replace this.
   private _renderedLineSources?: number[]
   private _mappedLineInfo?: LineInfo
-  // While set, the buffer holds `_content` and grows only by appends; the worker's copy of buffer `id` holds its first
-  // `sent` units, and each reply writes the syntax layer for the prefix it covers (record 312).
+  // While set, the buffer holds `_content` and grows only by appends; the worker's copy `id` holds its first `sent`
+  // units, and each reply writes the syntax layer for the prefix it covers (record 312).
   private _deltas?: { client: TreeSitterClient; id: number; filetype: string; sent: number }
   private _groupSets = new Map<string, number>()
   private static nextCopy = 0
-  /** @internal Markdown sets it on its fences: while one streams, its appends go to the highlighter as deltas. */
-  public _streamsDeltas = false
+  private _streamsDeltas = false
 
   protected _contentDefaultOptions = {
     content: "",
@@ -250,7 +249,7 @@ export class CodeRenderable extends TextBufferRenderable {
     } else {
       this.textBuffer.setText(value)
       this._shownVersion = -1
-      if (this.deltasAllowed()) {
+      if (this._streamsDeltas && this.deltasAllowed()) {
         const id = CodeRenderable.nextCopy++
         this._deltas = { client: this._treeSitterClient, id, filetype: this._filetype!, sent: 0 }
       }
@@ -264,7 +263,6 @@ export class CodeRenderable extends TextBufferRenderable {
   // with "\n" alone, so its UTF-8 offsets are native's.
   private deltasAllowed(): boolean {
     return (
-      this._streamsDeltas &&
       this._streaming &&
       !!this._filetype &&
       !this._conceal &&
@@ -273,6 +271,16 @@ export class CodeRenderable extends TextBufferRenderable {
       !this._baseHighlight &&
       !this._initialStyledText
     )
+  }
+
+  /**
+   * @internal Markdown marks a fence while its block is open: while it streams, its appends go to the highlighter as
+   * deltas. A closed block's text is final, so its worker copy goes (C4 question 4): now if the last reply covers the
+   * text, else once the reply for the rest lands.
+   */
+  public _setStreamsDeltas(open: boolean): void {
+    this._streamsDeltas = open
+    if (!open && this._shownVersion === this._version) this.stopDeltas()
   }
 
   private stopDeltas(): void {
@@ -409,6 +417,8 @@ export class CodeRenderable extends TextBufferRenderable {
   set streaming(value: boolean) {
     if (this._streaming !== value) {
       this._streaming = value
+      // At once, since a hidden block runs no update hook to do it.
+      if (!value) this.stopDeltas()
       this.invalidateHighlights(false)
     }
   }
@@ -629,6 +639,8 @@ export class CodeRenderable extends TextBufferRenderable {
     }
     this._shownVersion = version
     this._isHighlighting = false
+    // A closed block's copy goes once a reply covers all its text.
+    if (!this._streamsDeltas && deltas.sent === this._content.length) this.stopDeltas()
     this.setShouldRenderTextBuffer(true)
     // A layer changes no text, so nothing else asks for the frame that shows it.
     this.requestRender()

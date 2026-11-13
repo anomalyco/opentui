@@ -4142,13 +4142,16 @@ The fenced block above appears near the top so streaming mode exercises a larger
 
 /** Counts the string units of every message a client posts, and the bytes and layers written to text buffers. */
 function countStreamWork(client: TreeSitterClient) {
-  const counts = { units: 0, bytes: 0, layers: [] as number[], oneshots: 0, disposes: 0 }
+  const counts = { units: 0, bytes: 0, layers: [] as number[], oneshots: 0, disposes: 0, copies: new Set<number>() }
   const target = client as unknown as { sendWorkerMessage(message: TreeSitterWorkerRequest): void }
   const send = target.sendWorkerMessage
   target.sendWorkerMessage = function (message) {
     counts.units += "content" in message ? message.content.length : "text" in message ? message.text.length : 0
     counts.oneshots += Number(message.type === "ONESHOT_HIGHLIGHT")
     counts.disposes += Number(message.type === "DISPOSE_COPY")
+    // The worker copies alive: the first append makes one, a dispose frees it.
+    if (message.type === "APPEND_HIGHLIGHT" && message.offset === 0) counts.copies.add(message.copyId)
+    if (message.type === "DISPOSE_COPY") counts.copies.delete(message.copyId)
     return send.call(this, message)
   }
   const { setText, append, setStyledText, _setLayer } = TextBuffer.prototype
@@ -4191,7 +4194,7 @@ test.each([1024, 4096])("a %i-byte streamed fence sends work linear in its size"
       md.content = doc.slice(0, end)
       await renderMarkdownRenderable(md, true)
     }
-    const streamed = { ...counts, layers: counts.layers.length }
+    const streamed = { ...counts, layers: counts.layers.length, copies: counts.copies.size }
     md.streaming = false
     await renderMarkdownRenderable(md, true)
     const n = Buffer.byteLength(doc)
@@ -4199,8 +4202,9 @@ test.each([1024, 4096])("a %i-byte streamed fence sends work linear in its size"
     expect(streamed.units).toBeLessThanOrEqual(1.1 * n)
     expect(streamed.bytes).toBeLessThanOrEqual(1.1 * n)
     expect(streamed.layers).toBeGreaterThan(size / 64)
-    expect(streamed.oneshots).toBe(0)
-    // The stream end frees the worker's copy and highlights the fence once on today's path (question 9).
+    // The closed fence sent its last text as an append and freed its copy before the stream ended (question 4).
+    expect([streamed.oneshots, streamed.copies, streamed.disposes]).toEqual([0, 0, 1])
+    // The stream end highlights the fence once on today's path (question 9).
     expect([counts.oneshots, counts.disposes]).toEqual([1, 1])
     expect(counts.units).toBeLessThanOrEqual(2.2 * n)
     expect(counts.bytes).toBeLessThanOrEqual(2.2 * n)
@@ -4210,6 +4214,34 @@ test.each([1024, 4096])("a %i-byte streamed fence sends work linear in its size"
     await renderMarkdownRenderable(open, true)
     open.destroyRecursively()
     expect(counts.disposes).toBe(2)
+  } finally {
+    restore()
+  }
+})
+
+// Design question 4: a fence frees its worker copy when its block closes, so a streaming answer holds a copy for its open
+// fence only. An open fence of a hidden answer, whose update hooks do not run, frees its copy when the stream ends.
+test("a streaming answer holds a worker copy only for its open fence", async () => {
+  const md = createMarkdownRenderable({ content: "", syntaxStyle, streaming: true })
+  renderer.root.add(md)
+  const { counts, restore } = countStreamWork(markdownTreeSitterClient)
+  try {
+    let doc = ""
+    for (let i = 0; i < 4; i++) {
+      for (const piece of ["```js\n", `let n${i} = ${i}\n`, `let m${i} = n${i}\n`, "```\n", `Text ${i}.\n\n`]) {
+        md.content = doc += piece
+        await renderMarkdownRenderable(md, true)
+      }
+    }
+    expect(counts.copies.size).toBe(0)
+    md.content = doc += "```js\nlet open = 1\n"
+    await renderMarkdownRenderable(md, true)
+    expect(counts.copies.size).toBe(1)
+    md.visible = false
+    await renderOnce()
+    md.streaming = false
+    await renderOnce()
+    expect(counts.copies.size).toBe(0)
   } finally {
     restore()
   }
