@@ -1571,7 +1571,8 @@ fn a_selection_follows_its_gesture_when_the_content_changes() {
     }
     // One widget, a gesture at (x, y) (one press: a drag four cells right; three: a triple click), then each step
     // sets the text and the wrap mode, with the app's selection after the next frame, from Core: a followed log,
-    // a replace that clamps the scroll, a wrap set after the text, and a line that goes and comes back.
+    // a replace that clamps the scroll, a wrap set after the text, a drag that selected nothing at release (Core
+    // paints "ew " but copies nothing; the app copies what is painted), and a line that goes and comes back.
     type Step = (&'static str, Option<WrapMode>, Option<&'static str>);
     let log = "aa\nbb\ncc\ndd";
     let regrow: &[Step] = &[("ab", None, None), ("ab\ntwo words", None, Some("two words"))];
@@ -1580,6 +1581,8 @@ fn a_selection_follows_its_gesture_when_the_content_changes() {
         (true, true, log, (4, 2), 3, (1, 1), &[("aa\nbb\ncc\ndd\nee", None, Some("ee"))]),
         (true, true, log, (4, 2), 3, (1, 0), &[("one\ntwo", None, Some("one"))]),
         (true, false, "ab cd\nxy", (4, 2), 3, (1, 1), &[("xab cd\nxcd", Some(WrapMode::Word), Some("xab cd"))]),
+        (false, false, "old", (6, 2), 1, (1, 1), &[("old\nnew stuff", None, Some("ew "))]),
+        (true, false, "old", (6, 2), 1, (1, 1), &[("old\nnew stuff", None, Some("ew st"))]),
         (false, false, "ab\ncd", (8, 2), 3, (1, 1), regrow),
         (true, false, "ab\ncd", (8, 2), 3, (1, 1), regrow),
     ];
