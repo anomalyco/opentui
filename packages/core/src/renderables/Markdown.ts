@@ -455,7 +455,9 @@ export class MarkdownRenderable extends Renderable {
   set syntaxStyle(value: SyntaxStyle) {
     if (this._syntaxStyle !== value) {
       this._syntaxStyle = value
-      // The doc's bound text repaints with the new style; host-written leaves come back listed.
+      // The doc's bound text repaints with the new style; host-written leaves come back listed, and are written again
+      // even when the parser's output is unchanged, since a hook reads the style.
+      for (const shown of this._shown) shown.written = undefined
       this.change(() => this._doc.setOptions(this.engineOptions()))
       this.markStyleDirty()
     }
@@ -645,6 +647,12 @@ export class MarkdownRenderable extends Renderable {
       this.change(() => this._doc.setOptions(this.engineOptions()))
     }
     this.restyle()
+    // Text the host writes holds resolved colors.
+    this._shown.forEach((_, index) => {
+      const block = this._doc.blocks[index]!
+      const host = block.kind === md.OT_MD_HTML || (isProse(block.kind) && this.hostWrites(block))
+      if (host && !this.isHidden(index)) this.writeProse(index, true)
+    })
     this.requestRender()
   }
 
@@ -654,7 +662,8 @@ export class MarkdownRenderable extends Renderable {
     // The terminal owns the capability; the doc gets it from here (N5).
     if (this.ctx.capabilities?.hyperlinks === true) flags |= md.OT_MD_HYPERLINKS
     if (this._extensions.includes("math")) flags |= md.OT_MD_MATH
-    if (this._inlineHook) flags |= md.OT_MD_HOOK
+    // An empty filter selects no block.
+    if (this._inlineHook && this._inlineHookFilter?.length !== 0) flags |= md.OT_MD_HOOK
     return flags
   }
 
@@ -1146,28 +1155,29 @@ export class MarkdownRenderable extends Renderable {
     table.content = content
   }
 
-  /** A cell's content: the parser's output through the hook, in the heading style in a header row. */
+  /** A cell's content: the parser's output, in the heading style in a header row, through the hook. */
   private readCell(cell: number, header: boolean): TextChunk[] {
-    const heading = this.getStyle("markup.heading") ?? this.getStyle("default")
+    const heading = header ? (this.getStyle("markup.heading") ?? this.getStyle("default")) : undefined
     const headingAttributes = heading ? createTextAttributes(heading) : 0
     const leaf = this._doc.readLeaf(cell)
-    let spans = this.spans(leaf.chunks, leaf.spans)
+    let spans = this.spans(leaf.chunks, leaf.spans).map((span) => {
+      if (!heading) return span
+      // An inline ~~strike~~ stays in a header unless the heading style sets strikethrough itself.
+      const strike = heading.strikethrough === undefined ? (span.attributes ?? 0) & TextAttributes.STRIKETHROUGH : 0
+      return { ...span, fg: heading.fg ?? span.fg, bg: heading.bg ?? span.bg, attributes: headingAttributes | strike }
+    })
+    // The hook sees a header cell's content in the header style, as Rust's does.
     if (this._inlineHook && (this._doc.blocks[cell]!.flags & md.OT_MD_BLOCK_HOOKED) !== 0) {
       spans = this.hook(spans, this._doc.readSource(cell), true)
     }
-    const chunks: TextChunk[] = spans.map(({ text, fg, bg, attributes, link }) => {
-      if (!header || !heading) return { __isChunk: true, text, fg, bg, attributes, link }
-      // An inline ~~strike~~ stays in a header unless the heading style sets strikethrough itself.
-      const strike = heading.strikethrough === undefined ? (attributes ?? 0) & TextAttributes.STRIKETHROUGH : 0
-      return {
-        __isChunk: true,
-        text,
-        fg: heading.fg ?? fg,
-        bg: heading.bg ?? bg,
-        attributes: headingAttributes | strike,
-        link,
-      }
-    })
+    const chunks: TextChunk[] = spans.map(({ text, fg, bg, attributes, link }) => ({
+      __isChunk: true,
+      text,
+      fg,
+      bg,
+      attributes,
+      link,
+    }))
     return chunks.length > 0 ? chunks : [{ __isChunk: true as const, text: " " }]
   }
 

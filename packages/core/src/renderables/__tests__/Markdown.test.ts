@@ -5396,6 +5396,65 @@ test("inlineHookFilter limits the hook to blocks and cells that hold one of its 
   await renderMarkdownRenderable(md)
   expect(calls.map((call) => call.source)).toEqual(["plain"])
   expect(frameText()).toContain("see ses_a")
+
+  // An empty filter selects no block; no filter selects every block.
+  calls.length = 0
+  md.inlineHookFilter = []
+  await renderMarkdownRenderable(md)
+  expect(calls).toEqual([])
+  expect(frameText()).toContain("see ses_a")
+})
+
+test("hooked and host-written text takes a new style, and header cells keep what the hook returns", async () => {
+  setRendererCapabilities(renderer, { hyperlinks: true })
+  const [red, green] = [RGBA.fromInts(255, 0, 0, 255), RGBA.fromInts(0, 255, 0, 255)]
+  const theme = (link: RGBA) =>
+    SyntaxStyle.fromStyles(
+      { default: { fg: RGBA.fromValues(1, 1, 1, 1) }, "markup.link.url": { fg: link } },
+      renderer.nativeScene!,
+    )
+  const [first, second] = [theme(red), theme(green)]
+  // As OpenCode's session links: the target's color comes from the style the hook is given.
+  const hook: MarkdownInlineHook = (spans, context) =>
+    spans.map((span) =>
+      span.text.includes("ses_a")
+        ? { ...span, fg: context.syntaxStyle.getStyle("markup.link.url")?.fg, attributes: TextAttributes.UNDERLINE }
+        : span,
+    )
+  const md = createMarkdownRenderable({
+    content: "see ses_a now\n\n| ses_a |\n| - |\n| ses_a |",
+    syntaxStyle: first,
+    inlineHook: hook,
+  })
+  renderer.root.add(md)
+  await renderMarkdownRenderable(md)
+  const colors = () =>
+    captureSpans()
+      .lines.flatMap((line) => line.spans)
+      .filter((span) => span.text.includes("ses_a"))
+      .map((span) => [span.fg.toInts(), span.attributes & TextAttributes.UNDERLINE])
+  expect(colors()).toEqual(Array(3).fill([red.toInts(), TextAttributes.UNDERLINE]))
+  md.syntaxStyle = second
+  await renderMarkdownRenderable(md)
+  expect(colors()).toEqual(Array(3).fill([green.toInts(), TextAttributes.UNDERLINE]))
+  // Only the hook reads this definition, so refreshStyles() runs it again.
+  second.registerStyle("markup.link.url", { fg: red })
+  md.refreshStyles()
+  await renderOnce()
+  expect(colors()[0]).toEqual([red.toInts(), TextAttributes.UNDERLINE])
+
+  // A definition registered on the same style shows after refreshStyles(), on text the host writes too.
+  setRendererCapabilities(renderer, { hyperlinks: false })
+  md.inlineHook = undefined
+  md.content = "**bold**"
+  await renderMarkdownRenderable(md)
+  second.registerStyle("markup.strong", { fg: red, bold: true })
+  md.refreshStyles()
+  await renderOnce()
+  expect(findSpanContaining(captureSpans(), "bold")?.fg?.toInts()).toEqual(red.toInts())
+  md.destroyRecursively()
+  first.destroy()
+  second.destroy()
 })
 
 // A worker whose replies a test releases one by one, in any order. Its grammar conceals heading markers and the
