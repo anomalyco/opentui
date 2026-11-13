@@ -79,6 +79,19 @@ fn styled_cells_draw_in_a_grid() {
 }
 
 #[test]
+fn columns_align_their_lines_and_follow_a_change() {
+    let app = TestApp::new(20, 6);
+    let table = table(&app, &[&["Key", "Value"], &["a", "b"]])
+        .column_width_mode(ColumnWidthMode::Content)
+        .column_alignments([Alignment::Right, Alignment::Center]);
+    app.root().add(&table);
+    // Core: "aligns each column's lines and follows a columnAlignments change".
+    assert_eq!(top(&app, 4)[3], "│  a│  b  │");
+    table.column_alignments([Alignment::Left]);
+    assert_eq!(top(&app, 4)[3], "│a  │b    │");
+}
+
+#[test]
 fn cells_wrap_and_columns_fit_a_narrow_width() {
     let app = TestApp::new(60, 16);
     let table = TextTable::new(&app).width(34).set_content([

@@ -186,6 +186,8 @@ per top-level block, a blank row between blocks. These change to match Core:
   starts.
 - Concealed images lose the picture emoji.
 - Table headers take the heading color, as Core's take `markup.heading`.
+- Table columns align as their delimiter row says (`:-:` centered, `-:`
+  right), header included, as in Core.
 
 ## Deviations from Core
 

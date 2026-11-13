@@ -1938,6 +1938,9 @@ ot_status ot_markdown_get_source(ot_context *, const ot_handle *doc, const uint8
 #define OT_MD_BLOCK_MATH UINT32_C(512)       /* display math: a code block of the language math */
 #define OT_MD_BLOCK_HEADER UINT32_C(1024)    /* a table's header row */
 #define OT_MD_BLOCK_OPEN UINT32_C(2048)      /* later lines may still extend the block */
+/* A table cell's column alignment from the delimiter row: both = centred, neither = none. */
+#define OT_MD_BLOCK_ALIGN_LEFT UINT32_C(4096)
+#define OT_MD_BLOCK_ALIGN_RIGHT UINT32_C(8192)
 typedef struct ot_markdown_block {
     uint32_t index;           /* preorder index = block id */
     uint32_t parent_index;    /* UINT32_MAX at top level */

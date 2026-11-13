@@ -20,6 +20,7 @@ export type TextTableCellContent = TextChunk[] | null | undefined
 export type TextTableContent = TextTableCellContent[][]
 export type TextTableColumnWidthMode = "content" | "full"
 export type TextTableColumnFitter = "proportional" | "balanced"
+export type TextTableColumnAlignment = "left" | "center" | "right"
 
 interface ResolvedTableBorderLayout {
   left: boolean
@@ -71,6 +72,8 @@ export interface TextTableOptions extends RenderableOptions<TextTableRenderable>
   wrapMode?: "none" | "char" | "word"
   columnWidthMode?: TextTableColumnWidthMode
   columnFitter?: TextTableColumnFitter
+  /** Each column's line alignment in its cells, by column; a missing entry is `"left"`. */
+  columnAlignments?: TextTableColumnAlignment[]
   cellPadding?: number
   cellPaddingX?: number
   cellPaddingY?: number
@@ -95,6 +98,7 @@ export class TextTableRenderable extends Renderable {
   private _wrapMode: "none" | "char" | "word"
   private _columnWidthMode: TextTableColumnWidthMode
   private _columnFitter: TextTableColumnFitter
+  private _columnAlignments: TextTableColumnAlignment[]
   private _cellPaddingX: number
   private _cellPaddingY: number
   private _columnGap: number
@@ -157,6 +161,7 @@ export class TextTableRenderable extends Renderable {
       this._wrapMode = options.wrapMode ?? this._defaultOptions.wrapMode
       this._columnWidthMode = options.columnWidthMode ?? this._defaultOptions.columnWidthMode
       this._columnFitter = this.resolveColumnFitter(options.columnFitter)
+      this._columnAlignments = [...(options.columnAlignments ?? [])]
       this._cellPaddingX = this.resolveCellPadding(options.cellPaddingX ?? options.cellPadding)
       this._cellPaddingY = this.resolveCellPadding(options.cellPaddingY ?? options.cellPadding)
       this._columnGap = this.resolveColumnGap(options.columnGap)
@@ -226,6 +231,16 @@ export class TextTableRenderable extends Renderable {
     if (this._columnFitter === next) return
     this._columnFitter = next
     this.invalidateLayout()
+  }
+
+  public get columnAlignments(): TextTableColumnAlignment[] {
+    return [...this._columnAlignments]
+  }
+
+  public set columnAlignments(value: TextTableColumnAlignment[] | undefined) {
+    this._columnAlignments = [...(value ?? [])]
+    // The views take it with the layout; no size changes.
+    this.invalidateLayout(false)
   }
 
   public get cellPadding(): number {
@@ -931,6 +946,7 @@ export class TextTableRenderable extends Renderable {
         const contentHeight = Math.max(1, rowHeight - verticalPadding)
 
         cell.textBufferView.setViewport(0, 0, contentWidth, contentHeight)
+        cell.textBufferView.setTextAlign(this._columnAlignments[colIdx] ?? "left")
       }
     }
   }

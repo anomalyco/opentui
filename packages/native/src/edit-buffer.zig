@@ -581,8 +581,13 @@ pub const EditBuffer = struct {
 
         /// The marks once the text becomes `after`, one step on from the last call: built before
         /// the step publishes, so publishing cannot fail.
-        fn nextMarks(self: *EditSplice, allocator: Allocator, after: *const UnifiedRope) !usize {
-            if (self.marks == 0) return 0;
+        inline fn nextMarks(self: *EditSplice, allocator: Allocator, after: *const UnifiedRope) !usize {
+            if (edit_marks.live(self.marks).len == 0) return self.marks;
+            return self.prepareMarks(allocator, after);
+        }
+
+        fn prepareMarks(self: *EditSplice, allocator: Allocator, after: *const UnifiedRope) !usize {
+            text_work.add(.mark_preparations, 1);
             const byte_count = iter_mod.textBytes(&after.root.metrics());
             const before = self.marks_byte_count;
             self.marks = (try edit_marks.splice(allocator, self.marks, self.start_byte, before -| byte_count, byte_count -| before)) orelse self.marks;
@@ -612,9 +617,13 @@ pub const EditBuffer = struct {
         }
     };
 
-    fn editSplice(self: *const EditBuffer, row: u32, col: u32, offset: u32, always: bool) EditSplice {
-        const marks = self.tb.rope().aux;
+    inline fn editSplice(self: *const EditBuffer, row: u32, col: u32, offset: u32, always: bool) EditSplice {
         if (!always and self.tb.layers.isEmpty() and self.tb.marks().len == 0) return .{ .active = false };
+        return self.activeSplice(row, col, offset);
+    }
+
+    fn activeSplice(self: *const EditBuffer, row: u32, col: u32, offset: u32) EditSplice {
+        const marks = self.tb.rope().aux;
         // At a line start an edit goes before zero-width text (`insertBias`, `replaceByWeight`);
         // elsewhere after it, where the weight seek lands.
         const start_byte = if (col == 0) self.tb.lineStartByte(row) else self.tb.byteOffsetAtWeight(offset);

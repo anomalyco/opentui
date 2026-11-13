@@ -153,6 +153,7 @@ TextTable also accepts the standard [renderable layout options](/docs/core-conce
 | `wrapMode`              | `"none" \| "char" \| "word"`                   | `"word"`         | Cell text wrapping behavior                             |
 | `columnWidthMode`       | `"content" \| "full"`                          | `"full"`         | Preserve intrinsic width or fill the width constraint   |
 | `columnFitter`          | `"proportional" \| "balanced"`                 | `"proportional"` | Width allocation when columns must shrink               |
+| `columnAlignments`      | `("left" \| "center" \| "right")[]`            | `[]`             | Each column's line alignment in its cells; unset = left |
 | `cellPadding`           | `number`                                       | `0`              | Horizontal and vertical padding on each side of a cell  |
 | `cellPaddingX`          | `number`                                       | `cellPadding`    | Horizontal padding on each side                         |
 | `cellPaddingY`          | `number`                                       | `cellPadding`    | Vertical padding on each side                           |
@@ -172,7 +173,7 @@ TextTable also accepts the standard [renderable layout options](/docs/core-conce
 | `selectionFg`           | `ColorInput`                                   | -                | Selection foreground override                           |
 | `flexShrink`            | `number`                                       | `0`              | Inherited layout shrink factor                          |
 
-The renderable always uses a buffered surface. The mutable table-specific properties are `content`, `wrapMode`, `columnWidthMode`, `columnFitter`, `cellPadding`, `cellPaddingX`, `cellPaddingY`, `columnGap`, `showBorders`, `border`, `outerBorder`, `borderStyle`, and `borderColor`.
+The renderable always uses a buffered surface. The mutable table-specific properties are `content`, `wrapMode`, `columnWidthMode`, `columnFitter`, `columnAlignments`, `cellPadding`, `cellPaddingX`, `cellPaddingY`, `columnGap`, `showBorders`, `border`, `outerBorder`, `borderStyle`, and `borderColor`.
 
 ## Related components
 

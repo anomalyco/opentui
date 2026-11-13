@@ -2,7 +2,7 @@ use super::editor::{EditorInfo, LayerRun, SyntaxStyle, Viewport};
 use super::resource::{Resource, read_string};
 use super::{Context, Node, WidthMethod, WrapMode};
 use crate::error::{Result, check, count};
-use crate::style::{EncodedSpans, Span, Style};
+use crate::style::{Alignment, EncodedSpans, Span, Style};
 use crate::sys;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -237,6 +237,11 @@ impl TextView {
 
     pub fn set_wrap(&self, wrap: WrapMode) -> Result<()> {
         self.command(sys::OT_TEXT_VIEW_WRAP_MODE, wrap.raw())
+    }
+
+    /// Aligns each wrapped line within the viewport width.
+    pub fn set_align(&self, align: Alignment) -> Result<()> {
+        self.command(sys::OT_TEXT_VIEW_TEXT_ALIGN, align.raw())
     }
 
     pub fn set_tab_indicator(&self, indicator: Option<char>) -> Result<()> {

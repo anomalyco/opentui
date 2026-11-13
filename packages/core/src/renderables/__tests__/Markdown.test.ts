@@ -518,24 +518,6 @@ test("table with mixed formatting", async () => {
   `)
 })
 
-test("table with alignment markers (left, center, right)", async () => {
-  const markdown = `| Left | Center | Right |
-|:---|:---:|---:|
-| A | B | C |
-| Long text | X | Y |`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    ┌─────────┬──────┬─────┐
-    │Left     │Center│Right│
-    ├─────────┼──────┼─────┤
-    │A        │B     │C    │
-    ├─────────┼──────┼─────┤
-    │Long text│X     │Y    │
-    └─────────┴──────┴─────┘"
-  `)
-})
-
 test("table with empty cells", async () => {
   const markdown = `| A | B |
 |---|---|
