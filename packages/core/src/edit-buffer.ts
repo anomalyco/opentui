@@ -1,4 +1,5 @@
 import {
+  NativeEditAtomic,
   NativeEditCommand,
   NativeEditPositionQuery,
   NativeEditorStyleMask,
@@ -187,12 +188,19 @@ export class EditBuffer extends EventEmitter {
     )
   }
 
+  /** @internal Set by extmarks controllers: whether the cursor rules around virtual extmarks apply now. */
+  public _atomic?: () => boolean
+
+  private rules(): number {
+    return this._atomic?.() ? NativeEditAtomic : 0
+  }
+
   public deleteChar(): void {
-    this.command(NativeEditCommand.DeleteForward)
+    this.command(NativeEditCommand.DeleteForward, this.rules())
   }
 
   public deleteCharBackward(): void {
-    this.command(NativeEditCommand.Backspace)
+    this.command(NativeEditCommand.Backspace, this.rules())
   }
 
   public deleteRange(startLine: number, startCol: number, endLine: number, endCol: number): void {
@@ -216,11 +224,11 @@ export class EditBuffer extends EventEmitter {
   }
 
   public moveCursorLeft(): void {
-    this.command(NativeEditCommand.MoveLeft)
+    this.command(NativeEditCommand.MoveLeft, this.rules())
   }
 
   public moveCursorRight(): void {
-    this.command(NativeEditCommand.MoveRight)
+    this.command(NativeEditCommand.MoveRight, this.rules())
   }
 
   public moveCursorUp(): void {
@@ -246,7 +254,12 @@ export class EditBuffer extends EventEmitter {
   }
 
   public setCursorByOffset(offset: number): void {
-    this.command(NativeEditCommand.CursorOffset, offset)
+    this.command(this.rules() ? NativeEditCommand.CursorOffsetAtomic : NativeEditCommand.CursorOffset, offset)
+  }
+
+  /** @internal Moves a cursor inside virtual extmarks to their outer edge: the end (> 0), the start (< 0) or nearer. */
+  public _keepOutside(direction: number): void {
+    this.command(NativeEditCommand.KeepOutside, direction > 0 ? 1 : direction < 0 ? 2 : 0)
   }
 
   public getCursorPosition(): LogicalCursor {

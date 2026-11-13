@@ -732,8 +732,11 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     const side = this.selectionSide() ?? 0
     const had = this.hasSelection()
     this.resetSelection()
-    this.editorView._keepCursorOutside(side)
-    if (had) this.requestRender()
+    // A selection held the cursor at its focus; without one, the operation that moved it applied the rules.
+    if (had) {
+      this.editorView._keepCursorOutside(side)
+      this.requestRender()
+    }
     return had
   }
 
@@ -770,6 +773,8 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
       }
       this.requestRender()
     })
+    // Text that joins a grapheme can move a mark's edge across the cursor.
+    if (this.editorView._atomic) this.editBuffer._keepOutside(0)
   }
 
   public deleteChar(): boolean {
@@ -827,7 +832,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
 
     this.updateSelectionForMovement(select, true)
     this.editBuffer.moveCursorLeft()
-    this.updateSelectionForMovement(select, false)
+    if (select) this.updateSelectionForMovement(true, false)
     this.requestRender()
     return true
   }
@@ -838,7 +843,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
 
     this.updateSelectionForMovement(select, true)
     this.editBuffer.moveCursorRight()
-    this.updateSelectionForMovement(select, false)
+    if (select) this.updateSelectionForMovement(true, false)
     this.requestRender()
     return true
   }
@@ -847,7 +852,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     const select = options?.select ?? false
     this.updateSelectionForMovement(select, true)
     this.editorView.moveUpVisual()
-    this.updateSelectionForMovement(select, false)
+    if (select) this.updateSelectionForMovement(true, false)
     this.requestRender()
     return true
   }
@@ -856,7 +861,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     const select = options?.select ?? false
     this.updateSelectionForMovement(select, true)
     this.editorView.moveDownVisual()
-    this.updateSelectionForMovement(select, false)
+    if (select) this.updateSelectionForMovement(true, false)
     this.requestRender()
     return true
   }
@@ -1004,7 +1009,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     this.updateSelectionForMovement(select, true)
     const nextWord = this.editBuffer.getNextWordBoundary()
     this.editBuffer.setCursorByOffset(nextWord.offset)
-    this.updateSelectionForMovement(select, false)
+    if (select) this.updateSelectionForMovement(true, false)
     this.requestRender()
     return true
   }
@@ -1015,7 +1020,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     this.updateSelectionForMovement(select, true)
     const prevWord = this.editBuffer.getPrevWordBoundary()
     this.editBuffer.setCursorByOffset(prevWord.offset)
-    this.updateSelectionForMovement(select, false)
+    if (select) this.updateSelectionForMovement(true, false)
     this.requestRender()
     return true
   }
@@ -1195,7 +1200,9 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   protected updateSelectionForMovement(shiftPressed: boolean, isBeforeMovement: boolean): void {
     if (!shiftPressed) {
       this._keyboardSelectionActive = false
-      this.clearSelection()
+      // Before a move a selection goes; after a move that applies no rule, the cursor is kept outside the marks.
+      if (isBeforeMovement) this.clearSelection()
+      else this.editorView._keepCursorOutside(0)
       return
     }
 

@@ -1,5 +1,6 @@
 import { RGBA } from "./lib/RGBA.js"
 import {
+  NativeEditAtomic,
   NativeEditorCommand,
   NativeEditorPositionQuery,
   NativeEditorSelectionOperation,
@@ -270,12 +271,19 @@ export class EditorView {
     return this.position(NativeEditorPositionQuery.Cursor)
   }
 
+  /** @internal Set while an extmarks controller lives: Up and Down apply the cursor rules around virtual extmarks. */
+  public _atomic = false
+
+  private rules(): number {
+    return this._atomic && !this.hasSelection() ? NativeEditAtomic : 0
+  }
+
   public moveUpVisual(): void {
-    this.command(NativeEditorCommand.MoveUp)
+    this.command(NativeEditorCommand.MoveUp, this.rules())
   }
 
   public moveDownVisual(): void {
-    this.command(NativeEditorCommand.MoveDown)
+    this.command(NativeEditorCommand.MoveDown, this.rules())
   }
 
   public deleteSelectedText(): void {
@@ -330,9 +338,13 @@ export class EditorView {
     return this.lib.contextEditorViewGetLines(this.native.handle.context, this.native.handle, true)
   }
 
-  /** @internal Moves a cursor left inside virtual extmarks to an edge, when the view has an extmark controller. */
+  /**
+   * @internal A cursor that a wheel step, a pointer or the offset setter left inside virtual extmarks goes to the outer
+   * edge of the marks around it: toward the end for a positive `direction`, the start for a negative one, or the nearer
+   * edge. Only with an extmarks controller, and not while a selection is left: it holds the cursor at its focus.
+   */
   public _keepCursorOutside(direction: number): void {
-    this._extmarksController?._keepCursorOutside(direction)
+    if (this.rules()) this.editBuffer._keepOutside(direction)
   }
 
   public get extmarks(): any {

@@ -246,7 +246,12 @@ export enum NativeEditCommand {
   Clear = 10,
   ClearHistory = 11,
   DebugRope = 12,
+  CursorOffsetAtomic = 13,
+  KeepOutside = 14,
 }
+
+/** The argument that applies the cursor rules around atomic marks to Left, Right, Backspace, Delete, Up and Down. */
+export const NativeEditAtomic = 1
 
 export enum NativeEditPositionQuery {
   Cursor = 0,

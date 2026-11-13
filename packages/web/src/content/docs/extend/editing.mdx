@@ -344,13 +344,13 @@ Do not destroy an owned buffer or view separately. Destroy the renderable. Read
 
 ## Experimental extmarks
 
-Extmarks are experimental. The edit buffer stores them natively, but the cursor rules around virtual extmarks still run
-in JavaScript.
+Extmarks are experimental. The edit buffer stores them and applies the cursor rules around virtual extmarks natively.
 
-The lazy `EditorView.extmarks` property creates an `ExtmarksController`. The controller monkey-patches the cursor,
-Backspace, and Delete methods on its specific `EditBuffer` and `EditorView`. Every controller of one buffer shares its
+The lazy `EditorView.extmarks` property creates an `ExtmarksController`. While a controller lives and its view has no
+selection, the buffer's `moveCursorLeft`, `moveCursorRight`, `deleteCharBackward`, `deleteChar` and `setCursorByOffset`
+and the view's `moveUpVisual` and `moveDownVisual` apply those rules. Every controller of one buffer shares its
 extmarks, their data and metadata, and the type names, and these stay with the buffer when a controller goes:
-`destroy()` restores the methods the controller wrapped and leaves the rest.
+`destroy()` stops the rules for its view and leaves the rest.
 
 An extmark stores a half-open global display-offset range, `virtual`, optional style and priority values, arbitrary
 data, a numeric type, and optional metadata. Public operations are:
@@ -371,7 +371,11 @@ Malformed input is a miss, not an error: `create` returns 0 and adds nothing whe
 type, style or priority is not a non-negative integer; `get`, `getMetadataFor`, `getAllForTypeId` and `delete` find
 nothing for an id or type that no extmark has.
 
-Virtual extmarks make wrapped cursor methods skip the marked range. A styled extmark paints as one range highlight
+Each move steps over one virtual extmark: Left from its end goes one unit before it, or to its start when another one
+ends there, and Right from its start, or one cell before it, to its end. Backspace at its end and Delete at its start
+delete it whole; Up, Down, a pointer, the wheel and the `cursorOffset` setter leave the cursor at an edge. Of
+overlapping virtual extmarks the oldest counts first, and the cursor ends on a character's start outside all of them. A
+styled extmark paints as one range highlight
 after the buffer's own highlights and leaves them in place. Its priority must be in the highlight range `0..255`;
 otherwise `create` throws and keeps no extmark. An unstyled extmark keeps any priority.
 

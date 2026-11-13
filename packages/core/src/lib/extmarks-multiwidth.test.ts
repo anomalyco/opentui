@@ -247,6 +247,18 @@ describe("ExtmarksController - Multi-width Graphemes", () => {
       })
     }
 
+    // Up from the end of the wrapped mark lands nearer its end, which is where Up started: it goes before the mark.
+    it("Up from the end of a wrapped virtual extmark leaves it by its start", async () => {
+      await setup("日@mainrsxyzuvwABCDEFGH")
+      textarea.width = 6
+      await renderOnce()
+      extmarks.create({ start: 2, end: 15, virtual: true })
+      textarea.focus()
+      textarea.editBuffer.setCursorByOffset(15)
+      currentMockInput.pressArrow("up")
+      expect(textarea.editBuffer.getCursorPosition().offset).toBe(0)
+    })
+
     // A selection skips the mark logic: the second Shift+Down or Shift+Up, which extends one, stops inside the mark.
     for (const [key, from] of [
       ["down", 3],
@@ -346,6 +358,19 @@ describe("ExtmarksController - Multi-width Graphemes", () => {
         expect(cursorEvents).toBe(1)
       })
     }
+
+    // A pasted joiner moves the virtual mark's start across the cursor: the paste leaves the cursor outside the mark,
+    // so the next character keeps it.
+    it("a pasted joiner leaves the cursor outside the virtual extmark it joins", async () => {
+      await setup("\u{1f468}\u{1f469}abc")
+      textarea.focus()
+      textarea.cursorOffset = 2
+      const id = extmarks.create({ start: 2, end: 7, virtual: true })
+      await currentMockInput.pasteBracketedText("‍")
+      expect([textarea.cursorOffset, extmarks.get(id)]).toMatchObject([0, { start: 0, end: 5 }])
+      await currentMockInput.typeText("x")
+      expect(extmarks.get(id)).toMatchObject({ start: 1, end: 6 })
+    })
 
     // Backspace over `x` joins the flag and leaves the cursor after it, past where the deletion started.
     it("Backspace that joins a flag removes the mark on the character it deletes", async () => {
