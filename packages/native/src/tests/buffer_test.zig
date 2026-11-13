@@ -1366,7 +1366,7 @@ test "OptimizedBuffer - pixel buffers at signed positions draw their visible par
 
 // Zig 0.17.0 casts a signed value to a narrower unsigned type, and narrows
 // `@max(value, 0)`, so that a value in the top half of that type is undefined
-// (ziglang/zig#37127). These positions reach the top half.
+// (ziglang/zig#37127, fixed in 0.17.1). These positions reach the top half.
 test "OptimizedBuffer - draws at far positions leave every cell unchanged" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
