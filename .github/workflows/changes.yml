@@ -32,6 +32,9 @@ on:
         description: true when the SSH package or something it builds against changed
         value: ${{ jobs.changes.outputs.ssh }}
 
+permissions:
+  contents: read
+
 jobs:
   changes:
     name: Changes
