@@ -371,10 +371,11 @@ Malformed input is a miss, not an error: `create` returns 0 and adds nothing whe
 type, style or priority is not a non-negative integer; `get`, `getMetadataFor`, `getAllForTypeId` and `delete` find
 nothing for an id or type that no extmark has.
 
-Left from a virtual extmark's end goes one unit before it, and Right from its start, or the unit before it, to its end;
-Backspace at its end and Delete at its start delete it whole; Up, Down, a pointer, the wheel and the `cursorOffset`
-setter leave the cursor at an edge. Of overlapping virtual extmarks the oldest counts first, and the cursor ends outside
-all of them. A styled extmark paints as one range highlight
+Each move steps over one virtual extmark: Left from its end goes one unit before it, or to its start when another one
+ends there, and Right from its start, or one cell before it, to its end. Backspace at its end and Delete at its start
+delete it whole; Up, Down, a pointer, the wheel and the `cursorOffset` setter leave the cursor at an edge. Of
+overlapping virtual extmarks the oldest counts first, and the cursor ends on a character's start outside all of them. A
+styled extmark paints as one range highlight
 after the buffer's own highlights and leaves them in place. Its priority must be in the highlight range `0..255`;
 otherwise `create` throws and keeps no extmark. An unstyled extmark keeps any priority.
 
