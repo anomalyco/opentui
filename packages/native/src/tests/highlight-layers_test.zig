@@ -573,6 +573,17 @@ test "layers: a run with a dead link rejects the set and returns the references 
     }));
     try testing.expectEqual(@as(u32, 2), try links.getRefcount(live));
     try expectRuns(&.{.{ 0, 10, 1 }}, runsOf(&layers, 1));
+    // A rejection that would have grown the layer leaves its storage too.
+    var many: [100]LayerRun = undefined;
+    for (&many, 0..) |*run, index| run.* = .{ .start_byte = @intCast(20 + index), .end_byte = @intCast(21 + index), .group_set = 1, .link_id = if (index == 99) dead else 0 };
+    const capacity = layers.items[0].runs.capacity;
+    try testing.expectError(error.InvalidId, layers.set(gpa, &links, 1, 20, 200, &many));
+    try testing.expectEqual(capacity, layers.items[0].runs.capacity);
+    // A split without memory gives back the reference it took for the second outside part.
+    var no_spare: std.ArrayListUnmanaged(LayerRun) = .empty;
+    var no_memory = std.testing.FailingAllocator.init(gpa, .{ .fail_index = 0 });
+    try testing.expectError(error.OutOfMemory, layers.setWithSpare(no_memory.allocator(), &links, 1, 2, 8, &.{}, &no_spare));
+    try testing.expectEqual(@as(u32, 2), try links.getRefcount(live));
     // The split keeps both outside parts, each holding a reference.
     _ = try layers.set(gpa, &links, 1, 2, 8, &.{});
     try testing.expectEqual(@as(u32, 3), try links.getRefcount(live));

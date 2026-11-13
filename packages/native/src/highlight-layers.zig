@@ -263,6 +263,19 @@ pub const Layers = struct {
         // read from the layer itself are rebuilt instead, since the splice would move them.
         const aliased = @intFromPtr(runs.ptr) < @intFromPtr(old.ptr + old.len) and @intFromPtr(old.ptr) < @intFromPtr(runs.ptr + runs.len);
         const in_place = spare == null and found.exists and !aliased;
+
+        // Take the new references, then storage, so a rejection changes nothing and a failure
+        // releases only what it took.
+        var acquired: usize = 0;
+        errdefer for (runs[0..acquired]) |run| if (run.link_id != 0) link_pool.decref(run.link_id) catch unreachable;
+        for (runs) |run| {
+            if (run.link_id != 0) link_pool.incref(run.link_id) catch return Error.InvalidId;
+            acquired += 1;
+        }
+        const split_link = if (split) old[first].link_id else 0;
+        if (split_link != 0) link_pool.incref(split_link) catch return Error.InvalidId;
+        errdefer if (split_link != 0) link_pool.decref(split_link) catch unreachable;
+
         var next: std.ArrayListUnmanaged(LayerRun) = .empty;
         errdefer next.deinit(allocator);
         if (in_place) {
@@ -278,15 +291,6 @@ pub const Layers = struct {
             };
             try next.ensureTotalCapacity(allocator, result_len);
         }
-
-        // Take the new references first, so a failure releases only what it took.
-        var acquired: usize = 0;
-        errdefer for (runs[0..acquired]) |run| if (run.link_id != 0) link_pool.decref(run.link_id) catch unreachable;
-        for (runs) |run| {
-            if (run.link_id != 0) link_pool.incref(run.link_id) catch return Error.InvalidId;
-            acquired += 1;
-        }
-        if (split and old[first].link_id != 0) link_pool.incref(old[first].link_id) catch return Error.InvalidId;
 
         // Runs wholly inside the range give their references back.
         for (old[first..last], first..) |run, index| {
