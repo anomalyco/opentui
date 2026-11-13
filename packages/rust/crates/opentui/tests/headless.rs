@@ -157,7 +157,7 @@ fn timers_fire_on_the_real_clock() {
 
 /// Where the timer that ends a run is armed: while a widget paints, from a task it defers while painting, from an
 /// animation such a task starts, from a timer callback, or from an animation that a hover handler starts once a
-/// frame's output is complete.
+/// frame's output is complete. `Quit` quits from a task the widget defers while painting instead.
 #[derive(Clone, Copy, Debug)]
 enum Arm {
     Paint,
@@ -165,6 +165,7 @@ enum Arm {
     Animate,
     Timer,
     Hover,
+    Quit,
 }
 
 /// Where an app runs: headless, on a remote terminal that never reads its output, on one whose first frame does not
@@ -211,6 +212,7 @@ impl Component for Arming {
                     false
                 })
             }),
+            Arm::Quit => self.app.defer(|cx| cx.quit()),
             Arm::Timer | Arm::Hover => {}
         }
         let cells = if self.noisy { 0..200 * 60 } else { 0..0 };
@@ -223,8 +225,8 @@ impl Component for Arming {
 #[test]
 fn timers_armed_while_painting_fire_on_time() {
     // Runs an app whose only wakeup after its first frame is the timer `arm` sets up, with an unrelated 60 s timer
-    // pending, and returns when the timer quit. A timer the loop misses waits for the next unrelated wakeup: the
-    // watchdog, or a remote terminal's 5 s capability window closing.
+    // pending, and returns when the timer quit (for `Quit`, when the run ended). A timer or quit the loop misses waits
+    // for the next unrelated wakeup: the watchdog, or a remote terminal's 5 s capability window closing.
     let late = |&(arm, host): &(Arm, Host)| {
         let run = move |terminal: Option<RemoteTerminal>| {
             let app = match terminal {
@@ -264,6 +266,9 @@ fn timers_armed_while_painting_fire_on_time() {
             }
             // The result is not checked: a blocked terminal times out restoring itself after the quit.
             let _ = app.run();
+            if let Arm::Quit = arm {
+                quit.set(Some(Instant::now()));
+            }
             quit.get()
         };
         let started = Instant::now();
@@ -295,7 +300,7 @@ fn timers_armed_while_painting_fire_on_time() {
     };
     let rows = [Host::Headless, Host::Remote]
         .into_iter()
-        .flat_map(|host| [Arm::Paint, Arm::Defer, Arm::Animate, Arm::Timer].map(|arm| (arm, host)))
+        .flat_map(|host| [Arm::Paint, Arm::Defer, Arm::Animate, Arm::Timer, Arm::Quit].map(|arm| (arm, host)))
         .chain([(Arm::Defer, Host::Blocked), (Arm::Hover, Host::Late)]);
     let late: Vec<_> = rows.filter(late).collect();
     assert!(late.is_empty(), "{late:?}");

@@ -186,8 +186,11 @@ impl App {
                 if now >= earliest {
                     self.headless_frame()?;
                     last_frame = Some(now);
-                    // The frame, and the tasks it deferred, can arm timers.
+                    // The frame, and the tasks it deferred, can arm timers or quit.
                     deadline = self.next_timer();
+                    if self.ends_turn() {
+                        continue;
+                    }
                 }
                 if self.wants_frame() {
                     let retry = last_frame.map_or(now, |last| last + interval).max(now);

@@ -1396,6 +1396,14 @@ impl App {
         self.0.timers.borrow().next_due()
     }
 
+    /// Whether the turn asked to quit, fail, suspend, or release the terminal, which the top of the event loop does.
+    fn ends_turn(&self) -> bool {
+        self.0.quit.get()
+            || self.0.suspend.get()
+            || self.0.release.borrow().is_some()
+            || self.0.error.borrow().is_some()
+    }
+
     fn wants_frame(&self) -> bool {
         self.0.dirty.get() || !self.0.animations.borrow().is_empty()
     }
@@ -1613,9 +1621,13 @@ impl App {
                     framed = true;
                 }
             }
-            // Tasks a frame deferred run now, so the deadline sees the timers and frames that it and they asked for.
+            // Tasks a frame deferred run now, so the deadline sees the timers and frames that it and they asked for, and
+            // the loop does not sleep on a quit they asked for.
             let wants = if framed {
                 self.drain_deferred();
+                if self.ends_turn() {
+                    continue;
+                }
                 self.wants_frame() || host.wants_frame()
             } else {
                 earliest.is_some()
