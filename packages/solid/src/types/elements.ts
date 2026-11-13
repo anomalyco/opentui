@@ -87,7 +87,7 @@ export type GetNonStyledProperties<TConstructor> =
           : TConstructor extends RenderableConstructor<CodeRenderable>
             ? NonStyledProps | "content" | "filetype" | "syntaxStyle" | "treeSitterClient"
             : TConstructor extends RenderableConstructor<MarkdownRenderable>
-              ? NonStyledProps | "content" | "syntaxStyle" | "treeSitterClient" | "conceal" | "renderNode"
+              ? NonStyledProps | "content" | "syntaxStyle" | "treeSitterClient" | "conceal" | "renderBlock"
               : TConstructor extends RenderableConstructor<ImageRenderable>
                 ? NonStyledProps | "source"
                 : TConstructor extends RenderableConstructor<VideoRenderable>

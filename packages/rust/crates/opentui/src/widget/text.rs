@@ -1,4 +1,4 @@
-use super::{Behavior, Content, Element, SelectionUpdate, build, handle};
+use super::{Behavior, Content, Element, LocalSelection, SelectionUpdate, build, handle};
 use crate::app::App;
 use crate::native::{NodeKind, SelectionColors, WrapMode};
 use crate::style::{Alignment, Attributes, Color};
@@ -12,6 +12,21 @@ pub(crate) struct TextInner {
     selection_colors: Cell<SelectionColors>,
     /// A hash of the content last set, so setting equal content again skips the native rebuild.
     content: Cell<Option<u64>>,
+    selection: Cell<Option<LocalSelection>>,
+}
+
+impl TextInner {
+    /// Applies the selection kept from the app, or clears the text's.
+    fn apply_selection(&self, start: bool) -> bool {
+        let colors = self.selection_colors.get();
+        self.element.apply(|node| match self.selection.get() {
+            Some(LocalSelection { anchor, focus, unit }) => {
+                node.select_text(anchor, focus, !start, unit, colors).map(drop)
+            }
+            None => node.clear_text_selection().map(drop),
+        });
+        self.element.query(|node| node.text_selection()).flatten().is_some()
+    }
 }
 
 impl Behavior for TextInner {
@@ -23,15 +38,9 @@ impl Behavior for TextInner {
         self.selectable.get()
     }
 
-    fn select(&self, selection: Option<&SelectionUpdate>) -> bool {
-        let Some(selection) = selection else {
-            self.element.apply(|node| node.clear_text_selection().map(drop));
-            return false;
-        };
-        let (anchor, focus) = selection.local(&self.element);
-        let colors = self.selection_colors.get();
-        self.element.apply(|node| node.select_text(anchor, focus, !selection.start, selection.unit, colors).map(drop));
-        self.element.query(|node| node.text_selection()).flatten().is_some()
+    fn select(&self, update: Option<&SelectionUpdate>) -> bool {
+        self.selection.set(update.map(|update| update.local_selection(&self.element)));
+        self.apply_selection(update.is_none_or(|update| update.start))
     }
 
     fn selected_text(&self) -> Option<String> {
@@ -62,6 +71,7 @@ impl Text {
             selectable: Cell::new(true),
             selection_colors: Cell::new(SelectionColors { fg: Some(theme.selection_fg), bg: Some(theme.selection_bg) }),
             content: Cell::new(None),
+            selection: Cell::new(None),
         }));
         text.0.element.update_text_options(|options| options.fg = theme.foreground);
         text.set_text(content)
@@ -75,14 +85,16 @@ impl Text {
             (&span.content, span.style, &span.link).hash(&mut hasher);
         }
         let hash = Some(hasher.finish());
-        if self.0.element.cached() && self.0.content.replace(hash) == hash {
-            return self.clone();
+        if !self.0.element.cached() || self.0.content.replace(hash) != hash {
+            if content.is_plain() {
+                self.0.element.apply(|node| node.set_text(content.plain_text()));
+            } else {
+                self.0.element.apply(|node| node.set_spans(&content.0));
+            }
         }
-        if content.is_plain() {
-            let plain = content.plain_text();
-            self.0.element.apply(|node| node.set_text(plain));
-        } else {
-            self.0.element.apply(|node| node.set_spans(&content.0));
+        // As in Core, the selection starts over at the same cells, even on equal text: the wrap mode may have changed.
+        if self.0.selection.get().is_some() {
+            self.0.apply_selection(true);
         }
         self.clone()
     }
@@ -198,7 +210,7 @@ mod tests {
         type Cells = &'static [(i32, i32, Option<u32>)];
         // Each case builds a text and renders it, optionally changes it without rendering, and checks cells:
         // (x, y, byte) after the change and, where given, after the next frame.
-        let cases: [(&str, Setup, Cells, Cells); 16] = [
+        let cases: [(&str, Setup, Cells, Cells); 17] = [
             ("painted", |app| (Text::new(app, "hello"), None), &[(0, 0, Some(0)), (4, 0, Some(4)), (5, 0, None)], &[]),
             ("hidden", |app| (Text::new(app, "hello"), Some(|text| drop(text.visible(false)))), &[], &[(0, 0, None)]),
             ("detached", |app| (Text::new(app, "hello"), Some(|text| text.detach())), &[], &[(0, 0, None)]),
@@ -252,6 +264,13 @@ mod tests {
                 "wide cut by width",
                 |app| (Text::new(app, "a\u{4e2d}").wrap(WrapMode::None).width(2), None),
                 &[(0, 0, Some(0)), (1, 0, None)],
+                &[],
+            ),
+            (
+                // Paint, wrap, and hits keep out of the padding.
+                "padded",
+                |app| (Text::new(app, "hello world").width(7).padding_x(1), None),
+                &[(0, 0, None), (1, 0, Some(0)), (1, 1, Some(6))],
                 &[],
             ),
             ("wide wider than the text", |app| (Text::new(app, "\u{4e2d}").width(1), None), &[(0, 0, None)], &[]),

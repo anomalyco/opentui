@@ -417,6 +417,17 @@ export class NativeScene {
     }
   }
 
+  /** @internal A Markdown document binds the text node after its staged writes. */
+  textNode(renderable: Renderable): SceneNodeHandle {
+    this.flushStaged()
+    return renderable._getSceneHandle(this)
+  }
+
+  /** @internal The byte of the text the latest finished frame drew at a cell, or undefined. */
+  textByteAt(renderable: Renderable, x: number, y: number): number | undefined {
+    return this.driver.renderLib.sceneGetTextByteAt(this.driver.context, this.textNode(renderable), x, y)
+  }
+
   /** @internal Text options commit together without exposing the node-owned buffer or view. */
   setTextOptions(renderable: Renderable, options: NativeSceneTextOptions): void {
     this.flushStaged()
@@ -617,7 +628,7 @@ export class NativeScene {
    * Native owns callback-time projections and composes accepted ancestor translations. */
   getLayout(
     node: { _getSceneHandle(owner: NativeScene): SceneNodeHandle },
-    rawYoga: boolean | "paint" = false,
+    rawYoga: boolean | "paint" | "content" = false,
   ): NativeSceneLayout {
     const handle = node._getSceneHandle(this)
     this.flushStaged()
@@ -802,9 +813,9 @@ export class NativeScene {
     if (frame) this.cancelAttempt(frame)
   }
 
-  hitTest(x: number, y: number): number {
+  hitTest(x: number, y: number, excluded = 0): number {
     this.assertAlive()
-    const id = this.driver.renderLib.sceneHitTest(this.driver.context, this.driver.session, x, y)
+    const id = this.driver.renderLib.sceneHitTest(this.driver.context, this.driver.session, x, y, excluded)
     const renderable = this.nodes.get(id)
     return renderable && !renderable.isDestroyed ? id : 0
   }

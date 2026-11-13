@@ -171,7 +171,7 @@ test "Scene node that flex shrink sizes to zero paints and hits no cell" {
         try f.owner.sceneMoveNode(node, f.root, @intCast(index));
     }
     try repaint(f.owner, f.id, frame_options.background, true, 0);
-    try testing.expectEqual(@as(f32, 0), (try f.owner.sceneGetPaintLayout(header)).height);
+    try testing.expectEqual(@as(f32, 0), (try f.owner.sceneGetPaintLayout(header, false)).height);
     try testing.expectEqual(@as(f32, 1), (try f.owner.sceneGetLayout(header, false)).height);
     try testing.expectEqual(@as(u32, ' '), f.cli.getNextBuffer().get(0, 0).?.char);
     const token = (try f.owner.raw().getRenderable(header)).scene_node.?.token;

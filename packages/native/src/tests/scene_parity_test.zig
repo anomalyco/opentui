@@ -921,7 +921,7 @@ const Harness = struct {
                     }
                     const requester = self.model.slotOf(reference, first.node).?;
                     // The hook reads its request's paint geometry after its own changes.
-                    const asked = try self.twins[candidate].owner.sceneGetPaintLayout(second.node);
+                    const asked = try self.twins[candidate].owner.sceneGetPaintLayout(second.node, false);
                     // A scroll in the reply paints at the new offset in the same frame.
                     if (first.kind == c.OT_SCENE_FRAME_SCROLL and self.random.boolean()) try self.apply(self.generateScroll(requester));
                     // A LAYOUT request from a reply arrives in the next frame.
@@ -959,7 +959,7 @@ const Harness = struct {
                             self.stats.reply_hides += 1;
                         }
                     };
-                    if (self.twins[candidate].owner.sceneGetPaintLayout(second.node)) |after| {
+                    if (self.twins[candidate].owner.sceneGetPaintLayout(second.node, false)) |after| {
                         try testing.expectEqualSlices(u8, std.mem.asBytes(&asked), std.mem.asBytes(&after));
                     } else |_| {}
                 },
@@ -1026,7 +1026,7 @@ const Harness = struct {
         try testing.expectEqual(self.model.slotOf(reference, first.node), self.model.slotOf(candidate, second.node));
         if (first.kind == c.OT_SCENE_FRAME_DONE or first.kind == c.OT_SCENE_FRAME_RECORD) return;
         // The geometry the request carries, culled nodes' too (B5d).
-        const painted = .{ try self.twins[reference].owner.sceneGetPaintLayout(first.node), try self.twins[candidate].owner.sceneGetPaintLayout(second.node) };
+        const painted = .{ try self.twins[reference].owner.sceneGetPaintLayout(first.node, false), try self.twins[candidate].owner.sceneGetPaintLayout(second.node, false) };
         try testing.expectEqualSlices(u8, std.mem.asBytes(&painted[0]), std.mem.asBytes(&painted[1]));
     }
 
@@ -1201,7 +1201,7 @@ const Harness = struct {
         // A committed image also presents its placeholder cells.
         if (self.twins[candidate].cli.currentImages.items.len == 0) try testing.expectEqual(drafted, cellHash(self.twins[candidate].cli.currentRenderBuffer));
         for (drafted_hits[0..cells], 0..) |hit, index| {
-            try testing.expectEqual(hit, draft.state.hitToken(draft.cli, @intCast(index % draft.cli.width), @intCast(index / draft.cli.width)));
+            try testing.expectEqual(hit, draft.state.hitToken(draft.cli, @intCast(index % draft.cli.width), @intCast(index / draft.cli.width), 0));
         }
         try self.expectSamePresentation();
         if (spec.force) self.decoder_synced = true;
@@ -1342,7 +1342,7 @@ const Harness = struct {
                 };
                 try testing.expectEqualSlices(u8, std.mem.asBytes(&first), std.mem.asBytes(&try layouts[1]));
             }
-            const painted = .{ try owners[0].owner.sceneGetPaintLayout(pair[0]), try owners[1].owner.sceneGetPaintLayout(pair[1]) };
+            const painted = .{ try owners[0].owner.sceneGetPaintLayout(pair[0], false), try owners[1].owner.sceneGetPaintLayout(pair[1], false) };
             try testing.expectEqualSlices(u8, std.mem.asBytes(&painted[0]), std.mem.asBytes(&painted[1]));
             // Resize baselines and prepared text views, including culled children's (B2 invariant 3).
             const nodes = .{ (try owners[0].owner.raw().getRenderable(pair[0])).scene_node.?, (try owners[1].owner.raw().getRenderable(pair[1])).scene_node.? };
@@ -1436,7 +1436,7 @@ const Harness = struct {
                 // A clear takes the candidate's counts where the reference's moves take them.
                 const other = (try self.twins[reference].owner.raw().getRenderable(pair[reference])).scene_node.?;
                 try testing.expectEqual(.{ other.skip.update_below, other.skip.filters_below, other.skip.scrolls_below, other.placement }, .{ node.skip.update_below, node.skip.filters_below, node.skip.scrolls_below, node.placement });
-                try testing.expectEqual(try self.twins[reference].owner.sceneGetPaintLayout(pair[reference]), try f.owner.sceneGetPaintLayout(pair[twin]));
+                try testing.expectEqual(try self.twins[reference].owner.sceneGetPaintLayout(pair[reference], false), try f.owner.sceneGetPaintLayout(pair[twin], false));
             }
             // The reader text is a scene node outside the tree.
             try testing.expectEqual(live + 1, f.state.count);

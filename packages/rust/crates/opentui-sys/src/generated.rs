@@ -5,7 +5,7 @@ use core::ffi::c_void;
 
 /// FNV-1a 64-bit hash of the `opentui.h` these declarations were generated from.
 /// The build script rejects native artifacts whose header has a different hash.
-pub const OPENTUI_HEADER_FNV1A64: u64 = 0x4f4ef3a9bdd19063;
+pub const OPENTUI_HEADER_FNV1A64: u64 = 0x4c2d4c8debd9d56c;
 
 pub type ot_status = i32;
 
@@ -199,6 +199,7 @@ pub const OT_MEASURE_AT_MOST: u32 = 2;
 pub const OT_LAYOUT_PUBLIC: u32 = 0;
 pub const OT_LAYOUT_YOGA: u32 = 1;
 pub const OT_LAYOUT_PAINT: u32 = 2;
+pub const OT_LAYOUT_CONTENT: u32 = 3;
 pub const OT_BORDER_NONE: u32 = 0;
 pub const OT_BORDER_LEFT: u32 = 1;
 pub const OT_BORDER_BOTTOM: u32 = 2;
@@ -450,12 +451,45 @@ pub const OT_EDIT_POSITION_PREV_CHAR: u32 = 8;
 pub const OT_EDITOR_STYLE_FOREGROUND: u32 = 1;
 pub const OT_EDITOR_STYLE_BACKGROUND: u32 = 2;
 pub const OT_EDITOR_STYLE_ATTRIBUTES: u32 = 4;
+pub const OT_EDITOR_STYLE_ATTRIBUTE_MASK: u32 = 8;
 pub const OT_EDIT_HIGHLIGHT_ADD_LINE: u32 = 0;
 pub const OT_EDIT_HIGHLIGHT_ADD_RANGE: u32 = 1;
 pub const OT_EDIT_HIGHLIGHT_REMOVE_REF: u32 = 2;
 pub const OT_EDIT_HIGHLIGHT_CLEAR_LINE: u32 = 3;
 pub const OT_EDIT_HIGHLIGHT_CLEAR_ALL: u32 = 4;
 pub const OT_STYLE_RUN_FLAG: u32 = 2147483648;
+pub const OT_GROUP_SET_NAME_COUNT_MAX: u32 = 16;
+pub const OT_GROUP_SET_NAME_BYTE_COUNT_MAX: u32 = 64;
+pub const OT_MD_CONCEAL: u32 = 1;
+pub const OT_MD_HYPERLINKS: u32 = 2;
+pub const OT_MD_MATH: u32 = 4;
+pub const OT_MD_HOOK: u32 = 8;
+pub const OT_MD_HOOK_FILTER_BYTE_COUNT_MAX: u32 = 256;
+pub const OT_MD_PARAGRAPH: u32 = 0;
+pub const OT_MD_HEADING: u32 = 1;
+pub const OT_MD_CODE: u32 = 2;
+pub const OT_MD_HTML: u32 = 3;
+pub const OT_MD_RULE: u32 = 4;
+pub const OT_MD_TABLE: u32 = 5;
+pub const OT_MD_TABLE_ROW: u32 = 6;
+pub const OT_MD_TABLE_CELL: u32 = 7;
+pub const OT_MD_QUOTE: u32 = 8;
+pub const OT_MD_LIST: u32 = 9;
+pub const OT_MD_ITEM: u32 = 10;
+pub const OT_MD_BLOCK_CLOSED: u32 = 1;
+pub const OT_MD_BLOCK_SETEXT: u32 = 2;
+pub const OT_MD_BLOCK_ORDERED: u32 = 4;
+pub const OT_MD_BLOCK_TIGHT: u32 = 8;
+pub const OT_MD_BLOCK_TASK: u32 = 16;
+pub const OT_MD_BLOCK_CHECKED: u32 = 32;
+pub const OT_MD_BLOCK_BLANK_AFTER: u32 = 64;
+pub const OT_MD_BLOCK_FENCED: u32 = 128;
+pub const OT_MD_BLOCK_HOOKED: u32 = 256;
+pub const OT_MD_BLOCK_MATH: u32 = 512;
+pub const OT_MD_BLOCK_HEADER: u32 = 1024;
+pub const OT_MD_BLOCK_OPEN: u32 = 2048;
+pub const OT_MD_SPAN_CODE: u32 = 1;
+pub const OT_MD_SPAN_MATH: u32 = 2;
 pub const OT_EDITOR_MOVE_UP: u32 = 0;
 pub const OT_EDITOR_MOVE_DOWN: u32 = 1;
 pub const OT_EDITOR_GOTO_LINE_END: u32 = 2;
@@ -2599,6 +2633,135 @@ const _: () = {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ot_highlight_run {
+    pub start_byte: u32,
+    pub end_byte: u32,
+    pub group_set: u32,
+}
+
+// SAFETY: the record has no padding and only integer or float fields.
+unsafe impl Pod for ot_highlight_run {}
+
+impl Default for ot_highlight_run {
+    fn default() -> Self {
+        // SAFETY: every field is an integer, a float, or an array or record of them; all-zero is valid.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<ot_highlight_run>() == 12);
+    assert!(core::mem::align_of::<ot_highlight_run>() == 4);
+    assert!(core::mem::offset_of!(ot_highlight_run, start_byte) == 0);
+    assert!(core::mem::offset_of!(ot_highlight_run, end_byte) == 4);
+    assert!(core::mem::offset_of!(ot_highlight_run, group_set) == 8);
+};
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ot_markdown_options {
+    pub struct_size: u32,
+    pub abi_version: u32,
+    pub flags: u32,
+    pub source_byte_limit: u32,
+    pub syntax_style: ot_handle,
+    pub hook_filter_byte_count: u32,
+    pub reserved: u32,
+    pub hook_filter: [u8; 256],
+}
+
+// SAFETY: the record has no padding and only integer or float fields.
+unsafe impl Pod for ot_markdown_options {}
+
+impl Default for ot_markdown_options {
+    fn default() -> Self {
+        // SAFETY: every field is an integer, a float, or an array or record of them; all-zero is valid.
+        let mut value: Self = unsafe { core::mem::zeroed() };
+        value.struct_size = core::mem::size_of::<Self>() as u32;
+        value.abi_version = OT_CONTEXT_ABI_VERSION;
+        value
+    }
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<ot_markdown_options>() == 296);
+    assert!(core::mem::align_of::<ot_markdown_options>() == 8);
+    assert!(core::mem::offset_of!(ot_markdown_options, struct_size) == 0);
+    assert!(core::mem::offset_of!(ot_markdown_options, abi_version) == 4);
+    assert!(core::mem::offset_of!(ot_markdown_options, flags) == 8);
+    assert!(core::mem::offset_of!(ot_markdown_options, source_byte_limit) == 12);
+    assert!(core::mem::offset_of!(ot_markdown_options, syntax_style) == 16);
+    assert!(core::mem::offset_of!(ot_markdown_options, hook_filter_byte_count) == 32);
+    assert!(core::mem::offset_of!(ot_markdown_options, reserved) == 36);
+    assert!(core::mem::offset_of!(ot_markdown_options, hook_filter) == 40);
+};
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ot_markdown_result {
+    pub changed_block_count: u32,
+    pub committed_top_level_count: u32,
+    pub removed_from_index: u32,
+}
+
+// SAFETY: the record has no padding and only integer or float fields.
+unsafe impl Pod for ot_markdown_result {}
+
+impl Default for ot_markdown_result {
+    fn default() -> Self {
+        // SAFETY: every field is an integer, a float, or an array or record of them; all-zero is valid.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<ot_markdown_result>() == 12);
+    assert!(core::mem::align_of::<ot_markdown_result>() == 4);
+    assert!(core::mem::offset_of!(ot_markdown_result, changed_block_count) == 0);
+    assert!(core::mem::offset_of!(ot_markdown_result, committed_top_level_count) == 4);
+    assert!(core::mem::offset_of!(ot_markdown_result, removed_from_index) == 8);
+};
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ot_markdown_block {
+    pub index: u32,
+    pub parent_index: u32,
+    pub kind: u16,
+    pub flags: u16,
+    pub source_start_byte: u32,
+    pub source_end_byte: u32,
+    pub info_start_byte: u32,
+    pub info_end_byte: u32,
+    pub number: u32,
+}
+
+// SAFETY: the record has no padding and only integer or float fields.
+unsafe impl Pod for ot_markdown_block {}
+
+impl Default for ot_markdown_block {
+    fn default() -> Self {
+        // SAFETY: every field is an integer, a float, or an array or record of them; all-zero is valid.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<ot_markdown_block>() == 32);
+    assert!(core::mem::align_of::<ot_markdown_block>() == 4);
+    assert!(core::mem::offset_of!(ot_markdown_block, index) == 0);
+    assert!(core::mem::offset_of!(ot_markdown_block, parent_index) == 4);
+    assert!(core::mem::offset_of!(ot_markdown_block, kind) == 8);
+    assert!(core::mem::offset_of!(ot_markdown_block, flags) == 10);
+    assert!(core::mem::offset_of!(ot_markdown_block, source_start_byte) == 12);
+    assert!(core::mem::offset_of!(ot_markdown_block, source_end_byte) == 16);
+    assert!(core::mem::offset_of!(ot_markdown_block, info_start_byte) == 20);
+    assert!(core::mem::offset_of!(ot_markdown_block, info_end_byte) == 24);
+    assert!(core::mem::offset_of!(ot_markdown_block, number) == 28);
+};
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ot_editor_viewport {
     pub struct_size: u32,
     pub abi_version: u32,
@@ -4310,6 +4473,7 @@ unsafe extern "C" {
     pub fn ot_scene_get_layout(context: *mut ot_context, node: *const ot_handle, observation: u32, out_layout: *mut ot_scene_layout) -> ot_status;
     pub fn ot_scene_paint(context: *mut ot_context, session: *const ot_handle, background: *const u16, use_mouse: u32, excluded_hit_num: u32, out_frame: *mut ot_scene_frame_request) -> ot_status;
     pub fn ot_scene_hit_test(context: *mut ot_context, session: *const ot_handle, x: i32, y: i32, out_num: *mut u32) -> ot_status;
+    pub fn ot_scene_hit_test_excluding(context: *mut ot_context, session: *const ot_handle, x: i32, y: i32, excluded_num: u32, out_num: *mut u32) -> ot_status;
     pub fn ot_scene_get_stats(context: *mut ot_context, session: *const ot_handle, out_stats: *mut ot_scene_stats) -> ot_status;
     pub fn ot_scene_set_debug_flags(context: *mut ot_context, session: *const ot_handle, flags: u32) -> ot_status;
     pub fn ot_scene_get_cursor_state(context: *mut ot_context, session: *const ot_handle, out_state: *mut ot_scene_cursor_state) -> ot_status;
@@ -4364,6 +4528,19 @@ unsafe extern "C" {
     pub fn ot_syntax_style_get_count(context: *mut ot_context, handle: *const ot_handle, out_count: *mut u32) -> ot_status;
     pub fn ot_edit_buffer_highlight(context: *mut ot_context, handle: *const ot_handle, operation: u32, argument: u32, highlight: *const ot_edit_highlight) -> ot_status;
     pub fn ot_edit_buffer_get_highlights(context: *mut ot_context, handle: *const ot_handle, line: u32, highlights: *mut ot_edit_highlight, capacity: u32, out_count: *mut u32) -> ot_status;
+    pub fn ot_context_group_set(context: *mut ot_context, names: *const u8, name_byte_count: u32, name_end_bytes: *const u32, name_count: u32, out_group_set: *mut u32) -> ot_status;
+    pub fn ot_edit_buffer_set_layer(context: *mut ot_context, handle: *const ot_handle, layer_id: u32, start_byte: u32, end_byte: u32, runs: *const ot_highlight_run, run_count: u32) -> ot_status;
+    pub fn ot_markdown_create(context: *mut ot_context, markdown_options: *const ot_markdown_options, out_doc: *mut ot_handle) -> ot_status;
+    pub fn ot_markdown_destroy(context: *mut ot_context, doc: *const ot_handle) -> ot_status;
+    pub fn ot_markdown_set_options(context: *mut ot_context, doc: *const ot_handle, markdown_options: *const ot_markdown_options, out: *mut ot_markdown_result) -> ot_status;
+    pub fn ot_markdown_append(context: *mut ot_context, doc: *const ot_handle, bytes: *const u8, byte_count: u32, out: *mut ot_markdown_result) -> ot_status;
+    pub fn ot_markdown_set(context: *mut ot_context, doc: *const ot_handle, bytes: *const u8, byte_count: u32, out: *mut ot_markdown_result) -> ot_status;
+    pub fn ot_markdown_finish(context: *mut ot_context, doc: *const ot_handle, out: *mut ot_markdown_result) -> ot_status;
+    pub fn ot_markdown_get_source(context: *mut ot_context, doc: *const ot_handle, out_bytes: *mut *const u8, out_byte_count: *mut u32) -> ot_status;
+    pub fn ot_markdown_read_changes(context: *mut ot_context, doc: *const ot_handle, blocks: *mut ot_markdown_block, block_capacity: u32, out_block_count: *mut u32) -> ot_status;
+    pub fn ot_markdown_read_source(context: *mut ot_context, doc: *const ot_handle, block_index: u32, bytes: *mut u8, byte_capacity: u32, out_byte_count: *mut u32) -> ot_status;
+    pub fn ot_markdown_read_leaf(context: *mut ot_context, doc: *const ot_handle, block_index: u32, bytes: *mut u8, byte_capacity: u32, out_byte_count: *mut u32, chunks: *mut ot_styled_text_chunk, spans: *mut u32, chunk_capacity: u32, out_chunk_count: *mut u32, urls: *mut u8, url_byte_capacity: u32, out_url_byte_count: *mut u32) -> ot_status;
+    pub fn ot_markdown_bind(context: *mut ot_context, doc: *const ot_handle, block_index: u32, text_node: *const ot_handle) -> ot_status;
     pub fn ot_editor_view_set_viewport(context: *mut ot_context, handle: *const ot_handle, editor_viewport: *const ot_editor_viewport, size_only: u32, move_cursor: u32) -> ot_status;
     pub fn ot_editor_view_get_viewport(context: *mut ot_context, handle: *const ot_handle, out_viewport: *mut ot_editor_viewport) -> ot_status;
     pub fn ot_editor_view_set_scroll_margin(context: *mut ot_context, handle: *const ot_handle, margin: f32) -> ot_status;

@@ -314,6 +314,8 @@ pub const Layout = struct {
     height: f32 = 0,
     screenX: f64 = 0,
     screenY: f64 = 0,
+    // A text node's view: its offset from the box (x, y) and its size (width, height).
+    content: [4]f32 = @splat(0),
 };
 
 pub const Paint = struct {
@@ -722,15 +724,21 @@ pub const PaintSlot = struct {
 };
 
 /// A painted member's rect within its clip, in screen cells.
-pub const Hit = struct { x: u32, y: u32, width: u32, height: u32, token: u32 };
+pub const Hit = struct { x: u32, y: u32, width: u32, height: u32, token: u32, num: u32 = 0 };
 
 /// The index of the last hit in paint order that covers a cell: what a grid that every
 /// member overwrote in paint order would hold there.
 pub fn topmostHit(hits: []const Hit, x: u32, y: u32) ?usize {
+    return topmostHitExcept(hits, x, y, 0);
+}
+
+/// The same, as if the node with public number `excluded` (zero: none) painted no hits.
+pub fn topmostHitExcept(hits: []const Hit, x: u32, y: u32, excluded: u32) ?usize {
     var index = hits.len;
     while (index != 0) {
         index -= 1;
         const hit = hits[index];
+        if (excluded != 0 and hit.num == excluded) continue;
         if (x >= hit.x and y >= hit.y and x - hit.x < hit.width and y - hit.y < hit.height) return index;
     }
     return null;
@@ -2517,12 +2525,12 @@ pub const Scene = struct {
     }
 
     /// The token of the topmost presented hit rectangle at a cell, or 0.
-    pub fn hitToken(self: *Scene, cli: *const renderer.CliRenderer, x: u32, y: u32) u32 {
+    pub fn hitToken(self: *Scene, cli: *const renderer.CliRenderer, x: u32, y: u32, excluded: u32) u32 {
         self.settleHits(cli);
         // Every hit lies inside the screen.
         if (x >= cli.width or y >= cli.height or self.presented_hits_frame != cli.presented_hits_frame) return 0;
         const hits = self.presented_hits.items;
-        const index = topmostHit(hits, x, y);
+        const index = topmostHitExcept(hits, x, y, excluded);
         if (builtin.is_test) self.test_hit_steps += hits.len - (index orelse 0);
         return if (index) |found| hits[found].token else 0;
     }
@@ -2531,7 +2539,7 @@ pub const Scene = struct {
     /// A node no frame has prepared has no cells and draws nothing.
     pub fn paintBody(self: *const Scene, objects: *const handles.Table, target: *buffer.OptimizedBuffer, value: *const native.NativeRenderable, x: i32, y: i32) !void {
         const node = value.scene_node.?;
-        var layout = try getPaintLayout(value);
+        var layout = try getPaintLayout(value, false);
         // At its own cell a body keeps the fractional position, so slider thumbs land where paintNode puts them.
         if (x != @as(i32, @intFromFloat(layout.screenX)) or y != @as(i32, @intFromFloat(layout.screenY))) {
             layout.screenX = @floatFromInt(x);
@@ -2666,7 +2674,7 @@ pub const Scene = struct {
         return value.scene_node;
     }
 
-    /// Where the latest finished frame painted a member: its top-left cell and the cells it could draw. Null when
+    /// Where the latest finished frame painted a member: its content's top-left cell and the cells it could draw. Null when
     /// that frame did not paint it.
     pub fn paintedArea(self: *const Scene, node: *const Node) ?struct { x: i64, y: i64, clip: buffer.ClipRect, frame: u64 } {
         if (self.finished_frame == 0) return null;
@@ -2677,11 +2685,8 @@ pub const Scene = struct {
             self.recordOf(node, self.presented_records_frame, self.presented_records.items)
         else
             null) orelse return null;
-        const cells = cellLayout(found.inputs.layout);
-        const x: i32 = @intFromFloat(cells.screenX);
-        const y: i32 = @intFromFloat(cells.screenY);
-        const clip = intersection(.{ .x = x, .y = y, .width = @intFromFloat(cells.width), .height = @intFromFloat(cells.height) }, found.inputs.clip);
-        return .{ .x = x, .y = y, .clip = clip, .frame = self.finished_frame };
+        const content = cellClip(contentLayout(found.inputs.layout));
+        return .{ .x = content.x, .y = content.y, .clip = intersection(content, found.inputs.clip), .frame = self.finished_frame };
     }
 
     fn recordOf(_: *const Scene, node: *const Node, frame: u64, records: []const Record) ?Record {
@@ -2972,7 +2977,7 @@ pub const Scene = struct {
         };
         if (!options.use_mouse or node.num == options.excluded_hit_num) return;
         // The clip lies inside the screen, so hit coordinates are never negative.
-        if (painted.width != 0 and painted.height != 0) self.hits.appendAssumeCapacity(.{ .x = @intCast(painted.x), .y = @intCast(painted.y), .width = painted.width, .height = painted.height, .token = node.token });
+        if (painted.width != 0 and painted.height != 0) self.hits.appendAssumeCapacity(.{ .x = @intCast(painted.x), .y = @intCast(painted.y), .width = painted.width, .height = painted.height, .token = node.token, .num = node.num });
     }
 
     /// One member's phases and body inside a scissor. A member on several bands prepares its
@@ -3044,9 +3049,10 @@ pub const Scene = struct {
         const height: u32 = @intFromFloat(cells.height);
         try self.prepareMember(entry);
         if (node.text) |text| {
-            const hit = intersection(.{ .x = x, .y = y, .width = width, .height = height }, entry.clip);
+            const content = cellClip(contentLayout(entry.layout));
+            const hit = intersection(content, entry.clip);
             if (hit.width != 0 and hit.height != 0) {
-                try target.drawTextBufferChecked(text.view, x, y);
+                try target.drawTextBufferChecked(text.view, content.x, content.y);
                 // Fully transparent text draws no glyph. A redraw of the same mapping keeps the frame it was
                 // first drawn in, which a failed attempt's redraw must not move.
                 const painted = if (entry.opacity > 0) text.mapping() else null;
@@ -3118,7 +3124,7 @@ pub const Scene = struct {
         for (0..2) |axis| {
             if (!state.visible[axis]) continue;
             const hit = intersection(cellClip(state.barRects(axis, box, node.paint.borderSides).bar), entry.clip);
-            if (hit.width != 0 and hit.height != 0) self.hits.appendAssumeCapacity(.{ .x = @intCast(hit.x), .y = @intCast(hit.y), .width = hit.width, .height = hit.height, .token = node.token });
+            if (hit.width != 0 and hit.height != 0) self.hits.appendAssumeCapacity(.{ .x = @intCast(hit.x), .y = @intCast(hit.y), .width = hit.width, .height = hit.height, .token = node.token, .num = node.num });
         }
     }
 
@@ -3415,17 +3421,8 @@ pub const Scene = struct {
                 }
                 var layout = node.layout;
                 if (refresh_layout) {
-                    var computed: yoga.ExternalYogaLayout = undefined;
                     self.frame_work.geometry_reads += 1;
-                    try yoga.check(yoga.yogaNodeGetComputedLayoutChecked(value.yoga_node, &computed));
-                    layout = .{
-                        .left = computed.left,
-                        .top = computed.top,
-                        .right = computed.right,
-                        .bottom = computed.bottom,
-                        .width = computed.width,
-                        .height = computed.height,
-                    };
+                    layout = try localLayout(value, .solved);
                 } else if (mode == .paint) {
                     // Final paint follows settled preparation, but transforms remain live.
                     std.debug.assert(node.prepared_gen == self.candidates_gen);
@@ -3612,7 +3609,7 @@ fn sameBox(a: Layout, b: Layout) bool {
     inline for (.{ "left", "top", "right", "bottom", "width", "height" }) |name| {
         if (@as(u32, @bitCast(@field(a, name))) != @as(u32, @bitCast(@field(b, name)))) return false;
     }
-    return true;
+    return std.mem.eql(u8, std.mem.asBytes(&a.content), std.mem.asBytes(&b.content));
 }
 
 /// Public geometry keeps at least one cell per dimension; paint geometry keeps Yoga's zero. Culling
@@ -3663,19 +3660,21 @@ pub fn getLayout(value: *const native.NativeRenderable) !Layout {
 /// Where the latest paint list painted the node, or where this frame's preparation placed it.
 /// The walks prepare a culled subtree only where it shows, so a node the list did not paint
 /// reads its solved geometry again; while a host request is pending, the first read holds, so
-/// a hook reads its request's geometry after its own changes.
-pub fn getPaintLayout(value: *const native.NativeRenderable) !Layout {
+/// a hook reads its request's geometry after its own changes. `content` cuts a text's view
+/// out of the box before the box is clamped to cells, as paint does.
+pub fn getPaintLayout(value: *const native.NativeRenderable, content: bool) !Layout {
     const node = value.scene_node.?;
     const owner = node.owner;
-    if (node.painted_gen == owner.members_gen) return cellLayout(node.layout);
     const pending = if (owner.attempt) |active| active.pending != null else false;
-    if (pending and node.read_request == owner.last_request) return cellLayout(node.layout);
-    const layout = try composedLayout(value, .solved);
-    if (pending) {
-        node.layout = layout;
-        node.read_request = owner.last_request;
-    }
-    return cellLayout(layout);
+    const layout = if (node.painted_gen == owner.members_gen or (pending and node.read_request == owner.last_request)) node.layout else solved: {
+        const solved = try composedLayout(value, .solved);
+        if (pending) {
+            node.layout = solved;
+            node.read_request = owner.last_request;
+        }
+        break :solved solved;
+    };
+    return cellLayout(if (content and node.text != null) contentLayout(layout) else layout);
 }
 
 /// Composes a node's local geometry through its ancestors: the observed, prepared, or solved
@@ -3726,7 +3725,32 @@ fn localLayout(value: *const native.NativeRenderable, comptime source: anytype) 
     if (source == .prepared) return node.layout;
     var computed: yoga.ExternalYogaLayout = undefined;
     try yoga.check(yoga.yogaNodeGetComputedLayoutChecked(value.yoga_node, &computed));
-    return .{ .left = computed.left, .top = computed.top, .right = computed.right, .bottom = computed.bottom, .width = computed.width, .height = computed.height };
+    var layout: Layout = .{ .left = computed.left, .top = computed.top, .right = computed.right, .bottom = computed.bottom, .width = computed.width, .height = computed.height };
+    // Only text nodes paint inside their padding; boxes place children there. Yoga rounds the
+    // content box's edges as it rounds the node's own, so without padding the view is the box.
+    if (node.text != null) {
+        var box: [4]f32 = undefined;
+        try yoga.check(yoga.yogaNodeGetContentBoxChecked(value.yoga_node, &box));
+        layout.content = .{ box[0], box[1], @max(0, box[2]), @max(0, box[3]) };
+    }
+    return layout;
+}
+
+/// The rect a text node's view fills.
+pub fn contentLayout(layout: Layout) Layout {
+    var content = layout;
+    content.screenX += layout.content[0];
+    content.screenY += layout.content[1];
+    content.width = layout.content[2];
+    content.height = layout.content[3];
+    return content;
+}
+
+/// Where a text node's content starts, in cells from the node's own cell.
+pub fn contentOffset(layout: Layout) [2]i32 {
+    const box = cellClip(layout);
+    const content = cellClip(contentLayout(layout));
+    return .{ content.x - box.x, content.y - box.y };
 }
 
 /// Where a parent's children compose from: its screen position, plus a scroll node's viewport
@@ -3779,9 +3803,10 @@ fn prepareView(work: *renderer.FrameWork, node: *Node, layout: Layout) !void {
         return;
     }
     const text = node.text orelse return;
+    const content = contentLayout(layout);
     var viewport: text_buffer_view.Viewport = text.view.getViewport() orelse text.initial_viewport orelse .{ .x = 0, .y = 0, .width = 0, .height = 0 };
-    viewport.width = cellSize(layout.width);
-    viewport.height = cellSize(layout.height);
+    viewport.width = cellSize(content.width);
+    viewport.height = cellSize(content.height);
     text.view.setViewport(viewport);
     try text.prepareView();
     text.initial_viewport = null;
@@ -3791,7 +3816,8 @@ fn prepareView(work: *renderer.FrameWork, node: *Node, layout: Layout) !void {
 fn viewNeedsPrepare(node: *const Node, layout: Layout) bool {
     const view = if (node.kind == api.OT_SCENE_TEXT_VIEW) (node.control.text_view.view orelse return false).view else (node.text orelse return false).view;
     const viewport = view.getViewport() orelse return true;
-    return viewport.width != cellSize(layout.width) or viewport.height != cellSize(layout.height) or view.needsPrepare();
+    const content = if (node.text != null) contentLayout(layout) else layout;
+    return viewport.width != cellSize(content.width) or viewport.height != cellSize(content.height) or view.needsPrepare();
 }
 
 /// Whether a culling parent whose children compose from `origin` selects the child.
@@ -3857,7 +3883,7 @@ fn sortChildren(node: *Node) bool {
 /// culling node that moved left its own and its subtree's positions and clips behind, which only
 /// paint layout reads, again (getPaintLayout); a scroll node's stay exact for its report.
 fn sameEntries(first: []const Work, second: []const Work, comptime kept: bool) bool {
-    comptime std.debug.assert(@sizeOf(Layout) == 6 * @sizeOf(f32) + 2 * @sizeOf(f64));
+    comptime std.debug.assert(@sizeOf(Layout) == 10 * @sizeOf(f32) + 2 * @sizeOf(f64));
     if (first.len != second.len) return false;
     for (first, second) |a, b| {
         var rest = [2]Work{ a, b };

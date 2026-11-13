@@ -489,7 +489,7 @@ describe("Textarea - Scroll Tests", () => {
   describe("Mouse Wheel Horizontal Scrolling", () => {
     it("should scroll horizontally with wheel when wrapping is disabled", async () => {
       const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
-        initialValue: "A".repeat(200),
+        initialValue: "A".repeat(200) + "\nx",
         width: 20,
         height: 5,
         wrapMode: "none",

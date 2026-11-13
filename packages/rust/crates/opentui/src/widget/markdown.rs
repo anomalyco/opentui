@@ -4,406 +4,19 @@ use super::{
 };
 use crate::app::App;
 use crate::layout::{Edge, Gutter, LayoutProperty};
-use crate::native::{NodeKind, WrapMode};
-#[cfg(test)]
-use crate::style::Attributes;
-use crate::style::{Alignment, BorderStyle, Color, Sides, Span, Style};
+use crate::native::{
+    MarkdownBlock, MarkdownDoc, MarkdownLeaf, MarkdownOptions, MarkdownResult, NodeKind, SyntaxStyle, WrapMode,
+};
+use crate::style::{Attributes, BorderStyle, Color, Sides, Span, Style};
 use crate::syntax::{SyntaxTheme, filetype_for_info_string};
+use crate::sys;
 use crate::theme::Theme;
 use std::cell::{Cell, RefCell};
+use std::fmt::Write as _;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
-
-/// A block of Markdown. Lists and quotes hold blocks of their own.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Block {
-    Heading(u8, String),
-    /// Inline text, with the source's line breaks.
-    Paragraph(String),
-    List(List),
-    Quote(Vec<Block>),
-    /// A code block's info string, if any, its code, and whether its fence is closed.
-    Code(Option<String>, String, bool),
-    Table(Table),
-    Rule,
-}
-
-impl Block {
-    /// Whether this block, or one inside it, matches.
-    fn any(&self, matches: &impl Fn(&Block) -> bool) -> bool {
-        matches(self)
-            || match self {
-                Block::List(list) => list.items.iter().flat_map(|item| &item.blocks).any(|block| block.any(matches)),
-                Block::Quote(blocks) => blocks.iter().any(|block| block.any(matches)),
-                _ => false,
-            }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct List {
-    /// The first number of an ordered list.
-    start: Option<u64>,
-    /// No blank lines between or inside items: items sit without gaps.
-    tight: bool,
-    items: Vec<Item>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Item {
-    /// A task item's checkbox: checked or not.
-    task: Option<bool>,
-    blocks: Vec<Block>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Table {
-    alignments: Vec<Alignment>,
-    header: Vec<String>,
-    rows: Vec<Vec<String>>,
-}
-
-/// The whitespace of block structure. CommonMark treats other spaces, such as U+00A0, as text.
-const SPACE: [char; 2] = [' ', '\t'];
-
-/// Spaces of indentation, counting a tab as four.
-fn indentation(line: &str) -> usize {
-    line.chars().take_while(|c| *c == ' ' || *c == '\t').map(|c| if c == '\t' { 4 } else { 1 }).sum()
-}
-
-/// Removes up to `columns` columns of indentation.
-fn dedent(line: &str, columns: usize) -> &str {
-    let mut removed = 0;
-    for (index, character) in line.char_indices() {
-        if removed >= columns {
-            return &line[index..];
-        }
-        match character {
-            ' ' => removed += 1,
-            '\t' => removed += 4,
-            _ => return &line[index..],
-        }
-    }
-    ""
-}
-
-fn is_blank(line: &str) -> bool {
-    line.trim_matches(SPACE).is_empty()
-}
-
-/// An opening code fence: its character, length, and info string.
-fn fence(line: &str) -> Option<(char, usize, &str)> {
-    if indentation(line) > 3 {
-        return None;
-    }
-    let trimmed = line.trim_start_matches(SPACE);
-    let character = trimmed.chars().next().filter(|c| *c == '`' || *c == '~')?;
-    let length = trimmed.chars().take_while(|c| *c == character).count();
-    let info = trimmed[length..].trim_matches(SPACE);
-    (length >= 3 && !(character == '`' && info.contains('`'))).then_some((character, length, info))
-}
-
-fn heading(line: &str) -> Option<(u8, String)> {
-    if indentation(line) > 3 {
-        return None;
-    }
-    let trimmed = line.trim_start_matches(SPACE);
-    let level = trimmed.bytes().take_while(|byte| *byte == b'#').count();
-    let rest = &trimmed[level..];
-    if !(1..=6).contains(&level) || !(rest.is_empty() || rest.starts_with(SPACE)) {
-        return None;
-    }
-    let text = rest.trim_matches(SPACE);
-    // A closing run of #s goes, unless it is the whole text or glued to it.
-    let text = match text.trim_end_matches('#') {
-        stripped if stripped.is_empty() || stripped.ends_with(SPACE) => stripped.trim_end_matches(SPACE),
-        _ => text,
-    };
-    Some((level as u8, text.to_owned()))
-}
-
-fn is_rule(line: &str) -> bool {
-    let mut marks = line.chars().filter(|c| !SPACE.contains(c));
-    let Some(mark @ ('-' | '*' | '_')) = marks.next() else { return false };
-    indentation(line) <= 3 && marks.try_fold(1, |count, c| (c == mark).then_some(count + 1)).is_some_and(|n| n >= 3)
-}
-
-/// A list item's start: whether it is ordered and its number, its delimiter, the column its content starts at, and
-/// the content.
-fn list_marker(line: &str) -> Option<(Option<u64>, char, usize, &str)> {
-    let indent = indentation(line);
-    if indent > 3 {
-        return None;
-    }
-    let trimmed = line.trim_start_matches(SPACE);
-    let (number, delimiter, marker_width) = match trimmed.chars().next()? {
-        marker @ ('-' | '*' | '+') => (None, marker, 1),
-        _ => {
-            let digits = trimmed.bytes().take_while(u8::is_ascii_digit).count();
-            let delimiter = trimmed[digits..].chars().next().filter(|c| *c == '.' || *c == ')')?;
-            if !(1..=9).contains(&digits) {
-                return None;
-            }
-            (Some(trimmed[..digits].parse::<u64>().ok()?), delimiter, digits + 1)
-        }
-    };
-    let rest = &trimmed[marker_width..];
-    if rest.is_empty() {
-        return Some((number, delimiter, indent + marker_width + 1, ""));
-    }
-    let spaces = indentation(rest);
-    if spaces == 0 {
-        return None;
-    }
-    // Five or more spaces start indented code inside the item: the content starts one space in.
-    let spaces = if spaces > 4 { 1 } else { spaces };
-    Some((number, delimiter, indent + marker_width + spaces, dedent(rest, spaces)))
-}
-
-/// Splits a table row into cells at unescaped pipes, without the outer pipes.
-fn cells(line: &str) -> Vec<String> {
-    let line = line.trim_matches(SPACE);
-    let line = line.strip_prefix('|').unwrap_or(line);
-    let line = if line.ends_with('|') && !line.ends_with("\\|") { &line[..line.len() - 1] } else { line };
-    let mut cells = vec![String::new()];
-    let mut characters = line.chars().peekable();
-    while let Some(character) = characters.next() {
-        match character {
-            '\\' if characters.peek() == Some(&'|') => {
-                cells.last_mut().expect("cells is never empty").push('|');
-                characters.next();
-            }
-            '|' => cells.push(String::new()),
-            _ => cells.last_mut().expect("cells is never empty").push(character),
-        }
-    }
-    cells.into_iter().map(|cell| cell.trim_matches(SPACE).to_owned()).collect()
-}
-
-/// A table's delimiter row, such as `| :--- | ---: |`, as alignments.
-fn delimiter_row(line: &str) -> Option<Vec<Alignment>> {
-    if !line.contains('-') || !line.contains(['|', ':']) && !line.trim_start_matches(SPACE).starts_with('-') {
-        return None;
-    }
-    cells(line)
-        .iter()
-        .map(|cell| {
-            let dashes = cell.trim_matches(':');
-            (!dashes.is_empty() && dashes.bytes().all(|byte| byte == b'-')).then(|| {
-                match (cell.starts_with(':'), cell.ends_with(':')) {
-                    (true, true) => Alignment::Center,
-                    (false, true) => Alignment::Right,
-                    _ => Alignment::Left,
-                }
-            })
-        })
-        .collect()
-}
-
-/// Whether a line starts a block that interrupts a paragraph.
-fn interrupts(line: &str) -> bool {
-    fence(line).is_some()
-        || heading(line).is_some()
-        || is_rule(line)
-        || line.trim_start_matches(SPACE).starts_with('>')
-        || list_marker(line).is_some_and(|(number, _, _, content)| !content.is_empty() && number.is_none_or(|n| n == 1))
-}
-
-#[cfg(test)]
-fn blocks(markdown: &str) -> Vec<Block> {
-    document(markdown, 0).into_iter().map(|(_, block)| block).collect()
-}
-
-/// Parses Markdown blocks: ATX and setext headings, paragraphs with hard breaks, nested bullet, numbered, and task
-/// lists, block quotes, fenced and indented code, GFM tables, and thematic breaks. It parses the source from byte
-/// `from`, which starts a line, and returns the top-level blocks with the byte offsets they start at.
-fn document(markdown: &str, from: usize) -> Vec<(usize, Block)> {
-    let mut starts = Vec::new();
-    let mut lines = Vec::new();
-    let mut offset = from;
-    for line in markdown[from..].split_inclusive('\n') {
-        starts.push(offset);
-        offset += line.len();
-        let line = line.strip_suffix('\n').unwrap_or(line);
-        lines.push(line.strip_suffix('\r').unwrap_or(line));
-    }
-    parse_lines(&lines).into_iter().map(|(line, block)| (starts[line], block)).collect()
-}
-
-fn parse(lines: &[&str]) -> Vec<Block> {
-    parse_lines(lines).into_iter().map(|(_, block)| block).collect()
-}
-
-/// Parses blocks and the index of the line each starts at.
-fn parse_lines(lines: &[&str]) -> Vec<(usize, Block)> {
-    let mut blocks = Vec::new();
-    let mut paragraph: Vec<&str> = Vec::new();
-    // Inline parsing reads a trailing backslash as a hard break; trailing spaces break the line anyway.
-    let flush = |paragraph: &mut Vec<&str>, blocks: &mut Vec<(usize, Block)>, index: usize| {
-        if paragraph.is_empty() {
-            return;
-        }
-        let text = paragraph.iter().map(|line| line.trim_matches(SPACE)).collect::<Vec<_>>().join("\n");
-        blocks.push((index - paragraph.len(), Block::Paragraph(text)));
-        paragraph.clear();
-    };
-    let mut index = 0;
-    while index < lines.len() {
-        let line = lines[index];
-        let first = index;
-        if is_blank(line) {
-            flush(&mut paragraph, &mut blocks, index);
-            index += 1;
-        } else if let Some((character, length, info)) = fence(line) {
-            flush(&mut paragraph, &mut blocks, index);
-            let indent = indentation(line);
-            let mut code = Vec::new();
-            index += 1;
-            // An unclosed fence runs to the end, as streamed text does until its fence arrives.
-            let mut closed = false;
-            while let Some(line) = lines.get(index) {
-                index += 1;
-                if fence(line).is_some_and(|(c, l, info)| c == character && l >= length && info.is_empty()) {
-                    closed = true;
-                    break;
-                }
-                code.push(dedent(line, indent));
-            }
-            let info = (!info.is_empty()).then(|| info.to_owned());
-            blocks.push((first, Block::Code(info, code.join("\n"), closed)));
-        } else if indentation(line) >= 4 && paragraph.is_empty() {
-            let mut code = Vec::new();
-            while let Some(line) = lines.get(index).filter(|line| is_blank(line) || indentation(line) >= 4) {
-                code.push(dedent(line, 4));
-                index += 1;
-            }
-            while code.last().is_some_and(|line| is_blank(line)) {
-                code.pop();
-            }
-            blocks.push((first, Block::Code(None, code.join("\n"), true)));
-        } else if let Some((level, text)) = heading(line) {
-            flush(&mut paragraph, &mut blocks, index);
-            blocks.push((first, Block::Heading(level, text)));
-            index += 1;
-        } else if !paragraph.is_empty() && indentation(line) <= 3 && {
-            let marks = line.trim_matches(SPACE);
-            !marks.is_empty() && (marks.bytes().all(|byte| byte == b'=') || marks.bytes().all(|byte| byte == b'-'))
-        } {
-            // A setext underline turns the paragraph above into a heading.
-            let level = if line.trim_start_matches(SPACE).starts_with('=') { 1 } else { 2 };
-            let text = paragraph.iter().map(|line| line.trim_matches(SPACE)).collect::<Vec<_>>().join(" ");
-            blocks.push((index - paragraph.len(), Block::Heading(level, text)));
-            paragraph.clear();
-            index += 1;
-        } else if is_rule(line) {
-            flush(&mut paragraph, &mut blocks, index);
-            blocks.push((first, Block::Rule));
-            index += 1;
-        } else if line.trim_start_matches(SPACE).starts_with('>') && indentation(line) <= 3 {
-            flush(&mut paragraph, &mut blocks, index);
-            let mut quoted = Vec::new();
-            while let Some(line) = lines.get(index) {
-                let trimmed = line.trim_start_matches(SPACE);
-                if let Some(rest) = trimmed.strip_prefix('>').filter(|_| indentation(line) <= 3) {
-                    quoted.push(rest.strip_prefix(' ').unwrap_or(rest));
-                } else if !is_blank(line) && quoted.last().is_some_and(|last| !is_blank(last)) && !interrupts(line) {
-                    // A lazy continuation of the quoted paragraph.
-                    quoted.push(line);
-                } else {
-                    break;
-                }
-                index += 1;
-            }
-            blocks.push((first, Block::Quote(parse(&quoted))));
-        } else if let Some((start, delimiter, _, content)) = list_marker(line).filter(|(number, _, _, content)| {
-            paragraph.is_empty() || !content.is_empty() && number.is_none_or(|n| n == 1)
-        }) {
-            flush(&mut paragraph, &mut blocks, index);
-            let _ = content;
-            let mut list = List { start, tight: true, items: Vec::new() };
-            let mut blank_between = false;
-            // A line that could be an item or a thematic break is a break.
-            while let Some((number, item_delimiter, width, content)) =
-                lines.get(index).filter(|l| !is_rule(l)).and_then(|l| list_marker(l))
-            {
-                if item_delimiter != delimiter || number.is_some() != start.is_some() {
-                    break;
-                }
-                if blank_between {
-                    list.tight = false;
-                }
-                let mut item_lines = vec![content];
-                index += 1;
-                while let Some(line) = lines.get(index) {
-                    if is_blank(line) {
-                        item_lines.push("");
-                    } else if indentation(line) >= width {
-                        item_lines.push(dedent(line, width));
-                    } else if item_lines.last().is_some_and(|last| !is_blank(last))
-                        && !interrupts(line)
-                        && list_marker(line).is_none()
-                    {
-                        // A lazy continuation of the item's paragraph.
-                        item_lines.push(line.trim_start_matches(SPACE));
-                    } else {
-                        break;
-                    }
-                    index += 1;
-                }
-                // Blank lines at the end separate this item from the next.
-                blank_between = item_lines.last().is_some_and(|last| is_blank(last));
-                while item_lines.last().is_some_and(|last| is_blank(last)) {
-                    item_lines.pop();
-                }
-                let item_blocks = parse(&item_lines);
-                if item_blocks.len() > 1 && item_lines.iter().any(|line| is_blank(line)) {
-                    list.tight = false;
-                }
-                let (task, item_blocks) = task(item_blocks);
-                list.items.push(Item { task, blocks: item_blocks });
-                if lines.get(index).is_some_and(|line| is_blank(line)) {
-                    break;
-                }
-            }
-            blocks.push((first, Block::List(list)));
-        } else if paragraph.is_empty()
-            && line.contains('|')
-            && let Some(alignments) = lines.get(index + 1).and_then(|next| delimiter_row(next))
-            && cells(line).len() == alignments.len()
-        {
-            let header = cells(line);
-            let width = header.len();
-            index += 2;
-            let mut rows = Vec::new();
-            while let Some(line) = lines.get(index).filter(|line| !is_blank(line) && !interrupts(line)) {
-                let mut row = cells(line);
-                row.resize(width, String::new());
-                rows.push(row);
-                index += 1;
-            }
-            blocks.push((first, Block::Table(Table { alignments, header, rows })));
-        } else {
-            paragraph.push(line);
-            index += 1;
-        }
-    }
-    flush(&mut paragraph, &mut blocks, index);
-    blocks
-}
-
-/// Splits a leading `[ ]` or `[x]` off an item's first paragraph.
-fn task(mut blocks: Vec<Block>) -> (Option<bool>, Vec<Block>) {
-    if let Some(Block::Paragraph(text)) = blocks.first_mut() {
-        for (prefix, checked) in [("[ ] ", false), ("[x] ", true), ("[X] ", true)] {
-            if let Some(rest) = text.strip_prefix(prefix) {
-                *text = rest.to_owned();
-                return (Some(checked), blocks);
-            }
-        }
-    }
-    (None, blocks)
-}
 
 /// Colors for rendered Markdown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -451,10 +64,8 @@ pub(crate) struct MarkdownStyles {
     pub(crate) link_label: Style,
     /// A link's brackets and parentheses.
     pub(crate) link: Style,
+    /// A link's URL shown as text.
     pub(crate) link_url: Style,
-    /// A link's `]`, the space before a concealed link's URL, and an autolink's angle brackets.
-    pub(crate) link_gap: Style,
-    pub(crate) bare_url: Style,
     pub(crate) list: Style,
     pub(crate) quote: Style,
     pub(crate) quote_border: Color,
@@ -486,8 +97,6 @@ impl MarkdownStyles {
             link_label: link,
             link,
             link_url: link,
-            link_gap: link,
-            bare_url: link,
             list: Style::new().fg(colors.marker),
             quote: Style::new().fg(colors.quote),
             quote_border: colors.quote,
@@ -509,214 +118,33 @@ impl MarkdownStyles {
             link_label: scope("markup.link.label", fallback.link_label),
             link: scope("markup.link", fallback.link),
             link_url: scope("markup.link.url", fallback.link_url),
-            // Core's query puts `]` in `markup.link.bracket.close`, which its lookup does not style through
-            // `markup.link`, and conceals it to the space before the URL.
-            link_gap: Style::new(),
-            // Core styles bare URLs as link labels.
-            bare_url: scope("markup.link.label", fallback.bare_url),
             list: scope("markup.list", fallback.list),
             quote: scope("markup.quote", fallback.quote),
             quote_border: fg("conceal").or_else(|| fg("default")).unwrap_or(fallback.quote_border),
             rule: fg("conceal").unwrap_or(fallback.rule),
         }
     }
-}
 
-/// The length of a URL starting at the beginning of `text`, without trailing punctuation, for bare links.
-fn bare_url(text: &str) -> Option<usize> {
-    if !["https://", "http://", "www."].iter().any(|scheme| text.starts_with(scheme)) {
-        return None;
-    }
-    let end = text.find(|c: char| c.is_whitespace() || c == '<').unwrap_or(text.len());
-    let url = text[..end].trim_end_matches(['.', ',', ':', ';', '!', '?', '"', '\'', '*', '_', '~']);
-    // A closing parenthesis belongs to the URL only when it has an opening one.
-    let mut url = url;
-    while url.ends_with(')') && url.matches(')').count() > url.matches('(').count() {
-        url = &url[..url.len() - 1];
-    }
-    (url.len() > "www.".len()).then_some(url.len())
-}
-
-/// How inline Markdown shows besides its text.
-#[derive(Clone, Copy)]
-pub(crate) struct Inline {
-    pub(crate) styles: MarkdownStyles,
-    /// Hides the Markdown markers, as rendered text does.
-    pub(crate) conceal: bool,
-    /// Shows a link's URL after a label that differs from it, for terminals that do not show hyperlinks.
-    pub(crate) urls: bool,
-}
-
-/// Parses inline Markdown: `**strong**`, `*emphasis*`, `` `code` ``, `~~strike~~`, `[links](url)`, `<autolinks>`,
-/// bare URLs, images (as their alt text), escapes, and hard breaks. Without conceal, the markers stay, styled as
-/// what they mark.
-pub(crate) fn inline(text: &str, base: Style, options: &Inline) -> Vec<InlineSpan> {
-    let styles = &options.styles;
-    let mut spans: Vec<InlineSpan> = Vec::new();
-    let mut plain = String::new();
-    let mut rest = text;
-    let flush = |plain: &mut String, spans: &mut Vec<InlineSpan>, style: Style| {
-        if !plain.is_empty() {
-            spans.push(Span::styled(std::mem::take(plain), style).into());
+    /// Defines the scope names the engine's runs compose (N6): each part's style under Core's name for it, so a bound
+    /// node and `read_leaf` style text as these styles do, and a redefinition repaints without a rewrite.
+    fn register(&self, style: &SyntaxStyle) -> crate::Result<()> {
+        for (level, heading) in self.headings.iter().enumerate() {
+            style.register(&format!("markup.heading.{}", level + 1), *heading)?;
         }
-    };
-    let marker = |spans: &mut Vec<InlineSpan>, marker: &'static str, style: Style| {
-        if !options.conceal {
-            spans.push(Span::styled(marker, style).into());
+        for (name, part) in [
+            ("markup.strong", self.strong),
+            ("markup.italic", self.italic),
+            ("markup.strikethrough", self.strikethrough),
+            ("markup.link", self.link),
+            ("markup.link.label", self.link_label),
+            ("markup.link.url", self.link_url),
+            ("markup.raw", self.code),
+            ("string.escape", self.escape),
+        ] {
+            style.register(name, part)?;
         }
-    };
-    let (link, link_url, link_gap) =
-        (base.patch(styles.link), base.patch(styles.link_url), base.patch(styles.link_gap));
-    let mut previous: Option<char> = None;
-    while let Some(character) = rest.chars().next() {
-        let delimited = |open: &str, close: &str| -> Option<(&str, &str)> {
-            let inner = rest.strip_prefix(open)?;
-            if let [delimiter @ (b'*' | b'_')] = close.as_bytes() {
-                // A single delimiter skips even runs such as the `**` of nested strong text: `*a **b** c*`.
-                let runs = inner
-                    .match_indices(close)
-                    .map(|(start, _)| start)
-                    .filter(|&start| start == 0 || inner.as_bytes()[start - 1] != *delimiter);
-                let length = |start: usize| inner[start..].bytes().take_while(|byte| byte == delimiter).count();
-                let start = runs
-                    .clone()
-                    .find(|&start| start > 0 && length(start) % 2 == 1)
-                    .or_else(|| runs.clone().find(|&start| start > 0))?;
-                // A longer run also closes strong text opened inside: `*a **b***`.
-                let nested = length(start) >= 3 && inner[..start].contains(&close.repeat(2));
-                let end = if nested { start + length(start) - 1 } else { start };
-                return Some((&inner[..end], &inner[end + 1..]));
-            }
-            let mut end = inner.find(close).filter(|&end| end > 0)?;
-            // In a run such as `***`, the outer delimiter closes last: `**b *c***` is bold around `b *c*`.
-            let last = close.as_bytes()[close.len() - 1];
-            while close.len() > 1 && inner.as_bytes().get(end + close.len()) == Some(&last) {
-                end += 1;
-            }
-            Some((&inner[..end], &inner[end + close.len()..]))
-        };
-        // Intraword underscores stay literal, as in snake_case names.
-        let word_before = previous.is_some_and(char::is_alphanumeric);
-        // Emphasis delimiters never border whitespace, Unicode spaces included.
-        let flanked = |(_, (inner, _)): &(&str, (&str, &str))| {
-            !inner.starts_with(char::is_whitespace) && !inner.ends_with(char::is_whitespace)
-        };
-        let ticks = rest.bytes().take_while(|byte| *byte == b'`').count();
-        if character == '\\' && options.conceal && rest[1..].starts_with('\n') {
-            // A backslash before a line break marks a hard break, which the line break already shows.
-            rest = &rest[1..];
-            continue;
-        } else if character == '\\' && rest.len() > 1 && rest[1..].starts_with(|c: char| c.is_ascii_punctuation()) {
-            let next = rest[1..].chars().next().expect("checked above");
-            flush(&mut plain, &mut spans, base);
-            let escape = if options.conceal { next.to_string() } else { format!("\\{next}") };
-            spans.push(Span::styled(escape, base.patch(styles.escape)).into());
-            rest = &rest[1 + next.len_utf8()..];
-            previous = Some(next);
-            continue;
-        } else if ticks > 0
-            && let Some(end) = rest[ticks..].find(&"`".repeat(ticks))
-        {
-            flush(&mut plain, &mut spans, base);
-            let code = &rest[ticks..ticks + end];
-            let code = match code {
-                _ if !options.conceal => &rest[..2 * ticks + end],
-                _ if code.len() > 2 && code.starts_with(' ') && code.ends_with(' ') => &code[1..code.len() - 1],
-                _ => code,
-            };
-            let span = Span::styled(code.replace('\n', " "), base.patch(styles.code));
-            spans.push(InlineSpan { code: true, ..span.into() });
-            rest = &rest[2 * ticks + end..];
-        } else if let Some((open, (inner, after))) = delimited("**", "**")
-            .map(|found| ("**", found))
-            .or_else(|| delimited("__", "__").filter(|_| !word_before).map(|found| ("__", found)))
-            .filter(flanked)
-        {
-            flush(&mut plain, &mut spans, base);
-            let style = base.patch(styles.strong);
-            marker(&mut spans, open, style);
-            spans.extend(inline(inner, style, options));
-            marker(&mut spans, open, style);
-            rest = after;
-        } else if let Some((inner, after)) = delimited("~~", "~~") {
-            flush(&mut plain, &mut spans, base);
-            let style = base.patch(styles.strikethrough);
-            marker(&mut spans, "~~", style);
-            spans.extend(inline(inner, style, options));
-            marker(&mut spans, "~~", style);
-            rest = after;
-        } else if let Some((open, (inner, after))) = delimited("*", "*")
-            .map(|found| ("*", found))
-            .or_else(|| delimited("_", "_").filter(|_| !word_before).map(|found| ("_", found)))
-            .filter(flanked)
-        {
-            flush(&mut plain, &mut spans, base);
-            let style = base.patch(styles.italic);
-            marker(&mut spans, open, style);
-            spans.extend(inline(inner, style, options));
-            marker(&mut spans, open, style);
-            rest = after;
-        } else if let Some((label, destination, after)) = delimited("![", "](")
-            .or_else(|| delimited("[", "]("))
-            .and_then(|(label, after)| Some((label, after, after.find(')')?)))
-            .map(|(label, after, end)| (label, &after[..end], &after[end + 1..]))
-        {
-            flush(&mut plain, &mut spans, base);
-            let image = rest.starts_with('!');
-            let url = destination.split_whitespace().next().unwrap_or_default().to_owned();
-            let label_style = base.patch(styles.link_label);
-            let linked = |span: InlineSpan| InlineSpan { span: span.span.link(url.clone()), ..span };
-            let parts = |parts: [(&str, Style); 4]| {
-                parts.map(|(text, style)| linked(Span::styled(text.to_owned(), style).into()))
-            };
-            if options.conceal {
-                let label = inline(if image && label.is_empty() { "image" } else { label }, label_style, options);
-                let text: String = label.iter().map(|span| span.span.content.as_ref()).collect();
-                spans.extend(label.into_iter().map(linked));
-                // As in Core, a terminal without hyperlinks shows where the link goes.
-                if options.urls && !image && text != url {
-                    spans.extend(parts([(" ", link_gap), ("(", link), (&url, link_url), (")", link)]));
-                }
-            } else {
-                spans.push(linked(Span::styled(if image { "![" } else { "[" }, link).into()));
-                spans.extend(inline(label, label_style, options).into_iter().map(linked));
-                // An image's `]` is part of the link in Core's query; a link's is not.
-                spans.extend(parts([
-                    ("]", if image { link } else { link_gap }),
-                    ("(", link),
-                    (destination, link_url),
-                    (")", link),
-                ]));
-            }
-            rest = after;
-        } else if let Some((url, after)) = delimited("<", ">").filter(|(url, _)| {
-            (url.contains("://") || url.starts_with("mailto:")) && !url.contains(char::is_whitespace)
-        }) {
-            flush(&mut plain, &mut spans, base);
-            let link =
-                |text: &str, style: Style| InlineSpan::from(Span::styled(text.to_owned(), style).link(url.to_owned()));
-            if options.conceal {
-                spans.push(link(url, link_url));
-            } else {
-                spans.extend([link("<", link_gap), link(url, link_url), link(">", link_gap)]);
-            }
-            rest = after;
-        } else if !word_before && let Some(length) = bare_url(rest) {
-            flush(&mut plain, &mut spans, base);
-            let url = &rest[..length];
-            let target = if url.starts_with("www.") { format!("http://{url}") } else { url.to_owned() };
-            spans.push(Span::styled(url.to_owned(), base.patch(styles.bare_url)).link(target).into());
-            rest = &rest[length..];
-        } else {
-            plain.push(character);
-            rest = &rest[character.len_utf8()..];
-            previous = Some(character);
-            continue;
-        }
-        previous = None;
+        Ok(())
     }
-    flush(&mut plain, &mut spans, base);
-    spans
 }
 
 /// A fenced code block for a renderer registered with [`Markdown::code_block_renderer`].
@@ -777,7 +205,6 @@ type InlineHook = Rc<dyn Fn(Vec<InlineSpan>, &InlineContext<'_>) -> Vec<InlineSp
 
 /// The click targets of a paragraph or heading: byte ranges of its text, and what each means to the app.
 struct Targets {
-    text: Text,
     ranges: Vec<(Range<usize>, String)>,
     /// The app's frame number when `ranges` arrived: later frames paint them.
     since: u64,
@@ -835,16 +262,23 @@ struct Options {
 
 pub(crate) struct MarkdownInner {
     element: Element,
-    source: RefCell<String>,
+    /// The native document: the source, its blocks, and the paragraphs and headings it writes itself.
+    doc: Option<MarkdownDoc>,
+    /// The style its leaves draw with, defined from `colors`, `syntax` and `scopes` (N6).
+    style: Option<SyntaxStyle>,
+    /// Held while a reader borrows the source, so a change from inside the read panics instead of moving it.
+    guard: RefCell<()>,
     colors: RefCell<MarkdownColors>,
     syntax: RefCell<Arc<SyntaxTheme>>,
     options: RefCell<Rc<Options>>,
-    /// The styles from `colors`, `syntax` and `scopes`, built on the first refresh after one of them changes.
-    styles: Cell<Option<MarkdownStyles>>,
-    /// The top-level blocks shown: where each starts in the source, and its widget.
-    shown: RefCell<Vec<Shown>>,
-    /// Whether the terminal showed hyperlinks when the blocks were built.
+    styles: Cell<MarkdownStyles>,
+    /// Every block of the document by index, as last read, with its widget.
+    blocks: RefCell<Vec<Shown>>,
+    /// Whether the terminal showed hyperlinks at the last change (the engine's `OT_MD_HYPERLINKS`, N5).
     hyperlinks: Cell<bool>,
+    /// The code blocks whose renderer ran for a finished document in the last change: ending the stream asks each
+    /// one once.
+    rendered_code: RefCell<Vec<u32>>,
 }
 
 impl Behavior for MarkdownInner {
@@ -853,23 +287,40 @@ impl Behavior for MarkdownInner {
     }
 }
 
+/// A block as last read, and what shows it.
 struct Shown {
-    start: usize,
-    block: Block,
-    rendered: Rendered,
-    /// The click targets the inline hook gave the block's paragraphs and headings.
-    targets: Vec<Targets>,
+    block: MarkdownBlock,
+    rendered: Option<Rendered>,
+    /// A leaf the widget writes itself: the parser output it wrote last, with the inline source when a hook read it,
+    /// which an unchanged leaf does not write again.
+    written: Option<(MarkdownLeaf, Option<String>)>,
+    /// A hash of the spans the widget wrote last: equal spans leave the node as is, so its painted bytes keep
+    /// answering clicks.
+    content: Option<u64>,
+    /// The click targets the inline hook gave a paragraph or heading.
+    targets: Option<Targets>,
+    /// The widget wrote the text since native code last took the node: when native code writes the leaf again, the
+    /// widget binds the node again to hand it over (native code never writes over the widget's text).
+    host_wrote: bool,
 }
 
-/// A block's widget, typed where it can change in place.
+/// A block's widget. Table rows and cells have none: their table shows them.
 #[derive(Clone)]
 enum Rendered {
     Text(Text),
     Code(View, Code),
-    Table(TextTable),
     /// A code block from a registered renderer.
     Custom(AnyWidget),
-    Other(AnyWidget),
+    Table(TextTable),
+    /// A rule, quote or list; a quote's and a list's children go inside.
+    Other(View),
+    Item {
+        row: View,
+        marker: Text,
+        body: View,
+        /// The marker's text as last set, so an update that keeps it sets nothing.
+        label: Rc<RefCell<String>>,
+    },
 }
 
 impl Rendered {
@@ -878,318 +329,60 @@ impl Rendered {
             Self::Text(text) => text.as_any(),
             Self::Code(container, _) => container.as_any(),
             Self::Table(table) => table.as_any(),
-            Self::Custom(widget) | Self::Other(widget) => widget.clone(),
+            Self::Custom(widget) => widget.clone(),
+            Self::Other(view) | Self::Item { row: view, .. } => view.as_any(),
         }
     }
-}
 
-/// Which blocks an update builds again even when their source is unchanged.
-#[derive(Clone, Copy)]
-enum Rebuild<'a> {
-    None,
-    All,
-    Code,
-    Tables,
-    /// Runs the code-block renderers again with the widgets they returned, for a change they read, such as the end
-    /// of streaming.
-    Renderers,
-    /// Runs the inline hook again on the blocks with a paragraph, heading or table cell whose source matches, without
-    /// parsing.
-    Hook(&'a dyn Fn(&str) -> bool),
-}
-
-impl Rebuild<'_> {
-    fn matches(self, block: &Block) -> bool {
+    /// Where the block's children go.
+    fn container(&self) -> Option<View> {
         match self {
-            Self::None | Self::Renderers => false,
-            Self::All => true,
-            Self::Code => block.any(&|block| matches!(block, Block::Code(..))),
-            Self::Tables => block.any(&|block| matches!(block, Block::Table(_))),
-            Self::Hook(select) => block.any(&|block| match block {
-                Block::Paragraph(text) | Block::Heading(_, text) => select(text),
-                Block::Table(table) => table.header.iter().chain(table.rows.iter().flatten()).any(|cell| select(cell)),
-                _ => false,
-            }),
+            Self::Other(view) | Self::Item { body: view, .. } => Some(view.clone()),
+            _ => None,
         }
     }
 }
 
-/// Builds widgets for Markdown blocks.
-#[derive(Clone, Copy)]
-struct Renderer<'a> {
-    app: &'a App,
-    colors: MarkdownColors,
-    styles: MarkdownStyles,
-    syntax: &'a Arc<SyntaxTheme>,
-    options: &'a Options,
-    /// Whether link text shows URLs: the terminal does not show hyperlinks.
-    urls: bool,
-    /// The click targets of the paragraphs and headings built since the caller last took them.
-    targets: &'a RefCell<Vec<Targets>>,
-    /// The targets of the block being built again, before it changed.
-    previous: &'a RefCell<Vec<Targets>>,
+const PARAGRAPH: u32 = sys::OT_MD_PARAGRAPH;
+const HEADING: u32 = sys::OT_MD_HEADING;
+
+fn is_prose(block: &MarkdownBlock) -> bool {
+    block.kind == PARAGRAPH || block.kind == HEADING
 }
 
-impl Renderer<'_> {
-    fn base(&self) -> Style {
-        self.styles.text
-    }
-
-    fn inline(&self, text: &str, style: Style) -> Vec<InlineSpan> {
-        inline(text, style, &Inline { styles: self.styles, conceal: self.options.conceal, urls: self.urls })
-    }
-
-    fn heading(&self, level: u8, text: &str) -> Vec<InlineSpan> {
-        let style = self.base().patch(self.styles.headings[usize::from(level.clamp(1, 6)) - 1]);
-        let marker = (!self.options.conceal).then(|| Span::styled(format!("{} ", "#".repeat(level.into())), style));
-        marker.map(InlineSpan::from).into_iter().chain(self.inline(text, style)).collect()
-    }
-
-    /// `spans` of the inline `source`, a table cell's when `table_cell`, as the inline hook rewrites them, if there is
-    /// one.
-    fn hook(&self, spans: Vec<InlineSpan>, source: &str, table_cell: bool) -> Vec<InlineSpan> {
-        let Some(hook) = &self.options.inline_hook else { return spans };
-        hook(spans, &InlineContext { source, conceal: self.options.conceal, syntax: self.syntax, table_cell })
-    }
-
-    /// A paragraph's or heading's text: `spans` of the inline `source`, passed through the inline hook, in `widget`
-    /// or a new one. Records the spans' click targets.
-    fn prose(&self, widget: Option<&Text>, spans: Vec<InlineSpan>, source: &str) -> Text {
-        let spans = self.hook(spans, source, false);
-        let (mut ranges, mut end) = (Vec::new(), 0);
-        let content: Vec<Span<'static>> = spans
-            .into_iter()
-            .map(|InlineSpan { span, target, .. }| {
-                let start = end;
-                end += span.content.len();
-                ranges.extend(target.map(|target| (start..end, target)));
-                span
-            })
-            .collect();
-        let text = match widget {
-            Some(widget) => widget.set_text(content),
-            None => Text::new(self.app, content),
-        };
-        // Until a frame paints the new ranges, clicks keep reaching the ones on screen.
-        // Only a widget updated in place had targets before: a new one has none.
-        let mut previous = self.previous.borrow_mut();
-        let old = widget.and_then(|_| {
-            let index = previous.iter().position(|old| {
-                #[cfg(test)]
-                tests::LOOKUPS.with(|lookups| lookups.set(lookups.get() + 1));
-                old.text.id() == text.id()
-            })?;
-            Some(previous.swap_remove(index))
-        });
-        let since = self.app.painted_frames();
-        let painted = old.map_or_else(Vec::new, |old| if old.since < since { old.ranges } else { old.painted });
-        if !ranges.is_empty() || !painted.is_empty() {
-            self.targets.borrow_mut().push(Targets { text: text.clone(), ranges, since, painted });
-            self.app.request_redraw();
-        }
-        text
-    }
-
-    /// A code block: from a registered renderer, or highlighted as the filetype its fence names.
-    fn code_block(&self, info: Option<&str>, code: &str, closed: bool, previous: Option<&AnyWidget>) -> Rendered {
-        match self.custom_code(info, code, closed, previous) {
-            Some(widget) => Rendered::Custom(widget),
-            None => self.default_code(info, code),
-        }
-    }
-
-    fn default_code(&self, info: Option<&str>, code: &str) -> Rendered {
-        let language = info.and_then(|info| info.split_whitespace().next());
-        // It shows all its lines, so it has nothing to scroll and takes no focus: Tab passes over it.
-        let view = Code::themed(self.app, Arc::clone(self.syntax))
-            .fg(self.colors.text)
-            .filetype(language)
-            .set_code(code)
-            .focusable(false);
-        Rendered::Code(View::new(self.app).bg(self.colors.code_bg).child(&view), view)
-    }
-
-    /// Whether `block` is a code block a registered renderer may take.
-    fn claims(&self, block: &Block) -> bool {
-        let Block::Code(Some(info), ..) = block else { return false };
-        filetype_for_info_string(info)
-            .is_some_and(|language| self.options.code_blocks.iter().any(|(key, _)| *key == language))
-    }
-
-    fn custom_code(
-        &self,
-        info: Option<&str>,
-        code: &str,
-        closed: bool,
-        previous: Option<&AnyWidget>,
-    ) -> Option<AnyWidget> {
-        let info = info?;
-        let language = filetype_for_info_string(info)?;
-        let (_, render) = self.options.code_blocks.iter().find(|(key, _)| *key == language)?;
-        let (conceal, streaming) = (self.options.conceal, self.options.streaming);
-        render(&CodeBlock { app: self.app, language: &language, info, code, closed, conceal, streaming, previous })
-    }
-
-    /// The widget for a top-level block, updating `previous`, the block shown before and its widget, in place when
-    /// it can. Blocks never shrink: a document taller than its parent overflows it, as text should, instead of
-    /// squeezing rows into each other.
-    fn render(&self, block: &Block, previous: Option<(&Block, &Rendered)>) -> Rendered {
-        let rendered = previous
-            .and_then(|(old, rendered)| self.update(rendered, old, block))
-            .unwrap_or_else(|| self.unsized_block(block));
-        if previous.is_none_or(|(_, old)| old.widget() != rendered.widget()) {
-            rendered.widget().shrink(0.0);
-        }
-        rendered
-    }
-
-    fn block(&self, block: &Block) -> AnyWidget {
-        let widget = self.unsized_block(block).widget();
-        widget.shrink(0.0);
-        widget
-    }
-
-    fn unsized_block(&self, block: &Block) -> Rendered {
-        let (app, colors, base) = (self.app, &self.colors, self.base());
-        Rendered::Other(match block {
-            Block::Heading(level, text) => return Rendered::Text(self.prose(None, self.heading(*level, text), text)),
-            Block::Paragraph(text) => return Rendered::Text(self.prose(None, self.inline(text, base), text)),
-            Block::List(list) => {
-                let container = View::new(app).gap(if list.tight { 0 } else { 1 });
-                // As in Core, bullets are dashes at every depth, and numbers align on their right.
-                let numbers: Vec<String> = (0..list.items.len() as u64)
-                    .map(|index| list.start.map_or_else(|| "-".to_owned(), |start| format!("{}.", start + index)))
-                    .collect();
-                let width = numbers.iter().map(String::len).max().unwrap_or(1);
-                let marker = base.patch(self.styles.list);
-                for (item, number) in list.items.iter().zip(&numbers) {
-                    let task = match (item.task, self.options.conceal) {
-                        (None, _) => "",
-                        (Some(true), true) => " ☑",
-                        (Some(false), true) => " ☐",
-                        (Some(true), false) => " [x]",
-                        (Some(false), false) => " [ ]",
-                    };
-                    let body = View::new(app).grow(1.0).gap(if list.tight { 0 } else { 1 });
-                    for block in &item.blocks {
-                        body.add(&self.block(block));
-                    }
-                    container.add(
-                        &View::new(app)
-                            .row()
-                            .child(
-                                &Text::new(app, vec![Span::styled(format!("{number:>width$}{task} "), marker)])
-                                    .shrink(0.0),
-                            )
-                            .child(&body),
-                    );
-                }
-                container.as_any()
+/// The spans of a leaf's parser output, styles and links as native code resolved them.
+fn leaf_spans(leaf: &MarkdownLeaf) -> Vec<InlineSpan> {
+    let mut at = 0;
+    leaf.chunks
+        .iter()
+        .zip(&leaf.spans)
+        .map(|(chunk, span)| {
+            let end = at + chunk.byte_count as usize;
+            let text = String::from_utf8_lossy(&leaf.bytes[at..end]).into_owned();
+            at = end;
+            let color = |flag: u32, raw: [u16; 4]| (chunk.flags & flag != 0).then(|| Color::from_raw(raw));
+            let style = Style {
+                fg: color(sys::OT_SCENE_TEXT_FOREGROUND, chunk.foreground),
+                bg: color(sys::OT_SCENE_TEXT_BACKGROUND, chunk.background),
+                attributes: Attributes::from_bits(chunk.attributes as u8),
+            };
+            let mut text = Span::styled(text, style);
+            if chunk.flags & sys::OT_SCENE_TEXT_LINK != 0 {
+                let url = &leaf.urls[chunk.link_offset as usize..][..chunk.link_byte_count as usize];
+                text = text.link(String::from_utf8_lossy(url).into_owned());
             }
-            Block::Quote(blocks) => {
-                let quote = View::new(app)
-                    .border_sides(Sides::LEFT)
-                    .border_color(self.styles.quote_border)
-                    .padding_edge(Edge::Left, 1)
-                    .gap(1);
-                let renderer = Renderer {
-                    colors: MarkdownColors { text: colors.quote, ..*colors },
-                    styles: MarkdownStyles { text: base.patch(self.styles.quote), ..self.styles },
-                    ..*self
-                };
-                for block in blocks {
-                    quote.add(&renderer.block(block));
-                }
-                quote.as_any()
-            }
-            Block::Code(info, code, closed) => return self.code_block(info.as_deref(), code, *closed, None),
-            Block::Table(table) => return Rendered::Table(self.table(table)),
-            Block::Rule => View::new(app).border_sides(Sides::TOP).border_color(self.styles.rule).height(1).as_any(),
+            InlineSpan { span: text, code: span & sys::OT_MD_SPAN_CODE != 0, target: None }
         })
-    }
-
-    fn table(&self, table: &Table) -> TextTable {
-        let options = &self.options.table;
-        let columns = options.style == MarkdownTableStyle::Columns;
-        let borders = options.borders.unwrap_or(!columns);
-        let widget = TextTable::new(self.app).fg(self.base().fg.unwrap_or(self.colors.text));
-        if let Some(style) = options.border_style {
-            widget.border(style);
-        }
-        let width_mode = if columns { ColumnWidthMode::Content } else { ColumnWidthMode::Full };
-        widget
-            .grid_lines(borders)
-            .outer_border(options.outer_border.unwrap_or(borders))
-            .show_borders(borders)
-            .border_color(options.border_color.unwrap_or(self.styles.rule))
-            .column_width_mode(options.width_mode.unwrap_or(width_mode))
-            .column_fitter(options.column_fitter.unwrap_or_default())
-            .wrap(options.wrap.unwrap_or(WrapMode::Word))
-            .cell_padding_x(options.cell_padding_x.unwrap_or(0))
-            .cell_padding_y(options.cell_padding_y.unwrap_or(0))
-            .column_gap(if columns && !borders { 2 } else { 0 })
-            .selectable(options.selectable.unwrap_or(true));
-        self.fill_table(&widget, table);
-        widget
-    }
-
-    /// Fills a table: a header row in the heading color, then the body. Like Core's, cells do not follow column
-    /// alignment.
-    fn fill_table(&self, widget: &TextTable, table: &Table) {
-        let row = |cells: &[String], style: Style| -> Vec<Content> {
-            // Cells go through the inline hook too, but keep no click targets.
-            cells
-                .iter()
-                .map(|cell| {
-                    Content(self.hook(self.inline(cell, style), cell, true).into_iter().map(|span| span.span).collect())
-                })
-                .collect()
-        };
-        let header = self.base().patch(self.styles.table_header);
-        let rows =
-            std::iter::once(row(&table.header, header)).chain(table.rows.iter().map(|cells| row(cells, self.base())));
-        widget.set_content(rows);
-    }
-
-    /// The widget for `new` made from the one built for `old` when both are blocks of one kind, or `None` to build
-    /// another.
-    fn update(&self, rendered: &Rendered, old: &Block, new: &Block) -> Option<Rendered> {
-        match (rendered, old, new) {
-            (Rendered::Text(widget), Block::Paragraph(_), Block::Paragraph(text)) => {
-                self.prose(Some(widget), self.inline(text, self.base()), text);
-            }
-            (Rendered::Text(widget), Block::Heading(old_level, _), Block::Heading(level, text))
-                if old_level == level =>
-            {
-                self.prose(Some(widget), self.heading(*level, text), text);
-            }
-            (_, Block::Code(old_info, ..), Block::Code(info, code, closed)) => {
-                let previous = match rendered {
-                    Rendered::Custom(widget) => Some(widget),
-                    _ => None,
-                };
-                if let Some(widget) = self.custom_code(info.as_deref(), code, *closed, previous) {
-                    return Some(Rendered::Custom(widget));
-                }
-                match rendered {
-                    Rendered::Code(_, view) if old_info == info => view.set_code(code.as_str()),
-                    _ => return Some(self.default_code(info.as_deref(), code)),
-                };
-            }
-            (Rendered::Table(widget), Block::Table(_), Block::Table(table)) => self.fill_table(widget, table),
-            _ => return None,
-        }
-        Some(rendered.clone())
-    }
+        .collect()
 }
 
 /// Rendered Markdown: headings, paragraphs with inline styles and links, nested lists with tasks, quotes, tables,
 /// rules, and fenced code with highlighting, laid out as OpenTUI Core lays out a top-level Markdown document.
 ///
-/// It builds native widgets, so text wraps and selects like any [`Text`]. Updates rebuild only the blocks that
-/// changed, and the last paragraph or code block changes in place, so streaming text with [`Self::append`] stays
-/// cheap; with [`Self::streaming`] on, an update parses only the end of the document. It covers the CommonMark and
-/// GitHub subset that documents and chat messages use, but not HTML or reference links.
+/// It builds native widgets, so text wraps and selects like any [`Text`]. OpenTUI's native Markdown engine parses
+/// the document as it streams in with [`Self::append`]: it reads each byte once, updates only the blocks the new text
+/// changes, and writes streamed paragraphs and headings to their widgets itself. It follows CommonMark and GitHub's
+/// tables, strikethrough, task lists and autolinks; HTML shows as its source.
 ///
 /// ```no_run
 /// # use opentui::prelude::*;
@@ -1210,42 +403,64 @@ handle!(Markdown, MarkdownInner);
 impl Markdown {
     pub fn new(app: &App) -> Self {
         let colors = MarkdownColors::from_theme(&app.theme());
+        let styles = MarkdownStyles::new(&colors, None);
+        let context = app.session().context();
+        let style = app.report(SyntaxStyle::new(context));
+        if let Some(style) = &style {
+            app.report(styles.register(style));
+        }
+        let flags = sys::OT_MD_CONCEAL | if app.hyperlinks() { sys::OT_MD_HYPERLINKS } else { 0 };
+        let doc = app.report(MarkdownDoc::new(context, &MarkdownOptions { flags, style: style.as_ref() }));
         let markdown = Self(build(app, NodeKind::Box, |element| MarkdownInner {
             element,
-            source: RefCell::new(String::new()),
+            doc,
+            style,
+            guard: RefCell::new(()),
             colors: RefCell::new(colors),
             syntax: RefCell::new(Arc::new(SyntaxTheme::from_theme(&app.theme()))),
             options: RefCell::new(Rc::new(Options { conceal: true, ..Options::default() })),
-            styles: Cell::new(None),
-            shown: RefCell::new(Vec::new()),
-            hyperlinks: Cell::new(false),
+            styles: Cell::new(styles),
+            blocks: RefCell::new(Vec::new()),
+            hyperlinks: Cell::new(app.hyperlinks()),
+            rendered_code: RefCell::default(),
         }));
         markdown.0.element.set_layout(LayoutProperty::Gap(Gutter::Row, 1.into()));
         markdown
     }
 
-    /// Replaces the content, rebuilding only the blocks that changed.
+    /// Replaces the content. Blocks equal to the ones shown keep their widgets. While the document streams, text
+    /// that extends the content costs what appending the new text does.
     pub fn set_markdown(&self, markdown: impl Into<String>) -> Self {
         let markdown = markdown.into();
-        let old = self.0.source.borrow();
-        let unchanged = old.bytes().zip(markdown.bytes()).take_while(|(old, new)| old == new).count();
-        drop(old);
-        *self.0.source.borrow_mut() = markdown;
-        self.refresh(unchanged, Rebuild::None);
+        self.change(|doc, finish| {
+            // A fresh parse of the whole text equals the appended one (the engine's invariant 1).
+            let kept = if finish {
+                None
+            } else {
+                let source = doc.source()?;
+                markdown.starts_with(source).then_some(source.len())
+            };
+            let set = match kept {
+                Some(len) => doc.append(&markdown[len..])?,
+                None => doc.set(&markdown)?,
+            };
+            Ok(if finish { merge(set, doc.finish()?) } else { set })
+        });
         self.clone()
     }
 
     /// Appends to the content, as for text streamed in chunks.
     pub fn append(&self, markdown: &str) -> Self {
-        let unchanged = self.0.source.borrow().len();
-        self.0.source.borrow_mut().push_str(markdown);
-        self.refresh(unchanged, Rebuild::None);
+        self.change(|doc, finish| {
+            let append = doc.append(markdown)?;
+            Ok(if finish { merge(append, doc.finish()?) } else { append })
+        });
         self.clone()
     }
 
     /// A copy of the content. [`Self::with_markdown`] reads it without one.
     pub fn markdown(&self) -> String {
-        self.0.source.borrow().clone()
+        self.with_markdown(str::to_owned)
     }
 
     /// Reads the content without copying it, for example to check whether streamed text extends what is shown.
@@ -1254,13 +469,14 @@ impl Markdown {
     ///
     /// Panics if `read` changes the content of this widget through [`Self::set_markdown`] or [`Self::append`].
     pub fn with_markdown<R>(&self, read: impl FnOnce(&str) -> R) -> R {
-        read(&self.0.source.borrow())
+        let _guard = self.0.guard.borrow();
+        let source = self.0.doc.as_ref().and_then(|doc| self.app().and_then(|app| app.report(doc.source())));
+        read(source.unwrap_or_default())
     }
 
     pub fn colors(&self, colors: MarkdownColors) -> Self {
         *self.0.colors.borrow_mut() = colors;
-        self.0.styles.set(None);
-        self.refresh(0, Rebuild::All);
+        self.restyle();
         self.clone()
     }
 
@@ -1268,22 +484,19 @@ impl Markdown {
     /// `rust` in ` ```rust `. It starts as [`SyntaxTheme::from_theme`] for the app's theme.
     pub fn syntax_theme(&self, theme: SyntaxTheme) -> Self {
         *self.0.syntax.borrow_mut() = Arc::new(theme);
-        self.0.styles.set(None);
-        self.refresh(0, Rebuild::All);
+        self.restyle();
         self.clone()
     }
 
     /// Whether to style text through the [`Self::syntax_theme`] scopes Core's Markdown uses, so one theme styles
     /// both prose and code: `markup.heading.1` to `markup.heading.6`, `markup.strong`, `markup.italic`,
     /// `markup.strikethrough`, `markup.raw`, `markup.link`, `markup.link.label`, `markup.link.url`, `markup.list`,
-    /// `markup.quote`, `string.escape`, `default` for plain text, and the `conceal` color for rules and quote bars.
-    /// A scope the theme does not style takes its color from [`Self::colors`]. Off by default: text takes the
-    /// colors alone.
+    /// `markup.quote`, `string.escape`, `default` for plain text, and the `conceal` color for rules and quote bars. A scope the theme
+    /// does not style takes its color from [`Self::colors`]. Off by default: text takes the colors alone.
     pub fn scope_styles(&self, on: bool) -> Self {
         if self.0.options.borrow().scopes != on {
             Rc::make_mut(&mut self.0.options.borrow_mut()).scopes = on;
-            self.0.styles.set(None);
-            self.refresh(0, Rebuild::All);
+            self.restyle();
         }
         self.clone()
     }
@@ -1294,19 +507,29 @@ impl Markdown {
     pub fn conceal(&self, conceal: bool) -> Self {
         if self.0.options.borrow().conceal != conceal {
             Rc::make_mut(&mut self.0.options.borrow_mut()).conceal = conceal;
-            self.refresh(0, Rebuild::All);
+            self.change_options();
+            self.rebuild_all();
         }
         self.clone()
     }
 
-    /// Whether the content is still streaming in. While it is, an update parses only the source from the end of
-    /// the blocks that later text cannot change, and leaves the widgets before it alone. Turning it off parses the
-    /// whole document once, so it ends as it would from one [`Self::set_markdown`], and runs the code-block renderers
+    /// Whether the content is still streaming in. While it is, the last line shows as far as it is decided: a line
+    /// that may still become a table row, a fence's end or a heading's underline waits for its end. Turning it off
+    /// ends the document, so it shows as it would from one [`Self::set_markdown`], and runs the code-block renderers
     /// again with their widgets, because [`CodeBlock::streaming`] changed. Off by default.
     pub fn streaming(&self, streaming: bool) -> Self {
         if self.0.options.borrow().streaming != streaming {
             Rc::make_mut(&mut self.0.options.borrow_mut()).streaming = streaming;
-            self.refresh(0, Rebuild::Renderers);
+            if streaming {
+                // An ended document opens again as a fresh parse of its source (N2).
+                self.change(|doc, _| {
+                    let source = doc.source()?.to_owned();
+                    doc.set(&source)
+                });
+            } else {
+                self.change(|doc, _| doc.finish());
+                self.rerun_renderers();
+            }
         }
         self.clone()
     }
@@ -1315,7 +538,7 @@ impl Markdown {
     pub fn table_options(&self, options: MarkdownTableOptions) -> Self {
         if self.0.options.borrow().table != options {
             Rc::make_mut(&mut self.0.options.borrow_mut()).table = options;
-            self.refresh(0, Rebuild::Tables);
+            self.rebuild_all();
         }
         self.clone()
     }
@@ -1336,7 +559,7 @@ impl Markdown {
         code_blocks.retain(|(key, _)| *key != language);
         code_blocks.push((language, Rc::new(render)));
         drop(options);
-        self.refresh(0, Rebuild::Code);
+        self.rebuild_all();
         self.clone()
     }
 
@@ -1344,7 +567,7 @@ impl Markdown {
     pub fn remove_code_block_renderer(&self, language: &str) -> Self {
         let language = filetype_for_info_string(language).unwrap_or_else(|| language.to_owned());
         Rc::make_mut(&mut self.0.options.borrow_mut()).code_blocks.retain(|(key, _)| *key != language);
-        self.refresh(0, Rebuild::Code);
+        self.rebuild_all();
         self.clone()
     }
 
@@ -1354,30 +577,53 @@ impl Markdown {
     ///
     /// `hook` gets the spans in order, each marked when it is a code span or already a link, and returns the spans to
     /// show. A span's [`InlineSpan::target`] makes it clickable for the app through [`Self::target_at`], without a
-    /// hyperlink; in a table cell it is ignored. It runs when a block is built or changes, so [`Self::append`] runs it only for the blocks the new
-    /// text changes; [`Self::rerun_inline_hook`] runs it again for chosen blocks. Selecting and copying take the
-    /// text it returns.
+    /// hyperlink; in a table cell it is ignored. It runs when a block is built or its text changes, so
+    /// [`Self::append`] runs it only for the blocks the new text changes; [`Self::rerun_inline_hook`] runs it again
+    /// for chosen blocks. Selecting and copying take the text it returns.
     pub fn inline_hook(&self, hook: impl Fn(Vec<InlineSpan>, &InlineContext<'_>) -> Vec<InlineSpan> + 'static) -> Self {
-        Rc::make_mut(&mut self.0.options.borrow_mut()).inline_hook = Some(Rc::new(hook));
-        self.refresh(0, Rebuild::All);
+        let had = Rc::make_mut(&mut self.0.options.borrow_mut()).inline_hook.replace(Rc::new(hook)).is_some();
+        if had {
+            self.rebuild_all();
+        } else {
+            self.change_options();
+        }
         self.clone()
     }
 
     /// Removes the hook [`Self::inline_hook`] registered.
     pub fn remove_inline_hook(&self) -> Self {
         if Rc::make_mut(&mut self.0.options.borrow_mut()).inline_hook.take().is_some() {
-            self.refresh(0, Rebuild::All);
+            self.change_options();
         }
         self.clone()
     }
 
     /// Runs the inline hook again for the top-level blocks holding a paragraph, heading or table cell whose inline
     /// source `select` accepts, for a change only the hook knows about, such as a new title for an ID it links. Other
-    /// blocks are left alone, and nothing is parsed again. A paragraph, heading or table updates in place; a list or
-    /// quote is built again whole.
+    /// blocks are left alone, and nothing is parsed again; a selected block is built again whole.
     pub fn rerun_inline_hook(&self, select: impl Fn(&str) -> bool) -> Self {
-        if self.0.options.borrow().inline_hook.is_some() {
-            self.refresh(0, Rebuild::Hook(&select));
+        if self.0.options.borrow().inline_hook.is_none() {
+            return self.clone();
+        }
+        let Some(doc) = &self.0.doc else { return self.clone() };
+        let selected: Vec<u32> = {
+            let blocks = self.0.blocks.borrow();
+            let mut selected = Vec::new();
+            let mut top = 0;
+            for shown in blocks.iter() {
+                let block = &shown.block;
+                if block.parent.is_none() {
+                    top = block.index;
+                }
+                let inline = is_prose(block) || block.kind == sys::OT_MD_TABLE_CELL;
+                if inline && selected.last() != Some(&top) && doc.read_source(block.index).is_ok_and(|s| select(&s)) {
+                    selected.push(top);
+                }
+            }
+            selected
+        };
+        for top in selected {
+            self.rebuild_subtree(top);
         }
         self.clone()
     }
@@ -1388,421 +634,792 @@ impl Markdown {
     /// the handler does not keep a removed document alive.
     pub fn target_at(&self, x: u16, y: u16) -> Option<String> {
         // Native code answers both questions: which text the last frame drew at the cell, and which byte of it.
-        let hit = self.0.element.app()?.widget_at(x, y)?;
-        let shown = self.0.shown.borrow();
-        let targets = shown.iter().flat_map(|shown| &shown.targets).find(|targets| targets.text.id() == hit.id())?;
-        let byte = targets.text.element().query(|node| node.text_byte_at(i32::from(x), i32::from(y)))?? as usize;
-        // The ranges that frame painted, which the newest are once a frame has followed them.
         let app = self.0.element.app()?;
+        let hit = app.widget_at(x, y)?;
+        let blocks = self.0.blocks.borrow();
+        let (text, targets) = blocks.iter().find_map(|shown| match (&shown.rendered, &shown.targets) {
+            (Some(Rendered::Text(text)), Some(targets)) if text.id() == hit.id() => Some((text, targets)),
+            _ => None,
+        })?;
+        let byte = text.element().query(|node| node.text_byte_at(i32::from(x), i32::from(y)))?? as usize;
+        // The ranges that frame painted, which the newest are once a frame has followed them.
         let ranges = if app.painted_frames() > targets.since { &targets.ranges } else { &targets.painted };
         let (_, target) = ranges.iter().find(|(range, _)| range.contains(&byte))?;
         Some(target.clone())
     }
 
-    /// Shows the source, of which the first `unchanged` bytes are as last shown: keeps the widgets of unchanged
-    /// blocks, updates changed ones in place when it can, and builds the rest, along with the blocks `rebuild`
-    /// names.
-    fn refresh(&self, unchanged: usize, rebuild: Rebuild) {
-        let Some(app) = self.0.element.app() else { return };
-        let hyperlinks = app.hyperlinks();
-        // Link text depends on hyperlink support, which the terminal reports after startup.
-        let rebuild = if hyperlinks != self.0.hyperlinks.replace(hyperlinks) { Rebuild::All } else { rebuild };
-        let options = Rc::clone(&self.0.options.borrow());
-        let syntax = self.0.syntax.borrow();
-        let colors = *self.0.colors.borrow();
-        let styles =
-            self.0.styles.get().unwrap_or_else(|| MarkdownStyles::new(&colors, options.scopes.then_some(&**syntax)));
-        self.0.styles.set(Some(styles));
-        let (targets, previous) = (RefCell::new(Vec::new()), RefCell::new(Vec::new()));
-        let renderer = Renderer {
-            app: &app,
-            colors,
-            styles,
-            syntax: &syntax,
-            options: &options,
-            urls: !hyperlinks,
-            targets: &targets,
-            previous: &previous,
-        };
-        let source = self.0.source.borrow();
-        let mut shown = self.0.shown.borrow_mut();
-        if let Rebuild::Hook(_) = rebuild {
-            for (index, old) in shown.iter_mut().enumerate().filter(|(_, old)| rebuild.matches(&old.block)) {
-                previous.replace(std::mem::take(&mut old.targets));
-                let rendered = renderer.render(&old.block, Some((&old.block, &old.rendered)));
-                self.replace(index, &old.rendered, &rendered);
-                (old.rendered, old.targets) = (rendered, targets.take());
-            }
-            return;
+    fn app(&self) -> Option<App> {
+        self.0.element.app()
+    }
+
+    /// The engine flags: conceal, the terminal's hyperlinks, and a hook on every prose leaf (empty filter).
+    fn flags(&self) -> u32 {
+        let options = self.0.options.borrow();
+        let mut flags = 0;
+        if options.conceal {
+            flags |= sys::OT_MD_CONCEAL;
         }
-        // While streaming, a block is complete once the next one starts in unchanged source. As Core does, the
-        // last complete block is parsed again too, in case the end of the source changes how it reads.
-        let stable = match rebuild {
-            Rebuild::None if options.streaming => {
-                shown.iter().skip(1).take_while(|next| next.start <= unchanged).count().saturating_sub(1)
-            }
-            _ => 0,
-        };
-        let from = if stable == 0 { 0 } else { shown[stable].start };
-        let blocks = document(&source, from);
-        let end = stable + blocks.len();
-        for (index, (start, block)) in (stable..).zip(blocks) {
-            let Some(old) = shown.get_mut(index) else {
-                let rendered = renderer.render(&block, None);
-                self.0.element.insert(rendered.widget().element(), None);
-                shown.push(Shown { start, block, rendered, targets: targets.take() });
-                continue;
-            };
-            let rebuilt = rebuild.matches(&old.block) || rebuild.matches(&block);
-            // Also the code blocks in a list or quote, which are built again with their block.
-            let rerun = matches!(rebuild, Rebuild::Renderers) && old.block.any(&|block| renderer.claims(block));
-            if old.block == block && !rebuilt && !rerun {
-                old.start = start;
-                continue;
-            }
-            previous.replace(std::mem::take(&mut old.targets));
-            let rendered = renderer.render(&block, (!rebuilt).then_some((&old.block, &old.rendered)));
-            self.replace(index, &old.rendered, &rendered);
-            *old = Shown { start, block, rendered, targets: targets.take() };
+        if self.0.hyperlinks.get() {
+            flags |= sys::OT_MD_HYPERLINKS;
         }
-        let end = end.min(shown.len());
-        for removed in shown.drain(end..) {
-            removed.rendered.widget().detach();
+        if options.inline_hook.is_some() {
+            flags |= sys::OT_MD_HOOK;
+        }
+        flags
+    }
+
+    /// Whether the widget writes prose leaves itself: with a hook, without conceal, or without hyperlinks the parser's
+    /// display is not what shows.
+    fn host_writes(&self) -> bool {
+        self.flags() != sys::OT_MD_CONCEAL | sys::OT_MD_HYPERLINKS
+    }
+
+    /// Runs a change on the document and shows what it changed. `finish` says the document does not stream.
+    fn change(&self, run: impl FnOnce(&MarkdownDoc, bool) -> crate::Result<MarkdownResult>) {
+        let Some(app) = self.app() else { return };
+        let Some(doc) = &self.0.doc else { return };
+        self.0.rendered_code.borrow_mut().clear();
+        let result = {
+            let guard = self.0.guard.try_borrow_mut();
+            let _guard = guard.expect("the Markdown content changed while it was read");
+            // Link text depends on hyperlink support, which the terminal reports after startup (N5).
+            let mut options = None;
+            if app.hyperlinks() != self.0.hyperlinks.get() {
+                self.0.hyperlinks.set(app.hyperlinks());
+                let style = self.0.style.as_ref();
+                options = app.report(doc.set_options(&MarkdownOptions { flags: self.flags(), style }));
+            }
+            let streaming = self.0.options.borrow().streaming;
+            let result = app.report(run(doc, !streaming));
+            match (options, result) {
+                (Some(options), Some(result)) => Some(merge(options, result)),
+                (options, result) => result.or(options),
+            }
+        };
+        // Showing the change runs hooks and renderers, which may read the content but not change it.
+        let _guard = self.0.guard.borrow();
+        if let Some(result) = result {
+            self.apply(&app, doc, result);
         }
     }
 
-    /// Puts the widget of the top-level block at `index` in place of the one shown, when it is another.
-    fn replace(&self, index: usize, old: &Rendered, new: &Rendered) {
-        if new.widget() != old.widget() {
-            old.widget().detach();
-            self.0.element.insert(new.widget().element(), Some(index));
+    /// Sends the engine flags after an option change. What the widget wrote under the old options is written again.
+    fn change_options(&self) {
+        for shown in self.0.blocks.borrow_mut().iter_mut() {
+            shown.written = None;
+            shown.content = None;
+        }
+        // The flags as `change` leaves them: it may first take in a new hyperlink capability (N5).
+        let style = self.0.style.as_ref();
+        self.change(|doc, _| doc.set_options(&MarkdownOptions { flags: self.flags(), style }));
+    }
+
+    /// Shows a call's changes: drops the widgets of removed blocks, then builds or updates each listed block.
+    fn apply(&self, app: &App, doc: &MarkdownDoc, result: MarkdownResult) {
+        let mut refresh = Refresh::default();
+        let mut removed = Removed::default();
+        if let Some(from) = result.removed_from {
+            let mut blocks = self.0.blocks.borrow_mut();
+            let at = (from as usize).min(blocks.len());
+            removed = Removed { from: at as u32, blocks: blocks.drain(at..).collect(), reusing: true };
+        }
+        if result.changed > 0
+            && let Some(changes) = app.report(doc.read_changes())
+        {
+            for block in changes {
+                self.update(app, doc, block, &mut refresh, &mut removed);
+            }
+        }
+        // The removed widgets nothing took back: only one whose parent stays is attached to a widget that stays.
+        for shown in &removed.blocks {
+            if let Some(rendered) = &shown.rendered
+                && shown.block.parent.is_none_or(|parent| parent < removed.from)
+            {
+                rendered.widget().detach();
+            }
+        }
+        self.finish_refresh(app, doc, refresh);
+        // Native code may have written bound text without listing it.
+        app.request_redraw();
+    }
+
+    /// Builds a new block's widget, or updates the one shown.
+    fn update(&self, app: &App, doc: &MarkdownDoc, block: MarkdownBlock, refresh: &mut Refresh, removed: &mut Removed) {
+        let index = block.index as usize;
+        let len = self.0.blocks.borrow().len();
+        debug_assert!(index <= len, "blocks arrive in preorder");
+        if index == len {
+            // A text or code block in the place of a removed one of its kind keeps its widget, as an update in
+            // place, so clicks keep reaching what the last frame painted there.
+            if let Some(mut old) = removed.reuse(&block) {
+                if is_prose(&block)
+                    && let Some(Rendered::Text(text)) = &old.rendered
+                    && let Some(node) = text.element().node()
+                {
+                    app.report(doc.bind(block.index, node));
+                }
+                old.block = block.clone();
+                self.0.blocks.borrow_mut().push(old);
+                if block.kind == sys::OT_MD_CODE {
+                    self.update_code(app, doc, &block);
+                }
+                self.after_change(app, doc, index, refresh);
+                return;
+            }
+            let rendered = self.build_block(app, doc, &block);
+            let parent = block.parent;
+            self.0.blocks.borrow_mut().push(Shown {
+                block,
+                rendered: rendered.clone(),
+                written: None,
+                content: None,
+                targets: None,
+                host_wrote: false,
+            });
+            if let Some(rendered) = &rendered {
+                self.attach(parent, rendered);
+            }
+            self.after_change(app, doc, index, refresh);
+            return;
+        }
+        let old_kind = self.0.blocks.borrow()[index].block.kind;
+        let rendered = self.0.blocks.borrow()[index].rendered.clone();
+        self.0.blocks.borrow_mut()[index].block = block.clone();
+        if old_kind != block.kind {
+            // A kind change at the same index: a paragraph that becomes a setext heading keeps its text widget.
+            let keeps = is_prose(&block) && matches!(rendered, Some(Rendered::Text(_))) && old_kind == PARAGRAPH;
+            if !keeps {
+                let new = self.build_block(app, doc, &block);
+                self.replace(block.parent, rendered.as_ref(), new.as_ref());
+                let mut blocks = self.0.blocks.borrow_mut();
+                blocks[index].rendered = new;
+                blocks[index].written = None;
+                blocks[index].content = None;
+                blocks[index].targets = None;
+            }
+        } else if block.kind == sys::OT_MD_CODE {
+            self.update_code(app, doc, &block);
+        }
+        self.after_change(app, doc, index, refresh);
+    }
+
+    /// Shows a code block's new content in the widget it has, or in a new one a renderer returns.
+    fn update_code(&self, app: &App, doc: &MarkdownDoc, block: &MarkdownBlock) {
+        let index = block.index as usize;
+        let rendered = self.0.blocks.borrow()[index].rendered.clone();
+        let new = self.code_block(app, doc, block, rendered.as_ref());
+        if new.as_ref().map(Rendered::widget) != rendered.as_ref().map(Rendered::widget) {
+            self.replace(block.parent, rendered.as_ref(), new.as_ref());
+        }
+        self.0.blocks.borrow_mut()[index].rendered = new;
+    }
+
+    /// What a changed block changes besides its own widget: text the widget writes, and the table or list around it.
+    fn after_change(&self, app: &App, doc: &MarkdownDoc, index: usize, refresh: &mut Refresh) {
+        let (block, rendered) = {
+            let blocks = self.0.blocks.borrow();
+            (blocks[index].block.clone(), blocks[index].rendered.clone())
+        };
+        match (block.kind, rendered) {
+            (PARAGRAPH | HEADING, Some(Rendered::Text(text))) if self.host_writes() => {
+                self.write_prose(app, doc, index, &text, false);
+            }
+            // Native code writes the text: it has no targets once a frame paints it.
+            (PARAGRAPH | HEADING, Some(Rendered::Text(text))) => {
+                if std::mem::take(&mut self.0.blocks.borrow_mut()[index].host_wrote)
+                    && let Some(node) = text.element().node()
+                {
+                    app.report(doc.bind(block.index, node));
+                }
+                self.set_targets(app, index, Vec::new());
+            }
+            (sys::OT_MD_HTML, Some(Rendered::Text(text))) => {
+                if let Some(leaf) = app.report(doc.read_leaf(block.index)) {
+                    text.set_text(String::from_utf8_lossy(&leaf.bytes).into_owned());
+                }
+            }
+            (sys::OT_MD_TABLE, _) => refresh.table(block.index),
+            (sys::OT_MD_LIST, _) => refresh.list(block.index),
+            _ => {}
+        }
+        // A table shows its rows' cells; a list's gaps and markers follow its items and their blocks.
+        if let Some(parent) = block.parent {
+            refresh.parent_changed(&self.0.blocks.borrow(), parent);
         }
     }
+
+    fn finish_refresh(&self, app: &App, doc: &MarkdownDoc, refresh: Refresh) {
+        for table in refresh.tables {
+            self.fill_table(app, doc, table);
+        }
+        for list in refresh.lists {
+            self.update_list(app, doc, list);
+        }
+    }
+
+    /// The style text in block `index` takes where no part styles it: the text style, under each quote around it.
+    fn base(&self, parent: Option<u32>) -> Style {
+        let styles = self.0.styles.get();
+        let blocks = self.0.blocks.borrow();
+        let mut style = styles.text;
+        let mut next = parent;
+        while let Some(index) = next {
+            let Some(shown) = blocks.get(index as usize) else { break };
+            if shown.block.kind == sys::OT_MD_QUOTE {
+                style = style.patch(styles.quote);
+            }
+            next = shown.block.parent;
+        }
+        style
+    }
+
+    /// The widget of a block, without its children (they attach as they arrive).
+    fn build_block(&self, app: &App, doc: &MarkdownDoc, block: &MarkdownBlock) -> Option<Rendered> {
+        let styles = self.0.styles.get();
+        let base = self.base(block.parent);
+        let rendered = match block.kind {
+            PARAGRAPH | HEADING | sys::OT_MD_HTML => {
+                let text = Text::new(app, "").fg(base.fg.unwrap_or(self.0.colors.borrow().text));
+                text.attributes(base.attributes);
+                if is_prose(block) {
+                    // The node draws with the doc's style; the doc writes it unless the widget does.
+                    if let Some(node) = text.element().node() {
+                        app.report(doc.bind(block.index, node));
+                    }
+                }
+                Rendered::Text(text)
+            }
+            sys::OT_MD_CODE => self.code_block(app, doc, block, None)?,
+            sys::OT_MD_RULE => {
+                Rendered::Other(View::new(app).border_sides(Sides::TOP).border_color(styles.rule).height(1))
+            }
+            sys::OT_MD_TABLE => Rendered::Table(self.table(app, base)),
+            sys::OT_MD_QUOTE => Rendered::Other(
+                View::new(app)
+                    .border_sides(Sides::LEFT)
+                    .border_color(styles.quote_border)
+                    .padding_edge(Edge::Left, 1)
+                    .gap(1),
+            ),
+            sys::OT_MD_LIST => Rendered::Other(View::new(app)),
+            sys::OT_MD_ITEM => {
+                let marker = Text::new(app, "").shrink(0.0);
+                let body = View::new(app).grow(1.0);
+                let row = View::new(app).row().child(&marker).child(&body);
+                Rendered::Item { row, marker, body, label: Rc::default() }
+            }
+            _ => return None,
+        };
+        rendered.widget().shrink(0.0);
+        Some(rendered)
+    }
+
+    /// Puts a new block's widget last in its parent's.
+    fn attach(&self, parent: Option<u32>, rendered: &Rendered) {
+        match parent {
+            None => self.0.element.insert(rendered.widget().element(), None),
+            Some(parent) => {
+                let container = self.0.blocks.borrow()[parent as usize].rendered.as_ref().and_then(Rendered::container);
+                if let Some(container) = container {
+                    container.add(&rendered.widget());
+                }
+            }
+        }
+    }
+
+    /// Puts `new` in place of `old` in the parent's widget.
+    fn replace(&self, parent: Option<u32>, old: Option<&Rendered>, new: Option<&Rendered>) {
+        let container = match parent {
+            None => None,
+            Some(parent) => self.0.blocks.borrow()[parent as usize].rendered.as_ref().and_then(Rendered::container),
+        };
+        let element = container.as_ref().map_or(&self.0.element, |view| view.element());
+        let position = old.and_then(|old| {
+            let id = old.widget().id();
+            element.child_behaviors().iter().position(|child| child.element().id() == id)
+        });
+        if let Some(old) = old {
+            old.widget().detach();
+        }
+        if let Some(new) = new {
+            element.insert(new.widget().element(), position);
+        }
+    }
+
+    /// Writes a paragraph or heading the widget writes itself: the parser's output through the inline hook, with its
+    /// click targets. An unchanged output is not written again unless `force`, so the hook runs once per change.
+    fn write_prose(&self, app: &App, doc: &MarkdownDoc, index: usize, text: &Text, force: bool) {
+        let block = self.0.blocks.borrow()[index].block.index;
+        let Some(leaf) = app.report(doc.read_leaf(block)) else { return };
+        // A hook's output depends on the inline source too.
+        let source = self.0.options.borrow().inline_hook.as_ref().map(|_| doc.read_source(block).unwrap_or_default());
+        let written = (leaf, source);
+        if !force && self.0.blocks.borrow()[index].written.as_ref() == Some(&written) {
+            return;
+        }
+        let spans = self.hook(doc, block, leaf_spans(&written.0), false, written.1.as_deref());
+        let (mut ranges, mut end) = (Vec::new(), 0);
+        let content: Vec<Span<'static>> = spans
+            .into_iter()
+            .map(|InlineSpan { span, target, .. }| {
+                let start = end;
+                end += span.content.len();
+                ranges.extend(target.map(|target| (start..end, target)));
+                span
+            })
+            .collect();
+        let mut hasher = DefaultHasher::new();
+        for span in &content {
+            (&span.content, span.style, &span.link).hash(&mut hasher);
+        }
+        let hash = Some(hasher.finish());
+        if self.0.blocks.borrow()[index].content != hash {
+            text.set_text(content);
+        }
+        {
+            let mut blocks = self.0.blocks.borrow_mut();
+            blocks[index].written = Some(written);
+            blocks[index].content = hash;
+            blocks[index].host_wrote = true;
+        }
+        self.set_targets(app, index, ranges);
+    }
+
+    /// The click targets of block `index`'s text from the next frame on; until a frame paints them, clicks keep
+    /// reaching the ones on screen.
+    fn set_targets(&self, app: &App, index: usize, ranges: Vec<(Range<usize>, String)>) {
+        let since = app.painted_frames();
+        let mut blocks = self.0.blocks.borrow_mut();
+        let shown = &mut blocks[index];
+        let painted =
+            shown.targets.take().map_or_else(Vec::new, |old| if old.since < since { old.ranges } else { old.painted });
+        if !ranges.is_empty() || !painted.is_empty() {
+            shown.targets = Some(Targets { ranges, since, painted });
+            app.request_redraw();
+        }
+    }
+
+    /// `spans` of leaf `block` as the inline hook rewrites them, if there is one; `source` is its inline source, if
+    /// read already.
+    fn hook(
+        &self,
+        doc: &MarkdownDoc,
+        block: u32,
+        spans: Vec<InlineSpan>,
+        table_cell: bool,
+        source: Option<&str>,
+    ) -> Vec<InlineSpan> {
+        let options = Rc::clone(&self.0.options.borrow());
+        let Some(hook) = &options.inline_hook else { return spans };
+        let source = source.map_or_else(|| doc.read_source(block).unwrap_or_default(), str::to_owned);
+        let syntax = Arc::clone(&self.0.syntax.borrow());
+        hook(spans, &InlineContext { source: &source, conceal: options.conceal, syntax: &syntax, table_cell })
+    }
+
+    /// A code block: from a registered renderer, or highlighted as the filetype its fence names. `previous` is the
+    /// block's widget shown so far.
+    fn code_block(
+        &self,
+        app: &App,
+        doc: &MarkdownDoc,
+        block: &MarkdownBlock,
+        previous: Option<&Rendered>,
+    ) -> Option<Rendered> {
+        let code = String::from_utf8_lossy(&app.report(doc.read_leaf(block.index))?.bytes).into_owned();
+        // Read without the borrow guard: a change holds it, and nothing changes the source here.
+        let source = app.report(doc.source())?;
+        let info = source[block.info.start as usize..block.info.end as usize].to_owned();
+        let info = (!info.is_empty()).then_some(info);
+        let options = Rc::clone(&self.0.options.borrow());
+        let custom = info.as_deref().and_then(|info| {
+            let language = filetype_for_info_string(info)?;
+            let (_, render) = options.code_blocks.iter().find(|(key, _)| *key == language)?;
+            let previous = match previous {
+                Some(Rendered::Custom(widget)) => Some(widget),
+                _ => None,
+            };
+            let closed = block.has(sys::OT_MD_BLOCK_CLOSED);
+            let (conceal, streaming) = (options.conceal, options.streaming);
+            if !streaming {
+                self.0.rendered_code.borrow_mut().push(block.index);
+            }
+            render(&CodeBlock { app, language: &language, info, code: &code, closed, conceal, streaming, previous })
+        });
+        if let Some(widget) = custom {
+            return Some(Rendered::Custom(widget));
+        }
+        if let Some(Rendered::Code(container, view)) = previous {
+            view.set_code(code.as_str());
+            return Some(Rendered::Code(container.clone(), view.clone()));
+        }
+        let language = info.as_deref().and_then(|info| info.split_whitespace().next());
+        let base = self.base(block.parent);
+        let colors = *self.0.colors.borrow();
+        // It shows all its lines, so it has nothing to scroll and takes no focus: Tab passes over it.
+        let view = Code::themed(app, Arc::clone(&self.0.syntax.borrow()))
+            .fg(base.fg.unwrap_or(colors.text))
+            .filetype(language)
+            .set_code(code)
+            .focusable(false);
+        Some(Rendered::Code(View::new(app).bg(colors.code_bg).child(&view), view))
+    }
+
+    fn table(&self, app: &App, base: Style) -> TextTable {
+        let options = self.0.options.borrow().table;
+        let styles = self.0.styles.get();
+        let columns = options.style == MarkdownTableStyle::Columns;
+        let borders = options.borders.unwrap_or(!columns);
+        let widget = TextTable::new(app).fg(base.fg.unwrap_or(self.0.colors.borrow().text));
+        if let Some(style) = options.border_style {
+            widget.border(style);
+        }
+        let width_mode = if columns { ColumnWidthMode::Content } else { ColumnWidthMode::Full };
+        widget
+            .grid_lines(borders)
+            .outer_border(options.outer_border.unwrap_or(borders))
+            .show_borders(borders)
+            .border_color(options.border_color.unwrap_or(styles.rule))
+            .column_width_mode(options.width_mode.unwrap_or(width_mode))
+            .column_fitter(options.column_fitter.unwrap_or_default())
+            .wrap(options.wrap.unwrap_or(WrapMode::Word))
+            .cell_padding_x(options.cell_padding_x.unwrap_or(0))
+            .cell_padding_y(options.cell_padding_y.unwrap_or(0))
+            .column_gap(if columns && !borders { 2 } else { 0 })
+            .selectable(options.selectable.unwrap_or(true));
+        widget
+    }
+
+    /// Fills a table from its rows and cells: a header row in the heading color, then the body, each row as wide as
+    /// the header. Like Core's, cells do not follow column alignment.
+    fn fill_table(&self, app: &App, doc: &MarkdownDoc, table: u32) {
+        let (widget, columns, rows) = {
+            let blocks = self.0.blocks.borrow();
+            let Some(Some(Rendered::Table(widget))) = blocks.get(table as usize).map(|shown| shown.rendered.clone())
+            else {
+                return;
+            };
+            let columns = blocks[table as usize].block.number as usize;
+            let mut rows: Vec<(bool, Vec<u32>)> = Vec::new();
+            for shown in &blocks[table as usize + 1..] {
+                match (shown.block.kind, shown.block.parent) {
+                    (sys::OT_MD_TABLE_ROW, Some(parent)) if parent == table => {
+                        rows.push((shown.block.has(sys::OT_MD_BLOCK_HEADER), Vec::new()));
+                    }
+                    (sys::OT_MD_TABLE_CELL, Some(_)) => {
+                        rows.last_mut().expect("a cell follows its row").1.push(shown.block.index)
+                    }
+                    _ => break,
+                }
+            }
+            (widget, columns, rows)
+        };
+        let header = self.0.styles.get().table_header;
+        let content: Vec<Vec<Content>> = rows
+            .into_iter()
+            .map(|(is_header, cells)| {
+                let mut row: Vec<Content> = cells
+                    .into_iter()
+                    .map(|cell| {
+                        let leaf = app.report(doc.read_leaf(cell)).unwrap_or_default();
+                        let spans = self.hook(doc, cell, leaf_spans(&leaf), true, None);
+                        Content(
+                            spans
+                                .into_iter()
+                                .map(|span| {
+                                    let span = span.span;
+                                    if is_header { Span { style: header.patch(span.style), ..span } } else { span }
+                                })
+                                .collect(),
+                        )
+                    })
+                    .collect();
+                row.resize_with(row.len().max(columns), || Content(Vec::new()));
+                row
+            })
+            .collect();
+        widget.set_content(content);
+    }
+
+    /// A list's gap and its items' markers: numbers align on their right, and the list is loose when a blank line
+    /// separates items (tight once it closes unless the engine says otherwise).
+    fn update_list(&self, app: &App, doc: &MarkdownDoc, list: u32) {
+        let blocks = self.0.blocks.borrow();
+        let Some(shown) = blocks.get(list as usize) else { return };
+        let Some(Rendered::Other(view)) = &shown.rendered else { return };
+        let block = &shown.block;
+        let end = (list as usize + 1..blocks.len())
+            .find(|&i| blocks[i].block.parent.is_none_or(|parent| parent < list))
+            .unwrap_or(blocks.len());
+        let items: Vec<&Shown> =
+            blocks[list as usize + 1..end].iter().filter(|item| item.block.parent == Some(list)).collect();
+        // The engine says once the list closes; until then, as CommonMark decides it for the lines so far: loose when
+        // a blank line separates two items or two blocks of an item.
+        let tight = if block.has(sys::OT_MD_BLOCK_OPEN) {
+            // Read only for an item with two blocks, so a streamed list does not copy its source per append.
+            let source = std::cell::OnceCell::new();
+            let separated = |a: &Shown, b: &Shown| {
+                source
+                    .get_or_init(|| app.report(doc.source()).unwrap_or_default())
+                    .get(a.block.source.end as usize..b.block.source.start as usize)
+                    .is_some_and(|gap| gap.matches('\n').count() > 1)
+            };
+            // One pass in preorder: an item's blocks come together, each after the one before it.
+            let mut last: Option<&Shown> = None;
+            !items.iter().any(|item| item.block.has(sys::OT_MD_BLOCK_BLANK_AFTER))
+                && !blocks[list as usize + 1..end].iter().any(|child| {
+                    let Some(parent) = child.block.parent else { return false };
+                    if parent == list {
+                        last = None;
+                        return false;
+                    }
+                    if blocks[parent as usize].block.parent != Some(list) {
+                        return false;
+                    }
+                    last.replace(child).is_some_and(|previous| separated(previous, child))
+                })
+        } else {
+            block.has(sys::OT_MD_BLOCK_TIGHT)
+        };
+        let gap = if tight { 0 } else { 1 };
+        view.gap(gap);
+        let ordered = block.has(sys::OT_MD_BLOCK_ORDERED);
+        let last = u64::from(block.number) + (items.len() as u64).saturating_sub(1);
+        let digits = |number: u64| number.checked_ilog10().unwrap_or(0) as usize + 1;
+        let width = if ordered { digits(last) + 1 } else { 1 };
+        let marker = self.base(Some(list)).patch(self.0.styles.get().list);
+        let conceal = self.0.options.borrow().conceal;
+        let mut text = String::new();
+        for (n, item) in items.iter().enumerate() {
+            let Some(Rendered::Item { marker: widget, body, label, .. }) = &item.rendered else { continue };
+            let task = match (item.block.has(sys::OT_MD_BLOCK_TASK), item.block.has(sys::OT_MD_BLOCK_CHECKED), conceal)
+            {
+                (false, ..) => "",
+                (true, true, true) => " ☑",
+                (true, false, true) => " ☐",
+                (true, true, false) => " [x]",
+                (true, false, false) => " [ ]",
+            };
+            text.clear();
+            if ordered {
+                let number = u64::from(block.number) + n as u64;
+                text.extend(std::iter::repeat_n(' ', width - digits(number) - 1));
+                let _ = write!(text, "{number}.{task} ");
+            } else {
+                let _ = write!(text, "-{task} ");
+            }
+            if *label.borrow() != text {
+                widget.set_text(vec![Span::styled(text.clone(), marker)]);
+                label.replace(text.clone());
+            }
+            body.gap(gap);
+        }
+    }
+
+    /// Runs the code-block renderers again with their widgets, for a change they read: the end of streaming.
+    fn rerun_renderers(&self) {
+        let (Some(app), Some(doc)) = (self.app(), &self.0.doc) else { return };
+        let count = self.0.blocks.borrow().len();
+        for index in 0..count {
+            let (block, rendered) = {
+                let blocks = self.0.blocks.borrow();
+                (blocks[index].block.clone(), blocks[index].rendered.clone())
+            };
+            // A renderer that chose the default widget while streaming may choose its own now; one the finish
+            // already asked is not asked again.
+            if block.kind != sys::OT_MD_CODE
+                || self.0.options.borrow().code_blocks.is_empty()
+                || self.0.rendered_code.borrow().contains(&block.index)
+            {
+                continue;
+            }
+            let new = self.code_block(&app, doc, &block, rendered.as_ref());
+            if new.as_ref().map(Rendered::widget) != rendered.as_ref().map(Rendered::widget) {
+                self.replace(block.parent, rendered.as_ref(), new.as_ref());
+            }
+            self.0.blocks.borrow_mut()[index].rendered = new;
+        }
+    }
+
+    /// New styles from `colors`, `syntax` and `scopes`: the doc's style takes them, so the text it writes repaints
+    /// as is; the widgets around it are built again.
+    fn restyle(&self) {
+        let options = Rc::clone(&self.0.options.borrow());
+        let styles = MarkdownStyles::new(&self.0.colors.borrow(), options.scopes.then_some(&**self.0.syntax.borrow()));
+        self.0.styles.set(styles);
+        if let (Some(app), Some(style)) = (self.app(), &self.0.style) {
+            app.report(styles.register(style));
+        }
+        self.rebuild_all();
+    }
+
+    fn rebuild_all(&self) {
+        let tops: Vec<u32> =
+            self.0.blocks.borrow().iter().filter(|shown| shown.block.parent.is_none()).map(|s| s.block.index).collect();
+        for top in tops {
+            self.rebuild_subtree(top);
+        }
+    }
+
+    /// Builds top-level block `top` and its descendants again, keeping the text widgets of paragraphs and headings
+    /// (the doc writes them, or the widget writes them again here).
+    fn rebuild_subtree(&self, top: u32) {
+        let (Some(app), Some(doc)) = (self.app(), &self.0.doc) else { return };
+        let end = {
+            let blocks = self.0.blocks.borrow();
+            (top as usize + 1..blocks.len()).find(|&i| blocks[i].block.parent.is_none()).unwrap_or(blocks.len())
+        };
+        let old_top = self.0.blocks.borrow()[top as usize].rendered.clone();
+        let position = old_top.as_ref().and_then(|old| {
+            let id = old.widget().id();
+            self.0.element.child_behaviors().iter().position(|child| child.element().id() == id)
+        });
+        if let Some(old) = &old_top {
+            old.widget().detach();
+        }
+        let mut refresh = Refresh::default();
+        for index in top as usize..end {
+            let (block, old) = {
+                let blocks = self.0.blocks.borrow();
+                (blocks[index].block.clone(), blocks[index].rendered.clone())
+            };
+            let new = match (&block.kind, old) {
+                (&PARAGRAPH | &HEADING, Some(Rendered::Text(text))) => {
+                    let base = self.base(block.parent);
+                    text.detach();
+                    text.fg(base.fg.unwrap_or(self.0.colors.borrow().text)).attributes(base.attributes);
+                    Some(Rendered::Text(text))
+                }
+                _ => self.build_block(&app, doc, &block),
+            };
+            self.0.blocks.borrow_mut()[index].rendered = new.clone();
+            if index != top as usize
+                && let Some(new) = &new
+            {
+                self.attach(block.parent, new);
+            }
+        }
+        let new_top = self.0.blocks.borrow()[top as usize].rendered.clone();
+        if let Some(new_top) = &new_top {
+            self.0.element.insert(new_top.widget().element(), position);
+        }
+        for index in top as usize..end {
+            self.after_rebuild(&app, doc, index, &mut refresh);
+        }
+        self.finish_refresh(&app, doc, refresh);
+    }
+
+    fn after_rebuild(&self, app: &App, doc: &MarkdownDoc, index: usize, refresh: &mut Refresh) {
+        let (block, rendered) = {
+            let blocks = self.0.blocks.borrow();
+            (blocks[index].block.clone(), blocks[index].rendered.clone())
+        };
+        if let (PARAGRAPH | HEADING, Some(Rendered::Text(text))) = (block.kind, &rendered) {
+            if self.host_writes() {
+                self.write_prose(app, doc, index, text, true);
+                return;
+            }
+            // Attached again, the text shows what the widget last set: native code writes it whole when bound again.
+            self.0.blocks.borrow_mut()[index].host_wrote = true;
+        }
+        self.after_change(app, doc, index, refresh);
+    }
+}
+
+/// The blocks a call removed, kept until it ends: a text or code block that takes a removed one's place, while
+/// every block before it in the removed range did, keeps the removed one's widget.
+#[derive(Default)]
+struct Removed {
+    from: u32,
+    blocks: Vec<Shown>,
+    reusing: bool,
+}
+
+impl Removed {
+    fn reuse(&mut self, block: &MarkdownBlock) -> Option<Shown> {
+        // Containers are never taken back, and taking back stops at the first that is not: a block taken back has a
+        // parent that stays.
+        let at = block.index.checked_sub(self.from).map(|at| at as usize);
+        let reusable = self.reusing
+            && at.and_then(|at| self.blocks.get(at)).is_some_and(|old| {
+                old.block.kind == block.kind
+                    && old.block.parent == block.parent
+                    && matches!(old.rendered, Some(Rendered::Text(_) | Rendered::Code(..) | Rendered::Custom(_)))
+            });
+        self.reusing = reusable;
+        if !reusable {
+            return None;
+        }
+        let old = &mut self.blocks[(block.index - self.from) as usize];
+        Some(Shown {
+            block: old.block.clone(),
+            rendered: old.rendered.take(),
+            written: old.written.take(),
+            content: old.content.take(),
+            targets: old.targets.take(),
+            host_wrote: false,
+        })
+    }
+}
+
+/// The tables and lists a call changed, refreshed once each after its blocks.
+#[derive(Default)]
+struct Refresh {
+    tables: std::collections::BTreeSet<u32>,
+    lists: std::collections::BTreeSet<u32>,
+}
+
+impl Refresh {
+    fn table(&mut self, table: u32) {
+        self.tables.insert(table);
+    }
+
+    fn list(&mut self, list: u32) {
+        self.lists.insert(list);
+    }
+
+    /// A child of `parent` changed: a row's or a cell's table, an item's list.
+    fn parent_changed(&mut self, blocks: &[Shown], parent: u32) {
+        let Some(shown) = blocks.get(parent as usize) else { return };
+        match shown.block.kind {
+            sys::OT_MD_TABLE => self.table(parent),
+            sys::OT_MD_TABLE_ROW => self.table(shown.block.parent.expect("a row has its table")),
+            sys::OT_MD_LIST => self.list(parent),
+            sys::OT_MD_ITEM => self.list(shown.block.parent.expect("an item has its list")),
+            _ => {}
+        }
+    }
+}
+
+/// Two calls' results as one: the earlier removal, the later counts.
+fn merge(first: MarkdownResult, second: MarkdownResult) -> MarkdownResult {
+    let removed_from = match (first.removed_from, second.removed_from) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    MarkdownResult { removed_from, ..second }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::TestApp;
 
-    thread_local! {
-        /// Targets compared while matching new targets to old ones.
-        pub(super) static LOOKUPS: Cell<usize> = const { Cell::new(0) };
-    }
-
+    /// The Rust widget's block widgets follow the engine's blocks: every listed block of a corpus row, streamed in
+    /// its chunks, has the widget its kind takes.
     #[test]
-    fn rebuilt_lists_do_not_look_up_targets_their_new_texts_cannot_have() {
-        let app = crate::testing::TestApp::new(20, 10);
-        let markdown = Markdown::new(&app).inline_hook(|spans, _| {
-            spans.into_iter().map(|span| InlineSpan { target: Some("id".to_owned()), ..span }).collect()
-        });
+    fn widgets_follow_the_engines_blocks_across_kind_changes_and_removals() {
+        let app = TestApp::new(40, 12);
+        let markdown = Markdown::new(&app).streaming(true);
         app.root().add(&markdown);
-        markdown.set_markdown((1..=8).map(|item| format!("- item {item}\n")).collect::<String>());
-        app.render();
-        LOOKUPS.with(|lookups| lookups.set(0));
-        markdown.rerun_inline_hook(|_| true);
-        assert_eq!(LOOKUPS.with(Cell::get), 0);
-        // A paragraph updated in place finds its own targets.
-        markdown.set_markdown("one\n\ntwo");
-        app.render();
-        LOOKUPS.with(|lookups| lookups.set(0));
-        markdown.rerun_inline_hook(|_| true);
-        assert_eq!(LOOKUPS.with(Cell::get), 2);
-    }
-
-    fn inline(text: &str, base: Style, options: &Inline) -> Vec<Span<'static>> {
-        super::inline(text, base, options).into_iter().map(|span| span.span).collect()
-    }
-
-    fn paragraph(text: &str) -> Block {
-        Block::Paragraph(text.into())
-    }
-
-    fn item(blocks: Vec<Block>) -> Item {
-        Item { task: None, blocks }
-    }
-
-    #[test]
-    fn blocks_cover_headings_paragraphs_quotes_code_and_rules() {
-        let markdown = "# Title #\n\nOne\nparagraph.  \nBroken.\n\nSetext\n===\n\n> quoted\nlazy\n> > nested\n\n---\n\n```rs\nfn x() {}\n```\n\n    indented\n    code\nafter";
-        assert_eq!(
-            blocks(markdown),
-            [
-                Block::Heading(1, "Title".into()),
-                paragraph("One\nparagraph.\nBroken."),
-                Block::Heading(1, "Setext".into()),
-                Block::Quote(vec![paragraph("quoted\nlazy"), Block::Quote(vec![paragraph("nested")])]),
-                Block::Rule,
-                Block::Code(Some("rs".into()), "fn x() {}".into(), true),
-                Block::Code(None, "indented\ncode".into(), true),
-                paragraph("after"),
-            ]
-        );
-    }
-
-    /// The shared corpus that Core's markdown-parser test runs through marked: name, chunks, HTML, and the checks
-    /// that disagree with the row.
-    fn corpus() -> Vec<(String, Vec<String>, String, Vec<String>)> {
-        let mut corpus: serde_json::Value =
-            serde_json::from_str(include_str!("../../../../../core/src/renderables/markdown.conformance.json"))
-                .unwrap();
-        let rows: Vec<Vec<serde_json::Value>> = serde_json::from_value(corpus["rows"].take()).unwrap();
-        rows.into_iter()
-            .map(|mut row| {
-                row.truncate(4);
-                serde_json::from_value(serde_json::Value::Array(row)).unwrap()
-            })
-            .collect()
-    }
-
-    /// The rows whose check result differs from their listing, as `name|check`.
-    fn unexpected(check: &str, agrees: impl Fn(&[String], &str) -> bool) -> Vec<String> {
-        corpus()
-            .into_iter()
-            .filter(|(_, chunks, html, fails)| agrees(chunks, html) == fails.iter().any(|f| f == check))
-            .map(|(name, ..)| format!("{name}|{check}"))
-            .collect()
-    }
-
-    /// The block tags of an HTML fragment without attributes, and the text of its table cells:
-    /// `<ul><li><p></p></li></ul><table><thead><tr><th>a</th></tr></thead></table>`.
-    fn html_tags(html: &str) -> String {
-        let mut tags = String::new();
-        let mut cell: Option<String> = None;
-        for (index, piece) in html.split('<').enumerate() {
-            let (tag, text) = if index == 0 { ("", piece) } else { piece.split_once('>').unwrap_or((piece, "")) };
-            let close = if tag.starts_with('/') { "/" } else { "" };
-            let name = tag[close.len()..].split(|c: char| !c.is_ascii_alphanumeric()).next().unwrap_or_default();
-            if name == "th" || name == "td" {
-                if let Some(text) = cell.take() {
-                    tags.push_str(
-                        &text.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&amp;", "&"),
-                    );
-                }
-                cell = close.is_empty().then(String::new);
-            }
-            if TAGS.contains(&name) {
-                tags.push_str(&format!("<{close}{name}>"));
-            }
-            if let Some(cell) = cell.as_mut() {
-                cell.push_str(text);
-            }
+        for chunk in ["para", "\n===\n\n| a |\n| - |\n| 1 |", "\n\n> q\n\n- x\n- y\n\n```rs\nfn x() {}\n```\n"] {
+            markdown.append(chunk);
         }
-        tags
-    }
-
-    const TAGS: [&str; 19] = [
-        "p",
-        "h1",
-        "h2",
-        "h3",
-        "h4",
-        "h5",
-        "h6",
-        "pre",
-        "ul",
-        "ol",
-        "li",
-        "blockquote",
-        "hr",
-        "table",
-        "thead",
-        "tbody",
-        "tr",
-        "th",
-        "td",
-    ];
-
-    /// The tags `html_tags` reads, for these blocks. A tight list's paragraphs have none; a cell holds its shown text.
-    fn block_tags(blocks: &[Block], tight: bool) -> String {
-        let colors = MarkdownColors::from_theme(&Theme::default());
-        let options = Inline { styles: MarkdownStyles::new(&colors, None), conceal: true, urls: false };
-        let row = |cell: &str, cells: &[String]| -> String {
-            let text = |text: &String| {
-                inline(text, Style::new(), &options).iter().map(|span| span.content.to_string()).collect::<String>()
-            };
-            format!("<tr>{}</tr>", cells.iter().map(|c| format!("<{cell}>{}</{cell}>", text(c))).collect::<String>())
-        };
-        blocks
-            .iter()
-            .map(|block| match block {
-                Block::Heading(level, _) => format!("<h{level}></h{level}>"),
-                Block::Paragraph(_) if tight => String::new(),
-                Block::Paragraph(_) => "<p></p>".into(),
-                Block::List(list) => {
-                    let name = if list.start.is_some() { "ol" } else { "ul" };
-                    let items: String = list
-                        .items
-                        .iter()
-                        .map(|item| format!("<li>{}</li>", block_tags(&item.blocks, list.tight)))
-                        .collect();
-                    format!("<{name}>{items}</{name}>")
-                }
-                Block::Quote(blocks) => format!("<blockquote>{}</blockquote>", block_tags(blocks, false)),
-                Block::Code(..) => "<pre></pre>".into(),
-                Block::Table(table) => {
-                    let body: String = table.rows.iter().map(|cells| row("td", cells)).collect();
-                    let body = if body.is_empty() { body } else { format!("<tbody>{body}</tbody>") };
-                    format!("<table><thead>{}</thead>{body}</table>", row("th", &table.header))
-                }
-                Block::Rule => "<hr>".into(),
-            })
-            .collect()
-    }
-
-    /// A row's chunks, or 32 pieces of equal code point count for a one-chunk row, as the corpus format says.
-    fn pieces(chunks: &[String]) -> Vec<&str> {
-        let [text] = chunks else { return chunks.iter().map(String::as_str).collect() };
-        let size = text.chars().count().div_ceil(32).max(1);
-        let starts: Vec<usize> = text.char_indices().map(|(i, _)| i).step_by(size).chain([text.len()]).collect();
-        starts.windows(2).map(|pair| &text[pair[0]..pair[1]]).collect()
-    }
-
-    #[test]
-    fn corpus_blocks_follow_the_spec_unless_listed() {
-        let wrong =
-            unexpected("rust-blocks", |chunks, html| block_tags(&blocks(&chunks.concat()), false) == html_tags(html));
-        assert!(wrong.is_empty(), "{wrong:#?}");
-    }
-
-    #[test]
-    fn corpus_streams_parse_as_fresh_text_unless_listed() {
-        let app = crate::testing::TestApp::new(60, 10);
-        let wrong = unexpected("rust-stream", |chunks, _| {
-            let markdown = Markdown::new(&app).streaming(true);
-            let mut text = String::new();
-            pieces(chunks).into_iter().all(|piece| {
-                markdown.append(piece);
-                text.push_str(piece);
-                markdown.0.shown.borrow().iter().map(|shown| &shown.block).eq(&blocks(&text))
-            })
-        });
-        assert!(wrong.is_empty(), "{wrong:#?}");
-    }
-
-    #[test]
-    fn lists_nest_hold_blocks_and_track_tightness() {
-        let markdown =
-            "- a\n  continued\n  - nested\n    1. deep\n- [x] done\n\n3. three\n4. four\n\n   ```\n   code\n   ```\n";
-        assert_eq!(
-            blocks(markdown),
-            [
-                Block::List(List {
-                    start: None,
-                    tight: true,
-                    items: vec![
-                        item(vec![
-                            paragraph("a\ncontinued"),
-                            Block::List(List {
-                                start: None,
-                                tight: true,
-                                items: vec![item(vec![
-                                    paragraph("nested"),
-                                    Block::List(List {
-                                        start: Some(1),
-                                        tight: true,
-                                        items: vec![item(vec![paragraph("deep")])]
-                                    }),
-                                ])],
-                            }),
-                        ]),
-                        Item { task: Some(true), blocks: vec![paragraph("done")] },
-                    ],
-                }),
-                Block::List(List {
-                    start: Some(3),
-                    tight: false,
-                    items: vec![
-                        item(vec![paragraph("three")]),
-                        item(vec![paragraph("four"), Block::Code(None, "code".into(), true)]),
-                    ],
-                }),
-            ]
-        );
-    }
-
-    #[test]
-    fn tables_parse_alignment_and_ragged_rows() {
-        // As in GitHub's spec, a table runs until a blank line or another block.
-        let markdown = "| Name | Size |\n| :--- | ---: |\n| a \\| b | 1 |\n| c |\n\nafter";
-        assert_eq!(
-            blocks(markdown),
-            [
-                Block::Table(Table {
-                    alignments: vec![Alignment::Left, Alignment::Right],
-                    header: vec!["Name".into(), "Size".into()],
-                    rows: vec![vec!["a | b".into(), "1".into()], vec!["c".into(), String::new()]],
-                }),
-                paragraph("after"),
-            ]
-        );
-        // Without a delimiter row, pipes are text.
-        assert_eq!(blocks("a | b\nc | d"), [paragraph("a | b\nc | d")]);
-    }
-
-    #[test]
-    fn documents_record_where_blocks_start() {
-        let markdown = "# A\r\n\r\npara\ngraph\n\n- x\n- y\n\n```\ncode";
-        let starts: Vec<usize> = document(markdown, 0).iter().map(|(start, _)| *start).collect();
-        assert_eq!(starts, [0, 7, 19, 28]);
-        // Parsing from a block's start finds the same blocks from there.
-        assert_eq!(document(markdown, 19), document(markdown, 0)[2..]);
-    }
-
-    #[test]
-    fn inline_styles_nest_and_links_keep_urls() {
-        let colors = MarkdownColors::from_theme(&Theme::default());
-        let concealed = Inline { styles: MarkdownStyles::new(&colors, None), conceal: true, urls: false };
-        let spans = inline(
-            "a **b *c*** `d` [e](https://x.test) \\*f\\* snake_case_name <https://auto.test> see https://bare.test/x). ![pic](p.png)",
-            Style::new(),
-            &concealed,
-        );
-        let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
-        assert_eq!(text, "a b c d e *f* snake_case_name https://auto.test see https://bare.test/x). pic");
-        let find = |content: &str| spans.iter().find(|span| span.content == content).unwrap();
-        assert!(find("b ").style.attributes.contains(Attributes::BOLD));
-        let c = find("c").style.attributes;
-        assert!(c.contains(Attributes::BOLD) && c.contains(Attributes::ITALIC));
-        assert_eq!(find("d").style.bg, Some(colors.code_bg));
-        assert_eq!(find("e").link.as_deref(), Some("https://x.test"));
-        assert_eq!(find("https://auto.test").link.as_deref(), Some("https://auto.test"));
-        assert_eq!(find("https://bare.test/x").link.as_deref(), Some("https://bare.test/x"));
-        assert_eq!(find("pic").link.as_deref(), Some("p.png"));
-        // Double backticks hold single ones.
-        let spans = inline("``a ` b``", Style::new(), &concealed);
-        assert_eq!(spans[0].content, "a ` b");
-        // Emphasis closes past strong text inside it, including a run that closes both.
-        let styled = |text: &str| {
-            let spans = inline(text, Style::new(), &concealed);
-            spans.iter().map(|span| (span.content.to_string(), span.style.attributes)).collect::<Vec<_>>()
-        };
-        let (bold, italic) = (Attributes::BOLD, Attributes::ITALIC);
-        assert_eq!(styled("*a **b***"), [("a ".into(), italic), ("b".into(), bold | italic)]);
-        assert_eq!(styled("*c***"), [("c".into(), italic), ("**".into(), Attributes::default())]);
-        assert_eq!(styled("*a**"), [("a".into(), italic), ("*".into(), Attributes::default())]);
-    }
-
-    #[test]
-    fn inline_source_keeps_markers_and_concealed_links_show_urls() {
-        let colors = MarkdownColors::from_theme(&Theme::default());
-        let text = |markdown: &str, conceal: bool, urls: bool| {
-            let spans =
-                inline(markdown, Style::new(), &Inline { styles: MarkdownStyles::new(&colors, None), conceal, urls });
-            spans.iter().map(|span| span.content.as_ref()).collect::<String>()
-        };
-        let markdown =
-            "**a** __b__ *c* _d_ ~~e~~ ``f`` [g](https://g.test \"t\") ![h](h.png) <https://i.test> \\* j\\\nk";
-        assert_eq!(text(markdown, false, true), markdown);
-        assert_eq!(text(markdown, true, false), "a b c d e f g h https://i.test * j\nk");
-        // Without hyperlinks, a link shows its URL unless the label already does.
-        assert_eq!(text(markdown, true, true), "a b c d e f g (https://g.test) h https://i.test * j\nk");
-        assert_eq!(text("[https://x.test](https://x.test)", true, true), "https://x.test");
-        // Markers take the style of what they mark.
-        let spans = inline(
-            "**a**",
-            Style::new(),
-            &Inline { styles: MarkdownStyles::new(&colors, None), conceal: false, urls: false },
-        );
-        assert!(spans.iter().all(|span| span.style.attributes.contains(Attributes::BOLD)));
+        markdown.set_markdown("para\n===\n\nother");
+        let blocks = markdown.0.blocks.borrow();
+        let kinds: Vec<u32> = blocks.iter().map(|shown| shown.block.kind).collect();
+        assert_eq!(kinds, [HEADING, PARAGRAPH]);
+        assert!(blocks.iter().all(|shown| matches!(shown.rendered, Some(Rendered::Text(_)))));
+        drop(blocks);
+        assert_eq!(app.text().trim_end(), "para\n===\n\nother");
     }
 }

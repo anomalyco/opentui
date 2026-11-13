@@ -1,5 +1,8 @@
 use super::line_numbers::GutterInner;
-use super::{Behavior, Callbacks, Element, ScrollAction, SelectionUpdate, VisibleLines, Widget, build, keymap_methods};
+use super::{
+    Behavior, Callbacks, Element, LocalSelection, ScrollAction, SelectionUpdate, VisibleLines, Widget, build,
+    keymap_methods,
+};
 use crate::app::{App, Cx, ProxyError};
 use crate::input::{KeyEvent, Keymap, MouseEvent, MouseEventKind};
 use crate::layout::{FlexDirection, LayoutProperty, Length};
@@ -53,6 +56,10 @@ pub(crate) struct CodeInner {
     laid_out_height: Cell<Option<u32>>,
     selectable: Cell<bool>,
     selection_colors: Cell<SelectionColors>,
+    selection: Cell<Option<LocalSelection>>,
+    /// Whether the text changed under a selection since the last frame, which applies it again once following,
+    /// scrolling and wrapping settled, as Core's Code does when it sets its text in the frame.
+    reselect: Cell<bool>,
 }
 
 impl CodeInner {
@@ -116,8 +123,7 @@ impl CodeInner {
         };
         self.report(result);
         self.forget_highlight();
-        self.mark_stale();
-        self.gutter.changed();
+        self.changed();
     }
 
     /// Shows appended text plain after the shown highlight until the next one lands.
@@ -127,8 +133,7 @@ impl CodeInner {
         }
         self.source.borrow_mut().push_str(text);
         self.report(self.buffer.append(text));
-        self.mark_stale();
-        self.gutter.changed();
+        self.changed();
     }
 
     /// The next highlight runs on the UI thread, and a running one never lands.
@@ -192,6 +197,29 @@ impl CodeInner {
         self.highlighted.set(true);
     }
 
+    /// Highlights changed text at the next frame. As in Core, the selection starts over at the same cells.
+    fn changed(&self) {
+        self.mark_stale();
+        self.gutter.changed();
+        if self.selection.get().is_some() {
+            self.apply_selection(true);
+            self.reselect.set(true);
+        }
+    }
+
+    /// Applies the selection kept from the app, or clears the view's.
+    fn apply_selection(&self, start: bool) -> bool {
+        let colors = self.selection_colors.get();
+        self.report(match self.selection.get() {
+            Some(LocalSelection { anchor, focus, unit }) => {
+                self.view.select_local(anchor, focus, !start, unit, colors).map(drop)
+            }
+            None => self.view.clear_selection(),
+        });
+        self.element.app().inspect(App::request_redraw);
+        self.report(self.view.selection()).flatten().is_some()
+    }
+
     fn mark_stale(&self) {
         let stale = self.styled.borrow().is_none() && self.filetype.borrow().is_some();
         self.stale.set(stale);
@@ -217,6 +245,9 @@ impl Behavior for CodeInner {
     /// paints.
     fn update(&self, _cx: &mut Cx<'_>) {
         self.land();
+        if self.reselect.take() {
+            self.apply_selection(true);
+        }
         if !self.stale.get() || self.pending.borrow().is_some() {
             return;
         }
@@ -252,17 +283,9 @@ impl Behavior for CodeInner {
     }
 
     /// Selects in the text column: coordinates are relative to it, not to the gutter.
-    fn select(&self, selection: Option<&SelectionUpdate>) -> bool {
-        let Some(selection) = selection else {
-            self.report(self.view.clear_selection());
-            self.element.app().inspect(App::request_redraw);
-            return false;
-        };
-        let (anchor, focus) = selection.local(&self.text.element);
-        let colors = self.selection_colors.get();
-        self.report(self.view.select_local(anchor, focus, !selection.start, selection.unit, colors));
-        self.element.app().inspect(App::request_redraw);
-        self.report(self.view.selection()).flatten().is_some()
+    fn select(&self, update: Option<&SelectionUpdate>) -> bool {
+        self.selection.set(update.map(|update| update.local_selection(&self.text.element)));
+        self.apply_selection(update.is_none_or(|update| update.start))
     }
 
     fn selected_text(&self) -> Option<String> {
@@ -280,11 +303,15 @@ impl CodeInner {
     /// Keeps the scroll position within the text after the text column changed size, following the end if pinned.
     fn text_resized(&self, height: u32) {
         self.laid_out_height.set(Some(height));
-        if self.follow.get() && self.pinned.get() {
-            self.scroll_to(i64::from(u32::MAX));
-        } else {
-            self.scroll_to(i64::from(self.scroll.get()));
-        }
+        self.keep_in_view();
+    }
+
+    /// Keeps the view within the text, or at the end when following and the last scroll reached it. Before the first
+    /// layout there is no view to keep: the first resize does it.
+    fn keep_in_view(&self) {
+        let Some(_) = self.laid_out_height.get() else { return };
+        let follow = self.follow.get() && self.pinned.get();
+        self.scroll_to(if follow { i64::from(u32::MAX) } else { i64::from(self.scroll.get()) });
     }
 }
 
@@ -384,6 +411,8 @@ impl Code {
                     fg: Some(theme.selection_fg),
                     bg: Some(theme.selection_bg),
                 }),
+                selection: Cell::new(None),
+                reselect: Cell::new(false),
             }
         });
         inner.element.register();
@@ -440,7 +469,7 @@ impl Code {
             *self.0.styled.borrow_mut() = None;
             self.0.render_source();
         }
-        self.keep_in_view();
+        self.0.keep_in_view();
         self.clone()
     }
 
@@ -450,25 +479,16 @@ impl Code {
         *self.0.source.borrow_mut() = spans.iter().map(|span| &*span.content).collect();
         *self.0.styled.borrow_mut() = Some(spans);
         self.0.render_source();
-        self.keep_in_view();
-    }
-
-    /// Keeps the view within shorter text, or at the end when following.
-    fn keep_in_view(&self) {
-        let row = if self.0.follow.get() { i64::from(u32::MAX) } else { i64::from(self.0.scroll.get()) };
-        self.0.scroll_to(row);
+        self.0.keep_in_view();
     }
 
     /// Appends text, keeping the view at the bottom when following. With a filetype, the whole text is highlighted
     /// again: the first time before the next frame paints, and once highlighted on a worker thread, showing the new
     /// text plain until that highlight lands.
     pub fn append(&self, text: &str) -> Self {
-        let follow = self.0.follow.get() && self.0.pinned.get();
         *self.0.styled.borrow_mut() = None;
         self.0.extend(text);
-        if follow {
-            self.0.scroll_to(i64::from(u32::MAX));
-        }
+        self.0.keep_in_view();
         self.clone()
     }
 

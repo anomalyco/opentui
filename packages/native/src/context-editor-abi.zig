@@ -5,10 +5,12 @@ const ctx = @import("context.zig");
 const eb = @import("edit-buffer.zig");
 const iter = @import("text-buffer-iterators.zig");
 const text_work = @import("text-work.zig");
+const hl = @import("highlight-layers.zig");
 const Owner = abi.ContextHandle;
 
 comptime {
     std.debug.assert(c.OT_STYLE_RUN_FLAG == @import("syntax-style.zig").id_limit);
+    std.debug.assert(@sizeOf(c.ot_highlight_run) == 12);
 }
 
 /// Validates admission only; checked Context methods acquire their own mutation guard.
@@ -67,8 +69,8 @@ pub fn rgba(color: [4]u16) !void {
 
 pub fn styleRecord(ptr: ?*const c.ot_editor_style) !*const c.ot_editor_style {
     const value = try record(c.ot_editor_style, ptr);
-    if (value.flags & ~@as(u32, c.OT_EDITOR_STYLE_FOREGROUND | c.OT_EDITOR_STYLE_BACKGROUND | c.OT_EDITOR_STYLE_ATTRIBUTES) != 0) return error.InvalidOptions;
-    if (value.flags & c.OT_EDITOR_STYLE_ATTRIBUTES == 0 and value.attributes != 0) return error.InvalidOptions;
+    if (value.flags & ~@as(u32, c.OT_EDITOR_STYLE_FOREGROUND | c.OT_EDITOR_STYLE_BACKGROUND | c.OT_EDITOR_STYLE_ATTRIBUTES | c.OT_EDITOR_STYLE_ATTRIBUTE_MASK) != 0) return error.InvalidOptions;
+    if (value.flags & c.OT_EDITOR_STYLE_ATTRIBUTES == 0 and (value.attributes != 0 or value.flags & c.OT_EDITOR_STYLE_ATTRIBUTE_MASK != 0)) return error.InvalidOptions;
     if (value.flags & c.OT_EDITOR_STYLE_FOREGROUND == 0) for (value.foreground) |v| {
         if (v != 0) return error.InvalidOptions;
     };
@@ -184,10 +186,14 @@ pub fn ot_syntax_style_register(context: ?*Owner, id: ?*const c.ot_handle, bytes
     const style = styleRecord(options) catch |err| return fail(owner, err);
     if (id == null or (count != 0 and bytes == null) or out == null) return fail(owner, error.InvalidOptions);
     const name = if (bytes) |p| p[0..count] else &.{};
+    // Without the mask, a definition with attributes supplies all eight bits, as before the mask.
+    const masked = style.flags & c.OT_EDITOR_STYLE_ATTRIBUTE_MASK != 0;
+    const supplied: u32 = if (masked) (style.attributes >> 16) & 0xFF else if (style.flags & c.OT_EDITOR_STYLE_ATTRIBUTES != 0) 0xFF else 0;
     out.?.* = owner.core.syntaxStyleRegister(abi.handleFromC(id.?.*), name, .{
         .fg = if (style.flags & c.OT_EDITOR_STYLE_FOREGROUND != 0) style.foreground else null,
         .bg = if (style.flags & c.OT_EDITOR_STYLE_BACKGROUND != 0) style.background else null,
-        .attributes = style.attributes,
+        .attributes = if (masked) style.attributes & ~@as(u32, 0xFF << 16) else style.attributes,
+        .supplied_attributes = @intCast(supplied),
     }) catch |err| return fail(owner, err);
     return c.OT_OK;
 }
@@ -504,6 +510,28 @@ pub fn ot_edit_buffer_get_highlights(context: ?*Owner, id: ?*const c.ot_handle, 
     };
     out.?.* = @intCast(items.len);
     return c.OT_OK;
+}
+
+pub fn ot_edit_buffer_set_layer(context: ?*Owner, id: ?*const c.ot_handle, layer_id: u32, start_byte: u32, end_byte: u32, runs: ?[*]const c.ot_highlight_run, run_count: u32) callconv(.c) c.ot_status {
+    const owner = admit(context, false) catch |err| return fail(context, err);
+    const value = edit(owner, id) catch |err| return fail(owner, err);
+    const decoded = layerRunsFromC(owner, runs, run_count, value.buffer.tb.getByteSize()) catch |err| return fail(owner, err);
+    defer owner.core.allocator.free(decoded);
+    owner.core.editSetLayer(abi.handleFromC(id.?.*), .{ .layer_id = layer_id, .start_byte = start_byte, .end_byte = end_byte, .runs = decoded }) catch |err| return fail(owner, err);
+    return c.OT_OK;
+}
+
+/// Valid runs are nonempty, disjoint and inside the text, so they number at most its bytes; the
+/// check also bounds the copy.
+pub fn layerRunsFromC(owner: *Owner, runs: ?[*]const c.ot_highlight_run, run_count: u32, byte_count: u32) ![]hl.LayerRun {
+    if (run_count != 0 and runs == null) return error.InvalidOptions;
+    if (run_count > byte_count) return error.InvalidIndex;
+    const decoded = try owner.core.allocator.alloc(hl.LayerRun, run_count);
+    for (decoded, 0..) |*run, index| {
+        const value = runs.?[index];
+        run.* = .{ .start_byte = value.start_byte, .end_byte = value.end_byte, .group_set = value.group_set };
+    }
+    return decoded;
 }
 
 pub fn ot_syntax_style_resolve(context: ?*Owner, id: ?*const c.ot_handle, bytes: ?[*]const u8, count: u32, out: ?*u32) callconv(.c) c.ot_status {

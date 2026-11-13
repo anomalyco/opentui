@@ -2441,6 +2441,11 @@ const CONFIRMED_ESC_READS: [string[], string[]][] = [
     ["Alt+b", "Alt+f", "Alt+backspace", "Alt+return"],
   ],
   [["\x1b", "[27u"], ["escape"]],
+  // However late the next read comes, typed text that begins it stays typed (issue 610).
+  [
+    ["\x1b", "OA", "Pa\r"],
+    ["escape", "o", "a", "p", "a", "return"],
+  ],
 ]
 
 test("once the terminal confirms its Kitty push, a raw ESC that ends a read is Escape without a clock (issue 466)", async () => {

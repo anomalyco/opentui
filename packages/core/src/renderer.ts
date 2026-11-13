@@ -613,15 +613,18 @@ class ExternalOutputQueue {
     return { markers, removed, boundary: boundary < 0 ? kept.length : boundary }
   }
 
-  /** The head commits, at most `limit`, that fit one native split render. Never empty unless the queue is. */
+  // The head commits, at most `limit` and 8 writer snapshots, that fit one native split render; never empty unless the
+  // queue is. Writer snapshots can style every cell: more of them delay the footer repaint behind them on a slow link.
   batch(limit: number): readonly QueuedCommit[] {
     // An empty batch would never drain the queue.
     if (!(limit >= 1)) throw new RangeError("ExternalOutputQueue.batch requires a limit of at least 1")
     let count = 0
     let cells = 0
+    let writers = 0
     while (count < Math.min(limit, this.commits.length)) {
       cells += this.commits[count]!.cells
-      if (cells > this.maxCells) break
+      writers += this.commits[count]!.bytes === 0 ? 1 : 0
+      if (cells > this.maxCells || writers > 8) break
       count += 1
     }
     return this.commits.slice(0, count)
@@ -1227,6 +1230,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _previousControlState: RendererControlState = RendererControlState.IDLE
   private capturedRenderable?: Renderable
   private pressedRenderable?: Renderable
+  private lastDrag?: RawMouseEvent
   private lastOverRenderableNum: number = 0
   private lastOverRenderable?: Renderable
 
@@ -1245,12 +1249,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   // One-shot latch used to request a full split repaint after transitions
   // (resize/mode/output-path changes). Cleared after completed presentation.
   private forceFullRepaintRequested: boolean = false
-  // Upper bound for captured stdout commits consumed per native frame.
-  // This is a visual smoothness control: smaller batches reduce frame envelope
-  // churn and keep render latency predictable under heavy scrollback append load.
-  private readonly maxSplitCommitsPerFrame: number = 8
-  // Scrollback commits per frame; 1 after a batch was too large for one frame.
-  private splitCommitLimit = this.maxSplitCommitsPerFrame
+  // Scrollback commits per frame: as many as one native split render takes; 1 after a batch too large for one frame.
+  private splitCommitLimit: number = nativeConstants.OT_SPLIT_SNAPSHOTS_MAX
   // The renderer state's dropped frame count already reported.
   private droppedFrames = 0
   // A frame was dropped since the last rendered one; native counts a partial frame only when its full repaint fails.
@@ -3943,12 +3943,26 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     // Every left down or up ends the record, also one that returns early; other events keep it.
     const pressed = this.pressedRenderable
     const left = mouseEvent.button === MouseButton.LEFT
-    if (left && (mouseEvent.type === "down" || mouseEvent.type === "up")) this.pressedRenderable = undefined
+    const press = left && mouseEvent.type === "down"
+    if (press || (left && mouseEvent.type === "up")) this.pressedRenderable = undefined
     if (this._splitHeight > 0) {
       if (mouseEvent.y < this.renderOffset) {
         return false
       }
       mouseEvent.y -= this.renderOffset
+    }
+    if (left && mouseEvent.type === "drag") this.lastDrag = { ...mouseEvent }
+    // A left press while a gesture is held means its release was lost: end that gesture before any handler sees the
+    // press, for its owner as a release at the last drag point would, without a drop. Ctrl+press sets a selection
+    // dragging again below.
+    const lost = press ? this.capturedRenderable : undefined
+    if (press && this.currentSelection) this.currentSelection.isDragging = false
+    if (lost) {
+      this.capturedRenderable = undefined
+      this.sendMouseEvent(lost, new MouseEvent(lost, { ...this.lastDrag!, type: "drag-end" }))
+      this.sendMouseEvent(lost, new MouseEvent(lost, { ...this.lastDrag!, type: "up" }))
+      if (this._isDestroyed) return true
+      this.requestRender()
     }
 
     this._latestPointer.x = mouseEvent.x
@@ -3988,17 +4002,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       return true
     }
 
-    const maybeRenderableId = this.hitTest(mouseEvent.x, mouseEvent.y)
+    // A drag looks through its source, so its over and drop events reach what is under it.
+    const maybeRenderableId = this.nativeScene.hitTest(mouseEvent.x, mouseEvent.y, this.capturedRenderable?.num ?? 0)
     const sameElement = maybeRenderableId === this.lastOverRenderableNum
     this.lastOverRenderableNum = maybeRenderableId
     const maybeRenderable = Renderable.renderablesByNumber.get(maybeRenderableId)
 
-    if (
-      mouseEvent.type === "down" &&
-      mouseEvent.button === MouseButton.LEFT &&
-      !this.currentSelection?.isDragging &&
-      !mouseEvent.modifiers.ctrl
-    ) {
+    if (press && !mouseEvent.modifiers.ctrl) {
       const canStartSelection = Boolean(
         maybeRenderable &&
         maybeRenderable.selectable &&
@@ -4045,12 +4055,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       return true
     }
 
-    if (mouseEvent.type === "down" && mouseEvent.button === MouseButton.LEFT && this.currentSelection) {
-      if (mouseEvent.modifiers.ctrl) {
-        this.currentSelection.isDragging = true
-        this.updateSelection(maybeRenderable, mouseEvent.x, mouseEvent.y)
-        return true
-      }
+    if (press && this.currentSelection && mouseEvent.modifiers.ctrl) {
+      this.currentSelection.isDragging = true
+      this.updateSelection(maybeRenderable, mouseEvent.x, mouseEvent.y)
+      return true
     }
 
     if (!sameElement && (mouseEvent.type === "drag" || mouseEvent.type === "move")) {
@@ -4089,10 +4097,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.lastOverRenderable = source
       this.lastOverRenderableNum = source.num
       this.capturedRenderable = undefined
-      // Dropping the renderable needs to push another frame when the renderer is not live
-      // to update the hits, otherwise capturedRenderable won't be in the hits and will not receive mouse events
+      // Hover is not rechecked while a node holds the capture; the next frame rechecks it.
       this.requestRender()
-      // A source does not drop onto itself or its subtree; until that frame the presented hits still hold the source.
+      // A source does not drop onto itself or its subtree.
       if (maybeRenderable && this.isWithinContainer(maybeRenderable, source)) return true
       if (maybeRenderable) {
         this.sendMouseEvent(maybeRenderable, new MouseEvent(maybeRenderable, { ...mouseEvent, type: "drop", source }))
@@ -4104,21 +4111,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     let event: MouseEvent | undefined
     if (target) {
       if (isLeftDrag) this.capturedRenderable = target
-      else if (left && mouseEvent.type === "down") this.pressedRenderable = target
+      else if (press) this.pressedRenderable = target
       event = this.dispatchMouseEvent(target, mouseEvent)
     } else {
       this.lastOverRenderable = undefined
     }
 
-    if (
-      !event?.defaultPrevented &&
-      mouseEvent.type === "down" &&
-      mouseEvent.button === MouseButton.LEFT &&
-      this.currentSelection
-    ) {
-      this.clearSelection()
-    }
-
+    if (press && this.currentSelection && !event?.defaultPrevented) this.clearSelection()
     return true
   }
 
@@ -4822,7 +4821,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
     // Leave raw mode as the suspend settles, before resume(); after destroy() the close leaves it after restoration.
     // Suspending a suspended Session writes nothing, and the input since then belongs to the next program.
-    const settled = nativeTransition.finally(() => this._isDestroyed || restored || this.leaveRawMode(true))
+    // Until then an exit signal destroys, so the close restores the terminal; after it, the next program owns signals.
+    const settled = nativeTransition.finally(() => {
+      this.removeExitListeners()
+      if (!this._isDestroyed && !restored) this.leaveRawMode(true)
+    })
     nativeTransition = this.trackNativeTerminalTransition(settled)
     if (this._controlState !== RendererControlState.EXPLICIT_SUSPENDED) {
       // A failed native split drain leaves the host suspended until the caller retries.
@@ -4838,7 +4841,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.clearSplitStartupCursorSeed()
 
     this.disableMouse()
-    this.removeExitListeners()
     for (const batch of [...this.replyBatches]) {
       if (batch.backstop !== null) this.clock.clearTimeout(batch.backstop)
       batch.backstop = null
@@ -5288,7 +5290,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         this.nativeScene.paint(deltaTime, () => ({
           background: this.backgroundColor,
           useMouse: this._useMouse,
-          excludedHitNum: this.capturedRenderable?.num ?? 0,
+          excludedHitNum: 0,
         }))
       } catch (error) {
         // Failed feedback must not schedule its own retry. The error handler can request one explicitly.
@@ -5541,7 +5543,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
     this.externalOutputQueue.drop(commits.length)
     if (this.pendingNativeReplay) this.pendingNativeReplay.remaining -= commits.length
-    this.splitCommitLimit = this.maxSplitCommitsPerFrame
+    this.splitCommitLimit = nativeConstants.OT_SPLIT_SNAPSHOTS_MAX
     this.nativeSplitAcceptedCount = 0
     this.pendingSplitFooterTransition = null
   }

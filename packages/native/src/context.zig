@@ -4,6 +4,7 @@ const api = @import("context_abi_c");
 const handles = @import("context-handles.zig");
 const grapheme = @import("grapheme.zig");
 const link = @import("link.zig");
+const highlight_layers = @import("highlight-layers.zig");
 const yoga = @import("yoga.zig");
 const renderer = @import("renderer.zig");
 const session = @import("session.zig");
@@ -28,6 +29,7 @@ const audio = @import("audio.zig");
 const video = @import("video.zig");
 const clipboard = @import("clipboard/host.zig");
 const encoded_unicode = @import("encoded-unicode.zig");
+const markdown = @import("markdown.zig");
 pub const embedded_terminal = if (@import("ghostty_vt_options").available)
     @import("embedded-terminal/main.zig")
 else
@@ -244,6 +246,12 @@ pub const Edit = struct {
         var next = self.views;
         while (next) |view| : (next = view.next) view.invalidate();
     }
+
+    /// For changes that cannot change a size, such as highlights: views repaint, Yoga keeps the measure.
+    pub fn invalidatePreparation(self: *Edit) void {
+        var next = self.views;
+        while (next) |view| : (next = view.next) view.invalidatePreparation();
+    }
 };
 
 pub const Editor = struct {
@@ -351,6 +359,318 @@ pub const TextView = struct {
     }
 };
 
+pub const MarkdownOptions = struct {
+    flags: u32 = api.OT_MD_CONCEAL | api.OT_MD_HYPERLINKS,
+    /// 0: the 64 MiB ceiling.
+    source_byte_limit: u32 = 0,
+    syntax_style: ?Handle = null,
+    hook_filter: []const u8 = "",
+
+    const flags_all = api.OT_MD_CONCEAL | api.OT_MD_HYPERLINKS | api.OT_MD_MATH | api.OT_MD_HOOK;
+
+    /// The engine's options; a flag outside OT_MD_* or a limit above the ceiling is rejected.
+    pub fn engine(self: MarkdownOptions) !markdown.Options {
+        if (self.flags & ~flags_all != 0 or self.source_byte_limit > markdown.source_byte_count_max) return error.InvalidOptions;
+        return .{
+            .math = self.flags & api.OT_MD_MATH != 0,
+            .hook = self.flags & api.OT_MD_HOOK != 0,
+            .conceal = self.flags & api.OT_MD_CONCEAL != 0,
+            .hyperlinks = self.flags & api.OT_MD_HYPERLINKS != 0,
+            .hook_filter = self.hook_filter,
+            .limits = .{ .source_byte_count = if (self.source_byte_limit == 0) markdown.source_byte_count_max else self.source_byte_limit },
+        };
+    }
+};
+
+pub const MarkdownResult = struct { changed_block_count: u32, committed_top_level_count: u32, removed_from_index: u32 };
+
+fn markdownError(err: markdown.Error) error{ OutOfMemory, TextLimit, ObjectLimit, InvalidOptions } {
+    return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.SourceLimit => error.TextLimit,
+        error.BlockLimit => error.ObjectLimit,
+        error.InvalidOptions => error.InvalidOptions,
+    };
+}
+
+/// A Markdown document (`ot_markdown_*`): the engine, its options, and the scene text nodes of
+/// its bound leaves, which it writes while the live display is what read_leaf shows (conceal and
+/// hyperlinks on) and the leaf is not hooked; the host writes the others.
+pub const MarkdownDoc = struct {
+    owner: *Context,
+    doc: markdown.Doc,
+    writer: markdown.Writer,
+    syntax_style: ?Handle,
+    /// Bound leaves and their nodes, sorted by block index.
+    bindings: std.ArrayListUnmanaged(Binding) = .empty,
+    /// The group set of each scope combination written so far (Context ids, never freed).
+    scope_sets: std.AutoHashMapUnmanaged(u16, u32) = .empty,
+
+    /// Bindings whose node a failed write left behind.
+    stale_count: u32 = 0,
+    /// The writes of the call in progress (`writeNode`), in the Markdown scratch.
+    staged: std.ArrayListUnmanaged(markdown.NodeWrite) = .empty,
+
+    /// `skipped`: a write to the node was skipped (hooked, or not live), or its text changed
+    /// since the doc's last write (`epoch`, the buffer's content epoch then: the host wrote
+    /// it), so it does not hold the live display's earlier bytes and takes only resync writes.
+    /// `stale`: the node does not show the doc (a write failed); the next call writes it whole.
+    /// `handoff`: the host wrote the node and the call would make the doc write it: the node is
+    /// unbound and its leaf listed, so the host binds it again to hand it over (a doc never
+    /// writes over a host's text, which it could not rebuild).
+    pub const Binding = struct { block: u32, node: Handle, skipped: bool = false, epoch: u64 = 0, stale: bool = false, handoff: bool = false };
+    /// The Markdown layer of a bound node's buffer (its only layer).
+    pub const layer_id: u32 = 2;
+
+    fn deinit(self: *MarkdownDoc) void {
+        const allocator = self.owner.allocator;
+        self.doc.deinit();
+        self.bindings.deinit(allocator);
+        self.scope_sets.deinit(allocator);
+        allocator.destroy(self);
+    }
+
+    /// Where block `block`'s binding is or goes.
+    fn bindingIndex(self: *const MarkdownDoc, block: u32) usize {
+        var low: usize = 0;
+        var high: usize = self.bindings.items.len;
+        while (low < high) {
+            const middle = low + (high - low) / 2;
+            if (self.bindings.items[middle].block < block) low = middle + 1 else high = middle;
+        }
+        return low;
+    }
+
+    /// After a call: the nodes of removed blocks are unbound (they keep their text).
+    fn unbindRemoved(self: *MarkdownDoc) void {
+        const from = self.writer.unbound_from;
+        self.writer.unbound_from = markdown.none;
+        if (from == markdown.none) return;
+        self.bindings.items.len = self.bindingIndex(from);
+    }
+
+    fn result(self: *const MarkdownDoc) MarkdownResult {
+        return .{
+            .changed_block_count = self.doc.changeCount(),
+            .committed_top_level_count = self.doc.committed_top_level_count,
+            .removed_from_index = self.doc.removed_from_index,
+        };
+    }
+
+    fn setOptions(self: *MarkdownDoc, options: MarkdownOptions) !void {
+        const engine = try options.engine();
+        const style = if (options.syntax_style) |handle| try self.owner.getSyntaxStyle(handle) else null;
+        const old = self.doc.options;
+        const same = engine.math == old.math and engine.hook == old.hook and engine.conceal == old.conceal and
+            engine.hyperlinks == old.hyperlinks and engine.limits.source_byte_count == old.limits.source_byte_count and
+            std.mem.eql(u8, engine.hook_filter, self.doc.filter());
+        if (!same) self.doc.setOptions(engine) catch |err| return markdownError(err);
+        if (!std.meta.eql(options.syntax_style, self.syntax_style)) {
+            // A style swap: the bound nodes draw with the new style, nothing is written again;
+            // the leaves a host writes from read_leaf are listed.
+            self.syntax_style = options.syntax_style;
+            self.doc.relistHostWritten();
+            for (self.bindings.items) |binding| {
+                const node = self.owner.sceneNode(binding.node) catch continue;
+                const text = node.scene_node.?.text orelse continue;
+                text.buffer.setSyntaxStyle(style);
+                node.scene_node.?.paint_epoch = nextPaintEpoch();
+            }
+        }
+    }
+
+    /// The group set of a scope combination: the names Core styles Markdown with, later names
+    /// winning (null: no style, or the Context's group sets are full and it draws plain).
+    fn scopeSet(self: *MarkdownDoc, scope: markdown.Scope) !?u32 {
+        const key: u16 = @bitCast(scope);
+        if (key == 0) return null;
+        if (self.scope_sets.get(key)) |id| return id;
+        var names: [highlight_layers.group_set_name_count_max][]const u8 = undefined;
+        var count: usize = 0;
+        const headings = [_][]const u8{ "markup.heading.1", "markup.heading.2", "markup.heading.3", "markup.heading.4", "markup.heading.5", "markup.heading.6" };
+        if (scope.heading_level != 0) {
+            names[count] = headings[@min(scope.heading_level, 6) - 1];
+            count += 1;
+        }
+        const label = scope.link and !scope.link_gap and !scope.link_url;
+        inline for (.{
+            .{ scope.strong, "markup.strong" },               .{ scope.italic, "markup.italic" },
+            .{ scope.strikethrough, "markup.strikethrough" }, .{ (scope.link or scope.link_gap) and !scope.link_url, "markup.link" },
+            .{ label, "markup.link.label" },                  .{ scope.link_url, "markup.link.url" },
+            .{ scope.raw, "markup.raw" },                     .{ scope.math, "markup.math" },
+            .{ scope.escape, "string.escape" },
+        }) |entry| {
+            if (entry[0]) {
+                names[count] = entry[1];
+                count += 1;
+            }
+        }
+        if (count == 0) return null;
+        const id = self.owner.group_sets.intern(names[0..count]) catch |err| switch (err) {
+            error.GroupSetLimit => return null,
+            error.OutOfMemory => return error.OutOfMemory,
+            else => unreachable,
+        };
+        try self.scope_sets.put(self.owner.allocator, key, id);
+        return id;
+    }
+
+    /// A chunk's style resolved through the doc's style (read_leaf).
+    pub fn resolve(self: *MarkdownDoc, scope: markdown.Scope) !syntax_style.StyleDefinition {
+        const none_style: syntax_style.StyleDefinition = .{ .fg = null, .bg = null, .attributes = 0, .supplied_attributes = 0 };
+        const handle = self.syntax_style orelse return none_style;
+        const style = self.owner.getSyntaxStyle(handle) catch return none_style;
+        const id = (try self.scopeSet(scope)) orelse return none_style;
+        return style.resolveGroupSet(&self.owner.group_sets, id);
+    }
+    /// The engine's write to a bound leaf, inside a call: kept (its slices are in the Markdown
+    /// scratch, which the call resets after) until the call is accepted (`applyStaged`), so a
+    /// rejected call writes no node.
+    fn writeNode(context: *anyopaque, _: *const markdown.Doc, w: markdown.NodeWrite) markdown.Error!void {
+        const self: *MarkdownDoc = @ptrCast(@alignCast(context));
+        try self.staged.append(self.owner.markdown_scratch.allocator(), w);
+    }
+
+    /// After an accepted call: its writes, in order. A write that fails leaves its node stale
+    /// (the next accepted call writes it whole).
+    fn applyStaged(self: *MarkdownDoc) void {
+        for (self.staged.items) |w| {
+            if (w.block < self.writer.unbound_from) self.write(w) catch {};
+        }
+        self.staged = .empty;
+    }
+
+    /// Writes a bound leaf's node: its text tail and its Markdown runs. Leaves the host writes
+    /// (hooked, or a doc whose read_leaf differs from the live display), unbound blocks and
+    /// destroyed nodes are skipped. A node the host wrote is never written: a whole write the
+    /// doc would make to it marks it `handoff` instead.
+    fn write(self: *MarkdownDoc, w: markdown.NodeWrite) markdown.Error!void {
+        const doc = &self.doc;
+        if (w.block >= doc.blocks.items.len) return;
+        const b = doc.blocks.items[w.block];
+        if (!markdown.Doc.isBound(b)) return;
+        const at = self.bindingIndex(w.block);
+        if (at == self.bindings.items.len or self.bindings.items[at].block != w.block) return;
+        const binding = &self.bindings.items[at];
+        const node = self.owner.sceneMutableNode(binding.node) catch return;
+        const text = node.scene_node.?.text orelse return;
+        // A text change since the doc's last write is the host's (a hooked leaf's flag is off
+        // while its pending line is parsed again, so a write may come for it).
+        if (text.buffer.getContentEpoch() != binding.epoch) binding.skipped = true;
+        const live = doc.options.liveShown() and !b.flags.hooked;
+        if (!live or binding.skipped) {
+            if (live and w.resync) binding.handoff = true;
+            binding.skipped = true;
+            self.clearStale(binding);
+            return;
+        }
+        // A node a failed write left behind takes only a whole write.
+        if (binding.stale and !w.resync) return;
+        self.writeText(node, text, w) catch |err| {
+            if (!binding.stale) self.stale_count += 1;
+            binding.stale = true;
+            return switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                error.TextLimit => error.SourceLimit,
+                error.LayerLimit => error.BlockLimit,
+                else => error.InvalidOptions,
+            };
+        };
+        binding.epoch = text.buffer.getContentEpoch();
+        self.clearStale(binding);
+    }
+
+    fn clearStale(self: *MarkdownDoc, binding: *Binding) void {
+        if (!binding.stale) return;
+        binding.stale = false;
+        self.stale_count -= 1;
+    }
+
+    /// After an accepted call: the nodes the doc would take over from the host are unbound and
+    /// their leaves listed, so the host binds them again to hand them over.
+    fn finishHandoff(self: *MarkdownDoc) void {
+        var kept: usize = 0;
+        for (self.bindings.items) |binding| {
+            if (binding.handoff) {
+                if (binding.block < self.doc.blocks.items.len) self.doc.blocks.items[binding.block].flags.unreported = true;
+                continue;
+            }
+            self.bindings.items[kept] = binding;
+            kept += 1;
+        }
+        self.bindings.items.len = kept;
+    }
+
+    /// After an accepted call: the nodes a failed write left behind, written whole from the doc;
+    /// one that fails again stays stale.
+    fn resyncNodes(self: *MarkdownDoc) void {
+        if (self.stale_count == 0) return;
+        for (self.bindings.items) |binding| {
+            if (!binding.stale or binding.block >= self.doc.blocks.items.len) continue;
+            var whole = self.doc.wholeWrite(binding.block) catch continue;
+            whole.resync = true;
+            self.write(whole) catch {};
+        }
+    }
+
+    fn writeText(self: *MarkdownDoc, node: *native_renderable.NativeRenderable, text: *Text, w: markdown.NodeWrite) !void {
+        const owner = self.owner;
+        const buffer = text.buffer;
+        try Context.validateTextBytes(buffer.tabWidth(), w.bytes, w.from);
+        const arena = owner.markdown_scratch.allocator();
+        // The ranges' runs, one after another (`ends`), then storage for the layer sets: once the
+        // text changes, nothing here may fail.
+        var chunk_total: usize = 0;
+        for (w.ranges) |range| chunk_total += range.chunks.len;
+        const runs = try arena.alloc(highlight_layers.LayerRun, chunk_total);
+        const ends = try arena.alloc(usize, w.ranges.len);
+        var count: usize = 0;
+        // Each run holds a link reference while it is set; the layer takes its own.
+        defer for (runs[0..count]) |run| if (run.link_id != 0) owner.links.decref(run.link_id) catch unreachable;
+        for (w.ranges, ends) |range, *range_end| {
+            var at = range.from;
+            for (range.chunks) |chunk| {
+                defer at += chunk.byte_count;
+                const url = range.urls[chunk.link_offset..][0..chunk.link_byte_count];
+                const link_id: u32 = if (url.len == 0 or !link.isWritableUrl(url)) 0 else owner.links.acquire(url) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => 0,
+                };
+                // A linked chunk has the link scope, so only a full group-set table drops its run.
+                const group_set = (try self.scopeSet(chunk.scope)) orelse {
+                    if (link_id != 0) owner.links.decref(link_id) catch unreachable;
+                    continue;
+                };
+                runs[count] = .{ .start_byte = at, .end_byte = at + chunk.byte_count, .group_set = group_set, .link_id = link_id };
+                count += 1;
+            }
+            range_end.* = count;
+        }
+        // Two spares in turn: a set takes one and gives the layer's old storage back in it, so
+        // after the first set the old storage is as large (each set may split one run).
+        var spares: [2]std.ArrayListUnmanaged(highlight_layers.LayerRun) = .{ .empty, .empty };
+        defer for (&spares) |*spare| buffer.freeLayerSpare(spare);
+        for (&spares) |*spare| spare.* = try buffer.reserveLayer(layer_id, count + 2 * w.ranges.len);
+        const room = @min(spares[0].capacity, spares[1].capacity);
+        const changed = w.bytes.len > 0 or w.from != buffer.getByteSize();
+        if (changed) try buffer.replaceTail(w.from, w.bytes);
+        node.scene_node.?.paint_epoch = nextPaintEpoch();
+        const end = buffer.getByteSize();
+        var start: usize = 0;
+        for (w.ranges, ends) |range, range_end| {
+            defer start = range_end;
+            const to = if (range.end == markdown.none) end else @min(range.end, end);
+            const spare = if (spares[0].capacity >= room) &spares[0] else &spares[1];
+            buffer.setLayerWithSpare(layer_id, @min(range.from, to), to, runs[start..range_end], spare) catch |err| switch (err) {
+                error.OutOfMemory => unreachable,
+                else => return err,
+            };
+        }
+        if (changed) Context.textResourceChanged(text) else Context.textResent(node);
+        node.scene_node.?.owner.clearPreparation();
+    }
+};
+
 pub const EditCommand = union(enum) {
     delete_forward,
     backspace,
@@ -411,6 +731,13 @@ pub const TextHighlight = union(enum) {
     remove_ref: u16,
     clear_line: u32,
     clear_all,
+};
+
+pub const LayerReplacement = struct {
+    layer_id: u32,
+    start_byte: u32,
+    end_byte: u32,
+    runs: []const highlight_layers.LayerRun,
 };
 
 pub const TextSelection = struct {
@@ -562,6 +889,10 @@ pub const Context = struct {
     last_image_id: u32 = 0,
     graphemes: grapheme.GraphemePool,
     links: link.LinkPool,
+    /// Group sets that highlight layer runs name; every buffer of this Context borrows it.
+    group_sets: highlight_layers.GroupSets,
+    /// Per-call temporary memory of Markdown calls (one per Context; reset after each call).
+    markdown_scratch: std.heap.ArenaAllocator,
     diagnostics: logger.Diagnostics,
     logger: logger.Logger,
     yoga_config: yoga.Config,
@@ -675,6 +1006,8 @@ pub const Context = struct {
             .objects = objects,
             .graphemes = grapheme.GraphemePool.init(allocator),
             .links = link.LinkPool.init(allocator),
+            .group_sets = highlight_layers.GroupSets.init(allocator),
+            .markdown_scratch = std.heap.ArenaAllocator.init(allocator),
             .diagnostics = diagnostics,
             .logger = .{ .diagnostics = &self.diagnostics },
             .yoga_config = undefined,
@@ -686,7 +1019,7 @@ pub const Context = struct {
         return self;
     }
 
-    const teardown_order = [_]handles.Kind{ .native_renderable, .text_buffer_view, .text_buffer, .editor_view, .edit_buffer, .syntax_style, .buffer, .session, .image, .encoded_unicode, .embedded_terminal, .audio_engine, .clipboard_service };
+    const teardown_order = [_]handles.Kind{ .markdown_doc, .native_renderable, .text_buffer_view, .text_buffer, .editor_view, .edit_buffer, .syntax_style, .buffer, .session, .image, .encoded_unicode, .embedded_terminal, .audio_engine, .clipboard_service };
 
     // A kind missing from teardown_order would trip Table.deinit's live_count assertion.
     // Leases cannot be live (deinit requires lease_count == 0), and services own their operations.
@@ -749,6 +1082,8 @@ pub const Context = struct {
         self.yoga_config.deinit();
         self.graphemes.deinit();
         self.links.deinit();
+        self.group_sets.deinit();
+        self.markdown_scratch.deinit();
         self.diagnostics.deinit();
         self.allocator.destroy(self);
     }
@@ -1020,7 +1355,7 @@ pub const Context = struct {
         const writer = &file_writer.interface;
         for (0..attached.height) |y| {
             for (0..attached.width) |x| {
-                const token = if (value.scene) |owned| owned.hitToken(attached, @intCast(x), @intCast(y)) else 0;
+                const token = if (value.scene) |owned| owned.hitToken(attached, @intCast(x), @intCast(y), 0) else 0;
                 writer.writeByte(if (token == 0) '.' else '0' + @as(u8, @intCast(token % 10))) catch return;
             }
             writer.writeByte('\n') catch return;
@@ -1949,9 +2284,11 @@ pub const Context = struct {
         if (x >= target.width or y >= target.height) return;
         const text = owned.text orelse return owned.owner.paintBody(&self.objects, target, node, x, y);
         // A prepared text that Yoga sizes to zero paints nothing; an unprepared one draws its text.
-        if (owned.geometry_epoch != std.math.maxInt(u64) and (owned.layout.width == 0 or owned.layout.height == 0)) return;
+        const content = scene.contentLayout(owned.layout);
+        if (owned.geometry_epoch != std.math.maxInt(u64) and (content.width == 0 or content.height == 0)) return;
         try text.prepareView();
-        try target.drawTextBufferChecked(text.view, x, y);
+        const offset = scene.contentOffset(owned.layout);
+        try target.drawTextBufferChecked(text.view, x +| offset[0], y +| offset[1]);
     }
 
     pub fn acquireOwnedBufferLease(self: *Context, handle: Handle) Error!Handle {
@@ -2831,13 +3168,17 @@ pub const Context = struct {
         } else selection: {
             var dirty: u32 = 0;
             try yoga.check(yoga.yogaNodeIsDirtyChecked(node.yoga_node, &dirty));
+            // Hosts pass cells local to the node; the view starts at its content and clamps cells off its edges.
+            const offset = scene.contentOffset(node.scene_node.?.layout);
+            var local = options;
+            for ([_]*i32{ &local.anchor_x, &local.anchor_y, &local.focus_x, &local.focus_y }, [_]i32{ offset[0], offset[1], offset[0], offset[1] }) |point, by| point.* -|= by;
             if (text.view.getViewport()) |viewport| {
                 const x_offset: i32 = if (text.view.wrap_mode == .none) @intCast(viewport.x) else 0;
                 const y_offset: i32 = @intCast(viewport.y);
-                _ = std.math.add(i32, options.anchor_x, x_offset) catch return error.InvalidOptions;
-                _ = std.math.add(i32, options.focus_x, x_offset) catch return error.InvalidOptions;
-                _ = std.math.add(i32, options.anchor_y, y_offset) catch return error.InvalidOptions;
-                _ = std.math.add(i32, options.focus_y, y_offset) catch return error.InvalidOptions;
+                _ = std.math.add(i32, local.anchor_x, x_offset) catch return error.InvalidOptions;
+                _ = std.math.add(i32, local.focus_x, x_offset) catch return error.InvalidOptions;
+                _ = std.math.add(i32, local.anchor_y, y_offset) catch return error.InvalidOptions;
+                _ = std.math.add(i32, local.focus_y, y_offset) catch return error.InvalidOptions;
             }
             if (text.buffer.lineWidthColsMax() > std.math.maxInt(i32)) return error.InvalidOptions;
             // The legacy view methods cannot report allocation failures. Prepare
@@ -2846,9 +3187,9 @@ pub const Context = struct {
             if (text.view.virtual_lines.items.len > std.math.maxInt(i32)) return error.InvalidOptions;
             const behavior: text_buffer_view.SelectionBehavior = @fromBackingInt(@intCast(options.behavior));
             break :selection if (options.operation == api.OT_SCENE_TEXT_SELECTION_SET)
-                text.view.setLocalSelectionBehavior(options.anchor_x, options.anchor_y, options.focus_x, options.focus_y, options.background, options.foreground, behavior)
+                text.view.setLocalSelectionBehavior(local.anchor_x, local.anchor_y, local.focus_x, local.focus_y, options.background, options.foreground, behavior)
             else
-                text.view.updateLocalSelectionBehavior(options.anchor_x, options.anchor_y, options.focus_x, options.focus_y, options.background, options.foreground, behavior);
+                text.view.updateLocalSelectionBehavior(local.anchor_x, local.anchor_y, local.focus_x, local.focus_y, options.background, options.foreground, behavior);
         };
         node.scene_node.?.owner.clearPreparation();
         return changed;
@@ -3029,11 +3370,11 @@ pub const Context = struct {
         };
     }
 
-    pub fn sceneGetPaintLayout(self: *Context, handle: Handle) !scene.Layout {
+    pub fn sceneGetPaintLayout(self: *Context, handle: Handle, content: bool) !scene.Layout {
         try self.checkSceneRead();
         const node = try self.sceneNode(handle);
         try node.scene_node.?.owner.prepareOmitted(&self.objects, node);
-        return scene.getPaintLayout(node);
+        return scene.getPaintLayout(node, content);
     }
 
     /// Solve the Session root without painting or publishing output. Measurement
@@ -3171,13 +3512,17 @@ pub const Context = struct {
     }
 
     pub fn sceneHitTest(self: *Context, session_handle: Handle, x: i32, y: i32) !u32 {
+        return self.sceneHitTestExcluding(session_handle, x, y, 0);
+    }
+
+    pub fn sceneHitTestExcluding(self: *Context, session_handle: Handle, x: i32, y: i32, excluded: u32) !u32 {
         try self.beginMutation();
         defer self.mutating = false;
         const value = try self.getSession(session_handle);
         const attached = value.renderer orelse return error.RendererNotAttached;
         const owned = value.scene orelse return error.SceneNotAttached;
         if (x < 0 or y < 0) return 0;
-        const token = owned.hitToken(attached, @intCast(x), @intCast(y));
+        const token = owned.hitToken(attached, @intCast(x), @intCast(y), excluded);
         const handle = owned.tokens.get(token) orelse return 0;
         const node = self.objects.get(handle, .native_renderable, native_renderable.NativeRenderable) catch return 0;
         const state = node.scene_node orelse return 0;
@@ -3246,6 +3591,7 @@ pub const Context = struct {
         const buffer = try text_buffer.UnifiedTextBuffer.initWithOptions(self.allocator, &self.graphemes, &self.links, width_method, .{
             .io = self.io,
             .logger = &self.logger,
+            .group_sets = &self.group_sets,
         });
         errdefer buffer.deinit();
         const view = try text_buffer_view.UnifiedTextBufferView.init(self.allocator, buffer);
@@ -3280,6 +3626,7 @@ pub const Context = struct {
         const buffer = try text_buffer.UnifiedTextBuffer.initWithOptions(self.allocator, &self.graphemes, &self.links, width_method, .{
             .io = self.io,
             .logger = &self.logger,
+            .group_sets = &self.group_sets,
         });
         value.* = .{ .handle = undefined, .buffer = buffer, .input_mem_id = 0 };
         return value;
@@ -3489,6 +3836,13 @@ pub const Context = struct {
         text.invalidate(false);
     }
 
+    /// Group set ids are Context-wide: a buffer composes them against whatever style it binds.
+    pub fn groupSet(self: *Context, names: []const []const u8) !u32 {
+        try self.beginMutation();
+        defer self.mutating = false;
+        return self.group_sets.intern(names);
+    }
+
     pub fn textViewSetViewport(self: *Context, handle: Handle, viewport: text_buffer_view.Viewport, size_only: bool) !void {
         try self.beginMutation();
         defer self.mutating = false;
@@ -3571,6 +3925,7 @@ pub const Context = struct {
         }, .{
             .io = self.io,
             .logger = &self.logger,
+            .group_sets = &self.group_sets,
         });
         errdefer value.buffer.deinit();
         value.handle = try self.objects.insert(.edit_buffer, value);
@@ -3622,11 +3977,12 @@ pub const Context = struct {
         try self.beginMutation();
         defer self.mutating = false;
         if (!std.unicode.utf8ValidateSlice(name)) return error.InvalidUnicode;
-        if (definition.attributes & ~ansi.TextAttributes.ATTRIBUTE_BASE_MASK != 0) return error.InvalidOptions;
+        if (definition.attributes & ~@as(u32, definition.supplied_attributes) != 0) return error.InvalidOptions;
         if (definition.fg) |color| try buf.validateColor(color);
         if (definition.bg) |color| try buf.validateColor(color);
         const style = try self.getSyntaxStyle(handle);
-        // Paint resolves styles from the table every frame, so borrowers need no invalidation.
+        // Paint resolves styles from the table every frame, so borrowers need no invalidation;
+        // retained paint repaints them by their paint epochs.
         try checkStyleDependents(style);
         return style.registerStyleDefinition(name, definition);
     }
@@ -3639,8 +3995,154 @@ pub const Context = struct {
                 .none => {},
                 .text => |text| try @as(*SharedText, @ptrCast(@alignCast(text))).checkMutable(),
                 .edit => |edit| try @as(*Edit, @ptrCast(@alignCast(edit))).checkMutable(),
+                .scene_text => |node| {
+                    const value: *native_renderable.NativeRenderable = @ptrCast(@alignCast(node));
+                    try yoga.check(yoga.nodeTeardownStatus(value.yoga_node));
+                    value.scene_node.?.paint_epoch = nextPaintEpoch();
+                },
             }
         }
+    }
+
+    // ---- Markdown documents (ot_markdown_*) ----
+
+    pub fn createMarkdown(self: *Context, options: MarkdownOptions) !Handle {
+        try self.beginMutation();
+        defer self.mutating = false;
+        defer self.resetMarkdownScratch();
+        try self.objects.checkCapacity();
+        if (options.syntax_style) |handle| _ = try self.getSyntaxStyle(handle);
+        const value = try self.allocator.create(MarkdownDoc);
+        errdefer self.allocator.destroy(value);
+        value.* = .{
+            .owner = self,
+            .doc = markdown.Doc.init(self.allocator, &self.markdown_scratch, try options.engine()) catch |err| return markdownError(err),
+            .writer = .{ .context = value, .write_fn = MarkdownDoc.writeNode },
+            .syntax_style = options.syntax_style,
+        };
+        value.doc.writer = &value.writer;
+        errdefer value.doc.deinit();
+        return self.objects.insert(.markdown_doc, value);
+    }
+
+    fn getMarkdown(self: *Context, handle: Handle) Error!*MarkdownDoc {
+        if (self.closing) return error.ContextClosed;
+        return self.objects.get(handle, .markdown_doc, MarkdownDoc);
+    }
+
+    fn resetMarkdownScratch(self: *Context) void {
+        _ = self.markdown_scratch.reset(.{ .retain_with_limit = markdown.scratch_retained_byte_count_max });
+    }
+
+    pub const MarkdownCall = union(enum) { append: []const u8, set: []const u8, finish, options: MarkdownOptions };
+
+    /// One mutating call on a doc. A rejected call publishes nothing; a removal unbinds the
+    /// nodes of the removed blocks.
+    pub fn markdownCall(self: *Context, handle: Handle, call: MarkdownCall) !MarkdownResult {
+        try self.beginMutation();
+        defer self.mutating = false;
+        defer self.resetMarkdownScratch();
+        const value = try self.getMarkdown(handle);
+        switch (call) {
+            .append, .set => |bytes| if (!std.unicode.utf8ValidateSlice(bytes)) return error.InvalidUnicode,
+            else => {},
+        }
+        // The doc's writes wait for the call to be accepted: a rejected one writes no node.
+        errdefer value.writer.unbound_from = markdown.none;
+        errdefer value.staged = .empty;
+        switch (call) {
+            .append => |bytes| value.doc.append(bytes) catch |err| return markdownError(err),
+            .set => |bytes| value.doc.set(bytes) catch |err| return markdownError(err),
+            .finish => value.doc.finish() catch |err| return markdownError(err),
+            .options => |options| try value.setOptions(options),
+        }
+        value.applyStaged();
+        value.unbindRemoved();
+        value.resyncNodes();
+        value.finishHandoff();
+        return value.result();
+    }
+
+    pub fn markdownSource(self: *Context, handle: Handle) ![]const u8 {
+        if (self.mutating) return error.ContextBusy;
+        return (try self.getMarkdown(handle)).doc.source.items;
+    }
+
+    /// The changed blocks, in document order, when `capacity` holds them all (then
+    /// acknowledged); otherwise only their count.
+    pub fn markdownReadChanges(self: *Context, handle: Handle, capacity: u32) !struct { count: u32, changes: []const markdown.Doc.Change } {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const value = try self.getMarkdown(handle);
+        const count = value.doc.changeCount();
+        if (capacity == 0 or capacity < count) return .{ .count = count, .changes = &.{} };
+        _ = self.markdown_scratch.reset(.{ .retain_with_limit = markdown.scratch_retained_byte_count_max });
+        const changes = try self.markdown_scratch.allocator().alloc(markdown.Doc.Change, count);
+        _ = value.doc.readChanges(changes);
+        return .{ .count = count, .changes = changes };
+    }
+
+    /// Leaf `index`'s parser output (in the Markdown scratch, valid until the next Markdown
+    /// call), and the doc that resolves its styles.
+    pub fn markdownReadLeaf(self: *Context, handle: Handle, index: u32) !struct { leaf: markdown.Leaf, doc: *MarkdownDoc } {
+        if (self.mutating) return error.ContextBusy;
+        const value = try self.getMarkdown(handle);
+        if (index >= value.doc.blocks.items.len) return error.InvalidIndex;
+        switch (value.doc.blocks.items[index].kind) {
+            .paragraph, .heading, .code, .html, .table_cell => {},
+            else => return error.InvalidIndex,
+        }
+        self.resetMarkdownScratch();
+        const leaf = value.doc.readLeaf(self.markdown_scratch.allocator(), index) catch |err| return markdownError(err);
+        return .{ .leaf = leaf, .doc = value };
+    }
+
+    /// Inline leaf `index`'s source (in the Markdown scratch, valid until the next Markdown call).
+    pub fn markdownReadSource(self: *Context, handle: Handle, index: u32) ![]const u8 {
+        if (self.mutating) return error.ContextBusy;
+        const value = try self.getMarkdown(handle);
+        if (index >= value.doc.blocks.items.len or !markdown.Doc.isInlineLeaf(value.doc.blocks.items[index])) return error.InvalidIndex;
+        self.resetMarkdownScratch();
+        return value.doc.leafSubject(self.markdown_scratch.allocator(), index) catch |err| return markdownError(err);
+    }
+
+    pub fn markdownBind(self: *Context, handle: Handle, index: u32, node_handle: Handle) !void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        defer self.resetMarkdownScratch();
+        const value = try self.getMarkdown(handle);
+        if (index >= value.doc.blocks.items.len or !markdown.Doc.isBound(value.doc.blocks.items[index])) return error.InvalidIndex;
+        const node = try self.sceneMutableNode(node_handle);
+        const text = node.scene_node.?.text orelse return error.WrongKind;
+        const style = if (value.syntax_style) |id| try self.getSyntaxStyle(id) else null;
+        try value.bindings.ensureUnusedCapacity(self.allocator, 1);
+        const at = value.bindingIndex(index);
+        const rebind = at < value.bindings.items.len and value.bindings.items[at].block == index;
+        const previous = if (rebind) value.bindings.items[at] else undefined;
+        if (rebind and previous.stale) value.stale_count -= 1;
+        // The node's text as it is now is what the bind hands over.
+        const binding: MarkdownDoc.Binding = .{ .block = index, .node = node_handle, .epoch = text.buffer.getContentEpoch() };
+        if (rebind) {
+            value.bindings.items[at] = binding;
+        } else {
+            value.bindings.insertAssumeCapacity(at, binding);
+        }
+        // A rejected bind leaves the bindings as they were.
+        errdefer {
+            if (value.bindings.items[at].stale) value.stale_count -= 1;
+            if (rebind) {
+                value.bindings.items[at] = previous;
+                if (previous.stale) value.stale_count += 1;
+            } else _ = value.bindings.orderedRemove(at);
+        }
+        // The node shows the leaf now, if the doc writes it; then the doc's style (a rejected
+        // bind leaves both as they were).
+        var whole = value.doc.wholeWrite(index) catch |err| return markdownError(err);
+        whole.resync = true;
+        value.write(whole) catch |err| return markdownError(err);
+        text.buffer.style_binding.dependent = .{ .scene_text = node };
+        text.buffer.setSyntaxStyle(style);
+        node.scene_node.?.paint_epoch = nextPaintEpoch();
     }
 
     pub fn editSetSyntaxStyle(self: *Context, handle: Handle, style_handle: ?Handle) !void {
@@ -3741,7 +4243,16 @@ pub const Context = struct {
         const edit = try self.getEditBuffer(handle);
         try edit.checkMutable();
         try highlightBuffer(edit.buffer.tb, operation);
-        edit.invalidate();
+        edit.invalidatePreparation();
+    }
+
+    pub fn editSetLayer(self: *Context, handle: Handle, layer: LayerReplacement) !void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const edit = try self.getEditBuffer(handle);
+        try edit.checkMutable();
+        try edit.buffer.tb.setLayer(layer.layer_id, layer.start_byte, layer.end_byte, layer.runs);
+        edit.invalidatePreparation();
     }
 
     pub fn editorSetViewport(self: *Context, handle: Handle, viewport: text_buffer_view.Viewport, size_only: bool, move_cursor: bool) !void {
@@ -4116,6 +4627,10 @@ pub const Context = struct {
             },
             .syntax_style => {
                 const value: *syntax_style.SyntaxStyle = @ptrCast(@alignCast(token.ptr));
+                value.deinit();
+            },
+            .markdown_doc => {
+                const value: *MarkdownDoc = @ptrCast(@alignCast(token.ptr));
                 value.deinit();
             },
             .session => {

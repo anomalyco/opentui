@@ -86,9 +86,7 @@ impl App {
         let Some(refresh) = self.0.palette_refresh.borrow_mut().take() else { return };
         self.cancel_timer(refresh.timer);
         let palette = refresh.palette;
-        let answered =
-            palette.foreground.is_some() || palette.background.is_some() || palette.colors.iter().any(Option::is_some);
-        if answered {
+        if palette != (TerminalPalette { colors: vec![None; palette.colors.len()], ..TerminalPalette::default() }) {
             if self.0.terminal_active.get() {
                 self.publish_palette(&palette);
             }
