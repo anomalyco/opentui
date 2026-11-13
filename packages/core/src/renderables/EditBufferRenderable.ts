@@ -54,7 +54,9 @@ export function isEditBufferRenderable(obj: unknown): obj is EditBufferRenderabl
 }
 
 export interface CursorChangeEvent {
+  /** Zero-based logical line. */
   line: number
+  /** Display-cell column on that logical line, not a UTF-16 index. */
   visualColumn: number
 }
 
@@ -263,23 +265,28 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     this._scrollMargin = margin
   }
 
+  /** Buffer text with LF line breaks. Index or slice it in UTF-16 units, not cursor offsets. */
   get plainText(): string {
     return this.editBuffer.getText()
   }
 
+  /** Logical row, display-cell column, and document cell offset (one per newline). */
   get logicalCursor(): LogicalCursor {
     return this.editBuffer.getCursorPosition()
   }
 
+  /** Viewport-relative wrapped row and cell column, plus the logical position and document cell offset. */
   get visualCursor(): VisualCursor {
     if (this.editorView.isDestroyed) return emptyVisualCursor
     return this.editorView.getVisualCursor()
   }
 
+  /** Display cells from the document start, one per newline. Use editBuffer.cellOffsetToStringIndex for plainText. */
   get cursorOffset(): number {
     return this.editorView.isDestroyed ? emptyVisualCursor.offset : this.editBuffer.getCursorPosition().offset
   }
 
+  /** Sets the cursor in document display cells, counting each newline as one. */
   set cursorOffset(offset: number) {
     const direction = Math.sign((offset ?? 0) - this.cursorOffset)
     this.resetSelection()
@@ -296,6 +303,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     return Math.sign(selection.anchorY - selection.focusY || selection.anchorX - selection.focusX)
   }
 
+  /** Legacy under-cursor lookup with line-end adjustments; not a conversion from cells to a UTF-16 caret index. */
   get cursorCharacterOffset(): number | undefined {
     const len = this.plainText.length
     if (len <= 0) return
@@ -700,6 +708,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     }
   }
 
+  /** Returns the selected text as a UTF-16-indexed JavaScript string. */
   getSelectedText(): string {
     return this.editorView.getSelectedText()
   }
@@ -708,6 +717,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     return this.editorView.hasSelection()
   }
 
+  /** Returns half-open document cell bounds, counting one cell per newline. */
   getSelection(): { start: number; end: number } | null {
     return this.editorView.getSelection()
   }
@@ -724,6 +734,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     this._ctx.clearSelection()
   }
 
+  /** Selects [start, end) in document display cells, counting one cell per newline. */
   setSelection(start: number, end: number): void {
     this.resetSelection()
     this.editorView.setSelection(start, end, this._selectionBg, this._selectionFg)
@@ -731,6 +742,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     this.requestRender()
   }
 
+  /** Takes document cell offsets (one per newline); cell occupancy includes the grapheme at the larger endpoint. */
   setSelectionInclusive(start: number, end: number): void {
     this.resetSelection()
     this.editorView.setSelectionInclusive(start, end, this._selectionBg, this._selectionFg)
@@ -755,6 +767,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     return true
   }
 
+  /** Sets the cursor by zero-based logical row and display-cell column. */
   setCursor(row: number, col: number): void {
     this.clearSelection()
     this.editBuffer.setCursor(row, col)
@@ -831,6 +844,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     return true
   }
 
+  /** Moves left by a cursor stop, not one UTF-16 unit; select extends the cell range. */
   public moveCursorLeft(options?: { select?: boolean }): boolean {
     const select = options?.select ?? false
     if (!select && this.collapseSelectionToEdge("start")) return true
@@ -842,6 +856,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     return true
   }
 
+  /** Moves right by a cursor stop, not one UTF-16 unit; select extends the cell range. */
   public moveCursorRight(options?: { select?: boolean }): boolean {
     const select = options?.select ?? false
     if (!select && this.collapseSelectionToEdge("end")) return true
@@ -853,6 +868,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     return true
   }
 
+  /** Moves up one wrapped row; select extends the document cell range. */
   public moveCursorUp(options?: { select?: boolean }): boolean {
     const select = options?.select ?? false
     this.updateSelectionForMovement(select, true)
@@ -862,6 +878,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     return true
   }
 
+  /** Moves down one wrapped row; select extends the document cell range. */
   public moveCursorDown(options?: { select?: boolean }): boolean {
     const select = options?.select ?? false
     this.updateSelectionForMovement(select, true)
@@ -871,6 +888,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     return true
   }
 
+  /** Moves to a zero-based logical line. */
   public gotoLine(line: number): void {
     this.clearSelection()
     this.editBuffer.gotoLine(line)
@@ -1008,6 +1026,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     return true
   }
 
+  /** Moves to the next word boundary; select extends the document cell range. */
   public moveWordForward(options?: { select?: boolean }): boolean {
     const select = options?.select ?? false
     if (!select && this.collapseSelectionToEdge("end")) return true
@@ -1019,6 +1038,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     return true
   }
 
+  /** Moves to the previous word boundary; select extends the document cell range. */
   public moveWordBackward(options?: { select?: boolean }): boolean {
     const select = options?.select ?? false
     if (!select && this.collapseSelectionToEdge("start")) return true
@@ -1120,11 +1140,13 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     this.requestRender()
   }
 
+  /** Highlights a range in display cells relative to the logical line. */
   public addHighlight(lineIdx: number, highlight: Highlight): void {
     this.editBuffer.addHighlight(lineIdx, highlight)
     this.requestRender()
   }
 
+  /** Highlights a range in document display cells excluding newlines, not UTF-16 indices. */
   public addHighlightByCharRange(highlight: Highlight): void {
     this.editBuffer.addHighlightByCharRange(highlight)
     this.requestRender()
@@ -1177,15 +1199,18 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     this.requestRender()
   }
 
+  /** Deletes a half-open range between (zero-based logical line, display-cell column) pairs. */
   public deleteRange(startLine: number, startCol: number, endLine: number, endCol: number): void {
     this.editBuffer.deleteRange(startLine, startCol, endLine, endCol)
     this.requestRender()
   }
 
+  /** Reads [startOffset, endOffset) in document display cells, counting one cell per newline. */
   public getTextRange(startOffset: number, endOffset: number): string {
     return this.editBuffer.getTextRange(startOffset, endOffset)
   }
 
+  /** Reads a half-open range between (zero-based logical row, display-cell column) pairs. */
   public getTextRangeByCoords(startRow: number, startCol: number, endRow: number, endCol: number): string {
     return this.editBuffer.getTextRangeByCoords(startRow, startCol, endRow, endCol)
   }

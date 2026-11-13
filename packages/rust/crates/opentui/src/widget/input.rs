@@ -56,7 +56,7 @@ impl Input {
         self.clone()
     }
 
-    /// The current text.
+    /// The current single-line text. Rust string indices count UTF-8 bytes, not cursor cells.
     pub fn value(&self) -> String {
         self.0.text()
     }

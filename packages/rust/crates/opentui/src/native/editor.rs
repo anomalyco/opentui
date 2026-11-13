@@ -186,7 +186,7 @@ pub struct EditInfo {
     pub line_count: u32,
     /// The primary cursor: zero-based row and display column.
     pub cursor: (u32, u32),
-    /// The cursor as a flattened document offset, counting one position per line break.
+    /// Display cells from the document start, counting one cell per line break.
     pub cursor_offset: u32,
     pub can_undo: bool,
     pub can_redo: bool,
@@ -196,8 +196,11 @@ pub struct EditInfo {
 /// A position in an edit buffer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EditPosition {
+    /// Zero-based logical line.
     pub row: u32,
+    /// Display cells from the logical line start.
     pub col: u32,
+    /// Display cells from the document start, counting one per newline.
     pub offset: u32,
 }
 
@@ -208,11 +211,17 @@ pub enum EditCommand {
     Backspace,
     NewLine,
     DeleteLine,
+    /// One cursor stop left, not one byte or necessarily one display cell.
     MoveLeft,
+    /// One cursor stop right, not one byte or necessarily one display cell.
     MoveRight,
+    /// One logical line up, using the desired cell column.
     MoveUp,
+    /// One logical line down, using the desired cell column.
     MoveDown,
+    /// Zero-based logical line.
     GotoLine(u32),
+    /// Document display cells, counting one per newline.
     CursorOffset(u32),
     Clear,
     ClearHistory,
@@ -225,8 +234,11 @@ pub enum EditQuery {
     NextWord,
     PrevWord,
     EndOfLine,
+    /// Document display cells, counting one per newline.
     Offset(u32),
+    /// Zero-based logical line and display-cell column.
     Coords(u32, u32),
+    /// Zero-based logical line.
     LineStart(u32),
 }
 
@@ -277,7 +289,7 @@ impl EditBuffer {
         })
     }
 
-    /// Deletes from `start` up to, not including, `end`, as (row, column) pairs.
+    /// Deletes a half-open range between (zero-based logical line, display-cell column) pairs.
     pub fn delete_range(&self, start: (u32, u32), end: (u32, u32)) -> Result<()> {
         let (context, handle) = self.raw();
         check("ot_edit_buffer_delete_range", unsafe {
@@ -285,11 +297,13 @@ impl EditBuffer {
         })
     }
 
+    /// Sets the cursor by zero-based logical row and display-cell column.
     pub fn set_cursor(&self, row: u32, col: u32) -> Result<()> {
         let (context, handle) = self.raw();
         check("ot_edit_buffer_set_cursor", unsafe { sys::ot_edit_buffer_set_cursor(context, handle, row, col) })
     }
 
+    /// Returns UTF-8 text with LF line endings. `len()` and string slicing use bytes, not cursor cells.
     pub fn text(&self) -> Result<String> {
         let (context, handle) = self.raw();
         read_string("ot_edit_buffer_get_text", |bytes, capacity, length| unsafe {
@@ -299,6 +313,7 @@ impl EditBuffer {
         })
     }
 
+    /// Returns the cursor's logical line, cell column, and document cell offset (one per newline).
     pub fn info(&self) -> Result<EditInfo> {
         let mut raw = sys::ot_edit_buffer_info::default();
         let (context, handle) = self.raw();
@@ -358,6 +373,7 @@ impl EditBuffer {
         self.history(true)
     }
 
+    /// Queries a logical line, cell column, and document cell offset (one per newline), without moving the cursor.
     pub fn position(&self, query: EditQuery) -> Result<Option<EditPosition>> {
         let (code, a, b) = match query {
             EditQuery::Cursor => (sys::OT_EDIT_POSITION_CURSOR, 0, 0),
@@ -397,7 +413,7 @@ impl EditBuffer {
         Ok(result)
     }
 
-    /// The text between two flattened document offsets.
+    /// Reads `start..end` in document display cells, counting one per newline. The resulting string uses UTF-8 bytes.
     pub fn range(&self, start: u32, end: u32) -> Result<String> {
         let (context, handle) = self.raw();
         read_string("ot_edit_buffer_get_range", |bytes, capacity, length| unsafe {
@@ -421,7 +437,7 @@ impl EditBuffer {
         })
     }
 
-    /// Adds a highlight over a document range of display columns.
+    /// Adds a highlight over a document range of display cells excluding newlines.
     pub fn highlight(&self, highlight: Highlight) -> Result<()> {
         let raw = highlight.raw();
         let (context, handle) = self.raw();
@@ -579,9 +595,13 @@ pub struct Viewport {
 pub struct EditorPosition {
     /// Row within the viewport's wrapped lines.
     pub visual_row: u32,
+    /// Display cells from the viewport's left edge.
     pub visual_col: u32,
+    /// Zero-based logical line.
     pub logical_row: u32,
+    /// Display cells from the logical line start.
     pub logical_col: u32,
+    /// Display cells from the document start, counting one per newline.
     pub offset: u32,
 }
 
@@ -745,10 +765,12 @@ impl EditorView {
     }
 
     /// Moves the cursor one wrapped line up.
+    /// Moves up one wrapped row.
     pub fn move_up(&self) -> Result<()> {
         self.command(sys::OT_EDITOR_MOVE_UP, 0)
     }
 
+    /// Moves down one wrapped row.
     pub fn move_down(&self) -> Result<()> {
         self.command(sys::OT_EDITOR_MOVE_DOWN, 0)
     }
@@ -762,6 +784,7 @@ impl EditorView {
         self.command(sys::OT_EDITOR_DELETE_SELECTION, 0)
     }
 
+    /// Moves the cursor in document display cells, counting one per newline.
     pub fn set_cursor_offset(&self, offset: u32) -> Result<()> {
         self.command(sys::OT_EDITOR_CURSOR_OFFSET, offset)
     }
@@ -791,13 +814,14 @@ impl EditorView {
         Ok(changed != 0)
     }
 
-    /// Selects document offsets `start..end`.
+    /// Selects `start..end` in document display cells, counting one per newline.
     pub fn select_range(&self, start: u32, end: u32, colors: SelectionColors) -> Result<()> {
         self.select(sys::ot_editor_selection { start, end, ..colors.editor_selection(sys::OT_EDITOR_SELECT_SET) })
             .map(drop)
     }
 
-    /// Selects `start..end` and, in cell occupancy, the grapheme at the larger offset unless a line ends there.
+    /// Selects document cells (one per newline) and, in cell occupancy, includes the grapheme at the larger
+    /// offset unless a line ends there.
     pub fn select_inclusive(&self, start: u32, end: u32, colors: SelectionColors) -> Result<()> {
         self.select(sys::ot_editor_selection { start, end, ..colors.editor_selection(sys::OT_EDITOR_SELECT_INCLUSIVE) })
             .map(drop)
@@ -878,7 +902,7 @@ impl EditorView {
             .collect())
     }
 
-    /// Selected document offsets, without preparing lines.
+    /// Half-open bounds in document display cells, counting one per newline, without preparing lines.
     pub fn selection(&self) -> Result<Option<(u32, u32)>> {
         let mut raw = sys::ot_editor_view_info::default();
         let (context, handle) = self.raw();
@@ -886,6 +910,7 @@ impl EditorView {
         Ok((raw.selection_present != 0).then_some((raw.selection_start, raw.selection_end)))
     }
 
+    /// Returns the selected UTF-8 text; string slicing uses byte indices, not selection offsets.
     pub fn selected_text(&self) -> Result<String> {
         let (context, handle) = self.raw();
         read_string("ot_editor_view_get_selected_text", |bytes, capacity, length| unsafe {
@@ -893,6 +918,7 @@ impl EditorView {
         })
     }
 
+    /// Queries logical and viewport cell coordinates. The document offset counts one cell per newline.
     pub fn position(&self, query: EditorQuery) -> Result<EditorPosition> {
         let code = match query {
             EditorQuery::Cursor => sys::OT_EDITOR_POSITION_CURSOR,

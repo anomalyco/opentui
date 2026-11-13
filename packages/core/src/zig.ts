@@ -3562,16 +3562,24 @@ type ContextObjectDestroySymbol =
  * Logical coordinates (logicalRow, logicalCol) are document-absolute.
  */
 export interface VisualCursor {
-  visualRow: number // Viewport-relative row (0 = top of viewport)
-  visualCol: number // Viewport-relative column (0 = left edge of viewport when not wrapping)
-  logicalRow: number // Document-absolute row
-  logicalCol: number // Document-absolute column
-  offset: number // Global display-width offset from buffer start
+  /** Wrapped row relative to the top of the viewport. */
+  visualRow: number
+  /** Display-cell column relative to the viewport. */
+  visualCol: number
+  /** Zero-based logical line in the document. */
+  logicalRow: number
+  /** Display-cell column relative to the logical line start. */
+  logicalCol: number
+  /** Display cells from the document start, counting each newline as one. */
+  offset: number
 }
 
 export interface LogicalCursor {
+  /** Zero-based logical line in the document. */
   row: number
+  /** Display cells from the logical line start. */
   col: number
+  /** Display cells from the document start, counting each newline as one. */
   offset: number
 }
 
