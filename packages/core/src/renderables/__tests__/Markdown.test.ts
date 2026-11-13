@@ -5668,6 +5668,46 @@ class FakeWorker extends TreeSitterClient {
   }
 }
 
+// A theme change on a finished fence (a CodeRenderable) keeps its painted highlight and height while the worker
+// restyles it, never raw or blank, and the reply brings the new colors.
+test("a theme change keeps a finished fence's highlight until the new one lands", async () => {
+  const worker = new FakeWorker()
+  const theme = (fg: RGBA) =>
+    SyntaxStyle.fromStyles({ default: { fg: RGBA.fromValues(1, 1, 1, 1) }, "markup.raw": { fg } }, renderer.nativeScene)
+  const [first, second] = [theme(RGBA.fromValues(1, 0, 0, 1)), theme(RGBA.fromValues(0, 0, 1, 1))]
+  const md = createMarkdownRenderable({
+    content: "```md\nrun `x` now\n```",
+    syntaxStyle: first,
+    streaming: true,
+    treeSitterClient: worker,
+  })
+  renderer.root.add(md)
+  const settle = async () => {
+    for (let pass = 0; pass < 3; pass++) {
+      await renderOnce()
+      while (worker.pending.length > 0) worker.reply()
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+    await renderOnce()
+  }
+  await settle()
+  md.streaming = false
+  await settle()
+  const painted = () =>
+    captureSpans().lines.map((line) => line.spans.map((span) => [span.text, span.fg.toInts()].join(" ")).join("|"))
+  const before = painted()
+  const height = md.height
+  expect(findSpanContaining(captureSpans(), "x")?.fg?.toInts()).toEqual(RGBA.fromValues(1, 0, 0, 1).toInts())
+  md.syntaxStyle = second
+  await renderOnce()
+  expect([painted(), md.height, worker.pending.length > 0]).toEqual([before, height, true])
+  await settle()
+  expect(findSpanContaining(captureSpans(), "x")?.fg?.toInts()).toEqual(RGBA.fromValues(0, 0, 1, 1).toInts())
+  md.destroyRecursively()
+  first.destroy()
+  second.destroy()
+})
+
 // A finished block never falls back to unhooked text: the hook's output stays through the end of the stream and later
 // appends (the engine writes no unhooked prose for a hooked leaf).
 test("a finished block keeps the hooked text", async () => {

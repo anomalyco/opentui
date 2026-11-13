@@ -306,6 +306,7 @@ export const nativePointerPolicies = {
   ot_scene_set_measure: { 0: context, 1: buffer, 2: measure },
   ot_scene_has_measure: { 0: context, 1: buffer, 2: buffer },
   ot_scene_reaches_hooks: { 0: context, 1: buffer, 2: buffer },
+  ot_scene_painted: { 0: context, 1: buffer, 2: buffer },
   ot_scene_mark_dirty: { 0: context, 1: buffer },
   ot_scene_get_style: { 0: context, 1: buffer, 5: buffer },
   ot_scene_set_paint: { 0: context, 1: buffer, 2: buffer },
