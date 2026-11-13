@@ -28,11 +28,32 @@ pub const BoxDetails = struct {
     bottom_title_alignment: u32 = 0,
     title_color: ?ansi.RGBA = null,
     custom_border_chars: ?[11]u32 = null,
+    /// Kept when the rest is replaced: titles and per-side overrides have separate setters.
+    sides: BoxSides = .{},
+
+    fn isEmpty(self: *const BoxDetails) bool {
+        return self.title.len == 0 and self.bottom_title.len == 0 and self.title_color == null and
+            self.custom_border_chars == null and self.title_alignment == 0 and self.bottom_title_alignment == 0 and
+            !self.sides.any();
+    }
 
     fn destroy(self: *BoxDetails, allocator: std.mem.Allocator) void {
         allocator.free(self.title);
         allocator.free(self.bottom_title);
         allocator.destroy(self);
+    }
+};
+
+/// Per-side overrides of the paint's border style and color. Index i is the side of
+/// OT_BORDER_* bit i: left, bottom, right, top. A side without its mask bit takes the paint's.
+pub const BoxSides = struct {
+    style_sides: u32 = 0,
+    color_sides: u32 = 0,
+    styles: [4]u32 = @splat(0),
+    colors: [4]ansi.RGBA = @splat(.{ 0, 0, 0, 0 }),
+
+    pub fn any(self: *const BoxSides) bool {
+        return self.style_sides | self.color_sides != 0;
     }
 };
 
@@ -1327,13 +1348,13 @@ pub const Scene = struct {
             }
         }
         try checkWritable(value);
+        var next = options;
+        next.sides = if (node.control.box) |previous| previous.sides else .{};
         var replacement: ?*BoxDetails = null;
-        if (options.title.len != 0 or options.bottom_title.len != 0 or options.title_color != null or
-            options.custom_border_chars != null or options.title_alignment != 0 or options.bottom_title_alignment != 0)
-        {
+        if (!next.isEmpty()) {
             const details = try self.allocator.create(BoxDetails);
             errdefer self.allocator.destroy(details);
-            details.* = options;
+            details.* = next;
             details.title = try self.allocator.dupe(u8, options.title);
             errdefer self.allocator.free(details.title);
             details.bottom_title = try self.allocator.dupe(u8, options.bottom_title);
@@ -1341,6 +1362,34 @@ pub const Scene = struct {
         }
         if (node.control.box) |previous| previous.destroy(self.allocator);
         node.control.box = replacement;
+    }
+
+    /// Replaces the per-side overrides; a side without its mask bit has a zero value.
+    pub fn setBoxSides(self: *Scene, value: *native.NativeRenderable, sides: BoxSides) !void {
+        const node = value.scene_node.?;
+        std.debug.assert(node.owner == self);
+        if (node.kind != api.OT_SCENE_BOX) return error.WrongKind;
+        if (sides.style_sides > api.OT_BORDER_ALL or sides.color_sides > api.OT_BORDER_ALL) return error.InvalidOptions;
+        for (sides.styles, sides.colors, 0..) |style, color, side| {
+            const bit = @as(u32, 1) << @intCast(side);
+            if (sides.style_sides & bit == 0 and style != 0) return error.InvalidOptions;
+            if (style > api.OT_BORDER_HEAVY) return error.InvalidOptions;
+            if (sides.color_sides & bit != 0) {
+                try buffer.validateColor(color);
+            } else if (!std.mem.eql(u16, &color, &.{ 0, 0, 0, 0 })) return error.InvalidOptions;
+        }
+        try checkWritable(value);
+        if (node.control.box) |details| {
+            details.sides = sides;
+            if (details.isEmpty()) {
+                details.destroy(self.allocator);
+                node.control.box = null;
+            }
+        } else if (sides.any()) {
+            const details = try self.allocator.create(BoxDetails);
+            details.* = .{ .sides = sides };
+            node.control.box = details;
+        }
     }
 
     pub fn setHooks(self: *Scene, value: *native.NativeRenderable, flags: u32, generation: u64, initial_width: f64, initial_height: f64) !void {
@@ -3292,14 +3341,56 @@ pub const Scene = struct {
         if (hasBoxPaint(&paint_options)) {
             const border_color = if (paint_options.focusable and focused) paint_options.focusedBorderColor else paint_options.borderColor;
             const options = details orelse &BoxDetails{};
-            const chars = if (options.custom_border_chars) |*custom| custom else &borders[paint_options.borderStyle];
-            try target.drawBoxChecked(@intFromFloat(layout.screenX), @intFromFloat(layout.screenY), @intFromFloat(layout.width), @intFromFloat(layout.height), chars, .{
+            const x: i32 = @intFromFloat(layout.screenX);
+            const y: i32 = @intFromFloat(layout.screenY);
+            const width: u32 = @intFromFloat(layout.width);
+            const height: u32 = @intFromFloat(layout.height);
+            const sides: buffer.BorderSides = .{
                 .left = paint_options.borderSides & api.OT_BORDER_LEFT != 0,
                 .bottom = paint_options.borderSides & api.OT_BORDER_BOTTOM != 0,
                 .right = paint_options.borderSides & api.OT_BORDER_RIGHT != 0,
                 .top = paint_options.borderSides & api.OT_BORDER_TOP != 0,
-            }, border_color, paint_options.background, options.title_color orelse border_color, paint_options.shouldFill != 0, if (options.title.len != 0) options.title else null, @intCast(options.title_alignment), if (options.bottom_title.len != 0) options.bottom_title else null, @intCast(options.bottom_title_alignment));
+            };
+            const title = if (options.title.len != 0) options.title else null;
+            const bottom_title = if (options.bottom_title.len != 0) options.bottom_title else null;
+            const fill = paint_options.shouldFill != 0;
+            if (options.sides.any()) {
+                const border = sideBorder(&paint_options, options, paint_options.focusable and focused);
+                // Without a title color, each title takes the color of its own side.
+                const title_colors: [2]ansi.RGBA = if (options.title_color) |color| .{ color, color } else .{ border.colors[0], border.colors[2] };
+                return target.drawBoxSidesChecked(x, y, width, height, &border, sides, paint_options.background, title_colors, fill, title, @intCast(options.title_alignment), bottom_title, @intCast(options.bottom_title_alignment));
+            }
+            const chars = if (options.custom_border_chars) |*custom| custom else &borders[paint_options.borderStyle];
+            try target.drawBoxChecked(x, y, width, height, chars, sides, border_color, paint_options.background, options.title_color orelse border_color, fill, title, @intCast(options.title_alignment), bottom_title, @intCast(options.bottom_title_alignment));
         }
+    }
+
+    /// Resolves per-side overrides against the box's paint. Custom glyphs win over styles,
+    /// and focus colors every side.
+    fn sideBorder(paint_options: *const Paint, details: *const BoxDetails, focused: bool) buffer.BoxBorder {
+        const sides = &details.sides;
+        var styles: [4]u32 = undefined;
+        var colors: [4]ansi.RGBA = undefined;
+        for (0..4) |side| {
+            const bit = @as(u32, 1) << @intCast(side);
+            styles[side] = if (sides.style_sides & bit != 0) sides.styles[side] else paint_options.borderStyle;
+            colors[side] = if (focused) paint_options.focusedBorderColor else if (sides.color_sides & bit != 0) sides.colors[side] else paint_options.borderColor;
+        }
+        // Sides are in OT_BORDER_* bit order; the painter's are top, right, bottom, left.
+        const left, const bottom, const right, const top = styles;
+        var border: buffer.BoxBorder = if (details.custom_border_chars) |*custom| .uniform(custom, colors[0]) else .{
+            .lines = .{ borders[top][4], borders[right][5], borders[bottom][4], borders[left][5] },
+            .corners = .{ cornerGlyph(0, top, left), cornerGlyph(1, top, right), cornerGlyph(2, bottom, left), cornerGlyph(3, bottom, right) },
+            .colors = undefined,
+        };
+        border.colors = .{ colors[3], colors[2], colors[1], colors[0] };
+        return border;
+    }
+
+    /// The glyph where a top or bottom side of style horizontal meets a side of style vertical.
+    fn cornerGlyph(corner: usize, horizontal: u32, vertical: u32) u32 {
+        const mixed = mixed_corners[corner][border_strokes[horizontal]][border_strokes[vertical]];
+        return if (mixed != 0) mixed else borders[horizontal][corner];
     }
 
     fn viewportNode(self: *Scene, objects: *const handles.Table, handle: handles.Handle) !*native.NativeRenderable {
@@ -3989,4 +4080,17 @@ const borders = [4][11]u32{
     .{ 0x2554, 0x2557, 0x255a, 0x255d, 0x2550, 0x2551, 0x2566, 0x2569, 0x2560, 0x2563, 0x256c },
     .{ 0x256d, 0x256e, 0x2570, 0x256f, 0x2500, 0x2502, 0x252c, 0x2534, 0x251c, 0x2524, 0x253c },
     .{ 0x250f, 0x2513, 0x2517, 0x251b, 0x2501, 0x2503, 0x2533, 0x253b, 0x2523, 0x252b, 0x254b },
+};
+
+/// The stroke of each OT_BORDER_* style: light (single, rounded), double, heavy.
+const border_strokes = [4]u2{ 0, 1, 0, 2 };
+
+/// Unicode's mixed corners, by corner (top-left, top-right, bottom-left, bottom-right), then
+/// the horizontal and the vertical side's stroke. Zero where Unicode has none: double meets
+/// heavy, or the strokes match.
+const mixed_corners = [4][3][3]u32{
+    .{ .{ 0, 0x2553, 0x250e }, .{ 0x2552, 0, 0 }, .{ 0x250d, 0, 0 } },
+    .{ .{ 0, 0x2556, 0x2512 }, .{ 0x2555, 0, 0 }, .{ 0x2511, 0, 0 } },
+    .{ .{ 0, 0x2559, 0x2516 }, .{ 0x2558, 0, 0 }, .{ 0x2515, 0, 0 } },
+    .{ .{ 0, 0x255c, 0x251a }, .{ 0x255b, 0, 0 }, .{ 0x2519, 0, 0 } },
 };

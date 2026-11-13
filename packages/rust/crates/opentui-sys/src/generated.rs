@@ -5,7 +5,7 @@ use core::ffi::c_void;
 
 /// FNV-1a 64-bit hash of the `opentui.h` these declarations were generated from.
 /// The build script rejects native artifacts whose header has a different hash.
-pub const OPENTUI_HEADER_FNV1A64: u64 = 0xaee318107c530320;
+pub const OPENTUI_HEADER_FNV1A64: u64 = 0x632b7575b754419c;
 
 pub type ot_status = i32;
 
@@ -1289,6 +1289,47 @@ const _: () = {
     assert!(core::mem::offset_of!(ot_scene_box_details, reserved) == 20);
     assert!(core::mem::offset_of!(ot_scene_box_details, title_color) == 24);
     assert!(core::mem::offset_of!(ot_scene_box_details, border_characters) == 32);
+};
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ot_scene_box_sides {
+    pub struct_size: u32,
+    pub abi_version: u32,
+    pub style_sides: u32,
+    pub color_sides: u32,
+    pub styles: [u32; 4],
+    pub left_color: [u16; 4],
+    pub bottom_color: [u16; 4],
+    pub right_color: [u16; 4],
+    pub top_color: [u16; 4],
+}
+
+// SAFETY: the record has no padding and only integer or float fields.
+unsafe impl Pod for ot_scene_box_sides {}
+
+impl Default for ot_scene_box_sides {
+    fn default() -> Self {
+        // SAFETY: every field is an integer, a float, or an array or record of them; all-zero is valid.
+        let mut value: Self = unsafe { core::mem::zeroed() };
+        value.struct_size = core::mem::size_of::<Self>() as u32;
+        value.abi_version = OT_CONTEXT_ABI_VERSION;
+        value
+    }
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<ot_scene_box_sides>() == 64);
+    assert!(core::mem::align_of::<ot_scene_box_sides>() == 4);
+    assert!(core::mem::offset_of!(ot_scene_box_sides, struct_size) == 0);
+    assert!(core::mem::offset_of!(ot_scene_box_sides, abi_version) == 4);
+    assert!(core::mem::offset_of!(ot_scene_box_sides, style_sides) == 8);
+    assert!(core::mem::offset_of!(ot_scene_box_sides, color_sides) == 12);
+    assert!(core::mem::offset_of!(ot_scene_box_sides, styles) == 16);
+    assert!(core::mem::offset_of!(ot_scene_box_sides, left_color) == 32);
+    assert!(core::mem::offset_of!(ot_scene_box_sides, bottom_color) == 40);
+    assert!(core::mem::offset_of!(ot_scene_box_sides, right_color) == 48);
+    assert!(core::mem::offset_of!(ot_scene_box_sides, top_color) == 56);
 };
 
 #[repr(C)]
@@ -4504,6 +4545,7 @@ unsafe extern "C" {
     pub fn ot_scene_flush(context: *mut ot_context, updates: *const u8, byte_count: u32, out_applied: *mut u32) -> ot_status;
     pub fn ot_scene_set_surface(context: *mut ot_context, node: *const ot_handle, buffer: *const ot_handle) -> ot_status;
     pub fn ot_scene_set_box_details(context: *mut ot_context, node: *const ot_handle, scene_box_details: *const ot_scene_box_details, title: *const u8, title_bytes: u32, bottom_title: *const u8, bottom_title_bytes: u32) -> ot_status;
+    pub fn ot_scene_set_box_sides(context: *mut ot_context, node: *const ot_handle, scene_box_sides: *const ot_scene_box_sides) -> ot_status;
     pub fn ot_scene_set_viewport(context: *mut ot_context, node: *const ot_handle, viewport: *const ot_handle) -> ot_status;
     pub fn ot_scene_set_scroll(context: *mut ot_context, node: *const ot_handle, scene_scroll_options: *const ot_scene_scroll_options) -> ot_status;
     pub fn ot_scene_set_scroll_arrow(context: *mut ot_context, node: *const ot_handle, axis: u32, end: u32, scene_arrow_options: *const ot_scene_arrow_options, text: *const u8, byte_count: u32) -> ot_status;

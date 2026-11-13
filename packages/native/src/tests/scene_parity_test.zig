@@ -565,6 +565,7 @@ const Harness = struct {
             .arrow => |value| try f.owner.sceneSetArrow(self.handle(twin, value.slot), arrowOptions(value.seed)),
             .box => |value| {
                 try f.owner.sceneSetBoxDetails(self.handle(twin, value.slot), boxDetails(value.seed));
+                try f.owner.sceneSetBoxSides(self.handle(twin, value.slot), boxSides(value.seed));
                 try f.owner.scenePatchPaint(self.handle(twin, value.slot), c.OT_SCENE_PROPERTY_BORDER | c.OT_SCENE_PROPERTY_BACKGROUND | c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .borderSides = c.OT_BORDER_TOP | c.OT_BORDER_BOTTOM | ((value.seed >> 24) & 5), .translateY = -1 });
             },
             .scroll_arrow => |value| {
@@ -1482,6 +1483,18 @@ fn boxDetails(seed: u32) scene.BoxDetails {
     var chars: [11]u32 = undefined;
     for (&chars, 0..) |*char, index| char.* = if (seed & 0x800 != 0 and (seed >> @intCast(index)) & 1 != 0) "+-|="[index % 4] else ' ';
     return .{ .title = titles[(seed >> 12) % 4], .bottom_title = titles[(seed >> 14) % 4], .title_alignment = (seed >> 16) % 3, .bottom_title_alignment = (seed >> 18) % 3, .title_color = if ((seed >> 20) & 1 != 0) .{ 255, 255, 0, 255 } else null, .custom_border_chars = if ((seed >> 21) % 4 == 0) null else chars };
+}
+
+/// Per-side styles and a top color on some boxes, so mixed corners and side colors reach band edges.
+fn boxSides(seed: u32) scene.BoxSides {
+    if (seed & (1 << 27) == 0) return .{};
+    const sides = seed >> 28;
+    var result: scene.BoxSides = .{ .style_sides = sides, .color_sides = sides & c.OT_BORDER_TOP };
+    for (&result.styles, 0..) |*style, side| {
+        if (sides & (@as(u32, 1) << @intCast(side)) != 0) style.* = (seed >> @intCast(2 * side + 8)) & 3;
+    }
+    if (result.color_sides != 0) result.colors[3] = .{ 0, 255, 255, 255 };
+    return result;
 }
 
 /// A recorded clear, a color matrix without and with a mask, or an image.
