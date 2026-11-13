@@ -53,8 +53,11 @@ need this hook.
 pub struct CodeBlock<'a> {
     pub app: &'a App,
     pub language: &'a str,
+    /// `math` for display math.
     pub info: &'a str,
     pub code: &'a str,
+    /// Whether the closing fence or math line has arrived.
+    pub closed: bool,
     pub conceal: bool,
     pub streaming: bool,
     /// The widget this renderer returned for this block before the block changed.
@@ -69,6 +72,16 @@ place; Core gives the renderer only a block id for that, which Mermaid uses to
 keep its last good diagram. `remove_code_block_renderer(language)` removes one.
 Registering or removing a renderer rebuilds the code blocks only.
 
+## Math
+
+`Markdown::extensions(&[MarkdownExtension::Math])` turns on Core's math
+extension; it is off by default, so `$` is text. The native engine parses it:
+`$$` and `\[` display blocks reach a code-block renderer for `math` (as Core's
+`lang: "math"` code token, with `closed`), and show their TeX as plain code
+without one. Inline `$…$` and `\(…\)` reach the inline hook as
+`InlineSpan::math`. A `$` that may still turn out to be text, such as currency,
+stays text until the engine decides it.
+
 ## Inline hooks
 
 `Markdown::inline_hook(hook)` is the Rust form of Core's per-block chunk
@@ -80,12 +93,15 @@ hook returns but take no click targets; `InlineContext::table_cell` is true when
 the spans are one table cell's content, and false for every other block.
 
 ```rust
+#[non_exhaustive] // build one with `InlineSpan::from(span)`
 pub struct InlineSpan {
     pub span: Span<'static>,
     /// A code span (`markup.raw`).
     pub code: bool,
     /// What a click on the span means to the app. Never sent to the terminal.
     pub target: Option<String>,
+    /// Inline math's TeX, without delimiters (with `MarkdownExtension::Math`).
+    pub math: Option<String>,
 }
 
 pub struct InlineContext<'a> {

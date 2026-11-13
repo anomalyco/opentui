@@ -6,8 +6,8 @@ use opentui::native::Capture;
 use opentui::style::{Attributes, Color, Span, Style};
 use opentui::testing::TestApp;
 use opentui::widget::{
-    AnyWidget, ColumnWidthMode, Container, InlineContext, InlineSpan, Markdown, MarkdownTableOptions, ScrollBox, Text,
-    View, Widget,
+    AnyWidget, ColumnWidthMode, Container, InlineContext, InlineSpan, Markdown, MarkdownExtension,
+    MarkdownTableOptions, ScrollBox, Text, View, Widget,
 };
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::{Cell, RefCell};
@@ -126,7 +126,9 @@ fn corpus_text_matches_unless_listed() {
         let chunks = strings(&row[1]);
         let app = TestApp::new(60, 40);
         let options = MarkdownTableOptions { width_mode: Some(ColumnWidthMode::Content), ..Default::default() };
-        let markdown = Markdown::new(&app).table_options(options).streaming(chunks.len() > 1);
+        let math = row[0].as_str().unwrap().starts_with("math ");
+        let extensions: &[_] = if math { &[MarkdownExtension::Math] } else { &[] };
+        let markdown = Markdown::new(&app).extensions(extensions).table_options(options).streaming(chunks.len() > 1);
         app.root().add(&markdown);
         let text = strings(&row[4]);
         let fails = strings(&row[3]);
@@ -264,6 +266,71 @@ fn code_block_renderers_learn_when_the_fence_closes() {
     assert_eq!(*seen.borrow(), [("x +".to_owned(), false), ("x +".to_owned(), true)]);
 }
 
+#[test]
+fn math_leaves_streamed_prose_to_native_code() {
+    // Math changes only what the engine parses: where native code writes the text, the widget does the same work
+    // for a document without math with the extension on as off.
+    let allocations = |extensions: &[MarkdownExtension]| {
+        let app = TestApp::with_hyperlinks(40, 8);
+        let markdown = Markdown::new(&app).extensions(extensions).streaming(true);
+        app.root().add(&markdown);
+        let before = ALLOCATIONS.with(Cell::get);
+        for chunk in ["Some ", "**bold** ", "text\n\n", "streams ", "in."] {
+            markdown.append(chunk);
+        }
+        ALLOCATIONS.with(Cell::get) - before
+    };
+    assert_eq!(allocations(&[MarkdownExtension::Math]), allocations(&[]));
+}
+
+#[test]
+fn math_reaches_renderers_as_code_and_hooks_as_spans() {
+    // Display math is code of the language `math`, at any depth, and never reaches the hook (S3, invariant 7). Inline
+    // math reaches it with its TeX, with or without conceal. Without the extension, `$` and `\(` are text.
+    let app = TestApp::new(30, 8);
+    let (blocks, spans, sources) = (Calls::default(), Calls::default(), Calls::default());
+    let (record_block, record_span, record_source) = (blocks.clone(), spans.clone(), sources.clone());
+    let markdown = Markdown::new(&app)
+        .streaming(true)
+        .code_block_renderer("math", move |block| {
+            let seen = format!("{} {} {} {}", block.language, block.info, block.code, block.closed);
+            record_block.borrow_mut().push(seen);
+            Some(Text::new(block.app, format!("math: {}", block.code)).as_any())
+        })
+        .inline_hook(move |spans, context| {
+            record_source.borrow_mut().push(context.source.to_owned());
+            let math = spans.iter().filter_map(|span| Some(format!("{} {}", span.span.content, span.math.as_ref()?)));
+            record_span.borrow_mut().extend(math);
+            spans
+        });
+    app.root().add(&markdown);
+    markdown.set_markdown("a $x*y$ and \\(z\\) $5\n\n> $$\n> e^x");
+    assert_eq!(frame(&app), "a $x*y$ and (z) $5\n\n│ $$\n│ e^x\n");
+    assert!(blocks.borrow().is_empty() && spans.borrow().is_empty());
+    sources.borrow_mut().clear();
+    markdown.extensions(&[MarkdownExtension::Math]);
+    assert_eq!(frame(&app), "a x*y and z $5\n\n│ math: e^x\n");
+    assert_eq!(*blocks.borrow(), ["math math e^x false"]);
+    markdown.append("\n> $$\n");
+    assert_eq!(*blocks.borrow(), ["math math e^x false", "math math e^x true"]);
+    assert_eq!(*spans.borrow(), ["x*y x*y", "z z"]);
+    markdown.conceal(false);
+    assert_eq!(frame(&app), "a $x*y$ and \\(z\\) $5\n\n│ math: e^x\n");
+    assert_eq!(spans.borrow().last_chunk(), Some(&["$x*y$ x*y".to_owned(), "\\(z\\) z".to_owned()]));
+    markdown.append("\n| \\(t\\) |\n| - |\n");
+    assert_eq!(spans.borrow().last().map(String::as_str), Some("\\(t\\) t"));
+    assert!(sources.borrow().iter().all(|source| !source.contains("e^x")), "{:?}", sources.borrow());
+    // Off again, `$` and `\(` are text again.
+    markdown.conceal(true).extensions(&[]);
+    assert!(frame(&app).starts_with("a $x*y$ and (z) $5\n\n│ $$\n│ e^x\n"), "{}", frame(&app));
+}
+
+fn inline_span(text: Span<'static>, code: bool, target: Option<&str>) -> InlineSpan {
+    let mut span = InlineSpan::from(text);
+    (span.code, span.target) = (code, target.map(str::to_owned));
+    span
+}
+
 type Titles = Rc<RefCell<HashMap<&'static str, &'static str>>>;
 type Calls = Rc<RefCell<Vec<String>>>;
 
@@ -288,11 +355,8 @@ fn session_links(
                 continue;
             }
             let (style, code) = (span.span.style, span.code);
-            let piece = |text: &str, style: Style, target: Option<&str>| InlineSpan {
-                span: Span::styled(text.to_owned(), style),
-                code,
-                target: target.map(str::to_owned),
-            };
+            let piece =
+                |text: &str, style: Style, target| inline_span(Span::styled(text.to_owned(), style), code, target);
             let mut rest = text.as_str();
             while let Some(found) = rest.find("ses_") {
                 let end = rest[found..]
@@ -592,11 +656,7 @@ fn targets_count_bytes_as_the_hook_returned_them() {
     // A hook's CRLF stays in the text native code holds, so the target after it lines up.
     let app = TestApp::new(20, 3);
     let markdown = Markdown::new(&app).inline_hook(|_, _| {
-        let target = InlineSpan {
-            span: Span::styled("@Known", Style::new().underline()),
-            code: false,
-            target: Some("ses_a".to_owned()),
-        };
+        let target = inline_span(Span::styled("@Known", Style::new().underline()), false, Some("ses_a"));
         vec![Span::raw("hi\r\n").into(), target, Span::raw(" plain").into()]
     });
     markdown.set_markdown("anything");
@@ -650,8 +710,7 @@ fn a_hook_shows_its_inputs_and_its_targets_go_with_it() {
     assert_eq!(frame(&app), "_hi_\n");
     // Where native code writes the text (a terminal with hyperlinks), the hook's targets go with the hook.
     let app = TestApp::with_hyperlinks(20, 2);
-    let markdown = Markdown::new(&app)
-        .inline_hook(|_, _| vec![InlineSpan { span: Span::raw("hello"), code: false, target: Some("old".to_owned()) }]);
+    let markdown = Markdown::new(&app).inline_hook(|_, _| vec![inline_span(Span::raw("hello"), false, Some("old"))]);
     app.root().add(&markdown);
     markdown.set_markdown("hi");
     assert_eq!(frame(&app), "hello\n");
@@ -775,12 +834,16 @@ enum Command {
     Colors(bool),
     Renderer(bool),
     Hook(bool),
+    Math(bool),
     /// The hook again on every block; its titles never change, so nothing may.
     Rerun,
 }
 
 /// Pieces the generator glues together: block starts, inline markers, IDs the hook links, and line endings.
-const PIECES: [&str; 32] = [
+const PIECES: [&str; 35] = [
+    "$",
+    "$$\n",
+    "\\(",
     "- ",
     "> ",
     "```",
@@ -824,6 +887,7 @@ struct Settings {
     other_colors: bool,
     renderer: bool,
     hook: bool,
+    math: bool,
 }
 
 /// Sets every setting on a fresh document.
@@ -834,6 +898,7 @@ fn configure(markdown: &Markdown, settings: Settings) {
         Command::Colors(settings.other_colors),
         Command::Renderer(settings.renderer),
         Command::Hook(settings.hook),
+        Command::Math(settings.math),
         Command::Streaming(settings.streaming),
     ] {
         configure_one(markdown, &command, settings);
@@ -850,6 +915,7 @@ fn configure_one(markdown: &Markdown, command: &Command, settings: Settings) {
         Command::Renderer(_) => configure_renderer(markdown, settings),
         Command::Hook(_) if settings.hook => drop(markdown.inline_hook(session_links(&titles, &Calls::default()))),
         Command::Hook(_) => drop(markdown.remove_inline_hook()),
+        Command::Math(_) => drop(markdown.extensions(if settings.math { &[MarkdownExtension::Math] } else { &[] })),
         Command::Streaming(_) => drop(markdown.streaming(settings.streaming)),
         _ => {}
     }
@@ -904,6 +970,7 @@ impl model::Model for MarkdownModel {
                 5 => Command::Renderer(rng.below(2) == 0),
                 6 => Command::Hook(rng.below(2) == 0),
                 7 => Command::Rerun,
+                9 => Command::Math(rng.below(2) == 0),
                 8 => Command::Extend(rng.pick(&PIECES)),
                 _ => Command::Append(rng.pick(&PIECES)),
             })
@@ -945,6 +1012,7 @@ impl model::Model for MarkdownModel {
                 Command::Colors(on) => settings.other_colors = on,
                 Command::Renderer(on) => settings.renderer = on,
                 Command::Hook(on) => settings.hook = on,
+                Command::Math(on) => settings.math = on,
                 Command::Rerun => drop(subject.rerun_inline_hook(|_| true)),
             }
             configure_one(&subject, command, settings);
@@ -1001,5 +1069,181 @@ fn model_every_three_ownership_changes_equal_a_fresh_document() {
     ];
     for hyperlinks in [false, true] {
         model::check_exhaustive(&MarkdownModel { hyperlinks }, &alphabet, 3);
+    }
+}
+
+/// The math soup of markdown-highlight-ssot-models.md (S3), and `|`, which holds a streamed line that may be a
+/// table's header.
+const MATH_PIECES: [&str; 16] =
+    ["$", "$$", "\\(", "\\)", "\\[", "\\]", "\\$", "`", "5", "x", " ", "\n", "**", "<", "](", "|"];
+
+/// The inline math a fresh document of `source` shows: for each span, its paragraph or heading in document order,
+/// where it starts in its text (without conceal, the source), and its TeX.
+fn math_spans(source: &str, streaming: bool, conceal: bool) -> Vec<(usize, usize, String)> {
+    let app = TestApp::new(40, 24);
+    let found: Rc<RefCell<Vec<(usize, usize, String)>>> = Rc::default();
+    let (record, leaves) = (found.clone(), Cell::new(0));
+    let markdown = Markdown::new(&app).extensions(&[MarkdownExtension::Math]).conceal(conceal).streaming(streaming);
+    markdown.inline_hook(move |spans, _| {
+        let leaf = leaves.replace(leaves.get() + 1);
+        let mut at = 0;
+        for span in &spans {
+            if let Some(tex) = &span.math {
+                record.borrow_mut().push((leaf, at, tex.clone()));
+            }
+            at += span.span.content.len();
+        }
+        spans
+    });
+    app.root().add(&markdown);
+    markdown.set_markdown(source);
+    found.take()
+}
+
+/// S3's property for `source` streamed in chunks that end at `ends`: the math shown after each code point is still
+/// shown, the same, after every later one and once the document ends (P17: a span changes at most once and never
+/// reverts, so a `$` is never shown as math before it is decided); each streamed frame equals a fresh streaming
+/// document's of the text so far, where native code writes the text (invariant 4); the ended stream's frame equals
+/// one shot's. With `agree`, conceal on and off show the same math too. The failing check and the end of the text it
+/// failed at.
+fn math_streams_like_fresh_documents(source: &str, ends: &[usize], agree: bool) -> Option<(&'static str, usize)> {
+    let tex =
+        |spans: Vec<(usize, usize, String)>| spans.into_iter().map(|(leaf, _, tex)| (leaf, tex)).collect::<Vec<_>>();
+    let mut shown = Vec::new();
+    for end in (1..=source.len()).filter(|&end| source.is_char_boundary(end)) {
+        let now = math_spans(&source[..end], true, false);
+        if !shown.iter().all(|span| now.contains(span)) {
+            return Some(("math never reverts (P17)", end));
+        }
+        if agree && tex(now.clone()) != tex(math_spans(&source[..end], true, true)) {
+            return Some(("conceal on and off show the same math", end));
+        }
+        shown = now;
+    }
+    let ended = math_spans(source, false, false);
+    if !shown.iter().all(|span| ended.contains(span)) {
+        return Some(("math never reverts (P17)", source.len()));
+    }
+    let document = |app: &TestApp| {
+        let markdown = Markdown::new(app).extensions(&[MarkdownExtension::Math]);
+        app.root().add(&markdown);
+        markdown
+    };
+    let app = TestApp::with_hyperlinks(40, 24);
+    let streamed = document(&app).streaming(true);
+    let mut start = 0;
+    for &end in ends {
+        streamed.append(&source[start..end]);
+        start = end;
+        let twin = TestApp::with_hyperlinks(40, 24);
+        document(&twin).streaming(true).set_markdown(&source[..end]);
+        if app.render() != twin.render() {
+            return Some(("streamed frame equals a fresh streaming one (invariant 4)", end));
+        }
+    }
+    streamed.streaming(false);
+    let oneshot = TestApp::with_hyperlinks(40, 24);
+    document(&oneshot).set_markdown(source);
+    (app.render() != oneshot.render()).then_some(("ended stream equals one shot", source.len()))
+}
+
+fn chunk_ends(chunks: &[&str]) -> Vec<usize> {
+    let mut end = 0;
+    chunks
+        .iter()
+        .map(|chunk| {
+            end += chunk.len();
+            end
+        })
+        .collect()
+}
+
+#[test]
+fn math_rows_stream_like_fresh_documents() {
+    for row in corpus().iter().filter(|row| row[0].as_str().unwrap().starts_with("math ")) {
+        let (chunks, html) = (strings(&row[1]), row[2].as_str().unwrap());
+        // The spans the HTML holds, so the property below sees math where there is some.
+        let tex: Vec<&str> =
+            html.split("<span class=\"math\">").skip(1).map(|s| s.split("</span>").next().unwrap()).collect();
+        let ended = math_spans(&chunks.concat(), false, false);
+        assert_eq!(ended.iter().map(|(.., tex)| tex.as_str()).collect::<Vec<_>>(), tex, "{}", row[0]);
+        let failure = math_streams_like_fresh_documents(&chunks.concat(), &chunk_ends(&chunks), true);
+        assert_eq!(failure, None, "{}", row[0]);
+    }
+}
+
+/// The math soup; with `agree`, conceal on and off must show the same math.
+struct MathSoup {
+    agree: bool,
+}
+
+impl model::Model for MathSoup {
+    type Command = &'static str;
+
+    fn generate(&self, rng: &mut model::Rng, steps: usize) -> Vec<&'static str> {
+        (0..steps).map(|_| *rng.pick(&MATH_PIECES)).collect()
+    }
+
+    fn simplify(&self, piece: &&'static str) -> Vec<&'static str> {
+        if *piece == "x" { Vec::new() } else { vec!["x"] }
+    }
+
+    /// Each piece is a chunk of the stream.
+    fn run(&self, pieces: &[&'static str]) -> Option<model::Failure> {
+        let ends = chunk_ends(pieces);
+        let (property, end) = math_streams_like_fresh_documents(&pieces.concat(), &ends, self.agree)?;
+        Some(model::Failure { property, step: ends.iter().position(|&e| e >= end).unwrap_or(0) })
+    }
+}
+
+#[test]
+fn model_streamed_math_never_reverts() {
+    // CI budget: 64 documents of 24 pieces, every prefix; MODEL_SEEDS widens it.
+    model::check(&MathSoup { agree: true }, 64, 24);
+    // Seed 466 of 640: the `|` cuts the span after an escaped `$`, which is no closer.
+    assert_eq!(model::Model::run(&MathSoup { agree: true }, &["$", "\\$", "|", "$", " ", "x"]), None);
+}
+
+#[test]
+fn math_streams_as_decided_at_the_edges_the_reviews_found() {
+    // The finding, the streamed chunks, and the frame after each chunk where native code writes the text (none: the
+    // property alone).
+    let rows: [(&str, &[&str], &[&str]); 4] = [
+        // A span the held `|` of a streamed line cuts stays text until the line decides it.
+        ("opus-2", &["$a", "|", "b$", " c"], &["$a", "$a", "$a", "$a"]),
+        // A split escaped backslash is no `\)` closer.
+        ("bigboi-2", &["\\(a b\\\\", ")", " now"], &[]),
+        // A closer is decided by the character after it.
+        ("bigboi-3", &["see $x$", "."], &["see $x$", "see x."]),
+        // A line that may become a display block holds no inline math.
+        ("bigboi-4", &["\\[a $b$ z\\]", "\n"], &[]),
+    ];
+    for (finding, chunks, frames) in rows {
+        let app = TestApp::with_hyperlinks(40, 8);
+        let markdown = Markdown::new(&app).extensions(&[MarkdownExtension::Math]).streaming(true);
+        app.root().add(&markdown);
+        for (chunk, expected) in chunks.iter().zip(frames.iter().map(Some).chain(std::iter::repeat(None))) {
+            markdown.append(chunk);
+            if let Some(expected) = expected {
+                assert_eq!(frame(&app), format!("{expected}\n"), "{finding} after {chunk:?}");
+            }
+        }
+        assert_eq!(math_streams_like_fresh_documents(&chunks.concat(), &chunk_ends(chunks), true), None, "{finding}");
+    }
+    // bigboi-1: a hook gets the formula a held `|` cuts only once it is whole, with conceal and without.
+    for conceal in [true, false] {
+        let app = TestApp::new(40, 8);
+        let seen = Calls::default();
+        let record = seen.clone();
+        let markdown = Markdown::new(&app).extensions(&[MarkdownExtension::Math]).conceal(conceal).streaming(true);
+        markdown.inline_hook(move |spans, _| {
+            record.borrow_mut().extend(spans.iter().filter_map(|span| span.math.clone()));
+            spans
+        });
+        app.root().add(&markdown);
+        for chunk in ["pre $ab", "|cd$ ok", "\nnext\n"] {
+            markdown.append(chunk);
+        }
+        assert_eq!(*seen.borrow(), ["ab|cd"], "conceal {conceal}");
     }
 }

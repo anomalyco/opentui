@@ -50,7 +50,8 @@ pub use image::ImageView;
 pub use input::Input;
 pub use line_numbers::{LineColor, LineNumbers, LineSign};
 pub use markdown::{
-    CodeBlock, InlineContext, InlineSpan, Markdown, MarkdownColors, MarkdownTableOptions, MarkdownTableStyle,
+    CodeBlock, InlineContext, InlineSpan, Markdown, MarkdownColors, MarkdownExtension, MarkdownTableOptions,
+    MarkdownTableStyle,
 };
 pub use painter::Painter;
 pub use scroll::{LinearScroll, MacOsScroll, ScrollAcceleration, ScrollAction, ScrollBox, ScrollEdge};
