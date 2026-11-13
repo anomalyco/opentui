@@ -2836,8 +2836,7 @@ test "renderer - pinned split scrollback repaints live native images after appen
 }
 
 test "renderer - frames carry the sync envelope unless a remote endpoint lacks 2026 or runs under a host multiplexer" {
-    // `da1`: width probes disabled, 2026 not reported, and DA1 ends the replies.
-    const Reply = enum { reported, not_reported, pending, da1 };
+    const Reply = enum { reported, not_reported, pending };
     const Mode = terminal_mod.SynchronizedOutput;
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
@@ -2850,11 +2849,8 @@ test "renderer - frames carry the sync envelope unless a remote endpoint lacks 2
     // environment names one, as a client's does; it must not count.
     for (bools) |remote| for (bools) |host| for (bools) |client_tmux| for (bools) |xtversion| for (bools) |sentinel| for (std.enums.values(Reply)) |reply| for (std.enums.values(Mode)) |mode| {
         errdefer std.debug.print("remote={} host={} client_tmux={} xtversion={} sentinel={} reply={t} mode={t}\n", .{ remote, host, client_tmux, xtversion, sentinel, reply, mode });
-        const env_all = [_]test_renderer_mod.TestEnvVar{
-            .{ .key = "TMUX", .value = "/tmp/tmux-1000/default,1,0" },
-            .{ .key = "OPENTUI_FORCE_EXPLICIT_WIDTH", .value = "0" },
-        };
-        const env = env_all[@intFromBool(!client_tmux)..if (reply == .da1) 2 else 1];
+        const env_all = [_]test_renderer_mod.TestEnvVar{.{ .key = "TMUX", .value = "/tmp/tmux-1000/default,1,0" }};
+        const env = env_all[@intFromBool(!client_tmux)..];
         var test_renderer = try TestRenderer.createWithEnv(std.testing.allocator, 8, 2, &pools.graphemes, &pools.links, env);
         defer test_renderer.deinit();
         const term = &test_renderer.renderer.terminal;
@@ -2864,13 +2860,13 @@ test "renderer - frames carry the sync envelope unless a remote endpoint lacks 2
         term.reply_sentinel = sentinel;
         var writer = DiscardTerminalWriter{};
         try term.queryTerminalSend(&writer);
-        // Replies come in query order: XTVERSION, the startup cursor report, DECRQM, then the width probe's report
-        // or DA1. A pending reply has only the cursor report, which precedes DECRQM. A tmux on either side of the
-        // link answers XTVERSION, so the answer alone does not drop the envelope.
+        // Replies come in query order: XTVERSION, the startup cursor report, DECRQM, then DA1 (a main screen has no
+        // width probe). A pending reply has only the cursor report, which precedes DECRQM. A tmux on either side of
+        // the link answers XTVERSION, so the answer alone does not drop the envelope.
         if (xtversion) term.processCapabilityResponse("\x1bP>|tmux 3.8\x1b\\");
         term.processCapabilityResponse("\x1b[3;1R");
         if (reply == .reported) term.processCapabilityResponse("\x1b[?2026;2$y");
-        if (reply != .pending) term.processCapabilityResponse(if (reply == .da1) "\x1b[?62;22c" else "\x1b[1;1R");
+        if (reply != .pending) term.processCapabilityResponse("\x1b[?62;22c");
 
         const dropped = remote and reply != .pending and (reply != .reported or host);
         const envelope = mode == .always or (mode == .auto and !dropped);

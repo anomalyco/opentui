@@ -49,11 +49,8 @@ pub fn is_capability_response(reply: &[u8]) -> bool {
             return true;
         }
     }
-    // Explicit-width probe: ESC [ 1 ; column R with a column other than 1.
-    if let Some(rest) = reply.strip_prefix(b"\x1b[1;")
-        && digits(rest, 0).is_some_and(|end| &rest[end..] == b"R")
-        && rest != b"1R"
-    {
+    // Explicit-width probe, which runs on row 2 where no modified F3 key reports: ESC [ 2 ; 2 R or ESC [ 2 ; 3 R.
+    if matches!(reply, b"\x1b[2;2R" | b"\x1b[2;3R") {
         return true;
     }
     if let Some(body) = string_body(reply, b"\x1bP", false) {
@@ -235,7 +232,6 @@ mod tests {
         // Forms that Core's vectors below lack.
         for reply in [
             b"\x1b[?1016;1;2$y".as_slice(),
-            b"\x1b[1;10R",
             b"\x1bP1+r4d73=1b5d35323b\x1b\\",
             b"\x1bP1+R4D73\x1b\\",
             b"\x1b_Gi=31;OK\x1b\\",
@@ -252,6 +248,8 @@ mod tests {
     fn rejects_other_replies_and_partial_forms() {
         for reply in [
             b"\x1b[1;1R".as_slice(),
+            b"\x1b[1;2R",
+            b"\x1b[2;1R",
             b"\x1b[12;40R",
             b"\x1b[?2026;2$",
             b"\x1b[?u",
@@ -281,8 +279,8 @@ mod tests {
             b"\x1b[?2026;2$y",
             b"\x1b[?2004;2$y",
             b"\x1b[?1016;0$y",
-            b"\x1b[1;2R",
-            b"\x1b[1;3R",
+            b"\x1b[2;2R",
+            b"\x1b[2;3R",
             b"\x1bP>|kitty(0.40.1)\x1b\\",
             b"\x1bP>|ghostty 1.1.3\x1b\\",
             b"\x1bP>|tmux 3.5a\x1b\\",

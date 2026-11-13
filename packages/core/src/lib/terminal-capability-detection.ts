@@ -71,12 +71,12 @@ export function isCapabilityResponse(sequence: string): boolean {
 }
 
 /**
- * Check if a cursor position report answers the explicit width or scaled text probe: ESC[1;NR with N >= 2.
- * ESC[1;1R means the cursor did not move, so the terminal has no width support. Shift, Alt and Ctrl+F3 send the
- * same bytes, so only a report the parser classified as one may be checked.
+ * Check if a cursor position report answers the explicit width or scaled text probe, which runs on row 2: ESC[2;2R or
+ * ESC[2;3R. ESC[2;1R means the cursor did not move, so the terminal has no width support. Modified F3 keys report
+ * row 1, so no key has these bytes; still, only a report the parser classified as one may be checked.
  */
 export function isExplicitWidthReport(sequence: string): boolean {
-  return /\x1b\[1;(?!1R)\d+R/.test(sequence)
+  return /\x1b\[2;[23]R/.test(sequence)
 }
 
 /**

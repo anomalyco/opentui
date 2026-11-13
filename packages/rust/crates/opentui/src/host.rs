@@ -1109,10 +1109,10 @@ mod tests {
             assert_eq!(events, expected);
         }
         // In the window cursor reports reach native code, which takes the first as the cursor's position at setup and
-        // the second as the answer to its explicit-width probe.
+        // the next two as the answers to its explicit-width probes.
         let (terminal, link) = RemoteTerminal::new(RemoteOptions::default(), || {}).expect("create a terminal");
         let mut host = Host::start_remote(terminal, HostOptions::default()).expect("start the host");
-        link.send_input(b"\x1b[5;10R\x1b[1;2R");
+        link.send_input(b"\x1b[5;10R\x1b[2;2R\x1b[2;3R");
         host.poll(Some(Instant::now() + Duration::from_secs(1)), &mut Vec::new()).expect("read the replies");
         let flags = host.session().capabilities().expect("read the capabilities").flags;
         assert!(flags.contains(crate::native::CapabilityFlags::EXPLICIT_WIDTH), "{flags:?}");

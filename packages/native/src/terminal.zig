@@ -232,6 +232,9 @@ skip_explicit_width_query: bool = false,
 startup_cursor_query_pending: bool = false,
 startup_cursor_query_captured: bool = false,
 explicit_width_probe_reports_pending: u8 = 0,
+explicit_width_probe_first_column: u16 = 0,
+/// Setup probes OSC 66 (an alternate screen of 3+ rows), so the probe's answer, not XTVERSION, decides explicit width.
+explicit_width_probed: bool = false,
 /// The host ends each query batch with DA1 and waits for its reply (sentinel mode).
 reply_sentinel: bool = false,
 synchronized_output: SynchronizedOutput = .auto,
@@ -395,11 +398,9 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     self.state.theme_queries_sent = true;
 
     // Send xtversion first (used for tmux detection)
-    try tty.writeAll(ansi.ANSI.xtversion ++
-        ansi.ANSI.hideCursor ++
-        ansi.ANSI.saveCursorState);
+    try tty.writeAll(ansi.ANSI.xtversion ++ ansi.ANSI.hideCursor);
 
-    // Capture the current cursor position before temporary home-position queries.
+    // Capture the startup cursor position, which seeds the split scrollback.
     try tty.writeAll(ansi.ANSI.cursorPositionRequest);
 
     // Probes are never DCS wrapped, and screen prints a DCS body as text. tmux
@@ -417,26 +418,22 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     self.recordKittyQuery();
 
     // Inside tmux, graphics replies cannot describe the passthrough endpoint.
-    if (!self.skip_graphics_query and !self.isInTmux()) {
-        try tty.writeAll(ansi.ANSI.kittyGraphicsQuery);
-        if (!self.reply_sentinel) try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
-    }
+    if (!self.skip_graphics_query and !self.isInTmux()) try tty.writeAll(ansi.ANSI.kittyGraphicsQuery);
+    // Its reply settles the 2026 decision and Sixel; sentinel mode sends it at the end of setup instead.
+    if (!self.reply_sentinel) try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
 
-    if (!self.skip_explicit_width_query) {
-        self.explicit_width_probe_reports_pending = 2;
-        try tty.writeAll(ansi.ANSI.home ++
-            ansi.ANSI.explicitWidthQuery ++
-            ansi.ANSI.cursorPositionRequest ++
-            ansi.ANSI.home ++
-            ansi.ANSI.scaledTextQuery ++
-            ansi.ANSI.cursorPositionRequest);
-    } else {
-        self.explicit_width_probe_reports_pending = 0;
-    }
+    // Only queryExplicitWidth's own reports count; a key between packets is not one.
+    self.explicit_width_probe_reports_pending = 0;
+}
 
-    try tty.writeAll(ansi.ANSI.restoreCursorState);
-    // Terminals answer in order: the DA1 reply follows every other reply of the batch.
-    if (self.reply_sentinel) try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
+/// Draws OSC 66 probes: call only on the alternate screen just entered; it saves its own cursor, not another app's.
+/// They run on row 2 (the 2-row `s=2` cell needs row 3), so no reply equals a modified F3 key (`CSI 1;m R`).
+pub fn queryExplicitWidth(self: *Terminal, tty: anytype) !void {
+    if (self.skip_explicit_width_query) return;
+    self.explicit_width_probe_reports_pending = 2;
+    const row_two = "\x1b[2H";
+    try tty.writeAll(ansi.ANSI.saveCursorState ++ row_two ++ ansi.ANSI.explicitWidthQuery ++ ansi.ANSI.cursorPositionRequest ++
+        row_two ++ ansi.ANSI.scaledTextQuery ++ ansi.ANSI.cursorPositionRequest ++ ansi.ANSI.restoreCursorState);
 }
 
 /// ConPTY draws 24-bit color, but a remote app's output never reaches this process's console.
@@ -1422,17 +1419,19 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
             self.setCursorPosition(col, row, self.state.cursor.visible);
             self.startup_cursor_query_captured = true;
             self.startup_cursor_query_pending = false;
-        } else if (self.explicit_width_probe_reports_pending > 0) {
+        } else if (self.explicit_width_probe_reports_pending > 0 and row == 2 and col <= 3) {
+            // A probe reply is on row 2, columns 1 to 3; a key or a repeated report forwarded as a reply is skipped.
             const probe_index = 2 - self.explicit_width_probe_reports_pending;
             self.explicit_width_probe_reports_pending -= 1;
             // Terminals answer in order, and the probes follow the capability queries.
             self.sync_reply_settled = true;
 
-            if (row == 1 and probe_index == 0 and col == 2) {
+            // A terminal that draws `w=1` (column 2) also moves for `s=2`: kitty to column 3, foot to 2. Deciding on
+            // the pair keeps a stray column-2 report, such as a repeated startup report, from passing alone.
+            if (probe_index == 0) self.explicit_width_probe_first_column = col;
+            if (probe_index == 1 and self.explicit_width_probe_first_column == 2 and col >= 2) {
                 self.caps.explicit_width = true;
-            } else if (row == 1 and probe_index == 1 and col == 3) {
-                self.caps.explicit_width = true;
-                self.caps.scaled_text = true;
+                self.caps.scaled_text = col == 3;
             }
         }
 
@@ -1462,6 +1461,14 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
         self.caps.kitty_keyboard = true;
         self.caps.bracketed_paste = true;
         self.caps.hyperlinks = true;
+    }
+    // OSC 66 text sizing where setup runs no probe (the main screen): kitty since 0.40, foot since 1.21 (width only).
+    if (self.term_info.from_xtversion and !self.skip_explicit_width_query and !self.explicit_width_probed) {
+        const name = self.getTerminalName();
+        const version = self.getTerminalVersion();
+        const kitty = std.ascii.eqlIgnoreCase(name, "kitty") and semanticVersionAtLeast(version, 0, 40);
+        if (kitty or (std.ascii.eqlIgnoreCase(name, "foot") and semanticVersionAtLeast(version, 1, 21))) self.caps.explicit_width = true;
+        if (kitty) self.caps.scaled_text = true;
     }
     // Inside screen a reply may describe the terminal outside it, and screen drops 24-bit SGR.
     if (!self.insideScreen() and (truecolor_reply or (self.term_info.from_xtversion and isTruecolorTerminal(self.getTerminalName())))) {
