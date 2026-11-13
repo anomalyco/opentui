@@ -1106,11 +1106,12 @@ impl Markdown {
         let language = info.as_deref().and_then(|info| info.split_whitespace().next());
         let base = self.base(block.parent);
         let colors = *self.0.colors.borrow();
-        // It shows all its lines, so it has nothing to scroll and takes no focus: Tab passes over it.
+        // It shows all its lines, wrapped as Core's, so it has nothing to scroll and takes no focus: Tab passes over it.
         let view = Code::themed(app, Arc::clone(&self.0.syntax.borrow()), self.0.style.as_ref())
             .fg(base.fg.unwrap_or(colors.text))
             .filetype(language)
             .set_code(code)
+            .wrap(WrapMode::Word)
             .focusable(false);
         Some(Rendered::Code(View::new(app).bg(colors.code_bg).child(&view), view))
     }

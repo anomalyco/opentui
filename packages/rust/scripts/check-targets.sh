@@ -8,7 +8,7 @@
 # RUSTC_BOOTSTRAP=1 CARGO_UNSTABLE_BUILD_STD=std sh scripts/check-targets.sh
 #
 # Usage: sh scripts/check-targets.sh
-# Set ZIG to the Zig command if `zig` is not the version packages/native/build.zig.zon names, such as ZIG='zig 0.17.0'
+# Set ZIG to the Zig command if `zig` is not the version packages/native/build.zig.zon names, such as ZIG='zig 0.17.1'
 # with anyzig.
 set -eu
 

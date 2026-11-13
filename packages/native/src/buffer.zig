@@ -8,8 +8,6 @@ const edv = @import("editor-view.zig");
 const math = std.math;
 const assert = std.debug.assert;
 const fillU32 = @import("utils.zig").fillU32;
-const nonNegative = @import("utils.zig").nonNegative;
-const unsigned = @import("utils.zig").unsigned;
 
 const gp = @import("grapheme.zig");
 const link = @import("link.zig");
@@ -1888,7 +1886,7 @@ pub const OptimizedBuffer = struct {
             // Printable ASCII is one cell per byte and takes no pool or tracker capacity, so it
             // skips the copy and the prepared runs. The bytes left of column 0 are clipped.
             const clipped_byte_count: usize = if (x < 0) @min(text.len, @abs(x)) else 0;
-            var column: u32 = @intCast(nonNegative(x));
+            var column: u32 = @intCast(@max(x, 0));
             for (text[clipped_byte_count..]) |byte| {
                 if (column >= end) break;
                 self.setTextCell(column, row, makeCell(byte, fg, bg orelse self.get(column, row).?.bg, attributes));
@@ -2110,8 +2108,8 @@ pub const OptimizedBuffer = struct {
         const clampedSrcWidth = @min(srcWidth, frameBuffer.width - srcX);
         const clampedSrcHeight = @min(srcHeight, frameBuffer.height - srcY);
 
-        const startDestX = nonNegative(destX);
-        const startDestY = nonNegative(destY);
+        const startDestX = @max(0, destX);
+        const startDestY = @max(0, destY);
         const endDestX = @min(@as(i32, @intCast(self.width)) - 1, destX + @as(i32, @intCast(clampedSrcWidth)) - 1);
         const endDestY = @min(@as(i32, @intCast(self.height)) - 1, destY + @as(i32, @intCast(clampedSrcHeight)) - 1);
 
@@ -3510,10 +3508,10 @@ pub const OptimizedBuffer = struct {
         }
         if (clip_x0 >= clip_x1 or clip_y0 >= clip_y1) return false;
 
-        const left = unsigned(u32, clip_x0 - @as(i64, pos_x));
-        const top = unsigned(u32, clip_y0 - @as(i64, pos_y));
-        const right = unsigned(u32, clip_x1 - @as(i64, pos_x));
-        const bottom = unsigned(u32, clip_y1 - @as(i64, pos_y));
+        const left: u32 = @intCast(clip_x0 - @as(i64, pos_x));
+        const top: u32 = @intCast(clip_y0 - @as(i64, pos_y));
+        const right: u32 = @intCast(clip_x1 - @as(i64, pos_x));
+        const bottom: u32 = @intCast(clip_y1 - @as(i64, pos_y));
         const clipped_source_x = source_x + @as(u32, @intCast((@as(u64, left) * source_width) / width));
         const clipped_source_y = source_y + @as(u32, @intCast((@as(u64, top) * source_height) / height));
         const source_end_x = source_x + @as(u32, @intCast((@as(u64, right) * source_width + width - 1) / width));
@@ -3688,8 +3686,8 @@ pub const OptimizedBuffer = struct {
         // Each cell samples 2x2 source pixels. Draw only the source cells inside the buffer.
         const source_cells_x: i64 = (sourceWidth + 1) / 2;
         const source_cells_y: i64 = @intCast((pixels.len / alignedBytesPerRow + 1) / 2);
-        const start_x: u32 = @intCast(nonNegative(posX));
-        const start_y: u32 = @intCast(nonNegative(posY));
+        const start_x: u32 = @intCast(@max(0, posX));
+        const start_y: u32 = @intCast(@max(0, posY));
         const end_x = @min(@as(i64, self.width), @as(i64, posX) + source_cells_x);
         const end_y = @min(@as(i64, self.height), @as(i64, posY) + source_cells_y);
 
@@ -3759,8 +3757,8 @@ pub const OptimizedBuffer = struct {
         // Skip the source cells left of or above the buffer.
         const skip_x: u32 = @intCast(@min(terminalWidthCells, @max(0, -@as(i64, posX))));
         const skip_y: u32 = @intCast(@min(terminalHeightCells, @max(0, -@as(i64, posY))));
-        const start_x: u32 = @intCast(nonNegative(posX));
-        const start_y: u32 = @intCast(nonNegative(posY));
+        const start_x: u32 = @intCast(@max(0, posX));
+        const start_y: u32 = @intCast(@max(0, posY));
         if (start_x >= self.width or start_y >= self.height) return;
         const width = @min(terminalWidthCells - skip_x, self.width - start_x);
         const height = @min(terminalHeightCells - skip_y, self.height - start_y);
