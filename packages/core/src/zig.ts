@@ -2883,6 +2883,7 @@ function drawRecordBottomTitle(options: NativeBufferDraw): string {
 }
 
 const drawTextEncoder = new TextEncoder()
+const markdownDecoder = new TextDecoder()
 
 /** Encodes into a buffer sized to the native limit; text that does not fit exceeds that limit. */
 function encodeDrawText(text: string, output: Uint8Array): number {
@@ -7760,7 +7761,8 @@ export class FFIRenderLib {
     )
   }
 
-  public markdownGetSource(context: NativeContextHandle, doc: ContextMarkdownHandle): string {
+  /** The source's bytes `start` to `end` (default: all), read in place. */
+  public markdownGetSource(context: NativeContextHandle, doc: ContextMarkdownHandle, start = 0, end?: number): string {
     const bytes = new BigUint64Array(1)
     const count = new Uint32Array(1)
     const pointer = this.nativeContextPointer(context, "ot_markdown_get_source")
@@ -7768,8 +7770,9 @@ export class FFIRenderLib {
       "ot_markdown_get_source",
       this.opentui.symbols.ot_markdown_get_source(pointer, encodeContextHandle(context, doc), bytes, count),
     )
-    if (count[0] === 0) return ""
-    return this.decoder.decode(new Uint8Array(toArrayBuffer(Number(bytes[0]) as Pointer, 0, count[0])))
+    const to = Math.min(end ?? count[0], count[0])
+    if (to <= start) return ""
+    return markdownDecoder.decode(new Uint8Array(toArrayBuffer(Number(bytes[0]) as Pointer, start, to - start)))
   }
 
   /** The blocks changed since the last read, in document order; reading acknowledges them. */
@@ -7823,7 +7826,7 @@ export class FFIRenderLib {
       "ot_markdown_read_source",
       this.opentui.symbols.ot_markdown_read_source(pointer, handle, block, bytes, bytes.length, count),
     )
-    return this.decoder.decode(bytes)
+    return markdownDecoder.decode(bytes)
   }
 
   /** A leaf's parser output with its styles resolved through the doc's style. */
@@ -7872,14 +7875,14 @@ export class FFIRenderLib {
       const flags = records[base + layout.fields.flags.offset / 4]
       const end = at + records[base + layout.fields.byte_count.offset / 4]
       const color = (offset: number) => RGBA.fromArray(colors.slice(base * 2 + offset / 2, base * 2 + offset / 2 + 4))
-      const chunk: TextChunk = { __isChunk: true, text: this.decoder.decode(bytes.subarray(at, end)) }
+      const chunk: TextChunk = { __isChunk: true, text: markdownDecoder.decode(bytes.subarray(at, end)) }
       if (flags & nativeConstants.OT_SCENE_TEXT_FOREGROUND) chunk.fg = color(layout.fields.foreground.offset)
       if (flags & nativeConstants.OT_SCENE_TEXT_BACKGROUND) chunk.bg = color(layout.fields.background.offset)
       chunk.attributes = records[base + layout.fields.attributes.offset / 4]
       if (flags & nativeConstants.OT_SCENE_TEXT_LINK) {
         const offset = records[base + layout.fields.link_offset.offset / 4]
         const url = urls.subarray(offset, offset + records[base + layout.fields.link_byte_count.offset / 4])
-        chunk.link = { url: this.decoder.decode(url) }
+        chunk.link = { url: markdownDecoder.decode(url) }
       }
       chunks.push(chunk)
       at = end

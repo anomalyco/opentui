@@ -80,9 +80,9 @@ export class MarkdownDocument {
     return this.lib.markdownReadSource(this.context, this.doc, index)
   }
 
-  /** The engine's own copy of the source. */
-  source(): string {
-    return this.lib.markdownGetSource(this.context, this.doc)
+  /** The engine's own copy of the source, or its bytes `start` to `end`. */
+  source(start?: number, end?: number): string {
+    return this.lib.markdownGetSource(this.context, this.doc, start, end)
   }
 
   bind(index: number, node: SceneNodeHandle): void {

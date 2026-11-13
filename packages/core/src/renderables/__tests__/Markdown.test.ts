@@ -1833,6 +1833,83 @@ test("a delta that only grows bound prose costs the append and one record read",
   expect(await growCalls()).toEqual(Array(5).fill(["ot_markdown_append", "ot_markdown_read_changes"]))
 })
 
+// Gate: a delta's work does not grow with the document. Per K = 16..128 blocks before the growing one, counts the UTF-8
+// bytes JavaScript encodes, the list gaps it writes and the list markers it reads while 8 deltas grow a fence and the
+// last item of a list.
+test("a delta's work does not grow with the blocks before it", async () => {
+  const encode = TextEncoder.prototype.encode
+  const rowGap = Object.getOwnPropertyDescriptor(BoxRenderable.prototype, "rowGap")!
+  const chunks = Object.getOwnPropertyDescriptor(TextRenderable.prototype, "chunks")!
+  const work: Record<string, number[][]> = {}
+  let count = [0, 0, 0]
+  TextEncoder.prototype.encode = function (input?: string) {
+    const bytes = encode.call(this, input)
+    count[0]! += bytes.length
+    return bytes
+  }
+  Object.defineProperty(BoxRenderable.prototype, "rowGap", {
+    configurable: true,
+    set(value) {
+      count[1]!++
+      rowGap.set!.call(this, value)
+    },
+  })
+  Object.defineProperty(TextRenderable.prototype, "chunks", {
+    configurable: true,
+    get() {
+      count[2]!++
+      return chunks.get!.call(this)
+    },
+  })
+  try {
+    for (const k of [16, 32, 64, 128]) {
+      const rows = [
+        ["fence", "Para.\n\n".repeat(k) + "```ts\n", "x = 1\n"],
+        ["list", "- item\n".repeat(k) + "- last", " word"],
+        ["loose list", "- item\n\n".repeat(k) + "- last", " word"],
+        ["items", "- item\n".repeat(k), "- more\n"],
+      ]
+      for (const [name, prefix, delta] of rows) {
+        const md = createMarkdownRenderable({ content: prefix!, syntaxStyle, streaming: true })
+        renderer.root.add(md)
+        await renderOnce()
+        count = [0, 0, 0]
+        for (let i = 0; i < 8; i++) md.content += delta
+        ;(work[name!] ??= []).push([...count])
+        md.destroyRecursively()
+      }
+    }
+  } finally {
+    TextEncoder.prototype.encode = encode
+    Object.defineProperty(BoxRenderable.prototype, "rowGap", rowGap)
+    Object.defineProperty(TextRenderable.prototype, "chunks", chunks)
+  }
+  // Equal for every K: the fence's and the growing paragraph's bytes (the host writes it: no hyperlinks; the amount
+  // depends on what the highlighter and text buffers encode), and no gap written again except one per new item.
+  for (const [name, counts] of Object.entries(work)) expect([name, counts]).toEqual([name, Array(4).fill(counts[0])])
+  expect(Object.values(work).map((counts) => counts[0]!.slice(1))).toEqual([
+    [0, 0],
+    [0, 0],
+    [0, 0],
+    [8, 16],
+  ])
+})
+
+test("a list lays out again when a shown item gains a block or a replace rebuilds items", async () => {
+  const md = createMarkdownRenderable({ content: "- para 1\n\n", syntaxStyle, streaming: true })
+  renderer.root.add(md)
+  await renderOnce()
+  md.content += "  para 2\n"
+  await renderOnce()
+  expect(frameText()).toBe("- para 1\n\n  para 2")
+  // OpenCode's trim() parses again; the list stays and its second item is built again (model seed 1188).
+  md.content = "1. \n1. `run x` "
+  await renderOnce()
+  md.content = "1. \n1. `run x`"
+  await renderOnce()
+  expect(frameText()).toBe("1.\n2. run x")
+})
+
 // New defect M3-e (engine): the design's fast path is one call (`changed_block_count = 0`), but M1 lists a grown pending
 // paragraph so the host's ranges stay current.
 test.todo("a delta that only grows bound prose is one native call", async () => {
@@ -5430,6 +5507,8 @@ test.each([
   ["# Head *x*\n\ntext", 40, { conceal: false }],
   ["# Notes\n\ntext *x*", 40, {}, "Notes\n\ntext x"],
   ["# A ses_known\nB\n\nC\nD\n\n\nE", 40, sameHook, "A @K\n\nB\n\nC\nD\n\nE"],
+  // An open item with a blank line between its blocks is loose before its list closes, as in Rust.
+  ["- para 1\n\n  para 2\n", 40, {}, "- para 1\n\n  para 2"],
 ] as [string, number, Partial<MarkdownOptions>?, string?][])(
   "streamed %j draws its settled text in every frame",
   // A rest parameter: Bun passes a done callback to a callback with more parameters than a row has values.

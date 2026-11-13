@@ -292,6 +292,7 @@ const sameRecord = (a: NativeMarkdownBlock, b: NativeMarkdownBlock) =>
   a.infoEnd === b.infoEnd &&
   a.number === b.number
 const textEncoder = new TextEncoder()
+const textDecoder = new TextDecoder()
 const sameChunks = (a: TextChunk[], b: TextChunk[]) =>
   a.length === b.length &&
   a.every(
@@ -331,11 +332,19 @@ interface Shown {
   /** A table cell's content as its table shows it, kept until the cell changes. */
   cell?: TextChunk[]
   targets?: Targets
+  /** A list's items and whether one is loose, and the gap and marker width it shows; an item's place and gap. */
+  count?: number
+  loose?: boolean
+  gap?: number
+  width?: number
+  ordinal?: number
 }
 
+/** What a call's changes touch besides each block: tables to fill, lists to lay out again, items to mark. */
 interface Refresh {
   tables: Set<number>
   lists: Set<number>
+  items: Set<number>
 }
 
 export class MarkdownRenderable extends Renderable {
@@ -364,7 +373,6 @@ export class MarkdownRenderable extends Renderable {
   private _styleCopy?: { source: SyntaxStyle; copy: SyntaxStyle }
   // The engine flags the doc has, so an option change sends only a real change.
   private _flags = 0
-  private _sourceBytes?: Uint8Array
   // The source before the call being applied, when it changed, for blocks the call takes back.
   private _before?: string
   private _beforeBytes?: Uint8Array
@@ -685,7 +693,6 @@ export class MarkdownRenderable extends Renderable {
     if (this.isDestroyed) return
     const before = this._doc.content
     const changes = run()
-    this._sourceBytes = undefined
     this._before = before === this._doc.content ? undefined : before
     try {
       this.apply(changes)
@@ -699,10 +706,11 @@ export class MarkdownRenderable extends Renderable {
   private sameSource(old: NativeMarkdownBlock, block: NativeMarkdownBlock): boolean {
     if (this._before === undefined) return true
     const before = (this._beforeBytes ??= textEncoder.encode(this._before))
-    this._sourceBytes ??= textEncoder.encode(this._doc.content)
-    const a = before.subarray(old.sourceStart, old.sourceEnd)
-    const b = this._sourceBytes.subarray(block.sourceStart, block.sourceEnd)
-    return a.length === b.length && a.every((byte, at) => byte === b[at])
+    const source = before.subarray(old.sourceStart, old.sourceEnd)
+    return (
+      source.length === block.sourceEnd - block.sourceStart &&
+      textDecoder.decode(source) === this.sourceText(block.sourceStart, block.sourceEnd)
+    )
   }
 
   /** Binds a paragraph's or heading's node, which hands it to the doc. */
@@ -741,18 +749,32 @@ export class MarkdownRenderable extends Renderable {
   private apply(changes: MarkdownChanges): void {
     const from = changes.removedFrom ?? this._shown.length
     const removed = new Map(this._shown.splice(from).map((shown, at) => [from + at, shown]))
-    const refresh: Refresh = { tables: new Set(), lists: new Set() }
+    // Lists count their items again after a removal.
+    if (removed.size > 0) for (const shown of this._shown) shown.count = undefined
+    const refresh: Refresh = { tables: new Set(), lists: new Set(), items: new Set() }
     for (const block of changes.changed) this.update(block, refresh, removed)
     for (const shown of [...removed.values()].reverse()) {
       if (shown.renderable && !shown.renderable.isDestroyed) shown.renderable.destroyRecursively()
     }
+    this.refresh(refresh)
+  }
+
+  private refresh(refresh: Refresh): void {
     for (const table of refresh.tables) this.fillTable(table)
     for (const list of refresh.lists) this.updateList(list)
+    // Items of lists not laid out again: only their markers and gaps.
+    const items = new Map<number, number[]>()
+    for (const item of refresh.items) {
+      const list = this._doc.blocks[item]!.parent!
+      if (!refresh.lists.has(list)) items.set(list, [...(items.get(list) ?? []), item])
+    }
+    for (const [list, listed] of items) this.updateList(list, listed)
   }
 
   private update(block: NativeMarkdownBlock, refresh: Refresh, removed = new Map<number, Shown>()): void {
     const index = block.index
     const shown = this._shown[index]
+    let layout = true
     if (!shown) {
       // Blocks without children of their own: what shows them holds no other block's renderable.
       const old = removed.get(index)
@@ -767,7 +789,7 @@ export class MarkdownRenderable extends Renderable {
         if (old.default instanceof TextRenderable && isProse(block.kind) && !this.hostWrites(block)) {
           this.bind(index, old.default)
         }
-        this.afterChange(index, refresh)
+        this.afterChange(index, refresh, true)
         return
       }
       const same = old?.kind === block.kind || (isProse(block.kind) && isProse(old?.kind ?? -1))
@@ -778,6 +800,8 @@ export class MarkdownRenderable extends Renderable {
       // The doc unbound the removed block's node.
       if (reuse instanceof TextRenderable && isProse(block.kind) && !this.hostWrites(block)) this.bind(index, reuse)
     } else {
+      // A list or item grows with each delta inside it; it is laid out again only when its flags or number change.
+      layout = shown.record.flags !== block.flags || shown.record.number !== block.number
       // A kind change at the same index rebuilds, except that a paragraph that becomes a setext heading keeps its text.
       const rebuild = shown.kind !== block.kind && !(isProse(shown.kind) && isProse(block.kind))
       // A block listed for its output alone (a style or capability change) does not ask its renderer again.
@@ -789,7 +813,7 @@ export class MarkdownRenderable extends Renderable {
       } else if (rebuild || (changed && this.rendersCustom(block))) this.show(index, shown.renderable)
       else if (shown.default instanceof CodeRenderable) this.setCode(index, shown.default)
     }
-    this.afterChange(index, refresh)
+    this.afterChange(index, refresh, layout)
   }
 
   /** Builds the renderable of block `index` and puts it where `old` was, or last in its parent. */
@@ -809,8 +833,7 @@ export class MarkdownRenderable extends Renderable {
     }
     if (before === fallback) return
     if (before && !before.isDestroyed) before.destroyRecursively()
-    shown.written = undefined
-    shown.targets = undefined
+    shown.written = shown.targets = shown.gap = shown.width = shown.count = undefined
     if (!fallback) shown.container = shown.marker = undefined
     // Descendants lose what showed them with the old default, and show again in the new one.
     if (before) this.showDescendants(index)
@@ -822,15 +845,15 @@ export class MarkdownRenderable extends Renderable {
     for (let at = index + 1; at < end; at++) {
       const shown = this._shown[at]!
       shown.renderable = shown.default = shown.container = shown.marker = shown.written = shown.targets = undefined
+      shown.gap = shown.width = shown.count = shown.ordinal = undefined
     }
-    const refresh: Refresh = { tables: new Set(), lists: new Set() }
+    const refresh: Refresh = { tables: new Set(), lists: new Set(), items: new Set() }
     for (let at = index + 1; at < end; at++) {
       if (!this.isHidden(at)) this.show(at, undefined)
-      this.afterChange(at, refresh)
+      this.afterChange(at, refresh, true)
     }
-    this.afterChange(index, refresh)
-    for (const table of refresh.tables) this.fillTable(table)
-    for (const list of refresh.lists) this.updateList(list)
+    this.afterChange(index, refresh, true)
+    this.refresh(refresh)
   }
 
   private subtreeEnd(index: number): number {
@@ -1010,14 +1033,17 @@ export class MarkdownRenderable extends Renderable {
   }
 
   /** What a changed block changes besides its own renderable: text the host writes, the table or list around it. */
-  private afterChange(index: number, refresh: Refresh): void {
+  private afterChange(index: number, refresh: Refresh, layout: boolean): void {
     const block = this._doc.blocks[index]!
     const shown = this._shown[index]!
     if (block.kind === md.OT_MD_TABLE) refresh.tables.add(index)
     if (block.kind === md.OT_MD_TABLE_ROW || block.kind === md.OT_MD_TABLE_CELL) refresh.tables.add(this.tableOf(index))
     if (block.kind === md.OT_MD_TABLE_CELL) shown.cell = undefined
-    if (block.kind === md.OT_MD_LIST) refresh.lists.add(index)
-    if (block.kind === md.OT_MD_ITEM) refresh.lists.add(block.parent!)
+    if (layout && block.kind === md.OT_MD_LIST) refresh.lists.add(index)
+    if (layout && block.kind === md.OT_MD_ITEM) refresh.items.add(index)
+    // A new block in an item can make its list loose.
+    const parent = block.parent === undefined ? undefined : this._doc.blocks[block.parent]!
+    if (layout && parent?.kind === md.OT_MD_ITEM) refresh.items.add(block.parent!)
     const text = isProse(block.kind) || block.kind === md.OT_MD_HTML
     if (!text || this.isHidden(index) || !(shown.default instanceof TextRenderable)) return
     if (block.kind === md.OT_MD_HTML || this.hostWrites(block)) {
@@ -1145,31 +1171,46 @@ export class MarkdownRenderable extends Renderable {
     return chunks.length > 0 ? chunks : [{ __isChunk: true as const, text: " " }]
   }
 
-  /** A list's gaps and its items' markers: numbers align on their right, and the list is loose when items are. */
-  private updateList(index: number): void {
+  /**
+   * A list's gaps and its items' markers: numbers align on their right, and the list is loose when items are. With
+   * `listed`, only those items changed: they are counted and marked, and the rest is written only when the gap or the
+   * marker width changes.
+   */
+  private updateList(index: number, listed?: number[]): void {
     const list = this._shown[index]
     if (!list || !(list.default instanceof BoxRenderable) || this.isHidden(index)) return
     const block = this._doc.blocks[index]!
-    const items = this.childrenOf(index)
-    // The engine decides tightness when the list closes; until then a blank line after an item makes it loose.
-    const tight =
-      (block.flags & md.OT_MD_BLOCK_OPEN) !== 0
-        ? !items.some((item) => (this._doc.blocks[item]!.flags & md.OT_MD_BLOCK_BLANK_AFTER) !== 0)
-        : (block.flags & md.OT_MD_BLOCK_TIGHT) !== 0
+    const recount = listed === undefined || list.count === undefined
+    let items = recount ? this.childrenOf(index) : listed
+    let count = recount ? 0 : list.count!
+    if (recount) list.loose = false
+    for (const item of items) {
+      const shown = this._shown[item]!
+      if (recount || shown.ordinal === undefined) shown.ordinal = count++
+      list.loose ||= this.isLoose(item)
+    }
+    list.count = count
+    // The engine decides tightness when the list closes; until then a blank line in or after an item makes it loose.
+    const tight = (block.flags & md.OT_MD_BLOCK_OPEN) !== 0 ? !list.loose : (block.flags & md.OT_MD_BLOCK_TIGHT) !== 0
     const gap = tight ? 0 : 1
-    list.default.rowGap = gap
     const ordered = (block.flags & md.OT_MD_BLOCK_ORDERED) !== 0
-    const width = ordered ? `${block.number + Math.max(0, items.length - 1)}`.length + 1 : 1
+    const width = ordered ? `${block.number + Math.max(0, count - 1)}`.length + 1 : 1
+    if (gap !== list.gap || width !== list.width) {
+      list.gap = gap
+      list.width = width
+      list.default.rowGap = gap
+      if (listed) items = this.childrenOf(index)
+    }
     const base = this.baseStyle(index)
     const style = this.getStyle("markup.list")
-    items.forEach((item, n) => {
+    for (const item of items) {
       const shown = this._shown[item]!
-      if (!shown.marker || !(shown.container instanceof BoxRenderable)) return
+      if (!shown.marker || !(shown.container instanceof BoxRenderable)) continue
       const flags = this._doc.blocks[item]!.flags
       const checked = (flags & md.OT_MD_BLOCK_CHECKED) !== 0
       const task =
         (flags & md.OT_MD_BLOCK_TASK) === 0 ? "" : this._conceal ? (checked ? " ☑" : " ☐") : checked ? " [x]" : " [ ]"
-      const label = (ordered ? `${block.number + n}.`.padStart(width) : "-") + task + " "
+      const label = (ordered ? `${block.number + shown.ordinal!}.`.padStart(width) : "-") + task + " "
       const chunk = {
         __isChunk: true as const,
         text: label,
@@ -1186,7 +1227,17 @@ export class MarkdownRenderable extends Renderable {
         colorsEqual(shownChunk.bg, chunk.bg) &&
         shownChunk.attributes === chunk.attributes
       if (!same) shown.marker.content = new StyledText([chunk])
-      shown.container.rowGap = gap
+      if (shown.gap !== gap) shown.container.rowGap = shown.gap = gap
+    }
+  }
+
+  /** Whether an item has a blank line after it or between two of its blocks. */
+  private isLoose(item: number): boolean {
+    if ((this._doc.blocks[item]!.flags & md.OT_MD_BLOCK_BLANK_AFTER) !== 0) return true
+    const children = this.childrenOf(item)
+    return children.slice(1).some((child, n) => {
+      const gap = this.sourceText(this._doc.blocks[children[n]!]!.sourceEnd, this._doc.blocks[child]!.sourceStart)
+      return (gap.match(/\r\n|\r|\n/g)?.length ?? 0) > 1
     })
   }
 
@@ -1312,8 +1363,7 @@ export class MarkdownRenderable extends Renderable {
   }
 
   private sourceText(start: number, end: number): string {
-    this._sourceBytes ??= textEncoder.encode(this._doc.content)
-    return new TextDecoder().decode(this._sourceBytes.subarray(start, end))
+    return this._doc.source(start, end)
   }
 
   private resolveTableStyle(): MarkdownTableStyle {
