@@ -1,4 +1,7 @@
 import { Buffer } from "node:buffer"
+import { join } from "node:path"
+import { createInterface } from "node:readline"
+import { Readable } from "node:stream"
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { createTestRenderer, type MockInput, type TestRenderer } from "@opentui/core/testing"
 import { registerTimedLeader } from "@opentui/keymap/addons"
@@ -26,89 +29,23 @@ describe("timed leader addon", () => {
     diagnostics.assertNoUnhandledDiagnostics()
   })
 
-  test("supports leader extensions", () => {
+  test.each([
+    { kind: "stroke", trigger: { name: "x", ctrl: true }, input: "\x18" },
+    {
+      kind: "binding lookup",
+      trigger: createBindingLookup({ leader: { name: "x", ctrl: true } }).get("leader"),
+      input: "\x18",
+    },
+    { kind: "hyper", trigger: { name: "x", hyper: true }, input: "\x1b[27;17;120~" },
+  ])("supports a $kind leader trigger", ({ trigger, input }) => {
     const keymap = getKeymap(renderer)
     const calls: string[] = []
-
+    registerTimedLeader(keymap, { trigger })
     keymap.registerLayer({
-      commands: [
-        {
-          name: "leader-action",
-          run() {
-            calls.push("leader")
-          },
-        },
-      ],
-    })
-
-    registerTimedLeader(keymap, {
-      trigger: { name: "x", ctrl: true },
-    })
-
-    keymap.registerLayer({
+      commands: [{ name: "leader-action", run: () => void calls.push("leader") }],
       bindings: [{ key: "<leader>a", cmd: "leader-action" }],
     })
-
-    mockInput.pressKey("x", { ctrl: true })
-    mockInput.pressKey("a")
-
-    expect(calls).toEqual(["leader"])
-  })
-
-  test("accepts a single binding lookup result as the trigger", () => {
-    const keymap = getKeymap(renderer)
-    const calls: string[] = []
-    const bindings = createBindingLookup({ leader: { name: "x", ctrl: true } })
-
-    keymap.registerLayer({
-      commands: [
-        {
-          name: "leader-action",
-          run() {
-            calls.push("leader")
-          },
-        },
-      ],
-    })
-
-    registerTimedLeader(keymap, {
-      trigger: bindings.get("leader"),
-    })
-
-    keymap.registerLayer({
-      bindings: [{ key: "<leader>a", cmd: "leader-action" }],
-    })
-
-    mockInput.pressKey("x", { ctrl: true })
-    mockInput.pressKey("a")
-
-    expect(calls).toEqual(["leader"])
-  })
-
-  test("supports hyper leader triggers", () => {
-    const keymap = getKeymap(renderer)
-    const calls: string[] = []
-
-    keymap.registerLayer({
-      commands: [
-        {
-          name: "leader-action",
-          run() {
-            calls.push("leader")
-          },
-        },
-      ],
-    })
-
-    registerTimedLeader(keymap, {
-      trigger: { name: "x", hyper: true },
-    })
-
-    keymap.registerLayer({
-      bindings: [{ key: "<leader>a", cmd: "leader-action" }],
-    })
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[27;17;120~"))
+    renderer.stdin.emit("data", Buffer.from(input))
     mockInput.pressKey("a")
 
     expect(calls).toEqual(["leader"])
@@ -118,17 +55,7 @@ describe("timed leader addon", () => {
     const keymap = getKeymap(renderer)
     const calls: string[] = []
     const states: string[] = []
-
-    keymap.registerLayer({
-      commands: [
-        {
-          name: "leader-action",
-          run() {
-            calls.push("leader")
-          },
-        },
-      ],
-    })
+    const disarmed = Promise.withResolvers<void>()
 
     registerTimedLeader(keymap, {
       trigger: { name: "x", ctrl: true },
@@ -138,15 +65,16 @@ describe("timed leader addon", () => {
       },
       onDisarm() {
         states.push("disarmed")
+        disarmed.resolve()
       },
     })
 
     keymap.registerLayer({
-      bindings: [{ key: "<leader>a", cmd: "leader-action" }],
+      bindings: [{ key: "<leader>a", cmd: () => void calls.push("leader") }],
     })
 
     mockInput.pressKey("x", { ctrl: true })
-    await Bun.sleep(20)
+    await disarmed.promise
     mockInput.pressKey("a")
 
     expect(calls).toEqual([])
@@ -237,3 +165,36 @@ describe("timed leader addon", () => {
     expect(states).toEqual(["armed", "disarmed"])
   })
 })
+
+for (const addon of ["leader", "neovim"]) {
+  test.each([
+    { delay: 35, stall: 0, expected: "chord" },
+    { delay: 340, stall: 0, expected: addon === "leader" ? "plain f" : "exact,plain f" },
+    { delay: 35, stall: 700, expected: "chord" },
+  ])(`${addon}: follow-up at +$delay ms with a $stall ms stall`, async ({ delay, stall, expected }) => {
+    const timeout = 250
+    await using child = Bun.spawn(
+      [process.execPath, join(import.meta.dir, "timed-sequence.fixture.ts"), addon, String(timeout), String(stall)],
+      {
+        stdin: "pipe",
+        stdout: "pipe",
+        timeout: 4000,
+      },
+    )
+    child.stdin.write(addon === "leader" ? "\x18" : "g")
+    await child.stdin.flush()
+    const lines = createInterface({ input: Readable.from(child.stdout) })[Symbol.asyncIterator]()
+    const armedAt = Number((await lines.next()).value)
+    await Bun.sleep(delay)
+    child.stdin.write("fb")
+    await child.stdin.flush()
+    expect(Date.now() - armedAt < timeout).toBe(delay < timeout)
+    expect((await lines.next()).value).toBe(expected)
+    // The old timer must not discard the plain prefix started in the same read as f.
+    await Bun.sleep(35)
+    child.stdin.write("a")
+    await child.stdin.flush()
+    expect((await lines.next()).value).toBe("next chord")
+    expect(await child.exited).toBe(0)
+  })
+}
