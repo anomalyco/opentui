@@ -2940,8 +2940,10 @@ pub const Doc = struct {
         }
         if (link == TokenStyle.base_link) {
             styler.styles.link = try writer.url("", live.base_link.items);
+            styler.styles.link_owner = live.base_styles.link_owner;
         } else if (link != none) {
             styler.styles.link = try writer.url("", try styler.destination(link));
+            styler.styles.link_owner = r.tokens[link].aux;
         }
         try live.token_styles.resize(self.allocator, r.tokens.len);
         var at = from;
@@ -2987,7 +2989,8 @@ pub const Doc = struct {
             };
             if (styler.styles.link == null) {
                 link = none;
-            } else if (r.tokens[i].kind == .bracket_open and r.tokens[i].aux != 0) {
+            } else if (link == none) {
+                // The link's owner opened here (a link or image inside it keeps its target).
                 link = i;
             }
             at = live.display_ends.items[i];
@@ -4024,17 +4027,22 @@ const TokenStyler = struct {
             },
             .bracket_open => {
                 if (t.aux == 0) return w.write(raw, .{});
-                const link = r.links[t.aux - 1];
-                const url = try self.destination(i);
-                self.styles.link = try w.url("", url);
-                self.label_start = w.byte_count;
-                self.label_url = url;
-                self.image = link.image;
-                self.sync();
+                // The outermost link or image owns the target until its own `]` (an image inside a
+                // link keeps the link's).
+                if (self.styles.link == null) {
+                    const url = try self.destination(i);
+                    self.styles.link = try w.url("", url);
+                    self.styles.link_owner = t.aux;
+                    self.label_start = w.byte_count;
+                    self.label_url = url;
+                    self.image = r.links[t.aux - 1].image;
+                    self.sync();
+                }
                 if (!self.conceal) try w.linkPart(raw, .gap);
             },
             .bracket_close => {
                 if (t.aux == 0) return w.write(raw[0..1], .{});
+                const owner = t.aux == self.styles.link_owner;
                 if (!self.conceal) {
                     // An inline link's destination (and title) between `](` and `)`.
                     // As OpenCode's frames show it: `]` is text, `(` and `)` are the link's.
@@ -4045,6 +4053,7 @@ const TokenStyler = struct {
                         try w.linkPart(raw[raw.len - 1 ..], .gap);
                     } else try w.linkPart(raw, .gap);
                 }
+                if (!owner) return;
                 // Without hyperlinks a label that is not its URL shows where the link goes.
                 if (self.conceal and !self.hyperlinks and !self.image and !std.mem.eql(u8, w.leaf.bytes.items[self.label_start..], self.label_url)) {
                     assert(!w.count_only);
@@ -4054,11 +4063,13 @@ const TokenStyler = struct {
                     try w.linkPart(")", .gap);
                 }
                 self.styles.link = null;
+                self.styles.link_owner = 0;
             },
             .autolink, .autolink_email, .extended_autolink => {
                 const target = if (t.kind == .extended_autolink) raw else raw[1 .. raw.len - 1];
                 const prefix: []const u8 = if (t.kind == .autolink_email) "mailto:" else if (t.kind == .extended_autolink and t.aux == @backingInt(inline_parser.ExtendedKind.www)) "http://" else "";
-                w.link = try w.url(prefix, target);
+                // Inside a link or image its target stays.
+                if (w.link == null) w.link = try w.url(prefix, target);
                 const angled = !self.conceal and t.kind != .extended_autolink;
                 if (angled) try w.linkPart(raw[0..1], .gap);
                 try w.write(target, .{});

@@ -1751,6 +1751,29 @@ test "Markdown model: corpus rows split at random code points stream like one ap
     }
 }
 
+test "Markdown stream: the outermost link or image keeps its target while nested ones stream" {
+    // M3-b in the live walk: a node written a byte (or a few) at a time shows read_leaf after each
+    // call. Frames are not compared: the outer link takes over its parts' targets when it closes.
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    for ([_]usize{ 1, 2, 3 }) |width| {
+        var f: Fixture = undefined;
+        try f.init(.{});
+        defer f.deinit();
+        var sink: markdown.TailSink = .{ .allocator = gpa };
+        defer sink.deinit();
+        f.doc.tail_sink = &sink;
+        // Emphasis after the image restarts a walk inside the outer link.
+        for (try split(arena, "x [![<https://e.co> a@b.co](https://e/image) docs *now* more](https://e/outer) y", width)) |part| {
+            try f.doc.append(part);
+            try std.testing.expect(try writtenShowReadLeaf(arena, &f.doc, &sink, false));
+        }
+        try f.doc.finish();
+        try std.testing.expect(sink.mismatch_count == 0 and try liveShowsReadLeaf(arena, &f.doc, &sink));
+    }
+}
+
 test "Markdown read_leaf: display bytes, chunk styles, spans and the URL pool" {
     // A pending row reads the leaf while the stream is still open.
     const Row = struct { source: []const u8, math: bool = false, pending: bool = false, block: u32, chunks: []const struct { []const u8, []const u8, []const u8 } };
