@@ -51,7 +51,7 @@ export class MockTreeSitterClient extends TreeSitterClient {
   }
 
   // An append waits in the same queue and answers the same result as a whole highlight.
-  override highlightAppend(_bufferId: number, _offset: number, text: string, filetype: string) {
+  override highlightAppend(_copyId: number, _offset: number, text: string, filetype: string) {
     return this.highlightOnce(text, filetype)
   }
 

@@ -95,7 +95,7 @@ export class CodeRenderable extends TextBufferRenderable {
   // `sent` units, and each reply writes the syntax layer for the prefix it covers (record 312).
   private _deltas?: { client: TreeSitterClient; id: number; filetype: string; sent: number }
   private _groupSets = new Map<string, number>()
-  private static nextDeltaBuffer = -1
+  private static nextCopy = 0
   /** @internal Markdown sets it on its fences: while one streams, its appends go to the highlighter as deltas. */
   public _streamsDeltas = false
 
@@ -251,7 +251,7 @@ export class CodeRenderable extends TextBufferRenderable {
       this.textBuffer.setText(value)
       this._shownVersion = -1
       if (this.deltasAllowed()) {
-        const id = CodeRenderable.nextDeltaBuffer--
+        const id = CodeRenderable.nextCopy++
         this._deltas = { client: this._treeSitterClient, id, filetype: this._filetype!, sent: 0 }
       }
     }
@@ -278,8 +278,8 @@ export class CodeRenderable extends TextBufferRenderable {
   private stopDeltas(): void {
     const deltas = this._deltas
     this._deltas = undefined
-    // A destroyed client has freed its buffers; the worker ignores one it never had.
-    deltas?.client.removeBuffer(deltas.id).catch(() => {})
+    // A destroyed client has freed its copies; the worker ignores one it never had.
+    deltas?.client.removeCopy(deltas.id).catch(() => {})
   }
 
   public updateStreamingPreview(content: string, initialStyledText: StyledText): void {

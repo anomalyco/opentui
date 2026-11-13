@@ -4148,7 +4148,7 @@ function countStreamWork(client: TreeSitterClient) {
   target.sendWorkerMessage = function (message) {
     counts.units += "content" in message ? message.content.length : "text" in message ? message.text.length : 0
     counts.oneshots += Number(message.type === "ONESHOT_HIGHLIGHT")
-    counts.disposes += Number(message.type === "DISPOSE_BUFFER")
+    counts.disposes += Number(message.type === "DISPOSE_COPY")
     return send.call(this, message)
   }
   const { setText, append, setStyledText, _setLayer } = TextBuffer.prototype

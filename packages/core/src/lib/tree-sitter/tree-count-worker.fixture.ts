@@ -3,10 +3,12 @@ import { Node, Parser, Tree } from "web-tree-sitter"
 import "./parser.worker.js"
 
 // Logs "tree-count <json>" on each performance request: the trees the parser worker parsed and has not deleted, the
-// reads from a tree it had deleted (Tree.delete() zeroes the tree's address), and the parsers it has not deleted.
+// reads from a tree it had deleted (Tree.delete() zeroes the tree's address), the parsers it has not deleted, and the
+// parses that reused an old tree.
 const live = new Set<Tree>()
 const parsers = new Set<Parser>()
 let freedReads = 0
+let reused = 0
 const countFreed = (tree: Tree) => void ((tree as unknown as { 0: number })[0] === 0 && freedReads++)
 const { parse, setLanguage, delete: deleteParser } = Parser.prototype
 // The worker sets a language on every parser it creates, right after new Parser().
@@ -23,6 +25,7 @@ const { delete: deleteTree, getChangedRanges } = Tree.prototype
 Parser.prototype.parse = function (...args: Parameters<Parser["parse"]>) {
   const tree = args[0] === "null-parse" ? null : parse.apply(this, args)
   if (tree) live.add(tree)
+  if (args[1]) reused++
   return tree
 }
 Tree.prototype.delete = function () {
@@ -44,5 +47,5 @@ for (const key of ["endIndex", "endPosition"]) {
 }
 parentPort!.on("message", (message: { type?: string }) => {
   if (message.type !== "GET_PERFORMANCE") return
-  console.log(`tree-count ${JSON.stringify({ live: live.size, freedReads, parsers: parsers.size })}`)
+  console.log(`tree-count ${JSON.stringify({ live: live.size, freedReads, parsers: parsers.size, reused })}`)
 })

@@ -393,18 +393,27 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
   }
 
   /**
-   * @internal Appends `text` at `offset` to the worker's copy of buffer `bufferId` (created by the first append, at
-   * offset 0; free it with `removeBuffer`), parses it with the tree it kept, and answers the highlights of the whole
-   * copy. An offset that differs from the copy's length is an error.
+   * @internal Appends `text` at `offset` to the worker's copy `copyId` (created by the first append, at offset 0; free
+   * it with `removeCopy`), parses it with the tree it kept, and answers the highlights of the whole copy. An offset
+   * that differs from the copy's length is an error. Copies have their own ids, apart from buffers.
    */
   public async highlightAppend(
-    bufferId: number,
+    copyId: number,
     offset: number,
     text: string,
     filetype: string,
   ): Promise<{ highlights?: SimpleHighlight[]; warning?: string; error?: string }> {
     const messageId = `append_${this.messageIdCounter++}`
-    return this.request({ type: "APPEND_HIGHLIGHT", bufferId, offset, text, filetype, messageId })
+    return this.request({ type: "APPEND_HIGHLIGHT", copyId, offset, text, filetype, messageId })
+  }
+
+  /** @internal Frees copy `copyId`. An append still waiting for the worker to start posts first, so this waits too. */
+  public async removeCopy(copyId: number): Promise<void> {
+    if (!this.initialized) {
+      if (!this.initializePromise) return
+      await this.initialize().catch(() => {})
+    }
+    if (this.worker) this.sendWorkerMessage({ type: "DISPOSE_COPY", copyId })
   }
 
   private async request(

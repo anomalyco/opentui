@@ -75,6 +75,7 @@ function translateLuaMatch(query: string): string {
 
 class ParserWorker {
   private bufferParsers: Map<number, ParserState> = new Map()
+  private copies: Map<number, ParserState> = new Map()
   private filetypeParserOptions: Map<string, FiletypeParserOptions> = new Map()
   private filetypeAliases: Map<string, string> = new Map()
   private filetypeParsers: Map<string, FiletypeParser> = new Map()
@@ -836,8 +837,8 @@ class ParserWorker {
     return this.getHighlights(parserState, matches, injectionRanges)
   }
 
-  disposeBuffer(bufferId: number): void {
-    const parserState = this.bufferParsers.get(bufferId)
+  disposeBuffer(bufferId: number, parsers = this.bufferParsers): void {
+    const parserState = parsers.get(bufferId)
     if (!parserState) {
       return
     }
@@ -845,7 +846,11 @@ class ParserWorker {
     parserState.tree.delete()
     parserState.parser.delete()
 
-    this.bufferParsers.delete(bufferId)
+    parsers.delete(bufferId)
+  }
+
+  disposeCopy(copyId: number): void {
+    this.disposeBuffer(copyId, this.copies)
   }
 
   async handleOneShotHighlight(content: string, filetype: string, messageId: string): Promise<void> {
@@ -892,23 +897,28 @@ class ParserWorker {
     }
   }
 
-  // Appends to a buffer's copy and parses it with the kept tree; the whole tree is queried again, since an append can
-  // change captures before it (C4 rule (b)).
-  async handleAppendHighlight(bufferId: number, offset: number, text: string, filetype: string, messageId: string) {
+  // Appends to a copy and parses it with the kept tree; the whole tree is queried again, since an append can change
+  // captures before it (C4 rule (b)).
+  async handleAppendHighlight(copyId: number, offset: number, text: string, filetype: string, messageId: string) {
     const reply = (answer: { hasParser?: boolean; highlights?: SimpleHighlight[]; warning?: string; error?: string }) =>
       postWorkerMessage({ type: "ONESHOT_HIGHLIGHT_RESPONSE", messageId, hasParser: true, ...answer })
-    let state = this.bufferParsers.get(bufferId)
+    let state = this.copies.get(copyId)
     if ((state?.content.length ?? 0) !== offset) return reply({ error: "Append does not continue the buffer" })
     if (!state) {
       const filetypeParser = await this.resolveFiletypeParser(filetype)
       if (!filetypeParser) return reply({ hasParser: false, warning: `No parser available for filetype ${filetype}` })
       const parser = new Parser()
-      parser.setLanguage(filetypeParser.language)
-      const tree = parser.parse(text)
-      if (!tree) return (parser.delete(), reply({ error: "Failed to parse buffer" }))
+      let tree: Tree | null = null
+      try {
+        parser.setLanguage(filetypeParser.language)
+        tree = parser.parse(text)
+      } finally {
+        if (!tree) parser.delete()
+      }
+      if (!tree) return reply({ error: "Failed to parse buffer" })
       const { queries, injectionMapping } = filetypeParser
       state = { parser, tree, queries, filetype, content: text, injectionMapping }
-      this.bufferParsers.set(bufferId, state)
+      this.copies.set(copyId, state)
     } else if (text) {
       const content = state.content + text
       const position = endPosition(state.content)
@@ -1117,9 +1127,13 @@ if (isWorkerRuntime) {
           await worker.handleOneShotHighlight(message.content, message.filetype, message.messageId)
           break
 
+        case "DISPOSE_COPY":
+          worker.disposeCopy(message.copyId)
+          break
+
         case "APPEND_HIGHLIGHT":
           await worker.handleAppendHighlight(
-            message.bufferId,
+            message.copyId,
             message.offset,
             message.text,
             message.filetype,
@@ -1175,14 +1189,15 @@ if (isWorkerRuntime) {
     }
   }
 
-  // A buffer's messages run one at a time: a pass that awaits an injected grammar still reads the buffer's tree, so a
+  // A buffer's or copy's messages run one at a time: a pass that awaits an injected grammar still reads its tree, so a
   // later edit, reset or dispose must not delete it first. Other buffers and one-shot highlights do not wait.
-  const bufferQueues = new Map<number, Promise<void>>()
+  const bufferQueues = new Map<number | string, Promise<void>>()
   setWorkerMessageHandler<TreeSitterWorkerRequest>((event) => {
-    if (!("bufferId" in event.data)) return handleMessage(event)
-    const { bufferId } = event.data
-    const queued = (bufferQueues.get(bufferId) ?? Promise.resolve()).then(() => handleMessage(event))
-    bufferQueues.set(bufferId, queued)
-    void queued.then(() => bufferQueues.get(bufferId) === queued && bufferQueues.delete(bufferId))
+    const { data } = event
+    const key = "bufferId" in data ? data.bufferId : "copyId" in data ? `copy ${data.copyId}` : undefined
+    if (key === undefined) return handleMessage(event)
+    const queued = (bufferQueues.get(key) ?? Promise.resolve()).then(() => handleMessage(event))
+    bufferQueues.set(key, queued)
+    void queued.then(() => bufferQueues.get(key) === queued && bufferQueues.delete(key))
   })
 }
