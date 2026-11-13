@@ -331,13 +331,13 @@ pub const Highlight = struct {
 /// span starts where the previous one ends; only the right edge is stored.
 pub const StyleSpan = struct {
     end_col_exclusive: u32,
-    /// A legacy style id (a SyntaxStyle id, or a run style with `run_style_flag`) or a group-set
-    /// id, as `kind` says.
+    /// A legacy style id (a SyntaxStyle id, or a run style with `run_style_flag`), a group-set
+    /// id, or an index into the buffer's mark style table, as `kind` says.
     style_id: u32,
     /// Bits 0..23: link id (layer runs only); bits 24..31: `StyleSpan.Kind`.
     link_id_and_kind: u32 = 0,
 
-    pub const Kind = enum(u8) { legacy = 0, group_set = 1 };
+    pub const Kind = enum(u8) { legacy = 0, group_set = 1, mark_style = 2 };
     pub const link_id_mask: u32 = 0x00FF_FFFF;
 
     pub fn legacy(end_col_exclusive: u32, style_id: u32) StyleSpan {

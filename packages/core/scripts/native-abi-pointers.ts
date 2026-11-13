@@ -176,6 +176,8 @@ export const nativePointerPolicies = {
   ot_edit_buffer_get_highlights: { 0: context, 1: buffer, 3: empty, 5: buffer },
   ot_context_group_set: { 0: context, 1: buffer, 3: buffer, 5: buffer },
   ot_edit_buffer_set_layer: { 0: context, 1: buffer, 5: empty },
+  ot_edit_buffer_mark: { 0: context, 1: buffer, 3: optional, 4: optional },
+  ot_edit_buffer_get_marks: { 0: context, 1: buffer, 4: empty, 6: buffer },
   ot_markdown_create: { 0: context, 1: buffer, 2: buffer },
   ot_markdown_destroy: { 0: context, 1: buffer },
   ot_markdown_set_options: { 0: context, 1: buffer, 2: buffer, 3: buffer },

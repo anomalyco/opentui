@@ -6,6 +6,8 @@ const eb = @import("edit-buffer.zig");
 const iter = @import("text-buffer-iterators.zig");
 const text_work = @import("text-work.zig");
 const hl = @import("highlight-layers.zig");
+const edit_marks = @import("edit-marks.zig");
+const StyleDefinition = @import("syntax-style.zig").StyleDefinition;
 const Owner = abi.ContextHandle;
 
 comptime {
@@ -186,16 +188,112 @@ pub fn ot_syntax_style_register(context: ?*Owner, id: ?*const c.ot_handle, bytes
     const style = styleRecord(options) catch |err| return fail(owner, err);
     if (id == null or (count != 0 and bytes == null) or out == null) return fail(owner, error.InvalidOptions);
     const name = if (bytes) |p| p[0..count] else &.{};
-    // Without the mask, a definition with attributes supplies all eight bits, as before the mask.
+    out.?.* = owner.core.syntaxStyleRegister(abi.handleFromC(id.?.*), name, styleDefinition(style)) catch |err| return fail(owner, err);
+    return c.OT_OK;
+}
+
+/// Without the mask, a definition with attributes supplies all eight bits, as before the mask.
+fn styleDefinition(style: *const c.ot_editor_style) StyleDefinition {
     const masked = style.flags & c.OT_EDITOR_STYLE_ATTRIBUTE_MASK != 0;
     const supplied: u32 = if (masked) (style.attributes >> 16) & 0xFF else if (style.flags & c.OT_EDITOR_STYLE_ATTRIBUTES != 0) 0xFF else 0;
-    out.?.* = owner.core.syntaxStyleRegister(abi.handleFromC(id.?.*), name, .{
+    return .{
         .fg = if (style.flags & c.OT_EDITOR_STYLE_FOREGROUND != 0) style.foreground else null,
         .bg = if (style.flags & c.OT_EDITOR_STYLE_BACKGROUND != 0) style.background else null,
         .attributes = if (masked) style.attributes & ~@as(u32, 0xFF << 16) else style.attributes,
         .supplied_attributes = @intCast(supplied),
-    }) catch |err| return fail(owner, err);
+    };
+}
+
+/// The inverse of `styleDefinition`, with the mask.
+fn styleFromDefinition(definition: StyleDefinition) c.ot_editor_style {
+    return .{
+        .struct_size = @sizeOf(c.ot_editor_style),
+        .abi_version = c.OT_CONTEXT_ABI_VERSION,
+        .flags = c.OT_EDITOR_STYLE_ATTRIBUTES | c.OT_EDITOR_STYLE_ATTRIBUTE_MASK |
+            (if (definition.fg != null) c.OT_EDITOR_STYLE_FOREGROUND else 0) |
+            (if (definition.bg != null) c.OT_EDITOR_STYLE_BACKGROUND else 0),
+        .attributes = definition.attributes | @as(u32, definition.supplied_attributes) << 16,
+        .foreground = definition.fg orelse @splat(0),
+        .background = definition.bg orelse @splat(0),
+    };
+}
+
+pub fn ot_edit_buffer_mark(context: ?*Owner, id: ?*const c.ot_handle, operation: u32, mark: ?*const c.ot_edit_mark, out: ?*u32) callconv(.c) c.ot_status {
+    const owner = admit(context, false) catch |err| return fail(context, err);
+    const clear = operation == c.OT_EDIT_MARK_CLEAR;
+    if (id == null or operation > c.OT_EDIT_MARK_CLEAR or clear != (mark == null) or clear != (out == null)) return fail(owner, error.InvalidOptions);
+    const decoded: ctx.EditMark = switch (operation) {
+        c.OT_EDIT_MARK_ADD => .{ .add = markFromC(mark) catch |err| return fail(owner, err) },
+        c.OT_EDIT_MARK_REMOVE => remove: {
+            const value = record(c.ot_edit_mark, mark) catch |err| return fail(owner, err);
+            var expected = std.mem.zeroes(c.ot_edit_mark);
+            expected.struct_size = value.struct_size;
+            expected.abi_version = value.abi_version;
+            expected.id = value.id;
+            if (!std.meta.eql(value.*, expected)) return fail(owner, error.InvalidOptions);
+            break :remove .{ .remove = value.id };
+        },
+        else => .clear,
+    };
+    const result = owner.core.editMark(abi.handleFromC(id.?.*), decoded) catch |err| return fail(owner, err);
+    if (out) |pointer| pointer.* = result;
     return c.OT_OK;
+}
+
+fn markFromC(ptr: ?*const c.ot_edit_mark) !eb.EditBuffer.MarkOptions {
+    const value = try record(c.ot_edit_mark, ptr);
+    const by_value = value.flags & c.OT_EDIT_MARK_STYLE_VALUE != 0;
+    if (value.id != 0 or value.start_byte != 0 or value.end_byte != 0 or value.priority > 255 or value.start > value.end or
+        value.flags & ~@as(u32, c.OT_EDIT_MARK_ATOMIC | c.OT_EDIT_MARK_STYLE_VALUE) != 0 or
+        value.style & c.OT_STYLE_RUN_FLAG != 0 or (by_value and value.style != 0)) return error.InvalidOptions;
+    if (!by_value and !std.meta.eql(value.value, std.mem.zeroes(c.ot_editor_style))) return error.InvalidOptions;
+    return .{
+        .kind = value.kind,
+        .atomic = value.flags & c.OT_EDIT_MARK_ATOMIC != 0,
+        .style = value.style,
+        .style_value = if (by_value) styleDefinition(try styleRecord(&value.value)) else null,
+        .priority = @intCast(value.priority),
+        .start = value.start,
+        .end = value.end,
+    };
+}
+
+pub fn ot_edit_buffer_get_marks(context: ?*Owner, id: ?*const c.ot_handle, mark_id: u32, kind: u32, marks: ?[*]c.ot_edit_mark, capacity: u32, out: ?*u32) callconv(.c) c.ot_status {
+    const owner = admit(context, true) catch |err| return fail(context, err);
+    if (out == null or (capacity != 0 and marks == null)) return fail(owner, error.InvalidOptions);
+    const value = edit(owner, id) catch |err| return fail(owner, err);
+    const buffer = value.buffer;
+    var count: u32 = 0;
+    for (buffer.tb.marks()) |mark| count += @intFromBool(markSelected(mark, mark_id, kind));
+    if (capacity != 0 and capacity < count) return fail(owner, error.BufferTooSmall);
+    if (capacity != 0) {
+        var index: usize = 0;
+        for (buffer.tb.marks()) |mark| {
+            if (!markSelected(mark, mark_id, kind)) continue;
+            const offsets = buffer.markOffsets(mark);
+            marks.?[index] = .{
+                .struct_size = @sizeOf(c.ot_edit_mark),
+                .abi_version = c.OT_CONTEXT_ABI_VERSION,
+                .id = mark.id,
+                .kind = mark.kind,
+                .flags = (if (mark.atomic) c.OT_EDIT_MARK_ATOMIC else 0) | (if (mark.style_value) c.OT_EDIT_MARK_STYLE_VALUE else 0),
+                .style = if (mark.style_value) 0 else mark.style,
+                .value = if (mark.style_value) styleFromDefinition(buffer.tb.mark_styles.keys()[mark.style]) else std.mem.zeroes(c.ot_editor_style),
+                .priority = mark.priority,
+                .start = offsets.start,
+                .end = offsets.end,
+                .start_byte = mark.start_byte,
+                .end_byte = mark.end_byte,
+            };
+            index += 1;
+        }
+    }
+    out.?.* = count;
+    return c.OT_OK;
+}
+
+fn markSelected(mark: edit_marks.Mark, id: u32, kind: u32) bool {
+    return (id == 0 or mark.id == id) and (kind == c.OT_EDIT_MARK_ANY_KIND or mark.kind == kind);
 }
 
 pub fn ot_editor_view_set_viewport(context: ?*Owner, id: ?*const c.ot_handle, options: ?*const c.ot_editor_viewport, size_only: u32, move_cursor: u32) callconv(.c) c.ot_status {
@@ -503,12 +601,21 @@ pub fn ot_edit_buffer_get_highlights(context: ?*Owner, id: ?*const c.ot_handle, 
     if (out == null or (capacity != 0 and highlights == null)) return fail(owner, error.InvalidOptions);
     const value = edit(owner, id) catch |err| return fail(owner, err);
     const items = value.buffer.tb.getLineHighlights(line);
-    if (items.len > std.math.maxInt(u32)) return fail(owner, error.TextLimit);
-    if (capacity != 0 and capacity < items.len) return fail(owner, error.BufferTooSmall);
-    if (capacity != 0) for (items, 0..) |h, index| {
-        highlights.?[index] = .{ .start = h.col_start, .end = h.col_end, .style_id = h.style_id, .priority = h.priority, .ref = h.hl_ref };
-    };
-    out.?.* = @intCast(items.len);
+    // Styled marks read as range highlights added after the buffer's own, in id order.
+    const marks = value.buffer.tb.lineMarks(line) catch |err| return fail(owner, err);
+    const count = items.len + marks.len;
+    if (count > std.math.maxInt(u32)) return fail(owner, error.TextLimit);
+    if (capacity != 0 and capacity < count) return fail(owner, error.BufferTooSmall);
+    if (capacity != 0) {
+        for (items, 0..) |h, index| {
+            highlights.?[index] = .{ .start = h.col_start, .end = h.col_end, .style_id = h.style_id, .priority = h.priority, .ref = h.hl_ref };
+        }
+        for (marks, items.len..) |entry, index| {
+            const style_id = if (entry.mark.style_value) 0 else entry.mark.style;
+            highlights.?[index] = .{ .start = entry.col_start, .end = entry.col_end, .style_id = style_id, .priority = entry.mark.priority, .ref = entry.mark.id & 0xFFFF };
+        }
+    }
+    out.?.* = @intCast(count);
     return c.OT_OK;
 }
 

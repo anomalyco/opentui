@@ -61,8 +61,12 @@ export class ThreeRenderable extends Renderable {
     this.registerFrameCallback()
   }
 
-  public get aspectRatio(): number {
-    return this.getAspectRatio(this.width, this.height)
+  public override get aspectRatio(): number {
+    return this.computeDisplayAspectRatio(this.width, this.height)
+  }
+
+  public override set aspectRatio(value: number | null | undefined) {
+    super.aspectRatio = value
   }
 
   public get renderer(): ThreeCliRenderer {
@@ -173,12 +177,12 @@ export class ThreeRenderable extends Renderable {
 
     const camera = this.engine.getActiveCamera()
     if (camera instanceof PerspectiveCamera) {
-      camera.aspect = this.getAspectRatio(width, height)
+      camera.aspect = this.computeDisplayAspectRatio(width, height)
       camera.updateProjectionMatrix()
     }
   }
 
-  private getAspectRatio(width: number, height: number): number {
+  private computeDisplayAspectRatio(width: number, height: number): number {
     if (width <= 0 || height <= 0) return 1
 
     const resolution = this.cliRenderer.resolution

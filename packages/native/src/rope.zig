@@ -408,6 +408,8 @@ pub fn Rope(comptime T: type) type {
 
         pub const UndoNode = struct {
             root: *const Node,
+            /// The owner's state paired with `root`, as `Rope.aux` was when the node stored it.
+            aux: usize,
             metrics_generation: u64,
             next: ?*UndoNode = null,
             branches: ?*UndoBranch = null,
@@ -420,6 +422,12 @@ pub fn Rope(comptime T: type) type {
         };
 
         root: *const Node,
+        /// Opaque owner state paired with `root`: history stores it with each root and undo and
+        /// redo restore it with the root (an edit buffer's marks). A new rope starts at 0.
+        aux: usize = 0,
+        /// No history node holds `aux`, so its owner may change it in place. Every history move
+        /// that stores or loads an `aux` clears it.
+        aux_owned: bool = false,
         metrics_generation: u64 = 0,
         allocator: Allocator,
         empty_leaf: *const Node,
@@ -1149,6 +1157,7 @@ pub fn Rope(comptime T: type) type {
             self.push_undo(undo_node);
             self.curr_history = null;
             self.redo_history = null;
+            self.aux_owned = false;
         }
 
         fn create_undo_node(self: *const Self, root: *const Node, meta_: []const u8) !*UndoNode {
@@ -1157,6 +1166,7 @@ pub fn Rope(comptime T: type) type {
             const meta = try self.allocator.dupe(u8, meta_);
             undo_node.* = UndoNode{
                 .root = root,
+                .aux = self.aux,
                 .metrics_generation = self.metrics_generation,
                 .meta = meta,
             };
@@ -1203,12 +1213,17 @@ pub fn Rope(comptime T: type) type {
             undo_node.next = next;
         }
 
+        /// The redo node takes the live `aux` when it holds the live root; a reused node whose
+        /// root was replaced without history keeps the `aux` of its own root.
         pub fn undo(self: *Self, meta: []const u8) ![]const u8 {
             const r = self.curr_history orelse try self.create_undo_node(self.root, meta);
             const h = self.undo_history orelse return error.Stop;
+            if (r.root == self.root) r.aux = self.aux;
             self.undo_history = h.next;
             self.curr_history = h;
             self.root = h.root;
+            self.aux = h.aux;
+            self.aux_owned = false;
             self.metrics_generation = h.metrics_generation;
             self.push_redo(r);
             if (self.undo_depth > 0) self.undo_depth -= 1;
@@ -1219,9 +1234,12 @@ pub fn Rope(comptime T: type) type {
             const u = self.curr_history orelse return error.Stop;
             const h = self.redo_history orelse return error.Stop;
             if (u.root != self.root) return error.Stop;
+            u.aux = self.aux;
             self.redo_history = h.next;
             self.curr_history = h;
             self.root = h.root;
+            self.aux = h.aux;
+            self.aux_owned = false;
             self.metrics_generation = h.metrics_generation;
             self.push_undo(u);
             return h.meta;
