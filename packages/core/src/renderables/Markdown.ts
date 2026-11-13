@@ -15,7 +15,7 @@ import {
   type TextTableColumnWidthMode,
   type TextTableContent,
 } from "./TextTable.js"
-import type { TreeSitterClient } from "../lib/tree-sitter/index.js"
+import { getTreeSitterClient, type TreeSitterClient } from "../lib/tree-sitter/index.js"
 import { infoStringToFiletype } from "../lib/tree-sitter/resolve-ft.js"
 import { Gutter } from "../yoga.js"
 import { nativeConstants as md } from "../native-abi.generated.js"
@@ -465,6 +465,18 @@ export class MarkdownRenderable extends Renderable {
       for (const shown of this._shown) shown.written = undefined
       this.change(() => this._doc.setOptions(this.engineOptions()))
       this.markStyleDirty()
+    }
+  }
+
+  get treeSitterClient(): TreeSitterClient | undefined {
+    return this._treeSitterClient
+  }
+
+  set treeSitterClient(value: TreeSitterClient | undefined) {
+    if (this._treeSitterClient === value) return
+    this._treeSitterClient = value ?? undefined
+    for (const shown of this._shown) {
+      if (shown.default instanceof CodeRenderable) shown.default.treeSitterClient = value ?? getTreeSitterClient()
     }
   }
 

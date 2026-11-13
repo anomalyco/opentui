@@ -69,6 +69,23 @@ describe("EditBufferRenderable", () => {
     expect(editor.plainText).toBe("A\x07B\x1bC\fD")
   })
 
+  test.each([
+    [0.4, 3],
+    [0, 0],
+    [undefined, 1],
+  ] as const)("scrollMargin = %s reaches the live viewport", async (margin, expected) => {
+    const editor = new TextareaRenderable(renderer, { height: 10, initialValue: "a\n".repeat(32), scrollMargin: 0.3 })
+    renderer.root.add(editor)
+    await renderOnce()
+    editor.scrollMargin = margin
+    editor.cursorOffset = 16
+    expect(editor.scrollY).toBe(expected)
+    expect(() => {
+      editor.scrollMargin = NaN
+    }).toThrow()
+    expect(editor.scrollMargin).toBe(margin ?? 0.2)
+  })
+
   test("brands textarea and input instances", async () => {
     const textarea = new TextareaRenderable(renderer, { width: 20, height: 3 })
     const input = new InputRenderable(renderer, { width: 20 })

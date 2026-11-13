@@ -6,7 +6,7 @@ import { RGBA, parseColor } from "../lib/RGBA.js"
 import { SyntaxStyle } from "../syntax-style.js"
 import { parsePatch, type StructuredPatch } from "diff"
 import { TextRenderable } from "./Text.js"
-import type { TreeSitterClient } from "../lib/tree-sitter/index.js"
+import { getTreeSitterClient, type TreeSitterClient } from "../lib/tree-sitter/index.js"
 import type { MouseEvent } from "../renderer.js"
 
 interface LogicalLine {
@@ -418,7 +418,7 @@ export class DiffRenderable extends Renderable {
         width: "100%",
         flexGrow: 1,
         flexShrink: 1,
-        ...(this._treeSitterClient !== undefined && { treeSitterClient: this._treeSitterClient }),
+        treeSitterClient: this._treeSitterClient,
       })
       super.add(this.errorCodeRenderable)
     } else {
@@ -456,7 +456,7 @@ export class DiffRenderable extends Renderable {
         ...(drawUnstyledText !== undefined && { drawUnstyledText }),
         ...(this._selectionBg !== undefined && { selectionBg: this._selectionBg }),
         ...(this._selectionFg !== undefined && { selectionFg: this._selectionFg }),
-        ...(this._treeSitterClient !== undefined && { treeSitterClient: this._treeSitterClient }),
+        treeSitterClient: this._treeSitterClient,
       }
       const newRenderable = new CodeRenderable(this.ctx, codeOptions)
 
@@ -1054,6 +1054,18 @@ export class DiffRenderable extends Renderable {
     if (this._filetype !== value) {
       this._filetype = value
       this.rebuildView()
+    }
+  }
+
+  public get treeSitterClient(): TreeSitterClient | undefined {
+    return this._treeSitterClient
+  }
+
+  public set treeSitterClient(value: TreeSitterClient | undefined) {
+    if (this._treeSitterClient === value) return
+    this._treeSitterClient = value ?? undefined
+    for (const code of [this.leftCodeRenderable, this.rightCodeRenderable, this.errorCodeRenderable]) {
+      if (code && !code.isDestroyed) code.treeSitterClient = value ?? getTreeSitterClient()
     }
   }
 

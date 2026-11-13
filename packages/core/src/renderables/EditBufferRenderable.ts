@@ -109,7 +109,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   protected _selectionBg: RGBA | undefined
   protected _selectionFg: RGBA | undefined
   protected _wrapMode: "none" | "char" | "word" = "word"
-  protected _scrollMargin: number = 0.2
+  protected _scrollMargin!: number
   protected _showCursor: boolean = true
   protected _cursorColor: RGBA
   protected _cursorStyle: CursorStyleOptions
@@ -162,7 +162,6 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
       this._selectionFg = options.selectionFg ? RGBA.clone(parseColor(options.selectionFg)) : undefined
       this.selectable = options.selectable ?? this._defaultOptions.selectable
       this._wrapMode = options.wrapMode ?? this._defaultOptions.wrapMode
-      this._scrollMargin = options.scrollMargin ?? this._defaultOptions.scrollMargin
       this._scrollSpeed = options.scrollSpeed ?? this._defaultOptions.scrollSpeed
       this._showCursor = options.showCursor ?? this._defaultOptions.showCursor
       this._cursorColor = RGBA.clone(parseColor(options.cursorColor ?? this._defaultOptions.cursorColor))
@@ -183,7 +182,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
       this.editorView = editorView
 
       this.editorView.setWrapMode(this._wrapMode)
-      this.editorView.setScrollMargin(this._scrollMargin)
+      this.scrollMargin = options.scrollMargin
       if (options.selectionOccupancy === "boundary") {
         this.editorView.setSelectionOccupancy("boundary")
       }
@@ -251,6 +250,17 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
 
   public get scrollY(): number {
     return this.editorView.getViewport().offsetY
+  }
+
+  get scrollMargin(): number {
+    return this._scrollMargin
+  }
+
+  set scrollMargin(value: number | undefined) {
+    if (this.isDestroyed) return
+    const margin = value ?? this._defaultOptions.scrollMargin
+    this.editorView.setScrollMargin(margin)
+    this._scrollMargin = margin
   }
 
   get plainText(): string {

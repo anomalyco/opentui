@@ -71,8 +71,8 @@ export class ASCIIFontRenderable extends FrameBufferRenderable {
         ? color.map((value) => RGBA.clone(parseColor(value)))
         : RGBA.clone(parseColor(color))
       this._backgroundColor = RGBA.clone(parseColor(options.backgroundColor || defaultOptions.backgroundColor))
-      this._selectionBg = options.selectionBg ? RGBA.clone(parseColor(options.selectionBg)) : undefined
-      this._selectionFg = options.selectionFg ? RGBA.clone(parseColor(options.selectionFg)) : undefined
+      this.selectionBg = options.selectionBg
+      this.selectionFg = options.selectionFg
       this.selectable = options.selectable ?? true
 
       this.selectionHelper = new ASCIIFontSelectionHelper(
@@ -141,6 +141,31 @@ export class ASCIIFontRenderable extends FrameBufferRenderable {
     this.requestRender()
   }
 
+  get selectionBg(): RGBA | undefined {
+    return this._selectionBg && RGBA.clone(this._selectionBg)
+  }
+
+  set selectionBg(value: ColorInput | undefined) {
+    this._selectionBg = value ? RGBA.clone(parseColor(value)) : undefined
+    this.repaintSelection()
+  }
+
+  get selectionFg(): RGBA | undefined {
+    return this._selectionFg && RGBA.clone(this._selectionFg)
+  }
+
+  set selectionFg(value: ColorInput | undefined) {
+    this._selectionFg = value ? RGBA.clone(parseColor(value)) : undefined
+    this.repaintSelection()
+  }
+
+  private repaintSelection(): void {
+    if (this.lastLocalSelection) {
+      this.renderFontToBuffer()
+      this.requestRender()
+    }
+  }
+
   protected override defaultDimension(kind: "width" | "height"): number {
     return measureText({ text: this._text, font: this._font })[kind] || 1
   }
@@ -203,8 +228,6 @@ export class ASCIIFontRenderable extends FrameBufferRenderable {
   }
 
   private renderSelectionHighlight(selection: { start: number; end: number }): void {
-    if (!this._selectionBg && !this._selectionFg) return
-
     const selectedText = this._text.slice(selection.start, selection.end)
     if (!selectedText) return
 
@@ -219,15 +242,13 @@ export class ASCIIFontRenderable extends FrameBufferRenderable {
       this.frameBuffer.fillRect(startX, 0, endX - startX, this.height, parseColor(this._selectionBg))
     }
 
-    if (this._selectionFg || this._selectionBg) {
-      renderFontToFrameBuffer(this.frameBuffer, {
-        text: selectedText,
-        x: startX,
-        y: 0,
-        color: this._selectionFg ? this._selectionFg : this._color,
-        backgroundColor: this._selectionBg ? this._selectionBg : this._backgroundColor,
-        font: this._font,
-      })
-    }
+    renderFontToFrameBuffer(this.frameBuffer, {
+      text: selectedText,
+      x: startX,
+      y: 0,
+      color: this._selectionFg ?? this._color,
+      backgroundColor: this._selectionBg ?? this._backgroundColor,
+      font: this._font,
+    })
   }
 }
