@@ -742,6 +742,8 @@ test "atomic marks: cursor rules match the hosts' tables" {
         // Of overlapping marks, Delete and Backspace take the oldest with that edge at the cursor.
         .{ .text = "abcdefghijklmno", .marks = &.{ .{ 1, 8 }, .{ 3, 6 } }, .from = 3, .move = .delete, .to = 3, .after = "abcghijklmno" },
         .{ .text = "abcdefghijklmno", .marks = &.{ .{ 1, 8 }, .{ 3, 6 } }, .from = 6, .move = .backspace, .to = 3, .after = "abcghijklmno" },
+        // Backspace over `x` joins the wave and the skin tone, so the mark on `🏻Z` grows back over the cursor: it leaves.
+        .{ .text = "\u{1f44b}x\u{1f3fb}Z", .marks = &.{.{ 3, 6 }}, .from = 3, .move = .backspace, .to = 3, .after = "\u{1f44b}\u{1f3fb}Z" },
         // A cell inside a wide unit is not a stop: the atomic setter and KEEP_OUTSIDE go to the unit's start.
         .{ .text = "a\u{65e5}b", .marks = &.{.{ 0, 1 }}, .from = 0, .move = .{ .atomic_set = 2 }, .to = 1 },
         .{ .text = "a\u{65e5}b", .marks = &.{}, .from = 2, .move = .{ .keep = .nearer }, .to = 1 },
