@@ -1059,6 +1059,36 @@ test "layers: setLayer rejects bad ids, ranges and boundaries, and failed memory
     try testing.expectEqual(@as(u8, 2), tb.layers.count);
 }
 
+// Every text change empties the layers or moves their runs with it, so a run the layer holds lies
+// on character boundaries (bigboi-2): a raw slot replacement, and a layer set in the after-delete
+// callback of an editor replacement.
+test "layers: a held run stays on character boundaries through raw and callback edits" {
+    var setup: Setup = undefined;
+    try setup.init();
+    defer setup.deinit();
+    const first: []const LayerRun = &.{.{ .start_byte = 0, .end_byte = 1, .group_set = 1 }};
+    const tb = try setup.buffer(.unicode);
+    defer tb.deinit();
+    const slot = try tb.registerMemBuffer("a\u{e9}", false);
+    try tb.setTextFromMemId(slot);
+    try tb.setLayer(1, 0, 3, first);
+    try tb.replaceMemBuffer(slot, "\u{e9}a", false);
+    try testing.expectError(error.InvalidIndex, tb.setLayer(1, 0, 3, first));
+
+    const eb = try EditBuffer.initWithOptions(gpa, &setup.pools.graphemes, &setup.pools.links, .unicode, null, .{ .group_sets = &setup.sets });
+    defer eb.deinit();
+    try eb.setText("xab");
+    const Callback = struct {
+        fn handle(context: *anyopaque) void {
+            const buffer: *EditBuffer = @ptrCast(@alignCast(context));
+            buffer.tb.setLayer(1, 0, 2, &.{.{ .start_byte = 0, .end_byte = 1, .group_set = 1 }}) catch unreachable;
+        }
+    };
+    try eb.replaceRange(0, 1, "\u{e9}", .{ .ctx = eb, .handle = Callback.handle });
+    try expectRuns(&.{.{ 2, 3, 1 }}, runsOf(&eb.tb.layers, 1));
+    try testing.expectError(error.InvalidIndex, eb.tb.setLayer(1, 0, 4, first));
+}
+
 const Fault = enum { none, reversed, unsorted, overlapping, empty, past_range, past_text, inside_char, group_set, null_runs };
 
 fn isBoundary(text: []const u8, byte: u32) bool {
@@ -1270,6 +1300,8 @@ test "layers: seeded C ABI calls reject malformed runs atomically and match the 
         try testing.expectEqual(c.OT_OK, Calls.setLayer(&owner, on_text, id, 2, 0, 3, &.{.{ .start_byte = 0, .end_byte = 3, .group_set = 1 }}, 1));
         for ([_]struct { u32, u32, ?[*]const c.ot_highlight_run, u32 }{
             .{ 0, 3, &.{.{ .start_byte = 0, .end_byte = 2, .group_set = 1 }}, 1 },
+            // A start inside the character that shares the held run's end.
+            .{ 0, 3, &.{.{ .start_byte = 1, .end_byte = 3, .group_set = 1 }}, 1 },
             .{ 0, 2, null, 0 },
             .{ 2, 3, null, 0 },
         }) |row| {

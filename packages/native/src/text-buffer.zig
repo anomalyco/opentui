@@ -1388,8 +1388,11 @@ pub const UnifiedTextBuffer = struct {
         return self.mem_registry.register(data, owned);
     }
 
+    /// The text reading the slot changes under the layers, so they empty as on a whole-text change.
     pub fn replaceMemBuffer(self: *Self, mem_id: u8, data: []const u8, owned: bool) TextBufferError!void {
         try self.mem_registry.replace(mem_id, data, owned);
+        self.resetLayers();
+        self.span_generation += 1;
     }
 
     pub fn clearMemRegistry(self: *Self) void {

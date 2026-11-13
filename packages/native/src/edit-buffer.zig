@@ -457,7 +457,7 @@ pub const EditBuffer = struct {
         const added_lines = iter_mod.getLineCount(&candidate) - self.tb.lineCount();
         const end = endCursor(.{ .row = cursor.row, .col = cursor.col, .offset = insert_offset }, added_lines, &candidate, span.end);
         try self.autoStoreUndo();
-        var splice = self.layerSplice(cursor.row, cursor.col, insert_offset);
+        var splice = self.layerSplice(cursor.row, cursor.col, insert_offset, !self.tb.layers.isEmpty());
         self.tb.rope().root = candidate.root;
         splice.inserted(self.tb);
         self.cursor = end;
@@ -488,7 +488,7 @@ pub const EditBuffer = struct {
         var candidate = rope.*;
         const span = try self.replaceByWeight(&candidate, start_offset, end_offset, &.{});
         try self.autoStoreUndo();
-        var splice = self.layerSplice(start.row, start.col, start_offset);
+        var splice = self.layerSplice(start.row, start.col, start_offset, !self.tb.layers.isEmpty());
         self.tb.rope().root = candidate.root;
         splice.deleted(self.tb);
 
@@ -545,8 +545,9 @@ pub const EditBuffer = struct {
         const history_storage = try self.tb.rope().allocator.alloc(u8, history_step_size * step_count);
         var history_allocator = std.heap.FixedBufferAllocator.init(history_storage);
         // One splice byte for both steps: seeking the cell again in the deleted text can land
-        // elsewhere when the deletion joined graphemes.
-        var splice = self.layerSplice(start.row, start.col, start.offset);
+        // elsewhere when the deletion joined graphemes. after_delete may set a layer, which the
+        // insertion must move too.
+        var splice = self.layerSplice(start.row, start.col, start.offset, true);
         if (has_deletion) {
             self.publishReplacementStep(&deleted, deleted_cursor, history_allocator.allocator());
             splice.deleted(self.tb);
@@ -582,8 +583,8 @@ pub const EditBuffer = struct {
         }
     };
 
-    fn layerSplice(self: *const EditBuffer, row: u32, col: u32, offset: u32) LayerSplice {
-        if (self.tb.layers.isEmpty()) return .{ .layered = false };
+    fn layerSplice(self: *const EditBuffer, row: u32, col: u32, offset: u32, layered: bool) LayerSplice {
+        if (!layered) return .{ .layered = false };
         // At a line start an edit goes before zero-width text (`insertBias`, `replaceByWeight`);
         // elsewhere after it, where the weight seek lands.
         const start_byte = if (col == 0) self.tb.lineStartByte(row) else self.tb.byteOffsetAtWeight(offset);
