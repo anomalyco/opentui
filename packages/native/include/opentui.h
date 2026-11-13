@@ -2411,6 +2411,11 @@ ot_status ot_text_buffer_highlight(ot_context *, const ot_handle *, uint32_t ope
     uint32_t argument, const ot_edit_highlight *);
 ot_status ot_text_buffer_get_highlights(ot_context *, const ot_handle *, uint32_t line,
     ot_edit_highlight *, uint32_t capacity, uint32_t *out_count);
+/* Same arguments, validation, transaction and paint as ot_edit_buffer_set_layer. Appending
+ * keeps the layers; set_text, set_styled_text, clear and the CLEAR_ALL highlight operation
+ * empty them. */
+ot_status ot_text_buffer_set_layer(ot_context *, const ot_handle *, uint32_t layer_id,
+    uint32_t start_byte, uint32_t end_byte, const ot_highlight_run *runs, uint32_t run_count);
 ot_status ot_text_buffer_view_set_viewport(ot_context *, const ot_handle *, const ot_editor_viewport *, uint32_t size_only);
 ot_status ot_text_buffer_view_command(ot_context *, const ot_handle *, uint32_t command, uint32_t argument);
 ot_status ot_text_buffer_view_set_tab_color(ot_context *, const ot_handle *, const uint16_t color[4]);

@@ -23,6 +23,7 @@ const owned_styled = @import("owned-styled-text.zig");
 const c = @import("context_abi_c");
 const abi = @import("../context-abi.zig");
 const editor_abi = @import("../context-editor-abi.zig");
+const text_abi = @import("../context-text-abi.zig");
 const context_mod = @import("../context.zig");
 const Value = std.json.Value;
 
@@ -1113,9 +1114,29 @@ test "layers: seeded C ABI calls reject malformed runs atomically and match the 
         try testing.expectEqual(@as(u32, 99), group_set);
     }
     try testing.expectEqual(@as(u32, 3), owner.core.group_sets.count());
+    // Odd seeds run on a text buffer: both handles share one validator (C4 invariant 7).
     const edit_handle = try owner.core.createEditBuffer(.unicode);
-    const id = abi.handleToC(edit_handle);
-    const tb = (try owner.core.raw().getEditBuffer(edit_handle)).buffer.tb;
+    const text_handle = try owner.core.createTextBuffer(.unicode);
+    const ids = [_]c.ot_handle{ abi.handleToC(edit_handle), abi.handleToC(text_handle) };
+    const tbs = [_]*text_buffer.UnifiedTextBuffer{ (try owner.core.raw().getEditBuffer(edit_handle)).buffer.tb, (try owner.core.raw().getTextBuffer(text_handle)).buffer };
+    const Calls = struct {
+        fn setText(o: *abi.ContextHandle, on_text: bool, id: *const c.ot_handle, bytes: []const u8) c.ot_status {
+            if (on_text) return text_abi.ot_text_buffer_set_text(o, id, bytes.ptr, @intCast(bytes.len));
+            return abi.ot_edit_buffer_set_text(o, id, bytes.ptr, @intCast(bytes.len), 0);
+        }
+        fn getText(o: *abi.ContextHandle, on_text: bool, id: *const c.ot_handle, bytes: []u8, out: *u32) c.ot_status {
+            if (on_text) return text_abi.ot_text_buffer_get_text(o, id, bytes.ptr, @intCast(bytes.len), out);
+            return abi.ot_edit_buffer_get_text(o, id, bytes.ptr, @intCast(bytes.len), out);
+        }
+        fn highlight(o: *abi.ContextHandle, on_text: bool, id: *const c.ot_handle, operation: u32) c.ot_status {
+            if (on_text) return text_abi.ot_text_buffer_highlight(o, id, operation, 0, null);
+            return editor_abi.ot_edit_buffer_highlight(o, id, operation, 0, null);
+        }
+        fn setLayer(o: *abi.ContextHandle, on_text: bool, id: *const c.ot_handle, layer: u32, start: u32, end: u32, runs: ?[*]const c.ot_highlight_run, count: u32) c.ot_status {
+            if (on_text) return text_abi.ot_text_buffer_set_layer(o, id, layer, start, end, runs, count);
+            return editor_abi.ot_edit_buffer_set_layer(o, id, layer, start, end, runs, count);
+        }
+    };
     const pieces = [_][]const u8{ "ab", "c", " ", "\t", "\n", "\r\n", "\u{e9}", "\u{4e16}", "\u{1f642}" };
     const layer_ids = [_]u32{ 7, 1, 4, 2, 9, 3 };
     var rejected: std.EnumArray(Fault, u32) = .initFill(0);
@@ -1125,14 +1146,16 @@ test "layers: seeded C ABI calls reject malformed runs atomically and match the 
     for (0..64) |seed| {
         var prng = std.Random.DefaultPrng.init(seed);
         const random = prng.random();
+        const on_text = seed % 2 == 1;
+        const id = &ids[seed % 2];
+        const tb = tbs[seed % 2];
         var source: std.ArrayListUnmanaged(u8) = .empty;
         defer source.deinit(gpa);
         for (0..random.uintAtMost(usize, 60)) |_| try source.appendSlice(gpa, pieces[random.uintLessThan(usize, pieces.len)]);
-        const length: u32 = @intCast(source.items.len);
-        try testing.expectEqual(c.OT_OK, abi.ot_edit_buffer_set_text(&owner, &id, source.items.ptr, length, 0));
+        try testing.expectEqual(c.OT_OK, Calls.setText(&owner, on_text, id, source.items));
         var text_bytes: [LayerModel.byte_count_max]u8 = undefined;
         var byte_count: u32 = 0;
-        try testing.expectEqual(c.OT_OK, abi.ot_edit_buffer_get_text(&owner, &id, &text_bytes, text_bytes.len, &byte_count));
+        try testing.expectEqual(c.OT_OK, Calls.getText(&owner, on_text, id, &text_bytes, &byte_count));
         const text = text_bytes[0..byte_count];
         var model: LayerModel = .{ .byte_count = byte_count };
         defer model.deinit();
@@ -1141,7 +1164,7 @@ test "layers: seeded C ABI calls reject malformed runs atomically and match the 
             const roll = random.uintLessThan(u32, 16);
             if (roll < 2) {
                 const operation: u32 = if (roll == 0) c.OT_EDIT_HIGHLIGHT_CLEAR_ALL else if (random.boolean()) c.OT_EDIT_HIGHLIGHT_REMOVE_REF else c.OT_EDIT_HIGHLIGHT_CLEAR_LINE;
-                try testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_highlight(&owner, &id, operation, 0, null));
+                try testing.expectEqual(c.OT_OK, Calls.highlight(&owner, on_text, id, operation));
                 if (operation == c.OT_EDIT_HIGHLIGHT_CLEAR_ALL) model.reset();
                 try model.expectEqual(&tb.layers, &layer_ids);
                 continue;
@@ -1172,7 +1195,7 @@ test "layers: seeded C ABI calls reject malformed runs atomically and match the 
             // NULL is valid only with no runs.
             const pointer: ?[*]const c.ot_highlight_run = if (fault == .null_runs) null else &runs;
             const passed: ?[]const c.ot_highlight_run = if (pointer == null and run_count > 0) null else runs[0..run_count];
-            const status = editor_abi.ot_edit_buffer_set_layer(&owner, &id, layer_ids[layer], range[0], range[1], pointer, @intCast(run_count));
+            const status = Calls.setLayer(&owner, on_text, id, layer_ids[layer], range[0], range[1], pointer, @intCast(run_count));
             if (validLayerCall(text, range[0], range[1], passed, 3)) {
                 var model_runs: [24]LayerRun = undefined;
                 for (runs[0..run_count], model_runs[0..run_count]) |run, *target| target.* = .{ .start_byte = run.start_byte, .end_byte = run.end_byte, .group_set = run.group_set };
@@ -1199,18 +1222,20 @@ test "layers: seeded C ABI calls reject malformed runs atomically and match the 
 
     // Directed edges on 界 (bytes 0..3): a run end or a range end inside it rejects, and NULL with
     // no runs over the whole character clears.
-    try testing.expectEqual(c.OT_OK, abi.ot_edit_buffer_set_text(&owner, &id, "\u{754c}", 3, 0));
-    try testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_set_layer(&owner, &id, 2, 0, 3, &.{.{ .start_byte = 0, .end_byte = 3, .group_set = 1 }}, 1));
-    for ([_]struct { u32, u32, ?[*]const c.ot_highlight_run, u32 }{
-        .{ 0, 3, &.{.{ .start_byte = 0, .end_byte = 2, .group_set = 1 }}, 1 },
-        .{ 0, 2, null, 0 },
-        .{ 2, 3, null, 0 },
-    }) |row| {
-        try testing.expectEqual(c.OT_INVALID_ARGUMENT, editor_abi.ot_edit_buffer_set_layer(&owner, &id, 2, row[0], row[1], row[2], row[3]));
-        try expectRuns(&.{.{ 0, 3, 1 }}, runsOf(&tb.layers, 2));
+    for (&ids, tbs, [_]bool{ false, true }) |*id, tb, on_text| {
+        try testing.expectEqual(c.OT_OK, Calls.setText(&owner, on_text, id, "\u{754c}"));
+        try testing.expectEqual(c.OT_OK, Calls.setLayer(&owner, on_text, id, 2, 0, 3, &.{.{ .start_byte = 0, .end_byte = 3, .group_set = 1 }}, 1));
+        for ([_]struct { u32, u32, ?[*]const c.ot_highlight_run, u32 }{
+            .{ 0, 3, &.{.{ .start_byte = 0, .end_byte = 2, .group_set = 1 }}, 1 },
+            .{ 0, 2, null, 0 },
+            .{ 2, 3, null, 0 },
+        }) |row| {
+            try testing.expectEqual(c.OT_INVALID_ARGUMENT, Calls.setLayer(&owner, on_text, id, 2, row[0], row[1], row[2], row[3]));
+            try expectRuns(&.{.{ 0, 3, 1 }}, runsOf(&tb.layers, 2));
+        }
+        try testing.expectEqual(c.OT_OK, Calls.setLayer(&owner, on_text, id, 2, 0, 3, null, 0));
+        try testing.expect(tb.layers.isEmpty());
     }
-    try testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_set_layer(&owner, &id, 2, 0, 3, null, 0));
-    try testing.expect(tb.layers.isEmpty());
 }
 
 // Invariant 3: one layer of k runs, or k mutually overlapping records, on one line costs one
