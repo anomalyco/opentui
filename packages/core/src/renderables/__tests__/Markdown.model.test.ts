@@ -3,6 +3,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { MarkdownRenderable, type MarkdownInlineHook } from "../Markdown.js"
 import { BoxRenderable } from "../Box.js"
+import { CodeRenderable } from "../Code.js"
+import type { Renderable } from "../../Renderable.js"
 import { ScrollBoxRenderable } from "../ScrollBox.js"
 import { SyntaxStyle } from "../../syntax-style.js"
 import { RGBA } from "../../lib/RGBA.js"
@@ -20,6 +22,8 @@ class FakeWorker extends TreeSitterClient {
     reject: () => void
   }[] = []
   prose = 0
+  // Fence highlights answered, across runs: the model must reach some.
+  static replied = 0
 
   constructor() {
     super({ dataPath: join(tmpdir(), "tree-sitter-markdown-renderable-test-data") }, { autoStartWorker: false })
@@ -34,6 +38,7 @@ class FakeWorker extends TreeSitterClient {
 
   reply(index = 0) {
     const [item] = this.pending.splice(index, 1)
+    if (item) FakeWorker.replied++
     item?.resolve({ highlights: [[0, Math.min(1, item.content.length), "keyword"]] })
   }
 
@@ -42,17 +47,20 @@ class FakeWorker extends TreeSitterClient {
   }
 }
 
-// Like OpenCode's session links: a known ID shows as `@title` with conceal, as written without it.
+// Like OpenCode's session links: a known ID shows as `@title` with conceal, as written without it, in the link color of
+// the style the hook is given.
 function sessionLinks(titles: Map<string, string>): MarkdownInlineHook {
   return (spans, context) =>
     spans.flatMap((span) => {
       if (span.link || (span.code && !/^ses_\w+$/.test(span.text))) return [span]
+      const fg = context.syntaxStyle.getStyle("markup.link.url")?.fg
       return span.text
         .split(/(ses_[ab])/)
         .filter(Boolean)
         .map((text) => {
           const title = titles.get(text)
-          return title ? { ...span, text: context.conceal ? `@${title}` : text, target: text } : { ...span, text }
+          if (!title) return { ...span, text }
+          return { ...span, text: context.conceal ? `@${title}` : text, target: text, fg: fg ?? span.fg }
         })
     })
 }
@@ -66,6 +74,8 @@ type Command =
 const pieces = ["see ", "ses_a ", "ses_b\n", "word ", "\n\n", "# ", "> ", "- ", "1. ", "*x* ", "`ses_a` ", "`run x` "]
 // Three columns: a line holds at most one table piece, so only a delimiter's "--" cells can fall beyond the header.
 pieces.push("~~y~~ ", "[l](https://e.x) ", "\n", "| ses_a | | |\n", "|--|--|--|\n", "| x ses_b |\n", "```\n", "z = 1\n")
+// A fence the worker highlights, and an item's continuation.
+pieces.push("```ts\n", "  ")
 const others: Command["k"][] = [
   "rename",
   "finish",
@@ -104,7 +114,10 @@ beforeAll(async () => {
   captureFrame = setup.captureCharFrame
   captureSpans = setup.captureSpans
   styles = [
-    SyntaxStyle.fromStyles({ default: { fg: RGBA.fromValues(1, 1, 1, 1) } }, target.nativeScene),
+    SyntaxStyle.fromStyles(
+      { default: { fg: RGBA.fromValues(1, 1, 1, 1) }, "markup.link.url": { fg: RGBA.fromValues(0, 0, 1, 1) } },
+      target.nativeScene,
+    ),
     SyntaxStyle.fromStyles(
       {
         default: { fg: RGBA.fromValues(0.8, 0.8, 0.6, 1) },
@@ -114,6 +127,7 @@ beforeAll(async () => {
         "markup.heading": { bold: true, fg: RGBA.fromValues(0, 0.6, 1, 1) },
         "markup.quote": { italic: true },
         "markup.list": { fg: RGBA.fromValues(1, 0, 1, 1) },
+        "markup.link.url": { fg: RGBA.fromValues(1, 1, 0, 1) },
       },
       target.nativeScene,
     ),
@@ -130,6 +144,39 @@ const rows = () =>
     .split("\n")
     .map((row) => row.trimEnd())
 const text = (lines: string[]) => lines.join("\n").trimEnd()
+const codes = (node: Renderable): CodeRenderable[] => [
+  ...(node instanceof CodeRenderable ? [node] : []),
+  ...node.getChildren().flatMap(codes),
+]
+const rowsOf = (nodes: Renderable[]) =>
+  new Set(nodes.flatMap((node) => Array.from({ length: node.height }, (_, at) => node.y + at)))
+
+/**
+ * The frame, row by row: its characters, then its spans (colors and attributes) unless `plain` holds the row, then the
+ * cells that link where a link can be; rows `hidden` holds are left out.
+ */
+function snapshot(hidden: Set<number>, plain: Set<number>): string[] {
+  return captureSpans().lines.map((line, y) => {
+    if (hidden.has(y)) return ""
+    const chars = line.spans
+      .map((span) => span.text)
+      .join("")
+      .trimEnd()
+    const spans = plain.has(y)
+      ? []
+      : line.spans.map((span) => [span.text, span.fg.toInts(), span.bg.toInts(), span.attributes])
+    const links = /l|https/.test(chars)
+      ? Array.from(chars, (_, x) => target.getLinkAt(x, y)).flatMap((link, x) => (link ? [[x, link]] : []))
+      : []
+    return JSON.stringify([chars, spans, links])
+  })
+}
+
+/** The first row where two snapshots differ, shown both ways, or undefined. */
+function differs(a: string[], b: string[]): string | undefined {
+  const at = a.findIndex((row, y) => row !== b[y])
+  return at === -1 ? undefined : `row ${at}\n${a[at]}\n${b[at]}`
+}
 
 // One run of a command list: a hooked, streamed Markdown answer in a scroll box with 16 siblings (so the scene culls it
 // when scrolled away), as OpenCode shows one.
@@ -140,7 +187,7 @@ async function run(commands: Command[]): Promise<void> {
   ])
   const options = { style: 0, conceal: true, links: true, filter: true, streaming: true }
   const worker = new FakeWorker()
-  const mount = (content: string, streaming = options.streaming) => {
+  const mount = (content: string, streaming = options.streaming, client = worker) => {
     const box = new ScrollBoxRenderable(target, { width: "100%", height: target.height })
     box.verticalScrollBar.visible = false
     const md = new MarkdownRenderable(target, {
@@ -148,13 +195,14 @@ async function run(commands: Command[]): Promise<void> {
       syntaxStyle: styles[options.style]!,
       streaming,
       conceal: options.conceal,
-      treeSitterClient: worker,
+      treeSitterClient: client,
       inlineHook: sessionLinks(titles),
       inlineHookFilter: options.filter ? ["ses_"] : undefined,
       tableOptions: { style: "columns" },
     })
     box.add(md)
-    for (let i = 0; i < 16; i++) box.add(new BoxRenderable(target, { height: 3, flexShrink: 0 }))
+    // A twin is drawn alone; the subject has siblings, so the scene culls it when scrolled away.
+    if (client === worker) for (let i = 0; i < 16; i++) box.add(new BoxRenderable(target, { height: 3, flexShrink: 0 }))
     target.root.add(box)
     return { box, md }
   }
@@ -173,53 +221,91 @@ async function run(commands: Command[]): Promise<void> {
   const failWith = (property: string, what: string) =>
     fail(property, `${what} after ${trace.join(" | ")}\n${JSON.stringify(md.content)}\n${captureFrame()}`)
 
-  // A fresh streaming document of the same source and options, drawn alone.
-  const twin = async (streaming: boolean) => {
+  // A fence whose highlight failed draws its code without colors, which a twin's answered highlight has.
+  let failed = false
+  let compared = ""
+  // A fresh document of the same source and options, drawn alone, with every fence highlight answered.
+  const twin = async (streaming: boolean, hidden: Set<number>, plain: Set<number>) => {
     box.visible = false
-    const fresh = mount(md.content, streaming)
+    const own = new FakeWorker()
+    const fresh = mount(md.content, streaming, own)
     await renderOnce()
-    const frame = text(rows())
-    const spans = JSON.stringify(
-      captureSpans().lines.map((line) =>
-        line.spans.map((span) => [span.text, span.fg.toInts(), span.bg.toInts(), span.attributes]),
-      ),
-    )
+    for (let pass = 0; pass < 4 && own.pending.length > 0; pass++) {
+      while (own.pending.length > 0) own.reply()
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      await renderOnce()
+    }
+    const shot = snapshot(hidden, plain)
     fresh.box.destroyRecursively()
     box.visible = true
-    return { frame, spans }
+    return shot
   }
 
   const frame = async () => {
     await renderOnce()
     if (!inView) return
     const now = rows()
-    // A fence's code is never hooked, nor a code span that holds more than an ID (it shows its inner backticks).
-    const fenced = md.content.includes("```")
-    if (options.conceal && !fenced && /(?<!`)ses_[ab](?!`)/.test(now.join("\n"))) failWith("P8", "unhooked ID")
+    // A fence's code is never hooked, and draws again once its highlight lands.
+    const fences = codes(md)
+    const code = rowsOf(fences)
+    // A fence waiting for its highlight keeps its old size, so the rows from it down may differ from a twin's.
+    const first = Math.min(
+      ...fences
+        .filter((fence) => fence.isHighlighting || Reflect.get(fence, "_highlightsDirty"))
+        .map((fence) => fence.y),
+    )
+    const waiting = new Set(Array.from({ length: target.height }, (_, y) => y).filter((y) => y >= first))
+    const prose = now.map((row, y) => (code.has(y) ? "" : row))
+    // P9: a fence whose highlight landed draws its code, as the engine reads it; a twin shares any bug of the subject.
+    const doc = Reflect.get(md, "_doc")
+    md.blocks.forEach((block, index) => {
+      const fence = block.renderable
+      if (block.kind !== "code" || !(fence instanceof CodeRenderable) || fence.y >= first) return
+      const code = doc
+        .readLeaf(index)
+        .chunks.map((chunk: { text: string }) => chunk.text)
+        .join("")
+      const drawn = now
+        .slice(fence.y, fence.y + fence.height)
+        .map((row) => row.slice(fence.x, fence.x + fence.width))
+        .join("")
+      // Long lines wrap, so only the characters count.
+      if (drawn.replace(/\s/g, "") !== code.replace(/\s/g, "")) failWith("P9", `fence draws ${JSON.stringify(drawn)}`)
+    })
+    // A code span that holds more than an ID is not hooked: it shows its inner backticks, or, while a "```" run inside a
+    // line may still close one, its text as code.
+    const span = /[^\n]```/.test(md.content)
+    if (options.conceal && !span && /(?<!`)ses_[ab](?!`)/.test(prose.join("\n"))) failWith("P8", "unhooked ID")
     // Committed rows never change; text never leaves the frame while streaming.
     const blocks = md.getChildren()
     const end = md.committedBlockCount > 0 ? blocks[md.committedBlockCount - 1] : undefined
     const rowsEnd = end ? end.y + end.height - md.y : 0
     if (committed.some((row, at) => row !== now[at])) failWith("P4", "committed rows changed")
-    committed = now.slice(0, rowsEnd)
-    // Markers and IDs may show as written until decided, so only the rest counts. A "```" run that may still open a
-    // fence or close a code span draws its text as code until then, so those documents are not counted.
+    // Scrollback writes committed rows once highlights land (OpenCode settles first), so a waiting fence's are not yet.
+    committed = now.slice(0, Math.min(rowsEnd, first))
+    // Markers and IDs may show as written until decided, so only the rest counts, and not while a code span may close.
     const shown = {
-      rows: now.filter((row) => /[^│\s#]/.test(row)).length,
-      cells: now
+      rows: prose.filter((row) => /[^│\s#]/.test(row)).length,
+      cells: prose
         .join("")
         .replace(/ses_[ab]/g, "@")
         .replace(/[\s│#─|`~*-]/g, "").length,
     }
     const lost = shown.rows < drawn.rows || shown.cells < drawn.cells - 2
-    if (md.streaming && !fenced && lost) failWith("P7", `drawn text lost\n--- before\n${last}`)
+    if (md.streaming && !span && lost) failWith("P7", `drawn text lost\n--- before\n${last}`)
     drawn = shown
     last = text(now)
-    // Fences show after their highlight, so the twin is compared while none is in flight.
-    if (fenced || md.height > target.height) return
-    const fresh = await twin(md.streaming)
-    if (fresh.frame !== text(now))
-      failWith("P6", `frame differs from a fresh twin\n--- frame\n${text(now)}\n--- twin\n${fresh.frame}`)
+    if (md.height > target.height) return
+    // P6 per frame: characters, colors and links equal a fresh twin's, except from a fence whose highlight is in flight
+    // down, and a fence's colors after a failed highlight.
+    const plain = failed ? code : new Set<number>()
+    const subject = snapshot(waiting, plain)
+    // A twin depends only on what the key holds: a frame equal to the last one compared needs none.
+    const key = JSON.stringify([md.content, options, [...titles], [...waiting], [...plain], subject])
+    if (key === compared) return
+    compared = key
+    const difference = differs(subject, await twin(md.streaming, waiting, plain))
+    if (difference) failWith("P6", `frame differs from a fresh twin on ${difference}`)
   }
 
   try {
@@ -239,11 +325,12 @@ async function run(commands: Command[]): Promise<void> {
           break
         case "reply":
           worker.reply(command.at % Math.max(1, worker.pending.length))
-          await Promise.resolve()
+          await new Promise<void>((resolve) => setImmediate(resolve))
           break
         case "fail":
+          failed ||= worker.pending.length > 0
           worker.fail(command.at % Math.max(1, worker.pending.length))
-          await Promise.resolve()
+          await new Promise<void>((resolve) => setImmediate(resolve))
           break
         case "rename":
           // Titles keep their width, so a rename moves no row.
@@ -303,38 +390,10 @@ async function run(commands: Command[]): Promise<void> {
     }
     await renderOnce()
     if (md.height <= target.height) {
-      const settled = text(rows())
-      const spans = JSON.stringify(
-        captureSpans().lines.map((line) =>
-          line.spans.map((span) => [span.text, span.fg.toInts(), span.bg.toInts(), span.attributes]),
-        ),
-      )
-      box.visible = false
-      const fresh = mount(md.content, false)
-      for (let pass = 0; pass < 4; pass++) {
-        await renderOnce()
-        while (worker.pending.length > 0) worker.reply()
-        await new Promise<void>((resolve) => setImmediate(resolve))
-      }
-      await renderOnce()
-      const twinFrame = text(rows())
-      const twinSpans = JSON.stringify(
-        captureSpans().lines.map((line) =>
-          line.spans.map((span) => [span.text, span.fg.toInts(), span.bg.toInts(), span.attributes]),
-        ),
-      )
-      fresh.box.destroyRecursively()
-      box.visible = true
-      if (twinFrame !== settled)
-        failWith("P6", `settled frame differs from a fresh render\n--- settled\n${settled}\n--- fresh\n${twinFrame}`)
-      if (twinSpans !== spans) {
-        const [a, b] = [JSON.parse(spans) as unknown[], JSON.parse(twinSpans) as unknown[]]
-        const at = a.findIndex((line, index) => JSON.stringify(line) !== JSON.stringify(b[index]))
-        failWith(
-          "P6-spans",
-          `settled colors differ from a fresh render on row ${at}\n${JSON.stringify(a[at])}\n${JSON.stringify(b[at])}`,
-        )
-      }
+      const plain = failed ? rowsOf(codes(md)) : new Set<number>()
+      const settled = snapshot(new Set(), plain)
+      const difference = differs(settled, await twin(false, new Set(), plain))
+      if (difference) failWith("P6-settled", `settled frame differs from a fresh render on ${difference}`)
     }
   } finally {
     box.destroyRecursively()
@@ -343,7 +402,9 @@ async function run(commands: Command[]): Promise<void> {
 
 // CI runs 1,000 seeds of 60 commands (about 5 s); MODEL_SEEDS=10000 is the deep run.
 test("streamed, hooked Markdown matches a fresh document in every frame", async () => {
+  FakeWorker.replied = 0
   await check(1000, generate, run)
+  if (!process.env.MODEL_SEED) expect(FakeWorker.replied).toBeGreaterThan(0)
 }, 600_000)
 
 test("the model's shrinker keeps a failing trace", async () => {

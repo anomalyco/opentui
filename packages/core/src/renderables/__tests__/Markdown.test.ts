@@ -5095,6 +5095,22 @@ test("targetAt answers exactly where the last frame drew a target", async () => 
   expectTargets(md, () => "ses_cjk")
   md.destroyRecursively()
 
+  // A renderer's wrapper around the default answers as the default does.
+  const wrapped = createMarkdownRenderable({
+    content: "ses_top",
+    syntaxStyle,
+    inlineHook: underlinedLinks(titles),
+    renderBlock: (_block, context) => {
+      const box = new BoxRenderable(renderer, { paddingLeft: 2 })
+      box.add(context.defaultRender()!)
+      return box
+    },
+  })
+  renderer.root.add(wrapped)
+  await renderOnce()
+  expectTargets(wrapped, () => "ses_top")
+  wrapped.destroyRecursively()
+
   // Rows a scroll box clips and cells an overlay covers answer as the screen shows.
   resizeRenderer(24, 8)
   const box = new ScrollBoxRenderable(renderer, { height: 4, marginTop: 2 })
@@ -5390,6 +5406,11 @@ test("rerunning the inline hook reaches only selected blocks and cells, and remo
   md.rerunInlineHook((source) => source === "Head ses_a")
   await renderMarkdownRenderable(md)
   expect(calls.map((call) => call.source)).toEqual(["Head ses_a"])
+
+  // Another hook runs on the same blocks at once.
+  md.inlineHook = sessionLinks(new Map([["ses_a", "Q"]]))
+  await renderMarkdownRenderable(md)
+  expect(frameText()).toContain("First @Q")
 
   md.inlineHook = undefined
   await renderMarkdownRenderable(md)
