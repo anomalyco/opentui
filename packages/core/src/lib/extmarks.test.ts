@@ -982,10 +982,12 @@ describe("ExtmarksController", () => {
       }
     })
 
-    // A typed key, a prompt's typed query after it, and Left, Right, Backspace and Delete, the last two once at a
-    // virtual mark, make the same native calls whatever the number of styled marks after them; the query is one call.
+    // A typed key, a prompt's typed query after it, Left, Right, Delete and Backspace (Delete at a virtual mark), Left
+    // over a mark, a paste, a selection and the key that replaces it make the same native calls whatever the number of
+    // styled marks after them; the query is one call, and every other operation applies the cursor rules once.
     it("should make the same FFI calls per key at 0, 10 and 40 styled marks", async () => {
       const calls: number[][] = []
+      const rules: number[][] = []
       for (const count of [0, 10, 40]) {
         if (count) currentRenderer.destroy()
         await setup("ab".repeat(60))
@@ -1002,35 +1004,53 @@ describe("ExtmarksController", () => {
         const symbols = (currentRenderer.nativeScene.driver.renderLib as any).opentui.symbols
         const originals = { ...symbols }
         let made = 0
+        let ruled = 0
         for (const name of Object.keys(originals))
           symbols[name] = (...args: any[]) => (made++, originals[name](...args))
-        const counted = (key: () => void) => {
-          const before = made
-          key()
+        // A rule command: a buffer or view move or delete with the atomic flag, the atomic setter or KEEP_OUTSIDE.
+        symbols.ot_edit_buffer_command = (...args: any[]) => {
+          const [op, flag] = [args[2], args[3]]
+          if (([0, 1, 4, 5].includes(op) && flag === 1) || op === 13 || op === 14) ruled++
+          return (made++, originals.ot_edit_buffer_command(...args))
+        }
+        symbols.ot_editor_view_command = (...args: any[]) => {
+          if (args[2] <= 1 && args[3] === 1) ruled++
+          return (made++, originals.ot_editor_view_command(...args))
+        }
+        calls.push([])
+        rules.push([])
+        const counted = async (operation: () => unknown) => {
+          const [before, beforeRules] = [made, ruled]
+          await operation()
           calls.at(-1)!.push(made - before)
+          rules.at(-1)!.push(ruled - beforeRules)
         }
         try {
-          calls.push([])
-          counted(() => currentMockInput.pressKey("X"))
+          await counted(() => currentMockInput.pressKey("X"))
           await new Promise((resolve) => setTimeout(resolve, 0))
-          counted(() => extmarks.getAllForTypeId(0))
-          counted(() => currentMockInput.pressArrow("left"))
-          counted(() => currentMockInput.pressArrow("right"))
+          await counted(() => extmarks.getAllForTypeId(0))
+          await counted(() => currentMockInput.pressArrow("left"))
+          await counted(() => currentMockInput.pressArrow("right"))
           textarea.cursorOffset = 5
-          counted(() => currentMockInput.pressKey("DELETE"))
-          counted(() => currentMockInput.pressBackspace())
+          await counted(() => currentMockInput.pressKey("DELETE"))
+          await counted(() => currentMockInput.pressBackspace())
           textarea.cursorOffset = 8
-          counted(() => currentMockInput.pressArrow("left"))
+          await counted(() => currentMockInput.pressArrow("left"))
+          await counted(() => currentMockInput.pasteBracketedText("p"))
+          await counted(() => textarea.setSelection(0, 1))
+          await counted(() => currentMockInput.pressKey("Y"))
         } finally {
           Object.assign(symbols, originals)
         }
-        expect(textarea.plainText.slice(0, 6)).toBe("Xabaab")
-        expect(textarea.cursorOffset).toBe(5)
-        if (count) expect(extmarks.getAll().at(-1)).toMatchObject({ start: 2 * count + 16, end: 2 * count + 17 })
+        expect([textarea.plainText.slice(0, 7), textarea.cursorOffset]).toEqual(["Yabaapb", 1])
+        if (count) expect(extmarks.getAll().at(-1)).toMatchObject({ start: 2 * count + 17, end: 2 * count + 18 })
       }
-      // Each rule is one native call after the view's selection check (with the rules in TypeScript: Left 16, Right 17,
-      // Delete 8, Backspace 6, Left over a mark 18).
-      expect(calls).toEqual([0, 10, 40].map(() => [3, 1, 12, 12, 4, 4, 12]))
+      // With the rules in TypeScript: Left 16, Right 17, Delete 8, Backspace 6, Left over a mark 18. A new selection
+      // holds the cursor at its focus, so making one applies no rule.
+      expect({ calls, rules }).toEqual({
+        calls: [0, 10, 40].map(() => [4, 1, 6, 6, 4, 4, 6, 6, 3, 4]),
+        rules: [0, 10, 40].map(() => [1, 0, 1, 1, 1, 1, 1, 1, 0, 1]),
+      })
     })
   })
 

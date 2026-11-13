@@ -31,6 +31,14 @@ thread_local! {
     pub(crate) static TEXT_READS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     /// `ot_edit_buffer_get_marks` calls on this thread.
     pub(crate) static MARK_READS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// Commands on this thread that apply the cursor rules around atomic marks.
+    pub(crate) static RULE_CALLS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts a command that applies the cursor rules, for tests.
+fn ruled() {
+    #[cfg(test)]
+    RULE_CALLS.with(|calls| calls.set(calls.get() + 1));
 }
 
 /// A style that supplies exactly its own attributes, as a registered name or a mark's style value.
@@ -327,6 +335,7 @@ impl EditBuffer {
     /// As [`command`](Self::command), with the cursor rules around atomic marks for Left, Right, Backspace and
     /// Delete: a mark is one unit, and a move ends outside every atomic mark. Other commands run as `command`.
     pub fn command_atomic(&self, command: EditCommand) -> Result<()> {
+        ruled();
         self.send(command, sys::OT_EDIT_ATOMIC)
     }
 
@@ -338,6 +347,7 @@ impl EditBuffer {
             std::cmp::Ordering::Greater => 1,
             std::cmp::Ordering::Less => 2,
         };
+        ruled();
         let (context, handle) = self.raw();
         check("ot_edit_buffer_command", unsafe {
             sys::ot_edit_buffer_command(context, handle, sys::OT_EDIT_KEEP_OUTSIDE, edge)
@@ -759,6 +769,7 @@ impl EditorView {
     /// Moves one wrapped line down or up; landing in an atomic mark leaves it by its nearer edge, as
     /// [`EditBuffer::command_atomic`] moves do.
     pub fn move_atomic(&self, down: bool) -> Result<()> {
+        ruled();
         self.command(if down { sys::OT_EDITOR_MOVE_DOWN } else { sys::OT_EDITOR_MOVE_UP }, sys::OT_EDIT_ATOMIC)
     }
 

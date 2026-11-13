@@ -300,6 +300,8 @@ pub(crate) struct EditorCore {
     tracking: Cell<bool>,
     /// A press left the cursor on its cell, maybe inside an atomic mark, until a rule moves it out.
     held: Cell<bool>,
+    /// A rule command left the cursor outside the atomic marks since the step or edit began, so it needs no check.
+    settled: Cell<bool>,
     cursor_options: Cell<EditorOptions>,
     pub on_cursor: Callbacks<(u32, u32)>,
     filetype: RefCell<Option<String>>,
@@ -346,6 +348,7 @@ impl EditorCore {
             extmarks: RefCell::new(Extmarks::default()),
             tracking: Cell::new(false),
             held: Cell::new(false),
+            settled: Cell::new(false),
             cursor_options: Cell::new(EditorOptions { color: theme.cursor, ..Default::default() }),
             on_cursor: Callbacks::default(),
             filetype: RefCell::new(None),
@@ -497,9 +500,7 @@ impl EditorCore {
             if start.is_none() && self.pointer_unit.replace(SelectionUnit::Cell) != SelectionUnit::Cell {
                 self.report(self.view.convert_selection_to_cell());
             }
-            let before = self.cursor().2;
-            step(self);
-            self.keep_cursor_outside(self.cursor().2.cmp(&before));
+            self.settled_step(step);
             let cursor = self.cursor().2;
             self.anchor.set(start);
             let colors = self.colors.borrow().selection;
@@ -522,21 +523,35 @@ impl EditorCore {
             return;
         }
         self.clear_selection_state();
+        self.settled_step(step);
+    }
+
+    /// Runs a step, then keeps the cursor out of atomic marks unless a rule command already did.
+    fn settled_step(&self, step: impl FnOnce(&Self)) {
         let before = self.cursor().2;
+        self.settled.set(false);
         step(self);
-        self.keep_cursor_outside(self.cursor().2.cmp(&before));
+        if !self.settled.get() {
+            self.keep_cursor_outside(self.cursor().2.cmp(&before));
+        }
+    }
+
+    /// Sends an edit command with the cursor rules around atomic marks, which settle the cursor.
+    fn command_atomic(&self, command: EditCommand) {
+        self.report(self.buffer.command_atomic(command));
+        self.settled.set(true);
     }
 
     /// Moves the cursor one column, past atomic marks as Core moves past virtual ones (native rules, `OT_EDIT_ATOMIC`):
-    /// left from a mark's end goes to the start of the unit before it, and right from at most a unit before its start
+    /// left from a mark's end goes to the start of the unit before it, and right from its start or one cell before it
     /// goes to its end. A live selection moves one character, as Core's does.
     fn step_horizontal(&self, forward: bool) {
         let command = if forward { EditCommand::MoveRight } else { EditCommand::MoveLeft };
-        self.report(if self.selection().is_some() {
-            self.buffer.command(command)
+        if self.selection().is_some() {
+            self.report(self.buffer.command(command));
         } else {
-            self.buffer.command_atomic(command)
-        });
+            self.command_atomic(command);
+        }
     }
 
     fn goto_buffer_end(&self) {
@@ -600,11 +615,9 @@ impl EditorCore {
             A::MoveLeft => self.movement(false, Some(false), |s| s.step_horizontal(false)),
             A::MoveRight => self.movement(false, Some(true), |s| s.step_horizontal(true)),
             // Landing in an atomic mark leaves it by the nearer edge, as Core's; Down never goes back.
-            A::MoveUp => self.movement(false, None, |s| {
-                s.report(s.view.move_atomic(false));
-            }),
-            A::MoveDown => self.movement(false, None, |s| {
-                s.report(s.view.move_atomic(true));
+            A::MoveUp | A::MoveDown => self.movement(false, None, |s| {
+                s.report(s.view.move_atomic(action == A::MoveDown));
+                s.settled.set(true);
             }),
             A::SelectLeft => self.movement(true, None, |s| s.step_horizontal(false)),
             A::SelectRight => self.movement(true, None, |s| s.step_horizontal(true)),
@@ -646,12 +659,12 @@ impl EditorCore {
             // At an atomic mark's end (Backspace) or start (Delete) the whole mark goes, as one edit.
             A::Backspace => {
                 if !self.delete_selection() {
-                    self.report(self.buffer.command_atomic(EditCommand::Backspace));
+                    self.command_atomic(EditCommand::Backspace);
                 }
             }
             A::Delete => {
                 if !self.delete_selection() {
-                    self.report(self.buffer.command_atomic(EditCommand::DeleteForward));
+                    self.command_atomic(EditCommand::DeleteForward);
                 }
             }
             A::DeleteWordForward | A::DeleteWordBackward => {
@@ -767,11 +780,15 @@ impl EditorCore {
             self.keep_cursor_outside(Ordering::Equal);
         }
         self.tracking.set(true);
+        self.settled.set(false);
         let cursor_before = self.cursor().2;
         let result = edit();
         self.tracking.set(false);
-        // Undo can bring back a mark around the cursor, so this runs even when no mark was there before.
-        self.keep_cursor_outside(self.cursor().2.cmp(&cursor_before));
+        // Undo can bring back a mark around the cursor, so this runs even when no mark was there before, unless a rule
+        // command settled the cursor during the edit.
+        if !self.settled.get() {
+            self.keep_cursor_outside(self.cursor().2.cmp(&cursor_before));
+        }
         result
     }
 
@@ -780,6 +797,7 @@ impl EditorCore {
     fn keep_cursor_outside(&self, toward: Ordering) {
         self.held.set(false);
         self.report(self.buffer.keep_outside(toward));
+        self.settled.set(true);
     }
 
     /// The buffer's style table. Until `syntax_style` sets one, the editor makes its own, with its syntax theme.
@@ -1408,7 +1426,8 @@ mod tests {
     }
 
     // 474: with marks, a key read the whole text twice to find the edit; native code moves marks now. The cursor rules
-    // around atomic marks run natively too (C5.3), so no key reads the marks, however many there are.
+    // around atomic marks run natively too (C5.3), so no key reads the marks, however many there are, and each key
+    // sends one rule command.
     #[test]
     fn keys_with_marks_read_no_text() {
         for count in [1, 40] {
@@ -1423,17 +1442,17 @@ mod tests {
             }
             area.set_cursor_offset(0);
             app.render();
-            let keys = ["x", "left", "right", "backspace", "delete"];
+            let keys = ["x", "left", "right", "backspace", "delete", "up", "down"];
+            let counters = [&crate::native::TEXT_READS, &crate::native::MARK_READS, &crate::native::RULE_CALLS];
             let reads: Vec<_> = keys
                 .iter()
                 .map(|key| {
-                    crate::native::TEXT_READS.with(|reads| reads.set(0));
-                    crate::native::MARK_READS.with(|reads| reads.set(0));
+                    counters.iter().for_each(|counter| counter.with(|calls| calls.set(0)));
                     app.press(key);
-                    (crate::native::TEXT_READS.with(Cell::get), crate::native::MARK_READS.with(Cell::get))
+                    counters.map(|counter| counter.with(Cell::get))
                 })
                 .collect();
-            assert_eq!(reads, [(0, 0); 5], "{keys:?} with {count} marks");
+            assert_eq!(reads, [[0, 0, 1]; 7], "{keys:?} with {count} marks");
             assert_eq!(area.extmarks()[0].range(), 2..7);
         }
     }

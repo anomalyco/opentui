@@ -1105,9 +1105,10 @@ pub const EditBuffer = struct {
             const rope = self.tb.rope();
             const start = iter_mod.offsetToCoords(rope, m.start).?;
             const end = iter_mod.offsetToCoords(rope, m.end).?;
-            return self.deleteRange(.{ .row = start.row, .col = start.col }, .{ .row = end.row, .col = end.col });
-        }
-        if (forward_delete) try self.deleteForward() else try self.backspace();
+            try self.deleteRange(.{ .row = start.row, .col = start.col }, .{ .row = end.row, .col = end.col });
+        } else if (forward_delete) try self.deleteForward() else try self.backspace();
+        // A delete that joins graphemes can move a mark's edge across the cursor.
+        try self.keepOutside(.nearer);
     }
 
     pub fn getNextWordBoundary(self: *EditBuffer) Cursor {
