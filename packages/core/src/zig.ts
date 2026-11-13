@@ -374,6 +374,12 @@ export interface NativeSceneBoxDetails {
   customBorderChars?: Uint32Array
 }
 
+/** Per-side border overrides in OT_BORDER_* bit order: left, bottom, right, top. An undefined side takes the paint's. */
+export interface NativeSceneBoxSides {
+  styles: readonly (NativeScenePaint["borderStyle"] | undefined)[]
+  colors: readonly (RGBA | undefined)[]
+}
+
 export interface NativeScenePaint {
   zIndex: number
   opacity: number
@@ -7555,6 +7561,37 @@ export class FFIRenderLib {
       this.opentui.symbols.ot_scene_get_style(pointer, handle, styleGroup, styleKind, styleEdge, output),
     )
     return { unit: output[layout.fields.unit.offset / 4], value: values[layout.fields.value.offset / 4] }
+  }
+
+  public sceneSetBoxSides(context: NativeContextHandle, node: SceneNodeHandle, sides: NativeSceneBoxSides): void {
+    const layout = nativeLayouts.ot_scene_box_sides
+    const handle = encodeContextHandle(context, node)
+    const record = createContextRecord(layout)
+    const colors = new Uint16Array(record.buffer)
+    const colorFields = [
+      layout.fields.left_color,
+      layout.fields.bottom_color,
+      layout.fields.right_color,
+      layout.fields.top_color,
+    ]
+    for (let side = 0; side < 4; side++) {
+      const style = sides.styles[side]
+      if (style !== undefined) {
+        const index = SCENE_BORDER_STYLES.indexOf(style)
+        if (index < 0) throw new TypeError("Unknown scene border style")
+        record[layout.fields.style_sides.offset / 4] |= 1 << side
+        record[layout.fields.styles.offset / 4 + side] = index
+      }
+      const color = sides.colors[side]
+      if (color !== undefined) {
+        record[layout.fields.color_sides.offset / 4] |= 1 << side
+        contextBufferColor(color, colors, colorFields[side].offset / 2)
+      }
+    }
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_scene_set_box_sides")
+      nativeResult("ot_scene_set_box_sides", this.opentui.symbols.ot_scene_set_box_sides(pointer, handle, record))
+    })
   }
 
   public sceneSetBoxDetails(context: NativeContextHandle, node: SceneNodeHandle, details: NativeSceneBoxDetails): void {

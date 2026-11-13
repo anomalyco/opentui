@@ -1,0 +1,39 @@
+{
+  "description": "Boxes with per-side border overrides and the frame they draw. Core's Box.test.ts renders each row with BoxRenderable, and the Rust crate's tests/widgets.rs with View, so both bindings draw the same frame. Each row is [name, box, rows, foreground]: the box fills a screen of its width and height; rows are the screen's text with trailing spaces trimmed; in foreground each letter names a color in palette and '.' is not checked.",
+  "palette": { "G": "#808080", "R": "#ff0000", "B": "#0000ff", "V": "#00ff00" },
+  "rows": [
+    [
+      "mixed corners, side colors and titles",
+      {
+        "width": 12,
+        "height": 4,
+        "border": true,
+        "borderStyle": "rounded",
+        "borderColor": "#808080",
+        "title": "ab",
+        "bottomTitle": "cd",
+        "borderTopStyle": "double",
+        "borderTopColor": "#ff0000",
+        "borderLeftStyle": "heavy",
+        "borderBottomColor": "#0000ff"
+      },
+      ["╔═ab═══════╕", "┃          │", "┃          │", "┖─cd───────╯"],
+      ["RRRRRRRRRRRR", "G..........G", "G..........G", "BBBBBBBBBBBB"]
+    ],
+    [
+      "sides off: the top runs through, the left reaches the bottom",
+      {
+        "width": 8,
+        "height": 3,
+        "border": ["top", "left"],
+        "borderStyle": "single",
+        "borderColor": "#808080",
+        "borderTopStyle": "heavy",
+        "borderLeftStyle": "double",
+        "borderLeftColor": "#00ff00"
+      },
+      ["┏━━━━━━━", "║", "║"],
+      ["GGGGGGGG", "V.......", "V......."]
+    ]
+  ]
+}

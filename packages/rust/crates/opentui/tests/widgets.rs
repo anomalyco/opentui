@@ -62,6 +62,60 @@ fn views_style_and_color_each_border_side() {
 }
 
 #[test]
+fn views_draw_cores_per_side_border_frames() {
+    // Core's Box test renders the same rows with BoxRenderable.
+    let corpus: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../core/src/renderables/box-sides.conformance.json")).unwrap();
+    let style = |name: &serde_json::Value| match name.as_str().unwrap() {
+        "single" => BorderStyle::Single,
+        "double" => BorderStyle::Double,
+        "rounded" => BorderStyle::Rounded,
+        "heavy" => BorderStyle::Heavy,
+        other => panic!("unknown border style {other}"),
+    };
+    let color = |hex: &serde_json::Value| Color::parse(hex.as_str().unwrap()).unwrap();
+    let sides = [("Top", Sides::TOP), ("Right", Sides::RIGHT), ("Bottom", Sides::BOTTOM), ("Left", Sides::LEFT)];
+    for row in corpus["rows"].as_array().unwrap() {
+        let (name, spec) = (row[0].as_str().unwrap(), &row[1]);
+        let (width, height) = (spec["width"].as_u64().unwrap() as u16, spec["height"].as_u64().unwrap() as u16);
+        let app = TestApp::new(width, height);
+        let view =
+            View::new(&app).border_color(color(&spec["borderColor"])).border(style(&spec["borderStyle"])).grow(1.0);
+        if let Some(names) = spec["border"].as_array() {
+            let shown = sides.iter().filter(|(side, _)| names.iter().any(|name| name == &side.to_lowercase()));
+            view.border_sides(shown.fold(Sides::NONE, |all, (_, bit)| all | *bit));
+        }
+        if let Some(title) = spec["title"].as_str() {
+            view.title(title);
+        }
+        if let Some(title) = spec["bottomTitle"].as_str() {
+            view.bottom_title(title);
+        }
+        for (side, bit) in sides {
+            if !spec[format!("border{side}Style")].is_null() {
+                view.border_style_for(bit, Some(style(&spec[format!("border{side}Style")])));
+            }
+            if !spec[format!("border{side}Color")].is_null() {
+                view.border_color_for(bit, Some(color(&spec[format!("border{side}Color")])));
+            }
+        }
+        app.root().add(&view);
+        assert_eq!(
+            rows(&app),
+            row[2].as_array().unwrap().iter().map(|r| r.as_str().unwrap()).collect::<Vec<_>>(),
+            "{name}"
+        );
+        let capture = app.render();
+        for (y, letters) in row[3].as_array().unwrap().iter().enumerate() {
+            for (x, letter) in letters.as_str().unwrap().chars().enumerate().filter(|(_, letter)| *letter != '.') {
+                let expected = color(&corpus["palette"][letter.to_string()]);
+                assert_eq!(capture.cell(x as u32, y as u32).unwrap().fg, expected, "{name} at {x},{y}");
+            }
+        }
+    }
+}
+
+#[test]
 fn rows_columns_gaps_and_visibility() {
     let app = TestApp::new(16, 3);
     let left = Text::new(&app, "left");
