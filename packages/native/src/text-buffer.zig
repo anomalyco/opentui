@@ -1809,11 +1809,13 @@ pub const UnifiedTextBuffer = struct {
         try self.collectLineChunks(row);
         const chunks = self.span_scratch.chunks.items;
         const line_end_byte = line_start_byte + lineByteCount(chunks);
+        const line_start_weight = iter_mod.lineStart(&self._rope, row).?.weight;
         for (self.marks()) |mark| {
             if (mark.start_byte >= line_end_byte) break;
             if (!mark.styled() or mark.end_byte <= line_start_byte) continue;
+            // A start inside a grapheme (after a join) takes the grapheme, as `weightAtByte` reports it.
+            const col_start = if (mark.start_byte <= line_start_byte) 0 else self.weightAtByte(mark.start_byte, true) - line_start_weight;
             var cursor: ColumnCursor = .{ .buffer = self, .chunks = chunks };
-            const col_start = cursor.colAt(@max(mark.start_byte, line_start_byte) - line_start_byte);
             const col_end = cursor.colAt(@min(mark.end_byte, line_end_byte) - line_start_byte);
             if (col_start >= col_end) continue;
             try out.append(self.global_allocator, .{ .mark = mark, .col_start = col_start, .col_end = col_end });

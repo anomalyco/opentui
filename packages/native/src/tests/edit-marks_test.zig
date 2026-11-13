@@ -20,6 +20,9 @@ const Mark = @import("../edit-marks.zig").Mark;
 /// Strings that edits insert; none joins a grapheme with its neighbours, so mark edges stay on
 /// cursor stops and offsets convert exactly.
 const strings = [_][]const u8{ "a", "ab", "\u{65e5}", "\n", "a\nb", "\u{65e5}a" };
+/// The differential's pieces add ones that join a grapheme with the text before them (a ZWJ
+/// sequence, a flag), which can leave a mark's start inside a grapheme.
+const pieces = strings ++ [_][]const u8{ "\u{1f468}", "\u{200d}\u{1f469}", "\u{1f1fa}", "\u{1f1f8}" };
 
 const Op = union(enum) {
     insert: struct { at: u32, text: u8 },
@@ -426,7 +429,7 @@ test "styled edit marks paint and report as legacy range highlights do" {
         defer legacy.deinit();
         var text: std.ArrayListUnmanaged(u8) = .empty;
         defer text.deinit(std.testing.allocator);
-        for (0..random.uintLessThan(usize, 12) + 1) |_| try text.appendSlice(std.testing.allocator, strings[random.uintLessThan(usize, strings.len)]);
+        for (0..random.uintLessThan(usize, 12) + 1) |_| try text.appendSlice(std.testing.allocator, pieces[random.uintLessThan(usize, pieces.len)]);
         for ([_]*EditBuffer{ marked, legacy }) |eb| {
             try eb.setText(text.items);
             eb.tb.setSyntaxStyle(style);
@@ -449,7 +452,7 @@ test "styled edit marks paint and report as legacy range highlights do" {
         for (0..3) |round| {
             if (round > 0) {
                 try marked.setCursorByOffset(random.uintAtMost(u32, marked.tb.textEndOffset()));
-                try marked.insertText(strings[random.uintLessThan(usize, strings.len)]);
+                try marked.insertText(pieces[random.uintLessThan(usize, pieces.len)]);
                 var bytes: [512]u8 = undefined;
                 try legacy.setText(bytes[0..marked.getText(&bytes)]);
                 try legacy.tb.addHighlight(0, 0, 1, style_ids[0], 1, 7);
@@ -579,11 +582,17 @@ test "edit marks through the C ABI reject malformed records and round-trip" {
     try std.testing.expectEqual(c.OT_OK, abi.ot_edit_buffer_set_text(&owner, &id, "\u{1f468}\u{1f469}", 8, 0));
     plain.start = 2;
     plain.end = 4;
+    plain.flags = c.OT_EDIT_MARK_STYLE_VALUE;
+    plain.value = value;
     try std.testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_mark(&owner, &id, c.OT_EDIT_MARK_ADD, &plain, &out));
     try std.testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_command(&owner, &id, c.OT_EDIT_CURSOR_OFFSET, 2));
     try std.testing.expectEqual(c.OT_OK, abi.ot_edit_buffer_insert_text(&owner, &id, "\u{200d}", 3));
     try std.testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_get_marks(&owner, &id, 0, c.OT_EDIT_MARK_ANY_KIND, &marks, 2, &count));
     try std.testing.expectEqual([4]u32{ 0, 2, 7, 11 }, [4]u32{ marks[0].start, marks[0].end, marks[0].start_byte, marks[0].end_byte });
+    // It still paints and reads as a highlight over the whole grapheme.
+    try std.testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_get_highlights(&owner, &id, 0, &highlights, 2, &count));
+    try std.testing.expectEqual(@as(u32, 1), count);
+    try std.testing.expectEqual([2]u32{ 0, 2 }, [2]u32{ highlights[0].start, highlights[0].end });
 }
 
 fn expectSameLines(marked: *EditBuffer, legacy: *EditBuffer) !void {
