@@ -278,8 +278,8 @@ export class CodeRenderable extends TextBufferRenderable {
   private stopDeltas(): void {
     const deltas = this._deltas
     this._deltas = undefined
-    // A destroyed client has freed its buffers.
-    if (deltas && deltas.sent > 0) deltas.client.removeBuffer(deltas.id).catch(() => {})
+    // A destroyed client has freed its buffers; the worker ignores one it never had.
+    deltas?.client.removeBuffer(deltas.id).catch(() => {})
   }
 
   public updateStreamingPreview(content: string, initialStyledText: StyledText): void {
@@ -608,8 +608,7 @@ export class CodeRenderable extends TextBufferRenderable {
         const start = end
         // UTF-8 as native stores it (a lone surrogate becomes U+FFFD, 3 bytes).
         end += Buffer.byteLength(chunk.text)
-        // Native composes at most 16 names; the last ones win.
-        const key = names[index]!.slice(-16)
+        const key = names[index]!
         let set = this._groupSets.get(key.join("\n"))
         if (set === undefined) this._groupSets.set(key.join("\n"), (set = this.textBuffer._groupSet(key)))
         runs.set([start, end, set], index * 3)
