@@ -1521,6 +1521,12 @@ mod tests {
         app.root().add(&markdown);
         markdown.set_markdown(source);
         settle(&app, &codes(&markdown));
+        // C4 invariant 4 and question 4: each block's highlights took its text once, and only the open one keeps its
+        // tree, also where a block is built closed (opus-2).
+        let kept = |markdown: &Markdown| -> Vec<_> {
+            (codes(markdown).iter()).map(|code| (code.0.handed.get(), code.0.incremental.borrow().is_some())).collect()
+        };
+        assert_eq!(kept(&markdown), [(12, false), (9, false), (10, true)]);
         markdown.append("let c = 2;\n");
         app.render();
         let before: Vec<_> = codes(&markdown).iter().map(|code| (code.element().id(), code.0.work.get())).collect();
@@ -1531,11 +1537,7 @@ mod tests {
         let got = settle(&app, &codes(&markdown));
         let parses: Vec<_> = codes(&markdown).iter().map(|code| code.0.work.get().0).collect();
         assert_eq!(parses, before.iter().map(|(_, work)| work.0).collect::<Vec<_>>());
-        // C4 invariant 4 and question 4: each block's highlights took its text once, the open one's last only its new
-        // line, reusing its tree, which it alone keeps.
-        let kept = |markdown: &Markdown| -> Vec<_> {
-            (codes(markdown).iter()).map(|code| (code.0.handed.get(), code.0.incremental.borrow().is_some())).collect()
-        };
+        // The open block's last highlight took only its new line, reusing its tree.
         assert_eq!(kept(&markdown), [(12, false), (9, false), (21, true)]);
         let twin = Markdown::new(&fresh).syntax_theme(theme).colors(colors(&fresh)).streaming(true);
         fresh.root().add(&twin);
@@ -1548,6 +1550,14 @@ mod tests {
         markdown.append("let d = 3;\n```\n");
         settle(&app, &codes(&markdown));
         assert_eq!(kept(&markdown)[2], (32, false));
+        // Reopened (its closer gone), the block parses its text again once, then keeps its tree for each new line
+        // (bigboi-4); a closer alone releases the tree with no highlight to land (opus-2).
+        markdown.set_markdown(format!("{source}let c = 2;\nlet d = 3;\n"));
+        for (line, handed, open) in [("// z\n", 32 + 37, true), ("// y\n", 32 + 37 + 5, true), ("```\n", 74, false)] {
+            markdown.append(line);
+            settle(&app, &codes(&markdown));
+            assert_eq!(kept(&markdown)[2], (handed, open), "after {line:?}");
+        }
     }
 
     // A restyle keeps a code block's widget only as a fresh build would choose it: a changed info string changes the
