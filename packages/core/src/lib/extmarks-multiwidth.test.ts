@@ -117,13 +117,10 @@ describe("ExtmarksController - Multi-width Graphemes", () => {
       await setup(text)
       const style = SyntaxStyle.create(currentRenderer.nativeScene)
       textarea.syntaxStyle = style
-      const id = extmarks.create({
-        start,
-        end,
-        styleId: style.registerStyle("test", { fg: RGBA.fromValues(1, 0, 0, 1) }),
-      })
+      const styleId = style.registerStyle("test", { fg: RGBA.fromValues(1, 0, 0, 1) })
+      const id = extmarks.create({ start, end, styleId })
       expect(textarea.getLineHighlights(0)).toMatchObject([{ start: column, end: endColumn }])
-      expect(extmarks.get(id)).toMatchObject({ start: column, end: endColumn })
+      expect(extmarks.get(id)).toMatchObject({ start: column, end: endColumn, styleId })
     })
   })
 

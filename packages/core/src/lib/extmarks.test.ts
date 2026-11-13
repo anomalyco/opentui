@@ -476,8 +476,9 @@ describe("ExtmarksController", () => {
       await setup("abcd")
       textarea.focus()
       textarea.cursorOffset = 4
-      extmarks.create({ start: 1, end: 4, virtual: true })
-      extmarks.create({ start: 0, end: 4, virtual: true })
+      const later = extmarks.create({ start: 1, end: 4, virtual: true })
+      const earlier = extmarks.create({ start: 0, end: 4, virtual: true })
+      expect(extmarks.getAll().map((mark) => mark.id)).toEqual([earlier, later])
       currentMockInput.pressBackspace()
       expect(textarea.plainText).toBe("a")
     })
@@ -933,9 +934,10 @@ describe("ExtmarksController", () => {
       }
     })
 
-    // A typed key makes the same native calls whatever the number of styled marks after it.
+    // A typed key, and a prompt's typed query after it, make the same native calls whatever the number of styled marks
+    // after it; the query is one call.
     it("should make the same FFI calls per key at 0, 10 and 40 styled marks", async () => {
-      const calls: number[] = []
+      const calls: number[][] = []
       for (const count of [0, 10, 40]) {
         if (count) currentRenderer.destroy()
         await setup("ab".repeat(40))
@@ -953,13 +955,19 @@ describe("ExtmarksController", () => {
         try {
           currentMockInput.pressKey("X")
           await new Promise((resolve) => setTimeout(resolve, 0))
+          calls.push([made])
+          extmarks.getAllForTypeId(0)
+          calls.at(-1)!.push(made - calls.at(-1)![0])
         } finally {
           Object.assign(symbols, originals)
         }
-        calls.push(made)
         if (count) expect(extmarks.getAll().at(-1)).toMatchObject({ start: 2 * count - 1, end: 2 * count })
       }
-      expect(calls).toEqual([calls[0], calls[0], calls[0]])
+      expect(calls).toEqual([
+        [calls[0][0], 1],
+        [calls[0][0], 1],
+        [calls[0][0], 1],
+      ])
     })
   })
 
@@ -2095,6 +2103,11 @@ Press ESC to return to main menu.`
       const extmark = extmarks.get(id)
       expect(extmark?.start).toBe(5)
       expect(extmark?.end).toBe(5)
+
+      // Decision (C5.2, Rust's rule before C5.1): text typed at an empty mark goes after it, so the mark stays.
+      textarea.editBuffer.setCursor(0, 5)
+      textarea.editBuffer.insertText("X")
+      expect(extmarks.get(id)).toMatchObject({ start: 5, end: 5 })
     })
 
     it("should handle overlapping extmarks", async () => {

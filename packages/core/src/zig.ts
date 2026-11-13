@@ -3650,6 +3650,8 @@ export class FFIRenderLib {
     createEditorSelectionRecord()
   // Info reads never call back into JavaScript, so one output record serves every read.
   private readonly editorViewInfoRecord = createContextRecord(nativeLayouts.ot_editor_view_info)
+  // Kept between mark queries, which decode it before the next call.
+  private markRecords = new Uint32Array((16 * nativeLayouts.ot_edit_mark.size) / 4)
   private readonly videoStateRecord = new Uint8Array(nativeLayouts.ot_video_state.size)
   private readonly videoStateView = new DataView(this.videoStateRecord.buffer)
   private readonly selectionResetRecord = encodeEditorSelection({ operation: NativeEditorSelectionOperation.Reset })
@@ -5542,22 +5544,30 @@ export class FFIRenderLib {
     const markKind = toSafeFFIU32Length(kind, "Mark type id")
     const count = new Uint32Array(1)
     const pointer = this.nativeContextPointer(context, "ot_edit_buffer_get_marks")
-    // One mark always fits, so a query by id is one call.
-    let capacity = id === 0 ? 0 : 1
-    if (capacity === 0) {
+    const words = layout.size / 4
+    const copy = () =>
+      this.opentui.symbols.ot_edit_buffer_get_marks(
+        pointer,
+        handle,
+        markId,
+        markKind,
+        this.markRecords,
+        this.markRecords.length / words,
+        count,
+      )
+    // One call while the marks fit the kept records; an undersized call fails without output, so count and grow.
+    let status = copy()
+    if (status !== NativeStatus.Ok) {
       nativeResult(
         "ot_edit_buffer_get_marks",
         this.opentui.symbols.ot_edit_buffer_get_marks(pointer, handle, markId, markKind, null, 0, count),
       )
-      capacity = count[0]
-      if (capacity === 0) return []
+      if (count[0] * words <= this.markRecords.length) nativeResult("ot_edit_buffer_get_marks", status)
+      this.markRecords = new Uint32Array(count[0] * 2 * words)
+      status = copy()
+      nativeResult("ot_edit_buffer_get_marks", status)
     }
-    const words = layout.size / 4
-    const records = new Uint32Array(capacity * words)
-    nativeResult(
-      "ot_edit_buffer_get_marks",
-      this.opentui.symbols.ot_edit_buffer_get_marks(pointer, handle, markId, markKind, records, capacity, count),
-    )
+    const records = this.markRecords
     const marks: NativeEditMark[] = []
     for (let offset = 0; offset < count[0] * words; offset += words) {
       const field = (name: keyof typeof layout.fields) => records[offset + layout.fields[name].offset / 4]
