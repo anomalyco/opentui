@@ -188,13 +188,16 @@ impl CodeInner {
             (source.len(), source[incremental.text().len()..].to_owned())
         };
         let (sender, receiver) = mpsc::sync_channel(1);
+        // The worker gets the highlighter once it started, so a thread that fails to start leaves it here.
+        let (job_sender, job) = mpsc::channel::<(Incremental, String)>();
         let proxy = app.proxy();
         #[cfg(test)]
         {
             self.work.set((self.work.get().0 + 1, self.work.get().1));
             self.handed.set(self.handed.get() + appended.len());
         }
-        let worker = std::thread::Builder::new().name("opentui-highlight".into()).spawn(move || {
+        let job = move || {
+            let Ok((mut incremental, appended)) = job.recv() else { return };
             let named = incremental.update([incremental.text(), &appended].concat());
             if sender.send((incremental, named)).is_ok() {
                 // Retry while the UI thread catches up, so the result is painted.
@@ -202,10 +205,22 @@ impl CodeInner {
                     std::thread::sleep(Duration::from_millis(1));
                 }
             }
-        });
+        };
+        let builder = std::thread::Builder::new().name("opentui-highlight".into());
+        #[cfg(all(test, feature = "tree-sitter"))]
+        let worker = if tests::DENY_THREADS.get() { Err(std::io::Error::other("denied")) } else { builder.spawn(job) };
+        #[cfg(not(all(test, feature = "tree-sitter")))]
+        let worker = builder.spawn(job);
         match worker {
-            Ok(_) => *self.pending.borrow_mut() = Some(Pending { len, receiver }),
-            Err(_) => self.highlight_now(),
+            Ok(_) => {
+                drop(job_sender.send((incremental, appended)));
+                *self.pending.borrow_mut() = Some(Pending { len, receiver });
+            }
+            // Without a thread the same highlight runs here.
+            Err(_) => {
+                let named = incremental.update([incremental.text(), &appended].concat());
+                self.keep(incremental, named, len);
+            }
         }
     }
 
@@ -217,9 +232,9 @@ impl CodeInner {
         };
         let pending = self.pending.take().expect("a pending highlight");
         match result {
-            Ok((incremental, Some(named))) => self.keep(incremental, named, pending.len),
-            // No grammar, or the worker failed: the shown highlight stays, and the next one runs on the UI thread.
-            Ok((_, None)) | Err(_) => self.highlighted.set(None),
+            Ok((incremental, named)) => self.keep(incremental, named, pending.len),
+            // The worker failed: the shown highlight stays, and the next one runs on the UI thread.
+            Err(_) => self.highlighted.set(None),
         }
     }
 
@@ -238,14 +253,14 @@ impl CodeInner {
             self.handed.set(self.handed.get() + source.len());
         }
         let len = source.len();
-        match incremental.update(source) {
-            Some(named) => self.keep(incremental, named, len),
-            None => self.highlighted.set(None),
-        }
+        let named = incremental.update(source);
+        self.keep(incremental, named, len);
     }
 
-    /// Shows a highlight and keeps its highlighter for the next one.
-    fn keep(&self, incremental: Incremental, named: NamedRanges, len: usize) {
+    /// Shows a highlight and keeps its highlighter for the next one. Without one (no grammar), the shown highlight
+    /// stays, and the next one runs on the UI thread.
+    fn keep(&self, incremental: Incremental, named: Option<NamedRanges>, len: usize) {
+        let Some(named) = named else { return self.highlighted.set(None) };
         *self.incremental.borrow_mut() = Some(incremental);
         self.show(named, len);
         self.release_closed();
@@ -719,6 +734,11 @@ pub(crate) mod tests {
     use crate::testing::TestApp;
     use crate::widget::Container;
 
+    thread_local! {
+        /// Whether highlight threads fail to start on this thread, as under a process limit.
+        pub(crate) static DENY_THREADS: Cell<bool> = const { Cell::new(false) };
+    }
+
     /// Renders until no code view has a highlight running or due, and returns the frame.
     pub(crate) fn settle(app: &TestApp, codes: &[Code]) -> Capture {
         for _ in 0..10_000 {
@@ -881,6 +901,8 @@ pub(crate) mod tests {
                 }
                 _ => {}
             }
+            // Seed 3 highlights with every worker thread failing to start (bigboi-5).
+            DENY_THREADS.set(seed == 3);
             for _ in 0..40 {
                 match next(12) {
                     0..=4 => drop(code.append(PIECES[next(PIECES.len())])),
@@ -912,6 +934,7 @@ pub(crate) mod tests {
                     _ => compare(true),
                 }
             }
+            DENY_THREADS.set(false);
         }
         println!("C4 1b on {erroneous} of {compared} frames; the view's own tree painted otherwise on {own_differs}");
         assert!(compared > 3500 && erroneous * 4 < compared * 3, "{compared} compared, {erroneous} with errors");
