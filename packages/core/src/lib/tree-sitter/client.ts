@@ -3,7 +3,6 @@ import type {
   TreeSitterClientOptions,
   TreeSitterClientEvents,
   BufferState,
-  ParsedBuffer,
   FiletypeParserOptions,
   Edit,
   PerformanceStats,
@@ -565,25 +564,28 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
     version: number = 1,
     autoInitialize: boolean = true,
   ): Promise<boolean> {
-    if (!this.initialized) {
-      if (!autoInitialize) {
-        this.emitError("Could not create buffer because client is not initialized")
-        return false
-      }
-      try {
-        await this.initialize()
-      } catch (error) {
-        this.emitError("Could not create buffer because of initialization error")
-        return false
-      }
+    if (!this.initialized && !autoInitialize) {
+      this.emitError("Could not create buffer because client is not initialized")
+      return false
     }
-
     if (this.buffers.has(id)) {
       throw new Error(`Buffer with id ${id} already exists`)
     }
 
-    // Set buffer state immediately to avoid race conditions
-    this.buffers.set(id, { id, content, filetype, version, hasParser: false })
+    // A removeBuffer, or another createBuffer of this id, replaces this record; this call then returns false.
+    const created: BufferState = { id, content, filetype, version, hasParser: false }
+    this.buffers.set(id, created)
+    const drop = () => this.buffers.get(id) === created && this.buffers.delete(id)
+    if (!this.initialized) {
+      try {
+        await this.initialize()
+      } catch (error) {
+        drop()
+        this.emitError("Could not create buffer because of initialization error")
+        return false
+      }
+      if (this.buffers.get(id) !== created) return false
+    }
 
     const messageId = `init_${this.messageIdCounter++}`
     const response = await new Promise<{ hasParser: boolean; warning?: string; error?: string }>((resolve, reject) => {
@@ -601,8 +603,9 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
         this.messageCallbacks.delete(messageId)
         reject(error instanceof Error ? error : new Error(String(error)))
       }
-    })
+    }).catch((error) => (drop(), Promise.reject(error)))
 
+    if (this.buffers.get(id) !== created) return false
     if (!response.hasParser) {
       this.emit("buffer:initialized", id, false)
       if (filetype !== "plaintext") {
@@ -611,9 +614,7 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
       return false
     }
 
-    // Update buffer state to indicate it has a parser
-    const bufferState: ParsedBuffer = { id, content, filetype, version, hasParser: true }
-    this.buffers.set(id, bufferState)
+    this.buffers.set(id, { id, content, filetype, version, hasParser: true })
 
     this.emit("buffer:initialized", id, true)
     return true
@@ -635,12 +636,12 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
   }
 
   public async removeBuffer(bufferId: number): Promise<void> {
+    this.buffers.delete(bufferId)
+    this.resetVersions.delete(bufferId)
+    // A client that is not initialized has no worker buffers, only createBuffer records waiting for it to start.
     if (!this.initialized) {
       return
     }
-
-    this.buffers.delete(bufferId)
-    this.resetVersions.delete(bufferId)
 
     if (this.worker) {
       await new Promise<boolean>((resolve, reject) => {
