@@ -35,7 +35,6 @@ pub use highlight::{
 use crate::error::Result;
 use crate::native::{Context, LayerRun, SyntaxStyle};
 use crate::style::{Color, Style};
-use crate::sys;
 use crate::theme::{Theme, ThemeMode};
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
@@ -218,14 +217,14 @@ impl Palette {
 pub(crate) struct CaptureSets(HashMap<Vec<&'static str>, u32>);
 
 impl CaptureSets {
-    /// Every capture name of the lists seen.
-    pub(crate) fn names(&self) -> Vec<&'static str> {
-        self.0.keys().flatten().copied().collect()
+    /// The lists seen.
+    pub(crate) fn lists(&self) -> Vec<Vec<&'static str>> {
+        self.0.keys().cloned().collect()
     }
 
-    /// The layer runs of [`highlight_names`]' pieces, each edge mapped to the buffer's bytes by `edge`. A name over the
-    /// group-set name bound is left out, and past the name count bound the outermost names go. Past the Context's
-    /// group-set bound a list has no set, and its pieces paint plain rather than ending the app.
+    /// The layer runs of [`highlight_names`]' pieces, each edge mapped to the buffer's bytes by `edge`, and empty runs
+    /// left out. Past the Context's group-set bound a list has no set, and its pieces paint plain rather than ending
+    /// the app.
     pub(crate) fn runs(
         &mut self,
         table: &SyntaxStyle,
@@ -239,12 +238,8 @@ impl CaptureSets {
                 sets.push(Some(id));
                 continue;
             }
-            table.register_captures(&names)?;
-            let prefixed: Vec<String> = (names.iter().map(|name| format!("opentui.{name}")))
-                .filter(|name| name.len() <= sys::OT_GROUP_SET_NAME_BYTE_COUNT_MAX as usize)
-                .collect();
-            let kept = &prefixed[prefixed.len().saturating_sub(sys::OT_GROUP_SET_NAME_COUNT_MAX as usize)..];
-            let id = context.group_set(&kept.iter().map(String::as_str).collect::<Vec<_>>()).ok();
+            let group = table.capture_group(&names)?;
+            let id = context.group_set(&group.iter().map(String::as_str).collect::<Vec<_>>()).ok();
             if let Some(id) = id {
                 self.0.insert(names, id);
             }
