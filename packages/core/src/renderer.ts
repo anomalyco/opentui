@@ -612,15 +612,18 @@ class ExternalOutputQueue {
     return { markers, removed, boundary: boundary < 0 ? kept.length : boundary }
   }
 
-  /** The head commits, at most `limit`, that fit one native split render. Never empty unless the queue is. */
+  // The head commits, at most `limit` and 8 writer snapshots, that fit one native split render; never empty unless the
+  // queue is. Writer snapshots can style every cell: more of them delay the footer repaint behind them on a slow link.
   batch(limit: number): readonly QueuedCommit[] {
     // An empty batch would never drain the queue.
     if (!(limit >= 1)) throw new RangeError("ExternalOutputQueue.batch requires a limit of at least 1")
     let count = 0
     let cells = 0
+    let writers = 0
     while (count < Math.min(limit, this.commits.length)) {
       cells += this.commits[count]!.cells
-      if (cells > this.maxCells) break
+      writers += this.commits[count]!.bytes === 0 ? 1 : 0
+      if (cells > this.maxCells || writers > 8) break
       count += 1
     }
     return this.commits.slice(0, count)
@@ -1243,12 +1246,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   // One-shot latch used to request a full split repaint after transitions
   // (resize/mode/output-path changes). Cleared after completed presentation.
   private forceFullRepaintRequested: boolean = false
-  // Upper bound for captured stdout commits consumed per native frame.
-  // This is a visual smoothness control: smaller batches reduce frame envelope
-  // churn and keep render latency predictable under heavy scrollback append load.
-  private readonly maxSplitCommitsPerFrame: number = 8
-  // Scrollback commits per frame; 1 after a batch was too large for one frame.
-  private splitCommitLimit = this.maxSplitCommitsPerFrame
+  // Scrollback commits per frame: as many as one native split render takes; 1 after a batch too large for one frame.
+  private splitCommitLimit: number = nativeConstants.OT_SPLIT_SNAPSHOTS_MAX
   // The renderer state's dropped frame count already reported.
   private droppedFrames = 0
   // A frame was dropped since the last rendered one; native counts a partial frame only when its full repaint fails.
@@ -4813,7 +4812,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
     // Leave raw mode as the suspend settles, before resume(); after destroy() the close leaves it after restoration.
     // Suspending a suspended Session writes nothing, and the input since then belongs to the next program.
-    const settled = nativeTransition.finally(() => this._isDestroyed || restored || this.leaveRawMode(true))
+    // Until then an exit signal destroys, so the close restores the terminal; after it, the next program owns signals.
+    const settled = nativeTransition.finally(() => {
+      this.removeExitListeners()
+      if (!this._isDestroyed && !restored) this.leaveRawMode(true)
+    })
     nativeTransition = this.trackNativeTerminalTransition(settled)
     if (this._controlState !== RendererControlState.EXPLICIT_SUSPENDED) {
       // A failed native split drain leaves the host suspended until the caller retries.
@@ -4829,7 +4832,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.clearSplitStartupCursorSeed()
 
     this.disableMouse()
-    this.removeExitListeners()
     for (const batch of [...this.replyBatches]) {
       if (batch.backstop !== null) this.clock.clearTimeout(batch.backstop)
       batch.backstop = null
@@ -5532,7 +5534,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
     this.externalOutputQueue.drop(commits.length)
     if (this.pendingNativeReplay) this.pendingNativeReplay.remaining -= commits.length
-    this.splitCommitLimit = this.maxSplitCommitsPerFrame
+    this.splitCommitLimit = nativeConstants.OT_SPLIT_SNAPSHOTS_MAX
     this.nativeSplitAcceptedCount = 0
     this.pendingSplitFooterTransition = null
   }

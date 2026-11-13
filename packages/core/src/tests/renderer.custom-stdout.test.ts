@@ -2139,6 +2139,11 @@ const rawModeActions: Record<string, (renderer: CliRenderer) => Promise<unknown>
     spyOn(renderer.nativeScene.driver, "suspend").mockRejectedValue(0), renderer.suspend()
   ),
   "destroy during suspend": (renderer) => (renderer.suspend().catch(() => {}), renderer.destroy(), renderer.closed),
+  // Until the suspension settles the exit-signal handler destroys; with no handler the signal would kill the process.
+  // SIGUSR2 is in no default list, so renderers that other files leave behind don't listen.
+  "signal during suspend": async (renderer) => (
+    renderer.suspend().catch(() => {}), process.emit("SIGUSR2") && renderer.closed
+  ),
   // The footer change applies as the transition clears, and its resize listener resumes in that turn.
   "footer resize during a suspension": async (renderer) => {
     renderer.screenMode = "split-footer"
@@ -2159,6 +2164,7 @@ test.each<{ action: string; sync: string[]; settled: string[] }>([
   { action: "suspend behind held output", sync: [], settled: ["off after mouse bytes"] },
   { action: "failing suspend", sync: [], settled: ["off"] },
   { action: "destroy during suspend", sync: [], settled: ["off after mouse bytes after close"] },
+  { action: "signal during suspend", sync: [], settled: ["off after mouse bytes after close"] },
   { action: "footer resize during a suspension", sync: [], settled: ["off after mouse bytes", "on"] },
   { action: "resume", sync: ["on"], settled: ["on"] },
   { action: "failing resume", sync: [], settled: [] },
@@ -2177,7 +2183,8 @@ test.each<{ action: string; sync: string[]; settled: string[] }>([
     rawMode.push(`${enabled ? "on" : "off"}${mouseBytes ? " after mouse bytes" : ""}${closed ? " after close" : ""}`)
     return stdin
   }
-  const renderer = await createCliRenderer({ stdin, stdout, exitSignals: [] })
+  const listeners = process.listenerCount("SIGUSR2")
+  const renderer = await createCliRenderer({ stdin, stdout, exitSignals: ["SIGUSR2"] })
   driver = renderer.nativeScene.driver
   try {
     if (action.includes("resume")) await renderer.suspend()
@@ -2195,10 +2202,14 @@ test.each<{ action: string; sync: string[]; settled: string[] }>([
     stdout.release()
     await done
     await renderer.idle()
-    expect({ sync: log, settled: rawMode, suspended: renderer.controlState === "explicit_suspended" }).toEqual({
+    const suspended = renderer.controlState === "explicit_suspended"
+    const exitListeners = process.listenerCount("SIGUSR2") - listeners
+    expect({ sync: log, settled: rawMode, suspended, exitListeners }).toEqual({
       sync,
       settled,
       suspended: action.includes("suspend") || ["failing resume", "resume after destroy"].includes(action),
+      // A settled suspension leaves signals to the next program; a resumed renderer takes them back.
+      exitListeners: Number(action === "resume" || action.startsWith("footer")),
     })
   } finally {
     renderer.destroy()

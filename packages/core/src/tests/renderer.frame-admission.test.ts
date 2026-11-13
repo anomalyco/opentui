@@ -39,6 +39,14 @@ function createAdmissionRenderer(width = 80, height = 24, config: CliRendererCon
   return { renderer, stdout, clock, driver }
 }
 
+/** Advances the clock 100 ms at a time, `turns` times, settling after each. */
+async function advance(clock: ManualClock, turns: number) {
+  for (let turn = 0; turn < turns; turn++) {
+    clock.advance(100)
+    await settle()
+  }
+}
+
 test("frame admission bounds delayed output to one frame and coalesces callback work", async () => {
   const { renderer, stdout, clock, driver } = createAdmissionRenderer()
   const observed: string[] = []
@@ -222,10 +230,7 @@ for (const [state, enter] of Object.entries(busyResizes)) {
       renderer.requestRender()
     } else resize()
     stdout.release()
-    for (let turn = 0; turn < 8; turn++) {
-      clock.advance(100)
-      await settle()
-    }
+    await advance(clock, 8)
     await renderer.idle()
 
     const size = sizes.at(-1)!
@@ -297,10 +302,7 @@ test("Kitty uploads that do not fit one frame go out in the next frames", async 
       }),
     )
   }
-  for (let turn = 0; turn < 8; turn++) {
-    clock.advance(100)
-    await settle()
-  }
+  await advance(clock, 8)
   await renderer.idle()
   expect(stdout.text().split("\x1b_Ga=t").length - 1).toBe(3)
 })
@@ -391,10 +393,7 @@ for (const content of ["noise", "checkerboard"] as const) {
     const before = stdout.text().length
     update = true
     renderer.requestRender()
-    for (let turn = 0; turn < 8; turn++) {
-      clock.advance(100)
-      await settle()
-    }
+    await advance(clock, 8)
     await renderer.idle()
     const drawn = stdout.text().slice(before)
     expect({ events: dropped.length, drawn: drawn.includes("oxox") }).toEqual(
@@ -411,11 +410,11 @@ test("a scrollback commit too large for the output is dropped", async () => {
   renderer.on(CliRenderEvents.FRAME_DROPPED, (event) => dropped.push(event))
   const footer = new TextRenderable(renderer, { content: "footer-a" })
   renderer.root.add(footer)
-  const writeNoise = (width = 80, trailingNewline = true) =>
+  const writeNoise = (width = 80, trailingNewline = true, height = 17) =>
     renderer.writeToScrollback((ctx) => ({
-      root: new Noise(ctx.renderContext, { position: "absolute", left: 0, top: 0, width, height: 17 }),
+      root: new Noise(ctx.renderContext, { position: "absolute", left: 0, top: 0, width, height }),
       width,
-      height: 17,
+      height,
       startOnNewLine: true,
       trailingNewline,
     }))
@@ -426,17 +425,11 @@ test("a scrollback commit too large for the output is dropped", async () => {
   writeNoise(70, false)
   stdout.write("ab")
   renderer.once(CliRenderEvents.FRAME_DROPPED, () => stdout.write("1234567890\n"))
-  for (let turn = 0; turn < 40; turn++) {
-    clock.advance(100)
-    await settle()
-  }
+  await advance(clock, 40)
   footer.content = "ZZZZZZZZ"
   // Later commits batch again.
   for (const line of ["one", "two", "three"]) stdout.write(`${line}\n`)
-  for (let turn = 0; turn < 40; turn++) {
-    clock.advance(100)
-    await settle()
-  }
+  await advance(clock, 40)
   const output = stdout.text()
   expect({ events: dropped.length, before: output.includes("before"), after: output.includes("1234567890") }).toEqual({
     events: 1,
@@ -446,8 +439,15 @@ test("a scrollback commit too large for the output is dropped", async () => {
   expect(output).toContain("ZZZZZZZZ")
   expect(output).toContain("three")
   expect(output.slice(output.indexOf("one"), output.indexOf("three"))).not.toContain("\x1b[?2026l")
+  // Two 640-cell noise commits fit only one at a time; after them, captured rows batch 64 a frame again.
+  const renders = spyOn(renderer.nativeScene.driver, "renderSplit")
+  writeNoise(80, true, 8)
+  writeNoise(80, true, 8)
+  for (let row = 0; row < 70; row++) stdout.write(`T${row}\n`)
+  await advance(clock, 40)
+  expect(renders.mock.calls.map(([, commits]) => commits.length)).toEqual([33, 1, 64, 7])
   // The close flush drops a commit too large for one frame as well, then restores the terminal.
-  const closing = output.length
+  const closing = stdout.text().length
   writeNoise()
   renderer.destroy()
   await renderer.closed
