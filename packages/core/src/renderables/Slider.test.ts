@@ -151,64 +151,100 @@ test.each([
   },
 )
 
-test("SliderRenderable > Mouse interaction - horizontal click on thumb", async () => {
+test.each(["horizontal", "vertical"] as const)(
+  "SliderRenderable > Mouse interaction - %s click on thumb keeps the value",
+  async (orientation) => {
+    const changes: number[] = []
+    const vertical = orientation === "vertical"
+    const { slider } = await createSliderRenderable(currentRenderer, {
+      orientation,
+      min: 0,
+      max: 100,
+      value: 50,
+      width: vertical ? 2 : 20,
+      height: vertical ? 20 : 2,
+      onChange: (value) => changes.push(value),
+    })
+
+    // Both cells hold part of the three-half-cell thumb, which starts on a rounded half cell.
+    for (const cell of [9, 10]) {
+      await currentMockMouse.click(vertical ? 0 : cell, vertical ? cell : 0)
+      expect(slider.value).toBe(50)
+    }
+    expect(changes).toEqual([])
+  },
+)
+
+test.each(["horizontal", "vertical"] as const)(
+  "SliderRenderable > Mouse interaction - %s click on track sets the value once",
+  async (orientation) => {
+    const changes: number[] = []
+    const vertical = orientation === "vertical"
+    const { slider } = await createSliderRenderable(currentRenderer, {
+      orientation,
+      min: 0,
+      max: 100,
+      value: 50,
+      width: vertical ? 2 : 20,
+      height: vertical ? 20 : 2,
+      onChange: (value) => changes.push(value),
+    })
+
+    await currentMockMouse.click(vertical ? 0 : 15, vertical ? 15 : 0)
+    expect(slider.value).toBe(75)
+    await currentMockMouse.click(vertical ? 0 : 3, vertical ? 3 : 0)
+    expect(slider.value).toBe(15)
+    expect(changes).toEqual([75, 15])
+  },
+)
+
+test("SliderRenderable > Mouse interaction - click emits no rounding-error change", async () => {
+  const changes: number[] = []
   const { slider } = await createSliderRenderable(currentRenderer, {
     orientation: "horizontal",
-    min: 0,
-    max: 100,
-    value: 50,
-    width: 20,
+    min: 0.1,
+    max: 0.7,
+    value: 0.3,
+    viewPortSize: 0.07,
+    width: 23,
     height: 1,
-  })
-  await currentMockMouse.click(10, 0)
-  expect(slider.value).toBeCloseTo(51, 0)
-})
-
-test("SliderRenderable > Mouse interaction - horizontal click on track", async () => {
-  const { slider } = await createSliderRenderable(currentRenderer, {
-    orientation: "horizontal",
-    min: 0,
-    max: 100,
-    value: 50,
-    width: 20,
-    height: 1,
+    onChange: (value) => changes.push(value),
   })
 
-  await currentMockMouse.pressDown(15, 0)
-
-  expect(slider.value).toBeCloseTo(75, 1)
+  for (let cell = 0; cell < 23; cell++) {
+    changes.length = 0
+    await currentMockMouse.click(cell, 0)
+    expect(changes.length).toBeLessThanOrEqual(1)
+  }
 })
 
-test("SliderRenderable > Mouse interaction - vertical click on thumb", async () => {
-  const { slider } = await createSliderRenderable(currentRenderer, {
-    orientation: "vertical",
-    min: 0,
-    max: 100,
-    value: 50,
-    width: 2,
-    height: 20,
-  })
+test.each(["horizontal", "vertical"] as const)(
+  "SliderRenderable > Mouse interaction - %s thumb drag restores the value at the press position and reaches min",
+  async (orientation) => {
+    const vertical = orientation === "vertical"
+    const { slider } = await createSliderRenderable(currentRenderer, {
+      orientation,
+      min: 0,
+      max: 100,
+      value: 50,
+      width: vertical ? 2 : 20,
+      height: vertical ? 20 : 2,
+    })
+    const point = (cell: number): [number, number] => [vertical ? 0 : cell, vertical ? cell : 0]
 
-  currentMockMouse.click(0, 10)
+    await currentMockMouse.pressDown(...point(10))
+    await currentMockMouse.moveTo(...point(14))
+    expect(slider.value).toBeGreaterThan(50)
+    await currentMockMouse.moveTo(...point(10))
+    await currentMockMouse.release(...point(10))
+    expect(slider.value).toBeCloseTo(50, 10)
 
-  expect(slider.value).toBe(50)
-})
-
-// TODO: This seems flaky suddenly, because it now fails for all previous commits
-test.skip("SliderRenderable > Mouse interaction - vertical click on track", async () => {
-  const { slider } = await createSliderRenderable(currentRenderer, {
-    orientation: "vertical",
-    min: 0,
-    max: 100,
-    value: 50,
-    width: 2,
-    height: 20,
-  })
-
-  currentMockMouse.click(0, 15)
-
-  expect(slider.value).toBeCloseTo(75, 5)
-})
+    // Cell 9 is the thumb's first cell. It starts before the thumb's exact start, which is not on a half-cell edge.
+    await currentMockMouse.pressDown(...point(9))
+    await currentMockMouse.moveTo(...point(0))
+    expect(slider.value).toBe(0)
+  },
+)
 
 test.each(["horizontal", "vertical"] as const)(
   "SliderRenderable > Mouse interaction - %s captured drag updates before release",
@@ -262,7 +298,7 @@ test("SliderRenderable > Mouse interaction - click outside slider bounds", async
     top: 5,
   })
 
-  currentMockMouse.click(30, 5)
+  await currentMockMouse.click(30, 5)
 
   expect(slider.value).toBe(50)
 })
@@ -279,7 +315,7 @@ test("SliderRenderable > Mouse interaction - precision dragging with small viewp
 
   await currentMockMouse.pressDown(5, 0)
   expect(slider.value).toBeCloseTo(100, 10)
-  // A one-half-cell thumb travels 99 of the 100 half cells.
+  // A one-half-cell thumb travels 99 of the 100 half cells, so four half cells of pointer travel add 4/99 of the range.
   await currentMockMouse.moveTo(7, 0)
-  expect(slider.value).toBeCloseTo((14 / 99) * 1000, 10)
+  expect(slider.value).toBeCloseTo(100 + (4 / 99) * 1000, 10)
 })

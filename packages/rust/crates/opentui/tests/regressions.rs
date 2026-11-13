@@ -50,6 +50,8 @@ fn shift_selection_reuses_a_stale_anchor_after_backspace() {
     assert_eq!(input.value(), "abdef");
     app.press("shift+right");
     assert_eq!(input.selected_text(), "d");
+    // Delete removes the one selected character, not the one after it.
+    assert_eq!(input.perform(opentui::widget::EditorAction::Delete).value(), "abef");
 }
 
 // Expected: Shift+arrow extends an existing mouse selection from its anchor, as Core does.
@@ -166,22 +168,31 @@ fn set_timeout_with_a_huge_delay_panics() {
     app.advance(Duration::from_secs(1));
 }
 
-// Expected: follow stops after the user scrolls up, so a resize keeps the view at the top.
-// Actual: `CodeInner::resized` jumps to the bottom whenever follow is on.
+// Expected: follow stops after the user scrolls up, so new text or a resize keeps the view where the user left it,
+// and a view at the end stays there.
+// Actual: `CodeInner::resized`, and later `Code::set_code` (record 647), jumped to the bottom whenever follow is on.
 #[test]
-fn followed_code_jumps_to_the_bottom_on_resize_after_the_user_scrolled_up() {
-    let app = TestApp::new(12, 3);
-    let log = Code::new(&app).follow(true).grow(1.0);
-    app.root().add(&log);
-    app.render();
-    for line in 0..10 {
-        log.append(&format!("line {line}\n"));
+fn followed_code_jumps_to_the_bottom_after_the_user_scrolled_up() {
+    let changes: [fn(&TestApp, &Code); 4] = [
+        |_, log| drop(log.append("\nmore")),
+        |_, log| drop(log.set_code(log.code() + "\nmore")),
+        |_, log| drop(log.set_code(["other"; 12].join("\n"))),
+        |app, _| app.resize(14, 3),
+    ];
+    for (index, scrolled_up) in (0..changes.len()).flat_map(|index| [(index, false), (index, true)]) {
+        let app = TestApp::new(12, 3);
+        let log = Code::new(&app).follow(true).grow(1.0).set_code(["line"; 10].join("\n"));
+        app.root().add(&log);
+        app.render();
+        if scrolled_up {
+            log.scroll_to(3);
+        }
+        changes[index](&app, &log);
+        app.render();
+        let row = log.scroll_position();
+        let end = log.perform(ScrollAction::Bottom).scroll_position();
+        assert_eq!(row, if scrolled_up { 3 } else { end }, "change {index}, scrolled up: {scrolled_up}");
     }
-    app.render();
-    log.scroll_to(0);
-    assert_eq!(rows(&app)[0], "line 0");
-    app.resize(14, 3);
-    assert_eq!(rows(&app)[0], "line 0");
 }
 
 // Expected: Home scrolls to the top and keeps the horizontal position, as End does and as Core's vertical
@@ -407,6 +418,48 @@ fn extmark_tracking_measures_text_as_the_cursor_does() {
         assert_eq!(area.text(), format!("{lead}aXb"));
         let ranges = marks.map(|mark| area.extmark(mark).unwrap().range());
         assert_eq!(ranges, [width..width + 1, width + 2..width + 3], "{lead:?}");
+    }
+}
+
+// Expected: as in Core, an edit ends any selection, so the view follows the cursor to the line the edit moved it to.
+// Actual: a click left a zero-width selection that Enter, Backspace and the word deletes kept, and the view does not
+// follow the cursor while a selection exists: the cursor stayed above or below the one visible row.
+#[test]
+fn edits_after_a_click_leave_the_cursor_outside_the_view() {
+    use opentui::widget::EditorAction as A;
+    let [down, drag, up] =
+        [MouseEventKind::Down, MouseEventKind::Drag, MouseEventKind::Up].map(|kind| kind(MouseButton::Left));
+    let gestures: [&[_]; 3] =
+        [&[(down, 0), (up, 0)], &[(down, 0), (drag, 1), (drag, 0), (up, 0)], &[(down, 0), (drag, 1), (up, 1)]];
+    // The text after a click, or a drag back to where it started, at the start of "cd"; then after a drag over "cd".
+    let actions = [
+        (A::Newline, "ab\n\ncd\nef", "ab\n\n\nef"),
+        (A::Backspace, "abcd\nef", "ab\n\nef"),
+        (A::Delete, "ab\nd\nef", "ab\n\nef"),
+        (A::DeleteWordForward, "ab\nef", "ab\n\nef"),
+        (A::DeleteWordBackward, "abcd\nef", "ab\n\nef"),
+    ];
+    let cases = gestures.iter().enumerate().flat_map(|(index, events)| {
+        actions.map(|(action, unselected, selected)| ("ab\ncd\nef", *events, action, [unselected, selected][index / 2]))
+    });
+    // A line of only a combining mark has no cells; the click's empty selection must not delete it.
+    for (text, events, action, expected) in cases.chain([("\u{301}", gestures[0], A::Newline, "\n\u{301}")]) {
+        let app = TestApp::new(10, 1);
+        let area = Textarea::new(&app).set_text(text).grow(1.0);
+        app.root().add(&area);
+        area.focus();
+        app.render();
+        app.press("up");
+        app.render();
+        for &(kind, x) in events {
+            app.mouse(kind, x, 0);
+        }
+        area.perform(action);
+        app.render();
+        let at = format!("{text:?}, {events:?}, {action:?}");
+        assert_eq!(area.text(), expected, "{at}");
+        let (row, viewport) = (area.cursor().0, area.view().viewport().unwrap());
+        assert!((viewport.y..viewport.y + viewport.height).contains(&row), "{at}: row {row}, {viewport:?}");
     }
 }
 

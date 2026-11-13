@@ -233,6 +233,7 @@ typedef struct ot_handle {
 #define OT_LAYOUT_PUBLIC UINT32_C(0)
 #define OT_LAYOUT_YOGA UINT32_C(1)
 #define OT_LAYOUT_PAINT UINT32_C(2)
+#define OT_LAYOUT_CONTENT UINT32_C(3)
 
 /* Border masks are paint bits, not OT_EDGE_* layout selectors. */
 #define OT_BORDER_NONE UINT32_C(0)
@@ -1125,7 +1126,10 @@ ot_status ot_scene_get_text_byte_at(ot_context *, const ot_handle *node, int32_t
  * after a solve or after a change between frames that drops the list, until the next list
  * paints it, reads its latest solved geometry composed with current translations and
  * offsets; zeros if Yoga has not laid it out since it was created or moved. While a host
- * request is pending, such a node's first read holds.
+ * request is pending, such a node's first read holds. OT_LAYOUT_CONTENT is PAINT without a
+ * text node's padding, its content edges rounded as Yoga rounds the node's own edges (no
+ * padding reads the box): the cells its text view fills, which paint, wrapping, text byte
+ * hits, selection and body draws use. Other nodes read PAINT.
  * These reads do not run layout. Other selectors reject without changing output.
  * A scroll node's children report YOGA values local to its content node, and their
  * screen_x/y compose through the viewport and content origins and the offset. */
@@ -3483,7 +3487,8 @@ ot_status ot_session_pump(
  * at least OT_INPUT_EVENTS_MIN and payload_capacity at least
  * OT_INPUT_PAYLOAD_BYTES_MIN; the call consumes input until either runs low and
  * reports consumed. A bracketed paste arrives as one or more PASTE records from
- * START to END. Records and payload are borrowed for the call and never retained.
+ * START to END; a start marker cut by the timeout waits for a feed that begins with its
+ * rest and more bytes. Records and payload are borrowed for the call and never retained.
  * bytes, records, payload, and out_drain must not overlap.
  * Accepted in any open session state; closing, closed, failed, and cancelled
  * sessions reject. A rejected call leaves out_drain, the records, and parser
@@ -3519,9 +3524,11 @@ ot_status ot_session_input_feed(
  * cut before it matches a reply, its introducer is typed. KEEP_REPLY also keeps such a CSI.
  * ESCAPE_PREFIX, which implies KITTY_KEYBOARD, means the terminal confirmed
  * Kitty disambiguate or report-all keys, so no unit has a deadline. A raw ESC and the byte after it in the same
- * feed are Alt and that key as without the flag; a raw ESC that ends a feed is the Escape key at once, and a
- * sequence that begins the next feed is kept whole (a CSI then is never a key). With SENTINEL, a lone
- * introducer after that Escape waits as after a timeout, and is typed once SENTINEL is cleared.
+ * feed are Alt and that key as without the flag; a raw ESC that ends a feed is the Escape key at once. If the next
+ * feed, however late, begins with [ and a byte that begins a CSI such a terminal sends (a digit, ?, >, <, or one of
+ * ABCDEFHIOPQS), the CSI is kept whole and is never a key; _G begins a Kitty graphics reply, kept whole once that
+ * feed matches its key= prefix and typed otherwise; other bytes are typed. With SENTINEL, an OSC, DCS, or APC
+ * introducer or a lone [ after that Escape is recovered as after a timeout until SENTINEL is cleared.
  * A session with a renderer sets it itself once the terminal answers the CSI ? u
  * query that follows its current push (only with OT_TERMINAL_REPLY_SENTINEL).
  * Changing flags emits nothing; the next feed resolves a unit that may no longer wait. */

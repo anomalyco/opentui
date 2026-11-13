@@ -16,6 +16,8 @@
     ["an inserted emoji with one unit of room", "hell", 5, 0, "😀", "hell", "529"],
     ["an inserted emoji with two units of room", "hel", 5, 0, "😀", "hel😀"],
     ["a selected emoji frees two units", "ab😀", 4, 1, "xyz", "abxy", "529"],
+    ["a two-cell CJK selection frees one unit", "a界", 2, 1, "xy", "ax"],
+    ["a one-cell combining sequence frees two units", "ae\u0301", 3, 1, "xyz", "axy"],
     ["newlines go before the cut", "a\nbc", 3, 0, "", "abc", "529"]
   ]
 }

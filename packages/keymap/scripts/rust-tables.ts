@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 import process from "node:process"
 import { basenameToFiletype, defaultTextareaKeyBindings, extensionToFiletype } from "@opentui/core"
-import { kittyKeyMap } from "../../core/src/lib/parse.keypress-kitty.js"
+import { kittyKeyMap } from "../../core/src/lib/kitty-keys.js"
 import {
   editBufferCommandDescriptions,
   editBufferCommandNames,
