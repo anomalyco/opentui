@@ -750,17 +750,18 @@ pub(crate) mod tests {
             let twin = Code::new(&fresh);
             app.root().add(&code);
             fresh.root().add(&twin);
+            // The theme the reference takes its styles and defaults from, never through the view under test.
+            let theme = RefCell::new(themes[0].clone());
             let mut compare = |settled: bool| {
                 let got = if settled { settle(&app, std::slice::from_ref(&code)) } else { app.render() };
                 let source = code.code();
                 let filetype = code.0.filetype.borrow().clone();
                 let start = code.0.highlighted.get().unwrap_or(0);
-                if settled && matches!(filetype.as_deref(), Some("rust" | "markdown")) {
+                if settled && matches!(filetype.as_deref(), Some("rust" | "markdown" | "c4-crlf")) {
                     assert_eq!(start, source.len(), "seed {seed}: settled with a plain tail");
                 }
-                let ranges = filetype.and_then(|filetype| {
-                    syntax::highlight_ranges(&source[..start], &filetype, &code.0.syntax.borrow())
-                });
+                let ranges = filetype
+                    .and_then(|filetype| syntax::highlight_ranges(&source[..start], &filetype, &theme.borrow()));
                 let mut spans: Vec<Span<'static>> = (ranges.unwrap_or_default().into_iter())
                     .map(|(range, style)| Span::styled(source[range].to_owned(), style))
                     .collect();
@@ -771,15 +772,26 @@ pub(crate) mod tests {
                 assert!(differ.is_none(), "seed {seed} cell {differ:?}: {source:?} from {start}");
                 compared += 1;
             };
+            if seed == 1 {
+                // A registered capture that ends on the CR of a CRLF: its piece is that CR alone, empty in the
+                // buffer's bytes (bigboi-5).
+                let query = "(line_comment) @comment \"//\" @punctuation";
+                syntax::register("c4-crlf", syntax::Grammar::new(tree_sitter_rust::LANGUAGE, query)).unwrap();
+                code.filetype("c4-crlf").set_code("//\r\nlet x = 42;");
+                compare(true);
+            }
             for _ in 0..40 {
                 match next(12) {
                     0..=4 => drop(code.append(PIECES[next(PIECES.len())])),
                     5 => drop(code.set_code((0..next(8)).map(|_| PIECES[next(PIECES.len())]).collect::<String>())),
                     6 => drop(code.filetype([Some("rust"), Some("markdown"), Some("cobol"), None][next(4)])),
                     7 => {
-                        let theme = themes[next(themes.len())].clone();
-                        code.syntax_theme(theme.clone());
-                        twin.syntax_theme(theme);
+                        let next = themes[next(themes.len())].clone();
+                        let defaults =
+                            Style::new().fg(fresh.theme().foreground).patch(next.get("default").unwrap_or_default());
+                        twin.buffer().set_defaults(defaults).unwrap();
+                        code.syntax_theme(next.clone());
+                        *theme.borrow_mut() = next;
                     }
                     8 => {
                         // Another caller writes the buffer: the next append, or the running highlight's landing,
