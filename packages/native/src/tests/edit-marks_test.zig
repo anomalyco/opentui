@@ -370,6 +370,42 @@ test "edit marks follow edits, undo and redo as the reference model does" {
     defer pools.deinit();
     var harness: Harness = .{ .pools = &pools };
     try model.check(Harness, &harness, .{ .seeds = 256, .steps = 64 });
+    // The design's invariant-3 sequence (x, xA, xAB, undo, clear, undo, redo): the redo node that a
+    // history-less clear left behind keeps the marks of its own root.
+    const trace = [_]Op{
+        .{ .insert = .{ .at = 0, .text = 0 } },
+        .{ .add = .{ .at = 0, .len = 1, .atomic = false } },
+        .{ .insert = .{ .at = 1, .text = 1 } },
+        .undo,
+        .clear,
+        .undo,
+        .redo,
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectEqual(null, try harness.run(arena.allocator(), &trace));
+}
+
+// Mark operations that no history holds edit the live set in place: N adds keep O(N) bytes, and
+// adding and clearing the same marks again keeps none more.
+test "edit marks: mark operations without history keep linear memory" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode, null);
+    defer eb.deinit();
+    try eb.setText("abcdefghij");
+    const base = eb.tb.arena.queryCapacity();
+    const count = 2000;
+    for (0..count) |_| _ = try eb.addMark(.{ .start = 0, .end = 1 });
+    // Doubling buffers plus the arena's own growth: 270 KB here, where a copy per add took 48 MB.
+    try std.testing.expect(eb.tb.arena.queryCapacity() - base <= 16 * count * @sizeOf(Mark));
+    eb.clearMarks();
+    const settled = eb.tb.arena.queryCapacity();
+    for (0..16) |_| {
+        for (0..256) |_| _ = try eb.addMark(.{ .start = 1, .end = 2 });
+        eb.clearMarks();
+    }
+    try std.testing.expectEqual(settled, eb.tb.arena.queryCapacity());
 }
 
 // Invariant 6: styled marks paint and report what one legacy range highlight per mark, added in

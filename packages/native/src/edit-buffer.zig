@@ -611,7 +611,7 @@ pub const EditBuffer = struct {
 
     fn editSplice(self: *const EditBuffer, row: u32, col: u32, offset: u32) EditSplice {
         const marks = self.tb.rope().aux;
-        if (self.tb.layers.isEmpty() and marks == 0) return .{ .active = false };
+        if (self.tb.layers.isEmpty() and self.tb.marks().len == 0) return .{ .active = false };
         // At a line start an edit goes before zero-width text (`insertBias`, `replaceByWeight`);
         // elsewhere after it, where the weight seek lands.
         const start_byte = if (col == 0) self.tb.lineStartByte(row) else self.tb.byteOffsetAtWeight(offset);
@@ -963,7 +963,7 @@ pub const EditBuffer = struct {
             .atomic = options.atomic,
             .style_value = options.style_value != null,
         };
-        self.setMarks(try edit_marks.add(rope.allocator, rope.aux, mark));
+        self.setMarks(try edit_marks.add(rope.allocator, rope.aux, rope.aux_owned, mark));
         self.next_mark_id += 1;
         return mark.id;
     }
@@ -971,17 +971,20 @@ pub const EditBuffer = struct {
     /// Removes mark `id`; returns whether there was one.
     pub fn removeMark(self: *EditBuffer, id: u32) !bool {
         const rope = self.tb.rope();
-        self.setMarks((try edit_marks.remove(rope.allocator, rope.aux, id)) orelse return false);
+        self.setMarks((try edit_marks.remove(rope.allocator, rope.aux, rope.aux_owned, id)) orelse return false);
         return true;
     }
 
     /// Removes every mark; undo can restore them with the text they belong to.
     pub fn clearMarks(self: *EditBuffer) void {
-        if (self.tb.rope().aux != 0) self.setMarks(0);
+        const rope = self.tb.rope();
+        if (self.tb.marks().len > 0) self.setMarks(edit_marks.clear(rope.aux, rope.aux_owned));
     }
 
+    /// A mark operation's version is the buffer's alone until history stores or loads one.
     fn setMarks(self: *EditBuffer, marks: usize) void {
         self.tb.rope().aux = marks;
+        self.tb.rope().aux_owned = true;
         self.tb.assertMarks();
         self.tb.span_generation += 1;
     }

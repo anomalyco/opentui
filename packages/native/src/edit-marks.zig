@@ -57,7 +57,8 @@ pub const Mark = struct {
     }
 };
 
-const Version = struct { marks: []const Mark };
+/// `marks` is the set; `buffer` holds it with room to grow when no history holds the version.
+const Version = struct { marks: []Mark, buffer: []Mark };
 
 /// The marks of a rope's `aux`: 0 is the empty set.
 pub fn live(aux: usize) []const Mark {
@@ -71,7 +72,7 @@ fn publish(allocator: Allocator, marks: []Mark) Allocator.Error!usize {
     if (marks.len == 0) return 0;
     std.mem.sort(Mark, marks, {}, lessThan);
     const version = try allocator.create(Version);
-    version.* = .{ .marks = marks };
+    version.* = .{ .marks = marks, .buffer = marks };
     return @intFromPtr(version);
 }
 
@@ -96,26 +97,57 @@ pub fn splice(allocator: Allocator, aux: usize, start: u32, deleted: u32, insert
     return try publish(allocator, next[0..count]);
 }
 
-/// The set with `mark` added.
-pub fn add(allocator: Allocator, aux: usize, mark: Mark) Allocator.Error!usize {
+/// A version that a mark operation may change: `aux` itself when `owned` (no history holds it),
+/// else a copy. Either has room for one more mark, doubling, so N operations cost O(N) bytes.
+fn writable(allocator: Allocator, aux: usize, owned: bool) Allocator.Error!*Version {
     const marks = live(aux);
-    std.debug.assert(marks.len < count_max);
-    const next = try allocator.alloc(Mark, marks.len + 1);
-    @memcpy(next[0..marks.len], marks);
-    next[marks.len] = mark;
-    return publish(allocator, next);
+    if (owned and aux != 0) {
+        const version: *Version = @ptrFromInt(aux);
+        if (marks.len < version.buffer.len) return version;
+        const buffer = try allocator.alloc(Mark, 2 * version.buffer.len);
+        @memcpy(buffer[0..marks.len], marks);
+        version.* = .{ .marks = buffer[0..marks.len], .buffer = buffer };
+        return version;
+    }
+    const version = try allocator.create(Version);
+    const buffer = try allocator.alloc(Mark, @max(4, 2 * marks.len));
+    @memcpy(buffer[0..marks.len], marks);
+    version.* = .{ .marks = buffer[0..marks.len], .buffer = buffer };
+    return version;
 }
 
-/// The set without mark `id`, or null when it has no such mark.
-pub fn remove(allocator: Allocator, aux: usize, id: u32) Allocator.Error!?usize {
-    const marks = live(aux);
-    const index = for (marks, 0..) |mark, index| {
+/// The set with `mark` added, in place when `owned`.
+pub fn add(allocator: Allocator, aux: usize, owned: bool, mark: Mark) Allocator.Error!usize {
+    std.debug.assert(live(aux).len < count_max);
+    const version = try writable(allocator, aux, owned);
+    const index = std.sort.upperBound(Mark, version.marks, mark, struct {
+        fn order(context: Mark, item: Mark) std.math.Order {
+            return if (lessThan({}, context, item)) .lt else .gt;
+        }
+    }.order);
+    version.marks = version.buffer[0 .. version.marks.len + 1];
+    std.mem.copyBackwards(Mark, version.marks[index + 1 ..], version.marks[index .. version.marks.len - 1]);
+    version.marks[index] = mark;
+    return @intFromPtr(version);
+}
+
+/// The set without mark `id`, in place when `owned`, or null when it has no such mark.
+pub fn remove(allocator: Allocator, aux: usize, owned: bool, id: u32) Allocator.Error!?usize {
+    const index = for (live(aux), 0..) |mark, index| {
         if (mark.id == id) break index;
     } else return null;
-    const next = try allocator.alloc(Mark, marks.len - 1);
-    @memcpy(next[0..index], marks[0..index]);
-    @memcpy(next[index..], marks[index + 1 ..]);
-    return try publish(allocator, next);
+    const version = try writable(allocator, aux, owned);
+    std.mem.copyForwards(Mark, version.marks[index..], version.marks[index + 1 ..]);
+    version.marks.len -= 1;
+    return @intFromPtr(version);
+}
+
+/// The empty set: `aux` emptied in place when `owned`, so adding marks again reuses its room.
+pub fn clear(aux: usize, owned: bool) usize {
+    if (!owned or aux == 0) return 0;
+    const version: *Version = @ptrFromInt(aux);
+    version.marks.len = 0;
+    return aux;
 }
 
 /// Every mark lies in `[0, byte_count]` with ordered edges, sorted by start then id, and each id

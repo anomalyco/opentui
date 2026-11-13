@@ -425,6 +425,9 @@ pub fn Rope(comptime T: type) type {
         /// Opaque owner state paired with `root`: history stores it with each root and undo and
         /// redo restore it with the root (an edit buffer's marks). A new rope starts at 0.
         aux: usize = 0,
+        /// No history node holds `aux`, so its owner may change it in place. Every history move
+        /// that stores or loads an `aux` clears it.
+        aux_owned: bool = false,
         metrics_generation: u64 = 0,
         allocator: Allocator,
         empty_leaf: *const Node,
@@ -1154,6 +1157,7 @@ pub fn Rope(comptime T: type) type {
             self.push_undo(undo_node);
             self.curr_history = null;
             self.redo_history = null;
+            self.aux_owned = false;
         }
 
         fn create_undo_node(self: *const Self, root: *const Node, meta_: []const u8) !*UndoNode {
@@ -1219,6 +1223,7 @@ pub fn Rope(comptime T: type) type {
             self.curr_history = h;
             self.root = h.root;
             self.aux = h.aux;
+            self.aux_owned = false;
             self.metrics_generation = h.metrics_generation;
             self.push_redo(r);
             if (self.undo_depth > 0) self.undo_depth -= 1;
@@ -1234,6 +1239,7 @@ pub fn Rope(comptime T: type) type {
             self.curr_history = h;
             self.root = h.root;
             self.aux = h.aux;
+            self.aux_owned = false;
             self.metrics_generation = h.metrics_generation;
             self.push_undo(u);
             return h.meta;
