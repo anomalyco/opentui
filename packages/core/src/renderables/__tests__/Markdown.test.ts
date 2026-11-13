@@ -4182,11 +4182,18 @@ const fenceLine = (i: number) => `  const value${i} = compute(input.items[${i}],
 
 // Record 312: each byte of a streamed fence reaches the worker and native about once, so the work grows with the fence,
 // not its square (on the base, 4 KB sent 74x its size to the worker). Each reply queries the whole tree (C4 rule (b)).
-test.each([1024, 4096])("a %i-byte streamed fence sends work linear in its size", async (size) => {
+// A theme from another renderer's Context, which Markdown supports through a copy, costs the same.
+test.each([
+  [1024, false],
+  [4096, false],
+  [1024, true],
+])("a %i-byte streamed fence sends work linear in its size (theme from another Context: %p)", async (size, foreign) => {
   let body = ""
   for (let i = 0; body.length < size; i++) body += fenceLine(i)
   const doc = "```typescript\n" + body + "```\n"
-  const md = createMarkdownRenderable({ content: "", syntaxStyle, streaming: true })
+  const other = foreign ? await createTestRenderer({ width: 20, height: 5 }) : undefined
+  const style = other ? SyntaxStyle.fromStyles(syntaxStyle.getAllStyles(), other.renderer.nativeScene) : syntaxStyle
+  const md = createMarkdownRenderable({ content: "", syntaxStyle: style, streaming: true })
   renderer.root.add(md)
   const { counts, restore } = countStreamWork(markdownTreeSitterClient)
   try {
@@ -4216,6 +4223,8 @@ test.each([1024, 4096])("a %i-byte streamed fence sends work linear in its size"
     expect(counts.disposes).toBe(2)
   } finally {
     restore()
+    md.destroyRecursively()
+    other?.renderer.destroy()
   }
 })
 

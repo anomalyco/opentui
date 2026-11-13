@@ -1036,7 +1036,8 @@ export class MarkdownRenderable extends Renderable {
     // Display math without a renderer shows its TeX as plain code text.
     code.filetype =
       (block.flags & md.OT_MD_BLOCK_MATH) !== 0 ? undefined : infoStringToFiletype(this.view(index).lang ?? "")
-    code.syntaxStyle = this._syntaxStyle
+    // The style the doc binds, so a theme from another Context binds to the fence's text too.
+    code.syntaxStyle = this._styleCopy?.source === this._syntaxStyle ? this._styleCopy.copy : this._syntaxStyle
     code.fg = this._fg
     code.bg = this._bg
     code.conceal = this._concealCode
