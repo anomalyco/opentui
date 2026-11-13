@@ -7,7 +7,7 @@ use crate::layout::{Edge, Gutter, LayoutProperty};
 use crate::native::{
     MarkdownBlock, MarkdownDoc, MarkdownLeaf, MarkdownOptions, MarkdownResult, NodeKind, SyntaxStyle, WrapMode,
 };
-use crate::style::{Attributes, BorderStyle, Color, Sides, Span, Style};
+use crate::style::{Alignment, Attributes, BorderStyle, Color, Sides, Span, Style};
 use crate::syntax::{SyntaxTheme, filetype_for_info_string};
 use crate::sys;
 use crate::theme::Theme;
@@ -1142,9 +1142,9 @@ impl Markdown {
     }
 
     /// Fills a table from its rows and cells: a header row in the heading color, then the body, each row as wide as
-    /// the header. Like Core's, cells do not follow column alignment.
+    /// the header, each column aligned as its delimiter row says.
     fn fill_table(&self, app: &App, doc: &MarkdownDoc, table: u32) {
-        let (widget, columns, rows) = {
+        let (widget, columns, rows, alignments) = {
             let blocks = self.0.blocks.borrow();
             let Some(Some(Rendered::Table(widget))) = blocks.get(table as usize).map(|shown| shown.rendered.clone())
             else {
@@ -1152,18 +1152,31 @@ impl Markdown {
             };
             let columns = blocks[table as usize].block.number as usize;
             let mut rows: Vec<(bool, Vec<u32>)> = Vec::new();
+            let mut alignments = Vec::new();
             for shown in &blocks[table as usize + 1..] {
                 match (shown.block.kind, shown.block.parent) {
                     (sys::OT_MD_TABLE_ROW, Some(parent)) if parent == table => {
                         rows.push((shown.block.has(sys::OT_MD_BLOCK_HEADER), Vec::new()));
                     }
                     (sys::OT_MD_TABLE_CELL, Some(_)) => {
+                        // The header row has every column.
+                        if rows.len() == 1 {
+                            let left = shown.block.has(sys::OT_MD_BLOCK_ALIGN_LEFT);
+                            let right = shown.block.has(sys::OT_MD_BLOCK_ALIGN_RIGHT);
+                            alignments.push(if !right {
+                                Alignment::Left
+                            } else if left {
+                                Alignment::Center
+                            } else {
+                                Alignment::Right
+                            });
+                        }
                         rows.last_mut().expect("a cell follows its row").1.push(shown.block.index)
                     }
                     _ => break,
                 }
             }
-            (widget, columns, rows)
+            (widget, columns, rows, alignments)
         };
         let header = self.0.styles.get().table_header;
         let conceal = self.0.options.borrow().conceal;
@@ -1190,7 +1203,7 @@ impl Markdown {
                 row
             })
             .collect();
-        widget.set_content(content);
+        widget.column_alignments(alignments).set_content(content);
     }
 
     /// A list's gap and its items' markers: numbers align on their right, and the list is loose when a blank line

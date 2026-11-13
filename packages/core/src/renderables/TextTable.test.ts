@@ -400,6 +400,23 @@ describe("TextTableRenderable", () => {
     expect(borderXs).toEqual(expected)
   })
 
+  test("aligns each column's lines and follows a columnAlignments change", async () => {
+    const table = new TextTableRenderable(renderer, {
+      columnWidthMode: "content",
+      columnAlignments: ["right", "center"],
+      content: [
+        [cell("Key"), cell("Value")],
+        [cell("a"), cell("b")],
+      ],
+    })
+    renderer.root.add(table)
+    await renderOnce()
+    expect(captureFrame().split("\n")[3]!.trimEnd()).toBe("│  a│  b  │")
+    table.columnAlignments = ["left"]
+    await renderOnce()
+    expect(captureFrame().split("\n")[3]!.trimEnd()).toBe("│a  │b    │")
+  })
+
   test("fills available width in no-wrap mode when columnWidthMode is full", async () => {
     const table = new TextTableRenderable(renderer, {
       left: 0,

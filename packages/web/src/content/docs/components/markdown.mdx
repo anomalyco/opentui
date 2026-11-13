@@ -112,7 +112,7 @@ md.content = "# Title\n\nPara 1\n\nPara 2"
 
 ## Markdown tables
 
-Use `tableOptions` to set the style, sizing, wrapping, borders, and selection of Markdown tables.
+Use `tableOptions` to set the style, sizing, wrapping, borders, and selection of Markdown tables. Each column aligns its cells, the header included, as the delimiter row says: `:---` or `---` left, `:---:` centered, `---:` right.
 
 ```typescript
 const markdown = new MarkdownRenderable(renderer, {

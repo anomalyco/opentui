@@ -57,7 +57,7 @@ pub const Flags = packed struct(u16) {
 /// One block, 32 bytes. `small` holds a fence's or math block's opener indent and an HTML
 /// block's type; `payload` is per kind: heading [level, -], fence [info start, info end], list
 /// [start number, marker byte], item [content indent, -], table [column count, delimiter row
-/// start], table cell [column, -].
+/// start], table cell [column, its `Alignment`].
 pub const Block = extern struct {
     parent_index: u32,
     kind: Kind,
@@ -243,12 +243,14 @@ const Extension = struct {
     };
 
     /// A pending table row's scan: the cell still open at the line end (or where the next one
-    /// starts), its column, a trailing backslash, and whether every column is taken.
+    /// starts), its column and the delimiter row's cell of the next one, a trailing backslash,
+    /// and whether every column is taken.
     const Row = struct {
         table: u32 = none,
         row: u32 = none,
         columns: u32 = 0,
         column: u32 = 0,
+        delimiter: u32 = 0,
         open_cell: u32 = none,
         cell_start: u32 = 0,
         full: bool = false,
@@ -1824,7 +1826,8 @@ pub const Doc = struct {
         var cell_start = start;
         if (cell_start < line.end and s[cell_start] == '|') cell_start += 1;
         // The same scan grows a pending row (extendProvisional); it starts from the row's state.
-        var r: Extension.Row = .{ .table = t, .row = row, .columns = self.blocks.items[t].payload[0], .cell_start = cell_start };
+        const columns, const delimiter = self.blocks.items[t].payload;
+        var r: Extension.Row = .{ .table = t, .row = row, .columns = columns, .delimiter = delimiter + @intFromBool(s[delimiter] == '|'), .cell_start = cell_start };
         try self.scanRow(&r, cell_start, line.end);
         if (self.provisional) {
             self.extension.row = r;
@@ -2144,6 +2147,7 @@ pub const Doc = struct {
         if (self.blocks.items.len >= self.options.limits.block_count) return error.BlockLimit;
         const index: u32 = @intCast(self.blocks.items.len);
         if (self.blocks.items.len == self.blocks.capacity) self.counters.capacity_growth_count += 1;
+        const alignment, const next = delimiterCell(self.source.items, r.delimiter);
         try self.blocks.append(self.allocator, .{
             .parent_index = r.row,
             .kind = .table_cell,
@@ -2152,9 +2156,10 @@ pub const Doc = struct {
             .source_end_byte = end,
             .content_start_byte = start,
             .content_end_byte = end,
-            .payload = .{ r.column, 0 },
+            .payload = .{ r.column, @backingInt(alignment) },
         });
         r.column += 1;
+        r.delimiter = next;
         return index;
     }
 
@@ -3528,34 +3533,6 @@ pub const Doc = struct {
         return inline_parser.parse(arena, try self.leafSubject(arena, index), self.references(), .{ .math = self.options.math });
     }
 
-    /// A table column's alignment, from the table's delimiter row (`:-`, `-:`, `:-:`).
-    pub fn columnAlignment(self: *const Doc, table_index: u32, column: u32) Alignment {
-        const table = self.blocks.items[table_index];
-        assert(table.kind == .table);
-        const s = self.source.items;
-        var i = table.payload[1];
-        const end = lineContentEnd(s, i);
-        var c: u32 = 0;
-        while (i < end and isSpaceOrTab(s[i])) i += 1;
-        if (i < end and s[i] == '|') i += 1;
-        while (i < end) {
-            while (i < end and isSpaceOrTab(s[i])) i += 1;
-            const left = i < end and s[i] == ':';
-            while (i < end and s[i] != '|') i += 1;
-            var j = i;
-            while (j > 0 and isSpaceOrTab(s[j - 1])) j -= 1;
-            const right = s[j - 1] == ':';
-            if (c == column) {
-                if (left and right) return .center;
-                if (left) return .left;
-                return if (right) .right else .none;
-            }
-            c += 1;
-            if (i < end) i += 1;
-        }
-        return .none;
-    }
-
     pub fn references(self: *const Doc) inline_parser.References {
         return .{ .context = self, .lookup_fn = lookupReference };
     }
@@ -4663,6 +4640,23 @@ fn delimiterRow(s: []const u8, at: u32, end: u32) ?u32 {
     // A single cell needs a pipe after it (cmark-gfm requires at least one marker-pipe pair).
     if (cells == 1 and pipes == 1 and s[at] == '|' and !std.mem.endsWith(u8, std.mem.trimEnd(u8, s[at..end], " \t"), "|")) return null;
     return cells;
+}
+
+/// The alignment of a delimiter row's cell from `at` (after its pipe), and where the next cell
+/// starts. delimiterRow checked the row, and a table has no more columns than it has cells.
+fn delimiterCell(s: []const u8, at: u32) struct { Alignment, u32 } {
+    var i = at;
+    while (isSpaceOrTab(s[i])) i += 1;
+    assert(s[i] == ':' or s[i] == '-');
+    const left = s[i] == ':';
+    i += @intFromBool(left);
+    while (i < s.len and s[i] == '-') i += 1;
+    const right = i < s.len and s[i] == ':';
+    i += @intFromBool(right);
+    while (i < s.len and isSpaceOrTab(s[i])) i += 1;
+    i += @intFromBool(i < s.len and s[i] == '|');
+    const alignment: Alignment = if (left and right) .center else if (left) .left else if (right) .right else .none;
+    return .{ alignment, i };
 }
 
 /// Cells of a header row (pipes at the ends do not start cells; `\|` is not a separator).
