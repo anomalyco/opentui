@@ -2,7 +2,21 @@ import { test } from "bun:test"
 import assert from "node:assert/strict"
 import { CliRenderEvents } from "@opentui/core"
 import { createTestRenderer, ManualClock } from "@opentui/core/testing"
+import { PerspectiveCamera } from "three"
+import { ThreeRenderable } from "../ThreeRenderable.js"
 import { SuperSampleType, ThreeCliRenderer } from "../WGPURenderer.js"
+
+test("ThreeRenderable keeps the layout aspect ratio separate from the camera's", async () => {
+  await using setup = await createTestRenderer({ clock: new ManualClock() })
+  const camera = new PerspectiveCamera()
+  const view = new ThreeRenderable(setup.renderer, { width: 12, height: 3, aspectRatio: 3, camera })
+  setup.renderer.root.add(view)
+  assert.equal(view.getAspectRatio(), 3)
+  assert.equal(view.aspectRatio, 2)
+  assert.equal(camera.aspect, 2)
+  view.aspectRatio = null
+  assert.ok(Number.isNaN(view.getAspectRatio()))
+})
 
 test("ThreeCliRenderer destroy releases its subscriptions while the renderer stays alive", async () => {
   const { renderer } = await createTestRenderer({ width: 16, height: 8, clock: new ManualClock() })
