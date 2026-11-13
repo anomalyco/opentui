@@ -424,6 +424,7 @@ export class TextareaRenderable extends EditBufferRenderable {
     this._keyBindingsMap = buildKeyBindingsMap(mergedBindings, this._keyAliasMap)
   }
 
+  /** Mark endpoints count document display cells, including one per newline. */
   public get extmarks(): ExtmarksController {
     return this.editorView.extmarks
   }

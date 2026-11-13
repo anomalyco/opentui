@@ -512,6 +512,61 @@ describe("EditBuffer", () => {
       expect(offset).toBe(2)
       expect(buffer.getTextRange(0, offset).length).toBe(index)
     })
+
+    it.each(["unicode", "unicode-wide", "wcwidth"] as const)("converts string indices and cells under %s", (method) => {
+      const editor = EditBuffer.create(method, resourceContext)
+      editor.setTabWidth(4)
+      const units = [
+        ["a", 1],
+        ["\t", 4],
+        ["界", 2],
+        ["👩‍💻", method === "wcwidth" ? 4 : 2],
+        ["e\u0301", 1],
+        ["\n", 1],
+        ["\n", 1],
+        ["\f", 2],
+      ] as const
+      editor.setText(
+        units
+          .map(([unit]) => unit)
+          .join("")
+          .replaceAll("\n", "\r\n"),
+      )
+      let index = 0
+      let offset = 0
+      for (const [unit, width] of units) {
+        for (let i = 0; i < unit.length; i++) expect(editor.stringIndexToCellOffset(index + i)).toBe(offset)
+        for (let c = 0; c < width; c++) expect(editor.cellOffsetToStringIndex(offset + c)).toBe(index)
+        expect(editor.cellOffsetToStringIndex(editor.stringIndexToCellOffset(index))).toBe(index)
+        index += unit.length
+        offset += width
+      }
+      expect(editor.stringIndexToCellOffset(index + 1)).toBe(offset)
+      expect(editor.cellOffsetToStringIndex(offset)).toBe(index)
+      editor.setText("\u0301界") // Two string boundaries share cell 0; prefer the later boundary.
+      expect(editor.cellOffsetToStringIndex(0)).toBe(1)
+      expect(editor.stringIndexToCellOffset(1)).toBe(0)
+      for (const text of ["", "ascii", "plain\nASCII", "\u0301"]) {
+        editor.setText(text)
+        expect(editor.cellOffsetToStringIndex(0xffffffff)).toBe(text.length)
+        expect(editor.stringIndexToCellOffset(0xffffffff)).toBe(editor.measureText(text))
+      }
+      for (const invalid of [-1, 0.5, NaN, 2 ** 32]) {
+        expect(() => editor.stringIndexToCellOffset(invalid)).toThrow(RangeError)
+        expect(() => editor.cellOffsetToStringIndex(invalid)).toThrow(RangeError)
+      }
+      editor.destroy()
+    })
+
+    it.each([0, 1, 2, 3, 4])("deletes the character at string index %i in a tabbed line", (index) => {
+      const text = "ab\tcd"
+      buffer.setText(text)
+      const pos = (i: number) => buffer.offsetToPosition(buffer.stringIndexToCellOffset(i))!
+      const start = pos(index)
+      const end = pos(index + 1)
+      buffer.deleteRange(start.row, start.col, end.row, end.col)
+      expect(buffer.getText()).toBe(text.slice(0, index) + text.slice(index + 1))
+    })
   })
 
   describe("getEOL navigation", () => {
