@@ -29,6 +29,8 @@ fn encode_style(style: Style) -> sys::ot_editor_style {
 thread_local! {
     /// `ot_edit_buffer_get_text` calls on this thread, for tests that count the work of an edit.
     pub(crate) static TEXT_READS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// `ot_edit_buffer_get_marks` calls on this thread.
+    pub(crate) static MARK_READS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 /// A style that supplies exactly its own attributes, as a registered name or a mark's style value.
@@ -452,6 +454,8 @@ impl EditBuffer {
         let (context, handle) = self.raw();
         let mut length = 0;
         let any = sys::OT_EDIT_MARK_ANY_KIND;
+        #[cfg(test)]
+        MARK_READS.with(|reads| reads.set(reads.get() + 1));
         check("ot_edit_buffer_get_marks", unsafe {
             sys::ot_edit_buffer_get_marks(context, handle, 0, any, std::ptr::null_mut(), 0, &mut length)
         })?;
@@ -459,6 +463,8 @@ impl EditBuffer {
             return Ok(Vec::new());
         }
         let mut marks = vec![sys::ot_edit_mark::default(); length as usize];
+        #[cfg(test)]
+        MARK_READS.with(|reads| reads.set(reads.get() + 1));
         check("ot_edit_buffer_get_marks", unsafe {
             sys::ot_edit_buffer_get_marks(context, handle, 0, any, marks.as_mut_ptr(), length, &mut length)
         })?;

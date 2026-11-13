@@ -74,8 +74,8 @@ macro_rules! extmark_methods {
     () => {
         /// Marks a range of the text so it moves with edits: a styled decoration, or with
         /// [`ExtmarkOptions::atomic`], a token the cursor and deletions treat as one unit, such as a mention. Offsets
-        /// count as the cursor's do; see [`Extmark`]. Replacing the text with `set_text` or `set_value` removes all
-        /// marks, and undoing an edit does not bring back marks it removed.
+        /// count as the cursor's do and past the text mean its end; see [`Extmark`]. Replacing the text with `set_text`
+        /// or `set_value` removes all marks; undoing an edit brings back the marks it removed.
         pub fn add_extmark(&self, range: std::ops::Range<u32>, options: ExtmarkOptions) -> ExtmarkId {
             self.0.add_extmark(range, options)
         }
@@ -299,6 +299,8 @@ pub(crate) struct EditorCore {
     extmarks: RefCell<Extmarks>,
     /// Set while an edit is tracked for extmarks, so nested edits are counted once.
     tracking: Cell<bool>,
+    /// A press left the cursor on its cell, maybe inside an atomic mark, until a rule moves it out.
+    held: Cell<bool>,
     cursor_options: Cell<EditorOptions>,
     pub on_cursor: Callbacks<(u32, u32)>,
     filetype: RefCell<Option<String>>,
@@ -344,6 +346,7 @@ impl EditorCore {
             keymap: RefCell::new(if single_line { input_keymap() } else { textarea_keymap() }),
             extmarks: RefCell::new(Extmarks::default()),
             tracking: Cell::new(false),
+            held: Cell::new(false),
             cursor_options: Cell::new(EditorOptions { color: theme.cursor, ..Default::default() }),
             on_cursor: Callbacks::default(),
             filetype: RefCell::new(None),
@@ -563,7 +566,8 @@ impl EditorCore {
         let before = self.cursor().2;
         self.report(if down { self.view.move_down() } else { self.view.move_up() });
         let after = self.cursor().2;
-        let Some(mark) = extmarks::atomic_containing(&self.marks(), after) else { return };
+        let marks = self.marks();
+        let Some(mark) = extmarks::atomic_containing(&marks, after) else { return };
         if after - mark.start < mark.end - after {
             self.move_before(mark.start);
             if !down || self.cursor().2 > before {
@@ -571,7 +575,7 @@ impl EditorCore {
             }
         }
         // Past later marks that overlap the end, so the cursor is not left inside one.
-        self.report(self.buffer.command(EditCommand::CursorOffset(self.outside(mark.end, true))));
+        self.report(self.buffer.command(EditCommand::CursorOffset(Self::outside(&marks, mark.end, true))));
     }
 
     fn goto_buffer_end(&self) {
@@ -785,26 +789,30 @@ impl EditorCore {
 
     // Extmarks.
 
-    /// The marks in (start, id) order. Native code moves them with each edit.
+    /// The marks in creation (id) order, the order the cursor rules search them in. Native code moves them with each
+    /// edit.
     fn marks(&self) -> Vec<Extmark> {
         let marks = self.report(self.buffer.marks()).unwrap_or_default();
-        marks.iter().map(|(raw, style)| Extmark::from_native(raw, *style)).collect()
+        let mut marks: Vec<Extmark> = marks.iter().map(|(raw, style)| Extmark::from_native(raw, *style)).collect();
+        marks.sort_by_key(|mark| mark.id);
+        marks
     }
 
     /// Runs an edit and keeps the cursor out of atomic marks, once for nested edits.
     pub fn tracked<R>(&self, edit: impl FnOnce() -> R) -> R {
-        if self.tracking.get() || self.marks().is_empty() {
+        if self.tracking.get() {
             return edit();
         }
         // A press leaves the cursor on its cell for the handlers until the release; an edit before then starts at the
         // nearer edge.
-        if self.selection().is_none() {
+        if self.held.get() && self.selection().is_none() {
             self.keep_cursor_outside(Ordering::Equal);
         }
         self.tracking.set(true);
         let cursor_before = self.cursor().2;
         let result = edit();
         self.tracking.set(false);
+        // Undo can bring back a mark around the cursor, so this runs even when no mark was there before.
         self.keep_cursor_outside(self.cursor().2.cmp(&cursor_before));
         result
     }
@@ -812,8 +820,10 @@ impl EditorCore {
     /// Moves a cursor inside atomic marks to the outer edge of the marks around it: toward the end for `Greater`, the
     /// start for `Less`, or the nearer one.
     fn keep_cursor_outside(&self, toward: Ordering) {
+        self.held.set(false);
+        let marks = self.marks();
         let cursor = self.cursor().2;
-        let (start, end) = (self.outside(cursor, false), self.outside(cursor, true));
+        let (start, end) = (Self::outside(&marks, cursor, false), Self::outside(&marks, cursor, true));
         let to_end = match toward {
             Ordering::Less => false,
             Ordering::Greater => true,
@@ -825,9 +835,8 @@ impl EditorCore {
     }
 
     /// The first offset from `offset` toward the end (`forward`) or the start that no atomic mark surrounds.
-    fn outside(&self, mut offset: u32, forward: bool) -> u32 {
-        let marks = self.marks();
-        while let Some(mark) = extmarks::atomic_around(&marks, offset) {
+    fn outside(marks: &[Extmark], mut offset: u32, forward: bool) -> u32 {
+        while let Some(mark) = extmarks::atomic_around(marks, offset) {
             offset = if forward { mark.end } else { mark.start };
         }
         offset
@@ -905,7 +914,9 @@ impl EditorCore {
     }
 
     pub fn extmarks(&self) -> Vec<Extmark> {
-        self.marks()
+        let mut marks = self.marks();
+        marks.sort_by_key(|mark| (mark.start, mark.id));
+        marks
     }
 
     /// Moves the cursor to a document offset, outside any atomic mark, and clears the selection.
@@ -1045,6 +1056,7 @@ impl Behavior for EditorCore {
             self.report(self.view.select_local(anchor, focus, !selection.start, selection.unit, true, colors));
             self.pointer_side.set((anchor.1, anchor.0).cmp(&(focus.1, focus.0)));
             self.pointer_unit.set(selection.unit);
+            self.held.set(selection.start);
             (!selection.start).then_some(Ordering::Equal)
         } else {
             self.report(self.view.clear_selection());
@@ -1478,22 +1490,32 @@ mod tests {
         assert!(compared > 500, "{compared} compared");
     }
 
-    // 474: with marks, a key read the whole text twice to find the edit; native code moves marks now.
+    // 474: with marks, a key read the whole text twice to find the edit; native code moves marks now. A typed key
+    // reads the marks once, after the edit, however many there are: one count and one copy.
     #[test]
     fn keys_with_marks_read_no_text() {
-        let app = TestApp::new(20, 2);
-        let area = Textarea::new(&app).grow(1.0);
-        area.set_text("ab @file cd");
-        app.root().add(&area);
-        area.focus();
-        area.add_extmark(3..8, ExtmarkOptions::default().atomic().style(Style::new().fg(Color::CYAN)));
-        area.set_cursor_offset(0);
-        app.render();
-        crate::native::TEXT_READS.with(|reads| reads.set(0));
-        for key in ["x", "backspace", "right", "delete"] {
-            app.press(key);
+        for count in [1, 40] {
+            let app = TestApp::new(20, 2);
+            let area = Textarea::new(&app).grow(1.0);
+            area.set_text(format!("ab @file cd{}", " ".repeat(count)));
+            app.root().add(&area);
+            area.focus();
+            area.add_extmark(3..8, ExtmarkOptions::default().atomic().style(Style::new().fg(Color::CYAN)));
+            for at in 1..count as u32 {
+                area.add_extmark(10 + at..11 + at, ExtmarkOptions::default().atomic());
+            }
+            area.set_cursor_offset(0);
+            app.render();
+            let reads = || (crate::native::TEXT_READS.with(Cell::get), crate::native::MARK_READS.with(Cell::get));
+            crate::native::TEXT_READS.with(|reads| reads.set(0));
+            crate::native::MARK_READS.with(|reads| reads.set(0));
+            app.press("x");
+            assert_eq!(reads(), (0, 2), "{count} marks");
+            for key in ["backspace", "right", "delete"] {
+                app.press(key);
+            }
+            assert_eq!(crate::native::TEXT_READS.with(Cell::get), 0);
+            assert_eq!(area.extmarks()[0].range(), 2..7);
         }
-        assert_eq!(crate::native::TEXT_READS.with(std::cell::Cell::get), 0);
-        assert_eq!(area.extmarks()[0].range(), 2..7);
     }
 }

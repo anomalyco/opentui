@@ -23,7 +23,7 @@ mod clipboard;
 mod context;
 mod editor;
 #[cfg(all(test, feature = "tree-sitter"))]
-pub(crate) use editor::TEXT_READS;
+pub(crate) use editor::{MARK_READS, TEXT_READS};
 mod frame;
 mod markdown;
 mod measure;
