@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { EditBuffer } from "../edit-buffer.js"
 import { EditorView } from "../editor-view.js"
 import type { ExtmarksController } from "./extmarks.js"
+import { check, fail, rng } from "../testing/model.js"
 
 let resourceContext: ResourceContext
 beforeEach(() => {
@@ -76,5 +77,53 @@ describe("Extmark history metadata", () => {
       range && [...range, "world", "meta"],
     )
     expect((extmarks as any).payloads.size).toBe(range ? 1 : 0)
+  })
+
+  // Invariant 5 as a model: a live mark returns the payload it was created with, a dead id reads as absent, marks stay
+  // inside the text, and only marks created since the last `setText()` keep a payload. 64 seeds of 40 commands.
+  it("keeps payloads for exactly the marks undo can restore (model)", async () => {
+    const pick = (random: () => number, n: number) => Math.floor(random() * n)
+    const generate = (seed: number) => {
+      const random = rng(seed)
+      return Array.from({ length: 40 }, () => [pick(random, 10), random(), random()] as const)
+    }
+    await check(64, generate, async (commands) => {
+      buffer.setText("ab\n界 c")
+      const created = new Map<number, string>()
+      const ids: number[] = []
+      for (const [kind, a, b] of commands) {
+        const end = buffer.measureText(buffer.getText())
+        const [from, to] = [Math.floor(a * (end + 1)), Math.floor(b * (end + 1))].sort((x, y) => x - y)
+        if (kind === 0 || kind === 1) {
+          const id = extmarks.create({
+            start: from,
+            end: to,
+            virtual: kind === 1,
+            data: `d${from}`,
+            metadata: from,
+          })
+          created.set(id, `d${from}`)
+          ids.push(id)
+        } else if (kind === 2) extmarks.delete(ids[Math.floor(a * ids.length)] ?? 0)
+        else if (kind === 3) (buffer.setCursorByOffset(from), buffer.insertText(b < 0.5 ? "x" : "界\n"))
+        else if (kind === 4) (buffer.setCursorByOffset(from), buffer.deleteCharBackward())
+        else if (kind === 5) buffer.undo()
+        else if (kind === 6) buffer.redo()
+        else if (kind === 7) b < 0.5 ? buffer.clear() : extmarks.clear()
+        else if (kind === 8) buffer.replaceText(b < 0.5 ? "y界" : "")
+        else (buffer.setText("ab\n界 c"), created.clear())
+        const live = new Set(extmarks.getAll().map((mark) => mark.id))
+        const size = buffer.measureText(buffer.getText())
+        for (const mark of extmarks.getAll()) {
+          if (mark.data !== created.get(mark.id)) fail("payload", `mark ${mark.id} has ${mark.data}`)
+          if (!(0 <= mark.start && mark.start <= mark.end && mark.end <= size)) fail("range", JSON.stringify(mark))
+        }
+        for (const id of ids) {
+          if (!live.has(id) && (extmarks.get(id) || extmarks.getMetadataFor(id) !== undefined)) fail("dead", `${id}`)
+        }
+        const kept = [...(extmarks as any).payloads.keys()]
+        if (kept.some((id: number) => !created.has(id))) fail("reset", `payloads ${kept} after setText`)
+      }
+    })
   })
 })
