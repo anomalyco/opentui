@@ -4754,6 +4754,55 @@ export class FFIRenderLib {
     })
   }
 
+  /** The Context's id for an ordered list of style names (`ot_context_group_set`). */
+  public contextGroupSet(context: NativeContextHandle, names: readonly string[]): number {
+    const encoded = names.map((name) => this.encoder.encode(name))
+    const ends = new Uint32Array(encoded.length)
+    const bytes = new Uint8Array(encoded.reduce((end, name, index) => (ends[index] = end + name.length), 0))
+    encoded.forEach((name, index) => bytes.set(name, ends[index]! - name.length))
+    const output = new Uint32Array(1)
+    const pointer = this.nativeContextPointer(context, "ot_context_group_set")
+    nativeResult(
+      "ot_context_group_set",
+      this.opentui.symbols.ot_context_group_set(
+        pointer,
+        viewOrNull(bytes),
+        bytes.length,
+        viewOrNull(ends),
+        ends.length,
+        output,
+      ),
+    )
+    return output[0]!
+  }
+
+  /** Replaces layer `layerId` in `[start, end)` bytes with `runs`: (start, end, group set) triples. */
+  public contextTextBufferSetLayer(
+    context: NativeContextHandle,
+    text: ContextTextBufferHandle,
+    layerId: number,
+    start: number,
+    end: number,
+    runs: Uint32Array,
+  ): void {
+    const handle = encodeContextHandle(context, text)
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_text_buffer_set_layer")
+      nativeResult(
+        "ot_text_buffer_set_layer",
+        this.opentui.symbols.ot_text_buffer_set_layer(
+          pointer,
+          handle,
+          layerId,
+          start,
+          end,
+          viewOrNull(runs),
+          runs.length / 3,
+        ),
+      )
+    })
+  }
+
   public contextTextBufferGetHighlights(
     context: NativeContextHandle,
     text: ContextTextBufferHandle,

@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 4f9f968eed1b8d2d0d119efa69e7afabf8273a9cdd4b78b8b808b6a36599318b
+// ABI audit SHA-256: 75cc041e51a1e0dc74a375caef9228342b0947afa00fb75088612dd7cddc93f3
 
 export const OT_CONTEXT_ABI_VERSION = 2
 export const OT_OK = 0
@@ -485,6 +485,8 @@ export const OT_MD_BLOCK_HOOKED = 256
 export const OT_MD_BLOCK_MATH = 512
 export const OT_MD_BLOCK_HEADER = 1024
 export const OT_MD_BLOCK_OPEN = 2048
+export const OT_MD_BLOCK_ALIGN_LEFT = 4096
+export const OT_MD_BLOCK_ALIGN_RIGHT = 8192
 export const OT_MD_SPAN_CODE = 1
 export const OT_MD_SPAN_MATH = 2
 export const OT_EDITOR_MOVE_UP = 0
@@ -3016,6 +3018,8 @@ export const nativeConstants = {
   OT_MD_BLOCK_MATH: 512,
   OT_MD_BLOCK_HEADER: 1024,
   OT_MD_BLOCK_OPEN: 2048,
+  OT_MD_BLOCK_ALIGN_LEFT: 4096,
+  OT_MD_BLOCK_ALIGN_RIGHT: 8192,
   OT_MD_SPAN_CODE: 1,
   OT_MD_SPAN_MATH: 2,
   OT_EDITOR_MOVE_UP: 0,

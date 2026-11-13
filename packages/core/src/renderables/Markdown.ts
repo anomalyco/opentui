@@ -983,6 +983,7 @@ export class MarkdownRenderable extends Renderable {
           width: "100%",
           flexShrink: 0,
         })
+        code._setStreamsDeltas(true)
         this.setCode(index, code)
         return code
       }
@@ -1047,7 +1048,9 @@ export class MarkdownRenderable extends Renderable {
     // Display math without a renderer shows its TeX as plain code text.
     code.filetype =
       (block.flags & md.OT_MD_BLOCK_MATH) !== 0 ? undefined : infoStringToFiletype(this.view(index).lang ?? "")
-    code.syntaxStyle = this._syntaxStyle
+    // The style the doc binds, so a theme from another Context binds to the fence's text too.
+    const copy = this._styleCopy
+    code.syntaxStyle = copy && copy.source === this._syntaxStyle ? copy.copy : this._syntaxStyle
     code.fg = this._fg
     code.bg = this._bg
     code.conceal = this._concealCode
@@ -1055,6 +1058,7 @@ export class MarkdownRenderable extends Renderable {
     code.drawUnstyledText = (block.flags & md.OT_MD_BLOCK_MATH) !== 0 || !this._streaming
     code.streaming = this._streaming
     code.content = this.leafText(index)
+    code._setStreamsDeltas((block.flags & md.OT_MD_BLOCK_CLOSED) === 0)
   }
 
   /** What a changed block changes besides its own renderable: text the host writes, the table or list around it. */
@@ -1147,13 +1151,23 @@ export class MarkdownRenderable extends Renderable {
     return children
   }
 
-  /** Fills a table from its rows and cells: a header row in the heading style, then the body, as wide as the header. */
+  /**
+   * Fills a table from its rows and cells: a header row in the heading style, then the body, as wide as the header,
+   * each column aligned as its delimiter row says.
+   */
   private fillTable(index: number): void {
     const table = this._shown[index]?.default
     if (!(table instanceof TextTableRenderable) || !this._syntaxStyle) return
     const columns = this._doc.blocks[index]!.number
     const previous = table.content
-    const content: TextTableContent = this.childrenOf(index).map((row, r) => {
+    const rows = this.childrenOf(index)
+    // The header row has every column.
+    table.columnAlignments = this.childrenOf(rows[0]!).map((cell) => {
+      const flags = this._doc.blocks[cell]!.flags
+      if (!(flags & md.OT_MD_BLOCK_ALIGN_RIGHT)) return "left"
+      return flags & md.OT_MD_BLOCK_ALIGN_LEFT ? "center" : "right"
+    })
+    const content: TextTableContent = rows.map((row, r) => {
       const header = (this._doc.blocks[row]!.flags & md.OT_MD_BLOCK_HEADER) !== 0
       const cells = this.childrenOf(row).map((cell, c) => {
         const shown = this._shown[cell]

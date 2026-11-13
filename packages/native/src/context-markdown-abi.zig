@@ -108,6 +108,12 @@ fn blockToC(change: markdown.Doc.Change) c.ot_markdown_block {
     }
     // A paragraph the pending line's layout ends is shown closed.
     if (f.open and !f.ending) flags |= c.OT_MD_BLOCK_OPEN;
+    if (b.kind == .table_cell) flags |= switch (@as(markdown.Alignment, @fromBackingInt(@intCast(b.payload[1])))) {
+        .none => 0,
+        .left => c.OT_MD_BLOCK_ALIGN_LEFT,
+        .right => c.OT_MD_BLOCK_ALIGN_RIGHT,
+        .center => c.OT_MD_BLOCK_ALIGN_LEFT | c.OT_MD_BLOCK_ALIGN_RIGHT,
+    };
     const fenced = b.kind == .code and f.fenced;
     const numbered = switch (b.kind) {
         .heading, .list, .table, .table_cell => true,

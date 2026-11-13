@@ -121,7 +121,7 @@ const Writer = struct {
                 const row = doc.blocks.items[b.parent_index];
                 const tag = if (row.flags.header) "th" else "td";
                 try self.print("<{s}", .{tag});
-                try self.alignment(row.parent_index, b.payload[0]);
+                try self.alignment(b.payload[1]);
                 try self.put(">");
                 try self.leaf(index);
                 try self.print("</{s}>\n", .{tag});
@@ -145,7 +145,8 @@ const Writer = struct {
                 while (cells < table.payload[0]) : (cells += 1) {
                     const tag = if (b.flags.header) "th" else "td";
                     try self.print("<{s}", .{tag});
-                    try self.alignment(b.parent_index, cells);
+                    // The header row has every column: its cells follow the table and the row.
+                    try self.alignment(doc.blocks.items[b.parent_index + 2 + cells].payload[1]);
                     try self.print("></{s}>\n", .{tag});
                 }
                 try self.put("</tr>\n");
@@ -159,8 +160,8 @@ const Writer = struct {
         }
     }
 
-    fn alignment(self: *Writer, table_index: u32, column: u32) !void {
-        try self.put(switch (self.doc.columnAlignment(table_index, column)) {
+    fn alignment(self: *Writer, cell_alignment: u32) !void {
+        try self.put(switch (@as(markdown.Alignment, @fromBackingInt(@intCast(cell_alignment)))) {
             .none => "",
             .left => " align=\"left\"",
             .center => " align=\"center\"",

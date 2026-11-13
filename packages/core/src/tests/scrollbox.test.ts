@@ -1323,14 +1323,14 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
       if (mode === "shrunk") scrollbox.height = 2
       await renderOnce()
       // In view, where the scene runs its hooks, the block shows its last highlight until the next one lands. A streamed
-      // preview shows the new text at once.
-      if (mode === "shown" && !previewed) expect(captureCharFrame()).toBe(before)
+      // preview, or a fence's appended lines (C4 PR 4), show the new text at once.
+      if (mode === "shown" && !previewed && kind === "code") expect(captureCharFrame()).toBe(before)
       if (mode === "shown") await settle()
       // Painted in the frame before, a block that the write's frame culls (hidden in its tick, or moved out of view)
       // keeps its highlight's height through that frame; the next one measures its text. Hidden, a first block grows
       // into view, and starts its highlight, only then (a streamed preview shows the new text at once).
       if (mode === "hidden" || moved.includes(mode)) {
-        if (mode === "hidden" && first && !previewed) expect(client.isHighlighting()).toBe(false)
+        if (mode === "hidden" && first && !previewed && kind === "code") expect(client.isHighlighting()).toBe(false)
         await renderOnce()
       }
       const height = scrollbox.scrollHeight - (spacer.parent ? 6 : 0)
@@ -1340,7 +1340,8 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
       // the rows in view do not move. A streamed preview shows the new text at once: only a block that grows into view
       // starts its highlight.
       const below = (moved.includes(mode) && mode !== "followed") || mode === "hidden"
-      const starts = previewed ? first && !moved.includes(mode) : first || below
+      // A streamed fence holds its new text at once (C4 PR 4), so only growing into view starts its highlight.
+      const starts = previewed || kind === "fence" ? first && !moved.includes(mode) : first || below
       if (mode !== "shown") expect([mode, client.isHighlighting()]).toEqual([mode, starts])
       spacer.destroy()
       scrollbox.stickyScroll = false

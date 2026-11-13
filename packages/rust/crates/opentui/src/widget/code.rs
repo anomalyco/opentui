@@ -9,17 +9,17 @@ use crate::input::{KeyEvent, Keymap, MouseEvent, MouseEventKind};
 use crate::layout::{FlexDirection, LayoutProperty, Length};
 use crate::native::{Hooks, NodeKind, SelectionColors, SyntaxStyle, TextBuffer, TextView, Viewport, WrapMode};
 use crate::style::{Color, Span, Style};
-use crate::syntax::{self, CaptureSets, NamedRanges, SyntaxTheme};
+use crate::syntax::{CaptureSets, Incremental, NamedRanges, SyntaxTheme};
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
 
-/// A highlight on a worker thread, of the source's first `len` bytes.
+/// A highlight on a worker thread, of the source's first `len` bytes. It owns the highlighter and hands it back.
 struct Pending {
     len: usize,
-    receiver: Receiver<Option<NamedRanges>>,
+    receiver: Receiver<(Incremental, Option<NamedRanges>)>,
 }
 
 pub(crate) struct CodeInner {
@@ -46,6 +46,11 @@ pub(crate) struct CodeInner {
     highlighted: Cell<Option<usize>>,
     /// The highlight running on a worker thread. Replacing the text or filetype drops it, so its result never lands.
     pending: RefCell<Option<Pending>>,
+    /// The highlighter with the tree of the highlighted start, while no highlight runs. An append hands it only the
+    /// appended bytes; replacing the text or filetype drops it.
+    pub(crate) incremental: RefCell<Option<Incremental>>,
+    /// Whether the text is a closed Markdown fence, which drops its tree once its last highlight landed.
+    closed: Cell<bool>,
     source: RefCell<String>,
     /// The source offsets of its CRLF pairs. The buffer counts one byte per line break, so a layer run edge moves left
     /// by the pairs before it.
@@ -55,6 +60,9 @@ pub(crate) struct CodeInner {
     /// Highlights started and syntax layers written, for tests.
     #[cfg(test)]
     pub(crate) work: Cell<(usize, usize)>,
+    /// Bytes handed to highlights, for tests.
+    #[cfg(test)]
+    pub(crate) handed: Cell<usize>,
     scroll: Cell<u32>,
     follow: Cell<bool>,
     /// Whether the view sits at the bottom, so following keeps it there.
@@ -162,32 +170,57 @@ impl CodeInner {
         self.written.set(self.epoch());
     }
 
-    /// The next highlight runs on the UI thread, and a running one never lands.
+    /// The next highlight runs on the UI thread from a fresh parse, and a running one never lands.
     fn forget_highlight(&self) {
         self.highlighted.set(None);
         self.pending.take();
+        self.incremental.take();
     }
 
-    /// Highlights the source on a worker thread. The UI thread pays only for copying the source.
+    /// Highlights the source on a worker thread, handing it the highlighter and the bytes appended since its last
+    /// highlight. The UI thread pays only for copying those.
     fn spawn(&self, filetype: String) {
         let Some(app) = self.element.app() else { return };
-        let source = self.source.borrow().clone();
-        let len = source.len();
+        let mut incremental = self.incremental.take().unwrap_or_else(|| Incremental::new(&filetype));
+        let (len, appended) = {
+            let source = self.source.borrow();
+            debug_assert!(source.starts_with(incremental.text()));
+            (source.len(), source[incremental.text().len()..].to_owned())
+        };
         let (sender, receiver) = mpsc::sync_channel(1);
+        // The worker gets the highlighter once it started, so a thread that fails to start leaves it here.
+        let (job_sender, job) = mpsc::channel::<(Incremental, String)>();
         let proxy = app.proxy();
         #[cfg(test)]
-        self.work.set((self.work.get().0 + 1, self.work.get().1));
-        let worker = std::thread::Builder::new().name("opentui-highlight".into()).spawn(move || {
-            if sender.send(syntax::highlight_names(&source, &filetype)).is_ok() {
+        {
+            self.work.set((self.work.get().0 + 1, self.work.get().1));
+            self.handed.set(self.handed.get() + appended.len());
+        }
+        let job = move || {
+            let Ok((mut incremental, appended)) = job.recv() else { return };
+            let named = incremental.update([incremental.text(), &appended].concat());
+            if sender.send((incremental, named)).is_ok() {
                 // Retry while the UI thread catches up, so the result is painted.
                 while proxy.post(|cx| cx.app().request_redraw()) == Err(ProxyError::Full) {
                     std::thread::sleep(Duration::from_millis(1));
                 }
             }
-        });
+        };
+        let builder = std::thread::Builder::new().name("opentui-highlight".into());
+        #[cfg(all(test, feature = "tree-sitter"))]
+        let worker = if tests::DENY_THREADS.get() { Err(std::io::Error::other("denied")) } else { builder.spawn(job) };
+        #[cfg(not(all(test, feature = "tree-sitter")))]
+        let worker = builder.spawn(job);
         match worker {
-            Ok(_) => *self.pending.borrow_mut() = Some(Pending { len, receiver }),
-            Err(_) => self.highlight_now(),
+            Ok(_) => {
+                drop(job_sender.send((incremental, appended)));
+                *self.pending.borrow_mut() = Some(Pending { len, receiver });
+            }
+            // Without a thread the same highlight runs here.
+            Err(_) => {
+                let named = incremental.update([incremental.text(), &appended].concat());
+                self.keep(incremental, named, len);
+            }
         }
     }
 
@@ -199,22 +232,52 @@ impl CodeInner {
         };
         let pending = self.pending.take().expect("a pending highlight");
         match result {
-            Ok(Some(named)) => self.show(named, pending.len),
-            // No grammar, or the worker failed: the shown highlight stays, and the next one runs on the UI thread.
-            Ok(None) | Err(_) => self.highlighted.set(None),
+            Ok((incremental, named)) => self.keep(incremental, named, pending.len),
+            // The worker failed: the shown highlight stays, and the next one runs on the UI thread.
+            Err(_) => self.highlighted.set(None),
         }
     }
 
     fn highlight_now(&self) {
         let filetype = self.filetype.borrow();
         let Some(filetype) = filetype.as_deref() else { return };
-        let len = self.source.borrow().len();
-        #[cfg(test)]
-        self.work.set((self.work.get().0 + 1, self.work.get().1));
-        match syntax::highlight_names(&self.source.borrow(), filetype) {
-            Some(named) => self.show(named, len),
-            None => self.highlighted.set(None),
+        let mut incremental = Incremental::new(filetype);
+        // Plain text stays plain without copying it.
+        if !incremental.has_grammar() {
+            return self.highlighted.set(None);
         }
+        let source = self.source.borrow().clone();
+        #[cfg(test)]
+        {
+            self.work.set((self.work.get().0 + 1, self.work.get().1));
+            self.handed.set(self.handed.get() + source.len());
+        }
+        let len = source.len();
+        let named = incremental.update(source);
+        self.keep(incremental, named, len);
+    }
+
+    /// Shows a highlight and keeps its highlighter for the next one. Without one (no grammar), the shown highlight
+    /// stays, and the next one runs on the UI thread.
+    fn keep(&self, incremental: Incremental, named: Option<NamedRanges>, len: usize) {
+        let Some(named) = named else { return self.highlighted.set(None) };
+        *self.incremental.borrow_mut() = Some(incremental);
+        self.show(named, len);
+        self.release_closed();
+    }
+
+    /// A closed Markdown fence drops its tree once its last highlight landed: its text no longer grows. A running
+    /// highlight holds the tree until it lands.
+    fn release_closed(&self) {
+        if self.closed.get() && !self.stale.get() {
+            self.incremental.take();
+        }
+    }
+
+    /// Marks the text as a Markdown fence that is closed or open again.
+    pub(crate) fn set_closed(&self, closed: bool) {
+        self.closed.set(closed);
+        self.release_closed();
     }
 
     /// Shows the highlight of the source's first `len` bytes as the syntax layer, and the rest plain. Text another
@@ -457,11 +520,15 @@ impl Code {
                 stale: Cell::new(false),
                 highlighted: Cell::new(None),
                 pending: RefCell::new(None),
+                incremental: RefCell::new(None),
+                closed: Cell::new(false),
                 source: RefCell::new(String::new()),
                 crlf: RefCell::default(),
                 written: Cell::new(0),
                 #[cfg(test)]
                 work: Cell::default(),
+                #[cfg(test)]
+                handed: Cell::default(),
                 scroll: Cell::new(0),
                 follow: Cell::new(false),
                 pinned: Cell::new(true),
@@ -545,9 +612,9 @@ impl Code {
         self.0.keep_in_view();
     }
 
-    /// Appends text, keeping the view at the bottom when following. With a filetype, the whole text is highlighted
-    /// again: the first time before the next frame paints, and once highlighted on a worker thread, showing the new
-    /// text plain until that highlight lands.
+    /// Appends text, keeping the view at the bottom when following. With a filetype, the text is highlighted again:
+    /// the first time before the next frame paints, and once highlighted on a worker thread, which parses the
+    /// appended text reusing the last parse, showing the new text plain until that highlight lands.
     pub fn append(&self, text: &str) -> Self {
         *self.0.styled.borrow_mut() = None;
         self.0.extend(text);
@@ -663,8 +730,14 @@ impl Code {
 pub(crate) mod tests {
     use super::*;
     use crate::native::Capture;
+    use crate::syntax;
     use crate::testing::TestApp;
     use crate::widget::Container;
+
+    thread_local! {
+        /// Whether highlight threads fail to start on this thread, as under a process limit.
+        pub(crate) static DENY_THREADS: Cell<bool> = const { Cell::new(false) };
+    }
 
     /// Renders until no code view has a highlight running or due, and returns the frame.
     pub(crate) fn settle(app: &TestApp, codes: &[Code]) -> Capture {
@@ -697,8 +770,12 @@ pub(crate) mod tests {
         assert_eq!(app.render().cell(0, 0).unwrap().fg, Color::RED);
     }
 
-    // Rust and Markdown pieces; a CR and an LF also arrive apart.
+    // Rust, JavaScript and Markdown pieces, balanced ones and openers alone; a CR and an LF also arrive apart.
     const PIECES: &[&str] = &[
+        "/*",
+        "{",
+        "`",
+        " => x",
         "let ",
         "fn f() {",
         "}",
@@ -722,13 +799,16 @@ pub(crate) mod tests {
         "\u{301}",
     ];
 
-    // P12 and C4 invariants 2, 8, 9 and 10: every frame equals a buffer written with the styled text of the
+    // P12 and C4 invariants 1, 2, 4, 8, 9 and 10: every frame equals a buffer written with the styled text of the
     // highlighted start of the source and the rest plain, as the styled-ranges view painted it, over appends (CRLF
     // whole and split), replacements, filetype and theme changes, and writes through `buffer()` before an append or
-    // while a highlight runs; a settled view highlights all its text.
+    // while a highlight runs; a settled view highlights all its text. The styled text is a fresh highlight's, or
+    // where a fresh parse has an error, the view's own tree's. Since its last replacement, a settled view handed its
+    // highlights each byte once and parsed without a tree once.
     #[test]
     fn capture_layers_paint_as_styled_text_of_the_highlighted_start() {
-        let mut compared = 0;
+        let injective = syntax::injective_theme();
+        let (mut compared, mut erroneous, mut own_differs) = (0, 0, 0);
         for seed in 1..=300u64 {
             let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15);
             let mut next = |bound: usize| {
@@ -745,46 +825,96 @@ pub(crate) mod tests {
                 .style("string", red.bold())
                 .style("markup", Style::new().fg(Color::YELLOW).dim())
                 .style("markup.heading", Style::new().strikethrough());
-            let themes = [SyntaxTheme::from_theme(&app.theme()), nested.clone(), nested.first_part_fallback()];
-            let code = Code::new(&app).filetype("rust");
+            let themes = [
+                injective.clone(),
+                SyntaxTheme::from_theme(&app.theme()),
+                nested.clone(),
+                nested.first_part_fallback(),
+            ];
+            let code = Code::new(&app).filetype("rust").syntax_theme(themes[0].clone());
             let twin = Code::new(&fresh);
             app.root().add(&code);
             fresh.root().add(&twin);
             // The theme the reference takes its styles and defaults from, never through the view under test.
             let theme = RefCell::new(themes[0].clone());
+            // The bytes handed to highlights at the last replacement, which starts the highlighter afresh, and the
+            // parses without a tree on this thread since. Only `compare` and a write by another caller render, and
+            // that write's append replaces the text too.
+            let mut replaced = (0, 0);
             let mut compare = |settled: bool| {
+                if code.0.highlighted.get().is_none() && code.0.pending.borrow().is_none() {
+                    replaced = (code.0.handed.get(), 0);
+                }
+                let parses = syntax::FRESH_PARSES.get();
                 let got = if settled { settle(&app, std::slice::from_ref(&code)) } else { app.render() };
+                replaced.1 += syntax::FRESH_PARSES.get() - parses;
                 let source = code.code();
                 let filetype = code.0.filetype.borrow().clone();
                 let start = code.0.highlighted.get().unwrap_or(0);
-                if settled && matches!(filetype.as_deref(), Some("rust" | "markdown" | "c4-crlf")) {
+                let own = code.0.incremental.borrow();
+                let expected = |own: Option<&Incremental>| {
+                    let filetype = filetype.as_deref()?;
+                    syntax::expected_ranges(&source[..start], filetype, own, &theme.borrow())
+                };
+                let (ranges, error) = expected(None).unwrap_or_default();
+                if settled && filetype.as_deref().is_some_and(syntax::has_grammar) {
                     assert_eq!(start, source.len(), "seed {seed}: settled with a plain tail");
+                    let since = (code.0.handed.get() - replaced.0, replaced.1, own.is_some());
+                    assert_eq!(since, (source.len(), 1, true), "seed {seed}: highlights since {source:?} was replaced");
+                } else if settled {
+                    // Without a grammar nothing is copied for a highlight (bigboi-2).
+                    assert_eq!((own.is_none(), code.0.handed.get()), (true, replaced.0), "seed {seed}: plain text");
                 }
-                let ranges = filetype
-                    .and_then(|filetype| syntax::highlight_ranges(&source[..start], &filetype, &theme.borrow()));
-                let mut spans: Vec<Span<'static>> = (ranges.unwrap_or_default().into_iter())
-                    .map(|(range, style)| Span::styled(source[range].to_owned(), style))
-                    .collect();
-                spans.push(Span::raw(source[start..].to_owned()));
-                twin.buffer().set_spans(&spans).unwrap();
-                let want = fresh.render();
+                let paint = |ranges: Vec<(std::ops::Range<usize>, Style)>| {
+                    let mut spans: Vec<Span<'static>> = ranges
+                        .into_iter()
+                        .map(|(range, style)| Span::styled(source[range].to_owned(), style))
+                        .collect();
+                    spans.push(Span::raw(source[start..].to_owned()));
+                    twin.buffer().set_spans(&spans).unwrap();
+                    fresh.render()
+                };
+                let mut want = paint(ranges);
+                if error && want.cells != got.cells {
+                    // Where a fresh parse has an error, the view's own tree, which a running highlight holds.
+                    let Some(own) = own.as_ref() else { return };
+                    want = paint(expected(Some(own)).expect("a grammar").0);
+                    own_differs += 1;
+                }
+                erroneous += usize::from(error);
                 let differ = want.cells.iter().zip(&got.cells).position(|(want, got)| want != got);
                 assert!(differ.is_none(), "seed {seed} cell {differ:?}: {source:?} from {start}");
                 compared += 1;
             };
-            if seed == 1 {
-                // A registered capture that ends on the CR of a CRLF: its piece is that CR alone, empty in the
-                // buffer's bytes (bigboi-5).
-                let query = "(line_comment) @comment \"//\" @punctuation";
-                syntax::register("c4-crlf", syntax::Grammar::new(tree_sitter_rust::LANGUAGE, query)).unwrap();
-                code.filetype("c4-crlf").set_code("//\r\nlet x = 42;");
-                compare(true);
+            match seed {
+                1 => {
+                    // A registered capture that ends on the CR of a CRLF: its piece is that CR alone, empty in the
+                    // buffer's bytes (bigboi-5).
+                    let query = "(line_comment) @comment \"//\" @punctuation";
+                    syntax::register("c4-crlf", syntax::Grammar::new(tree_sitter_rust::LANGUAGE, query)).unwrap();
+                    code.filetype("c4-crlf").set_code("//\r\nlet x = 42;");
+                    compare(true);
+                }
+                2 => {
+                    // Review-bigboi-r2's append: ` => x` turns `f` on the line before into a function.
+                    code.filetype("javascript").set_code("const f =\n  (x)");
+                    compare(true);
+                    code.append(" => x");
+                    compare(true);
+                }
+                _ => {}
             }
+            // Seed 3 highlights with every worker thread failing to start (bigboi-5).
+            DENY_THREADS.set(seed == 3);
             for _ in 0..40 {
                 match next(12) {
                     0..=4 => drop(code.append(PIECES[next(PIECES.len())])),
                     5 => drop(code.set_code((0..next(8)).map(|_| PIECES[next(PIECES.len())]).collect::<String>())),
-                    6 => drop(code.filetype([Some("rust"), Some("markdown"), Some("cobol"), None][next(4)])),
+                    6 => {
+                        drop(code.filetype(
+                            [Some("rust"), Some("markdown"), Some("javascript"), Some("cobol"), None][next(5)],
+                        ))
+                    }
                     7 => {
                         let next = themes[next(themes.len())].clone();
                         let defaults =
@@ -807,7 +937,9 @@ pub(crate) mod tests {
                     _ => compare(true),
                 }
             }
+            DENY_THREADS.set(false);
         }
-        assert!(compared > 3500, "{compared} compared");
+        println!("C4 1b on {erroneous} of {compared} frames; the view's own tree painted otherwise on {own_differs}");
+        assert!(compared > 3500 && erroneous * 4 < compared * 3, "{compared} compared, {erroneous} with errors");
     }
 }

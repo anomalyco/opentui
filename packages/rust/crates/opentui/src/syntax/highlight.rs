@@ -11,7 +11,7 @@ use std::cmp::Reverse;
 use std::collections::hash_map::Entry as Slot;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock, PoisonError};
-use tree_sitter::{Language, Node, Parser, Query, QueryCursor, Range, StreamingIterator};
+use tree_sitter::{InputEdit, Language, Node, Parser, Point, Query, QueryCursor, Range, StreamingIterator, Tree};
 
 /// The tree-sitter crate this build uses, for grammars that need its types.
 pub use tree_sitter;
@@ -340,12 +340,13 @@ struct Run<'a> {
 }
 
 impl<'a> Run<'a> {
-    /// Highlights the text in `ranges`, all of it when empty, then its injections.
-    fn layer(&mut self, compiled: &'a Compiled, ranges: &[Range], depth: usize) -> Option<()> {
+    /// Highlights the text in `ranges`, all of it when empty, then its injections. Returns the layer's tree, parsed
+    /// reusing `old`, an edited tree of the text, if given.
+    fn layer(&mut self, compiled: &'a Compiled, ranges: &[Range], depth: usize, old: Option<&Tree>) -> Option<Tree> {
         self.layers += 1;
         self.parser.set_language(&compiled.language).ok()?;
         self.parser.set_included_ranges(ranges).ok()?;
-        let tree = self.parser.parse(self.source, None)?;
+        let tree = self.parser.parse(self.source, old)?;
         let bytes = self.source.as_bytes();
         let first = self.captures.len();
         // The last pattern that captures a node wins, unless the grammar keeps every capture as Core does.
@@ -373,7 +374,7 @@ impl<'a> Run<'a> {
                 }
             }
         }
-        let Some(injections) = compiled.injections.as_ref().filter(|_| depth < MAX_DEPTH) else { return Some(()) };
+        let Some(injections) = compiled.injections.as_ref().filter(|_| depth < MAX_DEPTH) else { return Some(tree) };
         let mut targets: Vec<Target> = Vec::new();
         let mut matches = self.cursor.matches(&injections.query, tree.root_node(), bytes);
         while let Some(found) = matches.next() {
@@ -443,9 +444,9 @@ impl<'a> Run<'a> {
                 break;
             }
             // A layer that fails to parse leaves its host's captures.
-            let _ = self.layer(injected, &target_ranges, depth + 1);
+            let _ = self.layer(injected, &target_ranges, depth + 1, None);
         }
-        Some(())
+        Some(tree)
     }
 }
 
@@ -505,22 +506,31 @@ pub fn highlights(source: &str, filetype: &str) -> Option<Vec<Capture>> {
     // A snapshot, so injected grammars resolve without holding the lock.
     let registry = Arc::clone(&lock(&REGISTRY));
     let compiled = registry.resolve(filetype)?.compiled()?;
-    // tree-sitter-md parses a heading that opens the text and ends it without a line ending as an error, where Core's
-    // build recovers the heading, as in a diff of a new Markdown file. With the line ending added, it is a heading.
-    let padded = (compiled.language.name() == Some("markdown") && !source.is_empty() && !source.ends_with('\n'))
-        .then(|| format!("{source}\n"));
-    let mut run = Run {
-        source: padded.as_deref().unwrap_or(source),
-        registry: &registry,
-        parser: Parser::new(),
-        cursor: QueryCursor::new(),
-        captures: Vec::new(),
-        layers: 0,
-    };
-    run.layer(compiled, &[], 0)?;
+    let padded = padded(compiled, source).then(|| format!("{source}\n"));
+    Some(captures(&registry, compiled, padded.as_deref().unwrap_or(source), source.len(), None)?.0)
+}
+
+/// tree-sitter-md parses a heading that opens the text and ends it without a line ending as an error, where Core's
+/// build recovers the heading, as in a diff of a new Markdown file. With the line ending added, it is a heading.
+fn padded(compiled: &Compiled, source: &str) -> bool {
+    compiled.language.name() == Some("markdown") && !source.is_empty() && !source.ends_with('\n')
+}
+
+/// The captures in the first `len` bytes of `source`, as [`highlights`] returns them, and the tree, parsed reusing
+/// `old`, an edited tree of the text, if given.
+fn captures(
+    registry: &Registry,
+    compiled: &Compiled,
+    source: &str,
+    len: usize,
+    old: Option<&Tree>,
+) -> Option<(Vec<Capture>, Tree)> {
+    let mut run =
+        Run { source, registry, parser: Parser::new(), cursor: QueryCursor::new(), captures: Vec::new(), layers: 0 };
+    let tree = run.layer(compiled, &[], 0, old)?;
     let mut captures = run.captures;
     captures.retain_mut(|(capture, ..)| {
-        capture.end = capture.end.min(source.len());
+        capture.end = capture.end.min(len);
         let (start, end) = (capture.start, capture.end);
         start < end && source.is_char_boundary(start) && source.is_char_boundary(end)
     });
@@ -532,7 +542,111 @@ pub fn highlights(source: &str, filetype: &str) -> Option<Vec<Capture>> {
     } else {
         captures.sort_by_key(|(capture, depth, pattern)| (capture.start, Reverse(capture.end), *depth, *pattern));
     }
-    Some(captures.into_iter().map(|(capture, ..)| capture).collect())
+    Some((captures.into_iter().map(|(capture, ..)| capture).collect(), tree))
+}
+
+/// A highlighter that keeps its tree, for a widget whose text changes in place. Each update edits the tree by the
+/// changed bytes and parses again reusing it, then queries the whole tree, so the result is a whole highlight of the
+/// widget's own tree whatever changed. Injected text parses afresh.
+pub(crate) struct Incremental {
+    filetype: String,
+    /// The grammar of the last parse and its tree. A grammar registered for the filetype since parses afresh.
+    tree: Option<(Arc<Entry>, Tree)>,
+    /// The text of the tree: the text highlighted last, with Markdown's added line ending if `padded`.
+    text: String,
+    padded: bool,
+    /// The texts highlighted since the last parse without a tree, for tests to replay.
+    #[cfg(test)]
+    texts: Vec<String>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Parses without a tree on this thread, for tests: a highlighter replaced since still counts.
+    pub(crate) static FRESH_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl Incremental {
+    pub(crate) fn new(filetype: &str) -> Self {
+        Self {
+            filetype: filetype.to_owned(),
+            tree: None,
+            text: String::new(),
+            padded: false,
+            #[cfg(test)]
+            texts: Vec::new(),
+        }
+    }
+
+    /// Whether the filetype has a grammar that compiles, as [`Self::update`] needs.
+    pub(crate) fn has_grammar(&self) -> bool {
+        prewarm(&self.filetype)
+    }
+
+    /// The text highlighted last.
+    pub(crate) fn text(&self) -> &str {
+        &self.text[..self.text.len() - usize::from(self.padded)]
+    }
+
+    /// Highlights `text` as [`highlights`] and [`named_ranges`] do, after a parse that reuses the tree of the text
+    /// highlighted last. The edit is the bytes between their common start and their common end, which is valid for
+    /// any change, so tree-sitter reparses at least what changed. `None` as [`highlights`].
+    pub(crate) fn update(&mut self, mut text: String) -> Option<super::NamedRanges> {
+        // Taken first, so a tree and its text are kept together or not at all.
+        let (last, old) = (self.tree.take(), std::mem::take(&mut self.text));
+        self.padded = false;
+        let registry = Arc::clone(&lock(&REGISTRY));
+        let entry = registry.resolve(&self.filetype)?;
+        let compiled = entry.compiled()?;
+        let len = text.len();
+        if padded(compiled, &text) {
+            text.push('\n');
+        }
+        let reused = last.filter(|(last, _)| Arc::ptr_eq(last, entry)).map(|(_, mut tree)| {
+            tree.edit(&edit(old.as_bytes(), text.as_bytes()));
+            tree
+        });
+        #[cfg(test)]
+        {
+            FRESH_PARSES.set(FRESH_PARSES.get() + usize::from(reused.is_none()));
+            if reused.is_none() {
+                self.texts.clear();
+            }
+            self.texts.push(text[..len].to_owned());
+        }
+        let (captures, tree) = captures(&registry, compiled, &text, len, reused.as_ref())?;
+        self.padded = text.len() > len;
+        (self.tree, self.text) = (Some((Arc::clone(entry), tree)), text);
+        Some(named_ranges(&self.text[..len], &captures))
+    }
+}
+
+/// The edit from `old` to `new`: the bytes between their common start and, after it, their common end.
+fn edit(old: &[u8], new: &[u8]) -> InputEdit {
+    let start = old.iter().zip(new).take_while(|(old, new)| old == new).count();
+    let same = |(old, new): &(&u8, &u8)| old == new;
+    let tail = old[start..].iter().rev().zip(new[start..].iter().rev()).take_while(same).count();
+    let (old_end, new_end) = (old.len() - tail, new.len() - tail);
+    let start_position = advance(Point::default(), &new[..start]);
+    InputEdit {
+        start_byte: start,
+        old_end_byte: old_end,
+        new_end_byte: new_end,
+        start_position,
+        old_end_position: advance(start_position, &old[start..old_end]),
+        new_end_position: advance(start_position, &new[start..new_end]),
+    }
+}
+
+/// The position after `bytes` from `point`: rows are lines, columns bytes.
+fn advance(point: Point, bytes: &[u8]) -> Point {
+    match bytes.iter().rposition(|&byte| byte == b'\n') {
+        Some(last) => Point {
+            row: point.row + bytes.iter().filter(|&&byte| byte == b'\n').count(),
+            column: bytes.len() - last - 1,
+        },
+        None => Point { row: point.row, column: point.column + bytes.len() },
+    }
 }
 
 /// Styles `source` from its captures, as Core's `treeSitterToTextChunks`: text no capture covers gets the theme's
@@ -601,9 +715,85 @@ pub fn highlight(source: &str, filetype: &str, theme: &SyntaxTheme) -> Option<Ve
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::style::{Color, Style};
+
+    /// A theme with a color of its own for every capture name of the Rust, JavaScript and Markdown grammars, for tests
+    /// that read capture names from frames.
+    pub(crate) fn injective_theme() -> SyntaxTheme {
+        for filetype in ["rust", "javascript", "markdown", "markdown_inline"] {
+            prewarm(filetype);
+        }
+        let names = lock(&NAMES).clone();
+        let color = |index: usize| Color::rgb(index as u8, (index >> 8) as u8, 7);
+        names.into_iter().enumerate().map(|(index, name)| (name, Style::new().fg(color(index)))).collect()
+    }
+
+    /// C4 invariant 1: the styled byte ranges a widget's syntax layer over `text` shows with `theme`, covering it in
+    /// order as `highlight` styles it, and whether a fresh parse of `text` has an error. They are a fresh highlight's
+    /// (1a), and where a fresh parse has an error, with `own`, the widget's highlighter that highlighted `text` last,
+    /// those of its texts replayed here (1b). `None` without a grammar.
+    pub(crate) fn expected_ranges(
+        text: &str,
+        filetype: &str,
+        own: Option<&Incremental>,
+        theme: &SyntaxTheme,
+    ) -> Option<(super::super::StyledRanges, bool)> {
+        let registry = Arc::clone(&lock(&REGISTRY));
+        let compiled = registry.resolve(filetype)?.compiled()?;
+        let source = if padded(compiled, text) { format!("{text}\n") } else { text.to_owned() };
+        let (captures, tree) = captures(&registry, compiled, &source, text.len(), None)?;
+        let error = tree.root_node().has_error();
+        let own = own.filter(|_| error).map(|own| {
+            assert_eq!(own.texts.last().map(String::as_str), Some(text), "the highlighter is of another text");
+            replay(&registry, compiled, &own.texts)
+        });
+        Some((super::super::styled_ranges(own.unwrap_or_else(|| named_ranges(text, &captures)), theme), error))
+    }
+
+    /// The highlight after `texts`: a fresh parse of the first, then each next text parsed reusing the tree, edited
+    /// by an edit worked out here rather than by `edit`.
+    fn replay(registry: &Registry, compiled: &Compiled, texts: &[String]) -> crate::syntax::NamedRanges {
+        let (mut tree, mut old, mut named) = (None::<Tree>, String::new(), Default::default());
+        for text in texts {
+            let new = if padded(compiled, text) { format!("{text}\n") } else { text.clone() };
+            if let Some(tree) = &mut tree {
+                tree.edit(&reference_edit(old.as_bytes(), new.as_bytes()));
+            }
+            let (captures, next) = captures(registry, compiled, &new, text.len(), tree.as_ref()).expect("a parse");
+            (named, tree, old) = (named_ranges(text, &captures), Some(next), new);
+        }
+        named
+    }
+
+    /// The design's edit by indices: the longest common start, then the longest common end of what follows it, with
+    /// positions counted from the start of each text.
+    fn reference_edit(old: &[u8], new: &[u8]) -> InputEdit {
+        let mut start = 0;
+        while start < old.len() && start < new.len() && old[start] == new[start] {
+            start += 1;
+        }
+        let mut tail = 0;
+        while start + tail < old.len()
+            && start + tail < new.len()
+            && old[old.len() - 1 - tail] == new[new.len() - 1 - tail]
+        {
+            tail += 1;
+        }
+        let position = |text: &[u8], at: usize| {
+            let line_start = text[..at].iter().rposition(|&byte| byte == b'\n').map_or(0, |line| line + 1);
+            Point { row: text[..at].iter().filter(|&&byte| byte == b'\n').count(), column: at - line_start }
+        };
+        InputEdit {
+            start_byte: start,
+            old_end_byte: old.len() - tail,
+            new_end_byte: new.len() - tail,
+            start_position: position(new, start),
+            old_end_position: position(old, old.len() - tail),
+            new_end_position: position(new, new.len() - tail),
+        }
+    }
 
     /// The captured text and names, for readable assertions.
     fn captured(source: &str, filetype: &str) -> Vec<(String, &'static str)> {
@@ -783,5 +973,20 @@ mod tests {
         let error = register("broken", Grammar::new(tree_sitter_rust::LANGUAGE, "(no_such_node) @x")).unwrap_err();
         assert!(matches!(error, GrammarError::Query(_)), "{error}");
         assert!(!has_grammar("broken"));
+        // A highlighter reuses its tree only with the grammar that parsed it: one registered since parses afresh.
+        let mut kept = Incremental::new("rv");
+        kept.update("let x = 1;".to_owned());
+        register("rust-variables", Grammar::new(tree_sitter_javascript::LANGUAGE, "(identifier) @variable")).unwrap();
+        let text = "let x = 1; y".to_owned();
+        assert_eq!(kept.update(text.clone()), Some(named_ranges(&text, &highlights(&text, "rv").unwrap())));
+        // An alias that stops resolving keeps no tree of an older text for when it resolves again (bigboi-1).
+        register_alias("c4-round", "rust");
+        let mut round = Incremental::new("c4-round");
+        round.update("fn main() { let x = 1; }\nfn g() {}\n".to_owned());
+        register_alias("c4-round", "c4-nothing");
+        assert!(round.update("// aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n".to_owned()).is_none());
+        register_alias("c4-round", "rust");
+        let text = "// aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n ".to_owned();
+        assert_eq!(round.update(text.clone()), Some(named_ranges(&text, &highlights(&text, "rust").unwrap())));
     }
 }
