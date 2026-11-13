@@ -58,6 +58,8 @@ pub const Counts = struct {
     tail_writes: u64 = 0,
     tail_write_bytes: u64 = 0,
     rope_rebuilds: u64 = 0,
+    /// Layer runs a `set` writes or moves, including the runs a growing layer reallocates.
+    layer_runs_copied: u64 = 0,
 };
 
 const enabled = builtin.is_test;

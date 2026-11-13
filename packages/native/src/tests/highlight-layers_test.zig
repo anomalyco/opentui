@@ -580,6 +580,33 @@ test "layers: a run with a dead link rejects the set and returns the references 
     try testing.expectEqual(@as(u32, 1), try links.getRefcount(live));
 }
 
+// Record 669: N one-run sets past the last run copy O(N) runs in total, growth included; the whole
+// layer set again is equal, so it changes and copies nothing.
+test "layers: one-run sets at the end copy linearly and an equal set copies nothing" {
+    var links = link.LinkPool.init(gpa);
+    defer links.deinit();
+    var copied: [2]u64 = undefined;
+    for ([_]u32{ 256, 512 }, &copied) |n, *total| {
+        var layers: hl.Layers = .{};
+        defer layers.reset(gpa, &links);
+        _ = text_work.take();
+        for (0..n) |index| {
+            const start: u32 = @intCast(2 * index);
+            try testing.expect(try layers.set(gpa, &links, 1, start, start + 1, &.{.{ .start_byte = start, .end_byte = start + 1, .group_set = 1 }}));
+        }
+        total.* = text_work.take().layer_runs_copied;
+        const same = try gpa.dupe(LayerRun, runsOf(&layers, 1));
+        defer gpa.free(same);
+        try testing.expect(!try layers.set(gpa, &links, 1, 0, std.math.maxInt(u32), same));
+        try testing.expectEqual(0, text_work.take().layer_runs_copied);
+        // One run restyled in the middle: the runs before and after it stay where they are.
+        same[n / 2].group_set = 2;
+        try testing.expect(try layers.set(gpa, &links, 1, 0, std.math.maxInt(u32), same));
+        try testing.expectEqual(1, text_work.take().layer_runs_copied);
+    }
+    try testing.expect(2 * copied[1] <= 5 * copied[0]);
+}
+
 /// A buffer with a style that defines `s1`..`s3` and a group set per name (ids 1..3).
 const Setup = struct {
     pools: TestPools,
@@ -1802,19 +1829,55 @@ test "layers: seeded span model, from-scratch cells and a forced full repaint ag
                 },
                 5, 6, 7 => {
                     const layer = random.uintLessThan(usize, layer_ids.len);
-                    const start = randomBoundary(random, text, 0, max);
-                    const end = randomBoundary(random, text, start, max);
-                    var buffer: [8]LayerRun = undefined;
+                    const kind = random.uintLessThan(u8, 3);
+                    // A random range; a tail set to the end of every text, as a streamed highlight
+                    // writes; or the layer's own runs set again, often equal.
+                    var start = randomBoundary(random, text, if (kind == 1) @intCast(text.len -| 12) else 0, max);
+                    var end = if (kind == 1) max else randomBoundary(random, text, start, max);
+                    var buffer: [64]LayerRun = undefined;
                     var kept: usize = 0;
-                    for (randomRuns(random, &buffer, start, end, &urls)) |run| {
+                    if (kind == 2) {
+                        if (random.boolean()) {
+                            start = 0;
+                            end = max;
+                        }
+                        try expectModelPaint(&setup, &model, &target, styles[0..]);
+                        for (runsOf(&tb.layers, layer_ids[layer])) |run| if (run.end_byte > start and run.start_byte < end and kept < buffer.len) {
+                            buffer[kept] = .{ .start_byte = @max(run.start_byte, start), .end_byte = @min(run.end_byte, end), .group_set = run.group_set, .link_id = run.link_id };
+                            kept += 1;
+                        };
+                        // One run dropped or restyled: the rest stays shared.
+                        const at = random.uintLessThan(usize, kept + 1);
+                        if (at < kept) switch (random.uintLessThan(u8, 4)) {
+                            0 => {
+                                std.mem.copyForwards(LayerRun, buffer[at .. kept - 1], buffer[at + 1 .. kept]);
+                                kept -= 1;
+                            },
+                            1 => buffer[at].group_set = 1 + random.uintLessThan(u32, SpanModel.sets.len),
+                            else => {},
+                        };
+                    } else for (randomRuns(random, buffer[0..8], start, @min(end, @as(u32, @intCast(text.len))), &urls)) |run| {
                         if (run.start_byte < text.len and text[run.start_byte] & 0xC0 == 0x80) continue;
                         if (run.end_byte < text.len and text[run.end_byte] & 0xC0 == 0x80) continue;
                         buffer[kept] = run;
                         buffer[kept].group_set = 1 + random.uintLessThan(u32, SpanModel.sets.len);
                         kept += 1;
                     }
+                    const before = try gpa.dupe(LayerRun, runsOf(&tb.layers, layer_ids[layer]));
+                    defer gpa.free(before);
+                    const generation = tb.span_generation;
                     const result = tb.setLayer(layer_ids[layer], start, end, buffer[0..kept]);
-                    if (try model.layers.set(layer, start, end, buffer[0..kept])) try testing.expectError(error.LayerLimit, result) else try result;
+                    if (try model.layers.set(layer, start, @min(end, model.layers.byte_count), buffer[0..kept])) try testing.expectError(error.LayerLimit, result) else try result;
+                    // The span stamp moves exactly when a run changed; an equal set builds no span.
+                    const same = std.mem.eql(u8, std.mem.sliceAsBytes(before), std.mem.sliceAsBytes(runsOf(&tb.layers, layer_ids[layer])));
+                    try testing.expectEqual(same, generation == tb.span_generation);
+                    if (same and kind == 2) {
+                        const screen = try setup.screen(target.viewport.width, target.viewport.height);
+                        defer screen.deinit();
+                        _ = text_work.take();
+                        try screen.drawTextBufferChecked(target.view, 0, 0);
+                        try testing.expectEqual(0, text_work.take().line_span_builds);
+                    }
                 },
                 8, 9 => if (room) {
                     const insert = inserts[random.uintLessThan(usize, inserts.len)];
