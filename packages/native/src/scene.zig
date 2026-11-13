@@ -2237,6 +2237,14 @@ pub const Scene = struct {
         return self.reaches(null, value);
     }
 
+    /// Whether the last frame that finished paint recorded the node, or the presented frame once a
+    /// later finished frame was cancelled (the root has no record).
+    pub fn paintedLatest(self: *const Scene, value: *const native.NativeRenderable) bool {
+        const records = value.scene_node.?.records;
+        const frame = if (self.cancelled_paint) self.presented_records_frame else self.finished_frame;
+        return frame != 0 and (records[0].frame == frame or records[1].frame == frame);
+    }
+
     /// Whether the hook walk reaches the node: it and its ancestors are shown up to the root and,
     /// with `objects`, each culling parent selects the branch at its current offset and child
     /// count, as selectChildren does. A child moved since its last layout has no position yet.

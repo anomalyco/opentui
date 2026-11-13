@@ -6,10 +6,9 @@
 ```tsx
 <markdown
   syntaxStyle={syntax()}
-  renderNode={plugins.markdown()}
+  renderBlock={plugins.markdown()}
   content={text}
   streaming={!completed}
-  internalBlockMode="top-level"
   tableOptions={{ style: "grid", cellPaddingX: 1 }}
   conceal={markdownMode === "rendered"}
   fg={theme.markdown.text}
@@ -17,11 +16,9 @@
 />
 ```
 
-The Rust widget keeps its own parser and its own native widgets per block. It
-does not copy Core's design, which renders text blocks as tree-sitter
-Markdown with conceal metadata in a `Code` renderable, because that is a Bun
-workaround: a parse in JavaScript, a second one in a worker. The goal is the
-same frame, from one parse.
+Both run on the native Markdown engine: it parses the document once and
+writes paragraphs and headings to their text nodes; each binding builds its
+own widgets per block. The goal is the same frame in both.
 
 The API changes are additive.
 

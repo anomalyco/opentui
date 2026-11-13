@@ -343,6 +343,12 @@ export class NativeScene {
     return this.driver.renderLib.sceneReachesHooks(this.driver.context, node._getSceneHandle(this))
   }
 
+  /** Whether the latest paint list held the node (see `ot_scene_painted`). */
+  painted(node: { _getSceneHandle(owner: NativeScene): SceneNodeHandle }): boolean {
+    this.flushStaged()
+    return this.driver.renderLib.scenePainted(this.driver.context, node._getSceneHandle(this))
+  }
+
   markDirty(node: { _getSceneHandle(owner: NativeScene): SceneNodeHandle }): void {
     this.flushStaged()
     this.driver.renderLib.sceneMarkDirty(this.driver.context, node._getSceneHandle(this))
@@ -415,6 +421,17 @@ export class NativeScene {
     } else {
       this.driver.renderLib.sceneSetStyledText(this.driver.context, node, content)
     }
+  }
+
+  /** @internal A Markdown document binds the text node after its staged writes. */
+  textNode(renderable: Renderable): SceneNodeHandle {
+    this.flushStaged()
+    return renderable._getSceneHandle(this)
+  }
+
+  /** @internal The byte of the text the latest finished frame drew at a cell, or undefined. */
+  textByteAt(renderable: Renderable, x: number, y: number): number | undefined {
+    return this.driver.renderLib.sceneGetTextByteAt(this.driver.context, this.textNode(renderable), x, y)
   }
 
   /** @internal Text options commit together without exposing the node-owned buffer or view. */

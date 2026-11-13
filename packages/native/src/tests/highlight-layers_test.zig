@@ -287,6 +287,27 @@ test "group sets: every registration clears the composition cache" {
     try testing.expectEqual(red, style.resolveGroupSet(&sets, id).fg.?);
 }
 
+test "group sets: markup.strikethrough strikes unless its definition supplies the bit" {
+    var sets = hl.GroupSets.init(gpa);
+    defer sets.deinit();
+    const style = try ss.SyntaxStyle.init(gpa);
+    defer style.deinit();
+    const strike = ansi.TextAttributes.STRIKETHROUGH;
+    const bold = ansi.TextAttributes.BOLD;
+    const struck = try sets.intern(&.{"markup.strikethrough"});
+    const under_bold = try sets.intern(&.{ "markup.strikethrough", "markup.strong" });
+    // No definition, then the fallback's color with the strike (Core supplies only the attributes a theme names),
+    // then a name after it, then a definition that clears it.
+    try testing.expectEqual(@as(u32, strike), style.resolveGroupSet(&sets, struck).attributes);
+    _ = try style.registerStyleDefinition("markup", .{ .fg = green, .bg = null, .attributes = bold, .supplied_attributes = bold });
+    const fallback = style.resolveGroupSet(&sets, struck);
+    try testing.expectEqualDeep(.{ green, @as(u32, bold | strike) }, .{ fallback.fg.?, fallback.attributes });
+    _ = try style.registerStyleDefinition("markup.strong", .{ .fg = null, .bg = null, .attributes = 0, .supplied_attributes = bold });
+    try testing.expectEqual(@as(u32, strike), style.resolveGroupSet(&sets, under_bold).attributes);
+    _ = try style.registerStyleDefinition("markup.strikethrough", .{ .fg = red, .bg = null, .attributes = 0, .supplied_attributes = strike });
+    try testing.expectEqual(@as(u32, 0), style.resolveGroupSet(&sets, struck).attributes);
+}
+
 const RunSpec = struct { u32, u32, u32 };
 
 fn runsOf(layers: *const hl.Layers, layer_id: u32) []const LayerRun {

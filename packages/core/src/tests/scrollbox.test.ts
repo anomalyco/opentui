@@ -15,6 +15,8 @@ import { CodeRenderable } from "../renderables/Code.js"
 import { MarkdownRenderable } from "../renderables/Markdown.js"
 import { LinearScrollAccel, MacOSScrollAccel, type ScrollAcceleration } from "../lib/scroll-acceleration.js"
 import { SyntaxStyle } from "../syntax-style.js"
+import { forceRenderStatus } from "../testing/harness.js"
+import { NativeSessionRenderStatus } from "../zig.js"
 
 // Test accelerator that returns a constant multiplier
 class ConstantScrollAccel implements ScrollAcceleration {
@@ -50,6 +52,14 @@ afterEach(async () => {
     await client.destroy()
   }
 })
+
+interface CodeView {
+  box: ScrollBoxRenderable
+  code: CodeRenderable[]
+  frame: () => Promise<string>
+  settle: () => Promise<void>
+  client: { release(): void; calls: number }
+}
 
 function createMockTreeSitterClient(): MockTreeSitterClient {
   const client = new MockTreeSitterClient()
@@ -1217,7 +1227,6 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
       const markdown = new MarkdownRenderable(testRenderer, {
         syntaxStyle,
         streaming: true,
-        internalBlockMode: "top-level",
         content: `PARAGRAPH_${i}\n\n\`\`\`ts\nconst CODE_${i} = ${i}\n\`\`\``,
         treeSitterClient: mockTreeSitterClient,
       })
@@ -1260,23 +1269,18 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
   // mounted out of view, or moved out by the same tick's layout), it measures as the block grown in view does, never
   // paints raw text, and then shows the same.
   const lines = (count: number, prefix = "") => [1, 2, 3, 4, 5].slice(0, count).map((i) => `${prefix}line ${i}`)
+  // Markdown prose is written natively, culled or not, and never waits for a highlight, so only code blocks run here.
   const grownOutOfView: [string, boolean, (count: number) => string][] = [
     ["code", true, (count) => lines(count).join("\n")],
-    ["paragraph", false, (count) => lines(count).join("\n")],
     ["fence", true, (count) => ["```ts", ...lines(count), "```"].join("\n")],
-    ...[true, false].flatMap((streaming): [string, boolean, (count: number) => string][] => [
-      ["quote", streaming, (count) => lines(count, "> ").join("\n")],
-      ["list", streaming, (count) => `- ${lines(count).join("\n")}`],
-    ]),
   ]
   test.each(grownOutOfView)("a %s block (streaming %p) grown out of view", async (kind, streaming, source) => {
     // In the write's tick, a box inserted above, a last child the view follows, or a shrunk view moves the block out.
     const moved = ["pushed", "followed", "shrunk"]
     const run = async (first: boolean, mode: string) => {
       const client = createMockTreeSitterClient()
-      // The highlight conceals each block's first two characters, so text painted unhighlighted differs. Streamed prose
-      // shows a preview, which equals a highlight without captures.
-      const previewed = streaming && (kind === "quote" || kind === "list")
+      // The highlight conceals each block's first two characters, so text painted unhighlighted differs.
+      const previewed = false
       client.setMockResult({ highlights: previewed ? [] : [[0, 2, "conceal", { conceal: "" }]] })
       const syntaxStyle = SyntaxStyle.create(testRenderer.nativeScene)
       const scrollbox = new ScrollBoxRenderable(testRenderer, { width: 40, height: 6, stickyStart: "bottom" })
@@ -1287,7 +1291,7 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
       const target =
         kind === "code"
           ? new CodeRenderable(testRenderer, { ...options, filetype: "typescript", drawUnstyledText: false })
-          : new MarkdownRenderable(testRenderer, { ...options, internalBlockMode: "top-level" })
+          : new MarkdownRenderable(testRenderer, options)
       const mount = () => scrollbox.insertBefore(target, first ? scrollbox.getChildren()[0] : undefined)
       mount()
       const shown = first ? 0 : Infinity
@@ -1318,15 +1322,26 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
       if (mode === "followed") scrollbox.add(spacer)
       if (mode === "shrunk") scrollbox.height = 2
       await renderOnce()
-      // In view, where the scene runs its hooks, the block shows its last highlight until the next one lands. Accepted
-      // cost of the moved modes: an afterLayout callback asked after the write that scrolls the block back in the same
-      // frame shows it blank until then, since the block's own check, asked first, saw it culled.
-      // A streamed preview shows the new text at once.
+      // In view, where the scene runs its hooks, the block shows its last highlight until the next one lands. A streamed
+      // preview shows the new text at once.
       if (mode === "shown" && !previewed) expect(captureCharFrame()).toBe(before)
       if (mode === "shown") await settle()
+      // Painted in the frame before, a block that the write's frame culls (hidden in its tick, or moved out of view)
+      // keeps its highlight's height through that frame; the next one measures its text. Hidden, a first block grows
+      // into view, and starts its highlight, only then (a streamed preview shows the new text at once).
+      if (mode === "hidden" || moved.includes(mode)) {
+        if (mode === "hidden" && first && !previewed) expect(client.isHighlighting()).toBe(false)
+        await renderOnce()
+      }
       const height = scrollbox.scrollHeight - (spacer.parent ? 6 : 0)
-      // Grown, a first block reaches into the view, where the scene highlights it; a last one stays out of view.
-      if (mode !== "shown") expect(client.isHighlighting()).toBe(first && !moved.includes(mode))
+      // Grown, a first block reaches into the view, where the scene highlights it; a last one stays out of view. A
+      // painted block that its write's frame culls below the view (moved, or hidden in the tick) starts its highlight
+      // there, for a callback that scrolls it back; one moved above (the view follows a new last child) does not, so
+      // the rows in view do not move. A streamed preview shows the new text at once: only a block that grows into view
+      // starts its highlight.
+      const below = (moved.includes(mode) && mode !== "followed") || mode === "hidden"
+      const starts = previewed ? first && !moved.includes(mode) : first || below
+      if (mode !== "shown") expect([mode, client.isHighlighting()]).toEqual([mode, starts])
       spacer.destroy()
       scrollbox.stickyScroll = false
       scrollbox.height = 6
@@ -1345,8 +1360,278 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
       const shown = await run(first, "shown")
       // A first block is in view only at the top, where a new last child or a two-row view keeps it.
       const modes = ["culled", "hidden", "detached", ...moved.slice(0, first ? 1 : 3)]
-      for (const mode of modes) expect(await run(first, mode)).toEqual(shown)
+      for (const mode of modes) expect([first, mode, await run(first, mode)]).toEqual([first, mode, shown])
     }
+  })
+
+  // Highlighted streaming Code blocks without unstyled text, between 15 text rows above and below in a 6-row view. The
+  // worker hides lines that start with "#", so a highlight has fewer rows than its source; it answers on `release`.
+  // Each row returns a trace of what the frames show; none may paint blank or old text that a block no longer holds.
+  class HashClient extends MockTreeSitterClient {
+    answers: (() => void)[] = []
+    calls = 0
+    override async highlightOnce(content: string) {
+      this.calls++
+      const { promise, resolve } = Promise.withResolvers<{
+        highlights: [number, number, string, { conceal: string; concealLines: string }][]
+      }>()
+      this.answers.push(() => {
+        let start = 0
+        const hidden = content.split("\n").flatMap((line) => {
+          const at = start
+          start += line.length + 1
+          return line.startsWith("#")
+            ? [[at, at + line.length + 1, "conceal", { conceal: "", concealLines: "" }] as const]
+            : []
+        })
+        resolve({ highlights: hidden.map(([a, b, c, d]) => [a, b, c, d]) })
+      })
+      return promise
+    }
+    release() {
+      for (const answer of this.answers.splice(0)) answer()
+    }
+  }
+  const numbered = (count: number, prefix: string) =>
+    [...Array(count).keys()].map((i) => `${prefix}${i + 1}`).join("\n")
+  test.each<[string, string[], (view: CodeView) => Promise<string>, string]>([
+    // Two blocks change in one tick: the first shrinks out of view above and rows mounted before the second keep it in
+    // place, so the second never leaves the screen. The second, painted in the frame before, keeps its highlight.
+    [
+      "a block kept in place while the block above it shrinks",
+      [`#h\n${numbered(16, "a")}`, "#h\nB"],
+      async ({ box, code, frame, settle }) => {
+        box.scrollTo(15)
+        await settle()
+        box.scrollTo(31)
+        await settle()
+        code[0].content = "#h\na"
+        code[1].content = `#h\nB\n${numbered(3, "b")}`
+        box.insertBefore(new BoxRenderable(testRenderer, { height: 14, flexShrink: 0 }), code[1])
+        return `${await frame()} ${await frame()}`
+      },
+      "B B",
+    ],
+    // The same with the rows mounted first: the order of the changes does not matter.
+    [
+      "a block kept in place while the block above it shrinks, rows first",
+      [`#h\n${numbered(16, "a")}`, "#h\nB"],
+      async ({ box, code, frame, settle }) => {
+        box.scrollTo(15)
+        await settle()
+        box.scrollTo(31)
+        await settle()
+        box.insertBefore(new BoxRenderable(testRenderer, { height: 14, flexShrink: 0 }), code[1])
+        code[0].content = "#h\na"
+        code[1].content = `#h\nB\n${numbered(3, "b")}`
+        return `${await frame()} ${await frame()}`
+      },
+      "B B",
+    ],
+    // With fewer rows the second block leaves the view. Painted in the frame before, it keeps its highlight's height
+    // through the frame that culls it; the next frame measures its new source.
+    [
+      "a block that leaves the view as the block above it shrinks, rows first",
+      [`#h\n${numbered(16, "a")}`, "#h\nB"],
+      async ({ box, code, frame, settle }) => {
+        box.scrollTo(15)
+        await settle()
+        box.scrollTo(31)
+        await settle()
+        box.insertBefore(new BoxRenderable(testRenderer, { height: 1, flexShrink: 0 }), code[1])
+        code[0].content = "#h\na"
+        code[1].content = `#h\nB\n${numbered(3, "b")}`
+        await frame()
+        const culled = code[1].height
+        await frame()
+        return `${culled} ${code[1].height}`
+      },
+      "1 5",
+    ],
+    // Without the rows the second block leaves the view, and the frame after measures its new source.
+    [
+      "a block that leaves the view as the block above it shrinks",
+      [`#h\n${numbered(16, "a")}`, "#h\nB"],
+      async ({ box, code, frame, settle }) => {
+        box.scrollTo(15)
+        await settle()
+        box.scrollTo(31)
+        await settle()
+        code[0].content = "#h\na"
+        code[1].content = `#h\nB\n${numbered(3, "b")}`
+        await frame()
+        const culled = `${code[1].height} ${box.scrollHeight}`
+        await frame()
+        return `${culled}, ${code[1].height} ${box.scrollHeight}`
+      },
+      "1 33, 5 37",
+    ],
+    // A box hidden over a change: its block holds the new source, and shows nothing old when the box shows again.
+    [
+      "a block written while its box is hidden",
+      ["#h\nTitle"],
+      async ({ box, code, frame, settle }) => {
+        box.scrollTo(15)
+        await settle()
+        box.visible = false
+        await frame()
+        // The frame before did not paint the block, so the write shows the new source at once.
+        box.add(new TextRenderable(testRenderer, { content: "new", flexShrink: 0 }))
+        code[0].content = `#h\n${numbered(4, "n")}`
+        await settle()
+        box.visible = true
+        return `${code[0].plainText.split("\n").length} ${await frame()}`
+      },
+      "5 -",
+    ],
+    // An afterLayout callback that holds the view by the growth reads the new height of a culled block changed before
+    // the frame.
+    [
+      "a growth hold over a culled block that changed",
+      ["#h\nconst a"],
+      async ({ box, code, frame, settle }) => {
+        box.scrollTo(15)
+        await settle()
+        box.scrollTo(20)
+        await settle()
+        const before = box.scrollHeight
+        code[0].content = `#h\n${numbered(4, "n")}`
+        box.afterLayout(() => box.scrollBy(box.scrollHeight - before))
+        return frame()
+      },
+      "below 4",
+    ],
+    // Scrolled away while a request is in flight, the block starts no extra one that a quick scroll back would wait
+    // for: the request it starts in view lands with the next answer.
+    [
+      "a stream scrolled away and back",
+      ["#h\nv1"],
+      async ({ box, code, frame, settle, client }) => {
+        box.scrollTo(15)
+        await settle()
+        code[0].content = "#h\nv2"
+        await frame()
+        code[0].content = "#h\nv3"
+        box.scrollTo(0)
+        await frame()
+        client.release()
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        code[0].content = "#h\nv4"
+        box.scrollTo(15)
+        await frame()
+        client.release()
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        return frame()
+      },
+      "v4",
+    ],
+    // A frame that the terminal skips never reaches the screen: the block keeps its height through the first presented
+    // frame that culls it, and the frame after measures its text.
+    [
+      "a block culled in a frame the terminal skips",
+      ["#h\nTitle"],
+      async ({ box, code, frame, settle }) => {
+        box.scrollTo(15)
+        await settle()
+        code[0].content = `#h\nTitle\n${numbered(3, "n")}`
+        box.scrollTo(0)
+        const restore = forceRenderStatus(testRenderer, () => NativeSessionRenderStatus.Skipped)
+        await frame()
+        restore()
+        await frame()
+        const presented = code[0].height
+        await frame()
+        return `${presented} ${code[0].height}`
+      },
+      "1 5",
+    ],
+    // A block written as its box hides starts no highlight (code.mdx: none while an ancestor is hidden).
+    [
+      "a block written as its box hides",
+      ["#h\nTitle"],
+      async ({ box, code, frame, settle, client }) => {
+        box.scrollTo(15)
+        await settle()
+        const calls = client.calls
+        code[0].content = "#h\nTitle\nmore"
+        box.visible = false
+        await frame()
+        await frame()
+        return `${client.calls - calls}`
+      },
+      "0",
+    ],
+    // A theme change keeps what a block paints, and its height, and asks the worker; the new highlight replaces it.
+    [
+      "a theme change on a block in view, without streaming",
+      ["#h\na\n#h\nb"],
+      async ({ box, code, frame, settle, client }) => {
+        code[0].streaming = false
+        box.scrollTo(15)
+        await settle()
+        const calls = client.calls
+        code[0].syntaxStyle = SyntaxStyle.create(testRenderer.nativeScene)
+        return `${await frame()} ${code[0].height} ${client.calls - calls}`
+      },
+      "a 2 1",
+    ],
+    // Culled, the block keeps its height through a theme change and asks the worker once back in view, where it paints
+    // its last highlight until the new one lands.
+    [
+      "a theme change on a culled block",
+      ["#h\na\n#h\nb"],
+      async ({ box, code, frame, settle, client }) => {
+        code[0].drawUnstyledText = true
+        box.scrollTo(15)
+        await settle()
+        box.scrollTo(0)
+        await settle()
+        const calls = client.calls
+        code[0].syntaxStyle = SyntaxStyle.create(testRenderer.nativeScene)
+        await frame()
+        await frame()
+        const culled = `${code[0].height} ${client.calls - calls}`
+        box.scrollTo(15)
+        return `${culled} ${await frame()}`
+      },
+      "2 0 a",
+    ],
+  ])("%s", async (_, sources, run, expected) => {
+    const client = new HashClient()
+    mockTreeSitterClients.push(client)
+    const box = new ScrollBoxRenderable(testRenderer, { width: 30, height: 6 })
+    testRenderer.root.add(box)
+    const rows = (name: string) => {
+      for (let i = 0; i < 15; i++) box.add(new TextRenderable(testRenderer, { content: `${name} ${i}`, flexShrink: 0 }))
+    }
+    rows("above")
+    const syntaxStyle = SyntaxStyle.create(testRenderer.nativeScene)
+    const options = {
+      filetype: "markdown",
+      syntaxStyle,
+      streaming: true,
+      drawUnstyledText: false,
+      treeSitterClient: client,
+    }
+    const code = sources.map(
+      (content) => new CodeRenderable(testRenderer, { ...options, content, width: "100%", flexShrink: 0 }),
+    )
+    for (const block of code) box.add(block)
+    rows("below")
+    const frame = async () => {
+      await renderOnce()
+      return captureCharFrame().split("\n")[0].slice(0, 20).trim() || "-"
+    }
+    const settle = async () => {
+      for (let pass = 0; pass < 4; pass++) {
+        await renderOnce()
+        client.release()
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
+      await renderOnce()
+    }
+    expect(await run({ box, code, frame, settle, client })).toBe(expected)
+    box.destroyRecursively()
   })
 
   // OpenCode's grouped entries: an entry in a group box mounted or grown out of view reads its layout as in view, also

@@ -58,7 +58,6 @@ async function render(content: string, conceal: boolean, chunks: string[]) {
     syntaxStyle,
     content: chunks.length === 1 ? content : "",
     streaming: chunks.length > 1,
-    internalBlockMode: "top-level",
     tableOptions: { style: "grid", cellPaddingX: 1 },
     conceal,
   })
