@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 4c3590e542387e190703ab553182e3f06b022ba38575934c226e3f9920ed171d
+// ABI audit SHA-256: 321fbad17c2e96acd8296cd4cc86d6bfe87ec13a0fa365efe14fac72de470be3
 
 export const OT_CONTEXT_ABI_VERSION = 2
 export const OT_OK = 0
@@ -1055,6 +1055,7 @@ export const nativeSymbols = {
   ot_text_buffer_set_tab_width: { args: ["ptr", "buffer", "u32"], returns: "i32" },
   ot_text_buffer_highlight: { args: ["ptr", "buffer", "u32", "u32", "ptr"], returns: "i32" },
   ot_text_buffer_get_highlights: { args: ["ptr", "buffer", "u32", "ptr", "u32", "buffer"], returns: "i32" },
+  ot_text_buffer_set_layer: { args: ["ptr", "buffer", "u32", "u32", "u32", "ptr", "u32"], returns: "i32" },
   ot_text_buffer_view_set_viewport: { args: ["ptr", "buffer", "buffer", "u32"], returns: "i32" },
   ot_text_buffer_view_command: { args: ["ptr", "buffer", "u32", "u32"], returns: "i32" },
   ot_text_buffer_view_set_tab_color: { args: ["ptr", "buffer", "ptr"], returns: "i32" },
