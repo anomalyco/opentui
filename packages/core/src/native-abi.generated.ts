@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 6407ad7d68344c74a21fc6896b6e3ca8d6c1b6b5fc765d4d2bc7e013b76681fb
+// ABI audit SHA-256: 111899fbb7992c660a7de40a005f696ac0f23c34a8fe3170fcca189705b37bff
 
 export const OT_CONTEXT_ABI_VERSION = 2
 export const OT_OK = 0
@@ -438,6 +438,7 @@ export const OT_EDIT_POSITION_PREV_CHAR = 8
 export const OT_EDITOR_STYLE_FOREGROUND = 1
 export const OT_EDITOR_STYLE_BACKGROUND = 2
 export const OT_EDITOR_STYLE_ATTRIBUTES = 4
+export const OT_EDITOR_STYLE_ATTRIBUTE_MASK = 8
 export const OT_EDIT_HIGHLIGHT_ADD_LINE = 0
 export const OT_EDIT_HIGHLIGHT_ADD_RANGE = 1
 export const OT_EDIT_HIGHLIGHT_REMOVE_REF = 2
@@ -2834,6 +2835,7 @@ export const nativeConstants = {
   OT_EDITOR_STYLE_FOREGROUND: 1,
   OT_EDITOR_STYLE_BACKGROUND: 2,
   OT_EDITOR_STYLE_ATTRIBUTES: 4,
+  OT_EDITOR_STYLE_ATTRIBUTE_MASK: 8,
   OT_EDIT_HIGHLIGHT_ADD_LINE: 0,
   OT_EDIT_HIGHLIGHT_ADD_RANGE: 1,
   OT_EDIT_HIGHLIGHT_REMOVE_REF: 2,

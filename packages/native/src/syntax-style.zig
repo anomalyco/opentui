@@ -12,6 +12,9 @@ pub const StyleDefinition = struct {
     fg: ?RGBA,
     bg: ?RGBA,
     attributes: u32,
+    /// The attribute bits this definition sets or clears when a group set composes it; the
+    /// others pass through from earlier names. `attributes` lies inside it.
+    supplied_attributes: u8 = 0xFF,
 };
 
 pub const SyntaxStyleError = error{
@@ -104,6 +107,7 @@ pub const SyntaxStyle = struct {
 
     pub fn registerStyleDefinition(self: *SyntaxStyle, name: []const u8, definition: StyleDefinition) SyntaxStyleError!u32 {
         text_work.add(.style_registrations, 1);
+        std.debug.assert(definition.attributes & ~@as(u32, definition.supplied_attributes) == 0);
         if (self.name_to_id.get(name)) |existing_id| {
             self.id_to_style.getPtr(existing_id).?.* = definition;
             self.group_set_cache.clearRetainingCapacity();

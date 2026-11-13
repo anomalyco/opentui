@@ -3656,7 +3656,7 @@ pub const Context = struct {
         try self.beginMutation();
         defer self.mutating = false;
         if (!std.unicode.utf8ValidateSlice(name)) return error.InvalidUnicode;
-        if (definition.attributes & ~ansi.TextAttributes.ATTRIBUTE_BASE_MASK != 0) return error.InvalidOptions;
+        if (definition.attributes & ~@as(u32, definition.supplied_attributes) != 0) return error.InvalidOptions;
         if (definition.fg) |color| try buf.validateColor(color);
         if (definition.bg) |color| try buf.validateColor(color);
         const style = try self.getSyntaxStyle(handle);

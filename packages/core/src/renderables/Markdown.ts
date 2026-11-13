@@ -1,5 +1,5 @@
 import { Renderable, type RenderableOptions, type NativeRenderableIntegration } from "../Renderable.js"
-import { type RenderContext, type TerminalCapabilities } from "../types.js"
+import { TextAttributes, type RenderContext, type TerminalCapabilities } from "../types.js"
 import { SyntaxStyle, type StyleDefinition } from "../syntax-style.js"
 import type { TextChunk } from "../text-buffer.js"
 import { createTextAttributes } from "../utils.js"
@@ -766,14 +766,7 @@ export class MarkdownRenderable extends Renderable {
       text,
       fg: style?.fg,
       bg: style?.bg,
-      attributes: style
-        ? createTextAttributes({
-            bold: style.bold,
-            italic: style.italic,
-            underline: style.underline,
-            dim: style.dim,
-          })
-        : 0,
+      attributes: createTextAttributes(style),
       link,
     }
   }
@@ -871,17 +864,24 @@ export class MarkdownRenderable extends Renderable {
         }
         break
 
-      case "del":
+      case "del": {
         if (!this._conceal) {
           chunks.push(this.createChunk("~~", "markup.strikethrough", link))
         }
+        const first = chunks.length
         for (const child of token.tokens) {
           this.renderInlineTokenWithStyle(child as MarkedToken, chunks, "markup.strikethrough", link)
+        }
+        // Children with their own style (**x** inside ~~...~~) stay struck, as in the tree-sitter cascade.
+        if (this.getStyle("markup.strikethrough")?.strikethrough) {
+          for (const chunk of chunks.slice(first))
+            chunk.attributes = (chunk.attributes ?? 0) | TextAttributes.STRIKETHROUGH
         }
         if (!this._conceal) {
           chunks.push(this.createChunk("~~", "markup.strikethrough", link))
         }
         break
+      }
 
       case "link": {
         const linkHref = { url: token.href }
@@ -1683,19 +1683,16 @@ export class MarkdownRenderable extends Renderable {
     this.renderInlineContent(cell.tokens, chunks)
 
     const headingStyle = this.getStyle("markup.heading") || this.getStyle("default")
-    const headingAttributes = createTextAttributes({
-      bold: headingStyle?.bold,
-      italic: headingStyle?.italic,
-      underline: headingStyle?.underline,
-      dim: headingStyle?.dim,
-    })
+    const headingAttributes = headingStyle ? createTextAttributes(headingStyle) : 0
+    // An inline ~~strike~~ stays unless the heading style sets strikethrough itself.
+    const inlineStrike = headingStyle?.strikethrough === undefined ? TextAttributes.STRIKETHROUGH : 0
     const head = (cells: TextChunk[]) =>
       headingStyle
         ? cells.map((chunk) => ({
             ...chunk,
             fg: headingStyle.fg ?? chunk.fg,
             bg: headingStyle.bg ?? chunk.bg,
-            attributes: headingAttributes,
+            attributes: headingAttributes | ((chunk.attributes ?? 0) & inlineStrike),
           }))
         : cells
     // The hook sees a header cell's content in the header style, as Rust's does.

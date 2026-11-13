@@ -101,8 +101,8 @@ pub const GroupSets = struct {
     }
 };
 
-/// Later names win per field: fg and bg when set, attribute bits added. A missing name falls back
-/// to its first dotted component, as Core's `SyntaxStyle.getStyle` does.
+/// Later names win per field: fg and bg when set, and each attribute bit the definition supplies.
+/// A missing name falls back to its first dotted component, as Core's `SyntaxStyle.getStyle` does.
 pub fn compose(style: *const ss.SyntaxStyle, sets: *const GroupSets, id: u32) ss.StyleDefinition {
     var result: ss.StyleDefinition = .{ .fg = null, .bg = null, .attributes = 0 };
     var index: u32 = 0;
@@ -114,7 +114,7 @@ pub fn compose(style: *const ss.SyntaxStyle, sets: *const GroupSets, id: u32) ss
         };
         if (definition.fg) |fg| result.fg = fg;
         if (definition.bg) |bg| result.bg = bg;
-        result.attributes |= definition.attributes;
+        result.attributes = (result.attributes & ~@as(u32, definition.supplied_attributes)) | definition.attributes;
     }
     return result;
 }
