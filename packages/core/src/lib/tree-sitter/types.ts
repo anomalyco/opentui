@@ -69,6 +69,8 @@ export type TreeSitterWorkerRequest =
   | { type: "RESET_BUFFER"; bufferId: number; version: number; content: string; edits: Edit[] }
   | { type: "DISPOSE_BUFFER"; bufferId: number }
   | { type: "ONESHOT_HIGHLIGHT"; content: string; filetype: string; messageId: string }
+  | { type: "APPEND_HIGHLIGHT"; copyId: number; offset: number; text: string; filetype: string; messageId: string }
+  | { type: "DISPOSE_COPY"; copyId: number }
   | { type: "UPDATE_DATA_PATH"; dataPath: string; messageId: string }
   | { type: "CLEAR_CACHE"; messageId: string }
 

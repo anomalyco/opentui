@@ -258,6 +258,18 @@ export class TextBuffer {
     this.highlight(NativeEditHighlightOperation.ClearAll)
   }
 
+  /** @internal The Context's group-set id for an ordered list of style names; later names win. */
+  public _groupSet(names: readonly string[]): number {
+    this.guard()
+    return this.lib.contextGroupSet(this.native.handle.context, names)
+  }
+
+  /** @internal Replaces layer `layerId` in `[start, end)` UTF-8 bytes with (start, end, group set) runs. */
+  public _setLayer(layerId: number, start: number, end: number, runs: Uint32Array): void {
+    this.guard()
+    this.lib.contextTextBufferSetLayer(this.native.handle.context, this.native.handle, layerId, start, end, runs)
+  }
+
   public getLineHighlights(lineIdx: number): Array<Highlight> {
     this.guard()
     return this.lib.contextTextBufferGetHighlights(this.native.handle.context, this.native.handle, lineIdx)

@@ -48,6 +48,8 @@ export interface CodeOptions extends TextBufferOptions {
 type ConcealLineRange = [start: number, end: number]
 
 const PREVIEW = -2
+// The layer a streamed fence's syntax goes in, as in Rust's editor.
+const SYNTAX_LAYER = 1
 
 export class CodeRenderable extends TextBufferRenderable {
   static override readonly nativeIntegration: NativeRenderableIntegration = {
@@ -89,6 +91,12 @@ export class CodeRenderable extends TextBufferRenderable {
   // Temporary rendered-line -> source-line map for concealment; native extmarks should replace this.
   private _renderedLineSources?: number[]
   private _mappedLineInfo?: LineInfo
+  // While set, the buffer holds `_content` and grows only by appends; the worker's copy `id` holds its first `sent`
+  // units, and each reply writes the syntax layer for the prefix it covers (record 312).
+  private _deltas?: { client: TreeSitterClient; id: number; filetype: string; sent: number }
+  private _groupSets = new Map<string, number>()
+  private static nextCopy = 0
+  private _streamsDeltas = false
 
   protected _contentDefaultOptions = {
     content: "",
@@ -218,7 +226,17 @@ export class CodeRenderable extends TextBufferRenderable {
   }
 
   private writeContent(value: string): void {
+    const delta = this._deltas && value.startsWith(this._content) ? value.slice(this._content.length) : undefined
     this._content = value
+    if (delta !== undefined) {
+      this.textBuffer.append(delta)
+      this._version++
+      this.setHighlightsDirty(true)
+      this.updateTextInfo()
+      this.requestRender()
+      return
+    }
+    this.stopDeltas()
     // Streaming keeps a painted highlight until the next one lands.
     if (this._streaming && this._shouldRenderTextBuffer && this._shownVersion >= 0 && !this._drawUnstyledText) {
       this.invalidateHighlights()
@@ -231,10 +249,45 @@ export class CodeRenderable extends TextBufferRenderable {
     } else {
       this.textBuffer.setText(value)
       this._shownVersion = -1
+      if (this._streamsDeltas && this.deltasAllowed()) {
+        const id = CodeRenderable.nextCopy++
+        this._deltas = { client: this._treeSitterClient, id, filetype: this._filetype!, sent: 0 }
+      }
     }
     this.invalidateHighlights()
     this.setRenderedLineSources(undefined)
     this.updateTextInfo()
+  }
+
+  // Only a streamed Markdown fence on the default path: no hook, no conceal, no preview. Markdown ends a fence's lines
+  // with "\n" alone, so its UTF-8 offsets are native's.
+  private deltasAllowed(): boolean {
+    return (
+      this._streaming &&
+      !!this._filetype &&
+      !this._conceal &&
+      !this._onHighlight &&
+      !this._onChunks &&
+      !this._baseHighlight &&
+      !this._initialStyledText
+    )
+  }
+
+  /**
+   * @internal Markdown marks a fence while its block is open: while it streams, its appends go to the highlighter as
+   * deltas. A closed block's text is final, so its worker copy goes (C4 question 4): now if the last reply covers the
+   * text, else once the reply for the rest lands.
+   */
+  public _setStreamsDeltas(open: boolean): void {
+    this._streamsDeltas = open
+    if (!open && this._shownVersion === this._version) this.stopDeltas()
+  }
+
+  private stopDeltas(): void {
+    const deltas = this._deltas
+    this._deltas = undefined
+    // A destroyed client has freed its copies; the worker ignores one it never had.
+    deltas?.client.removeCopy(deltas.id).catch(() => {})
   }
 
   public updateStreamingPreview(content: string, initialStyledText: StyledText): void {
@@ -364,6 +417,8 @@ export class CodeRenderable extends TextBufferRenderable {
   set streaming(value: boolean) {
     if (this._streaming !== value) {
       this._streaming = value
+      // At once, since a hidden block runs no update hook to do it.
+      if (!value) this.stopDeltas()
       this.invalidateHighlights(false)
     }
   }
@@ -453,7 +508,17 @@ export class CodeRenderable extends TextBufferRenderable {
       this.setShouldRenderTextBuffer(this._shownVersion === this._version)
   }
 
+  // The delta state while it still describes the block: the same client and filetype, and still eligible.
+  private currentDeltas(): CodeRenderable["_deltas"] {
+    const deltas = this._deltas
+    const same = deltas?.client === this._treeSitterClient && deltas.filetype === this._filetype
+    return same && this.deltasAllowed() ? deltas : undefined
+  }
+
   private async startHighlight(): Promise<void> {
+    const deltas = this.currentDeltas()
+    if (deltas) return this.highlightDelta(deltas)
+    this.stopDeltas()
     const content = this._content
     const filetype = this._filetype
     const version = this._version
@@ -535,6 +600,55 @@ export class CodeRenderable extends TextBufferRenderable {
       if (this.isDestroyed) return
       this.settle(-1, undefined, undefined, !!this._onChunks)
     }
+  }
+
+  // Sends the text the worker has not seen; the reply covers that prefix and is never stale: text appended meanwhile
+  // stays plain until the next step sends it. A failure, or a name native rejects, goes back to whole highlights.
+  private async highlightDelta(deltas: NonNullable<CodeRenderable["_deltas"]>): Promise<void> {
+    const version = this._version
+    const offset = deltas.sent
+    const content = this._content
+    deltas.sent = content.length
+    this._isHighlighting = true
+    const answer = await deltas.client
+      .highlightAppend(deltas.id, offset, content.slice(offset), deltas.filetype)
+      .catch((error: unknown) => ({ highlights: undefined, error: String(error) }))
+    // A reply for a block that changed language, concealment or hooks meanwhile is not shown; the next step goes whole.
+    if (this.currentDeltas() !== deltas || this.isDestroyed) return
+    try {
+      if (!answer.highlights) throw new Error(answer.error)
+      const names: string[][] = []
+      // No captures paint the buffer's defaults, as a whole highlight without any does: an empty layer.
+      const { highlights } = answer
+      const options = { enabled: false, names }
+      const chunks = highlights.length ? treeSitterToTextChunks(content, highlights, this._syntaxStyle, options) : []
+      const runs: number[] = []
+      let end = 0
+      chunks.forEach((chunk, index) => {
+        // A capture past the text (Markdown's closing backticks parse with a line break after them) leaves an empty one.
+        if (!chunk.text) return
+        const start = end
+        // UTF-8 as native stores it (a lone surrogate becomes U+FFFD, 3 bytes).
+        end += Buffer.byteLength(chunk.text)
+        const key = names[index]!
+        let set = this._groupSets.get(key.join("\n"))
+        if (set === undefined) this._groupSets.set(key.join("\n"), (set = this.textBuffer._groupSet(key)))
+        runs.push(start, end, set)
+      })
+      if (this.textBuffer.getSyntaxStyle() !== this._syntaxStyle) this.textBuffer.setSyntaxStyle(this._syntaxStyle)
+      this.textBuffer._setLayer(SYNTAX_LAYER, 0, Buffer.byteLength(content), new Uint32Array(runs))
+    } catch {
+      this.stopDeltas()
+      this._highlightRerun = true
+      return
+    }
+    this._shownVersion = version
+    this._isHighlighting = false
+    // A closed block's copy goes once a reply covers all its text.
+    if (!this._streamsDeltas && deltas.sent === this._content.length) this.stopDeltas()
+    this.setShouldRenderTextBuffer(true)
+    // A layer changes no text, so nothing else asks for the frame that shows it.
+    this.requestRender()
   }
 
   // Without styled text the highlight is the plain content; version -1 marks a failed highlight. A block that keeps what
@@ -693,6 +807,7 @@ export class CodeRenderable extends TextBufferRenderable {
 
     const hasContent = this._content.length > 0
     if (!hasContent || !this._filetype) {
+      this.stopDeltas()
       this.setShouldRenderTextBuffer(hasContent)
       this.setHighlightsDirty(false)
       this.clearPendingHighlight()
@@ -726,6 +841,7 @@ export class CodeRenderable extends TextBufferRenderable {
   protected override destroyOwnedResources(): void {
     this.runCleanup((run) => {
       run(() => this.clearPendingHighlight())
+      run(() => this.stopDeltas())
       run(() => super.destroyOwnedResources())
     })
   }

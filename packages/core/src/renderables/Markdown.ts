@@ -983,6 +983,7 @@ export class MarkdownRenderable extends Renderable {
           width: "100%",
           flexShrink: 0,
         })
+        code._setStreamsDeltas(true)
         this.setCode(index, code)
         return code
       }
@@ -1047,7 +1048,9 @@ export class MarkdownRenderable extends Renderable {
     // Display math without a renderer shows its TeX as plain code text.
     code.filetype =
       (block.flags & md.OT_MD_BLOCK_MATH) !== 0 ? undefined : infoStringToFiletype(this.view(index).lang ?? "")
-    code.syntaxStyle = this._syntaxStyle
+    // The style the doc binds, so a theme from another Context binds to the fence's text too.
+    const copy = this._styleCopy
+    code.syntaxStyle = copy && copy.source === this._syntaxStyle ? copy.copy : this._syntaxStyle
     code.fg = this._fg
     code.bg = this._bg
     code.conceal = this._concealCode
@@ -1055,6 +1058,7 @@ export class MarkdownRenderable extends Renderable {
     code.drawUnstyledText = (block.flags & md.OT_MD_BLOCK_MATH) !== 0 || !this._streaming
     code.streaming = this._streaming
     code.content = this.leafText(index)
+    code._setStreamsDeltas((block.flags & md.OT_MD_BLOCK_CLOSED) === 0)
   }
 
   /** What a changed block changes besides its own renderable: text the host writes, the table or list around it. */

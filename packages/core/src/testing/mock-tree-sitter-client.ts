@@ -50,6 +50,11 @@ export class MockTreeSitterClient extends TreeSitterClient {
     return promise
   }
 
+  // An append waits in the same queue and answers the same result as a whole highlight.
+  override highlightAppend(_copyId: number, _offset: number, text: string, filetype: string) {
+    return this.highlightOnce(text, filetype)
+  }
+
   setMockResult(result: { highlights?: SimpleHighlight[]; warning?: string; error?: string }) {
     this._mockResult = result
   }

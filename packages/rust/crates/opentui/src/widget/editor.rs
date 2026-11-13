@@ -11,7 +11,7 @@ use crate::native::{
     SelectionUnit, SyntaxStyle, Viewport, WrapMode,
 };
 use crate::style::{Color, Span, Style};
-use crate::syntax::{self, SyntaxTheme};
+use crate::syntax::{Incremental, SyntaxTheme};
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::rc::Rc;
@@ -309,6 +309,11 @@ pub(crate) struct EditorCore {
     syntax_theme: RefCell<SyntaxTheme>,
     /// The content epoch highlighted last, or `None` when the next frame highlights the text.
     highlighted: Cell<Option<u64>>,
+    /// The highlighter of the filetype, with the tree of the text it highlighted last.
+    incremental: RefCell<Option<Incremental>>,
+    /// Layers written, for tests.
+    #[cfg(test)]
+    layers: Cell<usize>,
 }
 
 impl EditorCore {
@@ -355,6 +360,9 @@ impl EditorCore {
             filetype: RefCell::new(None),
             syntax_theme: RefCell::new(SyntaxTheme::from_theme(&theme)),
             highlighted: Cell::new(None),
+            incremental: RefCell::new(None),
+            #[cfg(test)]
+            layers: Cell::new(0),
         });
         core.element.set_focusable(true);
         core.element.pointer.set(Some(crate::native::MousePointer::TEXT));
@@ -871,6 +879,7 @@ impl EditorCore {
         }
         *self.filetype.borrow_mut() = filetype.map(str::to_owned);
         self.highlighted.set(None);
+        self.incremental.take();
         if filetype.is_some() {
             self.element.add_hooks(Hooks::UPDATE);
             self.element.app().inspect(App::request_redraw);
@@ -889,8 +898,9 @@ impl EditorCore {
         }
     }
 
-    /// Highlights the text as its filetype when it changed since the last highlight, or the filetype did. Each piece
-    /// becomes a layer run of its capture names, which paint merges as `Code` merges their styles, below extmarks.
+    /// Highlights the text as its filetype when it changed since the last highlight, or the filetype did, reusing the
+    /// tree of the last highlight. Each piece becomes a layer run of its capture names, which paint merges as `Code`
+    /// merges their styles, below extmarks. The whole layer is written; native changes only the runs that differ.
     fn highlight(&self) {
         let filetype = self.filetype.borrow();
         let Some(filetype) = filetype.as_deref() else { return };
@@ -899,7 +909,8 @@ impl EditorCore {
             return;
         }
         let text = self.text();
-        let named = syntax::highlight_names(&text, filetype).unwrap_or_default();
+        let mut incremental = self.incremental.borrow_mut();
+        let named = incremental.get_or_insert_with(|| Incremental::new(filetype)).update(text).unwrap_or_default();
         // Without pieces the editor makes no table, so one the app bound on the buffer stays.
         let table = if named.0.is_empty() { None } else { self.table() };
         let runs = match table {
@@ -908,6 +919,8 @@ impl EditorCore {
         };
         let Some(runs) = self.report(runs) else { return };
         self.report(self.buffer.set_layer(extmarks::SYNTAX_LAYER, 0..u32::MAX, &runs));
+        #[cfg(test)]
+        self.layers.set(self.layers.get() + 1);
     }
 
     fn scroll(&self, rows: i64) {
@@ -1027,9 +1040,9 @@ impl Behavior for EditorCore {
 mod tests {
     use super::*;
     use crate::native::{Highlight, LayerRun};
-    use crate::sys;
     use crate::testing::TestApp;
     use crate::widget::{Container, Textarea, Widget};
+    use crate::{syntax, sys};
     use std::collections::HashMap;
 
     /// Syntax highlighting as the editor did it with value-named styles: each piece's merged style registered under a
@@ -1045,16 +1058,19 @@ mod tests {
     }
 
     impl Valued {
-        fn refresh(&mut self, buffer: &EditBuffer) {
-            let Some(filetype) = self.filetype else { return };
+        /// Highlights as C4's oracle expects, with `own` the editor's highlighter where a fresh parse has an error;
+        /// returns whether it had one.
+        fn refresh(&mut self, buffer: &EditBuffer, own: Option<&Incremental>) -> bool {
+            let Some(filetype) = self.filetype else { return false };
             let epoch = buffer.info().unwrap().content_epoch;
             if self.highlighted.replace(epoch) == Some(epoch) {
-                return;
+                return false;
             }
             self.cleared = false;
             let text = buffer.text().unwrap();
+            let (ranges, error) = syntax::expected_ranges(&text, filetype, own, &self.theme).unwrap_or_default();
             let mut runs = Vec::new();
-            for (range, style) in syntax::highlight_ranges(&text, filetype, &self.theme).unwrap_or_default() {
+            for (range, style) in ranges {
                 if style == Style::new() {
                     continue;
                 }
@@ -1066,6 +1082,7 @@ mod tests {
                 runs.push(LayerRun { start_byte: range.start as u32, end_byte: range.end as u32, group_set });
             }
             buffer.set_layer(extmarks::SYNTAX_LAYER, 0..u32::MAX, &runs).unwrap();
+            error
         }
 
         fn restyle(&mut self) {
@@ -1075,11 +1092,11 @@ mod tests {
         }
     }
 
-    // Rust and Markdown fragments, split at `|`.
+    // Rust, JavaScript and Markdown fragments, split at `|`: balanced ones, and openers and closers alone.
     const PIECES: &str = "let |fn f() {|}|x| = |1|\"s\\n\"|// c|/* b */|'a'|\t|\n|\u{65e5}\u{672c}|\u{e9}|# h|*e*|`c`|\
-                          ```rust\n|r#\"r\"#|;|\r\n|\"a\\n\u{fe0f}\"|\u{301}";
+                          ```rust\n|r#\"r\"#|;|\r\n|\"a\\n\u{fe0f}\"|\u{301}|/*|*/|r#\"|{|*|`|```python\n| => x|\"";
     const KEYS: &[&str] = &["backspace", "delete", "left", "right", "up", "down", "home", "end", "ctrl+-", "ctrl+."];
-    const FILETYPES: &[Option<&str>] = &[Some("rust"), Some("markdown"), Some("cobol"), None];
+    const FILETYPES: &[Option<&str>] = &[Some("rust"), Some("markdown"), Some("javascript"), Some("cobol"), None];
 
     // A group set composes its names as `Style::patch` does: fg and bg from the last name with one, attributes added.
     // Each run of random names paints as a run of its merged style under one name of its own.
@@ -1318,11 +1335,23 @@ mod tests {
 
     // P12: capture-name group sets paint byte-identical frames to value-named ones, over random edits, filetype
     // changes (with and without a grammar), clear_highlights, theme switches (longest-prefix and first-part themes,
-    // `default` styles, attributes over attributes) and table swaps, and styled extmarks above both.
+    // `default` styles, attributes over attributes, a color per capture name) and table swaps, and styled extmarks
+    // above both. C4 invariants 1, 5 and 9: the value-named twin highlights a fresh parse (an error-free text must
+    // highlight so) or the editor's own tree; edits at any place, through the view and through `buffer()`, undo and
+    // redo, and `set_text` reuse the tree; each highlight writes one layer.
     #[test]
     fn capture_name_sets_paint_as_value_named_styles_did() {
         let pieces: Vec<&str> = PIECES.split('|').collect();
-        let mut compared = 0;
+        // Review-bigboi-r2's JavaScript append (`f` becomes a function), review-bigboi's repeated line, and
+        // review-opus's two Markdown edits: the first `*` deleted, and a fence's info string changed.
+        let rows = [
+            ("javascript", "const f =\n  (x)", 15, 0, " => x"),
+            ("rust", "// x\n// x\n// x\n// x\n", 0, 0, "// x\n"),
+            ("markdown", "a *b\nc d* e", 2, 1, ""),
+            ("markdown", "```rust\nlet x = 1;\n```\n", 3, 4, "python"),
+        ];
+        let injective = syntax::injective_theme();
+        let (mut compared, mut erroneous, mut own_differs) = (0, 0, 0);
         for seed in 1..=200u64 {
             let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15);
             let mut next = |bound: usize| {
@@ -1342,27 +1371,53 @@ mod tests {
                 .style("markup", Style::new().fg(Color::YELLOW).dim())
                 .style("markup.heading", Style::new().strikethrough());
             let themes = [
+                injective.clone(),
                 SyntaxTheme::from_theme(&named.theme()),
                 other.style("string", red.bg(Color::BLUE)),
                 nested.clone(),
                 nested.first_part_fallback(),
             ];
+            let row = rows.get(seed as usize - 1);
+            let filetype = row.map_or("rust", |row| row.0);
             let mut twin = Valued {
                 table: SyntaxStyle::new(valued.session().context()).unwrap(),
                 sets: HashMap::new(),
-                filetype: Some("rust"),
+                filetype: Some(filetype),
                 theme: themes[0].clone(),
                 highlighted: None,
                 cleared: false,
             };
-            let areas = [Textarea::new(&named).filetype("rust").grow(1.0), Textarea::new(&valued).grow(1.0)];
+            let areas = [Textarea::new(&named).filetype(filetype).grow(1.0), Textarea::new(&valued).grow(1.0)];
             areas[1].syntax_style(&twin.table);
+            areas[0].syntax_theme(themes[0].clone());
             for (app, area) in [&named, &valued].into_iter().zip(&areas) {
                 app.root().add(area);
                 area.focus();
             }
+            // An edit through the view: `deleted` characters at a cursor offset, then a piece typed there.
+            let edit = |at: u32, deleted: usize, piece: &str| {
+                for (app, area) in [&named, &valued].into_iter().zip(&areas) {
+                    area.set_cursor_offset(at);
+                    (0..deleted).for_each(|_| app.press("delete"));
+                    area.insert(piece);
+                }
+            };
+            // Whether the next highlight is the filetype's first, the one parse without a tree.
+            let (mut layers, mut first) = (0, true);
             for step in 0..24 {
-                match if step == 0 { 8 } else { next(16) } {
+                let command = match (row, step) {
+                    (Some(row), 0) => {
+                        areas.iter().for_each(|area| drop(area.set_text(row.1)));
+                        17
+                    }
+                    (Some(row), 1) => {
+                        edit(row.2, row.3, row.4);
+                        17
+                    }
+                    (_, 0) => 8,
+                    _ => next(20),
+                };
+                match command {
                     0..=4 => {
                         let text = pieces[next(pieces.len())];
                         named.type_text(text);
@@ -1381,7 +1436,7 @@ mod tests {
                         let filetype = FILETYPES[next(FILETYPES.len())];
                         areas[0].filetype(filetype);
                         if twin.filetype != filetype {
-                            (twin.filetype, twin.highlighted) = (filetype, None);
+                            (twin.filetype, twin.highlighted, first) = (filetype, None, true);
                             if filetype.is_none() {
                                 areas[1].buffer().set_layer(extmarks::SYNTAX_LAYER, 0..u32::MAX, &[]).unwrap();
                             }
@@ -1389,6 +1444,10 @@ mod tests {
                     }
                     10 => {
                         areas.iter().for_each(|area| area.buffer().clear_highlights().unwrap());
+                        // Plain until the editor highlights again, also after a restyle the twin had due.
+                        if areas[0].0.highlighted.get() == Some(areas[0].0.epoch()) {
+                            twin.highlighted = Some(areas[1].buffer().info().unwrap().content_epoch);
+                        }
                         twin.cleared = true;
                     }
                     11 => {
@@ -1413,17 +1472,71 @@ mod tests {
                             area.add_extmark(start..start + length, options);
                         }
                     }
+                    14 => edit(next(areas[0].text().chars().count() + 1) as u32, next(4), pieces[next(pieces.len())]),
+                    15 => {
+                        let how = next(4);
+                        for area in &areas {
+                            match how {
+                                0 => drop(area.perform(EditorAction::Undo)),
+                                1 => drop(area.perform(EditorAction::Redo)),
+                                2 => drop(area.buffer().undo().unwrap()),
+                                _ => drop(area.buffer().redo().unwrap()),
+                            }
+                        }
+                    }
+                    16 => {
+                        let (column, deleted, piece) = (next(12) as u32, next(3) as u32, pieces[next(pieces.len())]);
+                        let undoable = next(2) == 0;
+                        for area in &areas {
+                            if undoable {
+                                area.buffer().set_text(piece, true).unwrap();
+                            } else {
+                                // Out-of-range places fail alike in both buffers.
+                                let _ = area.buffer().delete_range((0, column), (0, column + deleted));
+                                let _ = area.buffer().insert(piece);
+                            }
+                        }
+                    }
                     _ => {
-                        twin.refresh(areas[1].buffer());
-                        let (want, got) = (valued.render(), named.render());
+                        let core = &areas[0].0;
+                        let epoch = core.epoch();
+                        let due = core.filetype.borrow().is_some() && core.highlighted.get() != Some(epoch);
+                        let parses = syntax::FRESH_PARSES.get();
+                        let got = named.render();
+                        let parses = syntax::FRESH_PARSES.get() - parses;
+                        let error = twin.refresh(areas[1].buffer(), None);
+                        let mut want = valued.render();
+                        let own = core.incremental.borrow();
+                        if error && want.cells != got.cells {
+                            // Where a fresh parse has an error, a whole query of the editor's own tree.
+                            twin.highlighted = None;
+                            twin.refresh(areas[1].buffer(), own.as_ref());
+                            want = valued.render();
+                            own_differs += 1;
+                        }
+                        erroneous += usize::from(error);
                         let differ = want.cells.iter().zip(&got.cells).position(|(want, got)| want != got);
                         assert!(differ.is_none(), "seed {seed} step {step} cell {differ:?}: {:?}", areas[0].text());
+                        // C4 invariant 5: a highlight per epoch change writes one layer, and parses without a tree only
+                        // the first text of its filetype.
+                        assert_eq!(core.layers.get() - layers, usize::from(due), "seed {seed} step {step}");
+                        layers = core.layers.get();
+                        let parsed = due && core.filetype.borrow().as_deref().is_some_and(syntax::has_grammar);
+                        assert_eq!(
+                            parses,
+                            usize::from(parsed && first),
+                            "seed {seed} step {step}: parses without a tree"
+                        );
+                        first &= !parsed;
                         compared += 1;
                     }
                 }
             }
         }
-        assert!(compared > 500, "{compared} compared");
+        // How many highlights had text with a parse error, where the twin is a fresh highlight only if the editor's
+        // own tree agrees (1b), against 1a's error-free rest.
+        println!("C4 1b on {erroneous} of {compared} frames; the editor's own tree painted otherwise on {own_differs}");
+        assert!(compared > 500 && erroneous * 4 < compared * 3, "{compared} compared, {erroneous} with errors");
     }
 
     // 474: with marks, a key read the whole text twice to find the edit; native code moves marks now. The cursor rules
