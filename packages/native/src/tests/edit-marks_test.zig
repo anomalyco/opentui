@@ -537,6 +537,17 @@ test "edit marks through the C ABI reject malformed records and round-trip" {
     try std.testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_mark(&owner, &id, c.OT_EDIT_MARK_CLEAR, null, null));
     try std.testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_get_marks(&owner, &id, 0, c.OT_EDIT_MARK_ANY_KIND, null, 0, &count));
     try std.testing.expectEqual(@as(u32, 0), count);
+
+    // A ZWJ typed at a mark's start shifts the mark and joins it into the emoji before: its start
+    // byte is inside one grapheme now, and its offsets round out to cover all of it.
+    try std.testing.expectEqual(c.OT_OK, abi.ot_edit_buffer_set_text(&owner, &id, "\u{1f468}\u{1f469}", 8, 0));
+    plain.start = 2;
+    plain.end = 4;
+    try std.testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_mark(&owner, &id, c.OT_EDIT_MARK_ADD, &plain, &out));
+    try std.testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_command(&owner, &id, c.OT_EDIT_CURSOR_OFFSET, 2));
+    try std.testing.expectEqual(c.OT_OK, abi.ot_edit_buffer_insert_text(&owner, &id, "\u{200d}", 3));
+    try std.testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_get_marks(&owner, &id, 0, c.OT_EDIT_MARK_ANY_KIND, &marks, 2, &count));
+    try std.testing.expectEqual([4]u32{ 0, 2, 7, 11 }, [4]u32{ marks[0].start, marks[0].end, marks[0].start_byte, marks[0].end_byte });
 }
 
 fn expectSameLines(marked: *EditBuffer, legacy: *EditBuffer) !void {
