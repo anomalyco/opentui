@@ -2,9 +2,9 @@ import { describe, expect, it } from "bun:test"
 import { join } from "node:path"
 
 describe("solid runtime plugin support", () => {
-  it("loads external TSX modules against host runtime modules", () => {
+  it.each(["default", "preserve"])("loads external TSX modules against host runtime modules (%s)", (mode) => {
     const fixturePath = join(import.meta.dir, "runtime-plugin-support.fixture.ts")
-    const result = Bun.spawnSync([process.execPath, fixturePath], {
+    const result = Bun.spawnSync([process.execPath, fixturePath, mode], {
       cwd: join(import.meta.dir, ".."),
       stdout: "pipe",
       stderr: "pipe",
@@ -19,6 +19,8 @@ describe("solid runtime plugin support", () => {
     expect(stdout).toContain("coreTesting=true")
     expect(stdout).toContain("solidJs=true")
     expect(stdout).toContain("jsx=true")
+    expect(stdout).toContain("local=true:1:true;linked=true:1:true;view=true:1:true")
+    expect(stdout).toContain("linkedCore=true;linkedSolid=true;private=linked")
   })
 
   it("loads caller-provided runtime modules through the configurable entrypoint", () => {
