@@ -1786,6 +1786,51 @@ typedef struct ot_highlight_run {
 ot_status ot_edit_buffer_set_layer(ot_context *, const ot_handle *, uint32_t layer_id,
     uint32_t start_byte, uint32_t end_byte, const ot_highlight_run *runs, uint32_t run_count);
 
+/* Edit marks: ranges of the text that move with edits. Text inserted at a mark's start shifts it,
+ * at its end leaves it, and strictly inside grows it. A delete clips a mark and drops it once
+ * none of its text is left. An OT_EDIT_MARK_ATOMIC mark is one unit: an edit that changes part
+ * of its text drops it, and the edit changes exactly the text it asked for. set_text and clear
+ * drop every mark. Undo and redo restore the marks of the text they restore. Ids start at 1 and
+ * are never reused, undo included. At most 65,536 marks per buffer (OT_OBJECT_LIMIT).
+ * start and end are cursor offsets, start <= end; past the text they mean its end. On output a
+ * start rounds down and an end up to a cursor stop, and start_byte/end_byte give the mark in
+ * UTF-8 bytes of get_text; on input both are zero.
+ * A styled mark paints and get_highlights reports it as one ADD_RANGE highlight with its style,
+ * priority and ref = id & 0xFFFF, added after the buffer's own highlights in id order. style is
+ * a SyntaxStyle id (0 for none); with OT_EDIT_MARK_STYLE_VALUE, style is 0 and value is the
+ * style itself, kept by the buffer (at most 4,096 values; past it OT_OBJECT_LIMIT), and
+ * get_highlights reports style id 0. Without it, value is all zero. */
+#define OT_EDIT_MARK_ADD UINT32_C(0)
+#define OT_EDIT_MARK_REMOVE UINT32_C(1)
+#define OT_EDIT_MARK_CLEAR UINT32_C(2)
+#define OT_EDIT_MARK_ATOMIC UINT32_C(1)
+#define OT_EDIT_MARK_STYLE_VALUE UINT32_C(2)
+#define OT_EDIT_MARK_ANY_KIND UINT32_C(0xFFFFFFFF)
+typedef struct ot_edit_mark {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t id;
+    uint32_t kind;
+    uint32_t flags;
+    uint32_t style;
+    ot_editor_style value;
+    uint32_t priority;
+    uint32_t start;
+    uint32_t end;
+    uint32_t start_byte;
+    uint32_t end_byte;
+} ot_edit_mark;
+/* ADD takes mark (id 0, priority <= 255) and writes the new id. REMOVE takes mark->id (the rest
+ * zero) and writes it back, or 0 when there was no such mark. CLEAR drops every mark; mark and
+ * out_id are NULL. */
+ot_status ot_edit_buffer_mark(ot_context *, const ot_handle *, uint32_t operation,
+    const ot_edit_mark *mark, uint32_t *out_id);
+/* Copies the marks in (start, id) order: mark id, or all for id 0, of kind kind, or any for
+ * OT_EDIT_MARK_ANY_KIND. Zero capacity reports the count; otherwise all must fit, and
+ * undersized calls preserve both outputs. */
+ot_status ot_edit_buffer_get_marks(ot_context *, const ot_handle *, uint32_t id, uint32_t kind,
+    ot_edit_mark *marks, uint32_t capacity, uint32_t *out_count);
+
 /* A streamed Markdown document (CommonMark 0.31.2 with GFM tables, strikethrough, task lists and
  * extended autolinks), parsed incrementally. Blocks have preorder indices, which are their ids;
  * a removal is always a suffix. Complete lines parse exactly; the bytes after the last line
