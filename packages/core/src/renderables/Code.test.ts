@@ -2,7 +2,13 @@ import { test, expect, beforeEach, afterEach } from "bun:test"
 import { CodeRenderable } from "./Code.js"
 import { SyntaxStyle } from "../syntax-style.js"
 import { RGBA } from "../lib/RGBA.js"
-import { createTestRenderer, type TestRenderer, MockTreeSitterClient, type MockMouse } from "../testing.js"
+import {
+  createTestRenderer,
+  type TestRenderer,
+  MockTreeSitterClient,
+  type MockMouse,
+  setRendererCapabilities,
+} from "../testing.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import type { SimpleHighlight } from "../lib/tree-sitter/types.js"
 import { BoxRenderable } from "./Box.js"
@@ -318,8 +324,10 @@ test("content work: each streamed delta sends the whole text to the highlighter 
   const rows = {
     code: (options: any) =>
       new CodeRenderable(currentRenderer, { ...options, filetype: "markdown", drawUnstyledText: false }),
-    markdown: (options: any) => new MarkdownRenderable(currentRenderer, { ...options, internalBlockMode: "top-level" }),
+    markdown: (options: any) => new MarkdownRenderable(currentRenderer, options),
   }
+  // The terminal shows links, so the Markdown engine writes paragraphs and headings itself.
+  setRendererCapabilities(currentRenderer, { hyperlinks: true })
   // Calls and bytes by mode and by every native symbol that takes bytes. Text arrives as Uint8Array (handles and
   // chunk records are wider arrays); the output read fills a Uint8Array, so it is left out. Native objects created
   // count as calls with no bytes.
@@ -370,19 +378,23 @@ test("content work: each streamed delta sends the whole text to the highlighter 
   } finally {
     Object.assign(symbols, originals)
   }
-  // 12 deltas of 32 bytes: Code sends the 371-byte document 6.7 times over; Markdown resends its open block. Code
-  // sends the first delta as plain text too, so the block measures it before its first highlight lands.
+  // 12 deltas of 32 bytes: Code sends the 371-byte document 6.7 times over. Markdown sends each delta to its engine
+  // once, which writes the prose natively; only the fence goes to the highlighter, as its code, and its highlight is
+  // written (the list markers are the two scene writes). Code sends the first delta as plain text too, so the block
+  // measures it before its first highlight lands.
   expect(doc.length).toBe(371)
   expect(work).toEqual({
     "code highlightOnce": [12, 2483],
     "code ot_text_buffer_set_styled_text": [12, 2483],
     "code ot_text_buffer_set_text": [1, 32],
-    "markdown highlightOnce": [16, 1362],
-    "markdown ot_text_buffer_set_styled_text": [23, 1500],
+    "markdown ot_markdown_append": [12, 371],
+    "markdown ot_markdown_read_leaf": [9, 1219],
+    "markdown highlightOnce": [9, 1219],
+    "markdown ot_text_buffer_set_styled_text": [9, 1219],
     "markdown ot_scene_set_styled_text": [2, 4],
     "markdown ot_text_buffer_set_text": [1, 10],
-    "markdown ot_text_buffer_create": [6, 0],
-    "markdown ot_text_buffer_view_create": [6, 0],
+    "markdown ot_text_buffer_create": [1, 0],
+    "markdown ot_text_buffer_view_create": [1, 0],
   })
 })
 

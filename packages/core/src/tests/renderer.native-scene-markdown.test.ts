@@ -63,10 +63,10 @@ test("native Markdown releases partially constructed custom blocks on failure", 
         content: "# First\n\n```ts\nconst n = 1\n```",
         syntaxStyle: target.markdown.syntaxStyle,
         treeSitterClient: target.client,
-        renderNode(token, context) {
+        renderBlock(block, context) {
           const child = context.defaultRender()!
           defaults.push(child)
-          if (token.type === "code") throw new Error("custom block failed")
+          if (block.kind === "code") throw new Error("custom block failed")
           return child
         },
       }),
@@ -81,16 +81,18 @@ test("native Markdown releases default list owners when a destroyed style reject
   const target = await setup()
   const syntaxStyle = SyntaxStyle.fromStyles({}, target.renderer.nativeScene)
   syntaxStyle.destroy()
-  for (const internalBlockMode of ["coalesced", "top-level"] as const) {
+  for (const renderBlock of [
+    undefined,
+    (_block: unknown, context: { defaultRender: () => Renderable | null }) => context.defaultRender(),
+  ]) {
     const registered = new Set(Renderable.renderablesByNumber.keys())
     assert.throws(
       () =>
         new MarkdownRenderable(target.renderer, {
           content: "- item",
           syntaxStyle,
-          internalBlockMode,
           treeSitterClient: target.client,
-          renderNode: internalBlockMode === "coalesced" ? (_token, context) => context.defaultRender() : undefined,
+          renderBlock,
         }),
       /destroyed/,
     )

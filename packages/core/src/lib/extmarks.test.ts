@@ -272,25 +272,20 @@ describe("ExtmarksController", () => {
       expect(textarea.cursorOffset).toBe(2)
     })
 
-    it("should jump to position BEFORE extmark start when moving left from after extmark", async () => {
-      await setup("abcdefgh")
+    // A mark that touches or overlaps the one moved over is skipped too.
+    for (const end of [4, 5]) {
+      it(`should jump over virtual extmarks at 2..${end} and 4..6 when moving left`, async () => {
+        await setup("ab@x@y")
 
-      textarea.focus()
-      textarea.cursorOffset = 6
+        textarea.focus()
+        textarea.cursorOffset = 6
+        extmarks.create({ start: 2, end, virtual: true })
+        extmarks.create({ start: 4, end: 6, virtual: true })
 
-      extmarks.create({
-        start: 3,
-        end: 6,
-        virtual: true,
+        currentMockInput.pressArrow("left")
+        expect(textarea.cursorOffset).toBe(1)
       })
-
-      expect(textarea.cursorOffset).toBe(6)
-
-      // When moving left from position 6 (right after extmark end),
-      // should jump to position 2 (before extmark start at 3)
-      currentMockInput.pressArrow("left")
-      expect(textarea.cursorOffset).toBe(2)
-    })
+    }
 
     it("should allow normal cursor movement left outside virtual extmark", async () => {
       await setup("abcdefgh")
@@ -332,6 +327,93 @@ describe("ExtmarksController", () => {
       expect(textarea.cursorOffset).toBe(3)
       expect(textarea.hasSelection()).toBe(true)
     })
+  })
+
+  describe("Virtual Extmark - Mouse, Wheel and Offset Setter", () => {
+    // One row of 24 columns. While a selection is left the cursor and the selection are `held`; then it is cleared. A
+    // press's handlers see the pressed cell; then a pointer leaves the cursor at the nearer outer edge of the marks
+    // around it, a cleared drag at the side it came from, the wheel and the setter at the edge they moved toward.
+    // "press" drags through its other cells and types Z before the release. After ", " comes a key, a wheel step, an offset, a selection or a click. The
+    // rows match the Rust editor's but Shift+Left, which extends a selection into a mark here, and the rejected offset.
+    const pasted = "x [Pasted ~20 lines] y"
+    // Rows "@file ", "abcdefghijklmnopqrstuvwx", "yzabcdefghijklmnopqrstuv", "wxyz", "q": a wheel step lands on "wxyz".
+    const wrapped = "@file abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz\nq"
+    for (const [text, marks, from, gesture, held, to] of [
+      ["x @file y", "2..7", 9, "click 2", null, 2],
+      ["x @file y", "2..7", 9, "click 3", null, 2],
+      ["x @file y", "2..7", 9, "click 5", null, 7],
+      ["x @file y", "2..7", 9, "press 3", null, 3],
+      ["x @file y", "2..7", 9, "press 3 5 3", null, 3],
+      ["x @file y", "2..7", 9, "offset -1, click 3", null, 2],
+      [pasted, "2..20", 22, "click 15", null, 20],
+      ["x @file y", "2..7", 9, "double-click 4", "4 2..7", 2],
+      ["x @file y", "2..7", 9, "double-click 4, offset 3", null, 2],
+      ["x @file y", "2..7", 9, "double-click 4, select 2 7", "4 2..7", 2],
+      ["x @file y", "2..7", 9, "drag 0 4", "4 0..5", 2],
+      ["x @file y", "2..7", 9, "drag 8 4", "4 4..9", 7],
+      ["x @file y", "2..7", 9, "drag 8 6", "6 6..9", 7],
+      ["x @file y", "2..7", 9, "drag 3 5 3", null, 2],
+      ["x @file y", "2..7", 9, "drag 0 4, right", null, 7],
+      ["b ca", "0..3 0..4", 4, "click 2", null, 4],
+      ["b ca", "0..4 0..3", 4, "click 2", null, 4],
+      ["abcdefgh", "0..6 2..8", 8, "click 3", null, 0],
+      ["abcdefgh", "2..8 0..6", 8, "click 3", null, 0],
+      ["b ca", "0..3 0..4", 0, "offset 2", null, 4],
+      ["b ca", "0..4 0..3", 4, "offset 2", null, 0],
+      ["abcd", "2..4 1..3 0..2", 0, "offset 1", null, 4],
+      ["ab\n@file\nc", "3..8", 2, "wheel down", null, 8],
+      ["ab\n@file\nc", "3..8", 10, "wheel up", null, 3],
+      [wrapped, "0..5", 60, "wheel up", null, 55],
+      ["abcd\n@file\nc", "5..10", 0, "double-click 2, wheel down", "7 0..4", 5],
+    ] as const) {
+      it(`${gesture} from ${from} in ${JSON.stringify(text)} with ${marks} → ${to}`, async () => {
+        const result = await createTestRenderer({ width: 24, height: 2 })
+        currentRenderer = result.renderer
+        textarea = new TextareaRenderable(currentRenderer, { width: 24, height: 1, initialValue: text })
+        currentRenderer.root.add(textarea)
+        textarea.focus()
+        extmarks = textarea.extmarks
+        for (const [start, end] of marks.split(" ").map((mark) => mark.split("..").map(Number))) {
+          extmarks.create({ start, end, virtual: true })
+        }
+        textarea.cursorOffset = from
+        await result.renderOnce()
+        // As OpenCode's prompt: a press looks up the mark under the cursor.
+        let pressed: number | undefined
+        textarea.onMouseDown = () => (pressed = textarea.cursorOffset)
+        const [first, then = ""] = gesture.split(", ")
+        const [kind, a, b, c] = first.split(" ")
+        const mouse = result.mockMouse
+        if (kind === "click") await mouse.click(Number(a), 0)
+        else if (kind === "press") {
+          await mouse.pressDown(Number(a), 0)
+          for (const x of [b, c].filter(Boolean)) await mouse.moveTo(Number(x), 0)
+          await result.mockInput.typeText("Z")
+          await mouse.release(Number(c ?? a), 0)
+          expect(textarea.plainText).toBe("x Z@file y")
+        } else if (kind === "double-click") await mouse.doubleClick(Number(a), 0)
+        else if (kind === "drag" && c) {
+          await mouse.pressDown(Number(a), 0)
+          await mouse.moveTo(Number(b), 0)
+          await mouse.moveTo(Number(c), 0)
+          await mouse.release(Number(c), 0)
+        } else if (kind === "drag") await mouse.drag(Number(a), 0, Number(b), 0)
+        else if (kind === "offset" && Number(a) < 0) expect(() => (textarea.cursorOffset = Number(a))).toThrow()
+        else if (kind === "offset") textarea.cursorOffset = Number(a)
+        else await mouse.scroll(0, 0, a as "up" | "down")
+        if (kind === "click" || kind === "press") expect(pressed).toBe(Number(a))
+        const [step, x, y] = then.split(" ")
+        if (step === "wheel") await mouse.scroll(0, 0, x as "up" | "down")
+        else if (step === "offset") textarea.cursorOffset = Number(x)
+        else if (step === "select") textarea.setSelection(Number(x), Number(y))
+        else if (step === "click") await mouse.click(Number(x), 0)
+        else if (step) result.mockInput.pressArrow(step as "right")
+        const selection = textarea.getSelection()
+        expect(selection && `${textarea.cursorOffset} ${selection.start}..${selection.end}`).toBe(held)
+        if (selection) textarea.clearSelection()
+        expect(textarea.cursorOffset).toBe(to)
+      })
+    }
   })
 
   describe("Virtual Extmark - Backspace Deletion", () => {
@@ -1968,84 +2050,6 @@ Press ESC to return to main menu.`
   })
 
   describe("Virtual Extmark - Cursor Up/Down Movement", () => {
-    it("should not land inside virtual extmark when moving down", async () => {
-      await setup("abc\n[VIRTUAL]\ndef")
-
-      textarea.focus()
-      textarea.cursorOffset = 1
-
-      extmarks.create({
-        start: 4,
-        end: 13,
-        virtual: true,
-      })
-
-      expect(textarea.cursorOffset).toBe(1)
-
-      currentMockInput.pressArrow("down")
-      const cursorAfterDown = textarea.cursorOffset
-
-      const isInsideExtmark = cursorAfterDown >= 4 && cursorAfterDown < 13
-      expect(isInsideExtmark).toBe(false)
-    })
-
-    it("should not land inside virtual extmark when moving up", async () => {
-      await setup("abc\n[VIRTUAL]\ndef")
-
-      textarea.focus()
-      textarea.cursorOffset = 15
-
-      extmarks.create({
-        start: 4,
-        end: 13,
-        virtual: true,
-      })
-
-      expect(textarea.cursorOffset).toBe(15)
-
-      currentMockInput.pressArrow("up")
-      const cursorAfterUp = textarea.cursorOffset
-
-      const isInsideExtmark = cursorAfterUp >= 4 && cursorAfterUp < 13
-      expect(isInsideExtmark).toBe(false)
-    })
-
-    it("should jump to closest boundary when moving down into virtual extmark", async () => {
-      await setup("abc\n[VIRTUAL]\ndef")
-
-      textarea.focus()
-      textarea.cursorOffset = 1
-
-      extmarks.create({
-        start: 4,
-        end: 13,
-        virtual: true,
-      })
-
-      currentMockInput.pressArrow("down")
-      const cursorAfterDown = textarea.cursorOffset
-
-      expect(cursorAfterDown === 3 || cursorAfterDown === 13).toBe(true)
-    })
-
-    it("should jump to closest boundary when moving up into virtual extmark", async () => {
-      await setup("abc\n[VIRTUAL]\ndef")
-
-      textarea.focus()
-      textarea.cursorOffset = 15
-
-      extmarks.create({
-        start: 4,
-        end: 13,
-        virtual: true,
-      })
-
-      currentMockInput.pressArrow("up")
-      const cursorAfterUp = textarea.cursorOffset
-
-      expect(cursorAfterUp === 3 || cursorAfterUp === 13).toBe(true)
-    })
-
     it("should handle multiline virtual extmarks when moving up", async () => {
       await setup("line1\n[VIRTUAL\nMULTILINE]\nline4")
 

@@ -4,6 +4,7 @@ import { scrollOnce, wheelDirection } from "../lib/scroll-chain.js"
 import type { NativeRenderableIntegration, Renderable } from "../Renderable.js"
 import type { MouseEvent } from "../renderer.js"
 import type { TimerHandle } from "../lib/clock.js"
+import type { Selection } from "../lib/selection.js"
 import type { RenderContext } from "../types.js"
 import type { NativeScene } from "../NativeScene.js"
 import { emptySceneScrollState, type NativeSceneRect, type NativeSceneScrollState } from "../zig.js"
@@ -70,7 +71,7 @@ function stripScrollBoxPadding<T extends object>(options: T): Omit<T, ScrollBoxP
   return sanitized as Omit<T, ScrollBoxPaddingKey>
 }
 
-type BarPress = { axis: number; offset: number } | { axis: number; arrow: -1 | 1; timer?: TimerHandle }
+type BarPress = { axis: number; offset: number; at: number } | { axis: number; arrow: -1 | 1; timer?: TimerHandle }
 
 /** A box whose scroll offset, range, sticky edge and scrollbars are native state of its scene node. The
  * `wrapper`, `viewport`, `content` and scrollbar fields are facades over that state, not renderables; the
@@ -81,7 +82,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
     lifecycle: {
       update: {
         idle: this.prototype.onUpdate,
-        active: (renderable) => (renderable as ScrollBoxRenderable)["isAutoScrolling"],
+        active: (renderable) => (renderable as ScrollBoxRenderable)["autoScrollOwner"] !== undefined,
       },
       scroll: {
         active: (renderable) => (renderable as ScrollBoxRenderable).scrollHook,
@@ -98,6 +99,9 @@ export class ScrollBoxRenderable extends BoxRenderable {
   protected static override readonly defaultFocusable = true
   // A finished selection ends a drag's auto-scroll; the box listens only while it auto-scrolls.
   private readonly selectionListener = (): void => this.stopAutoScroll()
+  // Undefined while the box does not auto-scroll; otherwise the selection whose drag it scrolls for, or null. A press
+  // that ends a drag whose release was lost finishes no selection; the scroll then ends at its next step.
+  private autoScrollOwner?: Selection | null
 
   private autoScrollMouseX: number = 0
   private autoScrollMouseY: number = 0
@@ -106,7 +110,6 @@ export class ScrollBoxRenderable extends BoxRenderable {
   private readonly autoScrollSpeedSlow = 6
   private readonly autoScrollSpeedMedium = 36
   private readonly autoScrollSpeedFast = 72
-  private isAutoScrolling: boolean = false
   private cachedAutoScrollSpeed: number = 3
   private autoScrollAccumulatorX: number = 0
   private autoScrollAccumulatorY: number = 0
@@ -571,11 +574,18 @@ export class ScrollBoxRenderable extends BoxRenderable {
       if (this.isDestroyed) return
       thumb = this.thumbPointer(axis, event)
     }
-    this.barPress = { axis, offset: Math.max(0, Math.min(thumb.size, thumb.at - thumb.start)) }
+    // Measured from the thumb start the offset implies, not the painted start, which is rounded to a half cell.
+    const { offset, max } = this._scrollState()
+    const start = max[axis] === 0 ? 0 : (offset[axis] / max[axis]) * Math.max(0, thumb.length - thumb.size)
+    this.barPress = { axis, offset: Math.max(0, Math.min(thumb.size, thumb.at - start)), at: thumb.at }
   }
 
-  private dragThumb(press: { axis: number; offset: number }, event: MouseEvent): void {
+  /** A pointer at the position the offset already reflects has nothing to apply: recomputing the offset could move
+   * it, by a rounding error or by the clamp on a press before the thumb's exact start. */
+  private dragThumb(press: { axis: number; offset: number; at: number }, event: MouseEvent): void {
     const thumb = this.thumbPointer(press.axis, event)
+    if (thumb.at === press.at) return
+    press.at = thumb.at
     const span = Math.max(0, thumb.length - thumb.size)
     const start = Math.max(0, Math.min(span, thumb.at - press.offset))
     this._scrollAxis(press.axis, span === 0 ? 0 : (start / span) * this._scrollState().max[press.axis], false)
@@ -607,7 +617,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
     this.autoScrollMouseX = mouseX
     this.autoScrollMouseY = mouseY
     this.cachedAutoScrollSpeed = this.getAutoScrollSpeed(mouseX, mouseY)
-    this.isAutoScrolling = true
+    this.autoScrollOwner = this.draggingSelection()
     this.live = true
     this._ctx.on("selection", this.selectionListener)
     this.refreshNativeSceneHooks()
@@ -625,14 +635,20 @@ export class ScrollBoxRenderable extends BoxRenderable {
 
     if (scrollX === 0 && scrollY === 0) {
       this.stopAutoScroll()
-    } else if (!this.isAutoScrolling) {
+    } else if (this.autoScrollOwner !== this.draggingSelection()) {
+      // Another selection's drag reached the edge: the scroll follows that drag from now on.
       this.startAutoScroll(mouseX, mouseY)
     }
   }
 
+  private draggingSelection(): Selection | null {
+    const selection = this._ctx.getSelection()
+    return selection?.isDragging ? selection : null
+  }
+
   public stopAutoScroll(): void {
-    const wasAutoScrolling = this.isAutoScrolling
-    this.isAutoScrolling = false
+    const wasAutoScrolling = this.autoScrollOwner !== undefined
+    this.autoScrollOwner = undefined
     this.autoScrollAccumulatorX = 0
     this.autoScrollAccumulatorY = 0
     // Auto-scroll is the only reason a ScrollBox goes live or asks for updates.
@@ -644,7 +660,8 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   private handleAutoScroll(deltaTime: number): void {
-    if (!this.isAutoScrolling) return
+    if (this.autoScrollOwner === undefined) return
+    if (this.autoScrollOwner?.isDragging === false) return this.stopAutoScroll()
 
     const scrollX = this.getAutoScrollDirectionX(this.autoScrollMouseX)
     const scrollY = this.getAutoScrollDirectionY(this.autoScrollMouseY)

@@ -8,6 +8,7 @@ const ObjectHandle = @import("context-handles.zig").Handle;
 const ObjectKind = @import("context-handles.zig").Kind;
 const scene = @import("scene.zig");
 const scene_record = @import("scene-record.zig");
+const highlight_layers = @import("highlight-layers.zig");
 
 const editor_transport = @import("context-editor-abi.zig");
 const text_transport = @import("context-text-abi.zig");
@@ -19,6 +20,7 @@ const image_transport = @import("context-image-abi.zig");
 const video_transport = @import("context-video-abi.zig");
 const audio_transport = @import("context-audio-abi.zig");
 const clipboard_transport = @import("clipboard-abi.zig");
+const markdown_transport = @import("context-markdown-abi.zig");
 const utils = @import("utils.zig");
 
 /// Each C Context owns a private allocator. Test builds back it with
@@ -196,6 +198,36 @@ pub fn ot_context_get_link_url(
         if (capacity == 0) &.{} else bytes.?[0..capacity],
     ) catch |err| return sessionError(owner, err);
     out.?.* = count;
+    return c.OT_OK;
+}
+
+comptime {
+    std.debug.assert(highlight_layers.group_set_name_count_max == c.OT_GROUP_SET_NAME_COUNT_MAX);
+    std.debug.assert(highlight_layers.group_set_name_byte_count_max == c.OT_GROUP_SET_NAME_BYTE_COUNT_MAX);
+}
+
+pub fn ot_context_group_set(
+    context: ?*ContextHandle,
+    names: ?[*]const u8,
+    name_byte_count: u32,
+    name_end_bytes: ?[*]const u32,
+    name_count: u32,
+    out: ?*u32,
+) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    if (out == null or names == null or name_end_bytes == null) return sessionError(owner, error.InvalidOptions);
+    if (name_count > highlight_layers.group_set_name_count_max) return sessionError(owner, error.GroupSetLimit);
+    var slices: [highlight_layers.group_set_name_count_max][]const u8 = undefined;
+    var start: u32 = 0;
+    for (name_end_bytes.?[0..name_count], slices[0..name_count]) |end, *slice| {
+        if (end < start or end > name_byte_count) return sessionError(owner, error.InvalidOptions);
+        slice.* = names.?[start..end];
+        start = end;
+    }
+    if (start != name_byte_count) return sessionError(owner, error.InvalidOptions);
+    out.?.* = owner.core.groupSet(slices[0..name_count]) catch |err| return sessionError(owner, err);
     return c.OT_OK;
 }
 
@@ -2018,7 +2050,7 @@ pub fn ot_scene_get_layout(context: ?*ContextHandle, node_ptr: ?*const c.ot_hand
     const result = (switch (observation) {
         c.OT_LAYOUT_PUBLIC => owner.core.sceneGetLayout(handleFromC(id.*), false),
         c.OT_LAYOUT_YOGA => owner.core.sceneGetLayout(handleFromC(id.*), true),
-        c.OT_LAYOUT_PAINT => owner.core.sceneGetPaintLayout(handleFromC(id.*)),
+        c.OT_LAYOUT_PAINT, c.OT_LAYOUT_CONTENT => owner.core.sceneGetPaintLayout(handleFromC(id.*), observation == c.OT_LAYOUT_CONTENT),
         else => return sessionError(owner, error.InvalidOptions),
     }) catch |err| return sessionError(owner, err);
     out.* = sceneLayoutToC(result);
@@ -2400,7 +2432,7 @@ pub fn ot_scene_frame_step_with_geometry(context: ?*ContextHandle, session_ptr: 
     if (result.kind == c.OT_SCENE_FRAME_DONE or result.kind == c.OT_SCENE_FRAME_RECORD) return c.OT_OK;
     const node = result.node;
     // Public observations advance during refresh, after the ticket is created.
-    if (owner.core.sceneGetPaintLayout(node)) |layout| {
+    if (owner.core.sceneGetPaintLayout(node, false)) |layout| {
         geometry.paint = sceneLayoutToC(layout);
         geometry.flags |= c.OT_SCENE_GEOMETRY_PAINT;
     } else |_| {}
@@ -2525,13 +2557,16 @@ pub fn ot_scene_paint(context: ?*ContextHandle, session_ptr: ?*const c.ot_handle
 }
 
 pub fn ot_scene_hit_test(context: ?*ContextHandle, session_ptr: ?*const c.ot_handle, x: i32, y: i32, out_ptr: ?*u32) callconv(.c) c.ot_status {
+    return ot_scene_hit_test_excluding(context, session_ptr, x, y, 0, out_ptr);
+}
+
+pub fn ot_scene_hit_test_excluding(context: ?*ContextHandle, session_ptr: ?*const c.ot_handle, x: i32, y: i32, excluded_num: u32, out_ptr: ?*u32) callconv(.c) c.ot_status {
     const status = sessionContextStatus(context);
     if (status != c.OT_OK) return status;
     const owner = context.?;
     const id = session_ptr orelse return sessionError(owner, error.InvalidOptions);
     const out = out_ptr orelse return sessionError(owner, error.InvalidOptions);
-    const result = owner.core.sceneHitTest(handleFromC(id.*), x, y) catch |err| return sessionError(owner, err);
-    out.* = result;
+    out.* = owner.core.sceneHitTestExcluding(handleFromC(id.*), x, y, excluded_num) catch |err| return sessionError(owner, err);
     return c.OT_OK;
 }
 
@@ -2639,7 +2674,7 @@ pub fn sessionError(owner: *ContextHandle, err: anyerror) c.ot_status {
         error.Busy, error.PresentationPending, error.SplitRenderPending => c.OT_OUTPUT_BUSY,
         error.StaleRequest, error.InvalidTicket => c.OT_STALE_OUTPUT,
         error.SessionFailed, error.PresentationFailed => c.OT_OUTPUT_FAILED,
-        error.ObjectLimit, error.RequestLimit, error.TrackerLimit => c.OT_OBJECT_LIMIT,
+        error.ObjectLimit, error.RequestLimit, error.TrackerLimit, error.LayerLimit, error.GroupSetLimit => c.OT_OBJECT_LIMIT,
         error.RendererAlreadyAttached => c.OT_RENDERER_ATTACHED,
         error.RendererNotAttached => c.OT_RENDERER_NOT_ATTACHED,
         error.InvalidTerminalState, error.TerminalInactive => c.OT_INVALID_PHASE,
@@ -4253,7 +4288,7 @@ test "Scene ABI records preserve rejected outputs and read real Session metadata
     try std.testing.expectEqual(c.OT_OK, ot_scene_get_layout(handle, &box, 0, &layout));
     try std.testing.expectEqual(@as(f32, 3), layout.width);
     const before_selector = layout;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_get_layout(handle, &box, 3, &layout));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_get_layout(handle, &box, c.OT_LAYOUT_CONTENT + 1, &layout));
     try std.testing.expectEqualDeep(before_selector, layout);
     try owner.core.sceneSetStyle(handleFromC(box), 4, 0, 0, 1, 0, 1);
     try std.testing.expectEqual(c.OT_OK, ot_scene_frame_cancel(handle, &session_c, frame.frame_id));
@@ -5183,6 +5218,7 @@ const abi_modules = .{
     video_transport,
     audio_transport,
     clipboard_transport,
+    markdown_transport,
 };
 
 // The library opts into exports. Each export must match its opentui.h prototype.

@@ -102,7 +102,7 @@ export type GetNonStyledProperties<TConstructor> =
                   | "conceal"
                   | "drawUnstyledText"
               : TConstructor extends RenderableConstructor<MarkdownRenderable>
-                ? NonStyledProps | "content" | "syntaxStyle" | "treeSitterClient" | "conceal" | "renderNode"
+                ? NonStyledProps | "content" | "syntaxStyle" | "treeSitterClient" | "conceal" | "renderBlock"
                 : TConstructor extends RenderableConstructor<ImageRenderable>
                   ? NonStyledProps | "source"
                   : TConstructor extends RenderableConstructor<VideoRenderable>

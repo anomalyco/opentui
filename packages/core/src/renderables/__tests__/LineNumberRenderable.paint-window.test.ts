@@ -125,12 +125,15 @@ describe("LineNumber paint window", () => {
     card.add(numbers)
     setup.renderer.root.add(card)
     await setup.renderOnce()
-    for (const [scrollY, translateY, firstSource, firstRow] of [
+    for (const [scrollY, translateY, firstSource, firstRow, paddingTop = 0] of [
       [0, 0, 0, 0],
       [1, 0, 1, 0],
       [0, -1, 1, 0],
       [1, -1, 2, 0],
       [0, 1, 0, 1],
+      // Top padding: the gutter and the content colors start at the text, not at its box.
+      [0, 0, 0, 1, 1],
+      [1, 0, 1, 1, 1],
       // Node's native integer arguments reject fractions; Bun truncates them toward zero.
       ...(process.versions.bun
         ? [
@@ -143,9 +146,12 @@ describe("LineNumber paint window", () => {
             [1.5, -1.5, 2, 0],
             [0, 0.5, 0, 0],
             [0, 1.5, 0, 1],
+            // Paint truncates the box and the content origin each on its own: both land on row 0.
+            [0, -0.5, 0, 0, 1],
           ]
         : []),
     ]) {
+      text.paddingTop = paddingTop
       text.scrollY = scrollY
       card.translateY = translateY
       await setup.renderOnce()
@@ -167,6 +173,14 @@ describe("LineNumber paint window", () => {
         })
       }
     }
+    // Bottom padding: the text's last row shows no line, so the gutter numbers none there.
+    Object.assign(text, { paddingTop: 0, paddingBottom: 1, scrollY: 0 })
+    card.translateY = -4
+    await setup.renderOnce()
+    expect(setup.captureCharFrame().split("\n")[1].trim()).toBe("")
+    setup.renderer.currentRenderBuffer.withBuffers((cells) => {
+      expect(Array.from(cells.bg.slice((24 + 20) * 4, (24 + 20) * 4 + 4))).not.toEqual([64, 48, 82, 255])
+    })
   })
 
   test("gutter distinguishes the first row from a wrapped continuation across resizes", async () => {

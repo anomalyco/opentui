@@ -541,6 +541,36 @@ const attempt = (write: () => void) => {
     return (error as Error).name
   }
 }
+// From `start`, clicks thumb `cell`, then drags from it 2 cells and back. From `firstStart`, clicks the thumb's first
+// cell `first`, whose edge lies before the thumb's exact start, then drags from it to the track start. Traces the
+// offsets and the change events of each click.
+const thumbSteps =
+  (vertical: boolean, start: number, cell: number, firstStart: number, first: number) =>
+  async (box: ScrollBoxRenderable) => {
+    const at = (c: number): [number, number] => (vertical ? [19, c] : [c, 4])
+    const key = vertical ? "scrollTop" : "scrollLeft"
+    const changes: number[] = []
+    box[vertical ? "verticalScrollBar" : "horizontalScrollBar"].on("change", (e: { position: number }) =>
+      changes.push(e.position),
+    )
+    const trace: unknown[] = []
+    const click = async (offset: number, c: number) => {
+      box[key] = offset
+      await renderOnce()
+      changes.length = 0
+      await mockMouse.click(...at(c))
+      trace.push(box[key], changes.join(" "))
+    }
+    await click(start, cell)
+    await mockMouse.pressDown(...at(cell))
+    await mockMouse.moveTo(...at(cell + 2))
+    await mockMouse.moveTo(...at(cell))
+    await mockMouse.release(...at(cell))
+    trace.push(box[key])
+    await click(firstStart, first)
+    await mockMouse.drag(...at(first), ...at(0))
+    return [...trace, box[key]]
+  }
 const facadeRows: FacadeRow[] = [
   [
     "destroy keeps the last presented state",
@@ -649,6 +679,19 @@ const facadeRows: FacadeRow[] = [
       return trace
     },
     "40,40,50",
+  ],
+  // The thumb's painted start is rounded to a half cell: at 5 of 20 its exact start is 3.5 and it paints from 4.
+  [
+    "a vertical thumb click or a drag back keeps the offset, and a first-cell grab reaches 0",
+    {},
+    thumbSteps(true, 5, 3, 7, 2),
+    "5,,5,7,,0",
+  ],
+  [
+    "a horizontal thumb click or a drag back keeps the offset, and a first-cell grab reaches 0",
+    { wide: true },
+    thumbSteps(false, 37, 8, 37, 7),
+    "37,,37,37,,0",
   ],
   [
     "viewport padding writes",
@@ -1184,7 +1227,6 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
       const markdown = new MarkdownRenderable(testRenderer, {
         syntaxStyle,
         streaming: true,
-        internalBlockMode: "top-level",
         content: `PARAGRAPH_${i}\n\n\`\`\`ts\nconst CODE_${i} = ${i}\n\`\`\``,
         treeSitterClient: mockTreeSitterClient,
       })
@@ -1227,23 +1269,18 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
   // mounted out of view, or moved out by the same tick's layout), it measures as the block grown in view does, never
   // paints raw text, and then shows the same.
   const lines = (count: number, prefix = "") => [1, 2, 3, 4, 5].slice(0, count).map((i) => `${prefix}line ${i}`)
+  // Markdown prose is written natively, culled or not, and never waits for a highlight, so only code blocks run here.
   const grownOutOfView: [string, boolean, (count: number) => string][] = [
     ["code", true, (count) => lines(count).join("\n")],
-    ["paragraph", false, (count) => lines(count).join("\n")],
     ["fence", true, (count) => ["```ts", ...lines(count), "```"].join("\n")],
-    ...[true, false].flatMap((streaming): [string, boolean, (count: number) => string][] => [
-      ["quote", streaming, (count) => lines(count, "> ").join("\n")],
-      ["list", streaming, (count) => `- ${lines(count).join("\n")}`],
-    ]),
   ]
   test.each(grownOutOfView)("a %s block (streaming %p) grown out of view", async (kind, streaming, source) => {
     // In the write's tick, a box inserted above, a last child the view follows, or a shrunk view moves the block out.
     const moved = ["pushed", "followed", "shrunk"]
     const run = async (first: boolean, mode: string) => {
       const client = createMockTreeSitterClient()
-      // The highlight conceals each block's first two characters, so text painted unhighlighted differs. Streamed prose
-      // shows a preview, which equals a highlight without captures.
-      const previewed = streaming && (kind === "quote" || kind === "list")
+      // The highlight conceals each block's first two characters, so text painted unhighlighted differs.
+      const previewed = false
       client.setMockResult({ highlights: previewed ? [] : [[0, 2, "conceal", { conceal: "" }]] })
       const syntaxStyle = SyntaxStyle.create(testRenderer.nativeScene)
       const scrollbox = new ScrollBoxRenderable(testRenderer, { width: 40, height: 6, stickyStart: "bottom" })
@@ -1254,7 +1291,7 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
       const target =
         kind === "code"
           ? new CodeRenderable(testRenderer, { ...options, filetype: "typescript", drawUnstyledText: false })
-          : new MarkdownRenderable(testRenderer, { ...options, internalBlockMode: "top-level" })
+          : new MarkdownRenderable(testRenderer, options)
       const mount = () => scrollbox.insertBefore(target, first ? scrollbox.getChildren()[0] : undefined)
       mount()
       const shown = first ? 0 : Infinity

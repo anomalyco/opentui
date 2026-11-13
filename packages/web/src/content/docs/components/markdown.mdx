@@ -5,7 +5,7 @@ description: Render markdown with syntax-aware styling
 
 # Markdown
 
-`Markdown` renders document structure and can use Tree-sitter highlighting in fenced code blocks. Use [Code](/docs/components/code) when the full content is source code.
+`Markdown` renders CommonMark with the GitHub tables, strikethrough, task lists and autolinks. OpenTUI's native Markdown engine parses it as it streams in and writes paragraphs and headings itself; fenced code blocks can use Tree-sitter highlighting. Use [Code](/docs/components/code) when the full content is source code.
 
 ## Availability
 
@@ -80,9 +80,7 @@ const markdown = new MarkdownRenderable(renderer, {
 
 ## Streaming updates
 
-Use streaming mode when content arrives in chunks. Keep `streaming: true` while you append chunks.
-When the content is complete, set `markdown.streaming = false` to finish parsing the trailing block.
-Tables show trailing partial rows, with missing cells shown empty.
+Use streaming mode when content arrives in chunks. Keep `streaming: true` while you append chunks. When the content is complete, set `markdown.streaming = false`; the document then shows as it would from one `content` without streaming.
 
 ```typescript
 const markdown = new MarkdownRenderable(renderer, {
@@ -96,40 +94,21 @@ markdown.content += "- line 1\n"
 markdown.streaming = false
 ```
 
-### Stable block prefix
+Content that extends the previous content is appended: the engine reads only the new text, and when it only grows a paragraph or heading, it writes that block's text natively with no text work in JavaScript (in a terminal that shows links, with `conceal` on, and for blocks the inline hook does not rewrite; otherwise JavaScript writes the block's styled text). Other content is parsed again, and blocks equal to the shown ones keep their renderables.
 
-`parseMarkdownIncremental` reports how many parsed tokens at the head of the stream are unlikely to change after an append. The renderable exposes this value as a count of **top-level render blocks**. You can commit those blocks while the unstable tail changes.
+While streaming, the last line shows as far as it is decided. A line that may still become a table row, a fence's end, a rule or a heading's underline waits for its end, and an emphasis or code span that has not closed yet draws as if it had. So a block's kind never flips back and forth on screen.
 
-To use it, set `internalBlockMode: "top-level"`. The renderable then keeps each top-level Markdown block as a separate child renderable. These blocks include headings, paragraphs, lists, tables, and fenced code. `markdown._stableBlockCount` gives the current stable prefix length. In the default mode, it is always `0`. This matches the shape that [`ScrollbackSurface`](/docs/core-concepts/renderer#writing-to-scrollback) expects for row-by-row commits.
+### Committed blocks
+
+`markdown.committedBlockCount` is the number of top-level blocks at the start of the document whose rows are final: they equal the rows a render of the finished document draws, with one exception: a link reference definition that arrives after a committed block used its label turns that label into a link on screen, while rows already written out keep the old text. It never goes down while content only grows. `markdown.blocks` lists every block in document order (the index is the block's id) with its kind and the renderable that shows it. Together they let an app write finished rows out once, for example to terminal scrollback with [`ScrollbackSurface`](/docs/core-concepts/renderer#writing-to-scrollback): write each committed block's rows together with the blank row above it.
 
 ```typescript
-import { MarkdownRenderable, RGBA, SyntaxStyle } from "@opentui/core"
-
-const syntaxStyle = SyntaxStyle.fromStyles(
-  {
-    default: { fg: RGBA.fromHex("#E6EDF3") },
-  },
-  renderer.nativeScene,
-)
-
-const md = new MarkdownRenderable(renderer, {
-  content: "",
-  syntaxStyle,
-  streaming: true,
-  internalBlockMode: "top-level",
-})
-
 md.content = "# Title\n\nPara 1"
-// md._stableBlockCount is 0. While streaming, the newest parsed tokens stay unstable.
+// md.committedBlockCount is 1: the heading is final; "Para 1" can still grow.
 
 md.content = "# Title\n\nPara 1\n\nPara 2"
-// Still 0.
-
-md.content = "# Title\n\nPara 1\n\nPara 2\n\nPara 3"
-// md._stableBlockCount is 2: "# Title" and "Para 1" are stable.
+// md.committedBlockCount is 2: "Para 1" ended at the blank line.
 ```
-
-`internalBlockMode` is an internal, experimental flag for the built-in scrollback streaming demo. This status does not apply to Markdown or to its other options. For normal rendering, keep the default value, `"coalesced"`. This value combines sibling blocks into larger render blocks and keeps the existing layout.
 
 ## Markdown tables
 
@@ -160,7 +139,7 @@ const markdown = new MarkdownRenderable(renderer, {
 
 | Option         | Type                           | Default                 | Description                                       |
 | -------------- | ------------------------------ | ----------------------- | ------------------------------------------------- |
-| `style`        | `"grid" \| "columns"`          | depends on block mode   | Visual preset (see [Table styles](#table-styles)) |
+| `style`        | `"grid" \| "columns"`          | `"grid"`                | Visual preset (see [Table styles](#table-styles)) |
 | `widthMode`    | `"content" \| "full"`          | depends on style        | `"full"` expands columns to fill available width  |
 | `columnFitter` | `"proportional" \| "balanced"` | `"proportional"`        | How columns shrink when space is constrained      |
 | `wrapMode`     | `"none" \| "char" \| "word"`   | `"word"`                | Wrapping mode inside each table cell              |
@@ -202,21 +181,19 @@ api     ready
 worker  paused
 ```
 
-If you do not pass `style`, it is `"columns"` when `internalBlockMode` is `"top-level"`, and `"grid"` otherwise. Individual fields, such as `borders: true`, override the preset defaults.
+If you do not pass `style`, it is `"grid"`. Individual fields, such as `borders: true`, override the preset defaults.
 
-## Custom node rendering
+## Custom block rendering
 
-Use `renderNode` to replace the renderable for a block. Return `undefined` or `null` to use the default renderable. Call `context.defaultRender()` to create the default renderable yourself. When a style option (such as `syntaxStyle`, `fg`, or `conceal`) or `streaming` changes, `renderNode` runs again (in the default coalesced mode, only for blocks with a custom renderable). Its result replaces the old renderable, which is destroyed, so return a new renderable on each call. Default renderables are restyled in place:
+Use `renderBlock` to replace the renderable for a top-level block or a code block at any depth. It gets a `MarkdownBlock`: `kind` (`"paragraph"`, `"heading"`, `"code"`, `"html"`, `"rule"`, `"table"`, `"quote"`, `"list"` and so on), `index` (its id), `level`, `ordered`, `start`, `checked`, `lang`, `info`, `closed`, and, read when you ask, `raw` (its source), `text` and `children`. Return `undefined` or `null` to use the default renderable, or call `context.defaultRender()` to get it yourself; a renderable you return may hold it. `renderBlock` runs again when the block changes, when a style option (such as `syntaxStyle`, `fg`, or `conceal`) changes, and when `streaming` changes. Its result replaces the old renderable, which is destroyed, so return a new renderable on each call:
 
 ```typescript
 const markdown = new MarkdownRenderable(renderer, {
   content: "# Title\n\nHello",
   syntaxStyle,
-  renderNode: (token, context) => {
-    if (token.type === "heading") {
-      return context.defaultRender()
-    }
-    return undefined
+  renderBlock: (block, context) => {
+    if (block.kind === "heading") return new TextRenderable(renderer, { content: `>> ${block.text}` })
+    return context.defaultRender()
   },
 })
 ```
@@ -240,8 +217,8 @@ const syntaxStyle = SyntaxStyle.fromStyles({ default: {} }, renderer.nativeScene
 
 const renderTaskFlow =
   (renderer: CliRenderer): MarkdownCodeBlockRenderer =>
-  (token) => {
-    const steps = token.text
+  (block) => {
+    const steps = block.text
       .split("\n")
       .filter((line) => line.startsWith("step "))
       .map((line) => line.slice("step ".length))
@@ -265,35 +242,55 @@ const renderTaskFlow =
 const markdown = new MarkdownRenderable(renderer, {
   content: "```taskflow\nstep Parse markdown done\nstep Render widget active\n```",
   syntaxStyle,
-  renderNode: createMarkdownCodeBlockRenderer({
+  renderBlock: createMarkdownCodeBlockRenderer({
     taskflow: renderTaskFlow(renderer),
   }),
 })
 ````
 
+A code-block renderer gets a `MarkdownCodeBlock`: `type: "code"`, `lang`, `info`, `text` (the code), `raw` and `closed`, which says whether the closing fence arrived (a fence the stream left open is not closed, even once the stream ends).
+
+## Inline hooks and math
+
+`inlineHook` rewrites the display text of every paragraph, heading and table cell before it shows, for example to show IDs as titled links. It gets the parser's spans (`text`, styles, `link`, `code`, `math`) and the block's source, and returns the spans to show; a span's `target` in a paragraph or heading makes it clickable through `markdown.targetAt(x, y)` (targets in table cells are not). `targetAt` answers for what the last frame drew: after the text changes (a new `content`, a rename through `rerunInlineHook`), it answers from the next frame. `inlineHookFilter: ["ses_"]` runs the hook only on blocks whose source holds one of the strings, so other blocks stay on the native path; an empty filter runs it on none. The filter holds at most 16 strings of 1 to 64 bytes, 256 bytes in all, and the source at most 64 MiB. `rerunInlineHook(select)` runs it again for the blocks whose source `select` accepts, without parsing anything.
+
+`extensions: ["math"]` parses `$…$` and `\(…\)` as inline math (a span with `math` set) and `$$` or `\[` lines as display math, a code block of the language `math`, so `createMarkdownCodeBlockRenderer({ math })` renders it.
+
 ## Properties
 
-| Property            | Type                                                                            | Default       | Description                                                   |
-| ------------------- | ------------------------------------------------------------------------------- | ------------- | ------------------------------------------------------------- |
-| `content`           | `string`                                                                        | `""`          | Markdown source                                               |
-| `syntaxStyle`       | `SyntaxStyle`                                                                   | required      | Style definitions for tokens                                  |
-| `fg`                | `ColorInput`                                                                    | -             | Base foreground color, also used by inner code blocks         |
-| `bg`                | `ColorInput`                                                                    | -             | Base background color, also used by inner code blocks         |
-| `conceal`           | `boolean`                                                                       | `true`        | Hide markdown markers in markdown text                        |
-| `concealCode`       | `boolean`                                                                       | `false`       | Hide markers inside fenced code blocks                        |
-| `streaming`         | `boolean`                                                                       | `false`       | Incremental mode. Set `false` to finalize                     |
-| `tableOptions`      | `MarkdownTableOptions`                                                          | -             | Options for markdown table rendering                          |
-| `internalBlockMode` | `"coalesced" \| "top-level"`                                                    | `"coalesced"` | Experimental: expose top-level blocks as separate renderables |
-| `treeSitterClient`  | `TreeSitterClient`                                                              | -             | Custom Tree-sitter client for code blocks                     |
-| `renderNode`        | `(token: Token, context: RenderNodeContext) => Renderable \| null \| undefined` | -             | Custom renderer for each Markdown block                       |
+| Property           | Type                                                                                    | Default  | Description                                           |
+| ------------------ | --------------------------------------------------------------------------------------- | -------- | ----------------------------------------------------- |
+| `content`          | `string`                                                                                | `""`     | Markdown source                                       |
+| `syntaxStyle`      | `SyntaxStyle`                                                                           | required | Style definitions for the Markdown scopes             |
+| `fg`               | `ColorInput`                                                                            | -        | Base foreground color, also used by inner code blocks |
+| `bg`               | `ColorInput`                                                                            | -        | Base background color, also used by inner code blocks |
+| `conceal`          | `boolean`                                                                               | `true`   | Hide markdown markers in markdown text                |
+| `concealCode`      | `boolean`                                                                               | `false`  | Hide markers inside fenced code blocks                |
+| `streaming`        | `boolean`                                                                               | `false`  | More content is coming. Set `false` to finish         |
+| `tableOptions`     | `MarkdownTableOptions`                                                                  | -        | Options for markdown table rendering                  |
+| `treeSitterClient` | `TreeSitterClient`                                                                      | -        | Custom Tree-sitter client for code blocks             |
+| `renderBlock`      | `(block: MarkdownBlock, context: RenderNodeContext) => Renderable \| null \| undefined` | -        | Custom renderer for top-level blocks and code blocks  |
+| `inlineHook`       | `MarkdownInlineHook`                                                                    | -        | Rewrites prose and table cell spans before they show  |
+| `inlineHookFilter` | `readonly string[]`                                                                     | -        | Runs the hook only on blocks that hold a string       |
+| `extensions`       | `readonly "math"[]`                                                                     | `[]`     | Delimiter extensions to parse                         |
 
-Markdown rebuilds its blocks at once when you set `content`.
-It applies `syntaxStyle`, `fg`, `bg`, `conceal`, and `concealCode` changes later, in its lifecycle pass (`onLifecyclePass`).
-Core runs lifecycle passes after the frame callbacks and before layout, so the new styles appear in that frame.
-These five setters do not request a frame. If nothing else requests one, call `markdown.requestRender()`.
+Markdown applies `content`, `streaming`, `conceal`, `syntaxStyle` and the hook options at once. It restyles its renderables for `syntaxStyle`, `fg`, `bg`, `conceal` and `concealCode` changes in its lifecycle pass (`onLifecyclePass`), which Core runs before layout, so the new styles appear in that frame. A theme change repaints the natively written text and parses nothing again. If you assign `onLifecyclePass` on a Markdown renderable, call `refreshStyles()` after each change.
 
-If you assign `onLifecyclePass` on a Markdown renderable, even to `null`, Markdown no longer applies these changes by itself.
-Call `refreshStyles()` after each change. `refreshStyles()` rebuilds the blocks at once and requests a frame.
+## Migrating from 0.8
+
+0.9.0 replaces the `marked`-based parser with the native engine. What changes for apps:
+
+- `renderNode(token, context)` is now `renderBlock(block, context)`. Switch on `block.kind` instead of `token.type` (`blockquote` is `quote`, `hr` is `rule`); `token.raw` is `block.raw`, `token.text` is `block.text`, `token.lang` is `block.lang`. There is no inline token tree; use `inlineHook` for inline content. The React and Solid prop is `renderBlock` too.
+- `MarkdownCodeBlockRenderer` gets a `MarkdownCodeBlock` instead of `Tokens.Code`, with `closed` (the closing fence arrived). A renderer that checked `raw` for a closing fence can read `closed`. The default renderable's id is still `${markdown.id}-block-${index}`, now with the block's index in document order, counting nested blocks.
+- `internalBlockMode` is gone: every document renders its top-level blocks as separate renderables, one blank row apart. Apps on the old default (`"coalesced"`) see blank rows between some blocks they used to join. Top-level mode's default table style, `"columns"`, is gone too: set `tableOptions.style: "columns"` for it.
+- `BlockState`, `ParseState`, `_parseState`, `_blockStates` and `_stableBlockCount` are gone. Use `blocks` and `committedBlockCount`, which counts final blocks only (see [Committed blocks](#committed-blocks)).
+- `marked` is no longer a dependency, and `marked` extension objects are no longer used.
+- Paragraphs and headings are `TextRenderable`s written natively, not `CodeRenderable`s with `filetype: "markdown"`, and prose no longer goes to the Tree-sitter client. Code that set `onChunks` or `onHighlight` on them should use `inlineHook`.
+- Parsing follows CommonMark 0.31.2 and GFM: `[x]` without a definition keeps its brackets, a backslash escape hides its backslash, a code span loses one space at each end, a link reference definition applies anywhere in the document, a header with its delimiter row is a table before any row arrives, task items show ☐ or ☑ (`[ ]` or `[x]` without conceal), and a list with a blank line between items shows a blank row between them.
+- While streaming, a line that may still change kind waits for its end (see [Streaming updates](#streaming-updates)).
+- The inline hook runs when its content or options change (`content`, `inlineHook`, `inlineHookFilter`, `rerunInlineHook`, a new `syntaxStyle`), not when a highlight arrives, so a renamed title shows at once and a failed highlight no longer keeps an old one. Its output is written in the current style: a hook that reads `context.syntaxStyle` is run again on a theme change.
+- `targetAt` answers from the next frame after a rename or other text change; until then it answers nothing.
+- A `markup.strikethrough` style strikes its text through unless the style sets `strikethrough: false`.
 
 OpenTUI bundles a limited parser set. See the [Tree-sitter reference](/docs/reference/tree-sitter) before you highlight other fenced-code languages.
 

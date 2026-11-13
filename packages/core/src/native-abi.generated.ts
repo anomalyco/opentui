@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 5359a673505d047056d9dc50a5df7ca752ff2de1e3b5abb6ea9b2385096bdb78
+// ABI audit SHA-256: 4c3590e542387e190703ab553182e3f06b022ba38575934c226e3f9920ed171d
 
 export const OT_CONTEXT_ABI_VERSION = 2
 export const OT_OK = 0
@@ -186,6 +186,7 @@ export const OT_MEASURE_AT_MOST = 2
 export const OT_LAYOUT_PUBLIC = 0
 export const OT_LAYOUT_YOGA = 1
 export const OT_LAYOUT_PAINT = 2
+export const OT_LAYOUT_CONTENT = 3
 export const OT_BORDER_NONE = 0
 export const OT_BORDER_LEFT = 1
 export const OT_BORDER_BOTTOM = 2
@@ -437,12 +438,45 @@ export const OT_EDIT_POSITION_PREV_CHAR = 8
 export const OT_EDITOR_STYLE_FOREGROUND = 1
 export const OT_EDITOR_STYLE_BACKGROUND = 2
 export const OT_EDITOR_STYLE_ATTRIBUTES = 4
+export const OT_EDITOR_STYLE_ATTRIBUTE_MASK = 8
 export const OT_EDIT_HIGHLIGHT_ADD_LINE = 0
 export const OT_EDIT_HIGHLIGHT_ADD_RANGE = 1
 export const OT_EDIT_HIGHLIGHT_REMOVE_REF = 2
 export const OT_EDIT_HIGHLIGHT_CLEAR_LINE = 3
 export const OT_EDIT_HIGHLIGHT_CLEAR_ALL = 4
 export const OT_STYLE_RUN_FLAG = 2147483648
+export const OT_GROUP_SET_NAME_COUNT_MAX = 16
+export const OT_GROUP_SET_NAME_BYTE_COUNT_MAX = 64
+export const OT_MD_CONCEAL = 1
+export const OT_MD_HYPERLINKS = 2
+export const OT_MD_MATH = 4
+export const OT_MD_HOOK = 8
+export const OT_MD_HOOK_FILTER_BYTE_COUNT_MAX = 256
+export const OT_MD_PARAGRAPH = 0
+export const OT_MD_HEADING = 1
+export const OT_MD_CODE = 2
+export const OT_MD_HTML = 3
+export const OT_MD_RULE = 4
+export const OT_MD_TABLE = 5
+export const OT_MD_TABLE_ROW = 6
+export const OT_MD_TABLE_CELL = 7
+export const OT_MD_QUOTE = 8
+export const OT_MD_LIST = 9
+export const OT_MD_ITEM = 10
+export const OT_MD_BLOCK_CLOSED = 1
+export const OT_MD_BLOCK_SETEXT = 2
+export const OT_MD_BLOCK_ORDERED = 4
+export const OT_MD_BLOCK_TIGHT = 8
+export const OT_MD_BLOCK_TASK = 16
+export const OT_MD_BLOCK_CHECKED = 32
+export const OT_MD_BLOCK_BLANK_AFTER = 64
+export const OT_MD_BLOCK_FENCED = 128
+export const OT_MD_BLOCK_HOOKED = 256
+export const OT_MD_BLOCK_MATH = 512
+export const OT_MD_BLOCK_HEADER = 1024
+export const OT_MD_BLOCK_OPEN = 2048
+export const OT_MD_SPAN_CODE = 1
+export const OT_MD_SPAN_MATH = 2
 export const OT_EDITOR_MOVE_UP = 0
 export const OT_EDITOR_MOVE_DOWN = 1
 export const OT_EDITOR_GOTO_LINE_END = 2
@@ -853,6 +887,7 @@ export const nativeSymbols = {
   ot_scene_get_layout: { args: ["ptr", "buffer", "u32", "buffer"], returns: "i32" },
   ot_scene_paint: { args: ["ptr", "buffer", "buffer", "u32", "u32", "buffer"], returns: "i32" },
   ot_scene_hit_test: { args: ["ptr", "buffer", "i32", "i32", "buffer"], returns: "i32" },
+  ot_scene_hit_test_excluding: { args: ["ptr", "buffer", "i32", "i32", "u32", "buffer"], returns: "i32" },
   ot_scene_get_stats: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_scene_set_debug_flags: { args: ["ptr", "buffer", "u32"], returns: "i32" },
   ot_scene_get_cursor_state: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -916,6 +951,22 @@ export const nativeSymbols = {
   ot_syntax_style_get_count: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_edit_buffer_highlight: { args: ["ptr", "buffer", "u32", "u32", "ptr"], returns: "i32" },
   ot_edit_buffer_get_highlights: { args: ["ptr", "buffer", "u32", "ptr", "u32", "buffer"], returns: "i32" },
+  ot_context_group_set: { args: ["ptr", "buffer", "u32", "buffer", "u32", "buffer"], returns: "i32" },
+  ot_edit_buffer_set_layer: { args: ["ptr", "buffer", "u32", "u32", "u32", "ptr", "u32"], returns: "i32" },
+  ot_markdown_create: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
+  ot_markdown_destroy: { args: ["ptr", "buffer"], returns: "i32" },
+  ot_markdown_set_options: { args: ["ptr", "buffer", "buffer", "buffer"], returns: "i32" },
+  ot_markdown_append: { args: ["ptr", "buffer", "ptr", "u32", "buffer"], returns: "i32" },
+  ot_markdown_set: { args: ["ptr", "buffer", "ptr", "u32", "buffer"], returns: "i32" },
+  ot_markdown_finish: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
+  ot_markdown_get_source: { args: ["ptr", "buffer", "buffer", "buffer"], returns: "i32" },
+  ot_markdown_read_changes: { args: ["ptr", "buffer", "ptr", "u32", "buffer"], returns: "i32" },
+  ot_markdown_read_source: { args: ["ptr", "buffer", "u32", "ptr", "u32", "buffer"], returns: "i32" },
+  ot_markdown_read_leaf: {
+    args: ["ptr", "buffer", "u32", "ptr", "u32", "buffer", "ptr", "ptr", "u32", "buffer", "ptr", "u32", "buffer"],
+    returns: "i32",
+  },
+  ot_markdown_bind: { args: ["ptr", "buffer", "u32", "buffer"], returns: "i32" },
   ot_editor_view_set_viewport: { args: ["ptr", "buffer", "buffer", "u32", "u32"], returns: "i32" },
   ot_editor_view_get_viewport: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_editor_view_set_scroll_margin: { args: ["ptr", "buffer", "f32"], returns: "i32" },
@@ -1782,6 +1833,53 @@ export const nativeLayouts = {
       ref: { offset: 16, size: 4, alignment: 4, type: "u32" },
     },
   },
+  ot_highlight_run: {
+    size: 12,
+    alignment: 4,
+    fields: {
+      start_byte: { offset: 0, size: 4, alignment: 4, type: "u32" },
+      end_byte: { offset: 4, size: 4, alignment: 4, type: "u32" },
+      group_set: { offset: 8, size: 4, alignment: 4, type: "u32" },
+    },
+  },
+  ot_markdown_options: {
+    size: 296,
+    alignment: 8,
+    fields: {
+      struct_size: { offset: 0, size: 4, alignment: 4, type: "u32" },
+      abi_version: { offset: 4, size: 4, alignment: 4, type: "u32" },
+      flags: { offset: 8, size: 4, alignment: 4, type: "u32" },
+      source_byte_limit: { offset: 12, size: 4, alignment: 4, type: "u32" },
+      syntax_style: { offset: 16, size: 16, alignment: 8, type: "ot_handle" },
+      hook_filter_byte_count: { offset: 32, size: 4, alignment: 4, type: "u32" },
+      reserved: { offset: 36, size: 4, alignment: 4, type: "u32" },
+      hook_filter: { offset: 40, size: 256, alignment: 1, type: "[256]u8" },
+    },
+  },
+  ot_markdown_result: {
+    size: 12,
+    alignment: 4,
+    fields: {
+      changed_block_count: { offset: 0, size: 4, alignment: 4, type: "u32" },
+      committed_top_level_count: { offset: 4, size: 4, alignment: 4, type: "u32" },
+      removed_from_index: { offset: 8, size: 4, alignment: 4, type: "u32" },
+    },
+  },
+  ot_markdown_block: {
+    size: 32,
+    alignment: 4,
+    fields: {
+      index: { offset: 0, size: 4, alignment: 4, type: "u32" },
+      parent_index: { offset: 4, size: 4, alignment: 4, type: "u32" },
+      kind: { offset: 8, size: 2, alignment: 2, type: "u16" },
+      flags: { offset: 10, size: 2, alignment: 2, type: "u16" },
+      source_start_byte: { offset: 12, size: 4, alignment: 4, type: "u32" },
+      source_end_byte: { offset: 16, size: 4, alignment: 4, type: "u32" },
+      info_start_byte: { offset: 20, size: 4, alignment: 4, type: "u32" },
+      info_end_byte: { offset: 24, size: 4, alignment: 4, type: "u32" },
+      number: { offset: 28, size: 4, alignment: 4, type: "u32" },
+    },
+  },
   ot_editor_viewport: {
     size: 24,
     alignment: 4,
@@ -2571,6 +2669,7 @@ export const nativeConstants = {
   OT_LAYOUT_PUBLIC: 0,
   OT_LAYOUT_YOGA: 1,
   OT_LAYOUT_PAINT: 2,
+  OT_LAYOUT_CONTENT: 3,
   OT_BORDER_NONE: 0,
   OT_BORDER_LEFT: 1,
   OT_BORDER_BOTTOM: 2,
@@ -2822,12 +2921,45 @@ export const nativeConstants = {
   OT_EDITOR_STYLE_FOREGROUND: 1,
   OT_EDITOR_STYLE_BACKGROUND: 2,
   OT_EDITOR_STYLE_ATTRIBUTES: 4,
+  OT_EDITOR_STYLE_ATTRIBUTE_MASK: 8,
   OT_EDIT_HIGHLIGHT_ADD_LINE: 0,
   OT_EDIT_HIGHLIGHT_ADD_RANGE: 1,
   OT_EDIT_HIGHLIGHT_REMOVE_REF: 2,
   OT_EDIT_HIGHLIGHT_CLEAR_LINE: 3,
   OT_EDIT_HIGHLIGHT_CLEAR_ALL: 4,
   OT_STYLE_RUN_FLAG: 2147483648,
+  OT_GROUP_SET_NAME_COUNT_MAX: 16,
+  OT_GROUP_SET_NAME_BYTE_COUNT_MAX: 64,
+  OT_MD_CONCEAL: 1,
+  OT_MD_HYPERLINKS: 2,
+  OT_MD_MATH: 4,
+  OT_MD_HOOK: 8,
+  OT_MD_HOOK_FILTER_BYTE_COUNT_MAX: 256,
+  OT_MD_PARAGRAPH: 0,
+  OT_MD_HEADING: 1,
+  OT_MD_CODE: 2,
+  OT_MD_HTML: 3,
+  OT_MD_RULE: 4,
+  OT_MD_TABLE: 5,
+  OT_MD_TABLE_ROW: 6,
+  OT_MD_TABLE_CELL: 7,
+  OT_MD_QUOTE: 8,
+  OT_MD_LIST: 9,
+  OT_MD_ITEM: 10,
+  OT_MD_BLOCK_CLOSED: 1,
+  OT_MD_BLOCK_SETEXT: 2,
+  OT_MD_BLOCK_ORDERED: 4,
+  OT_MD_BLOCK_TIGHT: 8,
+  OT_MD_BLOCK_TASK: 16,
+  OT_MD_BLOCK_CHECKED: 32,
+  OT_MD_BLOCK_BLANK_AFTER: 64,
+  OT_MD_BLOCK_FENCED: 128,
+  OT_MD_BLOCK_HOOKED: 256,
+  OT_MD_BLOCK_MATH: 512,
+  OT_MD_BLOCK_HEADER: 1024,
+  OT_MD_BLOCK_OPEN: 2048,
+  OT_MD_SPAN_CODE: 1,
+  OT_MD_SPAN_MATH: 2,
   OT_EDITOR_MOVE_UP: 0,
   OT_EDITOR_MOVE_DOWN: 1,
   OT_EDITOR_GOTO_LINE_END: 2,

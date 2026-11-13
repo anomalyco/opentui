@@ -24,6 +24,7 @@ pub const Kind = enum(u32) {
     audio_engine,
     clipboard_service,
     clipboard_operation,
+    markdown_doc,
 };
 
 pub const Error = error{

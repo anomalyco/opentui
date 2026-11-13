@@ -8,5 +8,5 @@
 2. second
 3. third
 
-- todo
-- done
+- ☐ todo
+- ☑ done

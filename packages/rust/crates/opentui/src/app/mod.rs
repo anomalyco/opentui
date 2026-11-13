@@ -60,6 +60,12 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+thread_local! {
+    /// More environment the terminal of a headless app made on this thread reports
+    /// ([`crate::testing::TestApp::with_hyperlinks`]).
+    pub(crate) static HEADLESS_ENVIRONMENT: RefCell<Vec<(&'static str, &'static str)>> = const { RefCell::new(Vec::new()) };
+}
+
 /// How an [`App`] runs.
 #[derive(Clone, Debug)]
 #[must_use]
@@ -485,12 +491,9 @@ impl App {
     fn headless_session(width: u16, height: u16, options: &AppOptions) -> Result<Session> {
         let context = Context::new(options.host.context)?;
         let session = Session::new(&context, options.host.session)?;
-        session.attach_renderer(
-            u32::from(width.max(1)),
-            u32::from(height.max(1)),
-            Remote::Remote,
-            &[("TERM", "xterm-256color"), ("COLORTERM", "truecolor")],
-        )?;
+        let mut environment = vec![("TERM", "xterm-256color"), ("COLORTERM", "truecolor")];
+        HEADLESS_ENVIRONMENT.with_borrow(|extra| environment.extend_from_slice(extra));
+        session.attach_renderer(u32::from(width.max(1)), u32::from(height.max(1)), Remote::Remote, &environment)?;
         Ok(session)
     }
 
@@ -728,8 +731,8 @@ impl App {
 
     /// Restores the terminal after the current turn, runs `task` while another program owns it (an external editor,
     /// for example), and sets the terminal up again when `task` returns. The event loop waits for `task`, and input the
-    /// terminal sent meanwhile is dropped. Without a running local terminal (a test, a remote app, Windows), `task` runs
-    /// after the current event with the terminal untouched. A second call before the first runs replaces it.
+    /// terminal sent meanwhile is dropped. Without a running local terminal (a test, a remote app), `task` runs after
+    /// the current event with the terminal untouched. A second call before the first runs replaces it.
     pub fn release_terminal(&self, task: impl FnOnce(&mut Cx<'_>) + 'static) {
         if !self.0.terminal_active.get() {
             self.defer(task);
@@ -1160,6 +1163,9 @@ impl App {
                 | MouseEventKind::ScrollLeft
                 | MouseEventKind::ScrollRight
         );
+        if event.kind == MouseEventKind::Down(MouseButton::Left) {
+            self.drag_and_drop(event, None, None, false);
+        }
         let selecting = self.selection_mouse(event, hit.as_ref());
         let target = match event.kind {
             // As in Core, a selection drag goes to the widget under the pointer, so scroll boxes it passes over can
@@ -1209,7 +1215,10 @@ impl App {
                 self.set_focus(Some(focusable));
             }
         }
-        self.drag_and_drop(event, captured.as_ref(), hit.as_ref(), selecting);
+        // A left press ended the old drag before its handlers; a drag they started is the new gesture's.
+        if event.kind != MouseEventKind::Down(MouseButton::Left) {
+            self.drag_and_drop(event, captured.as_ref(), hit.as_ref(), selecting);
+        }
         if let MouseEventKind::Up(_) = event.kind {
             *self.0.capture.borrow_mut() = None;
             self.finish_selection_drag(event, hit.as_ref());
@@ -1218,7 +1227,8 @@ impl App {
     }
 
     /// Tracks a left-button drag from the captured widget: drag-over changes for the widgets under the pointer, then a
-    /// drop where it ends.
+    /// drop where it ends. A press during a drag means the drag's release was lost: the press ends it, before its own
+    /// handlers run and without a drop.
     fn drag_and_drop(
         &self,
         event: &MouseEvent,
@@ -1254,7 +1264,7 @@ impl App {
                     widget.element().handlers.drag_over.emit(&mut Cx::new(self), &(source.clone(), true));
                 }
             }
-            MouseEventKind::Up(MouseButton::Left) => {
+            MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left) => {
                 let Some((source, over)) = self.0.drag.borrow_mut().take() else { return };
                 let dragged = AnyWidget(Rc::clone(&source));
                 for widget in over.iter().filter_map(Weak::upgrade) {

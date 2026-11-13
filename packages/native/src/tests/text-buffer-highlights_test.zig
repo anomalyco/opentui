@@ -36,18 +36,18 @@ test "TextBuffer styled seek - JSON tokens retain every line span" {
         try std.testing.expectEqual(4, tb.run_styles.count());
         for (0..line_count) |row| {
             const highlights = tb.getLineHighlights(row);
-            const spans = tb.line_spans.items[row].items;
+            const spans = (try tb.getLineSpans(row));
             try std.testing.expectEqual(5, highlights.len);
             try std.testing.expectEqual(6, spans.len);
-            try std.testing.expectEqual(text_buffer.StyleSpan{ .col = 15, .style_id = 0, .next_col = std.math.maxInt(u32) }, spans[5]);
+            try std.testing.expectEqual(text_buffer.StyleSpan.legacy(std.math.maxInt(u32), 0), spans[5]);
             for ([_]u32{ 0, 2, 9, 11, 14 }, [_]u32{ 2, 9, 11, 14, 15 }, 0..) |start, end, token| {
                 try std.testing.expectEqual(start, highlights[token].col_start);
                 try std.testing.expectEqual(end, highlights[token].col_end);
                 try std.testing.expect(highlights[token].internal);
                 try std.testing.expectEqual(1, highlights[token].priority);
                 try std.testing.expectEqual(token, if (tb.resolveStyle(highlights[token].style_id)) |definition| definition.attributes else 0);
-                try std.testing.expectEqual(start, spans[token].col);
-                try std.testing.expectEqual(end, spans[token].next_col);
+                try std.testing.expectEqual(start, if (token == 0) 0 else spans[token - 1].end_col_exclusive);
+                try std.testing.expectEqual(end, spans[token].end_col_exclusive);
                 try std.testing.expectEqual(highlights[token].style_id, spans[token].style_id);
             }
         }
@@ -66,18 +66,16 @@ test "TextBuffer styled seek - newline excluded ranges across empty lines" {
     try std.testing.expectEqual(1, tb.getHighlightCount());
     try std.testing.expectEqual(0, tb.getLineHighlights(4)[0].col_start);
     try std.testing.expectEqual(3, tb.getLineHighlights(4)[0].col_end);
-    tb.startHighlightsTransaction();
     try tb.addHighlightByCharRange(2, 4, 2, 5, 43);
-    tb.endHighlightsTransaction();
     try std.testing.expectEqual(3, tb.getHighlightCount());
     try std.testing.expectEqual(2, tb.getLineHighlights(2)[0].col_start);
     try std.testing.expectEqual(3, tb.getLineHighlights(2)[0].col_end);
     try std.testing.expectEqual(0, tb.getLineHighlights(4)[1].col_start);
     try std.testing.expectEqual(1, tb.getLineHighlights(4)[1].col_end);
-    try std.testing.expectEqual(2, tb.line_spans.items[4].items[0].style_id);
+    try std.testing.expectEqual(2, (try tb.getLineSpans(4))[0].style_id);
     tb.removeHighlightsByRef(43);
     try std.testing.expectEqual(1, tb.getHighlightCount());
-    try std.testing.expectEqual(1, tb.line_spans.items[4].items[0].style_id);
+    try std.testing.expectEqual(1, (try tb.getLineSpans(4))[0].style_id);
     try tb.addHighlightByCharRange(6, 100, 2, 1, 0);
     try std.testing.expectEqual(1, tb.getHighlightCount());
 }
@@ -124,11 +122,11 @@ test "TextBuffer styled seek - display widths multiline chunks and links" {
             const text = "\n\n" ++ first ++ "\n\n" ++ emoji ++ "\n" ++ combining ++ "\n\tX\n\u{301}\n";
             var output: [text.len]u8 = undefined;
             try std.testing.expectEqualStrings(text, output[0..tb.getPlainTextIntoBuffer(&output)]);
-            try std.testing.expectEqual(0, tb.getLineSpans(7).len);
+            try std.testing.expectEqual(0, (try tb.getLineSpans(7)).len);
             const offset = tb.measureText(first ++ emoji ++ combining);
             try tb.addHighlightByCharRange(offset, offset + tb.measureText("\tX"), 99, 9, 42);
             try std.testing.expectEqual(2, tb.getLineHighlights(6).len);
-            try std.testing.expectEqual(99, tb.line_spans.items[6].items[0].style_id);
+            try std.testing.expectEqual(99, (try tb.getLineSpans(6))[0].style_id);
             tb.removeHighlightsByRef(42);
             try std.testing.expectEqual(4, tb.getHighlightCount());
         }
@@ -153,12 +151,10 @@ test "TextBuffer styled seek - arbitrary range order after replacing rope" {
     try tb.addHighlightByCharRange(1, 3, style_id, 1, 42);
     tb.clearAllHighlights();
     try tb.setText(text);
-    tb.startHighlightsTransaction();
     for (0..count) |i| {
         const start: u32 = @intCast(count - i - 1);
         try tb.addHighlightByCharRange(start, start + 1, style_id, 1, 42);
     }
-    tb.endHighlightsTransaction();
     try std.testing.expectEqual(count, tb.getHighlightCount());
     for (0..count) |i| {
         try std.testing.expectEqual(0, tb.getLineHighlights(i * 2).len);
@@ -166,7 +162,7 @@ test "TextBuffer styled seek - arbitrary range order after replacing rope" {
         try std.testing.expectEqual(1, highlights.len);
         try std.testing.expectEqual(0, highlights[0].col_start);
         try std.testing.expectEqual(1, highlights[0].col_end);
-        try std.testing.expectEqual(style_id, tb.line_spans.items[i * 2 + 1].items[0].style_id);
+        try std.testing.expectEqual(style_id, (try tb.getLineSpans(i * 2 + 1))[0].style_id);
     }
 }
 
@@ -229,19 +225,14 @@ test "TextBuffer styled text - failed growth keeps storage safe to reuse" {
 }
 
 test "TextBuffer rejection - single highlight preserves accepted highlights and spans" {
-    try checkHighlightRejection(false, false);
+    try checkHighlightRejection(false);
 }
 
 test "TextBuffer rejection - range highlight is atomic across lines" {
-    try checkHighlightRejection(true, false);
+    try checkHighlightRejection(true);
 }
 
-test "TextBuffer rejection - batched highlights preserve dirty lines" {
-    try checkHighlightRejection(false, true);
-    try checkHighlightRejection(true, true);
-}
-
-fn checkHighlightRejection(comptime range: bool, batched: bool) !void {
+fn checkHighlightRejection(comptime range: bool) !void {
     var pool = gp.GraphemePool.init(std.testing.allocator);
     defer pool.deinit();
     var links = link.LinkPool.init(std.testing.allocator);
@@ -253,27 +244,19 @@ fn checkHighlightRejection(comptime range: bool, batched: bool) !void {
         try tb.setText("hello\nworld\nlast\nfour\nfive\nsix\nseven\neight\nnine\nten");
         try tb.addHighlight(0, 0, 2, 11, 1, 7);
         const accepted = tb.getLineHighlights(0)[0];
-        const spans = try std.testing.allocator.dupe(text_buffer.StyleSpan, tb.getLineSpans(0));
+        const spans = try std.testing.allocator.dupe(text_buffer.StyleSpan, (try tb.getLineSpans(0)));
         defer std.testing.allocator.free(spans);
         const highlights_len = tb.line_highlights.items.len;
-        const spans_len = tb.line_spans.items.len;
-        if (batched) tb.startHighlightsTransaction();
+        const spans_len = tb.line_spans.count();
         const allocator = tb.global_allocator;
         var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = fail_index, .resize_fail_index = 0 });
         tb.global_allocator = failing.allocator();
-        tb.dirty_span_lines.allocator = failing.allocator();
         const result = if (range) tb.addHighlightByCharRange(1, 100, 22, 2, 8) else tb.addHighlight(0, 1, 4, 22, 2, 8);
         tb.global_allocator = allocator;
-        tb.dirty_span_lines.allocator = allocator;
         if (result) |_| {
             try std.testing.expect(!failing.has_induced_failure);
             try std.testing.expectEqual(@as(u32, if (range) 11 else 2), tb.getHighlightCount());
-            if (batched) {
-                try std.testing.expectEqualSlices(text_buffer.StyleSpan, spans, tb.getLineSpans(0));
-                try std.testing.expectEqual(@as(u32, if (range) 10 else 1), tb.dirty_span_lines.count());
-                tb.endHighlightsTransaction();
-            }
-            try std.testing.expectEqual(@as(u32, 22), tb.getLineSpans(0)[1].style_id);
+            try std.testing.expectEqual(@as(u32, 22), (try tb.getLineSpans(0))[1].style_id);
             succeeded = true;
             break;
         } else |err| {
@@ -282,16 +265,14 @@ fn checkHighlightRejection(comptime range: bool, batched: bool) !void {
         }
         try std.testing.expectEqual(@as(u32, 1), tb.getHighlightCount());
         try std.testing.expectEqualDeep(accepted, tb.getLineHighlights(0)[0]);
-        try std.testing.expectEqualSlices(text_buffer.StyleSpan, spans, tb.getLineSpans(0));
+        try std.testing.expectEqualSlices(text_buffer.StyleSpan, spans, (try tb.getLineSpans(0)));
         try std.testing.expectEqual(highlights_len, tb.line_highlights.items.len);
-        try std.testing.expectEqual(spans_len, tb.line_spans.items.len);
+        try std.testing.expectEqual(spans_len, tb.line_spans.count());
         for (1..tb.getLineCount()) |line_idx| {
             try std.testing.expectEqual(@as(usize, 0), tb.getLineHighlights(line_idx).len);
-            try std.testing.expectEqual(@as(usize, 0), tb.getLineSpans(line_idx).len);
+            try std.testing.expectEqual(@as(usize, 0), (try tb.getLineSpans(line_idx)).len);
         }
         try std.testing.expectEqual(@as(usize, 0), tb.internal_highlight_count);
-        try std.testing.expectEqual(@as(u32, 0), tb.dirty_span_lines.count());
-        if (batched) tb.endHighlightsTransaction();
         try tb.addHighlightByCharRange(1, 100, 22, 2, 8);
         try std.testing.expectEqual(@as(u32, 11), tb.getHighlightCount());
     }
@@ -315,14 +296,14 @@ test "TextBuffer rejection - first highlight does not publish partial storage" {
         if (result) |_| {
             try std.testing.expect(!failing.has_induced_failure);
             try std.testing.expectEqual(@as(u32, 1), tb.getHighlightCount());
-            try std.testing.expectEqual(@as(u32, 9), tb.getLineSpans(1)[0].style_id);
+            try std.testing.expectEqual(@as(u32, 9), (try tb.getLineSpans(1))[0].style_id);
             succeeded = true;
             break;
         } else |err| {
             try std.testing.expectEqual(error.OutOfMemory, err);
         }
         try std.testing.expectEqual(@as(usize, 0), tb.line_highlights.items.len);
-        try std.testing.expectEqual(@as(usize, 0), tb.line_spans.items.len);
+        try std.testing.expectEqual(@as(u32, 0), tb.line_spans.count());
         try std.testing.expectEqual(@as(u32, 0), tb.getHighlightCount());
     }
     try std.testing.expect(succeeded);
@@ -461,70 +442,37 @@ test "TextBuffer highlights - remove highlights by reference" {
     try std.testing.expectEqual(@as(usize, 0), line1_highlights.len);
 }
 
-test "TextBuffer removal rejection - mixed refs preserve accepted highlights and spans" {
+test "TextBuffer removal - mixed refs remove in place without memory" {
     var pool = gp.GraphemePool.init(std.testing.allocator);
     defer pool.deinit();
     var links = link.LinkPool.init(std.testing.allocator);
     defer links.deinit();
-    for ([_]bool{ false, true }) |batched| {
-        for ([_]u16{ 0, 200 }) |hl_ref| {
-            var succeeded = false;
-            for (0..32) |fail_index| {
-                const tb = try TextBuffer.init(std.testing.allocator, &pool, &links, .wcwidth);
-                defer tb.deinit();
-                _ = try owned_styled.replace(tb, null, &.{.{ .text = "abcdef\nabcdef", .attributes = 1 }});
-                for (0..2) |line_idx| try tb.addHighlight(line_idx, 2, 6, 9, 2, 200);
-                const highlights = try std.testing.allocator.dupe(Highlight, tb.getLineHighlights(0));
-                defer std.testing.allocator.free(highlights);
-                const spans = try std.testing.allocator.dupe(text_buffer.StyleSpan, tb.getLineSpans(0));
-                defer std.testing.allocator.free(spans);
-                const retained = highlights[if (hl_ref == 0) 1 else 0];
-                tb.dirty_span_lines.clearAndFree();
-                if (batched) tb.startHighlightsTransaction();
-                var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index, .resize_fail_index = 0 });
-                tb.global_allocator = failing.allocator();
-                tb.dirty_span_lines.allocator = failing.allocator();
-                const result = tb.removeHighlightsByRefChecked(hl_ref);
-                tb.global_allocator = std.testing.allocator;
-                tb.dirty_span_lines.allocator = std.testing.allocator;
-                if (result) |_| {
-                    try std.testing.expect(!failing.has_induced_failure);
-                    succeeded = true;
-                } else |err| {
-                    try std.testing.expectEqual(error.OutOfMemory, err);
-                    try std.testing.expect(failing.has_induced_failure);
-                    for (0..2) |line_idx| {
-                        try std.testing.expectEqualSlices(Highlight, highlights, tb.getLineHighlights(line_idx));
-                        try std.testing.expectEqualSlices(text_buffer.StyleSpan, spans, tb.getLineSpans(line_idx));
-                    }
-                    try std.testing.expectEqual(@as(usize, 2), tb.internal_highlight_count);
-                    try std.testing.expectEqual(@as(u32, 0), tb.dirty_span_lines.count());
-                    try tb.removeHighlightsByRefChecked(hl_ref);
-                }
-                try std.testing.expectEqual(@as(u32, 2), tb.getHighlightCount());
-                try std.testing.expectEqual(@as(usize, if (hl_ref == 0) 0 else 2), tb.internal_highlight_count);
-                for (0..2) |line_idx| {
-                    try std.testing.expectEqualSlices(Highlight, &.{retained}, tb.getLineHighlights(line_idx));
-                    if (batched) try std.testing.expectEqualSlices(text_buffer.StyleSpan, spans, tb.getLineSpans(line_idx));
-                }
-                if (batched) {
-                    try std.testing.expectEqual(@as(u32, 2), tb.dirty_span_lines.count());
-                    tb.endHighlightsTransaction();
-                }
-                for (0..2) |line_idx| {
-                    const actual = tb.getLineSpans(line_idx);
-                    try std.testing.expectEqual(@as(usize, if (hl_ref == 0) 3 else 2), actual.len);
-                    try std.testing.expectEqual(retained.style_id, actual[actual.len - 2].style_id);
-                    try std.testing.expectEqual(text_buffer.StyleSpan{ .col = 6, .style_id = 0, .next_col = std.math.maxInt(u32) }, actual[actual.len - 1]);
-                }
-                if (succeeded) break;
-            }
-            try std.testing.expect(succeeded);
+    for ([_]u16{ 0, 200 }) |hl_ref| {
+        const tb = try TextBuffer.init(std.testing.allocator, &pool, &links, .wcwidth);
+        defer tb.deinit();
+        _ = try owned_styled.replace(tb, null, &.{.{ .text = "abcdef\nabcdef", .attributes = 1 }});
+        for (0..2) |line_idx| try tb.addHighlight(line_idx, 2, 6, 9, 2, 200);
+        const retained = tb.getLineHighlights(0)[if (hl_ref == 0) 1 else 0];
+        // Removal filters in place: with no memory at all it still succeeds.
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+        tb.global_allocator = failing.allocator();
+        try tb.removeHighlightsByRefChecked(hl_ref);
+        tb.global_allocator = std.testing.allocator;
+        try std.testing.expect(!failing.has_induced_failure);
+        try std.testing.expectEqual(@as(u32, 2), tb.getHighlightCount());
+        try std.testing.expectEqual(@as(usize, if (hl_ref == 0) 0 else 2), tb.internal_highlight_count);
+        for (0..2) |line_idx| {
+            try std.testing.expectEqualSlices(Highlight, &.{retained}, tb.getLineHighlights(line_idx));
+            const actual = (try tb.getLineSpans(line_idx));
+            try std.testing.expectEqual(@as(usize, if (hl_ref == 0) 3 else 2), actual.len);
+            try std.testing.expectEqual(retained.style_id, actual[actual.len - 2].style_id);
+            try std.testing.expectEqual(@as(u32, 6), actual[actual.len - 2].end_col_exclusive);
+            try std.testing.expectEqual(text_buffer.StyleSpan.legacy(std.math.maxInt(u32), 0), actual[actual.len - 1]);
         }
     }
 }
 
-test "TextBuffer removal - absent and final refs preserve nested batches" {
+test "TextBuffer removal - absent and final refs" {
     var pool = gp.GraphemePool.init(std.testing.allocator);
     defer pool.deinit();
     var links = link.LinkPool.init(std.testing.allocator);
@@ -534,33 +482,18 @@ test "TextBuffer removal - absent and final refs preserve nested batches" {
     try tb.setText("one\ntwo\nthree");
     try tb.addHighlight(0, 0, 3, 1, 1, 7);
     try tb.addHighlight(1, 0, 3, 2, 1, 8);
-    tb.startHighlightsTransaction();
-    tb.startHighlightsTransaction();
     try tb.addHighlight(2, 0, 5, 3, 1, 9);
+    try std.testing.expectEqual(@as(u32, 1), (try tb.getLineSpans(0))[0].style_id);
+    const generation = tb.span_generation;
+    try tb.removeHighlightsByRefChecked(70);
+    try std.testing.expectEqual(generation, tb.span_generation);
     try tb.removeHighlightsByRefChecked(7);
-    try std.testing.expectEqual(@as(u32, 2), tb.dirty_span_lines.count());
-    try std.testing.expect(tb.dirty_span_lines.contains(0));
-    try std.testing.expect(tb.dirty_span_lines.contains(2));
-
-    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
-    tb.global_allocator = failing.allocator();
-    tb.dirty_span_lines.allocator = failing.allocator();
-    const result = tb.removeHighlightsByRefChecked(7);
-    tb.global_allocator = std.testing.allocator;
-    tb.dirty_span_lines.allocator = std.testing.allocator;
-    try result;
-    try std.testing.expect(!failing.has_induced_failure);
-    tb.endHighlightsTransaction();
-    try std.testing.expectEqual(@as(u32, 1), tb.getLineSpans(0)[0].style_id);
-    try std.testing.expectEqual(@as(usize, 0), tb.getLineSpans(2).len);
-    tb.endHighlightsTransaction();
     try std.testing.expectEqual(@as(usize, 0), tb.getLineHighlights(0).len);
-    try std.testing.expectEqual(@as(usize, 0), tb.getLineSpans(0).len);
-    try std.testing.expectEqual(@as(u32, 2), tb.getLineSpans(1)[0].style_id);
-    try std.testing.expectEqual(@as(u32, 3), tb.getLineSpans(2)[0].style_id);
-    try std.testing.expectEqual(@as(u32, 0), tb.dirty_span_lines.count());
+    try std.testing.expectEqual(@as(usize, 0), (try tb.getLineSpans(0)).len);
+    try std.testing.expectEqual(@as(u32, 2), (try tb.getLineSpans(1))[0].style_id);
+    try std.testing.expectEqual(@as(u32, 3), (try tb.getLineSpans(2))[0].style_id);
     try tb.removeHighlightsByRefChecked(8);
-    try std.testing.expectEqual(@as(usize, 0), tb.getLineSpans(1).len);
+    try std.testing.expectEqual(@as(usize, 0), (try tb.getLineSpans(1)).len);
     try std.testing.expectEqual(@as(u32, 1), tb.getHighlightCount());
 }
 
@@ -580,6 +513,7 @@ test "TextBuffer highlights - clear line highlights" {
 
     const highlights = tb.getLineHighlights(0);
     try std.testing.expectEqual(@as(usize, 0), highlights.len);
+    try std.testing.expectEqual(@as(usize, 0), (try tb.getLineSpans(0)).len);
 }
 
 test "TextBuffer highlights - clear all highlights" {
@@ -754,7 +688,7 @@ test "TextBuffer highlights - integration with SyntaxStyle" {
 }
 
 // Each row highlights `line` of `text` with [start, end, style, priority] ranges, applies `edit` with `arg`,
-// and expects [col, style, next_col] spans on `line`: the spans the final text gets from a fresh highlight.
+// and expects [start col, style, end col] spans on `line`: the spans the final text gets from a fresh highlight.
 test "TextBuffer highlights - spans after the line grows match a fresh build" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
@@ -797,9 +731,13 @@ test "TextBuffer highlights - spans after the line grows match a fresh build" {
         try fresh.setText(output[0..eb.tb.getPlainTextIntoBuffer(&output)]);
         for (highlights) |hl| try fresh.addHighlight(line, hl[0], hl[1], hl[2], @intCast(hl[3]), 0);
         for ([_]*TextBuffer{ eb.tb, fresh }) |tb| {
-            const spans = tb.getLineSpans(line);
+            const spans = (try tb.getLineSpans(line));
             try std.testing.expectEqual(expected.len, spans.len);
-            for (expected, spans) |want, span| try std.testing.expectEqual(want, [3]u32{ span.col, span.style_id, span.next_col });
+            var start: u32 = 0;
+            for (expected, spans) |want, span| {
+                try std.testing.expectEqual(want, [3]u32{ start, span.style_id, span.end_col_exclusive });
+                start = span.end_col_exclusive;
+            }
         }
     }
 }
@@ -1004,15 +942,17 @@ test "TextBuffer char range highlights - priority handling" {
     try tb.addHighlightByCharRange(0, 8, 1, 1, 0);
     try tb.addHighlightByCharRange(3, 6, 2, 5, 0);
 
-    const spans = tb.getLineSpans(0);
+    const spans = (try tb.getLineSpans(0));
     try std.testing.expect(spans.len > 0);
 
     // Higher priority should win in overlap region
     var found_high_priority = false;
+    var start: u32 = 0;
     for (spans) |span| {
-        if (span.col >= 3 and span.col < 6 and span.style_id == 2) {
+        if (start >= 3 and start < 6 and span.style_id == 2) {
             found_high_priority = true;
         }
+        start = span.end_col_exclusive;
     }
     try std.testing.expect(found_high_priority);
 }

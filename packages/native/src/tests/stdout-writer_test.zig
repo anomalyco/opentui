@@ -180,6 +180,95 @@ const Unwritten = struct {
 
 const ParkedWriter = stdout_writer.Writer(Unwritten, stdout_writer.Parked);
 
+const CopyEvent = enum { read, acknowledge, post, worker_write, collect, reclaim };
+const CopyOwner = enum { free, host, posted, delivered };
+const CountingWriter = stdout_writer.Writer(struct {
+    pub fn write(_: @This(), bytes: []const u8) stdout_writer.SinkError!usize {
+        return bytes.len;
+    }
+}, stdout_writer.Parked);
+const CountingCreate = struct {
+    pub fn create(_: @This()) error{UnsupportedResource}!*CountingWriter {
+        return CountingWriter.create(testing.allocator, .{}, .{});
+    }
+};
+
+fn checkCopy(owner: *context.Context, events: []const CopyEvent) !void {
+    const bytes = "abcdef";
+    const id = try owner.createSession(.{ .chunk_size = 8, .chunk_count = 2, .span_capacity = 2 });
+    defer owner.destroy(id) catch unreachable;
+    defer owner.cancelSession(id) catch unreachable;
+    const value = try owner.raw().getSession(id);
+    try value.write(bytes);
+    var state: CopyOwner = .free;
+    var completed: usize = 0;
+    var receipt: session.OutputTicket = .{ .session = id, .request_id = 0, .len = 1 };
+    for (events) |event| {
+        switch (event) {
+            .read => {
+                var out: [1]u8 = undefined;
+                const got = value.readOutput(&out);
+                if (state != .free) {
+                    if (got) |_| return error.ReadWhileOwned else |err| if (err != error.Busy) return error.ReadWhileOwned;
+                } else if (completed < bytes.len) {
+                    receipt = (try got) orelse return error.MissingReceipt;
+                    if (receipt.len != 1 or out[0] != bytes[completed]) return error.HostCopy;
+                    state = .host;
+                } else if (try got != null) return error.ExtraReceipt;
+            },
+            .acknowledge => {
+                const result = value.completeOutput(receipt, .written);
+                if (state == .host) {
+                    try result;
+                    state = .free;
+                    completed += 1;
+                } else if (result) return error.StaleAcknowledgement else |err| if (err != error.StaleRequest) return error.StaleAcknowledgement;
+            },
+            .post, .collect, .reclaim => {
+                const got = value.postStdout(CountingWriter, CountingCreate{}, @intFromBool(event == .post), event == .reclaim);
+                if (state == .host) {
+                    if (got) |_| return error.PostWhileHostOwned else |err| if (err != error.Busy) return error.PostWhileHostOwned;
+                } else {
+                    const result = try got;
+                    const delivered = state == .delivered;
+                    if (delivered) completed += 1;
+                    if (delivered or event == .reclaim) state = .free;
+                    if (event == .post and completed < bytes.len) state = .posted;
+                    if (result.written != @intFromBool(delivered)) return error.CollectCount;
+                    if (result.in_flight != (state == .posted)) return error.InFlight;
+                }
+            },
+            .worker_write => if (state == .posted) {
+                const writer: *CountingWriter = @ptrCast(@alignCast(value.stdout_post.?.ptr));
+                if (writer.len != 1 or writer.buffer[0] != bytes[completed]) return error.WriterCopy;
+                if (!writer.pick() or writer.writeStep() != .written or !writer.publish(true)) return error.WriterStep;
+                state = .delivered;
+            },
+        }
+        if (value.completed_bytes != completed) return error.CompletedBytes;
+        if (value.isDrained() != (completed == bytes.len)) return error.Drained;
+        if ((value.pending != null) != (state != .free)) return error.PendingTicket;
+        const writer_owned = state == .posted or state == .delivered;
+        if (value.pending_post != writer_owned) return error.TicketOwner;
+        if (value.stdout_post) |handle| {
+            const writer: *CountingWriter = @ptrCast(@alignCast(handle.ptr));
+            const expected: stdout_writer.State = switch (state) {
+                .posted => .in_flight,
+                .delivered => .done_ok,
+                else => .idle,
+            };
+            if (writer.state.load(.acquire) != expected) return error.WorkerPhase;
+        } else if (writer_owned) return error.MissingWriter;
+    }
+}
+
+test "native transition model: one owner completes each session copy" {
+    const owner = try context.Context.init(testing.allocator, std.Io.failing, .{});
+    defer owner.deinit() catch unreachable;
+    // CI: 6^4 schedules, then longer walks reach partial drains, reuse and EOF; no OS thread.
+    try @import("model-walk.zig").explore(CopyEvent, owner, checkCopy, 4, 32, 64);
+}
+
 test "Session exit wait takes back a copy the writer never picked up, for the synchronous drain" {
     const owner = try context.Context.init(testing.allocator, std.Io.failing, .{});
     defer owner.deinit() catch unreachable;

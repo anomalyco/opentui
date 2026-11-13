@@ -386,11 +386,13 @@ test "EditorView - vertical moves keep the desired column and land on cursor-uni
     defer pools.deinit();
     const long = "This is a very long line that will definitely wrap multiple times at twenty characters";
     const empty_line = "Line with some text\n\nAnother line with text";
+    const wheel = "ab @abcdefghijklmno\nq\nr\ns";
     // From (0, 1) into the width-2 unit at the start of line 1, and back to column 1 on ASCII lines.
     const wide = [_][2]u32{ .{ 1, 0 }, .{ 0, 1 }, .{ 1, 0 }, .{ 2, 1 }, .{ 1, 0 }, .{ 0, 1 }, .{ 1, 0 }, .{ 2, 1 }, .{ 1, 0 }, .{ 0, 1 } };
     const Case = struct { text: []const u8, wrap: text_buffer.WrapMode = .none, width: u32 = 20, placeholder: []const owned_styled.Part = &.{}, start: [2]u32, moves: []const u8, ends: []const [2]u32 };
-    // u/d move the EditBuffer, U/D move the EditorView, a digit scrolls a one-row viewport to that
-    // line with moveCursor, x types "x". Each end is the logical (row, col) after the move.
+    // u/d move the EditBuffer, U/D move the EditorView, E goes to the visual line end, a digit
+    // scrolls a one-row viewport to that line with moveCursor, x types "x". Each end is the
+    // logical (row, col) after the move.
     const cases = [_]Case{
         .{ .text = long, .wrap = .char, .start = .{ 0, 50 }, .moves = "UD", .ends = &.{ .{ 0, 30 }, .{ 0, 50 } } },
         .{ .text = long, .wrap = .char, .start = .{ 0, 0 }, .moves = "D", .ends = &.{.{ 0, 20 }} },
@@ -405,14 +407,26 @@ test "EditorView - vertical moves keep the desired column and land on cursor-uni
         .{ .text = "abcd\n👍🏽👍🏽\nabcd", .start = .{ 0, 3 }, .moves = "ddUU", .ends = &.{ .{ 1, 2 }, .{ 2, 3 }, .{ 1, 2 }, .{ 0, 3 } } },
         .{ .text = "abc\n👨‍👩‍👧x\nabc", .start = .{ 0, 1 }, .moves = "dUddUUDduu", .ends = &wide },
         .{ .text = "abc\n日本\nabc", .start = .{ 0, 1 }, .moves = "1u1U1D12", .ends = &.{ .{ 1, 0 }, .{ 0, 1 }, .{ 1, 0 }, .{ 0, 1 }, .{ 1, 0 }, .{ 2, 1 }, .{ 1, 0 }, .{ 2, 1 } } },
+        // A scroll keeps a cursor already on the new viewport's wrapped row; 670: a scroll onto a wrapped row keeps the
+        // visual column on that row.
+        .{ .text = "abcd efgh ijkl", .wrap = .word, .width = 5, .start = .{ 0, 1 }, .moves = "D1U", .ends = &.{ .{ 0, 6 }, .{ 0, 6 }, .{ 0, 1 } } },
+        .{ .text = wheel, .wrap = .char, .width = 6, .start = .{ 1, 1 }, .moves = "432101234", .ends = &.{ .{ 1, 1 }, .{ 0, 19 }, .{ 0, 13 }, .{ 0, 7 }, .{ 0, 1 }, .{ 0, 7 }, .{ 0, 13 }, .{ 0, 19 }, .{ 1, 1 } } },
+        // A scroll uses the column Up and Down remember, but remembers none of its own.
+        .{ .text = "abcdefghijk\nx\nabcdefghijk", .start = .{ 2, 8 }, .moves = "10", .ends = &.{ .{ 1, 1 }, .{ 0, 1 } } },
+        .{ .text = "abcdefghijk\nx\nabcdefghijk", .start = .{ 2, 8 }, .moves = "U012", .ends = &.{ .{ 1, 1 }, .{ 0, 8 }, .{ 1, 1 }, .{ 2, 8 } } },
+        .{ .text = wheel, .wrap = .word, .width = 6, .start = .{ 1, 1 }, .moves = "432101234", .ends = &.{ .{ 1, 1 }, .{ 0, 16 }, .{ 0, 10 }, .{ 0, 4 }, .{ 0, 1 }, .{ 0, 4 }, .{ 0, 10 }, .{ 0, 16 }, .{ 1, 1 } } },
         // #1289: cell boundaries 0, 2, 3, 5, ... above 0, 2, 4, ...
         .{ .text = "的[代码签名政策](\n因此签名批准者角色", .width = 40, .start = .{ 0, 5 }, .moves = "DUdu", .ends = &.{ .{ 1, 4 }, .{ 0, 5 }, .{ 1, 4 }, .{ 0, 5 } } },
         .{ .text = "的[代码因此签名政策", .wrap = .char, .width = 8, .start = .{ 0, 5 }, .moves = "DU", .ends = &.{ .{ 0, 11 }, .{ 0, 5 } } },
         // Down from the end of a line onto a soft-wrapped line steps back before the wrap.
         .{ .text = "0123456789\nquick brown fox", .wrap = .word, .width = 10, .start = .{ 0, 10 }, .moves = "D", .ends = &.{.{ 1, 5 }} },
         // 172: the placeholder's visual rows are not rows of the empty buffer.
-        .{ .text = "", .placeholder = &.{.{ .text = "type here\nsecond line" }}, .start = .{ 0, 0 }, .moves = "UDUx", .ends = &.{ .{ 0, 0 }, .{ 0, 0 }, .{ 0, 0 }, .{ 0, 1 } } },
+        .{ .text = "", .placeholder = &.{.{ .text = "type here\nsecond line" }}, .start = .{ 0, 0 }, .moves = "UDU1x", .ends = &.{ .{ 0, 0 }, .{ 0, 0 }, .{ 0, 0 }, .{ 0, 0 }, .{ 0, 1 } } },
         .{ .text = "", .wrap = .char, .width = 10, .placeholder = &.{.{ .text = "a placeholder wider than the box" }}, .start = .{ 0, 0 }, .moves = "DDUx", .ends = &.{ .{ 0, 0 }, .{ 0, 0 }, .{ 0, 0 }, .{ 0, 1 } } },
+        // 606: without wrapping, the visual line end is the line end, however wide the line.
+        .{ .text = "ab\nabcd\nabcdefgh", .width = 4, .start = .{ 0, 1 }, .moves = "EDEDEUU", .ends = &.{ .{ 0, 2 }, .{ 1, 2 }, .{ 1, 4 }, .{ 2, 4 }, .{ 2, 8 }, .{ 1, 4 }, .{ 0, 2 } } },
+        .{ .text = "日本語ab", .width = 3, .start = .{ 0, 0 }, .moves = "EE", .ends = &.{ .{ 0, 8 }, .{ 0, 8 } } },
+        .{ .text = "", .width = 4, .placeholder = &.{.{ .text = "abcde" }}, .start = .{ 0, 0 }, .moves = "Ex", .ends = &.{ .{ 0, 0 }, .{ 0, 1 } } },
     };
     for ([_]utf8.WidthMethod{ .unicode, .wcwidth }) |method| {
         const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method, null);
@@ -432,13 +446,22 @@ test "EditorView - vertical moves keep the desired column and land on cursor-uni
                     'd' => eb.moveDown(),
                     'U' => ev.moveUpVisual(),
                     'D' => ev.moveDownVisual(),
+                    'E' => ev.gotoVisualLineEnd(),
                     'x' => try eb.insertText("x"),
                     '0'...'9' => ev.setViewport(.{ .x = 0, .y = move - '0', .width = case.width, .height = 1 }, true),
                     else => unreachable,
                 }
+                // The cursor a scroll moves is on the new viewport's row, so the next frame keeps that viewport.
+                if (std.ascii.isDigit(move) and !ev.placeholder_active) try std.testing.expectEqual(@as(u32, move - '0'), ev.getVisualCursor().visual_row + ev.getViewport().?.y);
                 const cursor = ev.getPrimaryCursor();
                 try std.testing.expectEqual(end, [2]u32{ cursor.row, cursor.col });
                 try std.testing.expectEqual(ev.logicalToVisualCursor(cursor.row, cursor.col).offset, cursor.offset);
+                // 184: a placeholder's rows are not the buffer's, and without wrapping a visual line is the logical one.
+                if (ev.placeholder_active or case.wrap == .none) {
+                    const eol = ev.getEOL();
+                    const visual_eol = ev.getVisualEOL();
+                    try std.testing.expectEqual([3]u32{ eol.logical_row, eol.logical_col, eol.offset }, [3]u32{ visual_eol.logical_row, visual_eol.logical_col, visual_eol.offset });
+                }
             }
         }
     }
@@ -639,6 +662,11 @@ test "EditorView - small viewport cursor movement preserves scrolling margins" {
             try std.testing.expectEqual(@as(u32, 3), ev.getPrimaryCursor().col);
             try std.testing.expectEqual(@as(u32, 0), ev.getViewport().?.y);
 
+            // The first row inside the bottom margin belongs to the margin too.
+            try eb.setCursor(height - margin_lines, 3);
+            ev.setViewport(.{ .x = 0, .y = 0, .width = 20, .height = height }, true);
+            try std.testing.expectEqual(height - margin_lines - 1, ev.getPrimaryCursor().row);
+
             try eb.setCursor(0, 3);
             ev.setViewport(.{ .x = 0, .y = 3, .width = 20, .height = height }, true);
             try std.testing.expectEqual(3 + margin_lines, ev.getPrimaryCursor().row);
@@ -659,7 +687,7 @@ test "EditorView - small viewport cursor movement preserves scrolling margins" {
     }
 }
 
-test "EditorView - small viewport keeps a visible wrapped cursor in place" {
+test "EditorView - small viewport keeps the preferred column of a visible cursor" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -668,22 +696,15 @@ test "EditorView - small viewport keeps a visible wrapped cursor in place" {
     const ev = try EditorView.init(std.testing.allocator, eb, 5, 1);
     defer ev.deinit();
     ev.setScrollMargin(0.2);
-    try eb.setText("abcd efgh ijkl");
 
-    for ([_]text_buffer.WrapMode{ .char, .word }) |mode| {
-        ev.setWrapMode(mode);
-        try eb.setCursor(0, 1);
-        ev.moveDownVisual();
-        try std.testing.expectEqual(@as(u32, 1), ev.getViewport().?.y);
-        const cursor = ev.getPrimaryCursor();
-        ev.setViewport(ev.getViewport(), true);
-        try std.testing.expectEqualDeep(cursor, ev.getPrimaryCursor());
-        try std.testing.expectEqual(@as(u32, 0), ev.getVisualCursor().visual_row);
-        try std.testing.expectEqual(@as(u32, 1), ev.getViewport().?.y);
-        ev.moveUpVisual();
-        try std.testing.expectEqual(@as(u32, 1), ev.getPrimaryCursor().col);
-        try std.testing.expectEqual(@as(u32, 0), ev.getViewport().?.y);
-    }
+    // The first row outside the top margin is visible. A viewport write must
+    // not shorten the preferred column of a cursor parked on a shorter line.
+    try eb.setText("abcd\nx\nabcd\ny");
+    try eb.setCursor(0, 3);
+    eb.moveDown();
+    ev.setViewport(.{ .x = 0, .y = 0, .width = 5, .height = 4 }, true);
+    eb.moveDown();
+    try std.testing.expectEqual(@as(u32, 3), eb.getPrimaryCursor().col);
 }
 
 test "EditorView - small viewport accepts empty buffers and zero dimensions" {
@@ -2217,10 +2238,30 @@ test "occupancy - EditorView forwards occupancy and replays stored endpoints" {
     // The oversized CJK grapheme remains atomic, so its visual end is after
     // the complete width-2 cursor unit rather than inside it at the viewport edge.
     try std.testing.expectEqual(@as(u32, 2), ev.getPrimaryCursor().offset);
+    const before = ev.getVisualCursor();
+    ev.setViewportSize(1, 25);
+    try std.testing.expectEqualDeep(before, ev.getVisualCursor());
 
     ev.setSelectionOccupancy(.cell);
     ev.gotoVisualLineEnd();
     try std.testing.expectEqual(@as(u32, 2), ev.getPrimaryCursor().offset);
+
+    // A full soft-wrapped row keeps its wrap-edge cell under cell occupancy, so the
+    // boundary end of row 0 shows as the start of row 1 after the switch.
+    try eb.setText("abcd");
+    ev.setWrapMode(.char);
+    ev.setViewportSize(2, 24);
+    ev.setSelectionOccupancy(.boundary);
+    try eb.setCursor(0, 0);
+    ev.gotoVisualLineEnd();
+    ev.setSelectionOccupancy(.cell);
+    const vcursor = ev.getVisualCursor();
+    try std.testing.expectEqual([3]u32{ 2, 1, 0 }, [3]u32{ vcursor.offset, vcursor.visual_row, vcursor.visual_col });
+
+    // A one-row text has no row below the top margin of a two-row viewport: the cursor stays.
+    ev.setSelectionOccupancy(.boundary);
+    ev.setViewport(.{ .x = 0, .y = 0, .width = 4, .height = 2 }, true);
+    try std.testing.expectEqual([2]u32{ 2, 0 }, [2]u32{ ev.getPrimaryCursor().offset, ev.getVisualCursor().visual_row });
 }
 
 test "EditorView - word press keeps cursor on the clicked grapheme" {

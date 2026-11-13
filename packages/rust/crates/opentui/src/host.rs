@@ -882,13 +882,10 @@ impl Host {
     }
 
     /// Restores the terminal, runs `task` while another program owns it, and sets the terminal up again after it
-    /// returns. Reports [`Event::Resumed`]: paint a new frame. For a remote terminal, or on Windows, `task` runs with
-    /// the terminal untouched.
+    /// returns. Reports [`Event::Resumed`]: paint a new frame. For a remote terminal, `task` runs with the terminal
+    /// untouched.
     pub fn release<T>(&mut self, events: &mut Vec<Event>, task: impl FnOnce() -> T) -> Result<T> {
         let Connection::Local { restore, .. } = &self.connection else { return Ok(task()) };
-        if cfg!(windows) {
-            return Ok(task());
-        }
         let restore = Rc::clone(restore);
         let suspended = Instant::now();
         // Core's renderer stops expecting capability replies when it suspends.
@@ -900,7 +897,8 @@ impl Host {
         }
         self.session.suspend()?;
         self.drive_until(TerminalState::Suspended)?;
-        restore.terminal.borrow_mut().leave_raw()?;
+        // As Core, restore errors don't stop the hand-over: conhost can apply a saved mode and still fail the call.
+        let _ = restore.terminal.borrow_mut().leave_raw();
         // As Core does once a suspension settles: drop the input the terminal sent meanwhile, such as mouse reports from
         // before restoration turned them off, so the program that takes over does not read it.
         unsafe { sys::ot_terminal_flush_input() };
