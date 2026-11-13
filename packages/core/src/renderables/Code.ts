@@ -498,10 +498,16 @@ export class CodeRenderable extends TextBufferRenderable {
       this.setShouldRenderTextBuffer(this._shownVersion === this._version)
   }
 
-  private async startHighlight(): Promise<void> {
+  // The delta state while it still describes the block: the same client and filetype, and still eligible.
+  private currentDeltas(): CodeRenderable["_deltas"] {
     const deltas = this._deltas
-    if (deltas?.client === this._treeSitterClient && deltas.filetype === this._filetype && this.deltasAllowed())
-      return this.highlightDelta(deltas)
+    const same = deltas?.client === this._treeSitterClient && deltas.filetype === this._filetype
+    return same && this.deltasAllowed() ? deltas : undefined
+  }
+
+  private async startHighlight(): Promise<void> {
+    const deltas = this.currentDeltas()
+    if (deltas) return this.highlightDelta(deltas)
     this.stopDeltas()
     const content = this._content
     const filetype = this._filetype
@@ -597,7 +603,8 @@ export class CodeRenderable extends TextBufferRenderable {
     const answer = await deltas.client
       .highlightAppend(deltas.id, offset, content.slice(offset), deltas.filetype)
       .catch((error: unknown) => ({ highlights: undefined, error: String(error) }))
-    if (this._deltas !== deltas || this.isDestroyed) return
+    // A reply for a block that changed language, concealment or hooks meanwhile is not shown; the next step goes whole.
+    if (this.currentDeltas() !== deltas || this.isDestroyed) return
     try {
       if (!answer.highlights) throw new Error(answer.error)
       const names: string[][] = []

@@ -4258,6 +4258,25 @@ test("a streamed fence sends the appends made during a reply as one delta", asyn
     client.resolveHighlightOnce()
     await flushAsync()
     expect([sent.slice(2), counts.layers]).toEqual([[";"], [5, 13]])
+    // A reply held while its fence stops being eligible (another language, or concealment) writes no layer.
+    md.destroyRecursively()
+    client.resolveAllHighlightOnce()
+    await flushAsync()
+    for (const change of [
+      (held: MarkdownRenderable) => (held.content = "```ts\nlet c"),
+      (held: MarkdownRenderable) => (held.concealCode = true),
+    ]) {
+      const held = createMarkdownRenderable({ content: "```js\nlet c", syntaxStyle, streaming: true, treeSitterClient: client })
+      renderer.root.add(held)
+      await renderOnce()
+      change(held)
+      await renderOnce()
+      const layers = counts.layers.length
+      client.resolveHighlightOnce()
+      await flushAsync()
+      expect(counts.layers.length).toBe(layers)
+      held.destroyRecursively()
+    }
   } finally {
     restore()
   }
