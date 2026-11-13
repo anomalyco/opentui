@@ -1377,7 +1377,9 @@ pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *Pending
     if (continues and from >= s.len) return;
     const resume_at: u32 = if (continues) @max(from, scan.scanned) else from;
     var i = from;
-    var code: ?u32 = code_opener orelse if (continues) scan.code else null;
+    // A resumed scan past the named span's closer draws on after it.
+    const passed = continues and scan.code == null and code_opener != null and from > code_opener.?;
+    var code: ?u32 = if (passed) null else code_opener orelse if (continues) scan.code else null;
     var tag = continues and scan.tag;
     // Where the word being drawn starts: an entity or escape in a possible extended autolink
     // waits for the word to end (the link shows its source raw).
