@@ -671,13 +671,14 @@ pub const MarkdownDoc = struct {
     }
 };
 
+/// A `bool` payload applies the cursor rules around atomic marks.
 pub const EditCommand = union(enum) {
-    delete_forward,
-    backspace,
+    delete_forward: bool,
+    backspace: bool,
     new_line,
     delete_line,
-    move_left,
-    move_right,
+    move_left: bool,
+    move_right: bool,
     move_up,
     move_down,
     goto_line: u32,
@@ -685,11 +686,13 @@ pub const EditCommand = union(enum) {
     clear,
     clear_history,
     debug_rope,
+    cursor_offset_atomic: u32,
+    keep_outside: edit_buffer.EditBuffer.Toward,
 };
 
 pub const EditorCommand = union(enum) {
-    move_up,
-    move_down,
+    move_up: bool,
+    move_down: bool,
     goto_line_end,
     delete_selection,
     cursor_offset: u32,
@@ -4230,15 +4233,15 @@ pub const Context = struct {
         const edit = try self.getEditBuffer(handle);
         try edit.checkMutable();
         switch (command) {
-            .delete_forward => try edit.buffer.deleteForward(),
-            .backspace => try edit.buffer.backspace(),
+            .delete_forward => |atomic| if (atomic) try edit.buffer.deleteAtomic(true) else try edit.buffer.deleteForward(),
+            .backspace => |atomic| if (atomic) try edit.buffer.deleteAtomic(false) else try edit.buffer.backspace(),
             .new_line => {
                 try validateTextBytes(edit.buffer.tb.tabWidth(), "\n", edit.buffer.tb.getByteSize());
                 try edit.buffer.insertText("\n");
             },
             .delete_line => try edit.buffer.deleteLine(),
-            .move_left => edit.buffer.moveLeft(),
-            .move_right => edit.buffer.moveRight(),
+            .move_left => |atomic| if (atomic) try edit.buffer.moveAtomic(false) else edit.buffer.moveLeft(),
+            .move_right => |atomic| if (atomic) try edit.buffer.moveAtomic(true) else edit.buffer.moveRight(),
             .move_up => edit.buffer.moveUp(),
             .move_down => edit.buffer.moveDown(),
             .goto_line => |line| try edit.buffer.gotoLine(line),
@@ -4246,6 +4249,8 @@ pub const Context = struct {
             .clear => try edit.buffer.clear(),
             .clear_history => edit.buffer.clearHistory(),
             .debug_rope => edit.buffer.debugLogRope(),
+            .cursor_offset_atomic => |offset| try edit.buffer.setCursorByOffsetAtomic(offset),
+            .keep_outside => |toward| try edit.buffer.keepOutside(toward),
         }
     }
 
@@ -4329,9 +4334,16 @@ pub const Context = struct {
             .wrap_mode => if (view.view.follow_pending) try view.prepareView(),
             .delete_selection, .cursor_offset, .tab_indicator => {},
         }
+        const from = view.edit.buffer.getPrimaryCursor().offset;
         switch (command) {
-            .move_up => view.view.moveUpVisual(),
-            .move_down => view.view.moveDownVisual(),
+            .move_up => |atomic| {
+                view.view.moveUpVisual();
+                if (atomic) try view.edit.buffer.leaveAtomic(from, false);
+            },
+            .move_down => |atomic| {
+                view.view.moveDownVisual();
+                if (atomic) try view.edit.buffer.leaveAtomic(from, true);
+            },
             .goto_line_end => view.view.gotoVisualLineEnd(),
             .delete_selection => try view.view.deleteSelectedText(),
             .cursor_offset => |offset| try view.view.setCursorByOffset(offset),
