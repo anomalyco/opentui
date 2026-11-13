@@ -62,6 +62,8 @@ pub const Counts = struct {
     layer_runs_copied: u64 = 0,
     /// Set runs whose edges a `setLayer` looks up in the text, since the layer does not hold them.
     layer_run_seeks: u64 = 0,
+    /// Held runs a `setLayer` steps past while it looks for the new runs among them.
+    layer_runs_walked: u64 = 0,
 };
 
 const enabled = builtin.is_test;

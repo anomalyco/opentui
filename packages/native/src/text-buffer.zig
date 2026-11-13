@@ -1834,11 +1834,11 @@ pub const UnifiedTextBuffer = struct {
         // A run the layer already holds lies on boundaries, so setting a layer again seeks only
         // the edges that changed.
         const old = self.layers.runsOf(layer_id);
-        var held: usize = 0;
+        var held = hl.Layers.firstEndingAfter(old, start_byte);
         for (runs) |run| {
             if (run.group_set == 0 or run.group_set > sets.count()) return TextBufferError.InvalidId;
             if (run.end_byte > byte_count) return TextBufferError.InvalidIndex;
-            while (held < old.len and old[held].end_byte <= run.start_byte) held += 1;
+            while (held < old.len and old[held].end_byte <= run.start_byte) : (text_work.add(.layer_runs_walked, 1)) held += 1;
             if (held < old.len and old[held].start_byte == run.start_byte and old[held].end_byte == run.end_byte) continue;
             text_work.add(.layer_run_seeks, 1);
             if (!self.isCharBoundary(run.start_byte) or !self.isCharBoundary(run.end_byte)) return TextBufferError.InvalidIndex;

@@ -580,31 +580,39 @@ test "layers: a run with a dead link rejects the set and returns the references 
     try testing.expectEqual(@as(u32, 1), try links.getRefcount(live));
 }
 
-// Record 669: N one-run sets past the last run copy O(N) runs in total, growth included; the whole
-// layer set again is equal, so it changes and copies nothing.
+// Record 669: N one-run sets past the last run copy and walk O(N) runs in total, growth included;
+// the whole layer set again is equal, so it changes and copies nothing.
 test "layers: one-run sets at the end copy linearly and an equal set copies nothing" {
-    var links = link.LinkPool.init(gpa);
-    defer links.deinit();
-    var copied: [2]u64 = undefined;
-    for ([_]u32{ 256, 512 }, &copied) |n, *total| {
-        var layers: hl.Layers = .{};
-        defer layers.reset(gpa, &links);
+    var setup: Setup = undefined;
+    try setup.init();
+    defer setup.deinit();
+    var work: [2]text_work.Counts = undefined;
+    for ([_]u32{ 256, 512 }, &work) |n, *total| {
+        const tb = try setup.buffer(.unicode);
+        defer tb.deinit();
+        const text = try gpa.alloc(u8, 2 * n + 2);
+        defer gpa.free(text);
+        @memset(text, 'x');
+        try tb.setText(text);
         _ = text_work.take();
         for (0..n) |index| {
             const start: u32 = @intCast(2 * index);
-            try testing.expect(try layers.set(gpa, &links, 1, start, start + 1, &.{.{ .start_byte = start, .end_byte = start + 1, .group_set = 1 }}));
+            try tb.setLayer(1, start, start + 1, &.{.{ .start_byte = start, .end_byte = start + 1, .group_set = 1 }});
         }
-        total.* = text_work.take().layer_runs_copied;
-        const same = try gpa.dupe(LayerRun, runsOf(&layers, 1));
+        total.* = text_work.take();
+        const same = try gpa.dupe(LayerRun, runsOf(&tb.layers, 1));
         defer gpa.free(same);
-        try testing.expect(!try layers.set(gpa, &links, 1, 0, std.math.maxInt(u32), same));
+        const generation = tb.span_generation;
+        try tb.setLayer(1, 0, std.math.maxInt(u32), same);
+        try testing.expectEqual(generation, tb.span_generation);
         try testing.expectEqual(0, text_work.take().layer_runs_copied);
         // One run restyled in the middle: the runs before and after it stay where they are.
         same[n / 2].group_set = 2;
-        try testing.expect(try layers.set(gpa, &links, 1, 0, std.math.maxInt(u32), same));
+        try tb.setLayer(1, 0, std.math.maxInt(u32), same);
         try testing.expectEqual(1, text_work.take().layer_runs_copied);
     }
-    try testing.expect(2 * copied[1] <= 5 * copied[0]);
+    try testing.expect(2 * work[1].layer_runs_copied <= 5 * work[0].layer_runs_copied);
+    try testing.expect(2 * work[1].layer_runs_walked <= 5 * work[0].layer_runs_walked);
 }
 
 /// A buffer with a style that defines `s1`..`s3` and a group set per name (ids 1..3).
