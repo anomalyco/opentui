@@ -2952,12 +2952,11 @@ pub const Doc = struct {
             live.styled_count = i + 1;
             if (live.display_ends.items[i] > to) {
                 // A hold inside this token: B drew its start, styled as read_leaf styles a token
-                // the cut reaches (no autolink of its own).
+                // the cut reaches (no autolink of its own; a cut math span is literal).
                 const t = r.tokens[i];
                 styler.sync();
                 writer.base.raw = t.kind == .code;
-                writer.base.math = t.kind == .math;
-                try writer.writeLength(to - at, .{ .code = t.kind == .code, .math = t.kind == .math });
+                try writer.writeLength(to - at, .{ .code = t.kind == .code });
                 at = to;
                 break;
             }
@@ -4122,18 +4121,15 @@ const TokenStyler = struct {
         return found.destination;
     }
 
-    /// Token `i` cut by a hold at content offset `cut`: what B drew of it before the cut.
+    /// Token `i` cut by a hold at content offset `cut`: what B drew of it before the cut (a cut
+    /// math span is literal).
     fn partial(self: *TokenStyler, i: u32, cut: u32) Error!void {
         const w = self.writer;
         const t = self.r.tokens[i];
         self.sync();
         w.base.raw = t.kind == .code;
-        w.base.math = t.kind == .math;
-        defer {
-            w.base.raw = false;
-            w.base.math = false;
-        }
-        const span: Span = .{ .code = t.kind == .code, .math = t.kind == .math };
+        defer w.base.raw = false;
+        const span: Span = .{ .code = t.kind == .code };
         if (!self.conceal) return w.write(self.r.content[t.start..cut], span);
         var before: std.ArrayListUnmanaged(u8) = .empty;
         try inline_parser.appendTokenDisplayBefore(self.r, i, cut, self.arena, &before);
