@@ -4,6 +4,7 @@ import { dirname, join } from "node:path"
 import { plugin as registerPlugin } from "bun"
 import * as coreRuntime from "@opentui/core"
 import * as solidJsRuntime from "solid-js"
+import { createStore } from "solid-js/store"
 import * as solidRuntime from "../index.js"
 import { resetSolidTransformPluginState } from "../scripts/solid-plugin.js"
 
@@ -47,7 +48,8 @@ try {
     }),
   )
   const probe = `import { getOwner, createMemo } from "solid-js"
-    export const probe = (read) => [getOwner() !== null, createMemo(read)]`
+    import { unwrap } from "solid-js/store"
+    export const probe = (read, store) => [getOwner() !== null, createMemo(read), unwrap(store)]`
   for (const file of ["local.ts", "lib/owner.ts", "lib/view.tsx"]) writeFileSync(join(tempRoot, file), probe)
 
   await import("../scripts/runtime-plugin-support.js")
@@ -59,9 +61,11 @@ try {
   )
   solidJsRuntime.createRoot((dispose) => {
     const [read, set] = solidJsRuntime.createSignal(0)
+    const raw = { value: 0 }
+    const [store] = createStore(raw)
     const probes = ["local", "linked", "view"].map((name) => {
-      const [owned, memo] = plugin[name](read)
-      return () => `${name}=${owned}:${memo()}`
+      const [owned, memo, unwrapped] = plugin[name](read, store)
+      return () => `${name}=${owned}:${memo()}:${unwrapped === raw}`
     })
     set(1)
     console.log(probes.map((result) => result()).join(";"))

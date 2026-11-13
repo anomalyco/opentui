@@ -148,16 +148,16 @@ describe("runtime plugin", () => {
       rewrite: { nodeModulesRuntimeSpecifiers: enabled },
     }).setup(build as any)
 
-    for (const [specifier, exports, bare] of [
-      ["@opentui/core", { marker: "core" }, enabled],
-      ["fixture-sync", { value: "sync-value" }, false],
-      ["@fixture/async-module", { value: "async-value" }, false],
-      ["./local.ts", { value: "local" }, false],
+    for (const [specifier, exports] of [
+      ["@opentui/core", { marker: "core" }],
+      ["fixture-sync", { value: "sync-value" }],
+      ["@fixture/async-module", { value: "async-value" }],
+      ["./local.ts", { value: "local" }],
     ] as const) {
       const path = runtimeModuleIdForSpecifier(specifier)
       expect(await resolveSpecifier(resolveHandlers, specifier)).toEqual({ path })
       expect(await modules.get(path)?.()).toEqual({ exports, loader: "object" })
-      expect(await modules.get(specifier)?.()).toEqual(bare ? { exports, loader: "object" } : undefined)
+      expect(modules.has(specifier)).toBe(false)
     }
   })
 

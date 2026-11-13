@@ -19,7 +19,7 @@ describe("solid runtime plugin support", () => {
     expect(stdout).toContain("coreTesting=true")
     expect(stdout).toContain("solidJs=true")
     expect(stdout).toContain("jsx=true")
-    expect(stdout).toContain("local=true:1;linked=true:1;view=true:1")
+    expect(stdout).toContain("local=true:1:true;linked=true:1:true;view=true:1:true")
   })
 
   it("loads caller-provided runtime modules through the configurable entrypoint", () => {
