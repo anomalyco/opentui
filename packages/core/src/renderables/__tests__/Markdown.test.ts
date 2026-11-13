@@ -1954,6 +1954,23 @@ test("blockquote uses markup.quote style for text and conceal style for bar", as
   expect((textSpan?.attributes ?? 0) & TextAttributes.ITALIC).toBe(TextAttributes.ITALIC)
 })
 
+// Model seed 2258 of 10,000: a replace moves a quote's paragraph to the top level at the same index, and the text that
+// showed it keeps showing it.
+test("a paragraph that leaves a quote loses the quote style", async () => {
+  const style = SyntaxStyle.fromStyles(
+    { default: { fg: RGBA.fromValues(1, 1, 1, 1) }, "markup.quote": { italic: true } },
+    renderer.nativeScene,
+  )
+  const md = createMarkdownRenderable({ content: "> aa\n\nbb\n", syntaxStyle: style, streaming: true })
+  renderer.root.add(md)
+  await renderMarkdownRenderable(md)
+  md.content = "x " + md.content
+  await renderMarkdownRenderable(md)
+  expect(frameText()).toBe("x > aa\n\nbb")
+  expect((findSpanContaining(captureSpans(), "bb")?.attributes ?? 0) & TextAttributes.ITALIC).toBe(0)
+  style.destroy()
+})
+
 test("blockquote updates quote text and bar colors when syntaxStyle changes", async () => {
   const quoteColor1 = RGBA.fromValues(0.25, 0.5, 0.75, 1)
   const quoteColor2 = RGBA.fromValues(0.75, 0.5, 0.25, 1)

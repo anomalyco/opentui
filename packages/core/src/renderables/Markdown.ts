@@ -946,9 +946,13 @@ export class MarkdownRenderable extends Renderable {
       case md.OT_MD_PARAGRAPH:
       case md.OT_MD_HEADING:
       case md.OT_MD_HTML: {
-        if (current instanceof TextRenderable) return current
-        const text = new TextRenderable(this.ctx, { id, flexShrink: 0, wrapMode: "word" })
+        // A text taken back from a removed block may show a block in another place, such as out of a quote.
+        const text =
+          current instanceof TextRenderable
+            ? current
+            : new TextRenderable(this.ctx, { id, flexShrink: 0, wrapMode: "word" })
         this.styleText(index, text)
+        if (text === current) return text
         if (isProse(block.kind) && !this.hostWrites(block)) {
           this._doc.bind(index, this.ctx.nativeScene.textNode(text))
           shown.bound = true
