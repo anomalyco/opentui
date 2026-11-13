@@ -33,6 +33,13 @@ fi
 cargo=${CARGO:-cargo}
 manifest=$here/Cargo.toml
 
+# Keep the crate's packaged notices identical to the npm platform notices.
+ffmpeg=$here/../native/src/vendor/ffmpeg
+sys=$here/crates/opentui-sys
+cmp "$ffmpeg/COPYING.LGPLv2.1" "$sys/LICENSE-FFMPEG"
+cmp "$ffmpeg/README.md" "$sys/FFMPEG-SOURCE.md"
+cmp "$ffmpeg/LICENSE-ZLIB" "$sys/LICENSE-ZLIB"
+
 "$cargo" fmt --all --check --manifest-path "$manifest"
 # Each crate turns on the static feature by default, and --no-default-features turns it off through every edge.
 for package in opentui-sys opentui opentui-ssh; do

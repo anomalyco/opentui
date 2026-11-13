@@ -2,7 +2,7 @@
 name = "opentui-sys"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "MIT AND LGPL-2.1-or-later"
 publish = false
 links = "opentui"
 description = "Raw FFI declarations for OpenTUI's checked C ABI"
