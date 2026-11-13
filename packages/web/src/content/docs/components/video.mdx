@@ -19,6 +19,8 @@ skill:
 | Solid           | `<video>` (automatic) |
 | Status          | Built in              |
 
+With a [build without FFmpeg](/docs/ship/deploy#native-library-and-ffmpeg), opening a source leaves `ready` false and calls `onError` with the native detail `video decoding is unavailable on this target`.
+
 ## Renderable API
 
 ```typescript
