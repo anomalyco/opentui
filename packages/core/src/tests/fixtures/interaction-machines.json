@@ -1,0 +1,143 @@
+{
+  "depth": 4,
+  "seeds": 8,
+  "steps": 12,
+  "machines": {
+    "selection": {
+      "initial": "idle",
+      "states": {
+        "idle": ["/", { "press": "pressed", "drag": "held", "line": "line", "clear": "idle" }],
+        "pressed": ["/", { "extend": "drag", "clear": "idle" }],
+        "drag": ["ab/ab", { "release": "held", "extend": "drag" }],
+        "held": ["ab/ab", { "clear": "idle", "disable": "disabled", "press": "pressed" }],
+        "line": ["abc/abc", { "replace": "longLine", "clear": "idle", "disable": "disabledLine" }],
+        "longLine": ["abcd/abcd", { "replace": "longLine" }],
+        "disabled": ["ab/ab", { "enable": "held", "clear": "emptyDisabled" }],
+        "disabledLine": ["abc/abc", { "enable": "line", "clear": "emptyDisabled" }],
+        "emptyDisabled": ["/", { "enable": "idle", "clear": "emptyDisabled" }]
+      },
+      "xfail": [
+        ["core", "632", "disabledLine clear abc/"],
+        ["core", "632", "disabled clear ab/"]
+      ]
+    },
+    "focus": {
+      "initial": "none",
+      "states": {
+        "none": ["-/-/-", { "a": "a", "b": "b", "hideGroup": "hidden" }],
+        "a": ["A/A/A", { "b": "b", "blur": "none", "hideGroup": "hidden", "disableA": "disabled" }],
+        "b": ["B/B/B", { "a": "a", "b": "b", "blur": "none" }],
+        "hidden": ["-/-/-", { "a": "hidden", "showGroup": "none" }],
+        "disabled": ["-/-/-", { "a": "disabled", "enableA": "none" }]
+      },
+      "xfail": [
+        ["core", "651", "a hideGroup A/A/A"],
+        ["core", "651", "hidden a A/A/A"]
+      ]
+    },
+    "cursor": {
+      "initial": "blurBlock",
+      "states": {
+        "blurBlock": ["hidden", { "focus": "block", "line": "blurLine" }],
+        "block": ["block:true@1,1", { "blur": "blurBlock", "line": "line", "hide": "hideBlock" }],
+        "hideBlock": ["hidden", { "show": "block", "line": "hideLine" }],
+        "blurLine": ["hidden", { "focus": "line", "block": "blurBlock" }],
+        "line": ["line:false@1,1", { "blur": "blurLine", "block": "block", "hide": "hideLine" }],
+        "hideLine": ["hidden", { "show": "line", "block": "hideBlock" }]
+      },
+      "xfail": []
+    },
+    "scroll-bottom": {
+      "initial": "smallEnd",
+      "states": {
+        "smallEnd": ["1", { "top": "noise", "grow": "bigEnd", "end": "smallEnd" }],
+        "noise": ["0", { "grow": "bigEnd", "end": "smallEnd", "top": "noise" }],
+        "bigEnd": ["4", { "shrink": "smallEnd", "middle": "reader", "top": "readerTop" }],
+        "reader": ["2", { "end": "bigEnd", "shrink": "clamped", "top": "readerTop" }],
+        "clamped": ["1", { "grow": "readerOne", "top": "noise", "end": "smallEnd" }],
+        "readerOne": ["1", { "end": "bigEnd", "middle": "reader" }],
+        "readerTop": ["0", { "middle": "reader", "end": "bigEnd" }]
+      },
+      "xfail": []
+    },
+    "scroll-top": {
+      "initial": "smallTop",
+      "states": {
+        "smallTop": ["0", { "grow": "bigTop", "top": "smallTop" }],
+        "bigTop": ["0", { "shrink": "smallTop", "end": "atEnd", "middle": "middle" }],
+        "atEnd": ["4", { "growAgain": "away", "top": "bigTop" }],
+        "away": ["4", { "shrink": "smallAway" }],
+        "smallAway": ["1", { "top": "smallTop", "grow": "bigAway" }],
+        "bigAway": ["1", { "top": "bigTop" }],
+        "middle": ["2", { "end": "atEnd", "top": "bigTop" }]
+      },
+      "xfail": []
+    },
+    "textarea": {
+      "initial": "end",
+      "states": {
+        "end": ["ab@2/", { "left": "interior", "shiftLeft": "tail", "pauseKeys": "paused" }],
+        "paused": ["ab@2/", { "left": "paused", "insert": "pausedTyped", "resumeKeys": "end" }],
+        "pausedTyped": ["abx@3/", { "reset": "paused", "left": "pausedTyped" }],
+        "interior": ["ab@1/", { "right": "end", "shiftLeft": "both", "reset": "end" }],
+        "tail": ["ab@1/b", { "right": "end", "insert": "replaced", "newline": "split", "pasteNewline": "split" }],
+        "both": ["ab@0/ab", { "insert": "single", "right": "end", "reset": "end" }],
+        "single": ["x@1/", { "reset": "end" }],
+        "split": ["a\n@2/", { "reset": "end" }],
+        "replaced": ["ax@2/", { "reset": "end" }]
+      },
+      "xfail": [["core", "652", "tail newline a\nb@2/"]]
+    }
+  },
+  "faults": {
+    "pointer": { "cycles": ["bu", "au", "adu", "bdu"], "xfail": [] },
+    "selection": { "cycles": ["bdu", "adu"], "xfail": [] },
+    "consumed": { "cycles": ["bdu", "adu"], "xfail": [] },
+    "arrow": {
+      "cycles": ["bv", "au", "atu"],
+      "xfail": [
+        [
+          "core",
+          "662",
+          "1:v post-release:0 -> post-release:3",
+          "bvua/bv bva/bv ua/bv a/bv auua/bv aua/bv atuua/bv atua/bv"
+        ],
+        [
+          "core",
+          "662",
+          "2:v post-release:0 -> post-release:2",
+          "bvua/bv bva/bv ua/bv a/bv auua/bv aua/bv atuua/bv atua/bv"
+        ],
+        ["core", "662", "1:v post-release:0 -> post-release:2", "bvat/bv auat/bv at/bv atuat/bv"],
+        ["core", "662", "2:v post-release:0 -> post-release:3", "bvat/bv auat/bv at/bv atuat/bv"]
+      ]
+    },
+    "edge": { "cycles": ["bv", "adu"], "xfail": [] },
+    "policy": {
+      "cycles": ["srp"],
+      "xfail": [
+        [
+          "core",
+          "654",
+          "1:r Active/true/true/1 -> Active/true/false/1",
+          "rsp/srp sp/srp spr/srp srsprp/srp srprsp/srp srpsp/srp srpspr/srp"
+        ],
+        [
+          "core",
+          "654",
+          "2:r Active/true/true/1 -> Active/true/false/1",
+          "rsp/srp sp/srp spr/srp srsprp/srp srprsp/srp srpsp/srp srpspr/srp"
+        ]
+      ]
+    },
+    "release": {
+      "cycles": ["af", "bf"],
+      "xfail": [
+        ["rust", "645", "1:f a -> aa", "a/af afa/af affa/af bfa/af bffa/af fa/af"],
+        ["rust", "645", "1:f b -> ab", "a/bf fa/bf"],
+        ["rust", "645", "1:f a -> ba", "afb/af affb/af b/af bfb/af bffb/af fb/af"],
+        ["rust", "645", "1:f b -> bb", "b/bf fb/bf"]
+      ]
+    }
+  }
+}
