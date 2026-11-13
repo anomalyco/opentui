@@ -578,6 +578,13 @@ test "layers: a run with a dead link rejects the set and returns the references 
     try testing.expectEqual(@as(u32, 3), try links.getRefcount(live));
     layers.reset(gpa, &links);
     try testing.expectEqual(@as(u32, 1), try links.getRefcount(live));
+    // The layer's own runs as the input: replacing 0..5 with its run at 2..3 keeps that run.
+    _ = try layers.set(gpa, &links, 1, 0, 7, &.{
+        .{ .start_byte = 0, .end_byte = 1, .group_set = 1 }, .{ .start_byte = 2, .end_byte = 3, .group_set = 2 },
+        .{ .start_byte = 4, .end_byte = 5, .group_set = 1 }, .{ .start_byte = 6, .end_byte = 7, .group_set = 3 },
+    });
+    _ = try layers.set(gpa, &links, 1, 0, 5, runsOf(&layers, 1)[1..2]);
+    try expectRuns(&.{ .{ 2, 3, 2 }, .{ 6, 7, 3 } }, runsOf(&layers, 1));
 }
 
 // Record 669: N one-run sets past the last run copy and walk O(N) runs in total, growth included;

@@ -259,8 +259,10 @@ pub const Layers = struct {
         const result_len = old.len - removed + added;
         if (result_len > 0 and !found.exists and self.count >= layer_count_max) return Error.LayerLimit;
 
-        // A plain set of a layer splices it in place; its storage only grows (amortized).
-        const in_place = spare == null and found.exists;
+        // A plain set of a layer splices it in place; its storage only grows (amortized). Runs
+        // read from the layer itself are rebuilt instead, since the splice would move them.
+        const aliased = @intFromPtr(runs.ptr) < @intFromPtr(old.ptr + old.len) and @intFromPtr(old.ptr) < @intFromPtr(runs.ptr + runs.len);
+        const in_place = spare == null and found.exists and !aliased;
         var next: std.ArrayListUnmanaged(LayerRun) = .empty;
         errdefer next.deinit(allocator);
         if (in_place) {
