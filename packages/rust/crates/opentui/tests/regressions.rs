@@ -35,39 +35,6 @@ fn table_change_handler_that_mutates_the_table_panics() {
     assert_eq!(files.row_count(), 6);
 }
 
-// Expected: with no selection, Shift+Right selects from the cursor, as Core does ("d" in "ab|def").
-// Actual: Backspace kept the anchor of an earlier, collapsed selection, so the new selection starts at a stale
-// offset and comes out empty.
-#[test]
-fn shift_selection_reuses_a_stale_anchor_after_backspace() {
-    let app = TestApp::new(20, 1);
-    let input = Input::new(&app).set_value("abcdef");
-    app.root().add(&input);
-    input.focus();
-    for key in ["left", "left", "left", "shift+right", "shift+left", "backspace"] {
-        app.press(key);
-    }
-    assert_eq!(input.value(), "abdef");
-    app.press("shift+right");
-    assert_eq!(input.selected_text(), "d");
-    // Delete removes the one selected character, not the one after it.
-    assert_eq!(input.perform(opentui::widget::EditorAction::Delete).value(), "abef");
-}
-
-// Expected: Shift+arrow extends an existing mouse selection from its anchor, as Core does.
-// Actual: the mouse selection is dropped and a new one starts at the cursor ("g").
-#[test]
-fn shift_selection_discards_a_mouse_selection() {
-    let app = TestApp::new(20, 1);
-    let input = Input::new(&app).set_value("drag to select");
-    app.root().add(&input);
-    app.render();
-    app.drag((0, 0), (3, 0));
-    assert_eq!(input.selected_text(), "drag");
-    app.press("shift+right");
-    assert!(input.selected_text().starts_with("drag"), "{:?}", input.selected_text());
-}
-
 // Expected: clicking the first body row, which shows "row 3", selects row 3.
 // Actual: clicks map rows with the stored offset (5), not the clamped offset paint uses (3), so the click lands on
 // the selected row 5 and activates it instead.
@@ -168,22 +135,31 @@ fn set_timeout_with_a_huge_delay_panics() {
     app.advance(Duration::from_secs(1));
 }
 
-// Expected: follow stops after the user scrolls up, so a resize keeps the view at the top.
-// Actual: `CodeInner::resized` jumps to the bottom whenever follow is on.
+// Expected: follow stops after the user scrolls up, so new text or a resize keeps the view where the user left it,
+// and a view at the end stays there.
+// Actual: `CodeInner::resized`, and later `Code::set_code` (record 647), jumped to the bottom whenever follow is on.
 #[test]
-fn followed_code_jumps_to_the_bottom_on_resize_after_the_user_scrolled_up() {
-    let app = TestApp::new(12, 3);
-    let log = Code::new(&app).follow(true).grow(1.0);
-    app.root().add(&log);
-    app.render();
-    for line in 0..10 {
-        log.append(&format!("line {line}\n"));
+fn followed_code_jumps_to_the_bottom_after_the_user_scrolled_up() {
+    let changes: [fn(&TestApp, &Code); 4] = [
+        |_, log| drop(log.append("\nmore")),
+        |_, log| drop(log.set_code(log.code() + "\nmore")),
+        |_, log| drop(log.set_code(["other"; 12].join("\n"))),
+        |app, _| app.resize(14, 3),
+    ];
+    for (index, scrolled_up) in (0..changes.len()).flat_map(|index| [(index, false), (index, true)]) {
+        let app = TestApp::new(12, 3);
+        let log = Code::new(&app).follow(true).grow(1.0).set_code(["line"; 10].join("\n"));
+        app.root().add(&log);
+        app.render();
+        if scrolled_up {
+            log.scroll_to(3);
+        }
+        changes[index](&app, &log);
+        app.render();
+        let row = log.scroll_position();
+        let end = log.perform(ScrollAction::Bottom).scroll_position();
+        assert_eq!(row, if scrolled_up { 3 } else { end }, "change {index}, scrolled up: {scrolled_up}");
     }
-    app.render();
-    log.scroll_to(0);
-    assert_eq!(rows(&app)[0], "line 0");
-    app.resize(14, 3);
-    assert_eq!(rows(&app)[0], "line 0");
 }
 
 // Expected: Home scrolls to the top and keeps the horizontal position, as End does and as Core's vertical
@@ -685,10 +661,16 @@ fn press_and_release_handlers_see_a_selection_drag() {
     app.mouse(MouseEventKind::Drag(MouseButton::Left), 4, 0);
     app.mouse(MouseEventKind::Up(MouseButton::Left), 4, 0);
     assert!(!app.is_selecting());
-    // A press on no text is no drag.
-    app.mouse(MouseEventKind::Down(MouseButton::Left), 1, 1);
-    let ello = Some("ello".to_owned());
-    assert_eq!(*seen.borrow(), [(true, None), (true, ello.clone()), (false, ello)]);
+    // A press during a drag means the drag's release was lost: the press starts a new selection. Then, after another
+    // lost release, a press on no text is no drag, also when its handler keeps the selection.
+    blank.on_mouse(|cx, _event| cx.prevent_default());
+    for (kind, x, y) in [(0, 3, 0), (1, 4, 0), (0, 6, 0), (1, 8, 0), (0, 1, 1), (1, 2, 1), (2, 2, 1)] {
+        let kinds = [MouseEventKind::Down, MouseEventKind::Drag, MouseEventKind::Up];
+        app.mouse(kinds[kind](MouseButton::Left), x, y);
+    }
+    let (ello, wor) = (Some("ello".to_owned()), Some("wor".to_owned()));
+    let selections = [(true, None), (true, ello), (true, None), (true, None), (false, wor.clone()), (false, wor)];
+    assert_eq!(*seen.borrow(), selections);
 }
 
 // The tests below guard against bugs found in a review of the public API.

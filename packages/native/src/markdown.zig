@@ -1436,8 +1436,10 @@ pub const Doc = struct {
                 block.content_end_byte = line.end;
                 container.* = item;
                 matched.* = self.open_count;
-                try self.detectTask(item, line);
-                return .container;
+                // GFM: a task marker starts the item's paragraph; the rest of the line is its text.
+                if (!try self.detectTask(item, line)) return .container;
+                line.findNextNonspace();
+                return .leaf;
             }
         }
         // Indented code.
@@ -1741,22 +1743,23 @@ pub const Doc = struct {
         return .{ .ordered = ordered, .marker = marker, .number = number, .indent = marker_offset + padding, .start_byte = at };
     }
 
-    fn detectTask(self: *Doc, item: u32, line: *Line) Error!void {
+    fn detectTask(self: *Doc, item: u32, line: *Line) Error!bool {
         const s = self.source.items;
         var i = line.offset;
         // A partly consumed tab still counts as the space after the marker.
         while (i < line.end and isSpaceOrTab(s[i])) i += 1;
-        if (i + 3 > line.end or s[i] != '[' or s[i + 2] != ']') return;
+        if (i + 3 > line.end or s[i] != '[' or s[i + 2] != ']') return false;
         const mark = s[i + 1];
-        if (mark != ' ' and mark != 'x' and mark != 'X') return;
-        if (i + 3 >= line.end or !isSpaceOrTab(s[i + 3])) return;
-        if (isBlankRange(s, i + 3, line.end)) return;
+        if (mark != ' ' and mark != 'x' and mark != 'X') return false;
+        if (i + 3 >= line.end or !isSpaceOrTab(s[i + 3])) return false;
+        if (isBlankRange(s, i + 3, line.end)) return false;
         const block = try self.blockMut(item);
         block.flags.task = true;
         block.flags.checked = mark != ' ';
         line.offset = i + 3;
         line.column = 0;
         line.partially_consumed_tab = false;
+        return true;
     }
 
     // ---- Tables ----
@@ -2737,6 +2740,7 @@ pub const Doc = struct {
         live.token_display = .{};
         const parser = &live.parser;
         parser.references = self.references();
+        parser.options.math_blocks = self.options.math and self.blocks.items[live.block].kind == .paragraph;
         const tokens_before: u32 = @intCast(parser.tokens.items.len);
         const position_before = parser.position;
         const visits_before = parser.byte_visits;
@@ -2936,8 +2940,10 @@ pub const Doc = struct {
         }
         if (link == TokenStyle.base_link) {
             styler.styles.link = try writer.url("", live.base_link.items);
+            styler.styles.link_owner = live.base_styles.link_owner;
         } else if (link != none) {
             styler.styles.link = try writer.url("", try styler.destination(link));
+            styler.styles.link_owner = r.tokens[link].aux;
         }
         try live.token_styles.resize(self.allocator, r.tokens.len);
         var at = from;
@@ -2948,12 +2954,11 @@ pub const Doc = struct {
             live.styled_count = i + 1;
             if (live.display_ends.items[i] > to) {
                 // A hold inside this token: B drew its start, styled as read_leaf styles a token
-                // the cut reaches (no autolink of its own).
+                // the cut reaches (no autolink of its own; a cut math span is literal).
                 const t = r.tokens[i];
                 styler.sync();
                 writer.base.raw = t.kind == .code;
-                writer.base.math = t.kind == .math;
-                try writer.writeLength(to - at, .{ .code = t.kind == .code, .math = t.kind == .math });
+                try writer.writeLength(to - at, .{ .code = t.kind == .code });
                 at = to;
                 break;
             }
@@ -2984,7 +2989,8 @@ pub const Doc = struct {
             };
             if (styler.styles.link == null) {
                 link = none;
-            } else if (r.tokens[i].kind == .bracket_open and r.tokens[i].aux != 0) {
+            } else if (link == none) {
+                // The link's owner opened here (a link or image inside it keeps its target).
                 link = i;
             }
             at = live.display_ends.items[i];
@@ -3264,8 +3270,9 @@ pub const Doc = struct {
         if (!parser.settled() or position != parser.limit or position >= live.content.items.len) return;
         if (position <= 2 * look_behind_byte_count) return;
         if (live.definition_possible or live.pipe_line_start != none or live.line_pipe != none) return;
-        // The limit is a word start: whitespace precedes it.
-        assert(isAsciiWhitespaceByte(live.content.items[position - 1]));
+        // At a word's start or end only (the `$` read-ahead can stop inside a word).
+        const c = live.content.items;
+        if (!isAsciiWhitespaceByte(c[position - 1]) and !isAsciiWhitespaceByte(c[position])) return;
         const drop = position - look_behind_byte_count;
         const rest = live.content.items.len - drop;
         // Settled: every span the dropped tokens opened, or a retire left open, closed among
@@ -3409,7 +3416,7 @@ pub const Doc = struct {
         }
         // An open prose leaf shows what B shows of it: its tokens so far (an opener that waits is
         // concealed as if closed), the untokenized bytes it may draw, minus what B holds back.
-        var parser: inline_parser.Parser = .{ .allocator = arena, .references = self.references(), .options = .{ .math = self.options.math } };
+        var parser: inline_parser.Parser = .{ .allocator = arena, .references = self.references(), .options = .{ .math = self.options.math, .math_blocks = self.options.math and b.kind == .paragraph } };
         var cut: u32 = none;
         // A table cell of the pending row is drawn the same way.
         // (A cell of a row that ended is closed; one of the pending row stays open.)
@@ -3851,7 +3858,10 @@ const Styles = struct {
     strong: i32 = 0,
     italic: i32 = 0,
     strikethrough: i32 = 0,
+    /// The outermost link's or image's target and its link index + 1 (an image inside a link
+    /// keeps the link's target).
     link: ?[2]u32 = null,
+    link_owner: u16 = 0,
 
     fn apply(self: *Styles, kind: inline_parser.MatchKind, delta: i32) void {
         switch (kind) {
@@ -3905,7 +3915,8 @@ const LeafWriter = struct {
             if (email[1] <= at or email[0] >= end) continue;
             if (at < email[0]) try self.write(r.content[at..email[0]], .{});
             const saved = self.link;
-            self.link = try self.url("mailto:", r.content[email[0]..email[1]]);
+            // Inside a link or image its target stays.
+            self.link = saved orelse try self.url("mailto:", r.content[email[0]..email[1]]);
             const stop = @min(end, email[1]);
             try self.write(r.content[@max(at, email[0])..stop], .{});
             self.link = saved;
@@ -4016,17 +4027,22 @@ const TokenStyler = struct {
             },
             .bracket_open => {
                 if (t.aux == 0) return w.write(raw, .{});
-                const link = r.links[t.aux - 1];
-                const url = try self.destination(i);
-                self.styles.link = try w.url("", url);
-                self.label_start = w.byte_count;
-                self.label_url = url;
-                self.image = link.image;
-                self.sync();
+                // The outermost link or image owns the target until its own `]` (an image inside a
+                // link keeps the link's).
+                if (self.styles.link == null) {
+                    const url = try self.destination(i);
+                    self.styles.link = try w.url("", url);
+                    self.styles.link_owner = t.aux;
+                    self.label_start = w.byte_count;
+                    self.label_url = url;
+                    self.image = r.links[t.aux - 1].image;
+                    self.sync();
+                }
                 if (!self.conceal) try w.linkPart(raw, .gap);
             },
             .bracket_close => {
                 if (t.aux == 0) return w.write(raw[0..1], .{});
+                const owner = t.aux == self.styles.link_owner;
                 if (!self.conceal) {
                     // An inline link's destination (and title) between `](` and `)`.
                     // As OpenCode's frames show it: `]` is text, `(` and `)` are the link's.
@@ -4037,6 +4053,7 @@ const TokenStyler = struct {
                         try w.linkPart(raw[raw.len - 1 ..], .gap);
                     } else try w.linkPart(raw, .gap);
                 }
+                if (!owner) return;
                 // Without hyperlinks a label that is not its URL shows where the link goes.
                 if (self.conceal and !self.hyperlinks and !self.image and !std.mem.eql(u8, w.leaf.bytes.items[self.label_start..], self.label_url)) {
                     assert(!w.count_only);
@@ -4046,11 +4063,13 @@ const TokenStyler = struct {
                     try w.linkPart(")", .gap);
                 }
                 self.styles.link = null;
+                self.styles.link_owner = 0;
             },
             .autolink, .autolink_email, .extended_autolink => {
                 const target = if (t.kind == .extended_autolink) raw else raw[1 .. raw.len - 1];
                 const prefix: []const u8 = if (t.kind == .autolink_email) "mailto:" else if (t.kind == .extended_autolink and t.aux == @backingInt(inline_parser.ExtendedKind.www)) "http://" else "";
-                w.link = try w.url(prefix, target);
+                // Inside a link or image its target stays.
+                if (w.link == null) w.link = try w.url(prefix, target);
                 const angled = !self.conceal and t.kind != .extended_autolink;
                 if (angled) try w.linkPart(raw[0..1], .gap);
                 try w.write(target, .{});
@@ -4113,18 +4132,15 @@ const TokenStyler = struct {
         return found.destination;
     }
 
-    /// Token `i` cut by a hold at content offset `cut`: what B drew of it before the cut.
+    /// Token `i` cut by a hold at content offset `cut`: what B drew of it before the cut (a cut
+    /// math span is literal).
     fn partial(self: *TokenStyler, i: u32, cut: u32) Error!void {
         const w = self.writer;
         const t = self.r.tokens[i];
         self.sync();
         w.base.raw = t.kind == .code;
-        w.base.math = t.kind == .math;
-        defer {
-            w.base.raw = false;
-            w.base.math = false;
-        }
-        const span: Span = .{ .code = t.kind == .code, .math = t.kind == .math };
+        defer w.base.raw = false;
+        const span: Span = .{ .code = t.kind == .code };
         if (!self.conceal) return w.write(self.r.content[t.start..cut], span);
         var before: std.ArrayListUnmanaged(u8) = .empty;
         try inline_parser.appendTokenDisplayBefore(self.r, i, cut, self.arena, &before);

@@ -813,9 +813,9 @@ export class NativeScene {
     if (frame) this.cancelAttempt(frame)
   }
 
-  hitTest(x: number, y: number): number {
+  hitTest(x: number, y: number, excluded = 0): number {
     this.assertAlive()
-    const id = this.driver.renderLib.sceneHitTest(this.driver.context, this.driver.session, x, y)
+    const id = this.driver.renderLib.sceneHitTest(this.driver.context, this.driver.session, x, y, excluded)
     const renderable = this.nodes.get(id)
     return renderable && !renderable.isDestroyed ? id : 0
   }

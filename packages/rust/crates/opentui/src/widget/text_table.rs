@@ -1,4 +1,4 @@
-use super::{Behavior, Content, Element, Painter, SelectionUpdate, build, handle};
+use super::{Behavior, Content, Element, LocalSelection, Painter, SelectionUpdate, build, handle};
 use crate::app::App;
 use crate::layout::LayoutProperty;
 use crate::native::{
@@ -413,14 +413,6 @@ enum SelectionMode {
     Grid,
 }
 
-/// The app's selection relative to the table's top-left cell.
-#[derive(Clone, Copy, Debug)]
-struct LocalSelection {
-    anchor: (i32, i32),
-    focus: (i32, i32),
-    unit: SelectionUnit,
-}
-
 pub(crate) struct TextTableInner {
     element: Element,
     cells: RefCell<Cells>,
@@ -725,8 +717,7 @@ impl Behavior for TextTableInner {
             return false;
         };
         self.ensure_layout(self.element.rect().width);
-        let (anchor, focus) = update.local(&self.element);
-        let selection = LocalSelection { anchor, focus, unit: update.unit };
+        let selection = update.local_selection(&self.element);
         self.selection.set(Some(selection));
         self.apply_selection(selection, update.start);
         self.redraw();

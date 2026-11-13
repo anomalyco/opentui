@@ -172,7 +172,8 @@ pub const EditorView = struct {
     /// Respects scroll margins to prevent immediate re-scrolling by ensureCursorVisible.
     pub fn makeCursorVisible(self: *EditorView) void {
         const vp = self.text_buffer_view.getViewport() orelse return;
-        if (vp.height == 0 or vp.width == 0) return;
+        // A placeholder's rows are not rows of the empty buffer.
+        if (vp.height == 0 or vp.width == 0 or self.placeholder_active) return;
         const vcursor = self.getPrimaryVisualCursorAbsolute();
 
         const viewport_height = vp.height;
@@ -190,23 +191,11 @@ pub const EditorView = struct {
             else
                 vp.y + vp.height - margin_lines - 1;
 
-            self.text_buffer_view.updateVirtualLines();
-            const vlines = self.text_buffer_view.virtual_lines.items;
-            if (target_visual_row < vlines.len) {
-                const target_vline = &vlines[target_visual_row];
-                const target_logical_row = @as(u32, @intCast(target_vline.source_line));
-
-                const line_width = iter_mod.lineWidthAt(self.edit_buffer.tb.rope(), target_logical_row);
-                const desired_col = @min(self.edit_buffer.unsnappedColumn(), line_width);
-                const target_col = self.edit_buffer.snapColumn(target_logical_row, desired_col);
-
-                const offset = iter_mod.coordsToOffset(self.edit_buffer.tb.rope(), target_logical_row, target_col) orelse return;
-                self.edit_buffer.cursor = .{
-                    .row = target_logical_row,
-                    .col = target_col,
-                    .desired_col = desired_col,
-                    .offset = offset,
-                };
+            if (target_visual_row < self.text_buffer_view.virtual_lines.items.len) {
+                // Use the column Up and Down remember, but remember none of the scroll's own.
+                const desired_visual_col = self.desired_visual_col;
+                self.moveToVisualRow(vcursor, target_visual_row);
+                self.desired_visual_col = desired_visual_col;
             }
         }
     }
@@ -711,6 +700,7 @@ pub const EditorView = struct {
         const vcursor = self.getPrimaryVisualCursorAbsolute();
         if (vcursor.visual_row == 0) return;
         self.moveToVisualRow(vcursor, vcursor.visual_row - 1);
+        self.ensureCursorVisible(vcursor.visual_row - 1);
     }
 
     pub fn moveDownVisual(self: *EditorView) void {
@@ -718,6 +708,7 @@ pub const EditorView = struct {
         const vcursor = self.getPrimaryVisualCursorAbsolute();
         if (self.placeholder_active or vcursor.visual_row + 1 >= self.text_buffer_view.virtual_lines.items.len) return;
         self.moveToVisualRow(vcursor, vcursor.visual_row + 1);
+        self.ensureCursorVisible(vcursor.visual_row + 1);
     }
 
     fn moveToVisualRow(self: *EditorView, vcursor: VisualCursor, target_visual_row: u32) void {
@@ -744,7 +735,6 @@ pub const EditorView = struct {
         };
         self.cursor_visual_affinity = null;
         if (boundary) self.setCursorAffinityForAbsoluteRow(target_visual_row);
-        self.ensureCursorVisible(new_vcursor.visual_row);
     }
 
     pub fn deleteSelectedText(self: *EditorView) !void {

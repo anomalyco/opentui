@@ -165,7 +165,9 @@ pub(crate) struct ScrollInner {
     /// The vertical scrollbar shows even when the content fits.
     vertical_always: Cell<bool>,
     sticky: Cell<bool>,
-    /// The edges a sticky box follows as content grows: right and bottom. The left and top edges need no work.
+    /// The edge a sticky box follows on each axis, x then y.
+    edges: Cell<(Option<ScrollEdge>, Option<ScrollEdge>)>,
+    /// Whether the last explicit scroll on each axis left it following its edge.
     stuck: Cell<(bool, bool)>,
     toggles: Cell<(u64, u8)>,
     keymap: RefCell<Keymap<ScrollAction>>,
@@ -208,26 +210,26 @@ impl ScrollInner {
         self.horizontal.set_options(SliderOptions { value: x, ..horizontal });
     }
 
-    /// Scrolls, then follows the edges the view reached. While content fits, the followed edge stays.
+    /// Scrolls, then follows the edges the view reached.
     fn scroll_to(&self, x: f64, y: f64) {
         self.requested.set(None);
         self.apply(x, y);
-        self.follow_reached_edges();
+        self.follow_reached_edges((true, true));
     }
 
     /// Scrolls for the program, and again once the next frame's layout is known. A NaN position is ignored.
     ///
     /// A relative move adds to the target of a request no frame has applied yet, as Core's does, so moves before a
     /// frame add up and clamp once. A target at or past the end is the end, so moves past the end do not add up,
-    /// while moves past the start do. A zero move keeps that axis's target.
-    fn request(&self, (x, y): (f64, f64), relative: bool) {
+    /// while moves past the start do. A zero move keeps that axis's target. `relative` is per axis, x then y.
+    fn request(&self, (x, y): (f64, f64), (relative_x, relative_y): (bool, bool)) {
         if x.is_nan() || y.is_nan() {
             return;
         }
         let frame = self.element.app().map_or(0, |app| app.frame_number());
         let pending = self.requested.get().filter(|&(_, at)| at == frame).map_or((None, None), |(target, _)| target);
         let (content, (max_x, max_y), (offset_x, offset_y)) = (self.content.rect(), self.limits(), self.scroll.get());
-        let aim = |value: f64, pending: Option<f64>, offset: f64, max: f64, extent: f32| {
+        let aim = |value: f64, relative: bool, pending: Option<f64>, offset: f64, max: f64, extent: f32| {
             let base = pending.map_or(offset, |target| if target == f64::INFINITY { max } else { target });
             if relative && value == 0.0 {
                 return (base, pending);
@@ -236,23 +238,30 @@ impl ScrollInner {
             let end = position > 0.0 && position >= max && extent > 0.0;
             (position, Some(if end { f64::INFINITY } else { position.round() }))
         };
-        let (x, target_x) = aim(x, pending.0, offset_x, max_x, content.width);
-        let (y, target_y) = aim(y, pending.1, offset_y, max_y, content.height);
-        self.scroll_to(x, y);
-        self.requested.set(Some(((target_x, target_y), frame)));
+        let (x, target_x) = aim(x, relative_x, pending.0, offset_x, max_x, content.width);
+        let (y, target_y) = aim(y, relative_y, pending.1, offset_y, max_y, content.height);
+        self.apply(x, y);
+        self.follow_reached_edges((target_x.is_some(), target_y.is_some()));
+        // An axis the scroll left following keeps no target: the next frame follows its edge, as Core's does.
+        let ((edge_x, edge_y), (stuck_x, stuck_y)) = (self.edges.get(), self.stuck.get());
+        let keep = |target: Option<f64>, edge: Option<ScrollEdge>, stuck: bool| {
+            target.filter(|_| !(stuck && edge.is_some() && self.sticky.get()))
+        };
+        self.requested.set(Some(((keep(target_x, edge_x, stuck_x), keep(target_y, edge_y, stuck_y)), frame)));
     }
 
-    fn follow_reached_edges(&self) {
-        let (max_x, max_y) = self.limits();
-        let (x, y) = self.scroll.get();
-        let (mut right, mut bottom) = self.stuck.get();
-        if max_x > 0.0 {
-            right = x >= max_x;
-        }
-        if max_y > 0.0 {
-            bottom = y >= max_y;
-        }
-        self.stuck.set((right, bottom));
+    /// As the native scroll node does: an axis follows its edge once at it, or while its range is at most one cell.
+    /// Only the axes an explicit scroll set change.
+    fn follow_reached_edges(&self, (set_x, set_y): (bool, bool)) {
+        let ((max_x, max_y), (x, y), (edge_x, edge_y)) = (self.limits(), self.scroll.get(), self.edges.get());
+        let reached = |set: bool, stuck: bool, edge: Option<ScrollEdge>, offset: f64, max: f64| match edge {
+            _ if !set => stuck,
+            _ if max <= 1.0 => true,
+            Some(ScrollEdge::Top | ScrollEdge::Left) => offset <= 0.0,
+            _ => offset >= max,
+        };
+        let (stuck_x, stuck_y) = self.stuck.get();
+        self.stuck.set((reached(set_x, stuck_x, edge_x, x, max_x), reached(set_y, stuck_y, edge_y, y, max_y)));
     }
 
     fn scroll_by(&self, dx: f64, dy: f64) {
@@ -260,19 +269,35 @@ impl ScrollInner {
         self.scroll_to(x + dx, y + dy);
     }
 
+    /// Shows or hides each scrollbar with `show`, as the options call for at the last layout's sizes.
+    fn show_bars(&self, show: impl Fn(&View, bool)) {
+        let (content, viewport) = (self.content.rect(), self.viewport.rect());
+        let ((scroll_x, scroll_y), shown) = (self.axes.get(), self.scrollbars.get());
+        let overflow = content.height > viewport.height || self.vertical_always.get();
+        show(&self.vertical_bar, shown && scroll_y && overflow);
+        show(&self.horizontal_bar, shown && scroll_x && content.width > viewport.width);
+    }
+
+    /// Shows the scrollbars new options call for: at once between frames, and within the per-frame toggle limit while
+    /// a frame lays out, where a handler that sets options on resize could otherwise make the layout oscillate.
+    fn options_changed(&self) {
+        match self.element.app().filter(|app| app.frame_number() != app.painted_frames()) {
+            Some(app) => self.show_bars(|bar, visible| self.toggle(&app, bar, visible)),
+            None => self.show_bars(|bar, visible| drop(bar.visible(visible))),
+        }
+    }
+
     /// Refreshes scroll limits, scrollbars, and sticky scrolling after layout changed a size.
     fn refresh(&self, app: &App) {
-        let (content, viewport) = (self.content.rect(), self.viewport.rect());
+        let viewport = self.viewport.rect();
         let (max_x, max_y) = self.limits();
-        let (scroll_x, scroll_y) = self.axes.get();
-        let (mut x, mut y) = self.scroll.get();
-        let (right, bottom) = self.stuck.get();
-        if self.sticky.get() && bottom {
-            y = max_y;
-        }
-        if self.sticky.get() && right {
-            x = max_x;
-        }
+        let ((x, y), (edge_x, edge_y), (stuck_x, stuck_y)) = (self.scroll.get(), self.edges.get(), self.stuck.get());
+        let follow = |edge: Option<ScrollEdge>, stuck: bool, offset: f64, max: f64| match edge {
+            Some(ScrollEdge::Top | ScrollEdge::Left) if stuck && self.sticky.get() => 0.0,
+            Some(_) if stuck && self.sticky.get() => max,
+            _ => offset,
+        };
+        let (mut x, mut y) = (follow(edge_x, stuck_x, x, max_x), follow(edge_y, stuck_y, y, max_y));
         // Only the first frame after a request applies it; every resize in that frame may move the limits.
         let requested = self.requested.get().filter(|&(_, frame)| app.frame_number() == frame + 1);
         if let Some(((requested_x, requested_y), _)) = requested {
@@ -290,15 +315,12 @@ impl ScrollInner {
         };
         bar(&self.vertical, max_y, y, viewport.height);
         bar(&self.horizontal, max_x, x, viewport.width);
-        let scrollbars = self.scrollbars.get();
-        let overflow = content.height > viewport.height || self.vertical_always.get();
-        self.toggle(app, &self.vertical_bar, scrollbars && scroll_y && overflow);
-        self.toggle(app, &self.horizontal_bar, scrollbars && scroll_x && content.width > viewport.width);
+        self.show_bars(|bar, visible| self.toggle(app, bar, visible));
         // Re-apply even if unchanged: the limits may have moved under the current position.
         self.scroll.set((f64::NAN, f64::NAN));
         self.apply(x, y);
-        if requested.is_some() {
-            self.follow_reached_edges();
+        if let Some(((requested_x, requested_y), _)) = requested {
+            self.follow_reached_edges((requested_x.is_some(), requested_y.is_some()));
         }
     }
 
@@ -337,7 +359,7 @@ impl ScrollInner {
             ScrollAction::Top => (0.0, -content),
             ScrollAction::Bottom => (0.0, content),
         };
-        self.request(delta, true);
+        self.request(delta, (true, true));
         self.acceleration.borrow_mut().reset();
         self.wheel.set((0.0, 0.0));
         true
@@ -423,7 +445,7 @@ impl ScrollInner {
         let viewport = self.viewport.rect();
         let (dx, dy) = (dx * f64::from(viewport.width) * share, dy * f64::from(viewport.height) * share);
         let step = |delta: f64| if delta == 0.0 { 0.0 } else { delta.abs().max(1.0).copysign(delta) };
-        self.request((step(dx), step(dy)), true);
+        self.request((step(dx), step(dy)), (true, true));
     }
 
     fn press_arrow(&self, cx: &mut Cx<'_>, direction: (f64, f64)) {
@@ -617,7 +639,8 @@ impl ScrollBox {
             scrollbars: Cell::new(true),
             vertical_always: Cell::new(false),
             sticky: Cell::new(false),
-            stuck: Cell::new((false, true)),
+            edges: Cell::new((None, Some(ScrollEdge::Bottom))),
+            stuck: Cell::new((true, true)),
             toggles: Cell::new((0, 0)),
             keymap: RefCell::new(Self::default_keymap()),
             acceleration: RefCell::new(Box::new(LinearScroll)),
@@ -729,26 +752,27 @@ impl ScrollBox {
         self.clone()
     }
 
-    /// Keeps the view at the edge it sits at as content grows, as Core's sticky scrolling does: at the bottom, new
-    /// content scrolls into view; scrolled away from it, the view stays put; scrolling back to the edge follows it
-    /// again. A sticky box starts at the bottom unless [`Self::sticky_start`] says otherwise.
+    /// Keeps the view at its [`Self::sticky_start`] edge as content changes, as Core's sticky scrolling does: at the
+    /// edge, new content scrolls into view; scrolled away from it, the view stays put; scrolling back to the edge
+    /// follows it again, and so does any scroll while the content overflows by at most one cell. A sticky box follows
+    /// the bottom unless [`Self::sticky_start`] says otherwise.
     pub fn sticky(&self, sticky: bool) -> Self {
         self.0.sticky.set(sticky);
         self.clone()
     }
 
-    /// Moves the view to an edge, which a [`Self::sticky`] box then follows.
+    /// Moves the view to an edge, which a [`Self::sticky`] box then follows on that axis instead of the opposite edge.
     pub fn sticky_start(&self, edge: ScrollEdge) -> Self {
-        let (right, bottom) = self.0.stuck.get();
-        let (x, y) = self.0.scroll.get();
-        let (stuck, position) = match edge {
-            ScrollEdge::Top => ((right, false), (x, 0.0)),
-            ScrollEdge::Bottom => ((right, true), (x, f64::MAX)),
-            ScrollEdge::Left => ((false, bottom), (0.0, y)),
-            ScrollEdge::Right => ((true, bottom), (f64::MAX, y)),
+        let (edge_x, edge_y) = self.0.edges.get();
+        // The other axis moves by zero, which leaves its position, target, and follow alone.
+        let (edges, position, relative) = match edge {
+            ScrollEdge::Top => ((edge_x, Some(edge)), (0.0, 0.0), (true, false)),
+            ScrollEdge::Bottom => ((edge_x, Some(edge)), (0.0, f64::MAX), (true, false)),
+            ScrollEdge::Left => ((Some(edge), edge_y), (0.0, 0.0), (false, true)),
+            ScrollEdge::Right => ((Some(edge), edge_y), (f64::MAX, 0.0), (false, true)),
         };
-        self.0.request(position, false);
-        self.0.stuck.set(stuck);
+        self.0.edges.set(edges);
+        self.0.request(position, relative);
         self.clone()
     }
 
@@ -762,10 +786,7 @@ impl ScrollBox {
     /// Shows scrollbars when content overflows. On by default.
     pub fn scrollbars(&self, show: bool) -> Self {
         self.0.scrollbars.set(show);
-        if !show {
-            self.0.vertical_bar.visible(false);
-            self.0.horizontal_bar.visible(false);
-        }
+        self.0.options_changed();
         self.clone()
     }
 
@@ -773,10 +794,7 @@ impl ScrollBox {
     /// does; its thumb then fills the track. Off by default.
     pub fn vertical_scrollbar_always(&self, always: bool) -> Self {
         self.0.vertical_always.set(always);
-        let shown = self.0.scrollbars.get() && self.0.axes.get().1;
-        if always && shown {
-            self.0.vertical_bar.visible(true);
-        }
+        self.0.options_changed();
         self.clone()
     }
 
@@ -826,7 +844,7 @@ impl ScrollBox {
     /// Scrolls to a position, clamped to the content. Content added since the last frame counts: the next frame
     /// scrolls to the position again once its layout is known. A NaN position is ignored.
     pub fn scroll_to(&self, x: f64, y: f64) -> Self {
-        self.0.request((x, y), false);
+        self.0.request((x, y), (false, false));
         self.clone()
     }
 
@@ -834,13 +852,13 @@ impl ScrollBox {
     /// as Core's do: two moves of 5 from the top of a range of 6 land at 6, and a move of 3 back lands at 3.
     /// Moving at or past the end stops at the end, so a move back from there starts at the end.
     pub fn scroll_by(&self, dx: f64, dy: f64) -> Self {
-        self.0.request((dx, dy), true);
+        self.0.request((dx, dy), (true, true));
         self.clone()
     }
 
     /// Scrolls to the end of the content, including content added since the last frame.
     pub fn scroll_to_bottom(&self) -> Self {
-        self.0.request((0.0, f64::INFINITY), true);
+        self.0.request((0.0, f64::INFINITY), (true, true));
         self.clone()
     }
 

@@ -2339,8 +2339,8 @@ test("one-character and formatted prose and table labels preserve hyperlinks", a
   expect(captureFrame()).not.toContain("https://example.com/")
 })
 
-// New defect M3-b (engine): an image inside a link links its alt text to the image, where Core linked the outer link.
-test.todo("an image inside a link keeps the link's URL", async () => {
+// M3-b, fixed in the engine (#2078): an image inside a link links its alt text to the outer link.
+test("an image inside a link keeps the link's URL", async () => {
   setRendererCapabilities(renderer, { hyperlinks: true })
   const md = createMarkdownRenderable({
     content:
@@ -2358,8 +2358,8 @@ test.todo("an image inside a link keeps the link's URL", async () => {
   }
 })
 
-// New defect M3-d (engine): while streaming, a link that ends the last complete line shows "[label" until the next line.
-test.todo("a streamed link at the end of a line draws as a link", async () => {
+// M3-d, fixed in the engine (#2078): while streaming, a link that ends the last complete line draws as a link.
+test("a streamed link at the end of a line draws as a link", async () => {
   setRendererCapabilities(renderer, { hyperlinks: true })
   const md = createMarkdownRenderable({
     content: "See [docs](https://example.com/docs)\n",

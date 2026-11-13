@@ -228,15 +228,36 @@ export class ExtmarksController {
       this.moveBefore(extmark)
       if (this.editBuffer.getCursorPosition().offset > from) return
     }
-    this.moveAfter(extmark.end)
+    this.originalSetCursorByOffset(this.outside(extmark.end, 1))
   }
 
-  // An end inside a later virtual extmark that overlaps the one moved over goes on to that mark's end.
-  private moveAfter(end: number): void {
-    for (const extmark of this.extmarks.values()) {
-      if (extmark.virtual && extmark.start < end && end < extmark.end) return this.moveAfter(extmark.end)
+  /**
+   * @internal A cursor that a wheel step, a pointer or the offset setter left inside virtual extmarks goes to the
+   * outer edge of the marks around it: toward the end for a positive `direction`, the start for a negative one, or the
+   * nearer edge, as the Rust editor's. Not while a selection is left: it holds the cursor at its focus.
+   */
+  public _keepCursorOutside(direction: number): void {
+    if (this.extmarks.size === 0 || this.editorView.hasSelection()) return
+    const offset = this.editBuffer.getCursorPosition().offset
+    const start = this.outside(offset, -1)
+    if (start === offset) return
+    const end = this.outside(offset, 1)
+    const toEnd = direction === 0 ? end - offset <= offset - start : direction > 0
+    this.originalSetCursorByOffset(toEnd ? end : start)
+  }
+
+  // The first offset from `offset` toward `direction` that no virtual extmark strictly contains.
+  private outside(offset: number, direction: number): number {
+    for (let inside = true; inside; ) {
+      inside = false
+      for (const extmark of this.extmarks.values()) {
+        if (extmark.virtual && extmark.start < offset && offset < extmark.end) {
+          offset = direction > 0 ? extmark.end : extmark.start
+          inside = true
+        }
+      }
     }
-    this.originalSetCursorByOffset(end)
+    return offset
   }
 
   private wrapDeletion(): void {

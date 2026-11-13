@@ -1239,8 +1239,9 @@ fn stream_replies_and_partial_sequences() {
     let (plain, kitty, probing) =
         (Expectations::NONE, Expectations::KITTY_KEYBOARD, Expectations::REPLIES | Expectations::CURSOR_POSITION);
     type Case = (Expectations, &'static [u8], &'static [u8], Vec<Input>);
-    let cases: [Case; 14] = [
+    let cases: [Case; 15] = [
         (plain, b"\x1b[<35;20", b";5m", vec![mouse(Mouse::Moved, 19, 4, NONE)]),
+        (plain, b"\x1b[20", b"0~a\rb\x1b[201~", vec![paste("a\rb")]),
         (kitty, b"\x1b[118;5", b";3u", vec![key(Char('v'), CTRL)]),
         (kitty, b"\x1b[97;", b"2u", vec![key(Char('A'), SHIFT)]),
         (kitty, b"\x1b[97:65;", b"6:1u", vec![key(Char('A'), CTRL | SHIFT)]),
