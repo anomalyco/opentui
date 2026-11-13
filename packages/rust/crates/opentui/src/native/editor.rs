@@ -321,13 +321,37 @@ impl EditBuffer {
     }
 
     pub fn command(&self, command: EditCommand) -> Result<()> {
+        self.send(command, 0)
+    }
+
+    /// As [`command`](Self::command), with the cursor rules around atomic marks for Left, Right, Backspace and
+    /// Delete: a mark is one unit, and a move ends outside every atomic mark. Other commands run as `command`.
+    pub fn command_atomic(&self, command: EditCommand) -> Result<()> {
+        self.send(command, sys::OT_EDIT_ATOMIC)
+    }
+
+    /// Moves a cursor that atomic marks surround to the outer edge of all of them: the end for `Greater`, the start for
+    /// `Less`, or the nearer one.
+    pub fn keep_outside(&self, toward: std::cmp::Ordering) -> Result<()> {
+        let edge = match toward {
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
+            std::cmp::Ordering::Less => 2,
+        };
+        let (context, handle) = self.raw();
+        check("ot_edit_buffer_command", unsafe {
+            sys::ot_edit_buffer_command(context, handle, sys::OT_EDIT_KEEP_OUTSIDE, edge)
+        })
+    }
+
+    fn send(&self, command: EditCommand, atomic: u32) -> Result<()> {
         let (code, argument) = match command {
-            EditCommand::DeleteForward => (sys::OT_EDIT_DELETE_FORWARD, 0),
-            EditCommand::Backspace => (sys::OT_EDIT_BACKSPACE, 0),
+            EditCommand::DeleteForward => (sys::OT_EDIT_DELETE_FORWARD, atomic),
+            EditCommand::Backspace => (sys::OT_EDIT_BACKSPACE, atomic),
             EditCommand::NewLine => (sys::OT_EDIT_NEW_LINE, 0),
             EditCommand::DeleteLine => (sys::OT_EDIT_DELETE_LINE, 0),
-            EditCommand::MoveLeft => (sys::OT_EDIT_MOVE_LEFT, 0),
-            EditCommand::MoveRight => (sys::OT_EDIT_MOVE_RIGHT, 0),
+            EditCommand::MoveLeft => (sys::OT_EDIT_MOVE_LEFT, atomic),
+            EditCommand::MoveRight => (sys::OT_EDIT_MOVE_RIGHT, atomic),
             EditCommand::MoveUp => (sys::OT_EDIT_MOVE_UP, 0),
             EditCommand::MoveDown => (sys::OT_EDIT_MOVE_DOWN, 0),
             EditCommand::GotoLine(line) => (sys::OT_EDIT_GOTO_LINE, line),
@@ -730,6 +754,12 @@ impl EditorView {
 
     pub fn move_down(&self) -> Result<()> {
         self.command(sys::OT_EDITOR_MOVE_DOWN, 0)
+    }
+
+    /// Moves one wrapped line down or up; landing in an atomic mark leaves it by its nearer edge, as
+    /// [`EditBuffer::command_atomic`] moves do.
+    pub fn move_atomic(&self, down: bool) -> Result<()> {
+        self.command(if down { sys::OT_EDITOR_MOVE_DOWN } else { sys::OT_EDITOR_MOVE_UP }, sys::OT_EDIT_ATOMIC)
     }
 
     /// Moves the cursor to the end of its wrapped line.

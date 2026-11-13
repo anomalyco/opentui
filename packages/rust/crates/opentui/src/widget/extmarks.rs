@@ -58,11 +58,6 @@ impl Extmark {
         self.start..self.end
     }
 
-    /// Whether `offset` lies strictly inside the range, where an atomic mark's cursor may not rest.
-    pub(crate) fn surrounds(&self, offset: u32) -> bool {
-        self.start < offset && offset < self.end
-    }
-
     /// A mark as native code keeps it. Marks paint one priority above the one asked for, over syntax layers at 0.
     pub(crate) fn from_native(raw: &sys::ot_edit_mark, style: Option<Style>) -> Self {
         let atomic = raw.flags & sys::OT_EDIT_MARK_ATOMIC != 0;
@@ -74,16 +69,6 @@ impl Extmark {
             options: ExtmarkOptions { atomic, style, priority },
         }
     }
-}
-
-/// The atomic mark whose inside holds `offset`.
-pub(crate) fn atomic_around(marks: &[Extmark], offset: u32) -> Option<Extmark> {
-    marks.iter().find(|mark| mark.options.atomic && mark.surrounds(offset)).copied()
-}
-
-/// The atomic mark whose range holds `offset`, its start included, as Core's `findVirtualExtmarkContaining`.
-pub(crate) fn atomic_containing(marks: &[Extmark], offset: u32) -> Option<Extmark> {
-    marks.iter().find(|mark| mark.options.atomic && mark.range().contains(&offset)).copied()
 }
 
 /// The layer syntax highlighting sets; other layers should use others.

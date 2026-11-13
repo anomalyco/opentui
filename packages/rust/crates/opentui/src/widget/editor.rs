@@ -527,54 +527,16 @@ impl EditorCore {
         self.keep_cursor_outside(self.cursor().2.cmp(&before));
     }
 
-    /// Moves the cursor one column, past atomic marks as Core moves past virtual ones (`extmarks.ts`): left from a
-    /// mark's end goes to the start of the character before it, and right from at most its start goes to its end. A live
-    /// selection moves one character, as Core's does.
+    /// Moves the cursor one column, past atomic marks as Core moves past virtual ones (native rules, `OT_EDIT_ATOMIC`):
+    /// left from a mark's end goes to the start of the unit before it, and right from at most a unit before its start
+    /// goes to its end. A live selection moves one character, as Core's does.
     fn step_horizontal(&self, forward: bool) {
-        let before = self.cursor().2;
-        let edge = if self.selection().is_some() {
-            None
-        } else if forward {
-            let mark = extmarks::atomic_containing(&self.marks(), before + 1);
-            mark.filter(|mark| before <= mark.start).map(|mark| mark.end)
+        let command = if forward { EditCommand::MoveRight } else { EditCommand::MoveLeft };
+        self.report(if self.selection().is_some() {
+            self.buffer.command(command)
         } else {
-            before
-                .checked_sub(1)
-                .and_then(|target| extmarks::atomic_containing(&self.marks(), target))
-                .filter(|mark| before >= mark.end)
-                .map(|mark| mark.start)
-        };
-        let command = match edge {
-            Some(end) if forward => EditCommand::CursorOffset(end),
-            Some(start) => return self.move_before(start),
-            None if forward => EditCommand::MoveRight,
-            None => EditCommand::MoveLeft,
-        };
-        self.report(self.buffer.command(command));
-    }
-
-    /// One unit step left from a mark's start, so a wide character or a tab before it is not split.
-    fn move_before(&self, start: u32) {
-        self.report(self.buffer.command(EditCommand::CursorOffset(start)));
-        self.report(self.buffer.command(EditCommand::MoveLeft));
-    }
-
-    /// Moves the cursor one visual row. Landing in an atomic mark sends it to the nearer edge, as Core's: before the
-    /// start, or the end. Moving down never goes back to or before where it started.
-    fn step_vertical(&self, down: bool) {
-        let before = self.cursor().2;
-        self.report(if down { self.view.move_down() } else { self.view.move_up() });
-        let after = self.cursor().2;
-        let marks = self.marks();
-        let Some(mark) = extmarks::atomic_containing(&marks, after) else { return };
-        if after - mark.start < mark.end - after {
-            self.move_before(mark.start);
-            if !down || self.cursor().2 > before {
-                return;
-            }
-        }
-        // Past later marks that overlap the end, so the cursor is not left inside one.
-        self.report(self.buffer.command(EditCommand::CursorOffset(Self::outside(&marks, mark.end, true))));
+            self.buffer.command_atomic(command)
+        });
     }
 
     fn goto_buffer_end(&self) {
@@ -637,8 +599,13 @@ impl EditorCore {
         match action {
             A::MoveLeft => self.movement(false, Some(false), |s| s.step_horizontal(false)),
             A::MoveRight => self.movement(false, Some(true), |s| s.step_horizontal(true)),
-            A::MoveUp => self.movement(false, None, |s| s.step_vertical(false)),
-            A::MoveDown => self.movement(false, None, |s| s.step_vertical(true)),
+            // Landing in an atomic mark leaves it by the nearer edge, as Core's; Down never goes back.
+            A::MoveUp => self.movement(false, None, |s| {
+                s.report(s.view.move_atomic(false));
+            }),
+            A::MoveDown => self.movement(false, None, |s| {
+                s.report(s.view.move_atomic(true));
+            }),
             A::SelectLeft => self.movement(true, None, |s| s.step_horizontal(false)),
             A::SelectRight => self.movement(true, None, |s| s.step_horizontal(true)),
             A::SelectUp => self.movement(true, None, |s| {
@@ -676,14 +643,15 @@ impl EditorCore {
             A::WordBackward => self.movement(false, Some(false), |s| s.goto_word(false)),
             A::SelectWordForward => self.movement(true, None, |s| s.goto_word(true)),
             A::SelectWordBackward => self.movement(true, None, |s| s.goto_word(false)),
+            // At an atomic mark's end (Backspace) or start (Delete) the whole mark goes, as one edit.
             A::Backspace => {
-                if !self.delete_selection() && !self.delete_atomic(false) {
-                    self.report(self.buffer.command(EditCommand::Backspace));
+                if !self.delete_selection() {
+                    self.report(self.buffer.command_atomic(EditCommand::Backspace));
                 }
             }
             A::Delete => {
-                if !self.delete_selection() && !self.delete_atomic(true) {
-                    self.report(self.buffer.command(EditCommand::DeleteForward));
+                if !self.delete_selection() {
+                    self.report(self.buffer.command_atomic(EditCommand::DeleteForward));
                 }
             }
             A::DeleteWordForward | A::DeleteWordBackward => {
@@ -788,15 +756,6 @@ impl EditorCore {
 
     // Extmarks.
 
-    /// The marks in creation (id) order, the order the cursor rules search them in. Native code moves them with each
-    /// edit.
-    fn marks(&self) -> Vec<Extmark> {
-        let marks = self.report(self.buffer.marks()).unwrap_or_default();
-        let mut marks: Vec<Extmark> = marks.iter().map(|(raw, style)| Extmark::from_native(raw, *style)).collect();
-        marks.sort_by_key(|mark| mark.id);
-        marks
-    }
-
     /// Runs an edit and keeps the cursor out of atomic marks, once for nested edits.
     pub fn tracked<R>(&self, edit: impl FnOnce() -> R) -> R {
         if self.tracking.get() {
@@ -820,41 +779,7 @@ impl EditorCore {
     /// start for `Less`, or the nearer one.
     fn keep_cursor_outside(&self, toward: Ordering) {
         self.held.set(false);
-        let marks = self.marks();
-        let cursor = self.cursor().2;
-        let (start, end) = (Self::outside(&marks, cursor, false), Self::outside(&marks, cursor, true));
-        let to_end = match toward {
-            Ordering::Less => false,
-            Ordering::Greater => true,
-            Ordering::Equal => end - cursor <= cursor - start,
-        };
-        if start != cursor {
-            self.report(self.buffer.command(EditCommand::CursorOffset(if to_end { end } else { start })));
-        }
-    }
-
-    /// The first offset from `offset` toward the end (`forward`) or the start that no atomic mark surrounds.
-    fn outside(marks: &[Extmark], mut offset: u32, forward: bool) -> u32 {
-        while let Some(mark) = extmarks::atomic_around(marks, offset) {
-            offset = if forward { mark.end } else { mark.start };
-        }
-        offset
-    }
-
-    /// Deletes a whole atomic mark that starts at the cursor (`forward`) or ends at it. Returns whether it did.
-    fn delete_atomic(&self, forward: bool) -> bool {
-        let cursor = self.cursor().2;
-        let mark = self.marks().into_iter().find(|mark| {
-            mark.options.atomic
-                && mark.start < mark.end
-                && if forward { mark.start == cursor } else { mark.end == cursor }
-        });
-        let Some(mark) = mark else { return false };
-        let colors = self.colors.borrow().selection;
-        self.report(self.view.select_range(mark.start, mark.end, colors));
-        self.report(self.view.delete_selection());
-        self.clear_selection_state();
-        true
+        self.report(self.buffer.keep_outside(toward));
     }
 
     /// The buffer's style table. Until `syntax_style` sets one, the editor makes its own, with its syntax theme.
@@ -895,8 +820,10 @@ impl EditorCore {
         self.report(self.buffer.clear_marks());
     }
 
+    /// The marks in (start, id) order. Native code moves them with each edit.
     pub fn extmarks(&self) -> Vec<Extmark> {
-        let mut marks = self.marks();
+        let marks = self.report(self.buffer.marks()).unwrap_or_default();
+        let mut marks: Vec<Extmark> = marks.iter().map(|(raw, style)| Extmark::from_native(raw, *style)).collect();
         marks.sort_by_key(|mark| (mark.start, mark.id));
         marks
     }
@@ -1480,8 +1407,8 @@ mod tests {
         assert!(compared > 500, "{compared} compared");
     }
 
-    // 474: with marks, a key read the whole text twice to find the edit; native code moves marks now. A typed key
-    // reads the marks once, after the edit, however many there are: one count and one copy.
+    // 474: with marks, a key read the whole text twice to find the edit; native code moves marks now. The cursor rules
+    // around atomic marks run natively too (C5.3), so no key reads the marks, however many there are.
     #[test]
     fn keys_with_marks_read_no_text() {
         for count in [1, 40] {
@@ -1496,15 +1423,17 @@ mod tests {
             }
             area.set_cursor_offset(0);
             app.render();
-            let reads = || (crate::native::TEXT_READS.with(Cell::get), crate::native::MARK_READS.with(Cell::get));
-            crate::native::TEXT_READS.with(|reads| reads.set(0));
-            crate::native::MARK_READS.with(|reads| reads.set(0));
-            app.press("x");
-            assert_eq!(reads(), (0, 2), "{count} marks");
-            for key in ["backspace", "right", "delete"] {
-                app.press(key);
-            }
-            assert_eq!(crate::native::TEXT_READS.with(Cell::get), 0);
+            let keys = ["x", "left", "right", "backspace", "delete"];
+            let reads: Vec<_> = keys
+                .iter()
+                .map(|key| {
+                    crate::native::TEXT_READS.with(|reads| reads.set(0));
+                    crate::native::MARK_READS.with(|reads| reads.set(0));
+                    app.press(key);
+                    (crate::native::TEXT_READS.with(Cell::get), crate::native::MARK_READS.with(Cell::get))
+                })
+                .collect();
+            assert_eq!(reads, [(0, 0); 5], "{keys:?} with {count} marks");
             assert_eq!(area.extmarks()[0].range(), 2..7);
         }
     }
