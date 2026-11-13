@@ -29,7 +29,6 @@ pub(super) struct TextSelection {
     /// The subtrees the selection may cover, innermost last.
     containers: Vec<Weak<dyn Behavior>>,
     touched: Vec<Weak<dyn Behavior>>,
-    selected: Vec<Weak<dyn Behavior>>,
 }
 
 impl TextSelection {
@@ -84,15 +83,15 @@ impl App {
         let point = (i32::from(event.x), i32::from(event.y));
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                // Ctrl+press extends the current selection to the pointer.
-                if event.modifiers.contains(Modifiers::CTRL)
-                    && let Some(selection) = self.0.selection.borrow_mut().as_mut()
-                {
-                    selection.dragging = true;
-                } else if self.selection_dragging() || event.modifiers.contains(Modifiers::CTRL) {
+                // Ctrl+press extends the selection to the pointer. A plain press ends a drag whose release was lost.
+                let ctrl = event.modifiers.contains(Modifiers::CTRL);
+                if let Some(selection) = self.0.selection.borrow_mut().as_mut() {
+                    selection.dragging = ctrl;
+                }
+                if ctrl && !self.selection_dragging() {
                     // As in Core, Ctrl+press without a selection starts none.
                     return false;
-                } else {
+                } else if !ctrl {
                     let selectable = hit
                         .and_then(|hit| {
                             std::iter::successors(Some(Rc::clone(hit)), |widget| widget.element().parent_behavior())
@@ -176,7 +175,6 @@ impl App {
             start: true,
             containers: container.iter().map(Rc::downgrade).collect(),
             touched: Vec::new(),
-            selected: Vec::new(),
         });
         self.notify_selection();
     }
@@ -236,23 +234,23 @@ impl App {
             update.anchor.0.max(update.focus.0),
             update.anchor.1.max(update.focus.1),
         );
-        let (mut touched, mut selected) = (Vec::new(), Vec::new());
-        visit(&container, &update, bounds, &mut touched, &mut selected);
+        let mut touched = Vec::new();
+        visit(&container, &update, bounds, &mut touched);
         let ids: Vec<u32> = touched.iter().map(|widget| widget.element().id()).collect();
         for widget in previous.iter().filter(|widget| !ids.contains(&widget.element().id())) {
             widget.select(None);
         }
         if let Some(selection) = self.0.selection.borrow_mut().as_mut() {
             selection.touched = touched.iter().map(Rc::downgrade).collect();
-            selection.selected = selected.iter().map(Rc::downgrade).collect();
         }
         self.request_redraw();
     }
 
-    /// The text selected with the mouse, if any. Text from several widgets is joined in reading order: pieces on
-    /// the same row are concatenated left to right, and rows are joined with line breaks.
+    /// The text selected with the mouse, if any, as the widgets the selection covers hold it now. Text from several
+    /// widgets is joined in reading order: pieces on the same row are concatenated left to right, and rows are joined
+    /// with line breaks.
     pub fn selected_text(&self) -> Option<String> {
-        let selected = upgrade_all(&self.0.selection.borrow().as_ref()?.selected);
+        let selected = upgrade_all(&self.0.selection.borrow().as_ref()?.touched);
         let mut pieces: Vec<(i32, i32, String)> = Vec::new();
         for widget in selected {
             let Some(text) = widget.selected_text().filter(|text| !text.is_empty()) else { continue };
@@ -319,7 +317,6 @@ impl App {
                     let removed = selection.touched.iter().filter(|weak| within(weak)).filter_map(Weak::upgrade);
                     let removed = removed.collect();
                     selection.touched.retain(|weak| !within(weak));
-                    selection.selected.retain(|weak| !within(weak));
                     selection.containers.retain(|weak| !within(weak));
                     removed
                 };
@@ -344,18 +341,15 @@ fn visit(
     update: &SelectionUpdate,
     bounds: (i32, i32, i32, i32),
     touched: &mut Vec<Rc<dyn Behavior>>,
-    selected: &mut Vec<Rc<dyn Behavior>>,
 ) {
     for child in container.element().child_behaviors() {
         if !child.element().is_visible() {
             continue;
         }
         if child.selectable() && overlaps(&child.element().rect(), bounds) {
-            if child.select(Some(update)) {
-                selected.push(Rc::clone(&child));
-            }
+            child.select(Some(update));
             touched.push(Rc::clone(&child));
         }
-        visit(&child, update, bounds, touched, selected);
+        visit(&child, update, bounds, touched);
     }
 }

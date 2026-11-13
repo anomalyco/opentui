@@ -166,7 +166,10 @@ fn highlighting_registers_into_a_style_table_the_app_sets() {
     // Ids with the run flag name styled-text styles: a highlight with one fails and leaves the others.
     let flagged = opentui::native::Highlight { style_id: keyword | opentui::sys::OT_STYLE_RUN_FLAG, ..highlight };
     assert_eq!(area.buffer().highlight(flagged).unwrap_err().status(), Some(opentui::Status::InvalidArgument));
+    // At priority 0 it draws over text the syntax theme leaves plain, and under styled text.
+    area.buffer().highlight(opentui::native::Highlight { start: 0, end: 7, priority: 0, ..highlight }).unwrap();
     let capture = app.render();
     assert_eq!(capture.cell(8, 0).unwrap().fg, Color::RED);
+    assert_eq!(capture.cell(3, 0).unwrap().fg, Color::RED);
     assert_eq!(capture.cell(0, 0).unwrap().fg, syntax_fg(&app, "keyword"));
 }

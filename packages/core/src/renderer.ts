@@ -71,6 +71,7 @@ import {
 } from "./lib/terminal-capability-detection.js"
 import { type Clock, type TimerHandle, SystemClock } from "./lib/clock.js"
 import { NativeStdinParser, type StdinEvent, type StdinParserProtocolContext } from "./lib/stdin-parser-native.js"
+import { parseKeypress } from "./lib/parse.keypress.js"
 import { matchesKeyBinding } from "./lib/keybinding.internal.js"
 import { RendererThemeMode } from "./renderer-theme-mode.js"
 
@@ -612,15 +613,18 @@ class ExternalOutputQueue {
     return { markers, removed, boundary: boundary < 0 ? kept.length : boundary }
   }
 
-  /** The head commits, at most `limit`, that fit one native split render. Never empty unless the queue is. */
+  // The head commits, at most `limit` and 8 writer snapshots, that fit one native split render; never empty unless the
+  // queue is. Writer snapshots can style every cell: more of them delay the footer repaint behind them on a slow link.
   batch(limit: number): readonly QueuedCommit[] {
     // An empty batch would never drain the queue.
     if (!(limit >= 1)) throw new RangeError("ExternalOutputQueue.batch requires a limit of at least 1")
     let count = 0
     let cells = 0
+    let writers = 0
     while (count < Math.min(limit, this.commits.length)) {
       cells += this.commits[count]!.cells
-      if (cells > this.maxCells) break
+      writers += this.commits[count]!.bytes === 0 ? 1 : 0
+      if (cells > this.maxCells || writers > 8) break
       count += 1
     }
     return this.commits.slice(0, count)
@@ -1157,6 +1161,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private replyBatches: ReplyBatch[] = []
   // No missed DA1 reply yet. After a miss, batches carry no DA1 and end at their backstop.
   private replySentinel = true
+  /** The first cursor report of a setup answers its position query; later ones are probe replies or keys. */
+  private startupCursorReportPending = false
   public readonly clock: Clock
 
   private rendering: boolean = false
@@ -1224,6 +1230,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _previousControlState: RendererControlState = RendererControlState.IDLE
   private capturedRenderable?: Renderable
   private pressedRenderable?: Renderable
+  private lastDrag?: RawMouseEvent
   private lastOverRenderableNum: number = 0
   private lastOverRenderable?: Renderable
 
@@ -1242,12 +1249,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   // One-shot latch used to request a full split repaint after transitions
   // (resize/mode/output-path changes). Cleared after completed presentation.
   private forceFullRepaintRequested: boolean = false
-  // Upper bound for captured stdout commits consumed per native frame.
-  // This is a visual smoothness control: smaller batches reduce frame envelope
-  // churn and keep render latency predictable under heavy scrollback append load.
-  private readonly maxSplitCommitsPerFrame: number = 8
-  // Scrollback commits per frame; 1 after a batch was too large for one frame.
-  private splitCommitLimit = this.maxSplitCommitsPerFrame
+  // Scrollback commits per frame: as many as one native split render takes; 1 after a batch too large for one frame.
+  private splitCommitLimit: number = nativeConstants.OT_SPLIT_SNAPSHOTS_MAX
   // The renderer state's dropped frame count already reported.
   private droppedFrames = 0
   // A frame was dropped since the last rendered one; native counts a partial frame only when its full repaint fails.
@@ -1260,6 +1263,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private externalOutputQueue: ExternalOutputQueue
   private pendingExternalOutputMode: ExternalOutputMode | null = null
   private readonly stdoutDecoder = new StringDecoder("utf8")
+  // Captured text a later write continues, in stream order: the unfinished last row, then a cut-off escape's kind.
+  private stdoutRow = ""
   private stdoutEscape = ""
   private realStdoutWrite: (chunk: any, encoding?: any, callback?: any) => boolean
 
@@ -2074,6 +2079,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       if (mode === "passthrough") this.applyExternalOutputMode(mode)
       return
     }
+    // A held stdout row is queued output: it was written before the mode changed.
+    if (mode === "passthrough" && this.stdoutRow) this.captureStdout("", false)
     if (mode === "passthrough" && !this.rendering && !this.pendingNativeMode && this.externalOutputQueue.size === 0) {
       this.flushStdoutDecoder()
     }
@@ -2149,6 +2156,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private applyPendingExternalOutputModeIfReady(): void {
     if (this.rendering) return
+    if (this.stdoutRow && this.pendingExternalOutputMode !== null) this.captureStdout("", false)
     const pendingMode = this.pendingExternalOutputMode
     if (
       pendingMode === null ||
@@ -2800,6 +2808,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   private getPendingSplitTailColumn(): number {
+    // Queued output ends after a held stdout row, so the row joins the queue before anything is placed after it.
+    while (this.stdoutRow) this.captureStdout("", false)
     const width = Math.max(this.width, 1)
     const skipped = this.pendingNativeReplay?.remaining ?? 0
     const cached = this.queuedSplitTail
@@ -2856,7 +2866,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
   }
 
-  private splitStdoutRows(text: string, tailColumn: number): StdoutRow[] {
+  private splitStdoutRows(text: string, tailColumn: number, hold = false): { rows: StdoutRow[]; held: string } {
     // Captured stdout arrives as an arbitrary byte stream, but split append commits
     // are row-based (line text + whether that row ended with '\n'). We normalize
     // here because native split append expects already-decoded row intent, not raw
@@ -2874,14 +2884,16 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     let rowStart = 0
     let line = ""
     let cells = 0
+    let start = 0
     const widthMethod = this.widthMethod
     const widths = new Map<string, number>()
 
-    for (const { segment } of graphemeSegmenter.segment(text)) {
+    for (const { segment, index } of graphemeSegmenter.segment(text)) {
       if (segment === "\r") {
         rows.length = rowStart
         line = ""
         cells = 0
+        start = index + 1
         continue
       }
 
@@ -2891,6 +2903,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         rowStart = rows.length
         line = ""
         cells = 0
+        start = index + segment.length
         continue
       }
 
@@ -2910,17 +2923,21 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         rows.push({ line: line + " ".repeat(padding), cells: cells + padding, trailingNewline: false, endsRow: true })
         line = ""
         cells = 0
+        start = index
       }
       line += grapheme
       cells += graphemeCells
     }
 
+    // With `hold`, the unfinished last row is returned as text. At most 8 code units a cell are held, so a write
+    // rescans no more than one row.
+    if (hold && line.length > 0 && text.length - start <= 8 * width) return { rows, held: text.slice(start) }
     if (line.length > 0) {
       const column = (rows.length === 0 && tailColumn < width ? tailColumn : 0) + cells
       rows.push({ line, cells, trailingNewline: false, endsRow: column >= width })
     }
 
-    return rows
+    return { rows, held: "" }
   }
 
   private createStdoutSnapshotCommits(rows: readonly StdoutRow[]): ExternalOutputCommit[] {
@@ -2979,7 +2996,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private flushStdoutDecoder(): void {
     const text = this.stdoutDecoder.end()
     if (text && this.nativeSession.open) this.interceptStdoutWrite(text)
-    this.stdoutEscape = ""
+    // A listener's write during the commit is held again; it goes out too.
+    while (this.stdoutRow && this.nativeSession.open) this.captureStdout("", false)
+    this.stdoutRow = this.stdoutEscape = ""
   }
 
   private interceptStdoutWrite = (chunk: any, encoding?: any, callback?: any): boolean => {
@@ -2991,51 +3010,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       const bytes = ArrayBuffer.isView(chunk)
         ? new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength)
         : Buffer.from(String(chunk ?? ""), Buffer.isEncoding(encoding) ? encoding : undefined)
-      const decoded = this.stdoutEscape + this.stdoutDecoder.write(bytes)
-      this.stdoutEscape = ""
-      // Rows are plain text. A sequence cut off by the end of the write waits for the next; its kind is all it needs.
-      const text = decoded.replace(STDOUT_ESCAPE, (match, csi, bel, esc, offset) => {
-        if (offset + match.length === decoded.length && (csi ?? bel ?? esc) === undefined) {
-          this.stdoutEscape = match.slice(0, 2)
-        }
-        return ""
-      })
-      // Capture mode intentionally diverts stdout into split commit snapshots
-      // instead of writing directly to process stdout. Native flushing will append
-      // and repaint in one controlled frame, which is what avoids footer flicker.
-      const queue = this.externalOutputQueue
-      const rows = this.splitStdoutRows(text, this.getPendingSplitTailColumn())
-      // A write that overflows the bound keeps at most its newest half bound of rows: a collapse drops the rest anyway.
-      let added = rows.reduce((sum, row) => sum + capturedRowBytes(Math.max(1, row.cells)), 0)
-      let trimmed = 0
-      if (queue.capturedBytes + added > CAPTURED_STDOUT_MAX_BYTES) {
-        while (added > CAPTURED_STDOUT_HIGH_WATER_BYTES) added -= capturedRowBytes(Math.max(1, rows[trimmed++]!.cells))
-      }
-      const commits = this.createStdoutSnapshotCommits(rows.slice(trimmed))
-      try {
-        this.enqueueSplitCommits(commits, true)
-      } catch (error) {
-        for (const commit of commits) {
-          if (!queue.owns(commit.snapshot)) commit.snapshot.destroy()
-        }
-        throw error
-      }
-      // Rows handed to native stay. Rows ahead of a replay reset go like others; the reset's count follows them.
-      const limits = {
-        start: this.nativeSplitAcceptedCount,
-        boundary: this.pendingNativeReplay?.remaining ?? Infinity,
-        incoming: queue.size - commits.length,
-        trimmed,
-      }
-      const collapsed = queue.collapse(limits, (rows) => this.createDroppedRowCommit(rows))
-      if (collapsed) {
-        this.queuedSplitTail = null
-        if (this.pendingNativeReplay) this.pendingNativeReplay.remaining = collapsed.boundary
-      }
-      // Reported in queue order, after the collapse: a listener may write again.
-      this.emitExternalOutput(collapsed?.markers ?? [])
-      this.emitExternalOutput(commits.filter((commit) => !collapsed?.removed.has(commit.snapshot)))
-      writable = queue.writable()
+      writable = this.captureStdout(this.stdoutDecoder.write(bytes), true)
     }
 
     if (typeof resolvedCallback === "function") {
@@ -3045,9 +3020,61 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     return writable
   }
 
+  /** With `hold`, an unfinished last row waits for the frame: a later write may still extend its last grapheme. */
+  private captureStdout(input: string, hold: boolean): boolean {
+    // A lone CR extends no grapheme, and it clears only the row of its own write.
+    if (this.stdoutRow && /^\r(?!\n)/.test(input)) this.captureStdout("", false)
+    const decoded = this.stdoutRow + this.stdoutEscape + input
+    this.stdoutRow = this.stdoutEscape = ""
+    // Rows are plain text. A sequence cut off by the end of the write waits for the next; its kind is all it needs.
+    const text = decoded.replace(STDOUT_ESCAPE, (match, csi, bel, esc, offset) => {
+      if (offset + match.length === decoded.length && (csi ?? bel ?? esc) === undefined) {
+        this.stdoutEscape = match.slice(0, 2)
+      }
+      return ""
+    })
+    // Capture mode intentionally diverts stdout into split commit snapshots
+    // instead of writing directly to process stdout. Native flushing will append
+    // and repaint in one controlled frame, which is what avoids footer flicker.
+    const queue = this.externalOutputQueue
+    const { rows, held } = this.splitStdoutRows(text, this.getPendingSplitTailColumn(), hold)
+    // A write that overflows the bound keeps at most its newest half bound of rows: a collapse drops the rest anyway.
+    let added = rows.reduce((sum, row) => sum + capturedRowBytes(Math.max(1, row.cells)), 0)
+    let trimmed = 0
+    if (queue.capturedBytes + added > CAPTURED_STDOUT_MAX_BYTES) {
+      while (added > CAPTURED_STDOUT_HIGH_WATER_BYTES) added -= capturedRowBytes(Math.max(1, rows[trimmed++]!.cells))
+    }
+    const commits = this.createStdoutSnapshotCommits(rows.slice(trimmed))
+    try {
+      this.enqueueSplitCommits(commits, true)
+    } catch (error) {
+      for (const commit of commits) {
+        if (!queue.owns(commit.snapshot)) commit.snapshot.destroy()
+      }
+      throw error
+    }
+    // Rows handed to native stay. Rows ahead of a replay reset go like others; the reset's count follows them.
+    const limits = {
+      start: this.nativeSplitAcceptedCount,
+      boundary: this.pendingNativeReplay?.remaining ?? Infinity,
+      incoming: queue.size - commits.length,
+      trimmed,
+    }
+    const collapsed = queue.collapse(limits, (rows) => this.createDroppedRowCommit(rows))
+    if (collapsed) {
+      this.queuedSplitTail = null
+      if (this.pendingNativeReplay) this.pendingNativeReplay.remaining = collapsed.boundary
+    }
+    this.stdoutRow = held
+    // Reported in queue order, after the collapse: a listener may write again.
+    this.emitExternalOutput(collapsed?.markers ?? [])
+    this.emitExternalOutput(commits.filter((commit) => !collapsed?.removed.has(commit.snapshot)))
+    return queue.writable()
+  }
+
   private createDroppedRowCommit(rows: number): ExternalOutputCommit {
     const text = `[${rows} lines dropped]`.slice(0, Math.max(1, this.width))
-    const [commit] = this.createStdoutSnapshotCommits(this.splitStdoutRows(text, 0))
+    const [commit] = this.createStdoutSnapshotCommits(this.splitStdoutRows(text, 0).rows)
     commit!.nativeSnapshot = commit!.snapshot._getSceneHandle(this.nativeScene)
     return { ...commit!, startOnNewLine: true, trailingNewline: true, endsRow: true }
   }
@@ -3300,7 +3327,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       if (prevSplitHeight === 0 && nextSplitHeight > 0) {
         scrollOutput = ANSI.scrollDown(this._terminalHeight - nextSplitHeight)
       } else if (splitViewportScrollLines > 0) {
-        scrollOutput = ANSI.scrollUp(splitViewportScrollLines)
+        scrollOutput = ANSI.scrollIntoHistory(splitViewportScrollLines)
       }
     }
     const clearOutput =
@@ -3452,6 +3479,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this.pendingSplitStartupCursorSeed =
       this._screenMode === "split-footer" && this._externalOutputMode === "capture-stdout"
+    this.startupCursorReportPending = true
     // The startup batch asks OSC 11; after its DA1 reply a theme wait has its answer.
     const startup = this.admitReplyBatch("startup", () => this.replySentinel && this.themeModeState.resolveWaiters())
     try {
@@ -3820,8 +3848,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           }
         }
 
-        if (event.protocol === "cpr" && this.processCapabilitySequence(event.sequence, true)) {
-          return
+        if (event.protocol === "cpr") {
+          // After the startup position, a report that decodes as a key (`CSI 1;m R`, a modified F3) is one: the width
+          // probe replies come from row 2, which no key reports.
+          const key = this.startupCursorReportPending ? null : parseKeypress(event.sequence)
+          this.startupCursorReportPending = false
+          if (key) return this.handleStdinEvent({ type: "key", raw: event.sequence, key })
+          if (this.processCapabilitySequence(event.sequence, true)) return
         }
 
         this.dispatchSequenceHandlers(event.sequence)
@@ -3934,12 +3967,26 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     // Every left down or up ends the record, also one that returns early; other events keep it.
     const pressed = this.pressedRenderable
     const left = mouseEvent.button === MouseButton.LEFT
-    if (left && (mouseEvent.type === "down" || mouseEvent.type === "up")) this.pressedRenderable = undefined
+    const press = left && mouseEvent.type === "down"
+    if (press || (left && mouseEvent.type === "up")) this.pressedRenderable = undefined
     if (this._splitHeight > 0) {
       if (mouseEvent.y < this.renderOffset) {
         return false
       }
       mouseEvent.y -= this.renderOffset
+    }
+    if (left && mouseEvent.type === "drag") this.lastDrag = { ...mouseEvent }
+    // A left press while a gesture is held means its release was lost: end that gesture before any handler sees the
+    // press, for its owner as a release at the last drag point would, without a drop. Ctrl+press sets a selection
+    // dragging again below.
+    const lost = press ? this.capturedRenderable : undefined
+    if (press && this.currentSelection) this.currentSelection.isDragging = false
+    if (lost) {
+      this.capturedRenderable = undefined
+      this.sendMouseEvent(lost, new MouseEvent(lost, { ...this.lastDrag!, type: "drag-end" }))
+      this.sendMouseEvent(lost, new MouseEvent(lost, { ...this.lastDrag!, type: "up" }))
+      if (this._isDestroyed) return true
+      this.requestRender()
     }
 
     this._latestPointer.x = mouseEvent.x
@@ -3979,17 +4026,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       return true
     }
 
-    const maybeRenderableId = this.hitTest(mouseEvent.x, mouseEvent.y)
+    // A drag looks through its source, so its over and drop events reach what is under it.
+    const maybeRenderableId = this.nativeScene.hitTest(mouseEvent.x, mouseEvent.y, this.capturedRenderable?.num ?? 0)
     const sameElement = maybeRenderableId === this.lastOverRenderableNum
     this.lastOverRenderableNum = maybeRenderableId
     const maybeRenderable = Renderable.renderablesByNumber.get(maybeRenderableId)
 
-    if (
-      mouseEvent.type === "down" &&
-      mouseEvent.button === MouseButton.LEFT &&
-      !this.currentSelection?.isDragging &&
-      !mouseEvent.modifiers.ctrl
-    ) {
+    if (press && !mouseEvent.modifiers.ctrl) {
       const canStartSelection = Boolean(
         maybeRenderable &&
         maybeRenderable.selectable &&
@@ -4036,12 +4079,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       return true
     }
 
-    if (mouseEvent.type === "down" && mouseEvent.button === MouseButton.LEFT && this.currentSelection) {
-      if (mouseEvent.modifiers.ctrl) {
-        this.currentSelection.isDragging = true
-        this.updateSelection(maybeRenderable, mouseEvent.x, mouseEvent.y)
-        return true
-      }
+    if (press && this.currentSelection && mouseEvent.modifiers.ctrl) {
+      this.currentSelection.isDragging = true
+      this.updateSelection(maybeRenderable, mouseEvent.x, mouseEvent.y)
+      return true
     }
 
     if (!sameElement && (mouseEvent.type === "drag" || mouseEvent.type === "move")) {
@@ -4080,10 +4121,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.lastOverRenderable = source
       this.lastOverRenderableNum = source.num
       this.capturedRenderable = undefined
-      // Dropping the renderable needs to push another frame when the renderer is not live
-      // to update the hits, otherwise capturedRenderable won't be in the hits and will not receive mouse events
+      // Hover is not rechecked while a node holds the capture; the next frame rechecks it.
       this.requestRender()
-      // A source does not drop onto itself or its subtree; until that frame the presented hits still hold the source.
+      // A source does not drop onto itself or its subtree.
       if (maybeRenderable && this.isWithinContainer(maybeRenderable, source)) return true
       if (maybeRenderable) {
         this.sendMouseEvent(maybeRenderable, new MouseEvent(maybeRenderable, { ...mouseEvent, type: "drop", source }))
@@ -4095,21 +4135,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     let event: MouseEvent | undefined
     if (target) {
       if (isLeftDrag) this.capturedRenderable = target
-      else if (left && mouseEvent.type === "down") this.pressedRenderable = target
+      else if (press) this.pressedRenderable = target
       event = this.dispatchMouseEvent(target, mouseEvent)
     } else {
       this.lastOverRenderable = undefined
     }
 
-    if (
-      !event?.defaultPrevented &&
-      mouseEvent.type === "down" &&
-      mouseEvent.button === MouseButton.LEFT &&
-      this.currentSelection
-    ) {
-      this.clearSelection()
-    }
-
+    if (press && this.currentSelection && !event?.defaultPrevented) this.clearSelection()
     return true
   }
 
@@ -4349,6 +4381,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       return
     }
 
+    // Written before the resize, a held stdout row goes out at the old width.
+    if (this.stdoutRow) this.captureStdout("", false)
     const terminalWritable = this._terminalIsSetup && this._controlState !== RendererControlState.EXPLICIT_SUSPENDED
     if (terminalWritable && !this.isSplitCursorSeedFrameBlocked() && this.externalOutputQueue.size > 0) {
       this.pendingNativeResize = { width, height }
@@ -4813,7 +4847,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
     // Leave raw mode as the suspend settles, before resume(); after destroy() the close leaves it after restoration.
     // Suspending a suspended Session writes nothing, and the input since then belongs to the next program.
-    const settled = nativeTransition.finally(() => this._isDestroyed || restored || this.leaveRawMode(true))
+    // Until then an exit signal destroys, so the close restores the terminal; after it, the next program owns signals.
+    const settled = nativeTransition.finally(() => {
+      this.removeExitListeners()
+      if (!this._isDestroyed && !restored) this.leaveRawMode(true)
+    })
     nativeTransition = this.trackNativeTerminalTransition(settled)
     if (this._controlState !== RendererControlState.EXPLICIT_SUSPENDED) {
       // A failed native split drain leaves the host suspended until the caller retries.
@@ -4829,7 +4867,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.clearSplitStartupCursorSeed()
 
     this.disableMouse()
-    this.removeExitListeners()
     for (const batch of [...this.replyBatches]) {
       if (batch.backstop !== null) this.clock.clearTimeout(batch.backstop)
       batch.backstop = null
@@ -5273,13 +5310,18 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       // Callbacks can start terminal setup; a frame step is invalid until it settles.
       if (this.nativeTerminalTransition && !(await this.waitForTerminalTransition())) return
       if (!this.canRender || this.currentControlState === RendererControlState.EXPLICIT_SUSPENDED) return
+      // A held stdout row goes out with this frame. The paint below draws what its listeners change; a row they
+      // write is held for the next frame.
+      const requestedBeforeRow = this.immediateRerenderRequested
+      if (this.stdoutRow) this.captureStdout("", false)
+      this.immediateRerenderRequested = requestedBeforeRow || this.stdoutRow !== ""
       const sceneStart = performance.now()
       const requestedBeforeScene = this.immediateRerenderRequested
       try {
         this.nativeScene.paint(deltaTime, () => ({
           background: this.backgroundColor,
           useMouse: this._useMouse,
-          excludedHitNum: this.capturedRenderable?.num ?? 0,
+          excludedHitNum: 0,
         }))
       } catch (error) {
         // Failed feedback must not schedule its own retry. The error handler can request one explicitly.
@@ -5472,6 +5514,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private async presentNativeScene(): Promise<"rendered" | "retryable-skip" | "failed" | "dropped" | "blocked"> {
     if (this.isSplitCursorSeedFrameBlocked()) return "blocked"
+    // A row a post-process hook wrote after paint goes out with this frame too.
+    if (this.stdoutRow) this.captureStdout("", false)
     const commits =
       this._splitHeight > 0 && this._externalOutputMode === "capture-stdout"
         ? this.pendingNativeReplay?.remaining === 0
@@ -5532,7 +5576,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
     this.externalOutputQueue.drop(commits.length)
     if (this.pendingNativeReplay) this.pendingNativeReplay.remaining -= commits.length
-    this.splitCommitLimit = this.maxSplitCommitsPerFrame
+    this.splitCommitLimit = nativeConstants.OT_SPLIT_SNAPSHOTS_MAX
     this.nativeSplitAcceptedCount = 0
     this.pendingSplitFooterTransition = null
   }

@@ -681,6 +681,7 @@ pub const Session = struct {
         value.useAlternateScreen = options.use_alternate_screen;
         value.clearOnShutdown = options.clear_on_close;
         value.terminal.reply_sentinel = options.reply_sentinel;
+        value.terminal.explicit_width_probed = options.use_alternate_screen and value.height >= 3;
         value.terminal.synchronized_output = options.synchronized_output;
         value.terminal.multiplexer_on_host = options.host_multiplexer;
         value.terminal.opts.kitty_keyboard_flags = options.kitty_keyboard_flags;
@@ -1233,6 +1234,7 @@ pub const Session = struct {
             .setup_screen => {
                 try writer.writeAll(ansi.ANSI.saveCursorState);
                 if (value.useAlternateScreen) try candidate.enterAltScreen(writer);
+                if (progress.phase == .setting_up and candidate.explicit_width_probed) try candidate.queryExplicitWidth(writer);
                 progress.step = if (progress.rows_remaining == 0) .enable else .reserve_rows;
             },
             .reserve_rows => {
@@ -1246,6 +1248,8 @@ pub const Session = struct {
                 try writer.writeAll(ansi.ANSI.hideCursor);
                 try candidate.enableDetectedFeatures(writer, candidate.opts.kitty_keyboard_flags != 0);
                 try candidate.setMouseMode(writer, progress.mouse, progress.mouse_movement);
+                // Terminals answer in order: the DA1 reply follows every other reply of the setup.
+                if (progress.phase == .setting_up and candidate.reply_sentinel) try writer.writeAll(ansi.ANSI.primaryDeviceAttrs);
                 progress.screen_claimed = true;
                 progress.step = .activate;
             },

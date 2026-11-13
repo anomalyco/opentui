@@ -41,28 +41,25 @@ async function setup(options: TestRendererOptions = {}) {
 }
 
 /** A set-up split-footer terminal whose native output reaches `stdout`, so tests can read the scrollback bytes. */
-async function setupTerminal(
-  options: { columns?: number; height?: number; footerHeight?: number; maxBytes?: bigint } = {},
-) {
-  const columns = options.columns ?? 40
-  const height = options.height ?? 10
-  const stdout = new RecordingWriteStream(columns, height) as RecordingWriteStream & NodeJS.WriteStream
+async function setupTerminal({
+  columns = 40,
+  maxBytes,
+  ...options
+}: { columns?: number; maxBytes?: bigint } & TestRendererOptions = {}) {
+  const stdout = new RecordingWriteStream(columns, options.height ?? 10) as RecordingWriteStream & NodeJS.WriteStream
   const nativeSession =
-    options.maxBytes === undefined
+    maxBytes === undefined
       ? undefined
-      : new NativeSession(stdout, {
-          output: { chunkSize: 4096, spanCapacity: 128, maxBytes: options.maxBytes, controlCapacity: 4096 },
-        })
+      : new NativeSession(stdout, { output: { chunkSize: 4096, spanCapacity: 128, maxBytes, controlCapacity: 4096 } })
   const clock = new ManualClock()
   const result = await setup({
     width: columns,
-    height,
-    footerHeight: options.footerHeight ?? 3,
     stdout,
     nativeSession,
     bufferedOutput: "stdout",
     remote: true,
     clock,
+    ...options,
   })
   const driver = result.renderer.nativeScene.driver
   await result.renderer.setupTerminal()
@@ -88,6 +85,41 @@ const decoder = new TextDecoder()
 const lines = (count: number) => Array.from({ length: count }, (_, index) => `line ${index}`)
 
 type Terminal = Awaited<ReturnType<typeof setupTerminal>>
+// A mode round trip is an identity on the visible main screen, not on the terminal byte stream.
+// All two-write histories over a continuing row and a new row; no resize or passthrough writes.
+const historyWrites = ["a", "\n日"]
+test.each(historyWrites.flatMap((first) => historyWrites.map((second) => [first, second] as const)))(
+  "an alternate-screen round trip preserves split history after %j, %j",
+  async (first, second) => {
+    const terminal = await setupTerminal({ columns: 12, height: 8, footerHeight: 2 })
+    terminal.renderer.root.add(new TextRenderable(terminal.renderer, { content: "footer" }))
+    const view = await createTestRenderer({ width: 12, height: 8 })
+    renderers.push(view.renderer)
+    const vt = new EmbeddedTerminalRenderable(view.renderer, { cols: 12, rows: 8 })
+    view.renderer.root.add(vt)
+    const screen = async () => {
+      vt.write(terminal.stdout.bytes())
+      terminal.stdout.clear()
+      await view.renderOnce()
+      return vt.screen().text
+    }
+    for (const write of [first, second]) {
+      terminal.stdout.write(write)
+      await terminal.frame()
+    }
+    const before = await screen()
+    expect(before).toContain(second.trim())
+    expect(before).toContain("footer")
+    terminal.renderer.externalOutputMode = "passthrough"
+    terminal.renderer.screenMode = "alternate-screen"
+    await terminal.frame()
+    terminal.renderer.screenMode = "split-footer"
+    terminal.renderer.externalOutputMode = "capture-stdout"
+    await terminal.frame()
+    expect(await screen()).toBe(before)
+  },
+)
+
 const writeRow = ({ renderer }: Terminal, row: string) =>
   renderer.writeToScrollback(({ renderContext }) => ({
     root: new TextRenderable(renderContext, { content: row, width: row.length, height: 1 }),
@@ -97,12 +129,16 @@ test.each([
   ["one stdout write", (terminal: Terminal, rows: string[]) => terminal.stdout.write(rows.join("\n") + "\n")],
   ["stdout writes", (terminal: Terminal, rows: string[]) => rows.forEach((row) => terminal.stdout.write(row + "\n"))],
   ["writeToScrollback calls", (terminal: Terminal, rows: string[]) => rows.forEach((row) => writeRow(terminal, row))],
-] as const)("%s of 300 rows reach scrollback once and in order", async (_name, write) => {
+] as const)("%s of 300 rows reach scrollback once and in order", async (name, write) => {
   const terminal = await setupTerminal()
+  // A frame takes as many captured rows as one native split render does (64), but 8 writer commits.
+  const perFrame = name === "writeToScrollback calls" ? 8 : 64
   const rows = lines(300)
   write(terminal, rows)
   expect(terminal.externalOutput.take().map(({ text }) => text)).toEqual(rows)
-  await terminal.drainUntil("line 299")
+  await terminal.frame()
+  expect(terminal.printed(/line \d+/g)).toEqual(rows.slice(0, perFrame))
+  for (let frame = 1; frame < Math.ceil(300 / perFrame); frame++) await terminal.frame()
   expect(terminal.printed(/line \d+/g)).toEqual(rows)
 })
 
@@ -166,12 +202,7 @@ test("a snapshot larger than the Session output capacity throws at the call and 
 
 // Each drain ends with `last` on the terminal. A transition that changes the split footer waits for queued rows.
 const drains = {
-  frames: async (terminal: Terminal, last: string) => {
-    await terminal.frame()
-    // One frame carries at most 8 commits.
-    expect(terminal.printed(/line \d+/g)).toHaveLength(8)
-    await terminal.drainUntil(last)
-  },
+  frames: (terminal: Terminal, last: string) => terminal.drainUntil(last),
   passthrough: async (terminal: Terminal, last: string) => {
     terminal.renderer.externalOutputMode = "passthrough"
     // The switch waits for the queue, so this write is still captured behind it.
@@ -207,23 +238,23 @@ const drains = {
   },
 }
 
-// More rows than one frame or one flush batch carries (8).
+// More rows than one frame or one flush batch carries (64).
 test.each(
   (["stdout", "writer"] as const).flatMap((source) =>
     Object.keys(drains).map((drain) => [source, drain as keyof typeof drains] as const),
   ),
 )("queued %s rows reach the terminal once and in order before %s", async (source, drain) => {
   const terminal = await setupTerminal()
-  const rows = lines(12)
+  const rows = lines(70)
   if (source === "stdout") terminal.stdout.write(rows.join("\n") + "\n")
   else for (const row of rows) writeRow(terminal, row)
-  await drains[drain](terminal, "line 11")
+  await drains[drain](terminal, "line 69")
   expect(terminal.printed(/line \d+/g)).toEqual(rows)
 })
 
 // Captured stdout holds at most 64 MiB of queued rows (9,776 79-cell rows); past that its oldest unwritten rows
 // collapse into "[N lines dropped]" rows. Terminals: stalled renders frames only while a writer waits for drain;
-// draining renders 8 commits per 64 rows; suspending starts to flush a nearly full queue at row 9,600; replaying asks
+// draining renders 64 commits per 512 rows; suspending starts to flush a nearly full queue at row 9,600; replaying asks
 // for a replay reset at row 9,000; interleaved puts a writer row before every
 // 399-cell row (3,020 of them reach the bound); burst writes 8 rows, holds them in
 // a frame, and writes the rest in one call.
@@ -301,7 +332,7 @@ test.each([
       if (!written && mode === "respects")
         for (let frames = 0, wanted = drains.length + 1; drains.length < wanted && frames < 100; frames++)
           await terminal.frame()
-      else if (row % 64 === 0 && pace === "draining") await terminal.frame()
+      else if (row % 512 === 0 && pace === "draining") await terminal.frame()
       else if (row % 64 === 0 && pace === "stalled") await settle()
     }
     spy.mockRestore()
@@ -506,17 +537,41 @@ test.each<[string, string | string[], string[], TestRendererOptions?]>([
   ["counts tab stops from the row, not the write", ["a", "bc", "\tX\n"], ["a:1", "bc:2", "     X:6\n"]],
   ["stops a tab at the last column", "\t\tb\n", ["        b:9\n"]],
   ["keeps a wide character that wraps early", ["abc", "defgh一", "x\n"], ["abc:3", "defgh:6", "一:2", "x:1\n"]],
-])("captured stdout %s", async (_name, text, commits, options) => {
-  const stdout = createTestStdout(9, 10)
-  const { renderer } = await setup({ width: 9, stdout, forwardEnvKeys: [], ...options })
+])("captured stdout %s", async (_name, text, commits, ...[options]) => {
+  const { renderer, stdout, frame } = await setupTerminal({ columns: 9, forwardEnvKeys: [], ...options })
   const written: string[] = []
   renderer.on(CliRenderEvents.EXTERNAL_OUTPUT, ({ snapshot, rowColumns, trailingNewline }) => {
     expect(snapshot.width).toBe(Math.max(1, rowColumns))
     const row = decoder.decode(snapshot.getRealCharBytes(true)).trimEnd()
     written.push(`${row}:${rowColumns}${trailingNewline ? "\n" : ""}`)
   })
-  for (const write of [text].flat()) stdout.write(write)
+  // A frame after each write: writes within one frame join into one.
+  for (const write of [text].flat()) (stdout.write(write), await frame())
   expect(written).toEqual(commits)
+})
+
+// Writes within one frame print what their bytes print in one write, wherever they are cut: inside a UTF-8 sequence,
+// an escape sequence, or a grapheme. A cut inside CRLF is left out (a terminal ends the line; captured stdout does not).
+test("captured stdout in one frame prints the same bytes however they are cut into writes", async () => {
+  const pieces = ["ab", "x".repeat(7), "e", "\u0301", "\u2764", "\ufe0f", "\u{1f468}", "\u200d", "\u{1f4bb}"]
+  pieces.push("\u{1f44d}", "\u{1f3fd}", "\u4e00", "\t", "\r\n", "\n", "\x1b[31m")
+  for (let seed = 1; seed <= 24; seed++) {
+    let state = seed
+    const random = (n: number) => Math.floor(((state = (state * 48271) % 2147483647) / 2147483647) * n)
+    const bytes = Buffer.from(Array.from({ length: 16 }, () => pieces[random(pieces.length)]).join(""))
+    const cuts = Array.from({ length: 1 + random(5) }, () => 1 + random(bytes.length - 1))
+    const printed: string[] = []
+    for (const at of [[], cuts.filter((at) => bytes[at - 1] !== 13).sort((a, b) => a - b)]) {
+      const { renderer, stdout, frame } = await setupTerminal({ columns: 9 })
+      ;[0, ...at].forEach((start, index) => stdout.write(bytes.subarray(start, at[index] ?? bytes.length)))
+      let before
+      do ((before = stdout.text()), await frame())
+      while (before !== stdout.text())
+      printed.push(stdout.text())
+      renderer.destroy()
+    }
+    expect(printed[1], JSON.stringify([bytes.toString(), cuts])).toBe(printed[0]!)
+  }
 })
 
 // Without a newline every row continues the one before it, so the rows a collapse drops move the tail. The first
@@ -554,18 +609,64 @@ test("a collapse drops whole terminal rows, counts them, and predicts the tail t
   expect(created.filter((buffer) => !(buffer as unknown as { _destroyed: boolean })._destroyed)).toEqual([])
 }, 30_000)
 
-// After the frame the published tail is 4; the queued newline resets it.
+// After the frame the published tail is 4; the queued newline resets it. A listener's write ends the row at 6.
 test("the predicted tail column counts every cell of a trailing wide character", async () => {
   const { renderer, stdout, frame } = await setupTerminal()
+  renderer.once(CliRenderEvents.EXTERNAL_OUTPUT, () =>
+    renderer.root.add(new TextRenderable(renderer, { content: "NEW" })),
+  )
   stdout.write("ab二")
   await frame()
+  // The frame prints the unfinished row and what its listener changed, and needs no other.
+  const printed = ["ab二", "NEW"].map((text) => stdout.text().includes(text))
+  expect([...printed, renderer.getSchedulerState().hasScheduledRender]).toEqual([true, true, false])
   stdout.write("\nab二")
+  renderer.once(CliRenderEvents.EXTERNAL_OUTPUT, () => stdout.write("cd"))
   let tailColumn = -1
   renderer.writeToScrollback(({ renderContext, tailColumn: tail }) => {
     tailColumn = tail
     return { root: new TextRenderable(renderContext, { content: "x", width: 1, height: 1 }) }
   })
-  expect(tailColumn).toBe(4)
+  expect(tailColumn).toBe(6)
+})
+
+// A held row is at most 8 code units a cell (72 at 9 columns); a longer one goes to the queue at once.
+test("captured stdout holds no more than 8 code units a cell", async () => {
+  const { renderer, stdout } = await setupTerminal({ columns: 9 })
+  const cells: number[] = []
+  renderer.on(CliRenderEvents.EXTERNAL_OUTPUT, ({ rowColumns }) => cells.push(rowColumns))
+  stdout.write("e" + "\u0301".repeat(71))
+  expect(cells).toEqual([])
+  stdout.write("\u0301")
+  expect(cells).toEqual([1])
+})
+
+// A resize waits for an unfinished stdout row as it waits for queued rows.
+test("a resize waits for an unfinished captured stdout row", async () => {
+  const { renderer, stdout, drainUntil } = await setupTerminal()
+  stdout.write("held")
+  renderer.resize(30, 12)
+  expect(renderer.width).toBe(40)
+  await drainUntil("held")
+})
+
+// A post-process hook runs after paint; the row it writes still goes out with its frame.
+test("captured stdout written by a post-process hook reaches that frame", async () => {
+  const { renderer, stdout, frame } = await setupTerminal()
+  const hook = () => (renderer.removePostProcessFn(hook), stdout.write("ready"))
+  renderer.addPostProcessFn(hook)
+  await frame()
+  expect(stdout.text()).toContain("ready")
+})
+
+// A write after a frame has presented waits for the next frame, which a later mark can still join.
+test("captured stdout written as a frame ends joins a combining mark before the next frame", async () => {
+  const { renderer, stdout, frame } = await setupTerminal()
+  renderer.once(CliRenderEvents.FRAME, () => stdout.write("xe"))
+  await frame()
+  stdout.write("\u0301y\n")
+  await frame()
+  expect(stdout.text()).toContain("xe\u0301y")
 })
 
 test("captured stdout that fails mid-write queues and leaks none of its rows", async () => {

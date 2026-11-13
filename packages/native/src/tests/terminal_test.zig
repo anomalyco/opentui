@@ -677,13 +677,14 @@ test "remote detection - explicit local mode ignores SSH environment" {
     try testing.expect(!term.caps.remote);
 }
 
-test "processCapabilityResponse captures startup cursor report before home probes" {
+test "processCapabilityResponse captures startup cursor report before the width probes" {
     var term = Terminal.init(.{});
     var writer = TestWriter.init(testing.allocator);
     defer writer.deinit();
     try term.queryTerminalSend(&writer);
+    try term.queryExplicitWidth(&writer);
 
-    term.processCapabilityResponse("\x1b[7;11R\x1b[1;2R\x1b[1;3R");
+    term.processCapabilityResponse("\x1b[7;11R\x1b[2;2R\x1b[2;3R");
 
     const cursor = term.getCursorPosition();
     try testing.expectEqual(@as(u32, 11), cursor.x);
@@ -697,12 +698,12 @@ test "processCapabilityResponse captures startup cursor report before home probe
 test "a DA1 reply ends startup cursor reports in sentinel mode and reports Sixel only for a graphics query" {
     // Rows: sentinel, multiplexer variable, replies (one capability response each), explicit width, Sixel.
     const rows = .{
-        .{ false, "", .{ "\x1b[?62;4c", "\x1b[7;11R", "\x1b[1;2R", "\x1b[1;3R" }, true, true },
-        .{ true, "", .{ "\x1b[7;11R", "\x1b[1;2R", "\x1b[1;3R", "\x1b[?62;4c" }, true, true },
-        .{ true, "", .{ "\x1b[7;11R\x1b[1;2R\x1b[1;3R\x1b[?62;4c", "", "", "" }, true, true },
-        .{ true, "", .{ "\x1b[7;11R", "\x1b[?62;4c", "\x1b[1;2R", "\x1b[1;3R" }, false, true },
-        .{ true, "TMUX", .{ "\x1b[7;11R", "\x1b[1;2R", "\x1b[1;3R", "\x1b[?62;4c" }, true, false },
-        .{ true, "STY", .{ "\x1b[7;11R", "\x1b[1;2R", "\x1b[1;3R", "\x1b[?62;4c" }, true, false },
+        .{ false, "", .{ "\x1b[?62;4c", "\x1b[7;11R", "\x1b[2;2R", "\x1b[2;3R" }, true, true },
+        .{ true, "", .{ "\x1b[7;11R", "\x1b[2;2R", "\x1b[2;3R", "\x1b[?62;4c" }, true, true },
+        .{ true, "", .{ "\x1b[7;11R\x1b[2;2R\x1b[2;3R\x1b[?62;4c", "", "", "" }, true, true },
+        .{ true, "", .{ "\x1b[7;11R", "\x1b[?62;4c", "\x1b[2;2R", "\x1b[2;3R" }, false, true },
+        .{ true, "TMUX", .{ "\x1b[7;11R", "\x1b[2;2R", "\x1b[2;3R", "\x1b[?62;4c" }, true, false },
+        .{ true, "STY", .{ "\x1b[7;11R", "\x1b[2;2R", "\x1b[2;3R", "\x1b[?62;4c" }, true, false },
     };
     inline for (rows) |row| {
         var env = std.process.Environ.Map.init(testing.allocator);
@@ -713,6 +714,7 @@ test "a DA1 reply ends startup cursor reports in sentinel mode and reports Sixel
         var writer = TestWriter.init(testing.allocator);
         defer writer.deinit();
         try term.queryTerminalSend(&writer);
+        try term.queryExplicitWidth(&writer);
         inline for (row[2]) |reply| term.processCapabilityResponse(reply);
         try testing.expectEqual(row[3], term.caps.explicit_width);
         try testing.expectEqual(row[4], term.caps.sixel);
@@ -729,22 +731,29 @@ test "processCapabilityResponse only accepts exact ordered explicit width probe 
     var startup_writer = TestWriter.init(testing.allocator);
     defer startup_writer.deinit();
     try startup_on_row_one.queryTerminalSend(&startup_writer);
+    try startup_on_row_one.queryExplicitWidth(&startup_writer);
     startup_on_row_one.processCapabilityResponse("\x1b[1;5R");
-    startup_on_row_one.processCapabilityResponse("\x1b[1;2R");
-    startup_on_row_one.processCapabilityResponse("\x1b[1;3R");
+    startup_on_row_one.processCapabilityResponse("\x1b[2;2R");
+    startup_on_row_one.processCapabilityResponse("\x1b[2;3R");
     const cursor = startup_on_row_one.getCursorPosition();
     try testing.expectEqual(@as(u32, 5), cursor.x);
     try testing.expectEqual(@as(u32, 1), cursor.y);
     try testing.expect(startup_on_row_one.caps.explicit_width);
     try testing.expect(startup_on_row_one.caps.scaled_text);
 
-    var echoed = Terminal.init(.{});
-    var echoed_writer = TestWriter.init(testing.allocator);
-    defer echoed_writer.deinit();
-    try echoed.queryTerminalSend(&echoed_writer);
-    echoed.processCapabilityResponse("\x1b[7;11R\x1b[1;12R\x1b[1;8R");
-    try testing.expect(!echoed.caps.explicit_width);
-    try testing.expect(!echoed.caps.scaled_text);
+    // The probes run on row 2: the wrong columns there (#1383), or the right ones on row 1, where Shift+F3 and
+    // Alt+F3 send the same bytes, are no answer. Nor is a repeated startup report at (2,2) before a terminal that
+    // ignores OSC 66 answers column 1 twice: only a pair of replies that both moved counts.
+    for ([_][]const u8{ "\x1b[7;11R\x1b[2;12R\x1b[2;8R", "\x1b[7;11R\x1b[1;2R\x1b[1;3R", "\x1b[2;2R\x1b[2;2R\x1b[2;1R\x1b[2;1R" }) |replies| {
+        var echoed = Terminal.init(.{});
+        var echoed_writer = TestWriter.init(testing.allocator);
+        defer echoed_writer.deinit();
+        try echoed.queryTerminalSend(&echoed_writer);
+        try echoed.queryExplicitWidth(&echoed_writer);
+        echoed.processCapabilityResponse(replies);
+        try testing.expect(!echoed.caps.explicit_width);
+        try testing.expect(!echoed.caps.scaled_text);
+    }
 }
 
 test "environment variables - should be overridden by xtversion" {
@@ -1148,14 +1157,14 @@ test "queryTerminalSend - keeps response-generating queries inside tmux" {
 
     // tmux's graphics replies describe tmux, not the passthrough endpoint.
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.kittyGraphicsQuery) == null);
-    try testing.expect(std.mem.find(u8, output, ansi.ANSI.primaryDeviceAttrs) == null);
 }
 
-test "queryTerminalSend - sentinel mode moves its one DA1 to the end of the packet" {
-    for ([_]bool{ false, true }) |tmux| {
+test "queryTerminalSend - one DA1 follows DECRQM 2026, and sentinel mode leaves it to the end of the setup" {
+    // Without a graphics query too: the DA1 reply settles the 2026 decision when no width probe runs.
+    for ([_][]const u8{ "", "TMUX=/tmp/tmux-1000/default,12345,0", "STY=1234.session", "OPENTUI_GRAPHICS=0" }) |vars| {
         var env = std.process.Environ.Map.init(testing.allocator);
         defer env.deinit();
-        if (tmux) try env.put("TMUX", "/tmp/tmux-1000/default,12345,0");
+        try putEnv(&env, vars);
         var clock = TestWriter.init(testing.allocator);
         defer clock.deinit();
         var sentinel = TestWriter.init(testing.allocator);
@@ -1167,13 +1176,11 @@ test "queryTerminalSend - sentinel mode moves its one DA1 to the end of the pack
         try sentinel_term.queryTerminalSend(&sentinel);
 
         const da1 = ansi.ANSI.primaryDeviceAttrs;
-        try testing.expectEqual(@as(usize, @intFromBool(!tmux)), std.mem.count(u8, clock.getWritten(), da1));
-        try testing.expectEqual(@as(usize, 1), std.mem.count(u8, sentinel.getWritten(), da1));
+        try testing.expectEqual(@as(usize, 1), std.mem.count(u8, clock.getWritten(), da1));
+        try testing.expect(std.mem.find(u8, clock.getWritten(), da1).? > std.mem.find(u8, clock.getWritten(), ansi.ANSI.decrqmSync).?);
         const moved = try std.mem.replaceOwned(u8, testing.allocator, clock.getWritten(), da1, "");
         defer testing.allocator.free(moved);
-        const expected = try std.mem.concat(testing.allocator, u8, &.{ moved, da1 });
-        defer testing.allocator.free(expected);
-        try testing.expectEqualStrings(expected, sentinel.getWritten());
+        try testing.expectEqualStrings(moved, sentinel.getWritten());
     }
 }
 
@@ -1451,7 +1458,6 @@ test "queryTerminalSend - asks for 24-bit color only when the environment does n
         try testing.expect(std.mem.find(u8, output, ansi.ANSI.xtversion) != null and std.mem.find(u8, output, ansi.ANSI.capabilityQueriesBase) != null);
         try testing.expectEqual(row.asks, std.mem.find(u8, output, "\x1bP+q524742\x1b\\") != null);
         try testing.expectEqual(row.asks, std.mem.find(u8, output, "\x1bP+q5463\x1b\\") != null);
-        if (sentinel) try testing.expect(std.mem.endsWith(u8, output, ansi.ANSI.primaryDeviceAttrs));
         try term.enableDetectedFeatures(&writer, false);
         try testing.expectEqual(row.rgb, term.caps.rgb);
         try testing.expectEqual(row.rgb or !row.ms or std.mem.find(u8, row.env, "256color") != null, term.caps.ansi256);
@@ -1910,85 +1916,53 @@ fn forwardScreenDcs(input: []const u8, output: []u8) ![]const u8 {
     return output[0..output_offset];
 }
 
-test "queryTerminalSend - force-off rejects unrelated row-1 cursor reports" {
+test "queryExplicitWidth - OPENTUI_FORCE_EXPLICIT_WIDTH skips the probes or sets the capability" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
 
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("OPENTUI_FORCE_EXPLICIT_WIDTH", "0");
-
-    var term = Terminal.init(.{ .env_map = &env });
-
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-
-    try term.queryTerminalSend(&writer);
-
-    const output = writer.getWritten();
-
-    // Should not contain OSC 66 queries
-    try testing.expect(std.mem.find(u8, output, "\x1b]66;") == null);
-
-    // Should still contain other queries
-    try testing.expect(std.mem.find(u8, output, "\x1b[>0q") != null); // xtversion
-
-    // Verify the flag was set correctly
-    try testing.expect(term.skip_explicit_width_query);
-    try testing.expect(!term.caps.explicit_width);
-
-    term.processCapabilityResponse("\x1b[1;2R");
-    try testing.expect(!term.caps.explicit_width);
-    try testing.expect(!term.caps.scaled_text);
+    // Rows: environment value ("" unset), probes sent, explicit width before any reply.
+    const rows = .{ .{ "", true, false }, .{ "true", true, true }, .{ "0", false, false } };
+    inline for (rows) |row| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        if (row[0].len != 0) try env.put("OPENTUI_FORCE_EXPLICIT_WIDTH", row[0]);
+        var term = Terminal.init(.{ .env_map = &env });
+        var writer = TestWriter.init(testing.allocator);
+        defer writer.deinit();
+        try term.queryTerminalSend(&writer);
+        try term.queryExplicitWidth(&writer);
+        const output = writer.getWritten();
+        try testing.expectEqual(row[1], std.mem.find(u8, output, ansi.ANSI.explicitWidthQuery) != null);
+        try testing.expectEqual(row[1], std.mem.find(u8, output, ansi.ANSI.scaledTextQuery) != null);
+        try testing.expect(std.mem.find(u8, output, ansi.ANSI.xtversion) != null);
+        try testing.expectEqual(row[2], term.caps.explicit_width);
+        // foot's replies (it draws `w` only); without probes they are not evidence.
+        term.processCapabilityResponse("\x1b[7;11R\x1b[2;2R\x1b[2;2R");
+        try testing.expectEqual(row[1] or row[2], term.caps.explicit_width);
+        try testing.expect(!term.caps.scaled_text);
+    }
 }
 
-test "queryTerminalSend - sends OSC 66 queries by default" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-
-    var term = Terminal.init(.{ .env_map = &env });
-
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-
-    try term.queryTerminalSend(&writer);
-
-    const output = writer.getWritten();
-
-    // Should contain OSC 66 explicit width query
-    try testing.expect(std.mem.find(u8, output, "\x1b]66;w=1; \x1b\\") != null);
-
-    // Should contain OSC 66 scaled text query
-    try testing.expect(std.mem.find(u8, output, "\x1b]66;s=2; \x1b\\") != null);
-
-    // Verify the flag was not set
-    try testing.expect(!term.skip_explicit_width_query);
-}
-
-test "queryTerminalSend - sends OSC 66 queries when OPENTUI_FORCE_EXPLICIT_WIDTH=true" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("OPENTUI_FORCE_EXPLICIT_WIDTH", "true");
-
-    var term = Terminal.init(.{ .env_map = &env });
-
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-
-    try term.queryTerminalSend(&writer);
-
-    const output = writer.getWritten();
-
-    // Should contain OSC 66 queries
-    try testing.expect(std.mem.find(u8, output, "\x1b]66;w=1; \x1b\\") != null);
-    try testing.expect(std.mem.find(u8, output, "\x1b]66;s=2; \x1b\\") != null);
-
-    // Verify the capability was forced on
-    try testing.expect(term.caps.explicit_width);
-    try testing.expect(!term.skip_explicit_width_query);
+test "XTVERSION kitty 0.40 and foot 1.21 or later report text sizing without a probe" {
+    // Rows: XTVERSION reply, OPENTUI_FORCE_EXPLICIT_WIDTH ("" unset), explicit width, scaled text (foot: width only).
+    const rows = .{
+        .{ "kitty(0.49.2)", "", true, true },   .{ "kitty(0.40.0)", "", true, true },  .{ "kitty(0.39.1)", "", false, false },
+        .{ "kitty(1.0.0)", "", true, true },    .{ "kitty(0.9.0)", "", false, false }, .{ "kitty(0.49.2)", "0", false, false },
+        .{ "foot(1.28.0)", "", true, false },   .{ "foot(1.21.0)", "", true, false },  .{ "foot(1.20.2)", "", false, false },
+        .{ "foot(1.28.0)", "0", false, false }, .{ "tmux 3.5a", "", false, false },
+    };
+    inline for (rows) |row| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        if (row[1].len != 0) try env.put("OPENTUI_FORCE_EXPLICIT_WIDTH", row[1]);
+        var term = Terminal.init(.{ .env_map = &env });
+        var writer = TestWriter.init(testing.allocator);
+        defer writer.deinit();
+        try term.queryTerminalSend(&writer);
+        term.processCapabilityResponse("\x1bP>|" ++ row[0] ++ "\x1b\\");
+        errdefer std.debug.print("XTVERSION {s}\n", .{row[0]});
+        try testing.expectEqual(row[2], term.caps.explicit_width);
+        try testing.expectEqual(row[3], term.caps.scaled_text);
+    }
 }
 
 test "enableDetectedFeatures - sends initial theme queries" {
@@ -2094,8 +2068,8 @@ test "width method follows the environment, then the DECRPM 2027 reply and XTVER
         .{ tmux38 ++ .{.{ "ZELLIJ", "0" }}, .{"\x1bP>|tmux 3.8\x1b\\"}, .unicode },
         .{ .{ .{ "TERM", "xterm-256color" }, .{ "XTERM_VERSION", "XTerm(411)" }, .{ "KONSOLE_VERSION", "250400" } }, .{}, .unicode },
         // Explicit widths (the probe moved the cursor to column 2) need no mode 2027.
-        .{ .{}, .{ "\x1b[?2027;2$y", "\x1b[1;1R\x1b[1;2R\x1b[1;3R" }, .unicode },
-        .{ .{}, .{ "\x1b[?2027;1$y", "\x1b[1;1R\x1b[1;2R\x1b[1;3R" }, .unicode },
+        .{ .{}, .{ "\x1b[?2027;2$y", "\x1b[1;1R\x1b[2;2R\x1b[2;3R" }, .unicode },
+        .{ .{}, .{ "\x1b[?2027;1$y", "\x1b[1;1R\x1b[2;2R\x1b[2;3R" }, .unicode },
     };
     inline for (rows, 0..) |row, index| {
         var env = std.process.Environ.Map.init(testing.allocator);
@@ -2107,6 +2081,7 @@ test "width method follows the environment, then the DECRPM 2027 reply and XTVER
         defer writer.deinit();
         // Session enables features before the replies arrive, and again after each reply.
         try term.queryTerminalSend(&writer);
+        try term.queryExplicitWidth(&writer);
         try term.enableDetectedFeatures(&writer, false);
         inline for (row[1]) |reply| {
             term.processCapabilityResponse(reply);

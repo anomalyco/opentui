@@ -1197,7 +1197,7 @@ Normal paragraph with [link](https://example.com).`
 
       const testStyle = SyntaxStyle.fromStyles(
         {
-          default: { fg: RGBA.fromInts(255, 255, 255, 255) },
+          default: { fg: RGBA.fromInts(255, 255, 255, 255), strikethrough: true },
           keyword: { fg: RGBA.fromInts(255, 100, 100, 255), bold: true },
           string: { fg: RGBA.fromInts(100, 255, 100, 255) },
           number: { fg: RGBA.fromInts(100, 100, 255, 255) },
@@ -1217,6 +1217,7 @@ Normal paragraph with [link](https://example.com).`
       expect(chunks[0].attributes).toBe(createTextAttributes({ bold: true }))
 
       expect(chunks[1].text).toBe(" ")
+      expect(chunks[1].attributes).toBe(createTextAttributes({ strikethrough: true }))
 
       expect(chunks[2].text).toBe("'str'")
       expect(chunks[2].fg?.g).toBeCloseTo(1.0, 2) // 255 / 255
@@ -1288,7 +1289,7 @@ Normal paragraph with [link](https://example.com).`
       const testStyle = SyntaxStyle.fromStyles(
         {
           default: { fg: RGBA.fromInts(255, 255, 255, 255) },
-          parent: { bold: true, italic: true, underline: true },
+          parent: { bold: true, italic: true, underline: true, strikethrough: true },
           "parent.child": { bold: false, fg: RGBA.fromInts(200, 200, 200, 255) }, // Override bold, set color
         },
         resourceContext,
@@ -1305,7 +1306,7 @@ Normal paragraph with [link](https://example.com).`
 
       expect(chunk.fg?.r).toBeCloseTo(200 / 255, 2)
 
-      const expectedAttributes = createTextAttributes({ bold: false, italic: true, underline: true })
+      const expectedAttributes = createTextAttributes({ italic: true, underline: true, strikethrough: true })
       expect(chunk.attributes).toBe(expectedAttributes)
     })
   })

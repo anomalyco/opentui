@@ -4,7 +4,7 @@ use super::native::SplitSnapshot;
 use crate::app::{App, AppOptions};
 use crate::error::{Error, Result};
 use crate::layout::{Edge, FlexDirection};
-use crate::native::{Buffer, Draft, Remote, Session, SessionOptions};
+use crate::native::{Buffer, Draft, Remote, Session, SessionOptions, WidthMethod};
 use crate::style::Color;
 use crate::theme::Theme;
 use crate::widget::{Container, View, Widget};
@@ -108,7 +108,6 @@ impl Scrollback {
             scrollback: self.clone(),
             holder,
             rendered: RefCell::new(None),
-            width: Cell::new(width),
             next_start_on_new_line: Cell::new(start_on_new_line),
         })
     }
@@ -133,8 +132,8 @@ impl Scrollback {
     }
 
     /// Paints `holder` at `width` until its height settles, starting from `rows`, or at a fixed `height`, and copies
-    /// it into a new buffer.
-    fn render(&self, holder: &View, width: u32, height: Option<u32>, rows: u32) -> Result<(Buffer, u32)> {
+    /// it into a new buffer made with the width method it was painted with.
+    fn render(&self, holder: &View, width: u32, height: Option<u32>, rows: u32) -> Result<(Buffer, WidthMethod)> {
         let inner = &self.0;
         inner.session.sync_detached(&inner.parent)?;
         // Read before painting: the draft keeps the Session busy until it is dropped.
@@ -154,27 +153,26 @@ impl Scrollback {
         };
         let buffer = Buffer::new(inner.parent.context(), width, rows, width_method)?;
         draft.copy_to(&buffer)?;
-        Ok((buffer, rows))
+        Ok((buffer, width_method))
     }
 }
 
 /// Content rendered offscreen whose rows are committed to the scrollback in parts, as Core's `ScrollbackSurface`.
 ///
 /// Add widgets to [`Self::root`], [`render`](Self::render), then [`commit_rows`](Self::commit_rows) the rows that
-/// are final. Render again after the content or the terminal width changes; rows can only be committed from the
-/// latest render. Dropping the surface removes its widgets.
+/// are final. Render again after the content, the terminal width, or its width method changes; rows can only be
+/// committed from the latest render. Dropping the surface removes its widgets.
 pub struct ScrollbackSurface {
     scrollback: Scrollback,
     holder: View,
-    /// The latest render's cells and the renderer width it was made at.
-    rendered: RefCell<Option<(Buffer, u32)>>,
-    width: Cell<u32>,
+    /// The latest render's cells and the renderer width and width method it was made at.
+    rendered: RefCell<Option<(Buffer, u32, WidthMethod)>>,
     next_start_on_new_line: Cell<bool>,
 }
 
 impl std::fmt::Debug for ScrollbackSurface {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("ScrollbackSurface").field("width", &self.width.get()).finish_non_exhaustive()
+        formatter.debug_struct("ScrollbackSurface").field("height", &self.height()).finish_non_exhaustive()
     }
 }
 
@@ -193,24 +191,23 @@ impl ScrollbackSurface {
     /// Renders the content at the renderer's current width.
     pub fn render(&self) -> Result<()> {
         let width = self.scrollback.width(None)?;
-        self.width.set(width);
         self.holder.width(width).visible(true);
-        let height = self.rendered.borrow().as_ref().map_or(1, |(buffer, _)| buffer.size().1);
         // Start from the last height, as Core does; measuring then settles on the content's.
-        let result = self.scrollback.render(&self.holder, width, None, height);
+        let result = self.scrollback.render(&self.holder, width, None, self.height().max(1));
         self.holder.visible(false);
-        let (buffer, _) = result?;
-        *self.rendered.borrow_mut() = Some((buffer, width));
+        let (buffer, width_method) = result?;
+        *self.rendered.borrow_mut() = Some((buffer, width, width_method));
         Ok(())
     }
 
     /// Rows of the latest render.
     pub fn height(&self) -> u32 {
-        self.rendered.borrow().as_ref().map_or(0, |(buffer, _)| buffer.size().1)
+        self.rendered.borrow().as_ref().map_or(0, |(buffer, ..)| buffer.size().1)
     }
 
     /// Copies rows `start..end` of the latest render into a snapshot. The first commit starts on a new line when the
-    /// surface was made so; later ones continue. Fails without a render at the current width, or for rows outside it.
+    /// surface was made so; later ones continue. Fails without a render at the current width and width method, as
+    /// Core's `commitRows`, or for rows outside it.
     pub fn commit_rows(
         &self,
         start: u32,
@@ -219,11 +216,12 @@ impl ScrollbackSurface {
         trailing_newline: bool,
     ) -> Result<Option<SplitSnapshot>> {
         let rendered = self.rendered.borrow();
-        let Some((source, width)) = rendered.as_ref() else {
+        let Some(&(ref source, width, width_method)) = rendered.as_ref() else {
             return Err(Error::Usage("ScrollbackSurface::commit_rows needs a render first"));
         };
-        if *width != self.scrollback.width(None)? {
-            return Err(Error::Usage("ScrollbackSurface::commit_rows needs a render after the width changed"));
+        // A copy keeps the cells' old widths, which the terminal no longer draws.
+        if (width, width_method) != (self.scrollback.width(None)?, self.scrollback.0.app.width_method()) {
+            return Err(Error::Usage("ScrollbackSurface::commit_rows needs a render after the geometry changed"));
         }
         if start > end || end > source.size().1 {
             return Err(Error::Usage("ScrollbackSurface::commit_rows rows are outside the render"));
@@ -232,12 +230,12 @@ impl ScrollbackSurface {
             return Ok(None);
         }
         let parent = &self.scrollback.0.parent;
-        let buffer = Buffer::new(parent.context(), *width, end - start, self.scrollback.0.app.width_method())?;
+        let buffer = Buffer::new(parent.context(), width, end - start, width_method)?;
         buffer.compose(source, 0, -(start as i32))?;
         let start_on_new_line = self.next_start_on_new_line.replace(false);
         Ok(Some(SplitSnapshot {
             buffer,
-            row_columns: row_columns.unwrap_or(*width).min(*width),
+            row_columns: row_columns.unwrap_or(width).min(width),
             start_on_new_line,
             trailing_newline,
         }))

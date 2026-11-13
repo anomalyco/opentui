@@ -250,7 +250,6 @@ impl Drop for XServer {
 }
 
 /// A released terminal is the program's to read in cooked mode, and the app draws again afterwards.
-#[cfg(unix)]
 #[test]
 fn releasing_hands_the_terminal_over_and_takes_it_back() {
     let run = Run::fixture(&["--app"]);
@@ -259,20 +258,28 @@ fn releasing_hands_the_terminal_over_and_takes_it_back() {
     run.press("\x1b[4;480;800t");
     // As in Core, the release ends the batch it came in: the q after it never quits.
     run.press("rq");
-    run.wait_for("lifecycle released");
+    run.wait_for("lifecycle released 1");
     let text = run.text();
-    let released = text.find("lifecycle released").unwrap();
+    let released = text.find("lifecycle released 1").unwrap();
     assert!(text[..released].contains(LEAVE_ALT), "the alternate screen is still active: {text:?}");
-    // Taking it back after a resize, the app asks for the pixel size again.
+    // The program's terminal echoes what it reads.
+    run.press("hello");
+    run.wait_for("hello");
+    // Taking it back after a resize, the app draws at the new size and asks for the pixel size, which ConPTY may not
+    // pass on.
     run.pty.resize(100, 30).unwrap();
-    run.press("hello\r");
+    run.press("\r");
     run.wait_for("lifecycle read hello");
     let read = run.text().find("lifecycle read hello").unwrap();
-    let taken = || ["\x1b[14t", ENTER_ALT].iter().all(|text| run.text()[read..].contains(text));
+    let wanted: &[&str] =
+        if cfg!(windows) { &[ENTER_ALT, "size 100x30"] } else { &[ENTER_ALT, "size 100x30", "\x1b[14t"] };
+    let taken = || wanted.iter().all(|text| run.text()[read..].contains(text));
     let seen = run.app.wait_until(Duration::from_secs(10), taken);
     assert!(seen, "the app never took the terminal back: {:?}", run.text());
+    // The task prints its line after the hand-over drops pending input, so keys typed once it shows reach the program.
     let released = |count| {
-        run.app.wait_until(Duration::from_secs(10), || run.text().matches("lifecycle released").count() == count)
+        let line = format!("lifecycle released {count}");
+        run.app.wait_until(Duration::from_secs(10), || run.text().contains(&line))
     };
     run.press("r");
     assert!(released(2), "{:?}", run.text());
@@ -292,7 +299,8 @@ fn console_modes_are_restored() {
     let fixture = fixture();
     assert!(!fixture.to_string_lossy().contains(' '), "the script below does not quote {}", fixture.display());
     for arguments in MODES {
-        for key in ["q", "e", "p"] {
+        // With --app, P panics in a task that changed the modes while the app had released the console.
+        for key in ["q", "e", "p", "P"].into_iter().filter(|key| *key != "P" || !arguments.is_empty()) {
             let script = format!("{0} --modes & {0} {1} & {0} --modes", fixture.display(), arguments.join(" "));
             let mut command = Command::new("cmd.exe");
             command.args(["/d", "/s", "/c", &script]);

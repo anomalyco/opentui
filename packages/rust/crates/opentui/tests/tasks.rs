@@ -59,6 +59,41 @@ fn ambient_multi_thread_runtimes_are_reused() {
 }
 
 #[test]
+fn abort_between_posting_a_result_and_the_ui_turn_drops_only_that_task() {
+    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).build().unwrap();
+    let _guard = runtime.enter();
+    for cancel in [None, Some(0), Some(1)] {
+        let app = TestApp::new(4, 1);
+        let results = Rc::new(RefCell::new(Vec::new()));
+        let mut tasks = Vec::new();
+        for id in [0, 1] {
+            let results = Rc::clone(&results);
+            let (tx, rx) = std::sync::mpsc::channel();
+            tasks.push(app.spawn(
+                async move {
+                    // This task returns in the same poll. On this single worker the marker cannot run
+                    // until spawn's wrapper has posted the output; the UI hasn't had a turn yet.
+                    tokio::spawn(async move {
+                        let _ = tx.send(());
+                    });
+                    id + 10
+                },
+                move |_, value| results.borrow_mut().push((id, value)),
+            ));
+            rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        if let Some(id) = cancel {
+            tasks[id].abort();
+        }
+        assert!(results.borrow().is_empty());
+        app.advance(Duration::ZERO);
+        app.advance(Duration::ZERO);
+        let expected: Vec<_> = (0..2).filter(|&id| Some(id) != cancel).map(|id| (id, id + 10)).collect();
+        assert_eq!(*results.borrow(), expected);
+    }
+}
+
+#[test]
 fn current_thread_runtimes_are_not_used() {
     // App::run would block the runtime's only thread, so tasks could never run there.
     let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();

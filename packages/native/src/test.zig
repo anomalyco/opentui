@@ -1,6 +1,7 @@
 // Import all test modules
 const text_buffer_tests = @import("tests/text-buffer_test.zig");
 const text_buffer_highlights_tests = @import("tests/text-buffer-highlights_test.zig");
+const highlight_layers_tests = @import("tests/highlight-layers_test.zig");
 const text_work_tests = @import("tests/text-work_test.zig");
 const text_buffer_view_tests = @import("tests/text-buffer-view_test.zig");
 const text_corpus_tests = @import("tests/text-corpus_test.zig");
@@ -70,6 +71,9 @@ const embedded_terminal_tests = @import("embedded-terminal/tests.zig");
 const image_tests = @import("tests/image_test.zig");
 const terminal_image_tests = @import("tests/terminal-image_test.zig");
 const kitty_transport_tests = @import("tests/kitty-transport_test.zig");
+const markdown_tests = @import("tests/markdown_test.zig");
+const markdown_abi_tests = @import("tests/markdown_abi_test.zig");
+const markdown_engine_tests = @import("markdown.zig");
 const lib_tests = @import("lib.zig");
 const clipboard_tests = @import("clipboard/host.zig");
 // Otherwise reached only through lib.zig's comptime export_symbols() or another
@@ -96,6 +100,7 @@ const session_split_tests = @import("tests/session-split_test.zig");
 comptime {
     _ = text_buffer_tests;
     _ = text_buffer_highlights_tests;
+    _ = highlight_layers_tests;
     _ = text_work_tests;
     _ = text_buffer_view_tests;
     _ = text_corpus_tests;
@@ -165,6 +170,9 @@ comptime {
     _ = image_tests;
     _ = terminal_image_tests;
     _ = kitty_transport_tests;
+    _ = markdown_tests;
+    _ = markdown_abi_tests;
+    _ = markdown_engine_tests;
     _ = lib_tests;
     _ = clipboard_tests;
     _ = context_abi_tests;

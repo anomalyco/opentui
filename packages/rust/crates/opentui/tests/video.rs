@@ -44,15 +44,15 @@ fn video(app: &TestApp) -> (VideoView, Rc<RefCell<Vec<VideoEvent>>>) {
     (video, events)
 }
 
-/// Lets real time pass and ticks the app's clock, as a running app does, until `done` holds.
+/// Paints and lets real time pass, as a running app does, until `done` holds; the first paint follows play() at once.
 fn play_until(app: &TestApp, mut done: impl FnMut() -> bool) {
     for _ in 0..500 {
         if done() {
             return;
         }
-        std::thread::sleep(Duration::from_millis(5));
         app.advance(Duration::from_millis(10));
         app.render();
+        std::thread::sleep(Duration::from_millis(5));
     }
     panic!("playback did not get there in time");
 }

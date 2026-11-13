@@ -192,12 +192,17 @@ test("late Ghostty capability detection emits OSC 8 for compact Markdown links",
 })
 
 // OSC 8 carries a target as is, so a control character in it could end the sequence and run another one, here an
-// OSC 52 clipboard write. Such a target gets no hyperlink and its text still draws (Markdown shows the URL, as for
-// other targets native code rejects); UTF-8 targets keep theirs.
+// OSC 52 clipboard write. Such a target gets no hyperlink and its text still draws (a Markdown destination with a
+// control character is no link at all, as CommonMark says, so its source shows); UTF-8 targets keep theirs.
 const injected = "https://example.com/a\x1b]52;c;cHduZWQ=\x07"
 const [euro, city] = ["https://example.com/€", "https://pl.wikipedia.org/wiki/Łódź"]
 for (const [name, markdown, shown, kept] of [
-  ["Markdown link", `[docs](${injected}) [euro](${euro}) [city](${city})`, "docs (https://example.com/a", [euro, city]],
+  [
+    "Markdown link",
+    `[docs](${injected}) [euro](${euro}) [city](${city})`,
+    "[docs](https://example.com/a",
+    [euro, city],
+  ],
   ["bare URL", `see ${injected} or ${euro}`, "see https://example.com/a", [euro]],
   ["link()", null, "docs euro city", [euro, city]],
 ] as const) {
@@ -1936,6 +1941,8 @@ const processExit = (renderer: CliRenderer) => {
   renderer.nativeScene.driver.dispose()
   expect(flushed).toBe(0)
 }
+const listenerWrites = (renderer: CliRenderer, stdout: CollectingStdout) =>
+  renderer.once(CliRenderEvents.EXTERNAL_OUTPUT, () => stdout.write("B"))
 const sessionClose = async (renderer: CliRenderer) => {
   const closing = renderer.nativeScene.driver.close()
   renderer.destroy()
@@ -1954,6 +1961,13 @@ test.each<[string, StdoutStep[], string]>([
   ["2-byte split across a frame", splitBytes("caf\u00e9", 4, (renderer) => renderer.idle()), "caf\u00e9"],
   ["3-byte split", splitBytes("\u4e00", 1), "\u4e00"],
   ["4-byte split", splitBytes("\u{10437}", 1), "\u{10437}"],
+  ["a combining mark in a later write", ["xe", "\u0301y\n"], "xe\u0301y"],
+  ["VS16 in a later write", ["\u2764", "\ufe0f\n"], "\u2764\ufe0f"],
+  ["a combining mark after the last column", ["x".repeat(79) + "e", "\u0301\n"], `${"x".repeat(79)}e\u0301`],
+  ["capture set again before a combining mark", ["e", capture, "\u0301\n"], "e\u0301"],
+  ["a CR between a row and its LF", ["OK", "\r", "\n"], "OK"],
+  ["a listener write during a frame", [listenerWrites, "A"], "AB"],
+  ["a listener write during destroy", [listenerWrites, "A", destroy], "AB|"],
   ["empty writes inside a split", splitBytes("\u00e9", 1, "", null as never, ["", ""], ["", "bogus"]), "\u00e9"],
   ["string inside a split", splitBytes("\u00e9", 1, "x"), "\ufffdx\ufffd"],
   ["capture set again inside a split", splitBytes("\u00e9", 1, capture), "\u00e9"],
@@ -1973,7 +1987,7 @@ test.each<[string, StdoutStep[], string]>([
   ["split across suspend during a deferred passthrough", ["a", passthrough, suspendInSplit], "a|caf\u00e9"],
   ["passthrough during a pending native mode", [pendingModeInSplit], "|\u00e9"],
   ["exit after a lead byte", [lead, processExit], ""],
-  ["destroy after the session closes", ["a", lead, sessionClose], ""],
+  ["destroy after the session closes", ["a\n", lead, sessionClose], ""],
   ["output failure after a lead byte", ["a", lead, outputFailure], ""],
   ["SGR", ["\x1b[31mred\x1b[0m [1m]\x1b[m\x1b[38;2;1;2;3mx\x1b[2@\x1b[?25h\x1b[ q\x1b[3~~\n"], "red [1m]x~"],
   ["SGR across a newline", ["\x1b[1mbold\nnext\x1b[22m\n"], "bold\r\nnext"],
@@ -2139,6 +2153,11 @@ const rawModeActions: Record<string, (renderer: CliRenderer) => Promise<unknown>
     spyOn(renderer.nativeScene.driver, "suspend").mockRejectedValue(0), renderer.suspend()
   ),
   "destroy during suspend": (renderer) => (renderer.suspend().catch(() => {}), renderer.destroy(), renderer.closed),
+  // Until the suspension settles the exit-signal handler destroys; with no handler the signal would kill the process.
+  // SIGUSR2 is in no default list, so renderers that other files leave behind don't listen.
+  "signal during suspend": async (renderer) => (
+    renderer.suspend().catch(() => {}), process.emit("SIGUSR2") && renderer.closed
+  ),
   // The footer change applies as the transition clears, and its resize listener resumes in that turn.
   "footer resize during a suspension": async (renderer) => {
     renderer.screenMode = "split-footer"
@@ -2159,6 +2178,7 @@ test.each<{ action: string; sync: string[]; settled: string[] }>([
   { action: "suspend behind held output", sync: [], settled: ["off after mouse bytes"] },
   { action: "failing suspend", sync: [], settled: ["off"] },
   { action: "destroy during suspend", sync: [], settled: ["off after mouse bytes after close"] },
+  { action: "signal during suspend", sync: [], settled: ["off after mouse bytes after close"] },
   { action: "footer resize during a suspension", sync: [], settled: ["off after mouse bytes", "on"] },
   { action: "resume", sync: ["on"], settled: ["on"] },
   { action: "failing resume", sync: [], settled: [] },
@@ -2177,7 +2197,8 @@ test.each<{ action: string; sync: string[]; settled: string[] }>([
     rawMode.push(`${enabled ? "on" : "off"}${mouseBytes ? " after mouse bytes" : ""}${closed ? " after close" : ""}`)
     return stdin
   }
-  const renderer = await createCliRenderer({ stdin, stdout, exitSignals: [] })
+  const listeners = process.listenerCount("SIGUSR2")
+  const renderer = await createCliRenderer({ stdin, stdout, exitSignals: ["SIGUSR2"] })
   driver = renderer.nativeScene.driver
   try {
     if (action.includes("resume")) await renderer.suspend()
@@ -2195,10 +2216,14 @@ test.each<{ action: string; sync: string[]; settled: string[] }>([
     stdout.release()
     await done
     await renderer.idle()
-    expect({ sync: log, settled: rawMode, suspended: renderer.controlState === "explicit_suspended" }).toEqual({
+    const suspended = renderer.controlState === "explicit_suspended"
+    const exitListeners = process.listenerCount("SIGUSR2") - listeners
+    expect({ sync: log, settled: rawMode, suspended, exitListeners }).toEqual({
       sync,
       settled,
       suspended: action.includes("suspend") || ["failing resume", "resume after destroy"].includes(action),
+      // A settled suspension leaves signals to the next program; a resumed renderer takes them back.
+      exitListeners: Number(action === "resume" || action.startsWith("footer")),
     })
   } finally {
     renderer.destroy()

@@ -1,4 +1,4 @@
-//! The host clipboard: the system clipboard of the machine the process runs on, through Wayland or X11.
+//! The host clipboard: the system clipboard of the machine the process runs on (Wayland or X11, macOS, or Win32).
 //!
 //! Over SSH that is the server's clipboard, not the user's; [`Session::set_clipboard`](super::Session::set_clipboard)
 //! reaches the user's clipboard through the terminal instead.

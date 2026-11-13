@@ -660,7 +660,8 @@ test "Context shared text batch rejects every allocation failure including the f
         rejected += 1;
     }
     try std.testing.expect(completed);
-    try std.testing.expect(rejected > 20);
+    // Styled text builds no span lists of its own, so the batch has 19 allocation points.
+    try std.testing.expect(rejected > 16);
 }
 
 test "Context shared text batch validates identities limits admission and attached styles" {

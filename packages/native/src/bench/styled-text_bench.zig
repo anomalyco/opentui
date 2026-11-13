@@ -345,53 +345,6 @@ fn benchHighlightOperations(
         }
     }
 
-    // Batched: 1000 sequential addHighlightByCharRange calls in a transaction
-    {
-        const name = "addHighlightByCharRange - 1000 calls (batched)";
-        if (bench_utils.matchesBenchFilter(name, bench_filter)) {
-            var stats: BenchStats = .{};
-
-            for (0..iterations) |_| {
-                const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .wcwidth);
-                defer tb.deinit();
-
-                const style = try SyntaxStyle.init(allocator);
-                defer style.deinit();
-                tb.setSyntaxStyle(style);
-
-                // Create a multi-line buffer
-                const text = "Line 1 with some text\nLine 2 with more text\nLine 3 here\nLine 4 content\nLine 5 final";
-                try tb.setText(text);
-
-                const timer = bench_utils.BenchTimer.start(io);
-
-                // Batch all highlights in a transaction
-                tb.startHighlightsTransaction();
-                defer tb.endHighlightsTransaction();
-
-                // Add 1000 highlights sequentially
-                for (0..1000) |i| {
-                    const start_char: u32 = @intCast((i * 2) % 50);
-                    const end_char = start_char + 3;
-                    const style_id: u32 = @intCast((i % 5) + 1);
-                    tb.addHighlightByCharRange(start_char, end_char, style_id, 1, 0) catch {};
-                }
-
-                stats.record(timer.read());
-            }
-
-            try results.append(allocator, .{
-                .name = name,
-                .min_ns = stats.min_ns,
-                .avg_ns = stats.avg(),
-                .max_ns = stats.max_ns,
-                .total_ns = stats.total_ns,
-                .iterations = iterations,
-                .mem_stats = null,
-            });
-        }
-    }
-
     // Range highlights on a large document must seek to the first line, not walk every line.
     {
         const name = "addHighlightByCharRange - 2000 calls (10000 lines)";
