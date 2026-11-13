@@ -143,17 +143,20 @@ export class EditBuffer extends EventEmitter {
     return this.lib.contextEditBufferGetInfo(this.native.handle.context, this.native.handle).lineCount
   }
 
+  /** Sets the fixed width of each tab in display cells. */
   public setTabWidth(width: number): void {
     this.runMutation(() => {
       this.lib.contextEditBufferSetTabWidth(this.native.handle.context, this.native.handle, width)
     })
   }
 
+  /** Returns the fixed width of each tab in display cells. */
   public getTabWidth(): number {
     this.guard()
     return this.lib.contextEditBufferGetInfo(this.native.handle.context, this.native.handle).tabWidth
   }
 
+  /** Returns the buffer text with LF line breaks. JavaScript indexes this string in UTF-16 code units. */
   public getText(): string {
     this.guard()
     return this.lib.contextEditBufferGetText(this.native.handle.context, this.native.handle)
@@ -185,6 +188,7 @@ export class EditBuffer extends EventEmitter {
     this.command(NativeEditCommand.Backspace)
   }
 
+  /** Deletes a half-open range between (zero-based logical line, display-cell column) pairs. */
   public deleteRange(startLine: number, startCol: number, endLine: number, endCol: number): void {
     this.guard()
     return this.lib.contextEditBufferDeleteRange(
@@ -205,53 +209,65 @@ export class EditBuffer extends EventEmitter {
     this.command(NativeEditCommand.DeleteLine)
   }
 
+  /** Moves to the previous cursor stop, not necessarily one display cell or UTF-16 code unit. */
   public moveCursorLeft(): void {
     this.command(NativeEditCommand.MoveLeft)
   }
 
+  /** Moves to the next cursor stop, not necessarily one display cell or UTF-16 code unit. */
   public moveCursorRight(): void {
     this.command(NativeEditCommand.MoveRight)
   }
 
+  /** Moves up one logical line using the desired display-cell column. */
   public moveCursorUp(): void {
     this.command(NativeEditCommand.MoveUp)
   }
 
+  /** Moves down one logical line using the desired display-cell column. */
   public moveCursorDown(): void {
     this.command(NativeEditCommand.MoveDown)
   }
 
+  /** Moves to a zero-based logical line. */
   public gotoLine(line: number): void {
     this.command(NativeEditCommand.GotoLine, line)
   }
 
+  /** Sets the cursor by zero-based logical line and display-cell column. */
   public setCursor(line: number, col: number): void {
     this.guard()
     return this.lib.contextEditBufferSetCursor(this.native.handle.context, this.native.handle, line, col)
   }
 
+  /** Sets the cursor by zero-based logical line and display-cell column. */
   public setCursorToLineCol(line: number, col: number): void {
     this.guard()
     return this.lib.contextEditBufferSetCursor(this.native.handle.context, this.native.handle, line, col)
   }
 
+  /** Sets the cursor in display cells from the document start, counting each newline as one cell. */
   public setCursorByOffset(offset: number): void {
     this.command(NativeEditCommand.CursorOffset, offset)
   }
 
+  /** Returns the logical line, display-cell column, and document cell offset (one cell per newline). */
   public getCursorPosition(): LogicalCursor {
     this.guard()
     return this.lib.contextEditBufferGetInfo(this.native.handle.context, this.native.handle).cursor
   }
 
+  /** Returns the next word boundary in logical line and cell coordinates. */
   public getNextWordBoundary(): LogicalCursor {
     return this.position(NativeEditPositionQuery.NextWord)!
   }
 
+  /** Returns the previous word boundary in logical line and cell coordinates. */
   public getPrevWordBoundary(): LogicalCursor {
     return this.position(NativeEditPositionQuery.PrevWord)!
   }
 
+  /** Returns the logical line end in display cells. */
   public getEOL(): LogicalCursor {
     return this.position(NativeEditPositionQuery.Eol)!
   }
@@ -266,15 +282,18 @@ export class EditBuffer extends EventEmitter {
     return this.position(NativeEditPositionQuery.PrevChar)!
   }
 
+  /** Maps document cells (one per newline) to a logical row and cell column, not a string index. */
   public offsetToPosition(offset: number): { row: number; col: number } | null {
     const result = this.position(NativeEditPositionQuery.Offset, offset)
     return result && { row: result.row, col: result.col }
   }
 
+  /** Maps a logical row and cell column to document cells, counting one cell per newline. */
   public positionToOffset(row: number, col: number): number {
     return this.position(NativeEditPositionQuery.Coords, row, col)?.offset ?? 0
   }
 
+  /** Returns a logical line's start in document cells, counting one cell per newline. */
   public getLineStartOffset(row: number): number {
     return this.position(NativeEditPositionQuery.LineStart, row)?.offset ?? 0
   }
@@ -293,6 +312,19 @@ export class EditBuffer extends EventEmitter {
     )
   }
 
+  /** Converts a UTF-16 index in getText() to document cells (one per newline). Rounds down within a grapheme; clamps at EOF. */
+  public stringIndexToCellOffset(index: number): number {
+    this.guard()
+    return this.lib.contextEditBufferConvertOffset(this.native.handle.context, this.native.handle, index, true)
+  }
+
+  /** Converts document cells to a UTF-16 index in getText(). Rounds down within a grapheme, past zero-width text at a tie, and clamps at EOF. */
+  public cellOffsetToStringIndex(offset: number): number {
+    this.guard()
+    return this.lib.contextEditBufferConvertOffset(this.native.handle.context, this.native.handle, offset, false)
+  }
+
+  /** Reads [startOffset, endOffset) in document display cells, counting one cell per newline. */
   public getTextRange(startOffset: number, endOffset: number): string {
     this.guard()
     if (startOffset >= endOffset) return ""
@@ -307,6 +339,7 @@ export class EditBuffer extends EventEmitter {
     )
   }
 
+  /** Reads a half-open range between (zero-based logical row, display-cell column) pairs. */
   public getTextRangeByCoords(startRow: number, startCol: number, endRow: number, endCol: number): string {
     this.guard()
     return this.lib.contextEditBufferGetRange(
@@ -381,10 +414,12 @@ export class EditBuffer extends EventEmitter {
     return this._syntaxStyle ?? null
   }
 
+  /** Highlights a range in display cells relative to the logical line. */
   public addHighlight(lineIdx: number, highlight: Highlight): void {
     this.highlight(NativeEditHighlightOperation.AddLine, lineIdx, highlight)
   }
 
+  /** Highlights a range in document display cells excluding newlines, not UTF-16 indices. */
   public addHighlightByCharRange(highlight: Highlight): void {
     this.highlight(NativeEditHighlightOperation.AddRange, 0, highlight)
   }
