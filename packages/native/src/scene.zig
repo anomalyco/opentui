@@ -724,15 +724,21 @@ pub const PaintSlot = struct {
 };
 
 /// A painted member's rect within its clip, in screen cells.
-pub const Hit = struct { x: u32, y: u32, width: u32, height: u32, token: u32 };
+pub const Hit = struct { x: u32, y: u32, width: u32, height: u32, token: u32, num: u32 = 0 };
 
 /// The index of the last hit in paint order that covers a cell: what a grid that every
 /// member overwrote in paint order would hold there.
 pub fn topmostHit(hits: []const Hit, x: u32, y: u32) ?usize {
+    return topmostHitExcept(hits, x, y, 0);
+}
+
+/// The same, as if the node with public number `excluded` (zero: none) painted no hits.
+pub fn topmostHitExcept(hits: []const Hit, x: u32, y: u32, excluded: u32) ?usize {
     var index = hits.len;
     while (index != 0) {
         index -= 1;
         const hit = hits[index];
+        if (excluded != 0 and hit.num == excluded) continue;
         if (x >= hit.x and y >= hit.y and x - hit.x < hit.width and y - hit.y < hit.height) return index;
     }
     return null;
@@ -2519,12 +2525,12 @@ pub const Scene = struct {
     }
 
     /// The token of the topmost presented hit rectangle at a cell, or 0.
-    pub fn hitToken(self: *Scene, cli: *const renderer.CliRenderer, x: u32, y: u32) u32 {
+    pub fn hitToken(self: *Scene, cli: *const renderer.CliRenderer, x: u32, y: u32, excluded: u32) u32 {
         self.settleHits(cli);
         // Every hit lies inside the screen.
         if (x >= cli.width or y >= cli.height or self.presented_hits_frame != cli.presented_hits_frame) return 0;
         const hits = self.presented_hits.items;
-        const index = topmostHit(hits, x, y);
+        const index = topmostHitExcept(hits, x, y, excluded);
         if (builtin.is_test) self.test_hit_steps += hits.len - (index orelse 0);
         return if (index) |found| hits[found].token else 0;
     }
@@ -2971,7 +2977,7 @@ pub const Scene = struct {
         };
         if (!options.use_mouse or node.num == options.excluded_hit_num) return;
         // The clip lies inside the screen, so hit coordinates are never negative.
-        if (painted.width != 0 and painted.height != 0) self.hits.appendAssumeCapacity(.{ .x = @intCast(painted.x), .y = @intCast(painted.y), .width = painted.width, .height = painted.height, .token = node.token });
+        if (painted.width != 0 and painted.height != 0) self.hits.appendAssumeCapacity(.{ .x = @intCast(painted.x), .y = @intCast(painted.y), .width = painted.width, .height = painted.height, .token = node.token, .num = node.num });
     }
 
     /// One member's phases and body inside a scissor. A member on several bands prepares its
@@ -3118,7 +3124,7 @@ pub const Scene = struct {
         for (0..2) |axis| {
             if (!state.visible[axis]) continue;
             const hit = intersection(cellClip(state.barRects(axis, box, node.paint.borderSides).bar), entry.clip);
-            if (hit.width != 0 and hit.height != 0) self.hits.appendAssumeCapacity(.{ .x = @intCast(hit.x), .y = @intCast(hit.y), .width = hit.width, .height = hit.height, .token = node.token });
+            if (hit.width != 0 and hit.height != 0) self.hits.appendAssumeCapacity(.{ .x = @intCast(hit.x), .y = @intCast(hit.y), .width = hit.width, .height = hit.height, .token = node.token, .num = node.num });
         }
     }
 

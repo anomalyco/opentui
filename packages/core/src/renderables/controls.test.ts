@@ -6,6 +6,7 @@ import { renderFontToFrameBuffer } from "../lib/ascii.font.js"
 import { KeyEvent } from "../lib/KeyHandler.js"
 import { CliRenderEvents } from "../renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
+import { MouseButtons } from "../testing/mock-mouse.js"
 import { createTestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
 import type { CapturedFrame } from "../types.js"
 import { NativePaintRecorder, resolveRenderLib } from "../zig.js"
@@ -505,6 +506,13 @@ const scrolling: [string, object, string, string][] = [
     `press:19,0 move:${x},2 move:19,4 release:${x},4 press:5,5 move:19,5 move:19,8 release:19,8`,
     "0,0 20,0 40,0 40,0 40,0 40,0 40,0 40,0",
   ]),
+  // A press after a lost release ends the thumb drag: the content drag that follows does not scroll.
+  [
+    "press after a lost thumb release",
+    {},
+    "press:19,0 move:19,2 press:5,5 move:5,8 release:5,8",
+    "0,0 20,0 20,0 20,0 20,0",
+  ],
   // The box and its content growing in one frame clamp against that frame's range, not a stale one (338).
   ["same-frame growth keeps the position", { child: { width: 10, height: 15 } }, "#5 grow:20,25", "5,0 5,0"],
   ["same-frame growth clamps to the new range", { child: { width: 10, height: 15 } }, "#5 grow:20,22", "5,0 2,0"],
@@ -640,6 +648,48 @@ test("ScrollBox host requests per frame", async () => {
       "scroll+listeners:0c unlisten:0 append again:0 unsupported:0 append unsupported:0 destroy+auto:0 " +
       "start after destroy:0",
   )
+})
+
+// A selection drag's auto-scroll follows that drag: it ends on the drag's release, on a press after a lost release,
+// and on a finished selection, and a new drag that reaches the edge takes it over. The box (rows 0-8) holds text, and
+// row 9 is a selectable sibling. Steps: `press|ctrl|move|release|click:x,y` (left button), `auto:x,y`
+// (updateAutoScroll), `stop`, or `tick` (160 ms and a frame), which records whether the box scrolled and is live.
+const autoScrolls: [string, string, string][] = [
+  ["release", "press:2,0 move:2,8 tick release:2,8 click:2,9 tick", "1,1 0,0"],
+  ["lost release, then a held press outside", "press:2,0 move:2,8 tick press:2,9 tick release:2,9", "1,1 0,0"],
+  ["release outside, then a new edge drag", "press:2,0 move:2,8 tick release:2,9 press:2,1 move:2,8 tick", "1,1 1,1"],
+  ["lost release, then a new edge drag", "press:2,0 move:2,8 tick press:2,1 move:2,8 tick", "1,1 1,1"],
+  ["release outside, then a held ctrl press outside", "press:2,0 move:2,8 tick release:2,9 ctrl:2,9 tick", "1,1 0,0"],
+  ["from code after a finished selection", "press:2,1 move:4,1 release:4,1 auto:2,8 tick stop", "1,1"],
+  ["from code until a selection finishes", "auto:2,8 tick press:2,9 move:4,9 release:4,9 tick", "1,1 0,0"],
+]
+
+test.each(autoScrolls)("ScrollBox auto-scroll: %s", async (_, steps, expected) => {
+  const scroll = new ScrollBoxRenderable(renderer, { width: 20, height: 9 })
+  scroll.add(new TextRenderable(renderer, { content: Array.from({ length: 99 }, (_, i) => `line ${i}`).join("\n") }))
+  renderer.root.add(scroll)
+  renderer.root.add(new TextRenderable(renderer, { content: "sibling text" }))
+  await setup.renderOnce()
+  const mouse = setup.mockMouse
+  const trace: string[] = []
+  for (const step of steps.split(" ")) {
+    const [kind, arg] = step.split(":")
+    const [x, y] = (arg ?? "").split(",").map(Number)
+    if (kind === "tick") {
+      const top = scroll.scrollTop
+      clock.advance(160)
+      await setup.renderOnce()
+      trace.push(`${Math.sign(scroll.scrollTop - top)},${Number(scroll.live)}`)
+    } else if (kind === "auto") scroll.updateAutoScroll(x, y)
+    else if (kind === "stop") scroll.stopAutoScroll()
+    else if (kind === "move") await mouse.moveTo(x, y)
+    else if (kind === "release") await mouse.release(x, y)
+    else if (kind === "click") await mouse.click(x, y)
+    else await mouse.pressDown(x, y, MouseButtons.LEFT, { modifiers: { ctrl: kind === "ctrl" } })
+  }
+  await mouse.release(0, 11)
+  renderer.clearSelection()
+  expect(trace.join(" ")).toBe(expected)
 })
 
 // Wheel steps over an inner scroller in an outer ScrollBox (scrolled to 5, rows 5..8 show the inner node). A step

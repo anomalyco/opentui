@@ -1038,7 +1038,7 @@ pub const Context = struct {
         const writer = &file_writer.interface;
         for (0..attached.height) |y| {
             for (0..attached.width) |x| {
-                const token = if (value.scene) |owned| owned.hitToken(attached, @intCast(x), @intCast(y)) else 0;
+                const token = if (value.scene) |owned| owned.hitToken(attached, @intCast(x), @intCast(y), 0) else 0;
                 writer.writeByte(if (token == 0) '.' else '0' + @as(u8, @intCast(token % 10))) catch return;
             }
             writer.writeByte('\n') catch return;
@@ -3195,13 +3195,17 @@ pub const Context = struct {
     }
 
     pub fn sceneHitTest(self: *Context, session_handle: Handle, x: i32, y: i32) !u32 {
+        return self.sceneHitTestExcluding(session_handle, x, y, 0);
+    }
+
+    pub fn sceneHitTestExcluding(self: *Context, session_handle: Handle, x: i32, y: i32, excluded: u32) !u32 {
         try self.beginMutation();
         defer self.mutating = false;
         const value = try self.getSession(session_handle);
         const attached = value.renderer orelse return error.RendererNotAttached;
         const owned = value.scene orelse return error.SceneNotAttached;
         if (x < 0 or y < 0) return 0;
-        const token = owned.hitToken(attached, @intCast(x), @intCast(y));
+        const token = owned.hitToken(attached, @intCast(x), @intCast(y), excluded);
         const handle = owned.tokens.get(token) orelse return 0;
         const node = self.objects.get(handle, .native_renderable, native_renderable.NativeRenderable) catch return 0;
         const state = node.scene_node orelse return 0;

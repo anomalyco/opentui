@@ -424,6 +424,8 @@ test "Scene scroll node paints fills under its children and bars over them, and 
         try testing.expectEqual(@as(u32, 'v'), char(f, 5, 3));
         try testing.expectEqual(@as(u32, if (overlay) 'x' else ' '), char(f, 4, 0));
         try testing.expectEqual(@as(u32, 2), try f.owner.sceneHitTest(f.id, 5, 1));
+        // A lookup that skips the box skips its bar cells too: the row under an overlay bar answers.
+        try testing.expectEqual(@as(u32, if (overlay) 14 else 0), try f.owner.sceneHitTestExcluding(f.id, 5, 1, 2));
         try testing.expectEqual(@as(u32, 13), try f.owner.sceneHitTest(f.id, 0, 0));
         const thumb = char(f, 5, 1);
         // An unchanged frame asks nothing; a read changes nothing it reports.

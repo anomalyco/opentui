@@ -1160,6 +1160,9 @@ impl App {
                 | MouseEventKind::ScrollLeft
                 | MouseEventKind::ScrollRight
         );
+        if event.kind == MouseEventKind::Down(MouseButton::Left) {
+            self.drag_and_drop(event, None, None, false);
+        }
         let selecting = self.selection_mouse(event, hit.as_ref());
         let target = match event.kind {
             // As in Core, a selection drag goes to the widget under the pointer, so scroll boxes it passes over can
@@ -1209,7 +1212,10 @@ impl App {
                 self.set_focus(Some(focusable));
             }
         }
-        self.drag_and_drop(event, captured.as_ref(), hit.as_ref(), selecting);
+        // A left press ended the old drag before its handlers; a drag they started is the new gesture's.
+        if event.kind != MouseEventKind::Down(MouseButton::Left) {
+            self.drag_and_drop(event, captured.as_ref(), hit.as_ref(), selecting);
+        }
         if let MouseEventKind::Up(_) = event.kind {
             *self.0.capture.borrow_mut() = None;
             self.finish_selection_drag(event, hit.as_ref());
@@ -1218,7 +1224,8 @@ impl App {
     }
 
     /// Tracks a left-button drag from the captured widget: drag-over changes for the widgets under the pointer, then a
-    /// drop where it ends.
+    /// drop where it ends. A press during a drag means the drag's release was lost: the press ends it, before its own
+    /// handlers run and without a drop.
     fn drag_and_drop(
         &self,
         event: &MouseEvent,
@@ -1254,7 +1261,7 @@ impl App {
                     widget.element().handlers.drag_over.emit(&mut Cx::new(self), &(source.clone(), true));
                 }
             }
-            MouseEventKind::Up(MouseButton::Left) => {
+            MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left) => {
                 let Some((source, over)) = self.0.drag.borrow_mut().take() else { return };
                 let dragged = AnyWidget(Rc::clone(&source));
                 for widget in over.iter().filter_map(Weak::upgrade) {

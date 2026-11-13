@@ -116,6 +116,8 @@ pub const References = struct {
 
 pub const Options = struct {
     math: bool = false,
+    /// With math, the content is a paragraph's: its last line may still be a display math block.
+    math_blocks: bool = false,
 };
 
 pub const Result = struct {
@@ -153,8 +155,8 @@ pub const Parser = struct {
     options: Options,
     subject: []const u8 = "",
     final: bool = false,
-    /// Tokenizing stops here: the start of the trailing word (and the whitespace after it) until
-    /// the content is final.
+    /// Tokenizing stops here until the content is final: the start of the trailing word, or its
+    /// end once whitespace follows it (the whitespace may be the leaf's end).
     limit: u32 = 0,
     /// Start of the subject's trailing run of non-whitespace bytes; its length when it ends in
     /// whitespace.
@@ -187,6 +189,9 @@ pub const Parser = struct {
     tail_title: struct { close: u32 = std.math.maxInt(u32), at: u32 = 0, from: u32 = 0, destination: [2]u32 = .{ 0, 0 }, end: u32 = 0, newlines: u32 = 0 } = .{},
     /// A label scan after `]` that ran out of content (its `]` is `search_opener`).
     label_scan: LabelScan = .{ .at = 0, .position = 0 },
+    /// With `math_blocks`, the last line while it may be a one-line display math block: its start
+    /// (none: it cannot be) and the end of its first closer from there (none: none yet).
+    math_line: struct { start: u32 = std.math.maxInt(u32), closer: u32 = std.math.maxInt(u32) } = .{},
     /// The first token whose display changed since `takeChanged` (none: nothing changed).
     changed_from: u32 = std.math.maxInt(u32),
     extended_from: u32 = std.math.maxInt(u32),
@@ -261,10 +266,14 @@ pub const Parser = struct {
         self.final = final;
         if (final) {
             self.limit = @intCast(subject.len);
+            self.math_line = .{};
         } else {
             self.updateLimit(previous_len);
+            if (self.options.math_blocks) self.holdMathLine(previous_len) else self.math_line = .{};
         }
-        while (self.position < self.limit) {
+        // No construct reads a held line's bytes, its searches included.
+        self.subject = subject[0..@min(subject.len, self.math_line.start)];
+        while (self.position < self.heldLimit()) {
             const before = self.position;
             self.step() catch |err| switch (err) {
                 error.NeedMore => {
@@ -275,6 +284,22 @@ pub const Parser = struct {
                 error.OutOfMemory => return error.OutOfMemory,
             };
             assert(self.position > before);
+        }
+        self.subject = subject;
+        // The trailing word's decided prefix: plain bytes, `!` before no `[`, and single `$` spans,
+        // which the byte after their closer decides; the word's last byte waits for the next.
+        if (!final and self.options.math and self.tail_run_start < subject.len and self.position >= self.limit and self.position < self.math_line.start) {
+            self.limit = @intCast(subject.len - 1);
+            while (self.position < self.limit) {
+                const c = subject[self.position];
+                const next = subject[self.position + 1];
+                if (if (c == '$') next == '$' else if (c == '!') next == '[' else self.isSpecial(c)) break;
+                self.step() catch |err| switch (err) {
+                    error.NeedMore => break,
+                    error.OutOfMemory => return error.OutOfMemory,
+                };
+            }
+            self.limit = self.position;
         }
         if (!final) return;
         // Expired openers show literal from here, those this feed expired too.
@@ -287,8 +312,9 @@ pub const Parser = struct {
         try self.findEmails();
     }
 
-    /// The limit moves to the start of the trailing word; only the bytes added since
-    /// `previous_len` are read (a long word arriving byte by byte stays linear).
+    /// The limit moves to the start of the trailing word, or to its end once whitespace follows
+    /// it; only the bytes added since `previous_len` are read (a long word arriving byte by byte
+    /// stays linear).
     fn updateLimit(self: *Parser, previous_len: u32) void {
         const s = self.subject;
         const n: u32 = @intCast(s.len);
@@ -296,15 +322,51 @@ pub const Parser = struct {
         var i = n;
         while (i > previous_len and isAsciiWhitespace(s[i - 1])) i -= 1;
         if (i == previous_len) {
-            if (n > previous_len and previous_ended_in_word) self.limit = self.tail_run_start;
+            if (n > previous_len and previous_ended_in_word) self.limit = previous_len;
             if (n > previous_len) self.tail_run_start = n;
             return;
         }
         var j = i;
         while (j > previous_len and !isAsciiWhitespace(s[j - 1])) j -= 1;
         const word_start = if (j > previous_len or !previous_ended_in_word) j else self.tail_run_start;
-        self.limit = word_start;
+        self.limit = if (i == n) word_start else i;
         self.tail_run_start = if (i == n) word_start else n;
+    }
+
+    /// A paragraph's last line that may still become a one-line display math block (`$$x$$`,
+    /// `\[x\]`) shows as B draws it, literal (D102): tokenizing stops at its start (`heldLimit`)
+    /// and no search reads into it, until a byte after its first closer rules that out or its
+    /// line ends (a line held that the block parser then rejects only shows its spans later).
+    /// Reads each new byte once.
+    fn holdMathLine(self: *Parser, previous_len: u32) void {
+        const s = self.subject;
+        const m = &self.math_line;
+        // A restart (`reset` cleared this) is before the line a hold keeps: its '\n' is new here.
+        if (std.mem.lastIndexOfScalar(u8, s[previous_len..], '\n')) |at| {
+            m.* = .{ .start = previous_len + @as(u32, @intCast(at)) + 1 };
+        } else if (previous_len == 0) m.* = .{ .start = 0 };
+        if (m.start == std.math.maxInt(u32) or s.len - m.start < 2) return;
+        const line = s[m.start..];
+        const dollars = line[0] == '$';
+        const close: []const u8 = if (dollars) "$$" else "\\]";
+        var ruled_out = !std.mem.eql(u8, line[0..2], if (dollars) "$$" else "\\[");
+        var k = @max(previous_len -| m.start, 3);
+        self.byte_visits += line.len -| k;
+        // After the first closer only whitespace, and one `$` right after a `$$` closer (`$$a$$$`
+        // is the body `a$`).
+        while (!ruled_out and k < line.len) : (k += 1) {
+            if (m.closer != std.math.maxInt(u32)) {
+                ruled_out = !isAsciiWhitespace(line[k]) and !(dollars and line[k] == '$' and k == m.closer + 1);
+            } else if (line[k - 1] == close[0] and line[k] == close[1]) {
+                m.closer = k;
+            }
+        }
+        if (ruled_out) m.* = .{};
+    }
+
+    /// Where tokenizing stops now: the limit, or before it the start of a line holdMathLine holds.
+    fn heldLimit(self: *const Parser) u32 {
+        return @min(self.limit, self.math_line.start);
     }
 
     /// Forgets the first `drop` bytes of the content, which the caller removed; only when
@@ -314,6 +376,8 @@ pub const Parser = struct {
         self.position -= drop;
         self.limit -= drop;
         self.tail_run_start -= drop;
+        // A held line starts at or after the position.
+        if (self.math_line.start != std.math.maxInt(u32)) self.math_line.start -= drop;
         self.subject = self.subject[0 .. self.subject.len - drop];
         self.tokens.clearRetainingCapacity();
         self.delimiters.clearRetainingCapacity();
@@ -485,6 +549,8 @@ pub const Parser = struct {
             return self.text(at, at + 1);
         }
         if (s[at + 1] == '\n') {
+            // Before the content's last line ending it may end the leaf (then it is text).
+            if (at + 2 == n and !self.final) return error.NeedMore;
             var next = at + 2;
             while (next < n and (s[next] == ' ' or s[next] == '\t')) next += 1;
             try self.push(.{ .start = at, .len = next - at, .kind = .hard_break });
@@ -519,7 +585,8 @@ pub const Parser = struct {
             }
             if (c == '\\') i += 1;
         }
-        return self.searchRanOut(opener, @min(i, @as(u32, @intCast(s.len -| 1))));
+        // At the end, or past an escaped pair that ends there: read on from `i`.
+        return self.searchRanOut(opener, i);
     }
 
     fn resumeSearch(self: *Parser, opener: u32, from: u32) u32 {
@@ -1193,18 +1260,17 @@ pub fn tokenDisplayLength(r: Result, index: u32) u32 {
 }
 
 /// Appends the display of token `index` before content offset `cut` inside it: what B drew of
-/// it while its end was still to come (text bytes, a code span's or math's content so far).
-/// Other tokens draw nothing before their end.
+/// it while its end was still to come (text bytes, a code span's content so far, math as the
+/// undecided text it is). Other tokens draw nothing before their end.
 pub fn appendTokenDisplayBefore(r: Result, index: u32, cut: u32, allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) error{OutOfMemory}!void {
     const t = r.tokens[index];
     assert(t.start < cut and cut < t.end());
     switch (t.kind) {
         .text, .extended_autolink => try out.appendSlice(allocator, r.content[t.start..cut]),
-        .code => {
+        .code, .math => {
             var scan: PendingScan = .{};
-            try renderPending(r.content[0..cut], t.start, t.start, &scan, allocator, out);
+            try renderPending(r.content[0..cut], t.start, if (t.kind == .code) t.start else null, &scan, allocator, out);
         },
-        .math => if (cut > t.start + t.aux) try out.appendSlice(allocator, r.content[t.start + t.aux .. cut]),
         else => {},
     }
 }
@@ -1311,7 +1377,9 @@ pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *Pending
     if (continues and from >= s.len) return;
     const resume_at: u32 = if (continues) @max(from, scan.scanned) else from;
     var i = from;
-    var code: ?u32 = code_opener orelse if (continues) scan.code else null;
+    // A resumed scan past the named span's closer draws on after it.
+    const passed = continues and scan.code == null and code_opener != null and from > code_opener.?;
+    var code: ?u32 = if (passed) null else code_opener orelse if (continues) scan.code else null;
     var tag = continues and scan.tag;
     // Where the word being drawn starts: an entity or escape in a possible extended autolink
     // waits for the word to end (the link shows its source raw).
