@@ -3051,7 +3051,8 @@ pub const Doc = struct {
                 .autolink, .autolink_email, .extended_autolink => {
                     const target = if (t.kind == .extended_autolink) raw else raw[1 .. raw.len - 1];
                     const prefix: []const u8 = if (t.kind == .autolink_email) "mailto:" else if (t.kind == .extended_autolink and t.aux == @backingInt(inline_parser.ExtendedKind.www)) "http://" else "";
-                    writer.link = try writer.url(prefix, target);
+                    // Inside a link or image its target stays.
+                    if (writer.link == null) writer.link = try writer.url(prefix, target);
                     try writer.write(target, .{});
                 },
                 .code => {
@@ -3506,7 +3507,8 @@ const LeafWriter = struct {
             if (email[1] <= at or email[0] >= end) continue;
             if (at < email[0]) try self.write(r.content[at..email[0]], .{});
             const saved = self.link;
-            self.link = try self.url("mailto:", r.content[email[0]..email[1]]);
+            // Inside a link or image its target stays.
+            self.link = saved orelse try self.url("mailto:", r.content[email[0]..email[1]]);
             const stop = @min(end, email[1]);
             try self.write(r.content[@max(at, email[0])..stop], .{});
             self.link = saved;

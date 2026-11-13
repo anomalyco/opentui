@@ -1483,8 +1483,8 @@ test "Markdown read_leaf: display bytes, chunk styles, spans and the URL pool" {
         .{ .source = "- x\n\n      code\n       more\n", .block = 3, .chunks = &.{.{ "code\n more", "raw", "" }} },
         // One run closes a span and opens another (CommonMark 6.2).
         .{ .source = "*a***b**", .block = 0, .chunks = &.{ .{ "a", " italic", "" }, .{ "b", "strong", "" } } },
-        // An image inside a link keeps the link's target (M3-b).
-        .{ .source = "[![Logo](https://e/image) docs](https://e/outer)", .block = 0, .chunks = &.{.{ "Logo docs", "link", "https://e/outer" }} },
+        // An image inside a link keeps the link's target, its autolinks and emails too (M3-b).
+        .{ .source = "[![<https://e.co> a@b.co](https://e/image) docs](https://e/outer)", .block = 0, .chunks = &.{.{ "https://e.co a@b.co docs", "link", "https://e/outer" }} },
         // A math span the held pipe cuts shows as B drew it, literal (opus-2).
         .{ .source = "\\(a|b\\) c", .math = true, .pending = true, .block = 0, .chunks = &.{.{ "(a", "", "" }} },
         // A word is tokenized once white space follows it (M3-d).
