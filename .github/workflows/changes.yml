@@ -28,6 +28,9 @@ on:
       qrcode:
         description: true when the QRCode package or something it builds against changed
         value: ${{ jobs.changes.outputs.qrcode }}
+      three:
+        description: true when the Three package or something it builds against changed
+        value: ${{ jobs.changes.outputs.three }}
       ssh:
         description: true when the SSH package or something it builds against changed
         value: ${{ jobs.changes.outputs.ssh }}
@@ -48,6 +51,7 @@ jobs:
       solid: ${{ steps.changes.outputs.solid }}
       keymap: ${{ steps.changes.outputs.keymap }}
       qrcode: ${{ steps.changes.outputs.qrcode }}
+      three: ${{ steps.changes.outputs.three }}
       ssh: ${{ steps.changes.outputs.ssh }}
     steps:
       # The pull request's merge commit and its parents, without file contents outside scripts/.

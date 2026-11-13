@@ -2,7 +2,7 @@ name: Build Packages
 
 # The React, Solid, keymap, QRCode and SSH checks were five workflows that each repeated checkout, bun install and the
 # core build on the same commit. A pull request runs the packages its paths touch on one small Linux runner; a push to
-# the default branch runs all of them there, and adds the SSH macOS leg. Build Core tests the same packages on Windows,
+# the default branch runs all of them there, and adds the SSH macOS leg. Build Core tests those five on Windows,
 # where it already holds the native artifacts.
 on:
   push:
@@ -178,6 +178,14 @@ jobs:
         run: |
           if [ "$(uname -s)" = Linux ]; then ulimit -c unlimited; fi
           bun run test
+
+      # Every Three trigger selects this runner, and setup-build already built Core here.
+      - name: Build and test Three
+        if: needs.changes.outputs.three == 'true'
+        working-directory: packages/three
+        run: |
+          bun run build --skip-core-build
+          bun test
 
       - name: Upload Linux core dumps
         if: failure()
