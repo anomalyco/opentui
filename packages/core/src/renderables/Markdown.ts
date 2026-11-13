@@ -310,6 +310,12 @@ const sameChunks = (a: TextChunk[], b: TextChunk[]) =>
  */
 type Targets = [start: number, end: number, target: string][]
 
+/** Whether `inner` is `outer` or inside it. */
+function holds(outer: Renderable, inner: Renderable): boolean {
+  for (let at: Renderable | null = inner; at; at = at.parent) if (at === outer) return true
+  return false
+}
+
 /** What shows block i (document order); table rows and cells have none: their table shows them. */
 interface Shown {
   /** The block's record as last shown: a renderer runs again only when it changes. */
@@ -835,8 +841,9 @@ export class MarkdownRenderable extends Renderable {
     if (renderable !== old) {
       const parent = this.parentOf(index)
       const position = old ? parent.getChildren().indexOf(old) : -1
-      // A default the new result holds has left the old one already.
-      old?.destroyRecursively()
+      // The default the new result shows leaves the old result before it goes.
+      if (fallback && old && holds(old, fallback)) fallback.parent?.remove(fallback)
+      if (old !== fallback) old?.destroyRecursively()
       shown.renderable = renderable
       if (renderable) parent.add(renderable, position === -1 ? undefined : position)
     }
@@ -844,8 +851,9 @@ export class MarkdownRenderable extends Renderable {
     if (before && !before.isDestroyed) before.destroyRecursively()
     shown.written = shown.targets = shown.gap = shown.width = shown.count = undefined
     if (!fallback) shown.container = shown.marker = undefined
-    // Descendants lose what showed them with the old default, and show again in the new one.
-    if (before) this.showDescendants(index)
+    // Descendants lose what showed them with the old default, and show again in the new one; shown children of a block
+    // its renderer showed alone show in a default that appears.
+    if (before || (fallback && this._shown[index + 1]?.record.parent === index)) this.showDescendants(index)
   }
 
   private showDescendants(index: number): void {

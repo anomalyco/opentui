@@ -3075,6 +3075,70 @@ test("default-render delegation reuses renderable on same-type updates", async (
   expect(captureFrame()).toContain("const second = true")
 })
 
+// A renderer may ask for the default and still show something else, or switch between its own result, a wrapper and
+// the default; the default it falls back to always shows its block (bigboi-1).
+test("a renderer's switches between its own result, a wrapper and the default keep the block shown", async () => {
+  // As OpenCode's LaTeX renderer: it asks for the default first, and shows it while the formula does not parse.
+  const latex = createMarkdownRenderable({
+    content: "```math\nx",
+    syntaxStyle,
+    streaming: true,
+    renderBlock: (block, context) => {
+      const fallback = context.defaultRender()
+      const parses = block.text.includes("ok") && !block.text.includes("bad")
+      return parses ? new TextRenderable(renderer, { content: "FORMULA" }) : fallback
+    },
+  })
+  renderer.root.add(latex)
+  const frames: string[] = []
+  for (const more of ["", " ok\n", "bad\n```\n"]) {
+    latex.content += more
+    // A streamed fence shows once its highlight lands.
+    await renderMarkdownRenderable(latex, true)
+    frames.push(frameText())
+  }
+  latex.streaming = false
+  await renderMarkdownRenderable(latex, true)
+  expect([...frames, frameText()]).toEqual(["x", "FORMULA", "x ok\nbad", "x ok\nbad"])
+  latex.destroyRecursively()
+
+  // A wrapper around the default, then the default alone (on a style swap).
+  let wrap = true
+  const wrapped = createMarkdownRenderable({
+    content: "plain",
+    syntaxStyle,
+    renderBlock: (_block, context) => {
+      if (!wrap) return context.defaultRender()
+      const box = new BoxRenderable(renderer, { flexDirection: "column" })
+      box.add(context.defaultRender()!)
+      return box
+    },
+  })
+  renderer.root.add(wrapped)
+  await renderMarkdownRenderable(wrapped)
+  wrap = false
+  wrapped.syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: RGBA.fromValues(1, 1, 1, 1) } }, renderer.nativeScene!)
+  await renderMarkdownRenderable(wrapped)
+  expect(frameText()).toBe("plain")
+  wrapped.destroyRecursively()
+
+  // A quote shown by the renderer alone, then by the default, which shows its children.
+  let custom = true
+  const quote = createMarkdownRenderable({
+    content: "> aa\n> bb",
+    syntaxStyle,
+    renderBlock: (block) =>
+      custom && block.kind === "quote" ? new TextRenderable(renderer, { content: "CUSTOM" }) : null,
+  })
+  renderer.root.add(quote)
+  await renderMarkdownRenderable(quote)
+  expect(frameText()).toBe("CUSTOM")
+  custom = false
+  quote.syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: RGBA.fromValues(1, 1, 1, 1) } }, renderer.nativeScene!)
+  await renderMarkdownRenderable(quote)
+  expect(frameText()).toBe("│ aa\n│ bb")
+})
+
 test("a default code block becomes custom once its updated content is handled", async () => {
   const md = createMarkdownRenderable({
     id: "default-to-custom-code-update",
