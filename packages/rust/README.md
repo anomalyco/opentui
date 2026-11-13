@@ -86,6 +86,13 @@ system: `zig build -Doptimize=ReleaseFast -Dlibrary-target=x86_64-windows-gnu`.
 `packages/native/.cache/ffmpeg/prefix/<target>`, which `bun run build` makes for
 the host, and warns and leaves video out without it.
 
+The default native library includes FFmpeg under LGPL-2.1-or-later, even if
+your app never uses `VideoView`. `opentui-sys` ships `LICENSE-FFMPEG` and
+`FFMPEG-SOURCE.md`; the Rust code is MIT-licensed. To link OpenTUI without
+FFmpeg, run `sh scripts/prepare-zig-deps.sh` and `zig build -Dvideo=false
+-Doptimize=ReleaseFast` in `packages/native`. Set `OPENTUI_LIB_DIR` to the
+absolute path of the resulting `lib/<artifact directory>` when you run Cargo.
+
 `crates/opentui-sys/src/generated.rs` is generated from
 `packages/native/include/opentui.h`: `bun run generate:abi` in `packages/core`
 writes it, and `bun run check:abi` fails when it is stale. Do not edit it. The
