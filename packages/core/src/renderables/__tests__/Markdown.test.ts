@@ -4142,12 +4142,13 @@ The fenced block above appears near the top so streaming mode exercises a larger
 
 /** Counts the string units of every message a client posts, and the bytes and layers written to text buffers. */
 function countStreamWork(client: TreeSitterClient) {
-  const counts = { units: 0, bytes: 0, layers: [] as number[], oneshots: 0 }
+  const counts = { units: 0, bytes: 0, layers: [] as number[], oneshots: 0, disposes: 0 }
   const target = client as unknown as { sendWorkerMessage(message: TreeSitterWorkerRequest): void }
   const send = target.sendWorkerMessage
   target.sendWorkerMessage = function (message) {
     counts.units += "content" in message ? message.content.length : "text" in message ? message.text.length : 0
     counts.oneshots += Number(message.type === "ONESHOT_HIGHLIGHT")
+    counts.disposes += Number(message.type === "DISPOSE_BUFFER")
     return send.call(this, message)
   }
   const { setText, append, setStyledText, _setLayer } = TextBuffer.prototype
@@ -4199,6 +4200,8 @@ test.each([1024, 4096])("a %i-byte streamed fence sends work linear in its size"
     expect(streamed.bytes).toBeLessThanOrEqual(1.1 * n)
     expect(streamed.layers).toBeGreaterThan(size / 64)
     expect(streamed.oneshots).toBe(0)
+    // The stream end frees the worker's copy and highlights the fence once on today's path (question 9).
+    expect([counts.oneshots, counts.disposes]).toEqual([1, 1])
     expect(counts.units).toBeLessThanOrEqual(2.2 * n)
     expect(counts.bytes).toBeLessThanOrEqual(2.2 * n)
   } finally {

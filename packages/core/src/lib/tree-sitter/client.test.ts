@@ -420,6 +420,15 @@ describeClient("TreeSitterClient", () => {
       },
     ],
     [
+      "removeBuffer during an append's injection load",
+      async (c) => {
+        // A streamed fence's appends: one that does not continue the copy is refused and changes nothing.
+        expect((await c.highlightAppend(1, 0, md, "markdown")).highlights?.length).toBeGreaterThan(0)
+        expect(await c.highlightAppend(1, 1, "x", "markdown")).toMatchObject({ error: expect.any(String) })
+        void c.highlightAppend(1, md.length, mdZig.slice(md.length), "markdown")
+      },
+    ],
+    [
       "clearCache after highlighting",
       async (c) => {
         await c.highlightOnce(mdZig, "markdown")
