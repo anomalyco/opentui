@@ -1662,7 +1662,7 @@ pub const UnifiedTextBuffer = struct {
                 .col_end = entry.col_end,
                 .style_id = entry.mark.style,
                 .link_id_and_kind = if (entry.mark.style_value) mark_kind else 0,
-                .priority = entry.mark.priority,
+                .priority = @intCast(entry.mark.priority),
             });
         }
         const restylable = !self.layers.isEmpty() and try self.appendLayerInputs(@intCast(line_idx));

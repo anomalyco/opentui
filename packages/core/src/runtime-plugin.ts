@@ -14,9 +14,8 @@
  * - a matched `onLoad` cannot safely fall through, so loaders must be narrow.
  * - Bun may canonicalize paths before `onLoad`, so loaders are registered for
  *   both the resolved path spelling and its realpath, then canonical-checked.
- * - Bun may native-load `node_modules` ESM without firing `onResolve` for
- *   nested package imports, so `node_modules` ESM is recursively prescanned and
- *   only files that actually need runtime rewriting get exact-path loaders.
+ * - Bun may load package imports without firing `onResolve`. Prescan installed ESM
+ *   and linked ESM dependencies of local sources for files that need an exact loader.
  *
  * Behavior:
  * - non-`node_modules` source files get a dedicated rewrite loader immediately.
@@ -106,14 +105,6 @@ export const runtimeModuleIdForSpecifier = (specifier: string): string => {
   return `${RUNTIME_MODULE_PREFIX}${encodeURIComponent(specifier)}`
 }
 
-const resolveRuntimeModuleExports = async (moduleEntry: RuntimeModuleEntry): Promise<RuntimeModuleExports> => {
-  if (typeof moduleEntry === "function") {
-    return await moduleEntry()
-  }
-
-  return moduleEntry
-}
-
 const sourcePath = (path: string): string => {
   const searchIndex = path.indexOf("?")
   const hashIndex = path.indexOf("#")
@@ -184,15 +175,8 @@ const packageTypeForPath = (
   }
 }
 
-const isNodeModulesEsmPath = (
-  path: string,
-  packageTypeByPackageJsonPath: Map<string, "module" | "commonjs">,
-): boolean => {
+const isEsmPath = (path: string, packageTypeByPackageJsonPath: Map<string, "module" | "commonjs">): boolean => {
   const normalizedPath = normalizeSourcePath(path)
-
-  if (!isNodeModulesPath(normalizedPath)) {
-    return false
-  }
 
   if (
     normalizedPath.endsWith(".mjs") ||
@@ -460,22 +444,18 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
     runtimeModules.set(specifier, moduleEntry)
   }
 
-  const runtimeModuleIdsBySpecifier = new Map<string, string>()
-  for (const specifier of runtimeModules.keys()) {
-    runtimeModuleIdsBySpecifier.set(specifier, runtimeModuleIdForSpecifier(specifier))
-  }
-
   const isPreservedSpecifier = createPreservePredicate(input.preserve)
 
   return {
     name: "bun-plugin-opentui-runtime-modules",
     setup: (build) => {
+      const runtimeModuleIdsBySpecifier = new Map<string, string>()
       const resolveParentsByRecency: string[] = []
       const installedRewriteLoaders = new Set<string>()
       const nodeModulesBareRewritePackageRoots = new Set<string>()
       const packageTypeByPackageJsonPath = new Map<string, "module" | "commonjs">()
       const sourceAnalysisByPath = new Map<string, SourceAnalysis>()
-      const nodeModulesRuntimeRewritePathsByPath = new Map<string, string[]>()
+      const scannedNodeModulesPaths = new Set<string>()
 
       const installRewriteLoader = (path: string): void => {
         const resolvedTargetPath = sourcePath(path)
@@ -526,7 +506,8 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
 
       const analyzeSourcePath = (path: string): SourceAnalysis => {
         const normalizedPath = normalizeSourcePath(path)
-        const cachedAnalysis = sourceAnalysisByPath.get(normalizedPath)
+        const cache = isNodeModulesPath(normalizedPath) ? sourceAnalysisByPath : undefined
+        const cachedAnalysis = cache?.get(normalizedPath)
         if (cachedAnalysis) {
           return cachedAnalysis
         }
@@ -537,7 +518,7 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
         } catch (error) {
           if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
             const analysis = { importSpecifiers: [], needsRuntimeSpecifierRewrite: false }
-            sourceAnalysisByPath.set(normalizedPath, analysis)
+            cache?.set(normalizedPath, analysis)
             return analysis
           }
           throw error
@@ -551,66 +532,36 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
           ),
         }
 
-        sourceAnalysisByPath.set(normalizedPath, analysis)
+        cache?.set(normalizedPath, analysis)
         return analysis
       }
 
-      const collectNodeModulesRuntimeRewritePaths = (path: string, visiting = new Set<string>()): string[] => {
+      const scanPackageImports = (path: string, visited = new Set<string>()): void => {
         const normalizedPath = normalizeSourcePath(path)
-
-        if (!isNodeModulesEsmPath(normalizedPath, packageTypeByPackageJsonPath)) {
-          return []
-        }
-
-        const cachedPaths = nodeModulesRuntimeRewritePathsByPath.get(normalizedPath)
-        if (cachedPaths) {
-          return cachedPaths
-        }
-
-        if (visiting.has(normalizedPath)) {
-          return []
-        }
-
-        visiting.add(normalizedPath)
-
-        const rewritePaths = new Set<string>()
+        const installed = isNodeModulesPath(normalizedPath)
+        const seen = installed ? scannedNodeModulesPaths : visited
+        if (seen.has(normalizedPath)) return
+        seen.add(normalizedPath)
         const analysis = analyzeSourcePath(normalizedPath)
-
-        if (analysis.needsRuntimeSpecifierRewrite) {
-          rewritePaths.add(normalizedPath)
-        }
+        if (analysis.needsRuntimeSpecifierRewrite) installRewriteLoader(path)
 
         for (const specifier of analysis.importSpecifiers) {
-          if (runtimeModuleIdsBySpecifier.has(specifier) || isPreservedSpecifier(specifier)) {
-            continue
-          }
+          if (runtimeModuleIdsBySpecifier.has(specifier) || isPreservedSpecifier(specifier)) continue
+          // Bun resolves relative imports in local sources through onResolve, but can skip bare imports.
+          if (!installed && !isBareSpecifier(specifier)) continue
 
           const resolvedPath = resolveSourcePathFromSpecifier(specifier, normalizedPath)
-          if (!resolvedPath || !isNodeModulesEsmPath(resolvedPath, packageTypeByPackageJsonPath)) {
-            continue
-          }
-
-          for (const nestedPath of collectNodeModulesRuntimeRewritePaths(resolvedPath, visiting)) {
-            rewritePaths.add(nestedPath)
-          }
+          // A local parent's new bare edge is only for linked packages, not arbitrary installed dependencies.
+          if (!resolvedPath || (!installed && isNodeModulesPath(normalizeSourcePath(resolvedPath)))) continue
+          if (isEsmPath(resolvedPath, packageTypeByPackageJsonPath)) scanPackageImports(resolvedPath, visited)
         }
-
-        visiting.delete(normalizedPath)
-
-        const resolvedRewritePaths = [...rewritePaths]
-        nodeModulesRuntimeRewritePathsByPath.set(normalizedPath, resolvedRewritePaths)
-        return resolvedRewritePaths
       }
 
-      for (const [specifier, moduleEntry] of runtimeModules.entries()) {
-        const moduleId = runtimeModuleIdsBySpecifier.get(specifier)
-
-        if (!moduleId) {
-          continue
-        }
-
+      for (const [specifier, moduleEntry] of runtimeModules) {
+        const moduleId = runtimeModuleIdForSpecifier(specifier)
+        runtimeModuleIdsBySpecifier.set(specifier, moduleId)
         build.module(moduleId, async () => ({
-          exports: await resolveRuntimeModuleExports(moduleEntry),
+          exports: typeof moduleEntry === "function" ? await moduleEntry() : moduleEntry,
           loader: "object",
         }))
 
@@ -631,6 +582,7 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
 
         if (!nodeModulesPath) {
           installRewriteLoader(path)
+          scanPackageImports(path)
           return undefined
         }
 
@@ -638,9 +590,7 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
           return undefined
         }
 
-        for (const rewritePath of collectNodeModulesRuntimeRewritePaths(path)) {
-          installRewriteLoader(rewritePath)
-        }
+        if (isEsmPath(path, packageTypeByPackageJsonPath)) scanPackageImports(path)
 
         const packageRoot = nodeModulesPackageRootForPath(path)
         if (

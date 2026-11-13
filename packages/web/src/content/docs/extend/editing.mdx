@@ -362,24 +362,40 @@ Do not destroy an owned buffer or view separately. Destroy the renderable. Read
 
 ## Experimental extmarks
 
-Extmarks are an experimental simulated implementation. They are scheduled to move to native code. Do not treat them
-as stable native markers.
+Extmarks are experimental. The edit buffer stores them and applies the cursor rules around virtual extmarks natively.
 
-The lazy `EditorView.extmarks` property creates an `ExtmarksController`. The controller monkey-patches cursor, edit,
-selection-delete, undo, and redo methods on its specific `EditBuffer` and `EditorView`. `destroy()` restores those
-methods, removes its `content-changed` listener, and clears marker state.
+The lazy `EditorView.extmarks` property creates an `ExtmarksController`. While a controller lives and its view has no
+selection, the buffer's `moveCursorLeft`, `moveCursorRight`, `deleteCharBackward`, `deleteChar` and `setCursorByOffset`
+and the view's `moveUpVisual` and `moveDownVisual` apply those rules. Every controller of one buffer shares its
+extmarks, their data and metadata, and the type names, and these stay with the buffer when a controller goes:
+`destroy()` stops the rules for its view and leaves the rest.
 
 An extmark stores a half-open global display-offset range, `virtual`, optional style and priority values, arbitrary
 data, a numeric type, and optional metadata. Public operations are:
 
 - `create`, `delete`, `get`, `getAll`, `getVirtual`, and `getAtOffset`
 - `registerType`, `getTypeId`, `getTypeName`, and `getAllForTypeId`
-- `getMetadataFor`, `adjustExtmarksAfterDeletion`, `clear`, and `destroy`
+- `getMetadataFor`, `clear`, and `destroy`
 
-Virtual extmarks make wrapped cursor methods skip the marked range. Styled extmarks rebuild all buffer highlights after
-changes. A styled extmark's priority must be in the highlight range `0..255`; otherwise `create` throws and keeps no
-extmark. The simulation scans JavaScript text and adjusts offsets in JavaScript, so it inherits the offset limitations
-on this page.
+Edits move extmarks. Text inserted at an extmark's start shifts it, at its end leaves it, and strictly inside grows it.
+A delete clips an extmark and drops it once none of its text is left. An edit that changes part of a virtual extmark
+drops it and changes exactly the text it asked for. Undo and redo restore the extmarks, with their data and metadata,
+of the text they restore. `setText()` drops every extmark and its history; `clear()` drops every extmark. Ids are never
+reused. Offsets rest on cursor stops, and offsets past the text mean its end. Text typed at an empty extmark goes
+after it. Queries return extmarks in (start, id) order and read a snapshot: `get()` again after an edit. `priority`
+reads 0 when none was given.
+
+Malformed input is a miss, not an error: `create` returns 0 and adds nothing when the range is reversed or an offset,
+type, style or priority is not a non-negative integer; `get`, `getMetadataFor`, `getAllForTypeId` and `delete` find
+nothing for an id or type that no extmark has.
+
+Each move steps over one virtual extmark: Left from its end goes one unit before it, or to its start when another one
+ends there, and Right from its start, or one cell before it, to its end. Backspace at its end and Delete at its start
+delete it whole; Up, Down, a pointer, the wheel and the `cursorOffset` setter leave the cursor at an edge. Of
+overlapping virtual extmarks the oldest counts first, and the cursor ends on a character's start outside all of them. A
+styled extmark paints as one range highlight
+after the buffer's own highlights and leaves them in place. Its priority must be in the highlight range `0..255`;
+otherwise `create` throws and keeps no extmark. An unstyled extmark keeps any priority.
 
 `EditorView.destroy()` destroys a lazy controller after the native view. If you call `createExtmarksController()`
 directly, destroy the controller before the view and edit buffer.

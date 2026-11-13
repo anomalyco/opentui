@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { plugin as registerPlugin } from "bun"
@@ -42,11 +43,15 @@ try {
     },
   })
 
+  const name = "react-reconciler"
+  const hostRequire = createRequire(import.meta.url)
   const additional = {
+    [name]: await import(name),
     "runtime-plugin-support-extra": { marker: "ok" },
   }
   const preserve = (specifier: string) => specifier === "preserved-host-pkg"
   const first = ensureRuntimePluginSupport({ additional, preserve })
+  console.log(`hostReconciler=${typeof hostRequire(name)({}).createContainer === "function"}`)
   const second = ensureRuntimePluginSupport({ additional, preserve })
   let mismatchError = ""
   try {
