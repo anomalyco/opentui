@@ -227,10 +227,9 @@ export class CodeRenderable extends TextBufferRenderable {
   }
 
   private writeContent(value: string): void {
-    // Native stores a line break as one byte, so text with a carriage return goes the whole-text way.
     const delta = this._deltas && value.startsWith(this._content) ? value.slice(this._content.length) : undefined
     this._content = value
-    if (delta !== undefined && !delta.includes("\r")) {
+    if (delta !== undefined) {
       this.textBuffer.append(delta)
       this._version++
       this.setHighlightsDirty(true)
@@ -251,7 +250,7 @@ export class CodeRenderable extends TextBufferRenderable {
     } else {
       this.textBuffer.setText(value)
       this._shownVersion = -1
-      if (this.deltasAllowed() && !value.includes("\r")) {
+      if (this.deltasAllowed()) {
         const id = CodeRenderable.nextDeltaBuffer--
         this._deltas = { client: this._treeSitterClient, id, filetype: this._filetype!, sent: 0 }
       }
@@ -261,7 +260,8 @@ export class CodeRenderable extends TextBufferRenderable {
     this.updateTextInfo()
   }
 
-  // Only a streamed Markdown fence on the default path: no hook, no conceal, no preview.
+  // Only a streamed Markdown fence on the default path: no hook, no conceal, no preview. Markdown ends a fence's lines
+  // with "\n" alone, so its UTF-8 offsets are native's.
   private deltasAllowed(): boolean {
     return (
       this._streamsDeltas &&
