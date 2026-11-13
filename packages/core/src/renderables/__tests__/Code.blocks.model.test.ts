@@ -12,7 +12,7 @@
 // failure), measures what it paints, measures its current text when culled; a growth hold reads the painted height and
 // its scroll takes effect; the rows in view stay without input while an anchored row is in view; and the frame stays
 // within a fixed number of layout rounds. Settled, every block paints the highlight of its current text.
-import { expect, test } from "bun:test"
+import { afterAll, beforeAll, expect, test } from "bun:test"
 import { CodeRenderable } from "../Code.js"
 import { BoxRenderable } from "../Box.js"
 import { ScrollBoxRenderable } from "../ScrollBox.js"
@@ -127,33 +127,52 @@ interface Tag {
   epoch: number
 }
 
-// One renderer running the commands, with the model of its blocks.
-async function world(start: Start, reversed: boolean) {
-  // A manual clock: the renderer draws no frame of its own, so both twins see the same frames.
-  const { renderer, renderOnce, captureCharFrame } = await createTestRenderer({
+async function fixture(nested: boolean) {
+  const { renderer, renderOnce, captureCharFrame, dispose } = await createTestRenderer({
     width: 30,
     height: 10,
     clock: new ManualClock(),
   })
-  const client = new ModelClient()
   const syntaxStyle = SyntaxStyle.create(renderer.nativeScene)
-  const errors: unknown[] = []
-  renderer.on("render:error", (error) => errors.push(error))
   const box = new ScrollBoxRenderable(renderer, { width: 30, height: VIEW, flexShrink: 0 })
-  if (start.nested) {
+  if (nested) {
     const outer = new ScrollBoxRenderable(renderer, { width: 30, height: VIEW + 2 })
     renderer.root.add(outer)
     outer.add(new TextRenderable(renderer, { content: "outer", flexShrink: 0 }))
     outer.add(box)
   } else renderer.root.add(box)
   // The scene culls only parents with at least 16 children.
-  for (let i = 0; i < EDGE; i++) box.add(new TextRenderable(renderer, { content: `a${i}`, flexShrink: 0 }))
+  for (const prefix of ["a", "z"]) {
+    for (let i = 0; i < EDGE; i++) box.add(new TextRenderable(renderer, { content: `${prefix}${i}`, flexShrink: 0 }))
+  }
+  const errors: unknown[] = []
+  renderer.on("render:error", (error) => errors.push(error))
+  const close = async () => {
+    await dispose()
+    syntaxStyle.destroy()
+  }
+  return { renderer, box, renderOnce, captureCharFrame, syntaxStyle, errors, close, tail: box.getChildren()[EDGE] }
+}
+
+type Fixture = Awaited<ReturnType<typeof fixture>>
+let fixtures: Fixture[][]
+beforeAll(async () => {
+  fixtures = []
+  for (const nested of [false, true]) fixtures.push([await fixture(nested), await fixture(nested)])
+})
+afterAll(async () => {
+  for (const f of fixtures.flat()) await f.close()
+})
+
+function world(start: Start, reversed: boolean, f: Fixture) {
+  const { renderer, box, renderOnce, captureCharFrame, syntaxStyle, errors, tail } = f
+  const client = new ModelClient()
+  box.scrollTo(0)
   const options = { filetype: "hide", syntaxStyle, streaming: true, drawUnstyledText: false, treeSitterClient: client }
   const code = start.sources.map(
     (content) => new CodeRenderable(renderer, { ...options, content, width: "100%", flexShrink: 0 }),
   )
-  for (const block of code) box.add(block)
-  for (let i = 0; i < EDGE; i++) box.add(new TextRenderable(renderer, { content: `z${i}`, flexShrink: 0 }))
+  for (const block of code) box.insertBefore(block, tail)
   const spacers = new Map<number, BoxRenderable>()
 
   // Per block: every content it has had, the render epoch, and the last current reply (failed or held).
@@ -209,27 +228,20 @@ async function world(start: Start, reversed: boolean) {
     }
   }
 
-  const visibleRows = (block: CodeRenderable) => {
+  const visibleRows = (block: CodeRenderable, lines: string[]) => {
     const top = box.viewport.y
     const v0 = Math.max(top, block.y)
     const v1 = Math.min(top + VIEW, block.y + block.height)
     if (!box.visible || v1 <= v0) return undefined
-    const lines = captureCharFrame().split("\n")
     const rows: string[] = []
     for (let y = v0; y < v1; y++) rows.push((lines[y] ?? "").slice(block.x, block.x + block.width).trimEnd())
     return { rows, skip: v0 - block.y }
   }
   const matches = (rows: string[], skip: number, want: string[]) =>
     rows.every((row, i) => row === (want[i + skip] ?? "").trimEnd())
-  const view = () => {
-    const { x, y, width } = box.viewport
-    return captureCharFrame()
-      .split("\n")
-      .slice(y, y + VIEW)
-      .map((row) => row.slice(x, x + width))
-  }
-
   const check = (label: string) => {
+    const frame = captureCharFrame()
+    const lines = frame.split("\n")
     if (errors.length) fail("bounded", `${label}: ${(errors[0] as Error)?.message ?? String(errors[0])}`)
     const rounds = renderer.getNativeStats().frameWork.layoutRounds
     if (rounds > ROUNDS_MAX) fail("bounded", `${label}: ${rounds} layout rounds`)
@@ -237,7 +249,7 @@ async function world(start: Start, reversed: boolean) {
     let pushedOut = false
     code.forEach((block, i) => {
       const m = model[i]
-      const seen = visibleRows(block)
+      const seen = visibleRows(block, lines)
       if (process.env.MODEL_DEBUG)
         console.log(
           `  [${label}] b${i} y ${block.y} h ${block.height} view ${box.viewport.y} rows ${JSON.stringify(seen?.rows)}`,
@@ -286,7 +298,8 @@ async function world(start: Start, reversed: boolean) {
     scrolled = false
     // Without input or a reply, the rows around an anchored row in view stay. Without an anchor, a block that the frame
     // before painted and pushed above the view moves them in the next frame (code.mdx).
-    const rows = box.visible ? view() : []
+    const { x, y, width } = box.viewport
+    const rows = box.visible ? lines.slice(y, y + VIEW).map((row) => row.slice(x, x + width)) : []
     const top = box.viewport.y
     const anchorInView = !!anchored && !anchored.isDestroyed && anchored.y >= top && anchored.y < top + VIEW
     const still = anchorInView && anchorWasInView
@@ -298,6 +311,7 @@ async function world(start: Start, reversed: boolean) {
       )
     lastView = rows
     input = false
+    return frame
   }
 
   // A scroll may end an anchor (at the end of the content); the model ends it at every scroll.
@@ -364,11 +378,21 @@ async function world(start: Start, reversed: boolean) {
       }
       case "frame":
         await renderOnce()
-        check(`step ${i}`)
-        return
+        return check(`step ${i}`)
       case "tick":
         await tick()
         return
+    }
+  }
+
+  // Scroll again after layout or a reply moves the block. Stop when the frame needs neither.
+  const scrollAndHighlight = async (block: CodeRenderable, passes: number) => {
+    for (let pass = 0; pass < passes; pass++) {
+      box.scrollTo(block.y - box.viewport.y + box.scrollTop)
+      await renderOnce()
+      if (!client.pending.length && block.y === box.viewport.y) break
+      while (client.pending.length) client.reply(0)
+      await tick()
     }
   }
 
@@ -378,13 +402,7 @@ async function world(start: Start, reversed: boolean) {
     box.visible = true
     for (let i = 0; i < code.length; i++) {
       const block = code[i]
-      for (let pass = 0; pass < 6; pass++) {
-        box.scrollTo(block.y - box.viewport.y + box.scrollTop)
-        await renderOnce()
-        while (client.pending.length) client.reply(0)
-        await tick()
-        await tick()
-      }
+      await scrollAndHighlight(block, 6)
       box.scrollTo(block.y - box.viewport.y + box.scrollTop)
       await renderOnce()
       const m = model[i]
@@ -393,52 +411,53 @@ async function world(start: Start, reversed: boolean) {
       if (block.plainText !== want.join("\n"))
         fail("settled", `b${i} settles on ${JSON.stringify(block.plainText)}, want ${JSON.stringify(want.join("\n"))}`)
       if (block.height !== want.length) fail("settled", `b${i} measures ${block.height}, want ${want.length}`)
-      const seen = visibleRows(block)
+      const seen = visibleRows(block, captureCharFrame().split("\n"))
       if (want.join("") !== "" && (!seen || !matches(seen.rows, seen.skip, want)))
         fail("settled", `b${i} paints ${JSON.stringify(seen?.rows)}, want ${JSON.stringify(want)}`)
     }
   }
 
-  const close = async () => {
-    renderer.destroy()
-    await renderer.closed
-    syntaxStyle.destroy()
+  const close = () => {
+    for (const child of [...code, ...spacers.values()]) child.destroy()
   }
 
   // Highlight every block first, so the commands start from painted highlights.
   const ready = async () => {
-    for (const block of code) {
-      for (let pass = 0; pass < 3; pass++) {
-        box.scrollTo(block.y - box.viewport.y + box.scrollTop)
-        await renderOnce()
-        while (client.pending.length) client.reply(0)
-        await tick()
-      }
-    }
+    for (const block of code) await scrollAndHighlight(block, 3)
     box.scrollTo(EDGE)
     await renderOnce()
     check("start")
+    if (code.length && code[0].y !== box.viewport.y)
+      fail("start", "the first block does not start at the top of the viewport")
   }
 
-  return { step, settle, close, ready, frame: captureCharFrame }
+  return { step, settle, close, ready }
 }
 
 async function run(start: Start, commands: Command[], trace?: string[]): Promise<void> {
   const warn = console.warn
   console.warn = () => {}
-  const twins = [await world(start, false), await world(start, true)]
+  const pair = fixtures[start.nested ? 1 : 0]
   try {
+    const twins = pair.map((f, i) => world(start, i === 1, f))
     for (const twin of twins) await twin.ready()
     for (let i = 0; i < commands.length; i++) {
       trace?.push(show(commands[i]))
-      for (const twin of twins) await twin.step(commands[i], i)
-      if (commands[i].op === "frame" && twins[0].frame() !== twins[1].frame())
+      const frame = await twins[0].step(commands[i], i)
+      if ((await twins[1].step(commands[i], i)) !== frame)
         fail("order", `step ${i}: the frame differs when the turn's changes run in reverse order`)
     }
     for (const twin of twins) await twin.settle()
+    for (const twin of twins) twin.close()
+  } catch (error) {
+    // A failed trace may leave afterLayout callbacks on the box. Replay the shrinker on clean fixtures.
+    for (const [i, f] of pair.entries()) {
+      await f.close()
+      pair[i] = await fixture(!!start.nested)
+    }
+    throw error
   } finally {
     console.warn = warn
-    for (const twin of twins) await twin.close()
   }
 }
 

@@ -12,6 +12,7 @@ import { TreeSitterClient } from "../../lib/tree-sitter/index.js"
 import type { SimpleHighlight } from "../../lib/tree-sitter/types.js"
 import { createTestRenderer, setRendererCapabilities, type TestRenderer } from "../../testing.js"
 import { check, fail, rng } from "../../testing/model.js"
+import { getBaseAttributes } from "../../types.js"
 
 // A worker whose replies the model releases one by one, in any order. Only fences reach it: prose is the engine's.
 class FakeWorker extends TreeSitterClient {
@@ -104,7 +105,6 @@ function generate(seed: number): Command[] {
 let target: TestRenderer
 let renderOnce: () => Promise<void>
 let captureFrame: () => string
-let captureSpans: () => { lines: { spans: { text: string; fg: RGBA; bg: RGBA; attributes: number }[] }[] }
 let styles: SyntaxStyle[]
 
 beforeAll(async () => {
@@ -112,7 +112,6 @@ beforeAll(async () => {
   target = setup.renderer
   renderOnce = setup.renderOnce
   captureFrame = setup.captureCharFrame
-  captureSpans = setup.captureSpans
   styles = [
     SyntaxStyle.fromStyles(
       { default: { fg: RGBA.fromValues(1, 1, 1, 1) }, "markup.link.url": { fg: RGBA.fromValues(0, 0, 1, 1) } },
@@ -139,10 +138,7 @@ afterAll(() => {
   for (const style of styles) style.destroy()
 })
 
-const rows = () =>
-  captureFrame()
-    .split("\n")
-    .map((row) => row.trimEnd())
+const rows = () => captureFrame().split("\n")
 const text = (lines: string[]) => lines.join("\n").trimEnd()
 const codes = (node: Renderable): CodeRenderable[] => [
   ...(node instanceof CodeRenderable ? [node] : []),
@@ -151,31 +147,30 @@ const codes = (node: Renderable): CodeRenderable[] => [
 const rowsOf = (nodes: Renderable[]) =>
   new Set(nodes.flatMap((node) => Array.from({ length: node.height }, (_, at) => node.y + at)))
 
-/**
- * The frame, row by row: its characters, then its spans (colors and attributes) unless `plain` holds the row, then the
- * cells that link where a link can be; rows `hidden` holds are left out.
- */
-function snapshot(hidden: Set<number>, plain: Set<number>): string[] {
-  return captureSpans().lines.map((line, y) => {
-    if (hidden.has(y)) return ""
-    const chars = line.spans
-      .map((span) => span.text)
-      .join("")
-      .trimEnd()
-    const spans = plain.has(y)
-      ? []
-      : line.spans.map((span) => [span.text, span.fg.toInts(), span.bg.toInts(), span.attributes])
-    const links = /l|https/.test(chars)
-      ? Array.from(chars, (_, x) => target.getLinkAt(x, y)).flatMap((link, x) => (link ? [[x, link]] : []))
-      : []
-    return JSON.stringify([chars, spans, links])
+// Compare cell styles directly instead of constructing spans for the whole screen. Link IDs are local: compare URLs.
+function snapshot(hidden: Set<number>, plain: Set<number>, chars = rows()): string[] {
+  return target.currentRenderBuffer.withBuffers(({ width, height, fg, bg, attributes }) => {
+    const colors = (plane: Uint16Array) => Buffer.copyBytesFrom(plane).toString("latin1")
+    const foreground = colors(fg)
+    const background = colors(bg)
+    const attrs = String.fromCharCode(...attributes.map(getBaseAttributes))
+    return chars.slice(0, height).map((line, y) => {
+      if (hidden.has(y)) return ""
+      const row = line.trimEnd()
+      const links = /l|https/.test(row) ? Array.from(row, (_, x) => target.getLinkAt(x, y)) : []
+      const start = y * width
+      const end = start + width
+      const colorRow = (colors: string) => colors.slice(start * 8, end * 8) // Four u16 channels per cell.
+      const style = plain.has(y) ? "" : colorRow(foreground) + colorRow(background) + attrs.slice(start, end)
+      return JSON.stringify([plain.has(y) ? row : line, links]) + style
+    })
   })
 }
 
 /** The first row where two snapshots differ, shown both ways, or undefined. */
 function differs(a: string[], b: string[]): string | undefined {
   const at = a.findIndex((row, y) => row !== b[y])
-  return at === -1 ? undefined : `row ${at}\n${a[at]}\n${b[at]}`
+  return at === -1 ? undefined : `row ${at}\n${JSON.stringify(a[at])}\n${JSON.stringify(b[at])}`
 }
 
 // One run of a command list: a hooked, streamed Markdown answer in a scroll box with 16 siblings (so the scene culls it
@@ -226,6 +221,7 @@ async function run(commands: Command[]): Promise<void> {
   // A fence whose highlight failed draws its code without colors, which a twin's answered highlight has.
   let failed = false
   let compared = ""
+  let expected: string[] = []
   // A fresh document of the same source and options, drawn alone, with every fence highlight answered.
   const twin = async (streaming: boolean, hidden: Set<number>, plain: Set<number>) => {
     box.visible = false
@@ -247,7 +243,8 @@ async function run(commands: Command[]): Promise<void> {
   const frame = async () => {
     await renderOnce()
     if (!inView) return
-    const now = rows()
+    const lines = rows()
+    const now = lines.map((line) => line.trimEnd())
     // A fence's code is never hooked, and draws again once its highlight lands.
     const fences = codes(md)
     const code = rowsOf(fences)
@@ -302,12 +299,11 @@ async function run(commands: Command[]): Promise<void> {
     // P6 per frame: characters, colors and links equal a fresh twin's, except from a fence whose highlight is in flight
     // down, and a fence's colors after a failed highlight.
     const plain = failed ? code : new Set<number>()
-    const subject = snapshot(waiting, plain)
-    // A twin depends only on what the key holds: a frame equal to the last one compared needs none.
-    const key = JSON.stringify([md.content, options, [...titles], [...waiting], [...plain], subject])
-    if (key === compared) return
+    const subject = snapshot(waiting, plain, lines)
+    const key = JSON.stringify([md.content, options, [...titles], [...waiting], [...plain]])
+    if (key !== compared) expected = await twin(md.streaming, waiting, plain)
     compared = key
-    const difference = differs(subject, await twin(md.streaming, waiting, plain))
+    const difference = differs(subject, expected)
     if (difference) failWith("P6", `frame differs from a fresh twin on ${difference}`)
   }
 
@@ -388,6 +384,7 @@ async function run(commands: Command[]): Promise<void> {
     md.streaming = false
     for (let pass = 0; pass < 6; pass++) {
       await renderOnce()
+      if (!worker.pending.length) break
       while (worker.pending.length > 0) worker.reply()
       await new Promise<void>((resolve) => setImmediate(resolve))
     }
@@ -403,7 +400,7 @@ async function run(commands: Command[]): Promise<void> {
   }
 }
 
-// CI runs 1,000 seeds of 60 commands (about 5 s); MODEL_SEEDS=10000 is the deep run.
+// CI runs 1,000 seeds of 60 commands; MODEL_SEEDS=10000 is the deep run.
 test("streamed, hooked Markdown matches a fresh document in every frame", async () => {
   FakeWorker.replied = 0
   await check(1000, generate, run)
