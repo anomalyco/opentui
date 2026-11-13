@@ -204,10 +204,10 @@ pub const Layers = struct {
         return self.setWithSpare(allocator, link_pool, layer_id, start_byte, end_byte, runs, null);
     }
 
-    /// Runs of layer `layer_id` now (0 when it has none).
-    pub fn runCount(self: *const Layers, layer_id: u32) usize {
+    /// Runs of layer `layer_id` now (none when it has none).
+    pub fn runsOf(self: *const Layers, layer_id: u32) []const LayerRun {
         const found = self.position(layer_id);
-        return if (found.exists) self.items[found.index].runs.items.len else 0;
+        return if (found.exists) self.items[found.index].runs.items else &.{};
     }
 
     /// `set`, taking the new runs' storage from `spare` when it has room (then `spare` is the

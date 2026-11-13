@@ -60,6 +60,8 @@ pub const Counts = struct {
     rope_rebuilds: u64 = 0,
     /// Layer runs a `set` writes or moves, including the runs a growing layer reallocates.
     layer_runs_copied: u64 = 0,
+    /// Set runs whose edges a `setLayer` looks up in the text, since the layer does not hold them.
+    layer_run_seeks: u64 = 0,
 };
 
 const enabled = builtin.is_test;

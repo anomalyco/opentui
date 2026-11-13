@@ -1021,7 +1021,13 @@ test "layers: setLayer rejects bad ids, ranges and boundaries, and failed memory
     try testing.expectEqual(unchanged, tb.span_generation);
     try tb.setLayer(2, 4, std.math.maxInt(u32), &.{});
     try expectRuns(&.{.{ 1, 4, 1 }}, runsOf(&tb.layers, 2));
-    try tb.setLayer(2, 0, 8, &.{ .{ .start_byte = 1, .end_byte = 4, .group_set = 1 }, .{ .start_byte = 5, .end_byte = 8, .group_set = 2 } });
+    // Only the run the layer does not hold is looked up; set again, adjacent runs need none.
+    const adjacent = [_]LayerRun{ .{ .start_byte = 1, .end_byte = 4, .group_set = 1 }, .{ .start_byte = 4, .end_byte = 8, .group_set = 2 } };
+    for ([_]u64{ 1, 0 }) |seeks| {
+        _ = text_work.take();
+        try tb.setLayer(2, 0, 8, &adjacent);
+        try testing.expectEqual(seeks, text_work.take().layer_run_seeks);
+    }
     // Without a Context's group sets, no layer can be set.
     const bare = try TextBuffer.init(gpa, &setup.pools.graphemes, &setup.pools.links, .unicode);
     defer bare.deinit();
@@ -1866,12 +1872,16 @@ test "layers: seeded span model, from-scratch cells and a forced full repaint ag
                     const before = try gpa.dupe(LayerRun, runsOf(&tb.layers, layer_ids[layer]));
                     defer gpa.free(before);
                     const generation = tb.span_generation;
+                    _ = text_work.take();
                     const result = tb.setLayer(layer_ids[layer], start, end, buffer[0..kept]);
+                    const set_work = text_work.take();
                     if (try model.layers.set(layer, start, @min(end, model.layers.byte_count), buffer[0..kept])) try testing.expectError(error.LayerLimit, result) else try result;
                     // The span stamp moves exactly when a run changed; an equal set builds no span.
                     const same = std.mem.eql(u8, std.mem.sliceAsBytes(before), std.mem.sliceAsBytes(runsOf(&tb.layers, layer_ids[layer])));
                     try testing.expectEqual(same, generation == tb.span_generation);
                     if (same and kind == 2) {
+                        // Every run is one the layer holds: none copied, none looked up.
+                        try testing.expectEqual([2]u64{ 0, 0 }, [2]u64{ set_work.layer_runs_copied, set_work.layer_run_seeks });
                         const screen = try setup.screen(target.viewport.width, target.viewport.height);
                         defer screen.deinit();
                         _ = text_work.take();
