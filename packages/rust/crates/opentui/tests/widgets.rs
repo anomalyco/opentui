@@ -2187,8 +2187,13 @@ fn atomic_extmarks_move_with_edits_and_act_as_one_unit() {
     app.press("backspace");
     assert_eq!(input.value(), "see a  now");
     assert_eq!(input.extmark(mention), None);
+    // Undo brings the mark back with the text, and redo removes it again (473).
     app.press("ctrl+-");
     assert_eq!(input.value(), "see a @main.rs now");
+    assert_eq!(input.extmark(mention).map(|mark| mark.range()), Some(6..14));
+    app.press("ctrl+.");
+    assert_eq!((input.value().as_str(), input.extmark(mention)), ("see a  now", None));
+    app.press("ctrl+-");
     // Delete at the start of a mark does the same; replacing the value removes every mark.
     let again = input.add_extmark(6..14, ExtmarkOptions::default().atomic());
     input.set_cursor_offset(6);
