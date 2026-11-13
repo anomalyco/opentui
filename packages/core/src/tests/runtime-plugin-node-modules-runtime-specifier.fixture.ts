@@ -5,39 +5,32 @@ import { plugin as registerPlugin } from "bun"
 import { createRuntimePlugin } from "../runtime-plugin.js"
 
 const tempRoot = mkdtempSync(join(tmpdir(), "core-runtime-plugin-node-modules-runtime-specifier-fixture-"))
-const externalPackageDir = join(tempRoot, "external", "node_modules", "runtime-plugin-node-modules-fixture")
+const externalPackageDir = join(tempRoot, "node_modules", "consumer")
 const externalPackageEntryPath = join(externalPackageDir, "index.js")
 
-mkdirSync(externalPackageDir, { recursive: true })
+const privateCoreDir = join(externalPackageDir, "node_modules", "@opentui", "core")
+mkdirSync(privateCoreDir, { recursive: true })
+writeFileSync(join(privateCoreDir, "package.json"), JSON.stringify({ type: "module", exports: "./index.js" }))
+writeFileSync(join(privateCoreDir, "index.js"), 'export const marker = "private"')
 
-writeFileSync(
-  join(externalPackageDir, "package.json"),
-  JSON.stringify({
-    name: "runtime-plugin-node-modules-fixture",
-    private: true,
-    type: "module",
-    exports: "./index.js",
-  }),
-)
-
-writeFileSync(
-  externalPackageEntryPath,
-  ['import { marker } from "@opentui/core"', "export const externalMarker = marker"].join("\n"),
-)
+writeFileSync(join(externalPackageDir, "package.json"), JSON.stringify({ type: "module" }))
+writeFileSync(externalPackageEntryPath, 'export { marker } from "@opentui/core"')
 
 registerPlugin.clearAll()
-
+const mode = process.argv[2] ?? "default"
 registerPlugin(
   createRuntimePlugin({
-    core: {
-      marker: "resolved-from-node-modules-runtime-specifier",
-    },
+    core: { marker: "host" },
+    rewrite:
+      mode === "default"
+        ? undefined
+        : { nodeModulesRuntimeSpecifiers: false, nodeModulesBareSpecifiers: mode === "bare-only" },
   }),
 )
 
 try {
-  const externalModule = (await import(externalPackageEntryPath)) as { externalMarker: string }
-  console.log(`marker=${externalModule.externalMarker}`)
+  const { marker } = await import(externalPackageEntryPath)
+  console.log(`marker=${marker}`)
 } finally {
   registerPlugin.clearAll()
   rmSync(tempRoot, { recursive: true, force: true })

@@ -135,7 +135,7 @@ describe("runtime plugin", () => {
     })
   })
 
-  it.each([true, false])("registers runtime modules with node_modules runtime rewriting %s", async (enabled) => {
+  it("exposes mapped runtime modules only under their virtual IDs", async () => {
     const { build, resolveHandlers, modules } = createMockBuild()
     createRuntimePlugin({
       core: { marker: "core" },
@@ -145,7 +145,6 @@ describe("runtime plugin", () => {
         "./local.ts": { value: "local" },
       },
       preserve: ["fixture-sync"],
-      rewrite: { nodeModulesRuntimeSpecifiers: enabled },
     }).setup(build as any)
 
     for (const [specifier, exports] of [
@@ -213,9 +212,9 @@ describe("runtime plugin", () => {
     expect(stdout).toContain("marker=resolved-from-external-root")
   })
 
-  it("rewrites runtime specifiers in node_modules modules by default", () => {
+  it.each(["default", "disabled", "bare-only"])("resolves runtime specifiers in node_modules (%s)", (mode) => {
     const fixturePath = join(import.meta.dir, "runtime-plugin-node-modules-runtime-specifier.fixture.ts")
-    const result = Bun.spawnSync([process.execPath, fixturePath], {
+    const result = Bun.spawnSync([process.execPath, fixturePath, mode], {
       cwd: join(import.meta.dir, "..", ".."),
       stdout: "pipe",
       stderr: "pipe",
@@ -225,7 +224,7 @@ describe("runtime plugin", () => {
     const stdout = result.stdout.toString().trim()
 
     expect(result.exitCode).toBe(0)
-    expect(stdout).toContain("marker=resolved-from-node-modules-runtime-specifier")
+    expect(stdout).toBe(`marker=${mode === "default" ? "host" : "private"}`)
   })
 
   it("does not crash when prescan sees import-like strings for missing files", () => {
