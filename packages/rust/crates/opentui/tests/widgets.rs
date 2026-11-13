@@ -1643,6 +1643,22 @@ fn a_palette_refresh_reports_what_came_once_and_runs_a_queued_refresh_after() {
     app.advance(Duration::from_secs(1));
     assert_eq!(seen.borrow().len(), 2);
     assert_eq!(app.palette().and_then(|palette| palette.background), Some(Color::rgb(255, 255, 255)));
+    // Any one color is an answer: the wait ends the refresh with only that color.
+    let (rgb, n) = (Color::rgb(1, 2, 3), None);
+    let c = Some(rgb);
+    for (calls, reply, expected) in [
+        (3, OscColor::Palette(0, rgb), (c, n, n, n)),
+        (4, OscColor::Foreground(rgb), (n, c, n, n)),
+        (5, OscColor::Background(rgb), (n, n, c, n)),
+        (6, OscColor::Cursor(rgb), (n, n, n, c)),
+    ] {
+        app.refresh_palette();
+        app.event(Event::Color(reply));
+        app.advance(Duration::from_secs(1));
+        let palette = app.palette().unwrap();
+        let got = (palette.colors[0], palette.foreground, palette.background, palette.cursor);
+        assert_eq!((seen.borrow().len(), got), (calls, expected), "{reply:?}");
+    }
 }
 
 #[test]
