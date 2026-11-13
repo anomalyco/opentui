@@ -408,6 +408,8 @@ describe("BoxRenderable - per-side borders", () => {
     const expected = captureFrame()
     const leftColor = getCellForeground(0, 1)
     fromOptions.destroy()
+    // A destroyed box ignores the write, as its other paint setters do.
+    fromOptions.borderTopStyle = "single"
     const fromSetters = addBox()
     Object.assign(fromSetters, options)
     await renderOnce()
