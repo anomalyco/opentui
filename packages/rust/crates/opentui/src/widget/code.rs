@@ -678,6 +678,25 @@ pub(crate) mod tests {
         panic!("a highlight never landed");
     }
 
+    // Another view of a code view's buffer keeps its syntax colors after the code view is gone: the buffer holds the
+    // style table it is bound to (bigboi-3).
+    #[test]
+    fn a_buffer_keeps_its_style_table_after_its_code_view_drops() {
+        let app = TestApp::new(12, 1);
+        let theme = SyntaxTheme::new().style("keyword", Style::new().fg(Color::RED));
+        let code = Code::new(&app).filetype("rust").syntax_theme(theme).set_code("let a = 1;");
+        app.root().add(&code);
+        app.render();
+        let view = TextView::new(code.buffer()).unwrap();
+        let other = build(&app, NodeKind::TextView, |element| CodeText { element, code: Weak::new() });
+        other.element.apply(|node| node.set_text_view(Some(&view)));
+        other.element.set_layout(LayoutProperty::Width(Length::Cells(12.0)));
+        code.element().detach();
+        drop(code);
+        app.root().element().insert(&other.element, None);
+        assert_eq!(app.render().cell(0, 0).unwrap().fg, Color::RED);
+    }
+
     // Rust and Markdown pieces; a CR and an LF also arrive apart.
     const PIECES: &[&str] = &[
         "let ",

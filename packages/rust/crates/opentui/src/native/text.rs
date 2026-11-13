@@ -4,6 +4,7 @@ use super::{Context, Node, WidthMethod, WrapMode};
 use crate::error::{Result, check, count};
 use crate::style::{EncodedSpans, Span, Style};
 use crate::sys;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 /// Text buffer counts. Widths count display columns.
@@ -39,7 +40,7 @@ pub struct TextMeasure {
 
 /// Shared, read-only styled text. Views of it wrap and scroll independently.
 #[derive(Clone)]
-pub struct TextBuffer(Rc<Resource>);
+pub struct TextBuffer(Rc<Resource>, Rc<RefCell<Option<SyntaxStyle>>>);
 
 impl TextBuffer {
     /// `width_method` is normally the Session's detected method, such as
@@ -52,7 +53,7 @@ impl TextBuffer {
             ("ot_text_buffer_destroy", sys::ot_text_buffer_destroy),
             |context, handle| unsafe { sys::ot_text_buffer_create(context, &options, handle) },
         )?;
-        Ok(Self(Rc::new(resource)))
+        Ok(Self(Rc::new(resource), Rc::default()))
     }
 
     pub fn context(&self) -> &Context {
@@ -109,13 +110,16 @@ impl TextBuffer {
         })
     }
 
-    /// Uses `style` as the table layer runs' group sets and highlights' style ids resolve against, or none.
+    /// Uses `style` as the table layer runs' group sets and highlights' style ids resolve against, or none. The
+    /// buffer keeps the table alive while it is bound.
     pub fn set_syntax_style(&self, style: Option<&SyntaxStyle>) -> Result<()> {
-        let style = style.map(SyntaxStyle::handle);
+        let handle_of = style.map(SyntaxStyle::handle);
         let (context, handle) = self.raw();
         check("ot_text_buffer_set_syntax_style", unsafe {
-            sys::ot_text_buffer_set_syntax_style(context, handle, style.as_ref().map_or(std::ptr::null(), |s| s))
-        })
+            sys::ot_text_buffer_set_syntax_style(context, handle, handle_of.as_ref().map_or(std::ptr::null(), |s| s))
+        })?;
+        *self.1.borrow_mut() = style.cloned();
+        Ok(())
     }
 
     /// Replaces layer `layer_id` inside `range` with `runs`, as [`EditBuffer::set_layer`](super::EditBuffer::set_layer)
