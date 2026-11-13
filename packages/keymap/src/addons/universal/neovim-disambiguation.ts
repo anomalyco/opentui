@@ -17,12 +17,10 @@ export function registerNeovimDisambiguation<TTarget extends object, TEvent exte
 
   return keymap.appendDisambiguationResolver((ctx) => {
     return ctx.defer(async (deferred) => {
-      const elapsed = await deferred.sleep(timeoutMs)
-      if (!elapsed) {
-        return
+      // Let a queued continuation cancel the exact match before committing it.
+      if ((await deferred.sleep(timeoutMs)) && (await deferred.sleep(0))) {
+        return deferred.runExact()
       }
-
-      return deferred.runExact()
     })
   })
 }

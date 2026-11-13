@@ -1339,6 +1339,9 @@ fn highlighted_code_restyles_appends_and_theme_changes() {
     assert_eq!(capture.cell(0, 1).unwrap().fg, app.theme().foreground);
     let keyword = syntax_fg(&app, "keyword");
     assert!(app.wait_until(Duration::from_secs(10), || app.render().cell(0, 1).unwrap().fg == keyword));
+    // Two appends keep the shown highlight: the tail stays plain until the worker's lands.
+    code.append(" let c;").append(" let d;");
+    assert_eq!(app.render().cell(7, 1).unwrap().fg, app.theme().foreground);
     code.syntax_theme(SyntaxTheme::new().style("keyword", Style::new().fg(Color::RED)));
     let capture = app.render();
     assert_eq!(capture.cell(0, 0).unwrap().fg, Color::RED);
@@ -2180,15 +2183,21 @@ fn atomic_extmarks_move_with_edits_and_act_as_one_unit() {
     // Text typed before the mark moves it.
     app.type_text("a ");
     assert_eq!(input.value(), "see a @main.rs now");
-    assert_eq!(input.extmark(mention).unwrap().range(), 6..14);
+    let saved = input.extmark(mention).unwrap();
+    assert_eq!(saved.range(), 6..14);
     assert_eq!(input.extmarks_at(10).len(), 1);
     // Backspace at its end deletes all of it as one edit.
     input.set_cursor_offset(14);
     app.press("backspace");
     assert_eq!(input.value(), "see a  now");
     assert_eq!(input.extmark(mention), None);
+    // Undo brings the mark back with the text, its options included, and redo removes it again (473).
     app.press("ctrl+-");
     assert_eq!(input.value(), "see a @main.rs now");
+    assert_eq!(input.extmark(mention), Some(saved));
+    app.press("ctrl+.");
+    assert_eq!((input.value().as_str(), input.extmark(mention)), ("see a  now", None));
+    app.press("ctrl+-");
     // Delete at the start of a mark does the same; replacing the value removes every mark.
     let again = input.add_extmark(6..14, ExtmarkOptions::default().atomic());
     input.set_cursor_offset(6);
@@ -2248,6 +2257,26 @@ fn moves_into_an_atomic_extmark_go_to_its_nearer_edge() {
         app.press("down");
         assert_eq!(area.cursor_offset(), to, "down from {from} with {marks:?}");
     }
+    // Overlapping marks: Up and Backspace take the mark added first, whatever its position.
+    let app = TestApp::new(20, 4);
+    let area = Textarea::new(&app).grow(1.0);
+    area.set_text("0123456789\n0123456789\n0123456789");
+    app.root().add(&area);
+    area.focus();
+    for (start, end) in [(14, 20), (11, 16)] {
+        area.add_extmark(start..end, ExtmarkOptions::default().atomic());
+    }
+    app.render();
+    area.set_cursor_offset(26);
+    app.press("up");
+    assert_eq!(area.cursor_offset(), 11);
+    area.set_text("abcd");
+    for (start, end) in [(1, 4), (0, 4)] {
+        area.add_extmark(start..end, ExtmarkOptions::default().atomic());
+    }
+    area.set_cursor_offset(4);
+    app.press("backspace");
+    assert_eq!(area.text(), "a");
 }
 
 #[test]
@@ -2341,6 +2370,18 @@ fn mouse_and_wheel_leave_the_cursor_outside_atomic_extmarks() {
         }
         assert_eq!(area.cursor_offset(), to, "{gesture} from {from} in {text:?} with {marks:?}");
     }
+    // An undo that brings back the only mark leaves the cursor outside it, as other edits do.
+    let app = TestApp::new(24, 2);
+    let area = Textarea::new(&app).set_text("x ABCD y").height(1);
+    app.root().add(&area);
+    area.focus();
+    area.add_extmark(2..6, ExtmarkOptions::default().atomic());
+    app.render();
+    app.drag((0, 0), (3, 0));
+    app.press("backspace");
+    assert_eq!(area.text(), "CD y");
+    app.press("ctrl+-");
+    assert_eq!((area.text().as_str(), area.cursor_offset()), ("x ABCD y", 6));
 }
 
 #[test]

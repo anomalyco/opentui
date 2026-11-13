@@ -7,12 +7,11 @@ use crate::app::{App, Cx};
 use crate::error::Result;
 use crate::input::{KeyEvent, Keymap, MouseEvent, MouseEventKind};
 use crate::native::{
-    EditBuffer, EditCommand, EditQuery, EditorOptions, EditorQuery, EditorView, Highlight, Hooks, LayerRun, NodeKind,
-    SelectionColors, SelectionUnit, SyntaxStyle, Viewport, WrapMode,
+    EditBuffer, EditCommand, EditQuery, EditorOptions, EditorQuery, EditorView, Hooks, NodeKind, SelectionColors,
+    SelectionUnit, SyntaxStyle, Viewport, WrapMode,
 };
 use crate::style::{Color, Span, Style};
 use crate::syntax::{self, SyntaxTheme};
-use crate::sys;
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::rc::Rc;
@@ -74,8 +73,8 @@ macro_rules! extmark_methods {
     () => {
         /// Marks a range of the text so it moves with edits: a styled decoration, or with
         /// [`ExtmarkOptions::atomic`], a token the cursor and deletions treat as one unit, such as a mention. Offsets
-        /// count as the cursor's do; see [`Extmark`]. Replacing the text with `set_text` or `set_value` removes all
-        /// marks, and undoing an edit does not bring back marks it removed.
+        /// count as the cursor's do and past the text mean its end; see [`Extmark`]. Replacing the text with `set_text`
+        /// or `set_value` removes all marks; undoing an edit brings back the marks it removed.
         pub fn add_extmark(&self, range: std::ops::Range<u32>, options: ExtmarkOptions) -> ExtmarkId {
             self.0.add_extmark(range, options)
         }
@@ -299,6 +298,8 @@ pub(crate) struct EditorCore {
     extmarks: RefCell<Extmarks>,
     /// Set while an edit is tracked for extmarks, so nested edits are counted once.
     tracking: Cell<bool>,
+    /// A press left the cursor on its cell, maybe inside an atomic mark, until a rule moves it out.
+    held: Cell<bool>,
     cursor_options: Cell<EditorOptions>,
     pub on_cursor: Callbacks<(u32, u32)>,
     filetype: RefCell<Option<String>>,
@@ -344,6 +345,7 @@ impl EditorCore {
             keymap: RefCell::new(if single_line { input_keymap() } else { textarea_keymap() }),
             extmarks: RefCell::new(Extmarks::default()),
             tracking: Cell::new(false),
+            held: Cell::new(false),
             cursor_options: Cell::new(EditorOptions { color: theme.cursor, ..Default::default() }),
             on_cursor: Callbacks::default(),
             filetype: RefCell::new(None),
@@ -423,10 +425,6 @@ impl EditorCore {
         self.clear_selection_state();
         self.report(self.buffer.set_text(&text, false));
         self.goto_buffer_end();
-        if !self.extmarks.borrow().marks.is_empty() {
-            self.extmarks.borrow_mut().marks.clear();
-            self.refresh_extmarks();
-        }
     }
 
     /// The units `max_length` counts a character in: UTF-16 code units in an `Input`, one per character in a `Textarea`.
@@ -534,19 +532,18 @@ impl EditorCore {
     /// selection moves one character, as Core's does.
     fn step_horizontal(&self, forward: bool) {
         let before = self.cursor().2;
-        let marks = self.extmarks.borrow();
         let edge = if self.selection().is_some() {
             None
         } else if forward {
-            marks.atomic_containing(before + 1).filter(|mark| before <= mark.start).map(|mark| mark.end)
+            let mark = extmarks::atomic_containing(&self.marks(), before + 1);
+            mark.filter(|mark| before <= mark.start).map(|mark| mark.end)
         } else {
             before
                 .checked_sub(1)
-                .and_then(|target| marks.atomic_containing(target))
+                .and_then(|target| extmarks::atomic_containing(&self.marks(), target))
                 .filter(|mark| before >= mark.end)
                 .map(|mark| mark.start)
         };
-        drop(marks);
         let command = match edge {
             Some(end) if forward => EditCommand::CursorOffset(end),
             Some(start) => return self.move_before(start),
@@ -568,7 +565,8 @@ impl EditorCore {
         let before = self.cursor().2;
         self.report(if down { self.view.move_down() } else { self.view.move_up() });
         let after = self.cursor().2;
-        let Some(mark) = self.extmarks.borrow().atomic_containing(after) else { return };
+        let marks = self.marks();
+        let Some(mark) = extmarks::atomic_containing(&marks, after) else { return };
         if after - mark.start < mark.end - after {
             self.move_before(mark.start);
             if !down || self.cursor().2 > before {
@@ -576,7 +574,7 @@ impl EditorCore {
             }
         }
         // Past later marks that overlap the end, so the cursor is not left inside one.
-        self.report(self.buffer.command(EditCommand::CursorOffset(self.outside(mark.end, true))));
+        self.report(self.buffer.command(EditCommand::CursorOffset(Self::outside(&marks, mark.end, true))));
     }
 
     fn goto_buffer_end(&self) {
@@ -790,38 +788,30 @@ impl EditorCore {
 
     // Extmarks.
 
-    /// The cursor offset at the end of `text`: display columns as the buffer counts them, plus one per line break.
-    fn measure(&self, text: &str) -> u32 {
-        self.report(self.buffer.measure(text)).unwrap_or(0)
+    /// The marks in creation (id) order, the order the cursor rules search them in. Native code moves them with each
+    /// edit.
+    fn marks(&self) -> Vec<Extmark> {
+        let marks = self.report(self.buffer.marks()).unwrap_or_default();
+        let mut marks: Vec<Extmark> = marks.iter().map(|(raw, style)| Extmark::from_native(raw, *style)).collect();
+        marks.sort_by_key(|mark| mark.id);
+        marks
     }
 
-    /// Runs an edit, then moves extmarks for whatever it changed and keeps the cursor out of atomic marks.
+    /// Runs an edit and keeps the cursor out of atomic marks, once for nested edits.
     pub fn tracked<R>(&self, edit: impl FnOnce() -> R) -> R {
-        if self.tracking.get() || self.extmarks.borrow().marks.is_empty() {
+        if self.tracking.get() {
             return edit();
         }
         // A press leaves the cursor on its cell for the handlers until the release; an edit before then starts at the
         // nearer edge.
-        if self.selection().is_none() {
+        if self.held.get() && self.selection().is_none() {
             self.keep_cursor_outside(Ordering::Equal);
         }
         self.tracking.set(true);
-        let before = self.text();
         let cursor_before = self.cursor().2;
-        let selection_before = self.selection().map_or(u32::MAX, |(start, _)| start);
         let result = edit();
         self.tracking.set(false);
-        // A handler may have replaced the text and cleared the marks.
-        if self.extmarks.borrow().marks.is_empty() {
-            return result;
-        }
-        let after = self.text();
-        if before != after {
-            let limit = cursor_before.min(self.cursor().2).min(selection_before);
-            let change = extmarks::change(&before, &after, limit, &mut |text| self.measure(text));
-            extmarks::apply(&mut self.extmarks.borrow_mut().marks, change);
-            self.refresh_extmarks();
-        }
+        // Undo can bring back a mark around the cursor, so this runs even when no mark was there before.
         self.keep_cursor_outside(self.cursor().2.cmp(&cursor_before));
         result
     }
@@ -829,8 +819,10 @@ impl EditorCore {
     /// Moves a cursor inside atomic marks to the outer edge of the marks around it: toward the end for `Greater`, the
     /// start for `Less`, or the nearer one.
     fn keep_cursor_outside(&self, toward: Ordering) {
+        self.held.set(false);
+        let marks = self.marks();
         let cursor = self.cursor().2;
-        let (start, end) = (self.outside(cursor, false), self.outside(cursor, true));
+        let (start, end) = (Self::outside(&marks, cursor, false), Self::outside(&marks, cursor, true));
         let to_end = match toward {
             Ordering::Less => false,
             Ordering::Greater => true,
@@ -842,9 +834,8 @@ impl EditorCore {
     }
 
     /// The first offset from `offset` toward the end (`forward`) or the start that no atomic mark surrounds.
-    fn outside(&self, mut offset: u32, forward: bool) -> u32 {
-        let marks = self.extmarks.borrow();
-        while let Some(mark) = marks.atomic_around(offset) {
+    fn outside(marks: &[Extmark], mut offset: u32, forward: bool) -> u32 {
+        while let Some(mark) = extmarks::atomic_around(marks, offset) {
             offset = if forward { mark.end } else { mark.start };
         }
         offset
@@ -853,7 +844,7 @@ impl EditorCore {
     /// Deletes a whole atomic mark that starts at the cursor (`forward`) or ends at it. Returns whether it did.
     fn delete_atomic(&self, forward: bool) -> bool {
         let cursor = self.cursor().2;
-        let mark = self.extmarks.borrow().marks.iter().copied().find(|mark| {
+        let mark = self.marks().into_iter().find(|mark| {
             mark.options.atomic
                 && mark.start < mark.end
                 && if forward { mark.start == cursor } else { mark.end == cursor }
@@ -864,37 +855,6 @@ impl EditorCore {
         self.report(self.view.delete_selection());
         self.clear_selection_state();
         true
-    }
-
-    /// Redraws styled marks as highlights. Highlight offsets skip line breaks, unlike the cursor's.
-    fn refresh_extmarks(&self) {
-        let Some(app) = self.element.app() else { return };
-        self.report(self.buffer.remove_highlights(extmarks::HIGHLIGHT_TAG));
-        let styled: Vec<Extmark> =
-            self.extmarks.borrow().marks.iter().filter(|mark| mark.options.style.is_some()).copied().collect();
-        if styled.is_empty() {
-            app.request_redraw();
-            return;
-        }
-        // Each line break before an offset is one position the highlight's offset leaves out.
-        let skip_breaks = |offset: u32| {
-            let row = app.report(self.buffer.position(EditQuery::Offset(offset))).flatten().map_or(0, |at| at.row);
-            offset.saturating_sub(row)
-        };
-        for mark in styled {
-            let style = mark.options.style.expect("filtered to styled marks");
-            let Some(style_id) = self.style_id(style) else { continue };
-            let highlight = Highlight {
-                start: skip_breaks(mark.start),
-                end: skip_breaks(mark.end),
-                style_id,
-                // Above syntax highlights, at 0.
-                priority: mark.options.priority.saturating_add(1),
-                tag: extmarks::HIGHLIGHT_TAG,
-            };
-            self.report(self.buffer.highlight(highlight));
-        }
-        app.request_redraw();
     }
 
     /// The buffer's style table. Until `syntax_style` sets one, the editor makes its own, with its syntax theme.
@@ -910,75 +870,33 @@ impl EditorCore {
         Some(table)
     }
 
-    /// The id of an extmark's `style` in the buffer's style table, registering it on first use under a name made of its
-    /// fields, so editors that share a table never redefine each other's.
-    fn style_id(&self, style: Style) -> Option<u32> {
-        if let Some(&id) = self.extmarks.borrow().styles.get(&style) {
-            return Some(id);
-        }
-        let id = self.report(self.table()?.register(&format!("opentui.{style:?}"), style))?;
-        self.extmarks.borrow_mut().styles.insert(style, id);
-        Some(id)
-    }
-
-    /// The group set of a piece's capture names, registered first with the table's palette. A name over the
-    /// group-set name bound is left out, and past the name count bound the outermost names go. Past the Context's
-    /// group-set bound there is none, and the piece paints plain rather than ending the app.
-    fn group_set(&self, names: Vec<&'static str>) -> Option<u32> {
-        if let Some(&id) = self.extmarks.borrow().group_sets.get(&names) {
-            return Some(id);
-        }
-        self.report(self.table()?.register_captures(&names))?;
-        let prefixed: Vec<String> = (names.iter().map(|name| format!("opentui.{name}")))
-            .filter(|name| name.len() <= sys::OT_GROUP_SET_NAME_BYTE_COUNT_MAX as usize)
-            .collect();
-        let kept = &prefixed[prefixed.len().saturating_sub(sys::OT_GROUP_SET_NAME_COUNT_MAX as usize)..];
-        let id = self.buffer.context().group_set(&kept.iter().map(String::as_str).collect::<Vec<_>>()).ok()?;
-        self.extmarks.borrow_mut().group_sets.insert(names, id);
-        Some(id)
-    }
-
-    /// Uses `style` as the buffer's style table, registering extmark and syntax styles in it as needed.
+    /// Uses `style` as the buffer's style table, registering syntax styles in it as needed. Marks keep their styles.
     pub fn set_syntax_style(&self, style: &SyntaxStyle) {
         self.report(self.buffer.set_syntax_style(Some(style)));
-        {
-            let mut extmarks = self.extmarks.borrow_mut();
-            extmarks.syntax = Some(style.clone());
-            extmarks.styles.clear();
-        }
+        self.extmarks.borrow_mut().syntax = Some(style.clone());
         // The table takes this editor's theme and names; editors sharing it paint the theme set last.
-        let names: Vec<&'static str> = self.extmarks.borrow().group_sets.keys().flatten().copied().collect();
+        let lists = self.extmarks.borrow().group_sets.lists();
         self.report(style.set_capture_theme(&self.syntax_theme.borrow()));
-        self.report(style.register_captures(&names));
-        self.refresh_extmarks();
+        lists.iter().for_each(|names| drop(self.report(style.capture_group(names))));
     }
 
     pub fn add_extmark(&self, range: std::ops::Range<u32>, options: ExtmarkOptions) -> ExtmarkId {
-        let id = self.extmarks.borrow_mut().add(range, options);
-        self.refresh_extmarks();
-        id
+        let range = range.start.min(range.end)..range.start.max(range.end);
+        // Above syntax layers, which paint at 0.
+        let priority = options.priority.saturating_add(1);
+        ExtmarkId(self.report(self.buffer.add_mark(range, options.atomic, options.style, priority)).unwrap_or(0))
     }
 
     pub fn remove_extmark(&self, id: ExtmarkId) -> bool {
-        let removed = {
-            let mut extmarks = self.extmarks.borrow_mut();
-            let before = extmarks.marks.len();
-            extmarks.marks.retain(|mark| mark.id != id);
-            extmarks.marks.len() != before
-        };
-        if removed {
-            self.refresh_extmarks();
-        }
-        removed
+        self.report(self.buffer.remove_mark(id.0)).unwrap_or(false)
     }
 
     pub fn clear_extmarks(&self) {
-        self.extmarks.borrow_mut().marks.clear();
-        self.refresh_extmarks();
+        self.report(self.buffer.clear_marks());
     }
 
     pub fn extmarks(&self) -> Vec<Extmark> {
-        let mut marks = self.extmarks.borrow().marks.clone();
+        let mut marks = self.marks();
         marks.sort_by_key(|mark| (mark.start, mark.id));
         marks
     }
@@ -1035,13 +953,14 @@ impl EditorCore {
             return;
         }
         let text = self.text();
-        let (lists, pieces) = syntax::highlight_names(&text, filetype).unwrap_or_default();
-        let sets: Vec<Option<u32>> = lists.into_iter().map(|names| self.group_set(names)).collect();
-        let runs: Vec<LayerRun> = (pieces.into_iter())
-            .filter_map(|(range, list)| {
-                Some(LayerRun { start_byte: range.start as u32, end_byte: range.end as u32, group_set: sets[list]? })
-            })
-            .collect();
+        let named = syntax::highlight_names(&text, filetype).unwrap_or_default();
+        // Without pieces the editor makes no table, so one the app bound on the buffer stays.
+        let table = if named.0.is_empty() { None } else { self.table() };
+        let runs = match table {
+            Some(table) => self.extmarks.borrow_mut().group_sets.runs(&table, self.buffer.context(), named, |at| at),
+            None => Ok(Vec::new()),
+        };
+        let Some(runs) = self.report(runs) else { return };
         self.report(self.buffer.set_layer(extmarks::SYNTAX_LAYER, 0..u32::MAX, &runs));
     }
 
@@ -1120,6 +1039,7 @@ impl Behavior for EditorCore {
             self.report(self.view.select_local(anchor, focus, !selection.start, selection.unit, true, colors));
             self.pointer_side.set((anchor.1, anchor.0).cmp(&(focus.1, focus.0)));
             self.pointer_unit.set(selection.unit);
+            self.held.set(selection.start);
             (!selection.start).then_some(Ordering::Equal)
         } else {
             self.report(self.view.clear_selection());
@@ -1160,6 +1080,8 @@ impl Behavior for EditorCore {
 #[cfg(all(test, feature = "tree-sitter"))]
 mod tests {
     use super::*;
+    use crate::native::{Highlight, LayerRun};
+    use crate::sys;
     use crate::testing::TestApp;
     use crate::widget::{Container, Textarea, Widget};
     use std::collections::HashMap;
@@ -1385,18 +1307,18 @@ mod tests {
         assert_eq!(app.render().cell(0, 0).unwrap().fg, Color::GREEN);
     }
 
-    // A list of capture names past the group-set bounds still paints: a name over the byte bound is left out, and
-    // past the name count bound the outermost names go (`default` first), so the innermost capture keeps its style.
+    // A list of capture names past the group-set bounds keeps every style, in the editor and in `Code`: a name over
+    // the byte bound, or more names than a group set holds, paint as one name for the whole list (bigboi-4).
     #[test]
-    fn capture_lists_past_the_group_set_bounds_drop_names_not_pieces() {
+    fn capture_lists_past_the_group_set_bounds_keep_their_styles() {
         let bytes = sys::OT_GROUP_SET_NAME_BYTE_COUNT_MAX as usize - "opentui.".len();
         let count = sys::OT_GROUP_SET_NAME_COUNT_MAX as usize - 1;
         let default = Style::new().fg(Color::BLUE);
         for (captures, want) in [
             (vec!["n".repeat(bytes)], Style::new().fg(Color::RED)),
-            (vec!["n".repeat(bytes + 1)], default),
+            (vec!["n".repeat(bytes + 1)], Style::new().fg(Color::RED)),
             ((1..=count).map(|index| format!("c{index}")).collect(), default.bold()),
-            ((1..=count + 1).map(|index| format!("c{index}")).collect(), Style::new().bold()),
+            ((1..=count + 1).map(|index| format!("c{index}")).collect(), default.bold()),
         ] {
             let query: String = captures.iter().map(|name| format!("(\"let\" @{name})")).collect();
             let filetype = format!("g7-bounds-{}-{}", captures.len(), captures[0].len());
@@ -1405,20 +1327,26 @@ mod tests {
             let last = captures.last().unwrap();
             let style = if captures.len() == 1 { Style::new().fg(Color::RED) } else { Style::new().bold() };
             let theme = SyntaxTheme::new().style("default", default).style(last.as_str(), style);
-            let app = TestApp::new(20, 1);
-            let area = Textarea::new(&app).filetype(filetype.as_str()).syntax_theme(theme).grow(1.0);
+            let app = TestApp::new(20, 2);
+            // Highlighted first under a theme without these styles, then switched to it.
+            let area = Textarea::new(&app).filetype(filetype.as_str()).syntax_theme(SyntaxTheme::new()).height(1);
             area.set_text("let a = 1;");
-            app.root().add(&area);
+            let code = crate::widget::Code::new(&app).filetype(filetype.as_str()).syntax_theme(SyntaxTheme::new());
+            app.root().add(&area).add(&code.set_code("let a = 1;").height(1));
+            app.render();
+            area.syntax_theme(theme.clone());
+            code.syntax_theme(theme);
             let capture = app.render();
-            let cell = capture.cell(0, 0).unwrap();
             let fg = want.fg.unwrap_or(app.theme().foreground);
-            assert_eq!(
-                (cell.fg, cell.attributes),
-                (fg, want.attributes),
-                "{} names of {} bytes",
-                captures.len(),
-                last.len()
-            );
+            for row in 0..2 {
+                let cell = capture.cell(0, row).unwrap();
+                let (count, bytes) = (captures.len(), last.len());
+                assert_eq!(
+                    (cell.fg, cell.attributes),
+                    (fg, want.attributes),
+                    "row {row}: {count} names of {bytes} bytes"
+                );
+            }
         }
     }
 
@@ -1550,5 +1478,34 @@ mod tests {
             }
         }
         assert!(compared > 500, "{compared} compared");
+    }
+
+    // 474: with marks, a key read the whole text twice to find the edit; native code moves marks now. A typed key
+    // reads the marks once, after the edit, however many there are: one count and one copy.
+    #[test]
+    fn keys_with_marks_read_no_text() {
+        for count in [1, 40] {
+            let app = TestApp::new(20, 2);
+            let area = Textarea::new(&app).grow(1.0);
+            area.set_text(format!("ab @file cd{}", " ".repeat(count)));
+            app.root().add(&area);
+            area.focus();
+            area.add_extmark(3..8, ExtmarkOptions::default().atomic().style(Style::new().fg(Color::CYAN)));
+            for at in 1..count as u32 {
+                area.add_extmark(10 + at..11 + at, ExtmarkOptions::default().atomic());
+            }
+            area.set_cursor_offset(0);
+            app.render();
+            let reads = || (crate::native::TEXT_READS.with(Cell::get), crate::native::MARK_READS.with(Cell::get));
+            crate::native::TEXT_READS.with(|reads| reads.set(0));
+            crate::native::MARK_READS.with(|reads| reads.set(0));
+            app.press("x");
+            assert_eq!(reads(), (0, 2), "{count} marks");
+            for key in ["backspace", "right", "delete"] {
+                app.press(key);
+            }
+            assert_eq!(crate::native::TEXT_READS.with(Cell::get), 0);
+            assert_eq!(area.extmarks()[0].range(), 2..7);
+        }
     }
 }

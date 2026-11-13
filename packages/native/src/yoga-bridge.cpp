@@ -234,11 +234,45 @@ void otYogaNodeForgetMeasurements(YGNodeRef node) noexcept {
   }
 }
 
-uint32_t otYogaNodeGetComputedLayout(YGNodeConstRef node, OTYogaLayout* out) noexcept {
+uint32_t otYogaNodeGetComputedLayout(YGNodeConstRef node, OTYogaLayout* out,
+                                     float* content) noexcept {
   if (!node || !out) return OT_YOGA_INVALID_ARGUMENT;
   return checked([&] {
     *out = {YGNodeLayoutGetLeft(node),   YGNodeLayoutGetTop(node),   YGNodeLayoutGetRight(node),
             YGNodeLayoutGetBottom(node), YGNodeLayoutGetWidth(node), YGNodeLayoutGetHeight(node)};
+    if (!content) return;
+    using namespace facebook::yoga;
+    const auto* target = resolveRef(node);
+    const auto& layout = target->getLayout();
+    const float pad[4] = {layout.padding(PhysicalEdge::Left), layout.padding(PhysicalEdge::Top),
+                          layout.padding(PhysicalEdge::Right), layout.padding(PhysicalEdge::Bottom)};
+    if (pad[0] == 0 && pad[1] == 0 && pad[2] == 0 && pad[3] == 0) {
+      // Without padding the view is the box itself.
+      content[0] = content[1] = 0;
+      content[2] = out->width;
+      content[3] = out->height;
+      return;
+    }
+    // The unrounded absolute origin that rounding starts from.
+    double left = 0, top = 0;
+    for (auto* cursor = target; cursor; cursor = cursor->getOwner()) {
+      left += cursor->getLayout().rawPosition(PhysicalEdge::Left);
+      top += cursor->getLayout().rawPosition(PhysicalEdge::Top);
+    }
+    const double scale = target->getConfig()->getPointScaleFactor();
+    // Scene configs round at scale 1, which sees only the fraction: whole cells off the origin keep
+    // the edges small, exact floats.
+    left -= std::floor(left);
+    top -= std::floor(top);
+    // Rounded as Yoga rounds the node's own edges (PixelGrid.cpp), so no padding gives the box.
+    // Natively measured nodes keep the default node type (yoga.zig), whose edges round to nearest.
+    auto edge = [&](double value) { return roundValueToPixelGrid(value, scale, false, false); };
+    const double right = left + layout.rawDimension(Dimension::Width);
+    const double bottom = top + layout.rawDimension(Dimension::Height);
+    content[0] = edge(left + pad[0]) - edge(left);
+    content[1] = edge(top + pad[1]) - edge(top);
+    content[2] = edge(right - pad[2]) - edge(left + pad[0]);
+    content[3] = edge(bottom - pad[3]) - edge(top + pad[1]);
   });
 }
 
@@ -252,44 +286,6 @@ uint32_t otYogaNodeLayoutGetEdge(YGNodeConstRef node, uint32_t kind, uint32_t ed
       case 1: *out = YGNodeLayoutGetPadding(node, e); break;
       case 2: *out = YGNodeLayoutGetBorder(node, e); break;
     }
-  });
-}
-
-uint32_t otYogaNodeGetContentBox(YGNodeConstRef node, float* out) noexcept {
-  if (!node || !out) return OT_YOGA_INVALID_ARGUMENT;
-  return checked([&] {
-    using namespace facebook::yoga;
-    const auto* target = resolveRef(node);
-    const auto& layout = target->getLayout();
-    // The unrounded absolute origin that rounding starts from.
-    double left = 0, top = 0;
-    for (auto* cursor = target; cursor; cursor = cursor->getOwner()) {
-      left += cursor->getLayout().rawPosition(PhysicalEdge::Left);
-      top += cursor->getLayout().rawPosition(PhysicalEdge::Top);
-    }
-    const double scale = target->getConfig()->getPointScaleFactor();
-    const float pad[4] = {layout.padding(PhysicalEdge::Left), layout.padding(PhysicalEdge::Top),
-                          layout.padding(PhysicalEdge::Right), layout.padding(PhysicalEdge::Bottom)};
-    if (pad[0] == 0 && pad[1] == 0 && pad[2] == 0 && pad[3] == 0) {
-      // Without padding the view is the box itself.
-      out[0] = out[1] = 0;
-      out[2] = layout.dimension(Dimension::Width);
-      out[3] = layout.dimension(Dimension::Height);
-      return;
-    }
-    // Scene configs round at scale 1, which sees only the fraction: whole cells off the origin keep
-    // the edges small, exact floats.
-    left -= std::floor(left);
-    top -= std::floor(top);
-    // Rounded as Yoga rounds the node's own edges (PixelGrid.cpp), so no padding gives the box.
-    // Natively measured nodes keep the default node type (yoga.zig), whose edges round to nearest.
-    auto edge = [&](double value) { return roundValueToPixelGrid(value, scale, false, false); };
-    const double right = left + layout.rawDimension(Dimension::Width);
-    const double bottom = top + layout.rawDimension(Dimension::Height);
-    out[0] = edge(left + pad[0]) - edge(left);
-    out[1] = edge(top + pad[1]) - edge(top);
-    out[2] = edge(right - pad[2]) - edge(left + pad[0]);
-    out[3] = edge(bottom - pad[3]) - edge(top + pad[1]);
   });
 }
 

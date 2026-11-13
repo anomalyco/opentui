@@ -5,7 +5,7 @@ use core::ffi::c_void;
 
 /// FNV-1a 64-bit hash of the `opentui.h` these declarations were generated from.
 /// The build script rejects native artifacts whose header has a different hash.
-pub const OPENTUI_HEADER_FNV1A64: u64 = 0x02dc54261166b326;
+pub const OPENTUI_HEADER_FNV1A64: u64 = 0xaee318107c530320;
 
 pub type ot_status = i32;
 
@@ -460,6 +460,12 @@ pub const OT_EDIT_HIGHLIGHT_CLEAR_ALL: u32 = 4;
 pub const OT_STYLE_RUN_FLAG: u32 = 2147483648;
 pub const OT_GROUP_SET_NAME_COUNT_MAX: u32 = 16;
 pub const OT_GROUP_SET_NAME_BYTE_COUNT_MAX: u32 = 64;
+pub const OT_EDIT_MARK_ADD: u32 = 0;
+pub const OT_EDIT_MARK_REMOVE: u32 = 1;
+pub const OT_EDIT_MARK_CLEAR: u32 = 2;
+pub const OT_EDIT_MARK_ATOMIC: u32 = 1;
+pub const OT_EDIT_MARK_STYLE_VALUE: u32 = 2;
+pub const OT_EDIT_MARK_ANY_KIND: u32 = 4294967295;
 pub const OT_MD_CONCEAL: u32 = 1;
 pub const OT_MD_HYPERLINKS: u32 = 2;
 pub const OT_MD_MATH: u32 = 4;
@@ -2659,6 +2665,53 @@ const _: () = {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ot_edit_mark {
+    pub struct_size: u32,
+    pub abi_version: u32,
+    pub id: u32,
+    pub kind: u32,
+    pub flags: u32,
+    pub style: u32,
+    pub value: ot_editor_style,
+    pub priority: u32,
+    pub start: u32,
+    pub end: u32,
+    pub start_byte: u32,
+    pub end_byte: u32,
+}
+
+// SAFETY: the record has no padding and only integer or float fields.
+unsafe impl Pod for ot_edit_mark {}
+
+impl Default for ot_edit_mark {
+    fn default() -> Self {
+        // SAFETY: every field is an integer, a float, or an array or record of them; all-zero is valid.
+        let mut value: Self = unsafe { core::mem::zeroed() };
+        value.struct_size = core::mem::size_of::<Self>() as u32;
+        value.abi_version = OT_CONTEXT_ABI_VERSION;
+        value
+    }
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<ot_edit_mark>() == 76);
+    assert!(core::mem::align_of::<ot_edit_mark>() == 4);
+    assert!(core::mem::offset_of!(ot_edit_mark, struct_size) == 0);
+    assert!(core::mem::offset_of!(ot_edit_mark, abi_version) == 4);
+    assert!(core::mem::offset_of!(ot_edit_mark, id) == 8);
+    assert!(core::mem::offset_of!(ot_edit_mark, kind) == 12);
+    assert!(core::mem::offset_of!(ot_edit_mark, flags) == 16);
+    assert!(core::mem::offset_of!(ot_edit_mark, style) == 20);
+    assert!(core::mem::offset_of!(ot_edit_mark, value) == 24);
+    assert!(core::mem::offset_of!(ot_edit_mark, priority) == 56);
+    assert!(core::mem::offset_of!(ot_edit_mark, start) == 60);
+    assert!(core::mem::offset_of!(ot_edit_mark, end) == 64);
+    assert!(core::mem::offset_of!(ot_edit_mark, start_byte) == 68);
+    assert!(core::mem::offset_of!(ot_edit_mark, end_byte) == 72);
+};
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ot_markdown_options {
     pub struct_size: u32,
     pub abi_version: u32,
@@ -4531,6 +4584,8 @@ unsafe extern "C" {
     pub fn ot_edit_buffer_get_highlights(context: *mut ot_context, handle: *const ot_handle, line: u32, highlights: *mut ot_edit_highlight, capacity: u32, out_count: *mut u32) -> ot_status;
     pub fn ot_context_group_set(context: *mut ot_context, names: *const u8, name_byte_count: u32, name_end_bytes: *const u32, name_count: u32, out_group_set: *mut u32) -> ot_status;
     pub fn ot_edit_buffer_set_layer(context: *mut ot_context, handle: *const ot_handle, layer_id: u32, start_byte: u32, end_byte: u32, runs: *const ot_highlight_run, run_count: u32) -> ot_status;
+    pub fn ot_edit_buffer_mark(context: *mut ot_context, handle: *const ot_handle, operation: u32, mark: *const ot_edit_mark, out_id: *mut u32) -> ot_status;
+    pub fn ot_edit_buffer_get_marks(context: *mut ot_context, handle: *const ot_handle, id: u32, kind: u32, marks: *mut ot_edit_mark, capacity: u32, out_count: *mut u32) -> ot_status;
     pub fn ot_markdown_create(context: *mut ot_context, markdown_options: *const ot_markdown_options, out_doc: *mut ot_handle) -> ot_status;
     pub fn ot_markdown_destroy(context: *mut ot_context, doc: *const ot_handle) -> ot_status;
     pub fn ot_markdown_set_options(context: *mut ot_context, doc: *const ot_handle, markdown_options: *const ot_markdown_options, out: *mut ot_markdown_result) -> ot_status;
@@ -4624,6 +4679,7 @@ unsafe extern "C" {
     pub fn ot_text_buffer_set_tab_width(context: *mut ot_context, handle: *const ot_handle, width: u32) -> ot_status;
     pub fn ot_text_buffer_highlight(context: *mut ot_context, handle: *const ot_handle, operation: u32, argument: u32, edit_highlight: *const ot_edit_highlight) -> ot_status;
     pub fn ot_text_buffer_get_highlights(context: *mut ot_context, handle: *const ot_handle, line: u32, out_edit_highlight: *mut ot_edit_highlight, capacity: u32, out_count: *mut u32) -> ot_status;
+    pub fn ot_text_buffer_set_layer(context: *mut ot_context, handle: *const ot_handle, layer_id: u32, start_byte: u32, end_byte: u32, runs: *const ot_highlight_run, run_count: u32) -> ot_status;
     pub fn ot_text_buffer_view_set_viewport(context: *mut ot_context, handle: *const ot_handle, editor_viewport: *const ot_editor_viewport, size_only: u32) -> ot_status;
     pub fn ot_text_buffer_view_command(context: *mut ot_context, handle: *const ot_handle, command: u32, argument: u32) -> ot_status;
     pub fn ot_text_buffer_view_set_tab_color(context: *mut ot_context, handle: *const ot_handle, color: *const u16) -> ot_status;

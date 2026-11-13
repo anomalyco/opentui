@@ -427,11 +427,7 @@ export class LineNumberRenderable extends Renderable {
 
       this._lineColorsGutter = new Map<number, RGBA>()
       this._lineColorsContent = new Map<number, RGBA>()
-      if (options.lineColors) {
-        for (const [line, color] of options.lineColors) {
-          this.parseLineColor(line, color)
-        }
-      }
+      if (options.lineColors) this.setLineColors(options.lineColors)
 
       this._lineSigns = new Map<number, LineSign>()
       if (options.lineSigns) {
@@ -661,6 +657,11 @@ export class LineNumberRenderable extends Renderable {
     }
   }
 
+  public set lineColors(value: LineNumberOptions["lineColors"]) {
+    if (value) this.setLineColors(value)
+    else this.clearAllLineColors()
+  }
+
   public setLineColors(lineColors: Map<number, string | RGBA | LineColorConfig>): void {
     this._lineColorsGutter.clear()
     this._lineColorsContent.clear()
@@ -713,6 +714,11 @@ export class LineNumberRenderable extends Renderable {
     }
   }
 
+  public set lineSigns(value: LineNumberOptions["lineSigns"]) {
+    if (value) this.setLineSigns(value)
+    else this.clearAllLineSigns()
+  }
+
   public getLineSigns(): Map<number, LineSign> {
     return new Map(Array.from(this._lineSigns, ([line, sign]) => [line, cloneLineSign(sign)]))
   }
@@ -760,6 +766,10 @@ export class LineNumberRenderable extends Renderable {
     return this._hideLineNumbers
   }
 
+  public set hideLineNumbers(value: LineNumberOptions["hideLineNumbers"]) {
+    this.setHideLineNumbers(value ?? new Set())
+  }
+
   public setLineNumbers(lineNumbers: Map<number, number>): void {
     this._lineNumbers = lineNumbers
     if (this.gutter) {
@@ -770,6 +780,10 @@ export class LineNumberRenderable extends Renderable {
 
   public getLineNumbers(): Map<number, number> {
     return this._lineNumbers
+  }
+
+  public set lineNumbers(value: LineNumberOptions["lineNumbers"]) {
+    this.setLineNumbers(value ?? new Map())
   }
 
   public highlightLines(startLine: number, endLine: number, color: string | RGBA | LineColorConfig): void {

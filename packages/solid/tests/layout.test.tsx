@@ -1,5 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test"
-import { testRender } from "../index.js"
+import { ASCIIFontRenderable, EditBufferRenderable, RGBA, SyntaxStyle } from "@opentui/core"
+import { MockTreeSitterClient } from "@opentui/core/testing"
+import { testRender, useRenderer } from "../index.js"
 import { createSignal, Show } from "solid-js"
 
 let testSetup: Awaited<ReturnType<typeof testRender>>
@@ -15,6 +17,43 @@ describe("SolidJS Renderer Integration Tests", () => {
     if (testSetup) {
       testSetup.renderer.destroy()
     }
+  })
+
+  it.each(["code", "diff", "markdown"] as const)("%s highlights with the JSX client", async (tag) => {
+    const client = new MockTreeSitterClient()
+    testSetup = await testRender(() => {
+      const syntaxStyle = SyntaxStyle.create(useRenderer().nativeScene)
+      const props = { syntaxStyle, treeSitterClient: client }
+      if (tag === "diff") return <diff {...props} diff={"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b"} filetype="js" />
+      if (tag === "markdown") return <markdown {...props} content={"```js\na\n```"} />
+      return <code content="a" filetype="js" {...props} />
+    })
+    await testSetup.renderOnce()
+    const highlighting = client.isHighlighting()
+    await client.destroy()
+    expect(highlighting).toBe(true)
+  })
+
+  it.each(["textarea", "input"] as const)("%s scrolls with the JSX margin", async (tag) => {
+    const input = tag === "input"
+    testSetup = await testRender(() =>
+      input ? <input width={10} scrollMargin={0.75} /> : <textarea height={10} scrollMargin={0.75} />,
+    )
+    const editor = testSetup.renderer.root.getChildren()[0] as EditBufferRenderable
+    editor.setText((input ? "a" : "a\n").repeat(32))
+    await testSetup.renderOnce()
+    editor.cursorOffset = input ? 8 : 16
+    expect(editor.editorView.getViewport()[input ? "offsetX" : "offsetY"]).toBe(3)
+  })
+
+  it.each(["bg", "fg"] as const)("ascii_font paints the JSX selection %s", async (channel) => {
+    testSetup = await testRender(() => <ascii_font text="HI" selectionBg="red" selectionFg="blue" />)
+    const font = testSetup.renderer.root.getChildren()[0] as ASCIIFontRenderable
+    await testSetup.renderOnce()
+    testSetup.renderer.startSelection(font, font.x, font.y)
+    testSetup.renderer.updateSelection(font, font.x + 4, font.y)
+    const color = RGBA.fromHex(channel === "bg" ? "#ff0000" : "#0000ff")
+    expect(font.frameBuffer.getSpanLines()[0]!.spans[0]![channel]).toEqual(color)
   })
 
   describe("Basic Text Rendering", () => {

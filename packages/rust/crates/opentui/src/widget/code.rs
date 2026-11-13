@@ -1,3 +1,4 @@
+use super::extmarks::SYNTAX_LAYER;
 use super::line_numbers::GutterInner;
 use super::{
     Behavior, Callbacks, Element, LocalSelection, ScrollAction, SelectionUpdate, VisibleLines, Widget, build,
@@ -6,23 +7,19 @@ use super::{
 use crate::app::{App, Cx, ProxyError};
 use crate::input::{KeyEvent, Keymap, MouseEvent, MouseEventKind};
 use crate::layout::{FlexDirection, LayoutProperty, Length};
-use crate::native::{Hooks, NodeKind, SelectionColors, TextBuffer, TextView, Viewport, WrapMode};
+use crate::native::{Hooks, NodeKind, SelectionColors, SyntaxStyle, TextBuffer, TextView, Viewport, WrapMode};
 use crate::style::{Color, Span, Style};
-use crate::syntax::{self, SyntaxTheme};
+use crate::syntax::{self, CaptureSets, NamedRanges, SyntaxTheme};
 use std::cell::{Cell, RefCell};
-use std::ops::Range;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
 
-/// Highlighted text: byte ranges of the source with their styles.
-type Ranges = Vec<(Range<usize>, Style)>;
-
 /// A highlight on a worker thread, of the source's first `len` bytes.
 struct Pending {
     len: usize,
-    receiver: Receiver<Option<Ranges>>,
+    receiver: Receiver<Option<NamedRanges>>,
 }
 
 pub(crate) struct CodeInner {
@@ -33,20 +30,31 @@ pub(crate) struct CodeInner {
     view: TextView,
     filetype: RefCell<Option<String>>,
     syntax: RefCell<Arc<SyntaxTheme>>,
+    /// The buffer's style table, with `syntax` as its capture palette: the syntax layer paints capture names through
+    /// it, so a new theme restyles the shown highlight without highlighting again.
+    table: SyntaxStyle,
+    sets: RefCell<CaptureSets>,
     /// The text color, under the syntax theme's `default` style.
     fg: Cell<Color>,
     /// Text styled by the crate, shown instead of highlighting until the next `set_code`.
     styled: RefCell<Option<Vec<Span<'static>>>>,
     /// Whether the text changed since it was highlighted. The next frame highlights it.
     stale: Cell<bool>,
-    /// Whether the buffer shows a highlight of the source, or of its start with the rest plain. Text appended then
-    /// is highlighted on a worker thread, as Core highlights in its worker, and the shown highlight stays until the
-    /// new one lands.
-    highlighted: Cell<bool>,
-    /// The highlight running on a worker thread. Replacing the text, filetype, or styles drops it, so its result
-    /// never lands.
+    /// The length of the source's start the syntax layer highlights, the rest plain. Text appended then is
+    /// highlighted on a worker thread, as Core highlights in its worker, and the shown highlight stays until the new
+    /// one lands.
+    highlighted: Cell<Option<usize>>,
+    /// The highlight running on a worker thread. Replacing the text or filetype drops it, so its result never lands.
     pending: RefCell<Option<Pending>>,
     source: RefCell<String>,
+    /// The source offsets of its CRLF pairs. The buffer counts one byte per line break, so a layer run edge moves left
+    /// by the pairs before it.
+    crlf: RefCell<Vec<usize>>,
+    /// The buffer's content epoch after the widget's last write: another one means another caller wrote the text.
+    written: Cell<u64>,
+    /// Highlights started and syntax layers written, for tests.
+    #[cfg(test)]
+    pub(crate) work: Cell<(usize, usize)>,
     scroll: Cell<u32>,
     follow: Cell<bool>,
     /// Whether the view sits at the bottom, so following keeps it there.
@@ -122,35 +130,55 @@ impl CodeInner {
             None => self.buffer.set_text(&self.source.borrow()),
         };
         self.report(result);
+        *self.crlf.borrow_mut() = self.source.borrow().match_indices("\r\n").map(|(at, _)| at).collect();
+        self.wrote();
         self.forget_highlight();
         self.changed();
     }
 
-    /// Shows appended text plain after the shown highlight until the next one lands.
+    /// Shows appended text plain after the shown highlight until the next one lands. Text another caller wrote to the
+    /// buffer, or an append that splits a CRLF, writes the whole source again: the buffer counts a CRLF as one line
+    /// break, but a CR and then an LF as two.
     fn extend(&self, text: &str) {
         if text.is_empty() {
             return;
         }
+        let (len, split) = (self.source.borrow().len(), text.starts_with('\n') && self.source.borrow().ends_with('\r'));
         self.source.borrow_mut().push_str(text);
+        if split || self.epoch() != self.written.get() {
+            return self.render_source();
+        }
+        self.crlf.borrow_mut().extend(text.match_indices("\r\n").map(|(at, _)| len + at));
         self.report(self.buffer.append(text));
+        self.wrote();
         self.changed();
+    }
+
+    fn epoch(&self) -> u64 {
+        self.report(self.buffer.info()).map_or(0, |info| info.content_epoch)
+    }
+
+    fn wrote(&self) {
+        self.written.set(self.epoch());
     }
 
     /// The next highlight runs on the UI thread, and a running one never lands.
     fn forget_highlight(&self) {
-        self.highlighted.set(false);
+        self.highlighted.set(None);
         self.pending.take();
     }
 
     /// Highlights the source on a worker thread. The UI thread pays only for copying the source.
     fn spawn(&self, filetype: String) {
         let Some(app) = self.element.app() else { return };
-        let (source, syntax) = (self.source.borrow().clone(), Arc::clone(&self.syntax.borrow()));
+        let source = self.source.borrow().clone();
         let len = source.len();
         let (sender, receiver) = mpsc::sync_channel(1);
         let proxy = app.proxy();
+        #[cfg(test)]
+        self.work.set((self.work.get().0 + 1, self.work.get().1));
         let worker = std::thread::Builder::new().name("opentui-highlight".into()).spawn(move || {
-            if sender.send(syntax::highlight_ranges(&source, &filetype, &syntax)).is_ok() {
+            if sender.send(syntax::highlight_names(&source, &filetype)).is_ok() {
                 // Retry while the UI thread catches up, so the result is painted.
                 while proxy.post(|cx| cx.app().request_redraw()) == Err(ProxyError::Full) {
                     std::thread::sleep(Duration::from_millis(1));
@@ -171,9 +199,9 @@ impl CodeInner {
         };
         let pending = self.pending.take().expect("a pending highlight");
         match result {
-            Ok(Some(ranges)) => self.show(&ranges, pending.len),
-            // No grammar, or the worker failed: the text stays plain.
-            Ok(None) | Err(_) => self.highlighted.set(false),
+            Ok(Some(named)) => self.show(named, pending.len),
+            // No grammar, or the worker failed: the shown highlight stays, and the next one runs on the UI thread.
+            Ok(None) | Err(_) => self.highlighted.set(None),
         }
     }
 
@@ -181,20 +209,32 @@ impl CodeInner {
         let filetype = self.filetype.borrow();
         let Some(filetype) = filetype.as_deref() else { return };
         let len = self.source.borrow().len();
-        match syntax::highlight_ranges(&self.source.borrow(), filetype, &self.syntax.borrow()) {
-            Some(ranges) => self.show(&ranges, len),
-            None => self.highlighted.set(false),
+        #[cfg(test)]
+        self.work.set((self.work.get().0 + 1, self.work.get().1));
+        match syntax::highlight_names(&self.source.borrow(), filetype) {
+            Some(named) => self.show(named, len),
+            None => self.highlighted.set(None),
         }
     }
 
-    /// Shows the highlight of the source's first `len` bytes, and the rest plain.
-    fn show(&self, ranges: &Ranges, len: usize) {
-        let source = self.source.borrow();
-        self.report(self.buffer.set_styled_ranges(&source[..len], ranges));
-        if len < source.len() {
-            self.report(self.buffer.append(&source[len..]));
+    /// Shows the highlight of the source's first `len` bytes as the syntax layer, and the rest plain. Text another
+    /// caller wrote to the buffer is replaced with the source first.
+    fn show(&self, named: NamedRanges, len: usize) {
+        if self.epoch() != self.written.get() {
+            self.report(self.buffer.set_text(&self.source.borrow()));
+            self.wrote();
         }
-        self.highlighted.set(true);
+        let crlf = self.crlf.borrow();
+        let runs = self
+            .sets
+            .borrow_mut()
+            .runs(&self.table, self.buffer.context(), named, |at| at - crlf.partition_point(|&pair| pair < at));
+        if let Some(runs) = self.report(runs) {
+            self.report(self.buffer.set_layer(SYNTAX_LAYER, 0..u32::MAX, &runs));
+        }
+        #[cfg(test)]
+        self.work.set((self.work.get().0, self.work.get().1 + 1));
+        self.highlighted.set(Some(len));
     }
 
     /// Highlights changed text at the next frame. As in Core, the selection starts over at the same cells.
@@ -228,6 +268,16 @@ impl CodeInner {
         }
     }
 
+    /// Makes `syntax` the table's capture palette, which every code view and editor sharing the table paints.
+    /// The text color `fg` goes under the theme's `default` style.
+    pub(crate) fn restyle(&self, syntax: Arc<SyntaxTheme>, fg: Color) {
+        self.report(self.table.set_capture_theme(&syntax));
+        *self.syntax.borrow_mut() = syntax;
+        self.fg.set(fg);
+        self.apply_defaults();
+        self.element.app().inspect(App::request_redraw);
+    }
+
     /// Unstyled text takes the text color with the syntax theme's `default` style on top.
     fn apply_defaults(&self) {
         let default = self.syntax.borrow().get("default").unwrap_or_default();
@@ -254,7 +304,7 @@ impl Behavior for CodeInner {
         self.stale.set(false);
         let filetype = self.filetype.borrow().clone();
         match filetype {
-            Some(filetype) if self.highlighted.get() => self.spawn(filetype),
+            Some(filetype) if self.highlighted.get().is_some() => self.spawn(filetype),
             _ => self.highlight_now(),
         }
     }
@@ -369,16 +419,22 @@ impl Code {
     ///
     /// Panics if native code cannot create the text buffer or view, after the app recorded the error.
     pub fn new(app: &App) -> Self {
-        Self::themed(app, Arc::new(SyntaxTheme::from_theme(&app.theme())))
+        Self::themed(app, Arc::new(SyntaxTheme::from_theme(&app.theme())), None)
     }
 
-    /// A code view that shares `syntax`, as Markdown's code blocks share the document's.
-    pub(crate) fn themed(app: &App, syntax: Arc<SyntaxTheme>) -> Self {
+    /// A code view that shares `syntax` and the style `table`, as Markdown's code blocks share the document's; without
+    /// a table it makes its own.
+    pub(crate) fn themed(app: &App, syntax: Arc<SyntaxTheme>, table: Option<&SyntaxStyle>) -> Self {
         let theme = app.theme();
-        let buffer = app.report(TextBuffer::new(app.session().context(), app.width_method()));
+        let context = app.session().context();
+        let buffer = app.report(TextBuffer::new(context, app.width_method()));
         let buffer = buffer.unwrap_or_else(|| panic!("opentui: failed to create a text buffer: {:?}", app.check()));
         let view = app.report(TextView::new(&buffer));
         let view = view.unwrap_or_else(|| panic!("opentui: failed to create a text view: {:?}", app.check()));
+        let table = table.cloned().or_else(|| app.report(SyntaxStyle::new(context)));
+        let table = table.unwrap_or_else(|| panic!("opentui: failed to create a style table: {:?}", app.check()));
+        app.report(table.set_capture_theme(&syntax));
+        app.report(buffer.set_syntax_style(Some(&table)));
         let inner = Rc::new_cyclic(|weak: &Weak<CodeInner>| {
             let this: Weak<dyn Behavior> = weak.clone();
             let element = Element::new(app, NodeKind::Box, this);
@@ -394,12 +450,18 @@ impl Code {
                 view,
                 filetype: RefCell::new(None),
                 syntax: RefCell::new(syntax),
+                table,
+                sets: RefCell::default(),
                 fg: Cell::new(theme.foreground),
                 styled: RefCell::new(None),
                 stale: Cell::new(false),
-                highlighted: Cell::new(false),
+                highlighted: Cell::new(None),
                 pending: RefCell::new(None),
                 source: RefCell::new(String::new()),
+                crlf: RefCell::default(),
+                written: Cell::new(0),
+                #[cfg(test)]
+                work: Cell::default(),
                 scroll: Cell::new(0),
                 follow: Cell::new(false),
                 pinned: Cell::new(true),
@@ -428,6 +490,7 @@ impl Code {
         let view = inner.view.clone();
         inner.text.element.apply(|node| node.set_text_view(Some(&view)));
         inner.apply_defaults();
+        inner.wrote();
         inner.report(inner.view.set_wrap(WrapMode::None));
         inner.gutter.changed();
         Self(inner)
@@ -508,13 +571,11 @@ impl Code {
         self.clone()
     }
 
-    /// The styles for highlighted text. It starts as [`SyntaxTheme::from_theme`] for the app's theme.
+    /// The styles for highlighted text. It starts as [`SyntaxTheme::from_theme`] for the app's theme. A new theme
+    /// restyles the shown highlight without highlighting again.
     pub fn syntax_theme(&self, theme: SyntaxTheme) -> Self {
         if **self.0.syntax.borrow() != theme {
-            *self.0.syntax.borrow_mut() = Arc::new(theme);
-            self.0.apply_defaults();
-            self.0.forget_highlight();
-            self.0.mark_stale();
+            self.0.restyle(Arc::new(theme), self.0.fg.get());
         }
         self.clone()
     }
@@ -590,9 +651,163 @@ impl Code {
     }
 
     /// The native text buffer, for operations this widget does not wrap. Text written through it bypasses the widget:
-    /// [`Self::code`] leaves it out, and the widget's next rewrite of the buffer, from [`Self::set_code`] with text
-    /// that does not extend the current text, a [`Self::filetype`] change, or highlighting, replaces it.
+    /// [`Self::code`] leaves it out, and the widget's next write, from [`Self::set_code`], [`Self::append`], a
+    /// [`Self::filetype`] change, or highlighting, replaces it with the source. Highlighting sets layer 1; highlights
+    /// of priority 0 paint under it.
     pub fn buffer(&self) -> &TextBuffer {
         &self.0.buffer
+    }
+}
+
+#[cfg(all(test, feature = "tree-sitter"))]
+pub(crate) mod tests {
+    use super::*;
+    use crate::native::Capture;
+    use crate::testing::TestApp;
+    use crate::widget::Container;
+
+    /// Renders until no code view has a highlight running or due, and returns the frame.
+    pub(crate) fn settle(app: &TestApp, codes: &[Code]) -> Capture {
+        for _ in 0..10_000 {
+            let capture = app.render();
+            if codes.iter().all(|code| !code.0.stale.get() && code.0.pending.borrow().is_none()) {
+                return capture;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("a highlight never landed");
+    }
+
+    // Another view of a code view's buffer keeps its syntax colors after the code view is gone: the buffer holds the
+    // style table it is bound to (bigboi-3).
+    #[test]
+    fn a_buffer_keeps_its_style_table_after_its_code_view_drops() {
+        let app = TestApp::new(12, 1);
+        let theme = SyntaxTheme::new().style("keyword", Style::new().fg(Color::RED));
+        let code = Code::new(&app).filetype("rust").syntax_theme(theme).set_code("let a = 1;");
+        app.root().add(&code);
+        app.render();
+        let view = TextView::new(code.buffer()).unwrap();
+        let other = build(&app, NodeKind::TextView, |element| CodeText { element, code: Weak::new() });
+        other.element.apply(|node| node.set_text_view(Some(&view)));
+        other.element.set_layout(LayoutProperty::Width(Length::Cells(12.0)));
+        code.element().detach();
+        drop(code);
+        app.root().element().insert(&other.element, None);
+        assert_eq!(app.render().cell(0, 0).unwrap().fg, Color::RED);
+    }
+
+    // Rust and Markdown pieces; a CR and an LF also arrive apart.
+    const PIECES: &[&str] = &[
+        "let ",
+        "fn f() {",
+        "}",
+        "x",
+        " = ",
+        "1",
+        "\"s\\n\"",
+        "// c",
+        "/* b */",
+        "\t",
+        "\n",
+        "\r\n",
+        "\r",
+        "\u{65e5}",
+        "\u{e9}",
+        "# h",
+        "*e*",
+        "```rust\n",
+        ";",
+        "\"a\\n\u{fe0f}\"",
+        "\u{301}",
+    ];
+
+    // P12 and C4 invariants 2, 8, 9 and 10: every frame equals a buffer written with the styled text of the
+    // highlighted start of the source and the rest plain, as the styled-ranges view painted it, over appends (CRLF
+    // whole and split), replacements, filetype and theme changes, and writes through `buffer()` before an append or
+    // while a highlight runs; a settled view highlights all its text.
+    #[test]
+    fn capture_layers_paint_as_styled_text_of_the_highlighted_start() {
+        let mut compared = 0;
+        for seed in 1..=300u64 {
+            let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            let mut next = |bound: usize| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                (state % bound as u64) as usize
+            };
+            let (app, fresh) = (TestApp::new(24, 6), TestApp::new(24, 6));
+            let red = Style::new().fg(Color::RED);
+            let nested = SyntaxTheme::new()
+                .style("default", Style::new().fg(Color::GREEN).italic())
+                .style("punctuation", Style::new().bg(Color::BLUE))
+                .style("string", red.bold())
+                .style("markup", Style::new().fg(Color::YELLOW).dim())
+                .style("markup.heading", Style::new().strikethrough());
+            let themes = [SyntaxTheme::from_theme(&app.theme()), nested.clone(), nested.first_part_fallback()];
+            let code = Code::new(&app).filetype("rust");
+            let twin = Code::new(&fresh);
+            app.root().add(&code);
+            fresh.root().add(&twin);
+            // The theme the reference takes its styles and defaults from, never through the view under test.
+            let theme = RefCell::new(themes[0].clone());
+            let mut compare = |settled: bool| {
+                let got = if settled { settle(&app, std::slice::from_ref(&code)) } else { app.render() };
+                let source = code.code();
+                let filetype = code.0.filetype.borrow().clone();
+                let start = code.0.highlighted.get().unwrap_or(0);
+                if settled && matches!(filetype.as_deref(), Some("rust" | "markdown" | "c4-crlf")) {
+                    assert_eq!(start, source.len(), "seed {seed}: settled with a plain tail");
+                }
+                let ranges = filetype
+                    .and_then(|filetype| syntax::highlight_ranges(&source[..start], &filetype, &theme.borrow()));
+                let mut spans: Vec<Span<'static>> = (ranges.unwrap_or_default().into_iter())
+                    .map(|(range, style)| Span::styled(source[range].to_owned(), style))
+                    .collect();
+                spans.push(Span::raw(source[start..].to_owned()));
+                twin.buffer().set_spans(&spans).unwrap();
+                let want = fresh.render();
+                let differ = want.cells.iter().zip(&got.cells).position(|(want, got)| want != got);
+                assert!(differ.is_none(), "seed {seed} cell {differ:?}: {source:?} from {start}");
+                compared += 1;
+            };
+            if seed == 1 {
+                // A registered capture that ends on the CR of a CRLF: its piece is that CR alone, empty in the
+                // buffer's bytes (bigboi-5).
+                let query = "(line_comment) @comment \"//\" @punctuation";
+                syntax::register("c4-crlf", syntax::Grammar::new(tree_sitter_rust::LANGUAGE, query)).unwrap();
+                code.filetype("c4-crlf").set_code("//\r\nlet x = 42;");
+                compare(true);
+            }
+            for _ in 0..40 {
+                match next(12) {
+                    0..=4 => drop(code.append(PIECES[next(PIECES.len())])),
+                    5 => drop(code.set_code((0..next(8)).map(|_| PIECES[next(PIECES.len())]).collect::<String>())),
+                    6 => drop(code.filetype([Some("rust"), Some("markdown"), Some("cobol"), None][next(4)])),
+                    7 => {
+                        let next = themes[next(themes.len())].clone();
+                        let defaults =
+                            Style::new().fg(fresh.theme().foreground).patch(next.get("default").unwrap_or_default());
+                        twin.buffer().set_defaults(defaults).unwrap();
+                        code.syntax_theme(next.clone());
+                        *theme.borrow_mut() = next;
+                    }
+                    8 => {
+                        // Another caller writes the buffer: the next append, or the running highlight's landing,
+                        // writes the source again.
+                        app.render();
+                        if next(2) == 0 { code.buffer().append("!") } else { code.buffer().clear(true) }.unwrap();
+                        if code.0.pending.borrow().is_none() {
+                            code.append(PIECES[next(PIECES.len())]);
+                        }
+                        compare(true);
+                    }
+                    9 => compare(false),
+                    _ => compare(true),
+                }
+            }
+        }
+        assert!(compared > 3500, "{compared} compared");
     }
 }

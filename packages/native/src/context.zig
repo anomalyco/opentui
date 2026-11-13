@@ -733,6 +733,12 @@ pub const TextHighlight = union(enum) {
     clear_all,
 };
 
+pub const EditMark = union(enum) {
+    add: edit_buffer.EditBuffer.MarkOptions,
+    remove: u32,
+    clear,
+};
+
 pub const LayerReplacement = struct {
     layer_id: u32,
     start_byte: u32,
@@ -3842,6 +3848,15 @@ pub const Context = struct {
         text.invalidate(false);
     }
 
+    pub fn textBufferSetLayer(self: *Context, handle: Handle, layer: LayerReplacement) !void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const text = try self.getTextBuffer(handle);
+        try text.checkMutable();
+        try text.buffer.setLayer(layer.layer_id, layer.start_byte, layer.end_byte, layer.runs);
+        text.invalidate(false);
+    }
+
     /// Group set ids are Context-wide: a buffer composes them against whatever style it binds.
     pub fn groupSet(self: *Context, names: []const []const u8) !u32 {
         try self.beginMutation();
@@ -4259,6 +4274,24 @@ pub const Context = struct {
         try edit.checkMutable();
         try edit.buffer.tb.setLayer(layer.layer_id, layer.start_byte, layer.end_byte, layer.runs);
         edit.invalidatePreparation();
+    }
+
+    /// Returns the added id, the removed id or 0, or 0 for clear.
+    pub fn editMark(self: *Context, handle: Handle, operation: EditMark) !u32 {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const edit = try self.getEditBuffer(handle);
+        try edit.checkMutable();
+        const result = switch (operation) {
+            .add => |options| try edit.buffer.addMark(options),
+            .remove => |id| if (try edit.buffer.removeMark(id)) id else 0,
+            .clear => clear: {
+                edit.buffer.clearMarks();
+                break :clear 0;
+            },
+        };
+        edit.invalidatePreparation();
+        return result;
     }
 
     pub fn editorSetViewport(self: *Context, handle: Handle, viewport: text_buffer_view.Viewport, size_only: bool, move_cursor: bool) !void {

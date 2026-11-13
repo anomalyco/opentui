@@ -3,6 +3,7 @@ import type { KeyEvent } from "../lib/KeyHandler.js"
 import { parseColor, RGBA, type ColorInput } from "../lib/RGBA.js"
 import {
   parseAlign,
+  parseAlignContent,
   parseAlignItems,
   parseFlexDirection,
   parseJustify,
@@ -236,6 +237,7 @@ const contentStyles: Record<string, StyleWrite> = {}
     ["flexWrap", YogaEnumKind.FlexWrap, parseWrap],
     ["layoutMode", YogaEnumKind.LayoutMode, parseLayoutMode],
     ["alignItems", YogaEnumKind.AlignItems, parseAlignItems],
+    ["alignContent", YogaEnumKind.AlignContent, parseAlignContent],
     ["justifyContent", YogaEnumKind.JustifyContent, parseJustify],
     ["alignSelf", YogaEnumKind.AlignSelf, parseAlign],
   ]
@@ -246,6 +248,8 @@ const contentStyles: Record<string, StyleWrite> = {}
     sceneSetFloat(scene, node, YogaFloatKind.FlexGrow, input ?? 0, content)
   contentStyles.flexShrink = (scene, node, input) =>
     sceneSetFloat(scene, node, YogaFloatKind.FlexShrink, input ?? 0, content)
+  contentStyles.aspectRatio = (scene, node, input) =>
+    sceneSetFloat(scene, node, YogaFloatKind.AspectRatio, input, content)
   for (const [key, kind] of [
     ["width", YogaValueKind.Width],
     ["height", YogaValueKind.Height],
@@ -569,6 +573,8 @@ type ContentLayoutKey =
   | "flexWrap"
   | "layoutMode"
   | "alignItems"
+  | "alignContent"
+  | "aspectRatio"
   | "justifyContent"
   | "alignSelf"
   | "flexGrow"

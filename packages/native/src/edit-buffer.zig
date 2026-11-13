@@ -9,6 +9,7 @@ const link = @import("link.zig");
 const utf8 = @import("utf8.zig");
 const event_emitter = @import("event-emitter.zig");
 const text_work = @import("text-work.zig");
+const edit_marks = @import("edit-marks.zig");
 
 const UnifiedTextBuffer = tb.UnifiedTextBuffer;
 const TextChunk = seg_mod.TextChunk;
@@ -182,6 +183,8 @@ pub const EditBuffer = struct {
     events: event_emitter.EventEmitter(EditBufferEvent),
     segment_splitter: UnifiedRope.Node.LeafSplitFn,
     notify: ?NativeEventNotify,
+    /// The id of the next mark; ids are never reused, undo included.
+    next_mark_id: u32 = 1,
 
     pub fn init(
         allocator: Allocator,
@@ -456,10 +459,11 @@ pub const EditBuffer = struct {
         const span = try candidate.insertSliceByWeight(insert_offset, insertBias(cursor), result.segments.items, &self.segment_splitter);
         const added_lines = iter_mod.getLineCount(&candidate) - self.tb.lineCount();
         const end = endCursor(.{ .row = cursor.row, .col = cursor.col, .offset = insert_offset }, added_lines, &candidate, span.end);
+        var splice = self.editSplice(cursor.row, cursor.col, insert_offset);
+        const marks = try splice.nextMarks(self.tb.rope().allocator, &candidate);
         try self.autoStoreUndo();
-        var splice = self.layerSplice(cursor.row, cursor.col, insert_offset);
         self.tb.rope().root = candidate.root;
-        splice.inserted(self.tb);
+        splice.inserted(self.tb, marks);
         self.cursor = end;
 
         self.tb.markViewsDirty();
@@ -487,10 +491,11 @@ pub const EditBuffer = struct {
         errdefer checkpoint.restore(self.tb, &self.add_buffer);
         var candidate = rope.*;
         const span = try self.replaceByWeight(&candidate, start_offset, end_offset, &.{});
+        var splice = self.editSplice(start.row, start.col, start_offset);
+        const marks = try splice.nextMarks(rope.allocator, &candidate);
         try self.autoStoreUndo();
-        var splice = self.layerSplice(start.row, start.col, start_offset);
         self.tb.rope().root = candidate.root;
-        splice.deleted(self.tb);
+        splice.deleted(self.tb, marks);
 
         self.tb.markViewsDirty();
         self.cursor = endCursor(.{ .row = start.row, .col = start.col, .offset = start_offset }, 0, &candidate, deletedCursorOffset(span));
@@ -545,49 +550,73 @@ pub const EditBuffer = struct {
         const history_storage = try self.tb.rope().allocator.alloc(u8, history_step_size * step_count);
         var history_allocator = std.heap.FixedBufferAllocator.init(history_storage);
         // One splice byte for both steps: seeking the cell again in the deleted text can land
-        // elsewhere when the deletion joined graphemes.
-        var splice = self.layerSplice(start.row, start.col, start.offset);
+        // elsewhere when the deletion joined graphemes. Both mark versions precede publication.
+        var splice = self.editSplice(start.row, start.col, start.offset);
+        const deleted_marks = if (has_deletion) try splice.nextMarks(self.tb.rope().allocator, &deleted) else 0;
+        const inserted_marks = if (bytes.len > 0) try splice.nextMarks(self.tb.rope().allocator, &inserted) else 0;
         if (has_deletion) {
             self.publishReplacementStep(&deleted, deleted_cursor, history_allocator.allocator());
-            splice.deleted(self.tb);
+            splice.deleted(self.tb, deleted_marks);
         }
         after_delete.handle(after_delete.ctx);
         if (bytes.len > 0) {
             self.publishReplacementStep(&inserted, inserted_cursor, history_allocator.allocator());
-            splice.inserted(self.tb);
+            splice.inserted(self.tb, inserted_marks);
         }
     }
 
     /// Where an edit at rope weight `offset` starts in text bytes, and the text's byte count, so
-    /// highlight layers can follow each step once its root is published. Free without layers.
-    const LayerSplice = struct {
-        layered: bool,
+    /// highlight layers and marks can follow each step once its root is published. Free without
+    /// either.
+    const EditSplice = struct {
+        active: bool,
         start_byte: u32 = 0,
         byte_count: u32 = 0,
+        /// The marks after the steps that `nextMarks` prepared, and the text bytes after them.
+        marks: usize = 0,
+        marks_byte_count: u32 = 0,
 
-        fn inserted(self: *LayerSplice, text_buffer: *UnifiedTextBuffer) void {
-            if (!self.layered) return;
-            const byte_count = text_buffer.getByteSize();
-            text_buffer.layers.insertBytes(self.start_byte, byte_count - self.byte_count);
-            self.byte_count = byte_count;
-            text_buffer.assertLayerBoundaries();
+        /// The marks once the text becomes `after`, one step on from the last call: built before
+        /// the step publishes, so publishing cannot fail.
+        fn nextMarks(self: *EditSplice, allocator: Allocator, after: *const UnifiedRope) !usize {
+            if (self.marks == 0) return 0;
+            const byte_count = iter_mod.textBytes(&after.root.metrics());
+            const before = self.marks_byte_count;
+            self.marks = (try edit_marks.splice(allocator, self.marks, self.start_byte, before -| byte_count, byte_count -| before)) orelse self.marks;
+            self.marks_byte_count = byte_count;
+            return self.marks;
         }
 
-        fn deleted(self: *LayerSplice, text_buffer: *UnifiedTextBuffer) void {
-            if (!self.layered) return;
+        fn inserted(self: *EditSplice, text_buffer: *UnifiedTextBuffer, marks: usize) void {
+            if (!self.active) return;
+            const byte_count = text_buffer.getByteSize();
+            text_buffer.layers.insertBytes(self.start_byte, byte_count - self.byte_count);
+            self.published(text_buffer, byte_count, marks);
+        }
+
+        fn deleted(self: *EditSplice, text_buffer: *UnifiedTextBuffer, marks: usize) void {
+            if (!self.active) return;
             const byte_count = text_buffer.getByteSize();
             text_buffer.layers.deleteBytes(text_buffer.global_allocator, text_buffer.link_pool, self.start_byte, self.start_byte + (self.byte_count - byte_count));
+            self.published(text_buffer, byte_count, marks);
+        }
+
+        fn published(self: *EditSplice, text_buffer: *UnifiedTextBuffer, byte_count: u32, marks: usize) void {
             self.byte_count = byte_count;
+            text_buffer.rope().aux = marks;
             text_buffer.assertLayerBoundaries();
+            text_buffer.assertMarks();
         }
     };
 
-    fn layerSplice(self: *const EditBuffer, row: u32, col: u32, offset: u32) LayerSplice {
-        if (self.tb.layers.isEmpty()) return .{ .layered = false };
+    fn editSplice(self: *const EditBuffer, row: u32, col: u32, offset: u32) EditSplice {
+        const marks = self.tb.rope().aux;
+        if (self.tb.layers.isEmpty() and self.tb.marks().len == 0) return .{ .active = false };
         // At a line start an edit goes before zero-width text (`insertBias`, `replaceByWeight`);
         // elsewhere after it, where the weight seek lands.
         const start_byte = if (col == 0) self.tb.lineStartByte(row) else self.tb.byteOffsetAtWeight(offset);
-        return .{ .layered = true, .start_byte = start_byte, .byte_count = self.tb.getByteSize() };
+        const marks_byte_count = iter_mod.textBytes(&self.tb.rope().root.metrics());
+        return .{ .active = true, .start_byte = start_byte, .byte_count = self.tb.getByteSize(), .marks = marks, .marks_byte_count = marks_byte_count };
     }
 
     fn publishReplacementStep(self: *EditBuffer, candidate: *const UnifiedRope, cursor: Cursor, history_allocator: Allocator) void {
@@ -776,7 +805,9 @@ pub const EditBuffer = struct {
         self.finishTextReplacement();
     }
 
+    /// A whole-text replacement leaves no marks; undo restores the ones before it.
     fn finishTextReplacement(self: *EditBuffer) void {
+        self.tb.rope().aux = 0;
         self.cursor = .{ .row = 0, .col = 0 };
         self.publishCursor(true);
     }
@@ -899,8 +930,68 @@ pub const EditBuffer = struct {
 
     pub fn clear(self: *EditBuffer) !void {
         try self.tb.clear();
+        self.tb.rope().aux = 0;
         try self.setCursor(0, 0);
         self.emitNativeEvent(.content_changed);
+    }
+
+    pub const MarkOptions = struct {
+        kind: u32 = 0,
+        atomic: bool = false,
+        /// A SyntaxStyle id, unless `style_value` is set.
+        style: u32 = 0,
+        style_value: ?tb.StyleDefinition = null,
+        priority: u8 = 0,
+        /// Cursor offsets, `start <= end`; past the text they mean its end.
+        start: u32,
+        end: u32,
+    };
+
+    /// Adds a mark and returns its id.
+    pub fn addMark(self: *EditBuffer, options: MarkOptions) !u32 {
+        std.debug.assert(options.start <= options.end);
+        const rope = self.tb.rope();
+        if (self.tb.marks().len == edit_marks.count_max or self.next_mark_id == std.math.maxInt(u32)) return error.ObjectLimit;
+        const style = if (options.style_value) |value| try self.tb.internMarkStyle(value) else options.style;
+        const mark: edit_marks.Mark = .{
+            .id = self.next_mark_id,
+            .kind = options.kind,
+            .style = style,
+            .start_byte = self.tb.byteAtOffset(options.start),
+            .end_byte = self.tb.byteAtOffset(options.end),
+            .priority = options.priority,
+            .atomic = options.atomic,
+            .style_value = options.style_value != null,
+        };
+        self.setMarks(try edit_marks.add(rope.allocator, rope.aux, rope.aux_owned, mark));
+        self.next_mark_id += 1;
+        return mark.id;
+    }
+
+    /// Removes mark `id`; returns whether there was one.
+    pub fn removeMark(self: *EditBuffer, id: u32) !bool {
+        const rope = self.tb.rope();
+        self.setMarks((try edit_marks.remove(rope.allocator, rope.aux, rope.aux_owned, id)) orelse return false);
+        return true;
+    }
+
+    /// Removes every mark; undo can restore them with the text they belong to.
+    pub fn clearMarks(self: *EditBuffer) void {
+        const rope = self.tb.rope();
+        if (self.tb.marks().len > 0) self.setMarks(edit_marks.clear(rope.aux, rope.aux_owned));
+    }
+
+    /// A mark operation's version is the buffer's alone until history stores or loads one.
+    fn setMarks(self: *EditBuffer, marks: usize) void {
+        self.tb.rope().aux = marks;
+        self.tb.rope().aux_owned = true;
+        self.tb.assertMarks();
+        self.tb.span_generation += 1;
+    }
+
+    /// The cursor offsets of `mark`: its start rounds down and its end up to a cursor stop.
+    pub fn markOffsets(self: *const EditBuffer, mark: edit_marks.Mark) struct { start: u32, end: u32 } {
+        return .{ .start = self.tb.weightAtByte(mark.start_byte, true), .end = self.tb.weightAtByte(mark.end_byte, false) };
     }
 
     pub fn getNextWordBoundary(self: *EditBuffer) Cursor {

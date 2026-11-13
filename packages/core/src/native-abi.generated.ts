@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 4c3590e542387e190703ab553182e3f06b022ba38575934c226e3f9920ed171d
+// ABI audit SHA-256: 9758200231b5d75d502ff50269f4842b7e209af9b23aae9ca0fce3e467b3264d
 
 export const OT_CONTEXT_ABI_VERSION = 2
 export const OT_OK = 0
@@ -447,6 +447,12 @@ export const OT_EDIT_HIGHLIGHT_CLEAR_ALL = 4
 export const OT_STYLE_RUN_FLAG = 2147483648
 export const OT_GROUP_SET_NAME_COUNT_MAX = 16
 export const OT_GROUP_SET_NAME_BYTE_COUNT_MAX = 64
+export const OT_EDIT_MARK_ADD = 0
+export const OT_EDIT_MARK_REMOVE = 1
+export const OT_EDIT_MARK_CLEAR = 2
+export const OT_EDIT_MARK_ATOMIC = 1
+export const OT_EDIT_MARK_STYLE_VALUE = 2
+export const OT_EDIT_MARK_ANY_KIND = 4294967295
 export const OT_MD_CONCEAL = 1
 export const OT_MD_HYPERLINKS = 2
 export const OT_MD_MATH = 4
@@ -953,6 +959,8 @@ export const nativeSymbols = {
   ot_edit_buffer_get_highlights: { args: ["ptr", "buffer", "u32", "ptr", "u32", "buffer"], returns: "i32" },
   ot_context_group_set: { args: ["ptr", "buffer", "u32", "buffer", "u32", "buffer"], returns: "i32" },
   ot_edit_buffer_set_layer: { args: ["ptr", "buffer", "u32", "u32", "u32", "ptr", "u32"], returns: "i32" },
+  ot_edit_buffer_mark: { args: ["ptr", "buffer", "u32", "ptr", "ptr"], returns: "i32" },
+  ot_edit_buffer_get_marks: { args: ["ptr", "buffer", "u32", "u32", "ptr", "u32", "buffer"], returns: "i32" },
   ot_markdown_create: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_markdown_destroy: { args: ["ptr", "buffer"], returns: "i32" },
   ot_markdown_set_options: { args: ["ptr", "buffer", "buffer", "buffer"], returns: "i32" },
@@ -1055,6 +1063,7 @@ export const nativeSymbols = {
   ot_text_buffer_set_tab_width: { args: ["ptr", "buffer", "u32"], returns: "i32" },
   ot_text_buffer_highlight: { args: ["ptr", "buffer", "u32", "u32", "ptr"], returns: "i32" },
   ot_text_buffer_get_highlights: { args: ["ptr", "buffer", "u32", "ptr", "u32", "buffer"], returns: "i32" },
+  ot_text_buffer_set_layer: { args: ["ptr", "buffer", "u32", "u32", "u32", "ptr", "u32"], returns: "i32" },
   ot_text_buffer_view_set_viewport: { args: ["ptr", "buffer", "buffer", "u32"], returns: "i32" },
   ot_text_buffer_view_command: { args: ["ptr", "buffer", "u32", "u32"], returns: "i32" },
   ot_text_buffer_view_set_tab_color: { args: ["ptr", "buffer", "ptr"], returns: "i32" },
@@ -1840,6 +1849,24 @@ export const nativeLayouts = {
       start_byte: { offset: 0, size: 4, alignment: 4, type: "u32" },
       end_byte: { offset: 4, size: 4, alignment: 4, type: "u32" },
       group_set: { offset: 8, size: 4, alignment: 4, type: "u32" },
+    },
+  },
+  ot_edit_mark: {
+    size: 76,
+    alignment: 4,
+    fields: {
+      struct_size: { offset: 0, size: 4, alignment: 4, type: "u32" },
+      abi_version: { offset: 4, size: 4, alignment: 4, type: "u32" },
+      id: { offset: 8, size: 4, alignment: 4, type: "u32" },
+      kind: { offset: 12, size: 4, alignment: 4, type: "u32" },
+      flags: { offset: 16, size: 4, alignment: 4, type: "u32" },
+      style: { offset: 20, size: 4, alignment: 4, type: "u32" },
+      value: { offset: 24, size: 32, alignment: 4, type: "ot_editor_style" },
+      priority: { offset: 56, size: 4, alignment: 4, type: "u32" },
+      start: { offset: 60, size: 4, alignment: 4, type: "u32" },
+      end: { offset: 64, size: 4, alignment: 4, type: "u32" },
+      start_byte: { offset: 68, size: 4, alignment: 4, type: "u32" },
+      end_byte: { offset: 72, size: 4, alignment: 4, type: "u32" },
     },
   },
   ot_markdown_options: {
@@ -2930,6 +2957,12 @@ export const nativeConstants = {
   OT_STYLE_RUN_FLAG: 2147483648,
   OT_GROUP_SET_NAME_COUNT_MAX: 16,
   OT_GROUP_SET_NAME_BYTE_COUNT_MAX: 64,
+  OT_EDIT_MARK_ADD: 0,
+  OT_EDIT_MARK_REMOVE: 1,
+  OT_EDIT_MARK_CLEAR: 2,
+  OT_EDIT_MARK_ATOMIC: 1,
+  OT_EDIT_MARK_STYLE_VALUE: 2,
+  OT_EDIT_MARK_ANY_KIND: 4294967295,
   OT_MD_CONCEAL: 1,
   OT_MD_HYPERLINKS: 2,
   OT_MD_MATH: 4,

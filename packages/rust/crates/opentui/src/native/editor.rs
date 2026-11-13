@@ -25,15 +25,32 @@ fn encode_style(style: Style) -> sys::ot_editor_style {
     raw
 }
 
+#[cfg(test)]
+thread_local! {
+    /// `ot_edit_buffer_get_text` calls on this thread, for tests that count the work of an edit.
+    pub(crate) static TEXT_READS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// `ot_edit_buffer_get_marks` calls on this thread.
+    pub(crate) static MARK_READS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// A style that supplies exactly its own attributes, as a registered name or a mark's style value.
+fn encode_supplied(style: Style) -> sys::ot_editor_style {
+    let mut raw = encode_style(style);
+    raw.flags |= sys::OT_EDITOR_STYLE_ATTRIBUTE_MASK;
+    raw.attributes |= raw.attributes << 16;
+    raw
+}
+
 /// A named-style table for edit buffer highlights, which several buffers can share.
 #[derive(Clone)]
 pub struct SyntaxStyle(Rc<Resource>, Rc<RefCell<CapturePalette>>);
 
-/// The syntax theme an editor last set on a table, and the capture names registered from it.
+/// The syntax theme an editor last set on a table, and the capture names and whole lists registered from it.
 #[derive(Default)]
 struct CapturePalette {
     theme: SyntaxTheme,
     names: BTreeSet<&'static str>,
+    lists: BTreeSet<Vec<&'static str>>,
 }
 
 impl SyntaxStyle {
@@ -55,7 +72,30 @@ impl SyntaxStyle {
         }
         self.1.borrow_mut().theme = theme.clone();
         self.1.borrow().names.iter().try_for_each(|name| self.register_capture(name).map(drop))?;
+        self.1.borrow().lists.iter().try_for_each(|names| self.register_list(names).map(drop))?;
         Ok(true)
+    }
+
+    /// The style names a group set of the capture-name list `names` composes, registered with the palette:
+    /// `opentui.<name>` for each, or, for a list past the group-set bounds, one name for the whole list with its
+    /// merged style, so no style is lost.
+    pub(crate) fn capture_group(&self, names: &[&'static str]) -> Result<Vec<String>> {
+        let prefixed: Vec<String> = names.iter().map(|name| format!("opentui.{name}")).collect();
+        let bytes = sys::OT_GROUP_SET_NAME_BYTE_COUNT_MAX as usize;
+        if names.len() <= sys::OT_GROUP_SET_NAME_COUNT_MAX as usize && prefixed.iter().all(|name| name.len() <= bytes) {
+            self.register_captures(names)?;
+            return Ok(prefixed);
+        }
+        if !self.1.borrow().lists.contains(names) {
+            self.register_list(names)?;
+            self.1.borrow_mut().lists.insert(names.to_vec());
+        }
+        Ok(vec![list_name(names)])
+    }
+
+    fn register_list(&self, names: &[&'static str]) -> Result<u32> {
+        let style = self.1.borrow().theme.merge(names.iter().copied());
+        self.register(&list_name(names), style)
     }
 
     /// Registers the capture names the table has not seen as `opentui.<name>`, with its palette's style.
@@ -81,9 +121,7 @@ impl SyntaxStyle {
     /// Defines or replaces a named style and returns its id for highlights. In a group set it adds its attributes to
     /// earlier names' (a [`Style`] has no attribute that says "off"), as [`Style::patch`] does.
     pub fn register(&self, name: &str, style: Style) -> Result<u32> {
-        let mut raw = encode_style(style);
-        raw.flags |= sys::OT_EDITOR_STYLE_ATTRIBUTE_MASK;
-        raw.attributes |= raw.attributes << 16;
+        let raw = encode_supplied(style);
         let length = count("ot_syntax_style_register", name.len())?;
         let (context, handle) = self.0.raw();
         let mut id = 0;
@@ -103,6 +141,14 @@ impl SyntaxStyle {
         })?;
         Ok((id != 0).then_some(id))
     }
+}
+
+/// The style name of a capture-name list past the group-set bounds: the same in every table.
+fn list_name(names: &[&str]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    names.hash(&mut hasher);
+    format!("opentui.~{:016x}", hasher.finish())
 }
 
 /// A highlight over a range of display columns.
@@ -247,6 +293,8 @@ impl EditBuffer {
     pub fn text(&self) -> Result<String> {
         let (context, handle) = self.raw();
         read_string("ot_edit_buffer_get_text", |bytes, capacity, length| unsafe {
+            #[cfg(test)]
+            TEXT_READS.with(|reads| reads.set(reads.get() + 1));
             sys::ot_edit_buffer_get_text(context, handle, bytes, capacity, length)
         })
     }
@@ -336,18 +384,6 @@ impl EditBuffer {
         })
     }
 
-    /// The document offset at the end of `text` if it were this buffer's text: its display cells under the buffer's
-    /// width method, tab width, and control notation, plus one per line break.
-    pub(crate) fn measure(&self, text: &str) -> Result<u32> {
-        let length = count("ot_edit_buffer_measure_text", text.len())?;
-        let (context, handle) = self.raw();
-        let mut offset = 0;
-        check("ot_edit_buffer_measure_text", unsafe {
-            sys::ot_edit_buffer_measure_text(context, handle, text.as_ptr(), length, &mut offset)
-        })?;
-        Ok(offset)
-    }
-
     /// Sets the colors and attributes of unhighlighted text.
     pub fn set_defaults(&self, style: Style) -> Result<()> {
         let raw = encode_style(style);
@@ -405,6 +441,79 @@ impl EditBuffer {
         check("ot_edit_buffer_set_layer", unsafe {
             sys::ot_edit_buffer_set_layer(context, handle, layer_id, range.start, range.end, runs.as_ptr(), length)
         })
+    }
+
+    /// Adds a mark over cursor offsets `range` and returns its id; a style paints by value at `priority`.
+    pub(crate) fn add_mark(&self, range: Range<u32>, atomic: bool, style: Option<Style>, priority: u8) -> Result<u32> {
+        let mut raw = sys::ot_edit_mark {
+            start: range.start,
+            end: range.end,
+            priority: u32::from(priority),
+            ..Default::default()
+        };
+        if atomic {
+            raw.flags |= sys::OT_EDIT_MARK_ATOMIC;
+        }
+        if let Some(style) = style {
+            raw.flags |= sys::OT_EDIT_MARK_STYLE_VALUE;
+            raw.value = encode_supplied(style);
+        }
+        self.mark(sys::OT_EDIT_MARK_ADD, Some(&raw))
+    }
+
+    /// Removes mark `id`. Returns whether there was one.
+    pub(crate) fn remove_mark(&self, id: u32) -> Result<bool> {
+        let raw = sys::ot_edit_mark { id, ..Default::default() };
+        Ok(self.mark(sys::OT_EDIT_MARK_REMOVE, Some(&raw))? != 0)
+    }
+
+    pub(crate) fn clear_marks(&self) -> Result<()> {
+        self.mark(sys::OT_EDIT_MARK_CLEAR, None).map(drop)
+    }
+
+    fn mark(&self, operation: u32, raw: Option<&sys::ot_edit_mark>) -> Result<u32> {
+        let mut id = 0;
+        let out = if raw.is_some() { &mut id as *mut u32 } else { std::ptr::null_mut() };
+        let (context, handle) = self.raw();
+        check("ot_edit_buffer_mark", unsafe {
+            sys::ot_edit_buffer_mark(context, handle, operation, raw.map_or(std::ptr::null(), |raw| raw), out)
+        })?;
+        Ok(id)
+    }
+
+    /// Every mark in (start, id) order, with its style value decoded.
+    pub(crate) fn marks(&self) -> Result<Vec<(sys::ot_edit_mark, Option<Style>)>> {
+        let (context, handle) = self.raw();
+        let mut length = 0;
+        let any = sys::OT_EDIT_MARK_ANY_KIND;
+        #[cfg(test)]
+        MARK_READS.with(|reads| reads.set(reads.get() + 1));
+        check("ot_edit_buffer_get_marks", unsafe {
+            sys::ot_edit_buffer_get_marks(context, handle, 0, any, std::ptr::null_mut(), 0, &mut length)
+        })?;
+        if length == 0 {
+            return Ok(Vec::new());
+        }
+        let mut marks = vec![sys::ot_edit_mark::default(); length as usize];
+        #[cfg(test)]
+        MARK_READS.with(|reads| reads.set(reads.get() + 1));
+        check("ot_edit_buffer_get_marks", unsafe {
+            sys::ot_edit_buffer_get_marks(context, handle, 0, any, marks.as_mut_ptr(), length, &mut length)
+        })?;
+        Ok(marks
+            .into_iter()
+            .map(|mark| (mark, (mark.flags & sys::OT_EDIT_MARK_STYLE_VALUE != 0).then(|| decode_style(&mark.value))))
+            .collect())
+    }
+}
+
+/// A style value as `encode_supplied` wrote it.
+fn decode_style(raw: &sys::ot_editor_style) -> Style {
+    let color = |flag, words| (raw.flags & flag != 0).then(|| Color::from_raw(words));
+    Style {
+        fg: color(sys::OT_EDITOR_STYLE_FOREGROUND, raw.foreground),
+        bg: color(sys::OT_EDITOR_STYLE_BACKGROUND, raw.background),
+        attributes: crate::style::Attributes::from_bits(raw.attributes as u8),
     }
 }
 

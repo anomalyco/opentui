@@ -3732,15 +3732,12 @@ fn localLayout(value: *const native.NativeRenderable, comptime source: anytype) 
     if (source == .observed) return node.observed_layout;
     if (source == .prepared) return node.layout;
     var computed: yoga.ExternalYogaLayout = undefined;
-    try yoga.check(yoga.yogaNodeGetComputedLayoutChecked(value.yoga_node, &computed));
-    var layout: Layout = .{ .left = computed.left, .top = computed.top, .right = computed.right, .bottom = computed.bottom, .width = computed.width, .height = computed.height };
     // Only text nodes paint inside their padding; boxes place children there. Yoga rounds the
     // content box's edges as it rounds the node's own, so without padding the view is the box.
-    if (node.text != null) {
-        var box: [4]f32 = undefined;
-        try yoga.check(yoga.yogaNodeGetContentBoxChecked(value.yoga_node, &box));
-        layout.content = .{ box[0], box[1], @max(0, box[2]), @max(0, box[3]) };
-    }
+    var box: [4]f32 = undefined;
+    try yoga.check(yoga.yogaNodeGetLayoutChecked(value.yoga_node, &computed, if (node.text != null) &box else null));
+    var layout: Layout = .{ .left = computed.left, .top = computed.top, .right = computed.right, .bottom = computed.bottom, .width = computed.width, .height = computed.height };
+    if (node.text != null) layout.content = .{ box[0], box[1], @max(0, box[2]), @max(0, box[3]) };
     return layout;
 }
 

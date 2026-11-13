@@ -13,6 +13,7 @@ const link = @import("link.zig");
 const utf8 = @import("utf8.zig");
 const text_work = @import("text-work.zig");
 const hl = @import("highlight-layers.zig");
+const edit_marks = @import("edit-marks.zig");
 
 const logger = @import("logger.zig");
 
@@ -87,18 +88,31 @@ const LineChunk = struct {
     start_col: u32,
 };
 
+/// A styled edit mark's part on one line, in the line's columns.
+pub const LineMark = struct {
+    mark: edit_marks.Mark,
+    col_start: u32,
+    col_end: u32,
+
+    fn idLessThan(_: void, a: LineMark, b: LineMark) bool {
+        return a.mark.id < b.mark.id;
+    }
+};
+
 /// Build scratch, retained between builds so paint allocates only while it grows.
 const SpanScratch = struct {
     inputs: std.ArrayListUnmanaged(SpanInput) = .empty,
     events: std.ArrayListUnmanaged(SpanEvent) = .empty,
     heap: std.ArrayListUnmanaged(u32) = .empty,
     chunks: std.ArrayListUnmanaged(LineChunk) = .empty,
+    marks: std.ArrayListUnmanaged(LineMark) = .empty,
 
     fn deinit(self: *SpanScratch, allocator: Allocator) void {
         self.inputs.deinit(allocator);
         self.events.deinit(allocator);
         self.heap.deinit(allocator);
         self.chunks.deinit(allocator);
+        self.marks.deinit(allocator);
         self.* = .{};
     }
 };
@@ -151,6 +165,8 @@ pub const UnifiedTextBuffer = struct {
     run_styles: RunStyles,
     /// clear() released the run styles' link refs while their highlights stay.
     run_links_retired: bool,
+    /// Styles of edit marks by value, never removed: undo can restore a mark that names any.
+    mark_styles: RunStyles,
     /// Byte-addressed provider layers; their runs name group sets in `group_sets`.
     layers: hl.Layers,
     /// The owning Context's group sets; null until the Context attaches it, and then no layer
@@ -392,6 +408,7 @@ pub const UnifiedTextBuffer = struct {
             .internal_highlight_count = 0,
             .run_styles = .empty,
             .run_links_retired = false,
+            .mark_styles = .empty,
             .layers = .{},
             .group_sets = options.group_sets,
             .tab_width = 2,
@@ -440,6 +457,8 @@ pub const UnifiedTextBuffer = struct {
         }
         self.link_tracker = null;
         self.dropRunStyles();
+        self.mark_styles.deinit(self.global_allocator);
+        self.mark_styles = .empty;
 
         self.layout_cache.clear();
         self.mem_registry.clear();
@@ -1547,7 +1566,7 @@ pub const UnifiedTextBuffer = struct {
         const row: u32 = @intCast(line_idx);
         const entry = self.line_spans.getPtr(row) orelse entry: {
             const has_records = line_idx < self.line_highlights.items.len and self.line_highlights.items[line_idx].items.len > 0;
-            if (!has_records and self.layers.isEmpty()) return &.{};
+            if (!has_records and self.layers.isEmpty() and self.marks().len == 0) return &.{};
             try self.line_spans.ensureUnusedCapacity(self.global_allocator, 1);
             const added = self.line_spans.getOrPutAssumeCapacity(row);
             added.value_ptr.* = .{};
@@ -1573,8 +1592,24 @@ pub const UnifiedTextBuffer = struct {
                 if (span.linkId() != 0) definition.attributes = ansi.TextAttributes.setLinkId(definition.attributes, span.linkId());
                 return definition;
             },
+            .mark_style => return self.mark_styles.keys()[span.style_id],
         }
     }
+
+    /// The edit marks of the live text, sorted by start byte and id.
+    pub fn marks(self: *const Self) []const edit_marks.Mark {
+        return edit_marks.live(self._rope.aux);
+    }
+
+    /// The mark style table index of `style`, added on first use; at most 4,096 styles.
+    pub fn internMarkStyle(self: *Self, style: StyleDefinition) error{ OutOfMemory, ObjectLimit }!u32 {
+        if (self.mark_styles.getIndex(style)) |index| return @intCast(index);
+        if (self.mark_styles.count() == mark_style_count_max) return error.ObjectLimit;
+        try self.mark_styles.put(self.global_allocator, style, {});
+        return @intCast(self.mark_styles.count() - 1);
+    }
+
+    pub const mark_style_count_max = 4096;
 
     fn suppliesNothing(self: *Self, group_set: u32) bool {
         const style = self.style_binding.style orelse return true;
@@ -1599,7 +1634,8 @@ pub const UnifiedTextBuffer = struct {
     }
 
     /// One sweep over the line's inputs: the highest priority wins each column; on a tie the later
-    /// input wins (records in line order, then layers in `layer_id` order). A layer run whose set
+    /// input wins (records in line order, styled marks in id order, then layers in `layer_id`
+    /// order). A layer run whose set
     /// supplies nothing and has no link is left out when other inputs could show under it. Spans
     /// start at column 0, include gaps, and end with a default tail that unstyles text added later.
     /// Returns the binding's `changes` when the spans depend on definitions.
@@ -1616,6 +1652,16 @@ pub const UnifiedTextBuffer = struct {
             .link_id_and_kind = 0,
             .priority = record.priority,
         });
+        if (self.marks().len > 0) {
+            const mark_kind = @as(u32, @backingInt(StyleSpan.Kind.mark_style)) << 24;
+            for (try self.lineMarks(@intCast(line_idx))) |entry| try scratch.inputs.append(allocator, .{
+                .col_start = entry.col_start,
+                .col_end = entry.col_end,
+                .style_id = entry.mark.style,
+                .link_id_and_kind = if (entry.mark.style_value) mark_kind else 0,
+                .priority = entry.mark.priority,
+            });
+        }
         const restylable = !self.layers.isEmpty() and try self.appendLayerInputs(@intCast(line_idx));
         text_work.add(.line_span_builds, 1);
         text_work.add(.line_span_highlights, scratch.inputs.items.len);
@@ -1717,8 +1763,7 @@ pub const UnifiedTextBuffer = struct {
         const line_start_byte = iter_mod.lineStartByte(&self._rope, row) orelse return false;
         try self.collectLineChunks(row);
         const chunks = self.span_scratch.chunks.items;
-        const line_byte_count: u32 = if (chunks.len == 0) 0 else chunks[chunks.len - 1].start_byte + chunks[chunks.len - 1].chunk.byte_end - chunks[chunks.len - 1].chunk.byte_start;
-        const line_end_byte = line_start_byte + line_byte_count;
+        const line_end_byte = line_start_byte + lineByteCount(chunks);
         const group_set_kind = @as(u32, @backingInt(StyleSpan.Kind.group_set)) << 24;
         var restylable = false;
         for (self.layers.slice()) |layer| {
@@ -1747,6 +1792,36 @@ pub const UnifiedTextBuffer = struct {
             }
         }
         return restylable;
+    }
+
+    fn lineByteCount(chunks: []const LineChunk) u32 {
+        if (chunks.len == 0) return 0;
+        const last = chunks[chunks.len - 1];
+        return last.start_byte + last.chunk.byte_end - last.chunk.byte_start;
+    }
+
+    /// The styled marks over line `row` in its columns, in id order: the records that one legacy
+    /// highlight per mark, added in id order, would give the line. Reuses the span scratch.
+    pub fn lineMarks(self: *Self, row: u32) TextBufferError![]const LineMark {
+        const out = &self.span_scratch.marks;
+        out.clearRetainingCapacity();
+        const line_start_byte = iter_mod.lineStartByte(&self._rope, row) orelse return out.items;
+        try self.collectLineChunks(row);
+        const chunks = self.span_scratch.chunks.items;
+        const line_end_byte = line_start_byte + lineByteCount(chunks);
+        const line_start_weight = iter_mod.lineStart(&self._rope, row).?.weight;
+        for (self.marks()) |mark| {
+            if (mark.start_byte >= line_end_byte) break;
+            if (!mark.styled() or mark.end_byte <= line_start_byte) continue;
+            // A start inside a grapheme (after a join) takes the grapheme, as `weightAtByte` reports it.
+            const col_start = if (mark.start_byte <= line_start_byte) 0 else self.weightAtByte(mark.start_byte, true) - line_start_weight;
+            var cursor: ColumnCursor = .{ .buffer = self, .chunks = chunks };
+            const col_end = cursor.colAt(@min(mark.end_byte, line_end_byte) - line_start_byte);
+            if (col_start >= col_end) continue;
+            try out.append(self.global_allocator, .{ .mark = mark, .col_start = col_start, .col_end = col_end });
+        }
+        std.mem.sort(LineMark, out.items, {}, LineMark.idLessThan);
+        return out.items;
     }
 
     /// Fills the scratch with the text chunks of line `row`, with line-relative bytes and columns.
@@ -1858,6 +1933,14 @@ pub const UnifiedTextBuffer = struct {
         };
     }
 
+    /// Every edit mark lies inside the text, on code point boundaries, in order. Debug builds check
+    /// it after each mark change and edit.
+    pub fn assertMarks(self: *const Self) void {
+        if (!std.debug.runtime_safety) return;
+        edit_marks.assertValid(self._rope.aux, self.getByteSize());
+        for (self.marks()) |mark| std.debug.assert(self.isCharBoundary(mark.start_byte) and self.isCharBoundary(mark.end_byte));
+    }
+
     /// Whether text byte `byte` starts a code point, a line break, or the end of the text.
     fn isCharBoundary(self: *const Self, byte: u32) bool {
         const found = self._rope.seekKey(iter_mod.textBytes, byte) orelse return byte == self.getByteSize();
@@ -1877,6 +1960,37 @@ pub const UnifiedTextBuffer = struct {
         const ascii_only = (chunk.flags & TextChunk.Flags.ASCII_ONLY) != 0;
         const split = utf8.findPosByWidth(chunk.getBytes(&self.mem_registry), target_col, self.tab_width, self.control_display, ascii_only, false, self.width_method);
         return before + split.byte_offset;
+    }
+
+    /// The cursor offset at text byte `byte`: the weight before it, where a byte inside a grapheme
+    /// rounds to the grapheme's end, or its start with `round_down`. The inverse of
+    /// `byteOffsetAtWeight` on cursor stops.
+    pub fn weightAtByte(self: *const Self, byte: u32, round_down: bool) u32 {
+        const found = self._rope.seekKey(iter_mod.textBytes, byte) orelse return self._rope.totalWeight();
+        const before = (self._rope.seekCountSum(iter_mod.leafCount, iter_mod.weight, found.leaf_index) orelse unreachable).sum;
+        // A break's byte is the end of its line.
+        const chunk = found.leaf.asText() orelse return before;
+        const target = byte - found.before;
+        var cursor: utf8.TextWidthCursor = .{
+            .text = chunk.getBytes(&self.mem_registry),
+            .tab_width = self.tab_width,
+            .control_display = self.control_display,
+            .width_method = self.width_method,
+        };
+        // Each one-byte advance takes at least one whole grapheme.
+        var columns_before: u32 = 0;
+        while (cursor.byte_offset < target) {
+            columns_before = cursor.columns;
+            _ = cursor.advanceTo(cursor.byte_offset + 1);
+        }
+        return before + if (round_down and cursor.byte_offset > target) columns_before else cursor.columns;
+    }
+
+    /// The text byte where an edit at cursor offset `offset` starts: a line start's first byte, or
+    /// where `byteOffsetAtWeight` splits the text elsewhere.
+    pub fn byteAtOffset(self: *const Self, offset: u32) u32 {
+        const coords = iter_mod.offsetToCoords(&self._rope, @min(offset, self._rope.totalWeight())).?;
+        return if (coords.col == 0) self.lineStartByte(coords.row) else self.byteOffsetAtWeight(offset);
     }
 
     /// The text byte where line `row` starts.
