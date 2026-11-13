@@ -1436,8 +1436,10 @@ pub const Doc = struct {
                 block.content_end_byte = line.end;
                 container.* = item;
                 matched.* = self.open_count;
-                try self.detectTask(item, line);
-                return .container;
+                // GFM: a task marker starts the item's paragraph; the rest of the line is its text.
+                if (!try self.detectTask(item, line)) return .container;
+                line.findNextNonspace();
+                return .leaf;
             }
         }
         // Indented code.
@@ -1741,22 +1743,23 @@ pub const Doc = struct {
         return .{ .ordered = ordered, .marker = marker, .number = number, .indent = marker_offset + padding, .start_byte = at };
     }
 
-    fn detectTask(self: *Doc, item: u32, line: *Line) Error!void {
+    fn detectTask(self: *Doc, item: u32, line: *Line) Error!bool {
         const s = self.source.items;
         var i = line.offset;
         // A partly consumed tab still counts as the space after the marker.
         while (i < line.end and isSpaceOrTab(s[i])) i += 1;
-        if (i + 3 > line.end or s[i] != '[' or s[i + 2] != ']') return;
+        if (i + 3 > line.end or s[i] != '[' or s[i + 2] != ']') return false;
         const mark = s[i + 1];
-        if (mark != ' ' and mark != 'x' and mark != 'X') return;
-        if (i + 3 >= line.end or !isSpaceOrTab(s[i + 3])) return;
-        if (isBlankRange(s, i + 3, line.end)) return;
+        if (mark != ' ' and mark != 'x' and mark != 'X') return false;
+        if (i + 3 >= line.end or !isSpaceOrTab(s[i + 3])) return false;
+        if (isBlankRange(s, i + 3, line.end)) return false;
         const block = try self.blockMut(item);
         block.flags.task = true;
         block.flags.checked = mark != ' ';
         line.offset = i + 3;
         line.column = 0;
         line.partially_consumed_tab = false;
+        return true;
     }
 
     // ---- Tables ----
@@ -2737,6 +2740,7 @@ pub const Doc = struct {
         live.token_display = .{};
         const parser = &live.parser;
         parser.references = self.references();
+        parser.options.math_blocks = self.options.math and self.blocks.items[live.block].kind == .paragraph;
         const tokens_before: u32 = @intCast(parser.tokens.items.len);
         const position_before = parser.position;
         const visits_before = parser.byte_visits;
@@ -3264,8 +3268,9 @@ pub const Doc = struct {
         if (!parser.settled() or position != parser.limit or position >= live.content.items.len) return;
         if (position <= 2 * look_behind_byte_count) return;
         if (live.definition_possible or live.pipe_line_start != none or live.line_pipe != none) return;
-        // The limit is a word start: whitespace precedes it.
-        assert(isAsciiWhitespaceByte(live.content.items[position - 1]));
+        // At a word's start or end only (the `$` read-ahead can stop inside a word).
+        const c = live.content.items;
+        if (!isAsciiWhitespaceByte(c[position - 1]) and !isAsciiWhitespaceByte(c[position])) return;
         const drop = position - look_behind_byte_count;
         const rest = live.content.items.len - drop;
         // Settled: every span the dropped tokens opened, or a retire left open, closed among
@@ -3409,7 +3414,7 @@ pub const Doc = struct {
         }
         // An open prose leaf shows what B shows of it: its tokens so far (an opener that waits is
         // concealed as if closed), the untokenized bytes it may draw, minus what B holds back.
-        var parser: inline_parser.Parser = .{ .allocator = arena, .references = self.references(), .options = .{ .math = self.options.math } };
+        var parser: inline_parser.Parser = .{ .allocator = arena, .references = self.references(), .options = .{ .math = self.options.math, .math_blocks = self.options.math and b.kind == .paragraph } };
         var cut: u32 = none;
         // A table cell of the pending row is drawn the same way.
         // (A cell of a row that ended is closed; one of the pending row stays open.)
@@ -3851,7 +3856,10 @@ const Styles = struct {
     strong: i32 = 0,
     italic: i32 = 0,
     strikethrough: i32 = 0,
+    /// The outermost link's or image's target and its link index + 1 (an image inside a link
+    /// keeps the link's target).
     link: ?[2]u32 = null,
+    link_owner: u16 = 0,
 
     fn apply(self: *Styles, kind: inline_parser.MatchKind, delta: i32) void {
         switch (kind) {
@@ -3905,7 +3913,8 @@ const LeafWriter = struct {
             if (email[1] <= at or email[0] >= end) continue;
             if (at < email[0]) try self.write(r.content[at..email[0]], .{});
             const saved = self.link;
-            self.link = try self.url("mailto:", r.content[email[0]..email[1]]);
+            // Inside a link or image its target stays.
+            self.link = saved orelse try self.url("mailto:", r.content[email[0]..email[1]]);
             const stop = @min(end, email[1]);
             try self.write(r.content[@max(at, email[0])..stop], .{});
             self.link = saved;

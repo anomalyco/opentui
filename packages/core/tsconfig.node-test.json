@@ -84,6 +84,7 @@
     "src/lib/terminal-palette.test.ts",
     "src/lib/tree-sitter/cache.test.ts",
     "src/lib/tree-sitter/client.test.ts",
+    "src/lib/tree-sitter/client.model.test.ts",
     "src/lib/tree-sitter-styled-text.test.ts",
     "src/lib/styled-text.test.ts",
     "src/lib/yoga.options.test.ts",
