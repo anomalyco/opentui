@@ -5,7 +5,7 @@ use core::ffi::c_void;
 
 /// FNV-1a 64-bit hash of the `opentui.h` these declarations were generated from.
 /// The build script rejects native artifacts whose header has a different hash.
-pub const OPENTUI_HEADER_FNV1A64: u64 = 0x4c2d4c8debd9d56c;
+pub const OPENTUI_HEADER_FNV1A64: u64 = 0x02dc54261166b326;
 
 pub type ot_status = i32;
 
@@ -4443,6 +4443,7 @@ unsafe extern "C" {
     pub fn ot_scene_set_measure(context: *mut ot_context, node: *const ot_handle, callback: ot_scene_measure_callback) -> ot_status;
     pub fn ot_scene_has_measure(context: *mut ot_context, node: *const ot_handle, out_enabled: *mut u32) -> ot_status;
     pub fn ot_scene_reaches_hooks(context: *mut ot_context, node: *const ot_handle, out_reached: *mut u32) -> ot_status;
+    pub fn ot_scene_painted(context: *mut ot_context, node: *const ot_handle, out_painted: *mut u32) -> ot_status;
     pub fn ot_scene_mark_dirty(context: *mut ot_context, node: *const ot_handle) -> ot_status;
     pub fn ot_scene_set_style(context: *mut ot_context, node: *const ot_handle, group: u32, kind: u32, edge: u32, unit: u32, value: f32, flags: u32) -> ot_status;
     pub fn ot_scene_get_style(context: *mut ot_context, node: *const ot_handle, group: u32, kind: u32, edge: u32, out_value: *mut ot_scene_style_value) -> ot_status;

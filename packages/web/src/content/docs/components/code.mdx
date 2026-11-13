@@ -176,7 +176,7 @@ code.content += "const y = 2\n"
 With `drawUnstyledText: false`, streaming mode changes what `Code` shows while a highlight runs:
 
 - Without streaming, `Code` shows nothing until each highlight completes.
-- With streaming, `Code` shows nothing until the first highlight completes. Later updates keep the previous highlighted text visible until the new highlight completes.
+- With streaming, `Code` shows nothing until the first highlight completes. Later updates keep the previous highlighted text visible until the new highlight completes, while the block stays in view. A block that leaves the view during an update measures its new text from the next frame, and shows nothing when it comes back until that highlight completes. If it ends above the view of a `ScrollBox`, the rows in view move in that next frame; `anchor` and sticky bottom keep them in place.
 
 With `drawUnstyledText: true`, a `content` change shows the new text unstyled while its highlight runs, with or without streaming.
 In streaming mode, after the first highlight, other changes that start a highlight, such as `filetype` or `conceal`, keep the previous highlighted text visible.
@@ -267,8 +267,9 @@ renderer.root.add(scrollbox)
 | `drawUnstyledText` | `boolean`          | `true`   | Show unstyled text while a highlight runs (see [Streaming mode](#streaming-mode)) |
 | `treeSitterClient` | `TreeSitterClient` | -        | Custom Tree-sitter client instance                                                |
 
-When the renderable has a `filetype`, a change to `content`, `filetype`, `syntaxStyle`, `conceal`, `drawUnstyledText`, `streaming`, or `treeSitterClient` starts a new highlight.
-`Code` starts each highlight in its [update hook](/docs/extend/custom-renderables#schedule-updates) (`onUpdate`) during the next frame.
+When the renderable has a `filetype`, a change to `content`, `filetype`, `syntaxStyle`, `conceal`, `baseHighlight`, `onHighlight`, `onChunks`, `drawUnstyledText`, `streaming`, or `treeSitterClient` starts a new highlight.
+After a change to `syntaxStyle`, `conceal`, `baseHighlight`, `onHighlight`, or `onChunks`, the block keeps showing its last highlight, at its height, until the new one completes.
+`Code` starts each highlight in its [update hook](/docs/extend/custom-renderables#schedule-updates) (`onUpdate`) during the next frame. A block that leaves the view below it right after a change starts its highlight before the next frame, so scrolling back finds it sooner.
 `Code` does not start a highlight while it or an ancestor has `visible: false`.
 
 ### Inherited from TextBufferRenderable

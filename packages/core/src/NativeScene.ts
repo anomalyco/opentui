@@ -343,6 +343,12 @@ export class NativeScene {
     return this.driver.renderLib.sceneReachesHooks(this.driver.context, node._getSceneHandle(this))
   }
 
+  /** Whether the latest paint list held the node (see `ot_scene_painted`). */
+  painted(node: { _getSceneHandle(owner: NativeScene): SceneNodeHandle }): boolean {
+    this.flushStaged()
+    return this.driver.renderLib.scenePainted(this.driver.context, node._getSceneHandle(this))
+  }
+
   markDirty(node: { _getSceneHandle(owner: NativeScene): SceneNodeHandle }): void {
     this.flushStaged()
     this.driver.renderLib.sceneMarkDirty(this.driver.context, node._getSceneHandle(this))
