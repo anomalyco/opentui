@@ -1679,6 +1679,16 @@ ot_status ot_edit_buffer_get_position(ot_context *, const ot_handle *, uint32_t 
 ot_status ot_edit_buffer_get_range(ot_context *, const ot_handle *, uint32_t by_coords,
     uint32_t start_row, uint32_t start_col, uint32_t end_row, uint32_t end_col,
     uint8_t *bytes, uint32_t capacity, uint32_t *out_count);
+#define OT_EDIT_BYTE_TO_CELL UINT32_C(0)
+#define OT_EDIT_CELL_TO_BYTE UINT32_C(1)
+#define OT_EDIT_UTF16_TO_CELL UINT32_C(2)
+#define OT_EDIT_CELL_TO_UTF16 UINT32_C(3)
+/* Converts an index in get_text (UTF-8 bytes or UTF-16 code units) to or from document
+ * display cells, one per LF. Interior positions round down to the buffer grapheme's start;
+ * a cell shared by zero-width text maps after it. Past the end clamps to the end.
+ * Read-only. Unknown conversions fail and failures preserve out_value. */
+ot_status ot_edit_buffer_convert_offset(ot_context *, const ot_handle *edit_buffer,
+    uint32_t conversion, uint32_t value, uint32_t *out_value);
 /* Lays UTF-8 bytes out as set_text would, without storing them, and reports the offset at
  * their end: display cells under the buffer's width method, tab width, and control notation,
  * plus one per line break (LF, CR, or CRLF). bytes may be NULL only for zero length; the

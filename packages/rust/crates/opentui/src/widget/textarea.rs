@@ -60,6 +60,7 @@ impl Textarea {
         self.clone()
     }
 
+    /// The buffer text. Rust string indices count UTF-8 bytes, not cursor cells.
     pub fn text(&self) -> String {
         self.0.text()
     }

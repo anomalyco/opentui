@@ -573,11 +573,64 @@ test "layers: a run with a dead link rejects the set and returns the references 
     }));
     try testing.expectEqual(@as(u32, 2), try links.getRefcount(live));
     try expectRuns(&.{.{ 0, 10, 1 }}, runsOf(&layers, 1));
+    // A rejection that would have grown the layer leaves its storage too.
+    var many: [100]LayerRun = undefined;
+    for (&many, 0..) |*run, index| run.* = .{ .start_byte = @intCast(20 + index), .end_byte = @intCast(21 + index), .group_set = 1, .link_id = if (index == 99) dead else 0 };
+    const capacity = layers.items[0].runs.capacity;
+    try testing.expectError(error.InvalidId, layers.set(gpa, &links, 1, 20, 200, &many));
+    try testing.expectEqual(capacity, layers.items[0].runs.capacity);
+    // A split without memory gives back the reference it took for the second outside part.
+    var no_spare: std.ArrayListUnmanaged(LayerRun) = .empty;
+    var no_memory = std.testing.FailingAllocator.init(gpa, .{ .fail_index = 0 });
+    try testing.expectError(error.OutOfMemory, layers.setWithSpare(no_memory.allocator(), &links, 1, 2, 8, &.{}, &no_spare));
+    try testing.expectEqual(@as(u32, 2), try links.getRefcount(live));
     // The split keeps both outside parts, each holding a reference.
     _ = try layers.set(gpa, &links, 1, 2, 8, &.{});
     try testing.expectEqual(@as(u32, 3), try links.getRefcount(live));
     layers.reset(gpa, &links);
     try testing.expectEqual(@as(u32, 1), try links.getRefcount(live));
+    // The layer's own runs as the input: replacing 0..5 with its run at 2..3 keeps that run.
+    _ = try layers.set(gpa, &links, 1, 0, 7, &.{
+        .{ .start_byte = 0, .end_byte = 1, .group_set = 1 }, .{ .start_byte = 2, .end_byte = 3, .group_set = 2 },
+        .{ .start_byte = 4, .end_byte = 5, .group_set = 1 }, .{ .start_byte = 6, .end_byte = 7, .group_set = 3 },
+    });
+    _ = try layers.set(gpa, &links, 1, 0, 5, runsOf(&layers, 1)[1..2]);
+    try expectRuns(&.{ .{ 2, 3, 2 }, .{ 6, 7, 3 } }, runsOf(&layers, 1));
+}
+
+// Record 669: N one-run sets past the last run copy and walk O(N) runs in total, growth included;
+// the whole layer set again is equal, so it changes and copies nothing.
+test "layers: one-run sets at the end copy linearly and an equal set copies nothing" {
+    var setup: Setup = undefined;
+    try setup.init();
+    defer setup.deinit();
+    var work: [2]text_work.Counts = undefined;
+    for ([_]u32{ 256, 512 }, &work) |n, *total| {
+        const tb = try setup.buffer(.unicode);
+        defer tb.deinit();
+        const text = try gpa.alloc(u8, 2 * n + 2);
+        defer gpa.free(text);
+        @memset(text, 'x');
+        try tb.setText(text);
+        _ = text_work.take();
+        for (0..n) |index| {
+            const start: u32 = @intCast(2 * index);
+            try tb.setLayer(1, start, start + 1, &.{.{ .start_byte = start, .end_byte = start + 1, .group_set = 1 }});
+        }
+        total.* = text_work.take();
+        const same = try gpa.dupe(LayerRun, runsOf(&tb.layers, 1));
+        defer gpa.free(same);
+        const generation = tb.span_generation;
+        try tb.setLayer(1, 0, std.math.maxInt(u32), same);
+        try testing.expectEqual(generation, tb.span_generation);
+        try testing.expectEqual(0, text_work.take().layer_runs_copied);
+        // One run restyled in the middle: the runs before and after it stay where they are.
+        same[n / 2].group_set = 2;
+        try tb.setLayer(1, 0, std.math.maxInt(u32), same);
+        try testing.expectEqual(1, text_work.take().layer_runs_copied);
+    }
+    try testing.expect(2 * work[1].layer_runs_copied <= 5 * work[0].layer_runs_copied);
+    try testing.expect(2 * work[1].layer_runs_walked <= 5 * work[0].layer_runs_walked);
 }
 
 /// A buffer with a style that defines `s1`..`s3` and a group set per name (ids 1..3).
@@ -994,7 +1047,13 @@ test "layers: setLayer rejects bad ids, ranges and boundaries, and failed memory
     try testing.expectEqual(unchanged, tb.span_generation);
     try tb.setLayer(2, 4, std.math.maxInt(u32), &.{});
     try expectRuns(&.{.{ 1, 4, 1 }}, runsOf(&tb.layers, 2));
-    try tb.setLayer(2, 0, 8, &.{ .{ .start_byte = 1, .end_byte = 4, .group_set = 1 }, .{ .start_byte = 5, .end_byte = 8, .group_set = 2 } });
+    // Only the run the layer does not hold is looked up; set again, adjacent runs need none.
+    const adjacent = [_]LayerRun{ .{ .start_byte = 1, .end_byte = 4, .group_set = 1 }, .{ .start_byte = 4, .end_byte = 8, .group_set = 2 } };
+    for ([_]u64{ 1, 0 }) |seeks| {
+        _ = text_work.take();
+        try tb.setLayer(2, 0, 8, &adjacent);
+        try testing.expectEqual(seeks, text_work.take().layer_run_seeks);
+    }
     // Without a Context's group sets, no layer can be set.
     const bare = try TextBuffer.init(gpa, &setup.pools.graphemes, &setup.pools.links, .unicode);
     defer bare.deinit();
@@ -1016,6 +1075,45 @@ test "layers: setLayer rejects bad ids, ranges and boundaries, and failed memory
     }
     try testing.expect(succeeded);
     try testing.expectEqual(@as(u8, 2), tb.layers.count);
+    // A reserved spare covers a split of a held run: no allocation is needed.
+    var spare = try tb.reserveLayer(2, 0);
+    defer tb.freeLayerSpare(&spare);
+    var no_memory = std.testing.FailingAllocator.init(gpa, .{ .fail_index = 0, .resize_fail_index = 0 });
+    tb.global_allocator = no_memory.allocator();
+    const split = tb.setLayerWithSpare(2, 5, 6, &.{}, &spare);
+    tb.global_allocator = gpa;
+    try split;
+    try expectRuns(&.{ .{ 1, 4, 1 }, .{ 4, 5, 2 }, .{ 6, 8, 2 } }, runsOf(&tb.layers, 2));
+}
+
+// Every text change empties the layers or moves their runs with it, so a run the layer holds lies
+// on character boundaries (bigboi-2): a raw slot replacement, and a layer set in the after-delete
+// callback of an editor replacement.
+test "layers: a held run stays on character boundaries through raw and callback edits" {
+    var setup: Setup = undefined;
+    try setup.init();
+    defer setup.deinit();
+    const first: []const LayerRun = &.{.{ .start_byte = 0, .end_byte = 1, .group_set = 1 }};
+    const tb = try setup.buffer(.unicode);
+    defer tb.deinit();
+    const slot = try tb.registerMemBuffer("a\u{e9}", false);
+    try tb.setTextFromMemId(slot);
+    try tb.setLayer(1, 0, 3, first);
+    try tb.replaceMemBuffer(slot, "\u{e9}a", false);
+    try testing.expectError(error.InvalidIndex, tb.setLayer(1, 0, 3, first));
+
+    const eb = try EditBuffer.initWithOptions(gpa, &setup.pools.graphemes, &setup.pools.links, .unicode, null, .{ .group_sets = &setup.sets });
+    defer eb.deinit();
+    try eb.setText("xab");
+    const Callback = struct {
+        fn handle(context: *anyopaque) void {
+            const buffer: *EditBuffer = @ptrCast(@alignCast(context));
+            buffer.tb.setLayer(1, 0, 2, &.{.{ .start_byte = 0, .end_byte = 1, .group_set = 1 }}) catch unreachable;
+        }
+    };
+    try eb.replaceRange(0, 1, "\u{e9}", .{ .ctx = eb, .handle = Callback.handle });
+    try expectRuns(&.{.{ 2, 3, 1 }}, runsOf(&eb.tb.layers, 1));
+    try testing.expectError(error.InvalidIndex, eb.tb.setLayer(1, 0, 4, first));
 }
 
 const Fault = enum { none, reversed, unsorted, overlapping, empty, past_range, past_text, inside_char, group_set, null_runs };
@@ -1229,6 +1327,8 @@ test "layers: seeded C ABI calls reject malformed runs atomically and match the 
         try testing.expectEqual(c.OT_OK, Calls.setLayer(&owner, on_text, id, 2, 0, 3, &.{.{ .start_byte = 0, .end_byte = 3, .group_set = 1 }}, 1));
         for ([_]struct { u32, u32, ?[*]const c.ot_highlight_run, u32 }{
             .{ 0, 3, &.{.{ .start_byte = 0, .end_byte = 2, .group_set = 1 }}, 1 },
+            // A start inside the character that shares the held run's end.
+            .{ 0, 3, &.{.{ .start_byte = 1, .end_byte = 3, .group_set = 1 }}, 1 },
             .{ 0, 2, null, 0 },
             .{ 2, 3, null, 0 },
         }) |row| {
@@ -1802,19 +1902,59 @@ test "layers: seeded span model, from-scratch cells and a forced full repaint ag
                 },
                 5, 6, 7 => {
                     const layer = random.uintLessThan(usize, layer_ids.len);
-                    const start = randomBoundary(random, text, 0, max);
-                    const end = randomBoundary(random, text, start, max);
-                    var buffer: [8]LayerRun = undefined;
+                    const kind = random.uintLessThan(u8, 3);
+                    // A random range; a tail set to the end of every text, as a streamed highlight
+                    // writes; or the layer's own runs set again, often equal.
+                    var start = randomBoundary(random, text, if (kind == 1) @intCast(text.len -| 12) else 0, max);
+                    var end = if (kind == 1) max else randomBoundary(random, text, start, max);
+                    var buffer: [64]LayerRun = undefined;
                     var kept: usize = 0;
-                    for (randomRuns(random, &buffer, start, end, &urls)) |run| {
+                    if (kind == 2) {
+                        if (random.boolean()) {
+                            start = 0;
+                            end = max;
+                        }
+                        try expectModelPaint(&setup, &model, &target, styles[0..]);
+                        if (start < end) for (runsOf(&tb.layers, layer_ids[layer])) |run| if (run.end_byte > start and run.start_byte < end and kept < buffer.len) {
+                            buffer[kept] = .{ .start_byte = @max(run.start_byte, start), .end_byte = @min(run.end_byte, end), .group_set = run.group_set, .link_id = run.link_id };
+                            kept += 1;
+                        };
+                        // One run dropped or restyled: the rest stays shared.
+                        const at = random.uintLessThan(usize, kept + 1);
+                        if (at < kept) switch (random.uintLessThan(u8, 4)) {
+                            0 => {
+                                std.mem.copyForwards(LayerRun, buffer[at .. kept - 1], buffer[at + 1 .. kept]);
+                                kept -= 1;
+                            },
+                            1 => buffer[at].group_set = 1 + random.uintLessThan(u32, SpanModel.sets.len),
+                            else => {},
+                        };
+                    } else for (randomRuns(random, buffer[0..8], start, @min(end, @as(u32, @intCast(text.len))), &urls)) |run| {
                         if (run.start_byte < text.len and text[run.start_byte] & 0xC0 == 0x80) continue;
                         if (run.end_byte < text.len and text[run.end_byte] & 0xC0 == 0x80) continue;
                         buffer[kept] = run;
                         buffer[kept].group_set = 1 + random.uintLessThan(u32, SpanModel.sets.len);
                         kept += 1;
                     }
+                    const before = try gpa.dupe(LayerRun, runsOf(&tb.layers, layer_ids[layer]));
+                    defer gpa.free(before);
+                    const generation = tb.span_generation;
+                    _ = text_work.take();
                     const result = tb.setLayer(layer_ids[layer], start, end, buffer[0..kept]);
-                    if (try model.layers.set(layer, start, end, buffer[0..kept])) try testing.expectError(error.LayerLimit, result) else try result;
+                    const set_work = text_work.take();
+                    if (try model.layers.set(layer, start, @min(end, model.layers.byte_count), buffer[0..kept])) try testing.expectError(error.LayerLimit, result) else try result;
+                    // The span stamp moves exactly when a run changed; an equal set builds no span.
+                    const same = std.mem.eql(u8, std.mem.sliceAsBytes(before), std.mem.sliceAsBytes(runsOf(&tb.layers, layer_ids[layer])));
+                    try testing.expectEqual(same, generation == tb.span_generation);
+                    if (same and kind == 2) {
+                        // Every run is one the layer holds: none copied, none looked up.
+                        try testing.expectEqual([2]u64{ 0, 0 }, [2]u64{ set_work.layer_runs_copied, set_work.layer_run_seeks });
+                        const screen = try setup.screen(target.viewport.width, target.viewport.height);
+                        defer screen.deinit();
+                        _ = text_work.take();
+                        try screen.drawTextBufferChecked(target.view, 0, 0);
+                        try testing.expectEqual(0, text_work.take().line_span_builds);
+                    }
                 },
                 8, 9 => if (room) {
                     const insert = inserts[random.uintLessThan(usize, inserts.len)];
