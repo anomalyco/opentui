@@ -5,7 +5,7 @@ use crate::native::{
     Constraint, GridSpec, Hooks, Measure, NodeKind, SelectionColors, SelectionUnit, TextBuffer, TextMeasure, TextView,
     Viewport, WrapMode,
 };
-use crate::style::{Attributes, BorderStyle, Color, Style};
+use crate::style::{Alignment, Attributes, BorderStyle, Color, Style};
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::rc::{Rc, Weak};
@@ -57,6 +57,8 @@ struct Options {
     wrap: WrapMode,
     width_mode: ColumnWidthMode,
     fitter: ColumnFitter,
+    /// Each column's line alignment; a missing one is left.
+    alignments: Vec<Alignment>,
     padding_x: u32,
     padding_y: u32,
     column_gap: u32,
@@ -485,11 +487,12 @@ impl TextTableInner {
             let (cells, options) = (self.cells.borrow(), self.options.borrow());
             let (padding_x, padding_y) = (options.padding_x * 2, options.padding_y * 2);
             for (row, &height) in cells.rows.iter().zip(&layout.rows) {
-                for (cell, &width) in row.iter().zip(&layout.columns) {
+                for (column, (cell, &width)) in row.iter().zip(&layout.columns).enumerate() {
                     let Some(cell) = cell else { continue };
                     let width = width.saturating_sub(padding_x).max(1);
                     let height = height.saturating_sub(padding_y).max(1);
                     self.report(cell.view.set_viewport(Viewport { x: 0, y: 0, width, height }));
+                    self.report(cell.view.set_align(options.alignments.get(column).copied().unwrap_or_default()));
                 }
             }
         }
@@ -770,6 +773,7 @@ impl TextTable {
                 wrap: WrapMode::Word,
                 width_mode: ColumnWidthMode::Full,
                 fitter: ColumnFitter::Proportional,
+                alignments: Vec::new(),
                 padding_x: 0,
                 padding_y: 0,
                 column_gap: 0,
@@ -843,6 +847,13 @@ impl TextTable {
     /// How columns narrow when the cells do not fit. [`ColumnFitter::Proportional`] by default.
     pub fn column_fitter(&self, fitter: ColumnFitter) -> Self {
         self.0.update_layout(|options| options.fitter = fitter);
+        self.clone()
+    }
+
+    /// Each column's alignment of the lines in its cells, by column; columns past the list are left-aligned.
+    pub fn column_alignments(&self, alignments: impl IntoIterator<Item = Alignment>) -> Self {
+        let alignments = alignments.into_iter().collect();
+        self.0.update_layout(|options| options.alignments = alignments);
         self.clone()
     }
 
