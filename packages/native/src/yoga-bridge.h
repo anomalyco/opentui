@@ -49,13 +49,13 @@ uint32_t otYogaNodeSetMeasureFunc(YGNodeRef node, YGMeasureFunc callback,
                                   uint32_t height_cap_only_clamps) OT_YOGA_NOEXCEPT;
 void otYogaNodeInvalidateMeasure(YGNodeRef node) OT_YOGA_NOEXCEPT;
 void otYogaNodeForgetMeasurements(YGNodeRef node) OT_YOGA_NOEXCEPT;
-uint32_t otYogaNodeGetComputedLayout(YGNodeConstRef node, OTYogaLayout* out) OT_YOGA_NOEXCEPT;
+/* A non-null `content` also gets the node's content box in rounded cells: left and top offsets
+ * from its rounded origin, width and height, with each edge rounded from the unrounded absolute
+ * layout as Yoga rounds the node's own edges. */
+uint32_t otYogaNodeGetComputedLayout(YGNodeConstRef node, OTYogaLayout* out,
+                                     float* content) OT_YOGA_NOEXCEPT;
 uint32_t otYogaNodeLayoutGetEdge(YGNodeConstRef node, uint32_t kind, uint32_t edge,
                                  float* out) OT_YOGA_NOEXCEPT;
-/* A node's content box in rounded cells: left and top offsets from its rounded origin, width
- * and height, with each edge rounded from the unrounded absolute layout as Yoga rounds the
- * node's own edges. */
-uint32_t otYogaNodeGetContentBox(YGNodeConstRef node, float* out) OT_YOGA_NOEXCEPT;
 uint32_t otYogaNodeStyleSetEnum(YGNodeRef node, uint32_t kind, uint32_t value) OT_YOGA_NOEXCEPT;
 uint32_t otYogaNodeStyleGetEnum(YGNodeConstRef node, uint32_t kind, uint32_t* out) OT_YOGA_NOEXCEPT;
 uint32_t otYogaNodeStyleSetFloat(YGNodeRef node, uint32_t kind, float value) OT_YOGA_NOEXCEPT;
