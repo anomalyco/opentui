@@ -348,9 +348,10 @@ describe("BoxRenderable - per-side borders", () => {
   // A cell on each side line of an 8x4 box at the origin.
   const lineCells: Record<Side, [number, number]> = { Top: [3, 0], Right: [7, 1], Bottom: [3, 3], Left: [0, 1] }
   const horizontal = (side: Side) => side === "Top" || side === "Bottom"
-  const gray = [128, 128, 128, 255]
-  const green = [0, 255, 0, 255]
-  const red = [255, 0, 0, 255]
+  type Ints = [number, number, number, number]
+  const gray: Ints = [128, 128, 128, 255]
+  const green: Ints = [0, 255, 0, 255]
+  const red: Ints = [255, 0, 0, 255]
 
   function addBox(options: BoxOptions = {}): BoxRenderable {
     const box = new BoxRenderable(testRenderer, {
@@ -539,7 +540,7 @@ describe("BoxRenderable - per-side borders", () => {
   test.each(sideConformance.rows as unknown as [string, Record<string, unknown>, string[], string[]][])(
     "conformance: %s",
     async (_name, spec, rows, foreground) => {
-      const { width, height, ...options } = spec as { width: number; height: number } & BoxOptions
+      const { width, height, ...options } = spec as unknown as { width: number; height: number } & BoxOptions
       const setup = await createTestRenderer({ width, height })
       const box = new BoxRenderable(setup.renderer, { width, height, ...options })
       setup.renderer.root.add(box)
