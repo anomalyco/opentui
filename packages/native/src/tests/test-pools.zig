@@ -133,6 +133,7 @@ pub fn checkPoolModel(comptime Spec: type, seed: u64, step_count: u32) !void {
                 self.failing.fail_index = self.failing.alloc_index + random.uintLessThan(usize, 4);
                 self.failing.resize_fail_index = self.failing.resize_index + random.uintLessThan(usize, 2);
             }
+            const allocated = self.failing.allocated_bytes;
             const result = self.pool.acquire(value);
             self.failing.fail_index = std.math.maxInt(usize);
             self.failing.resize_fail_index = std.math.maxInt(usize);
@@ -144,7 +145,10 @@ pub fn checkPoolModel(comptime Spec: type, seed: u64, step_count: u32) !void {
                 try std.testing.expect(inject and entry.id == null);
                 return;
             };
-            if (entry.id) |live| try std.testing.expectEqual(live, id);
+            if (entry.id) |live| {
+                try std.testing.expectEqual(live, id);
+                try std.testing.expectEqual(allocated, self.failing.allocated_bytes);
+            }
             // Each slot reuse needs a release, and the ring holds the last 8, so a
             // 7-bit grapheme generation cannot wrap back to a ringed ID.
             if (entry.id == null) {

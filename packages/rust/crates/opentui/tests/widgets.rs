@@ -170,26 +170,66 @@ fn inputs_type_move_delete_and_undo() {
 }
 
 #[test]
-fn inputs_select_with_shift_and_replace_selection() {
-    let app = TestApp::new(30, 1);
-    let input = Input::new(&app).set_value("abc def");
-    app.root().add(&input);
-    input.focus();
-    app.press("shift+left");
-    app.press("shift+left");
-    app.press("shift+left");
-    assert_eq!(input.selected_text(), "def");
-    app.type_text("xyz");
-    assert_eq!(input.value(), "abc xyz");
-    app.press("super+a");
-    assert_eq!(input.selected_text(), "abc xyz");
-    app.press("left");
-    assert_eq!(input.cursor_offset(), 0);
-    assert_eq!(input.selected_text(), "");
-    app.press("alt+shift+f");
-    assert!(!input.selected_text().is_empty());
-    app.press("backspace");
-    assert!(input.value().ends_with("xyz"), "{:?}", input.value());
+fn editors_select_with_shift_and_replace_selection() {
+    // Core's rows for the same keys (cell occupancy): a selection covers the cell it started on and the cursor's cell,
+    // but not an empty one past the end of a line. A mouse selection grows from the cell at its other end.
+    for (text, keys, selected, typed) in [
+        ("a界", "left shift+left", "a界", "x"),
+        ("a界", "home shift+right", "a界", "x"),
+        ("a界", "shift+left", "界", "ax"),
+        ("a界", "left shift+left shift+right", "", "ax界"),
+        ("abc def", "shift+left shift+left shift+left", "def", "abc x"),
+        ("abcdef", "left left left shift+left shift+left", "bcd", "axef"),
+        ("abcdef", "shift+left shift+right", "", "abcdefx"),
+        ("abcdef", "left left left shift+right shift+left backspace shift+right", "de", "abxf"),
+        ("abcdef", "left left left shift+home", "abcd", "xef"),
+        ("abc def", "home alt+shift+f", "abc d", "xef"),
+        ("abc def", "super+a", "abc def", "x"),
+        ("abc def", "super+a left", "", "xabc def"),
+        ("ab\ncd", "up shift+right", "\nc", "abxd"),
+        ("ab\ncd", "up home shift+right shift+right", "ab", "x\ncd"),
+        ("ab\ncd", "left left shift+up", "ab\nc", "xd"),
+        ("drag me", "drag 0 3, shift+right", "drag ", "xme"),
+        ("drag me", "drag 3 0, shift+right", "rag", "dx me"),
+        ("drag me", "drag 0 3, shift+left", "dra", "xg me"),
+        ("a界b", "drag 2 0, shift+right", "界", "axb"),
+        ("a界b", "drag 2 0, shift+right shift+right", "界b", "ax"),
+        ("abc", "drag 3 0, shift+end", "", "abcx"),
+        ("alpha beta gamma", "double-click 7, shift+right", "beta ", "alpha xgamma"),
+        ("alpha beta gamma", "double-click 7, shift+home shift+right", "lpha b", "axeta gamma"),
+        ("alpha beta gamma", "triple-click 7, shift+right", "alpha beta gamma", "x"),
+    ] {
+        for single_line in [true, false] {
+            if single_line && text.contains('\n') {
+                continue;
+            }
+            let app = TestApp::new(20, 1);
+            let (input, area) = (Input::new(&app).set_value(text), Textarea::new(&app).set_text(text));
+            if single_line {
+                app.root().add(&input);
+                input.focus();
+            } else {
+                app.root().add(&area);
+                area.focus();
+            }
+            app.render();
+            let (gesture, keys) = keys.split_once(", ").unwrap_or(("", keys));
+            match gesture.split(' ').collect::<Vec<_>>()[..] {
+                ["drag", from, to] => app.drag((from.parse().unwrap(), 0), (to.parse().unwrap(), 0)),
+                [clicks, at] => {
+                    (0..if clicks == "double-click" { 2 } else { 3 }).for_each(|_| app.click(at.parse().unwrap(), 0))
+                }
+                _ => {}
+            }
+            keys.split(' ').for_each(|key| app.press(key));
+            let state = || {
+                if single_line { (input.selected_text(), input.value()) } else { (area.selected_text(), area.text()) }
+            };
+            let now = state().0;
+            app.type_text("x");
+            assert_eq!((now.as_str(), state().1.as_str()), (selected, typed), "{text:?} {keys} {single_line}");
+        }
+    }
 }
 
 #[test]
@@ -443,6 +483,48 @@ fn an_always_shown_vertical_scrollbar_fills_its_track_until_the_content_overflow
     scroll.add(&Text::new(&app, "line 0"));
     app.root().add(&scroll);
     assert!(!column(&app).contains(&thumb));
+}
+
+// Scrollbar options set on a rendered box show what a box built with them shows, with no size change between.
+#[test]
+fn scrollbar_options_changed_after_a_frame_match_a_fresh_box() {
+    let bars = |lines: usize, (show, always): (bool, bool), last: (bool, bool)| {
+        let app = TestApp::new(8, 4);
+        let scroll = ScrollBox::new(&app).grow(1.0).scrollbars(show).vertical_scrollbar_always(always);
+        scroll.add(&Text::new(&app, "a\n".repeat(lines)).shrink(0.0));
+        app.root().add(&scroll);
+        app.render();
+        // Each setter alone, so neither covers for the other.
+        (show != last.0).then(|| scroll.scrollbars(last.0));
+        (always != last.1).then(|| scroll.vertical_scrollbar_always(last.1));
+        let capture = (app.render(), app.render()).1;
+        let column: String = (0..4).map(|y| capture.row(y).chars().nth(7).unwrap_or(' ')).collect();
+        (column, scroll.content_view().rect().width)
+    };
+    let options = [(false, false), (false, true), (true, false), (true, true)];
+    for lines in [0, 6] {
+        for (first, last) in options.iter().flat_map(|&first| options.map(|last| (first, last))) {
+            assert_eq!(bars(lines, first, last), bars(lines, last, last), "{lines} lines, {first:?} then {last:?}");
+        }
+    }
+    // A box that fits on both axes shows no bar, and between frames the last call wins.
+    let app = TestApp::new(8, 4);
+    app.root().add(&ScrollBox::new(&app).grow(1.0).axes(true, true).child(&Text::new(&app, "a")));
+    assert_eq!(rows(&app)[3], "");
+    let scroll = ScrollBox::new(&app).grow(1.0).child(&Text::new(&app, "a\n".repeat(6)).shrink(0.0));
+    app.root().clear().add(&scroll);
+    app.render();
+    scroll.scrollbars(false).scrollbars(true).scrollbars(false);
+    app.render();
+    assert_eq!(scroll.content_view().rect().width, 8.0);
+    // Options set from a resize handler stay within the per-frame toggle limit, so the frame still lays out.
+    let app = TestApp::new(8, 4);
+    let scroll = ScrollBox::new(&app).grow(1.0).child(&Text::new(&app, "a"));
+    let handle = scroll.clone();
+    scroll.content_view().on_resize(move |_, rect| drop(handle.vertical_scrollbar_always(rect.width >= 8.0)));
+    app.root().add(&scroll);
+    app.render();
+    app.render();
 }
 
 #[test]
@@ -914,18 +996,16 @@ fn code_highlights_numbers_lines_and_scrolls() {
 fn followed_code_keeps_appended_text_in_view() {
     use opentui::widget::Code;
     let app = TestApp::new(12, 3);
-    let log = Code::new(&app).follow(true).grow(1.0);
+    // Text given before follow and before the first frame is followed too.
+    let log = Code::new(&app).grow(1.0).append("line 0\nline 1\nline 2\nline 3\n").follow(true);
     app.root().add(&log);
     app.render();
-    for line in 0..6 {
+    for line in 4..6 {
         log.append(&format!("line {line}\n"));
         app.render();
     }
     // The trailing newline leaves an empty last line in view.
     assert_eq!(rows(&app), ["line 4", "line 5", ""]);
-    log.scroll_to(0);
-    log.append("line 6\n");
-    assert_eq!(rows(&app)[0], "line 0");
 }
 
 #[test]
@@ -1464,7 +1544,7 @@ fn mouse_selection_spans_widgets_in_reading_order() {
     // A press on a widget that cannot select ends the selection.
     app.click(3, 2);
     assert_eq!(app.selected_text(), None);
-    assert_eq!(first.selected_text(), "");
+    assert_eq!(first.set_text("first line").selected_text(), "");
 }
 
 #[test]
@@ -1483,6 +1563,117 @@ fn double_and_triple_clicks_select_words_and_lines() {
     app.advance(Duration::from_millis(600));
     app.click(8, 0);
     assert_eq!(app.selected_text(), None);
+}
+
+// As in Core, a text whose content changes applies the selection again at the same cells of the text, during the
+// gesture or after it, even after the text moved, so it selects what a fresh gesture on the new content selects.
+#[test]
+fn a_selection_follows_its_gesture_when_the_content_changes() {
+    use opentui::widget::Code;
+    let [down, drag, up] =
+        [MouseEventKind::Down, MouseEventKind::Drag, MouseEventKind::Up].map(|kind| kind(MouseButton::Left));
+    // Presses at (1, 1) of "ab cd\ncd" in a 4x2 text above "def": a drag to (0, 2) in "def", a double click, a
+    // triple click. Each change replaces the text, appends to it, or sets it again after a wrap change, which wraps
+    // "cd" of the first line to the second row. Expected: the text's selection and the app's, from Core.
+    let changes = [("xab cd\nxcd", WrapMode::None), ("ab cd\ncde", WrapMode::None), ("ab cd\ncd", WrapMode::Word)];
+    let rows: [(u16, [&str; 3]); 3] =
+        [(1, ["cd", "de", "d\nc"]), (2, ["xcd", "cde", "cd"]), (3, ["xcd", "cde", "ab cd"])];
+    for is_code in [false, true] {
+        for (presses, expected) in rows {
+            for ((content, wrap), expected) in changes.into_iter().zip(expected) {
+                // Core's Code ignores equal text, so it keeps the selection made under the old wrap mode.
+                if is_code && wrap == WrapMode::Word {
+                    continue;
+                }
+                for when in ["fresh", "after", "during", "moved"] {
+                    let app = TestApp::new(8, 4);
+                    let first = if when == "fresh" { (content, wrap) } else { ("ab cd\ncd", WrapMode::None) };
+                    let text = Text::new(&app, first.0).wrap(first.1).size(4, 2);
+                    let code = Code::new(&app).wrap(first.1).size(4, 2).set_code(first.0);
+                    let change = || match (when, is_code) {
+                        ("fresh", _) => {}
+                        (_, false) => drop(text.wrap(wrap).set_text(content)),
+                        (_, true) => drop(code.wrap(wrap).set_code(content)),
+                    };
+                    let root = if is_code { app.root().add(&code) } else { app.root().add(&text) };
+                    root.add(&Text::new(&app, "def"));
+                    app.render();
+                    let (x, y) = if presses == 1 { (0, 2) } else { (1, 1) };
+                    for press in 1..=presses {
+                        app.mouse(down, 1, 1);
+                        if presses == 1 {
+                            app.mouse(drag, x, y);
+                        }
+                        if when == "during" && press == presses {
+                            change();
+                        }
+                        app.mouse(up, x, y);
+                    }
+                    if when == "moved" {
+                        app.root().insert(0, &Text::new(&app, "top"));
+                        app.render();
+                    }
+                    if matches!(when, "after" | "moved") {
+                        change();
+                    }
+                    app.render();
+                    let at = format!("code {is_code}, {presses} presses, {content:?} {wrap:?} {when}");
+                    assert_eq!(if is_code { code.selected_text() } else { text.selected_text() }, expected, "{at}");
+                    assert_eq!(app.selected_text().as_deref(), Some(expected), "{at}");
+                }
+            }
+        }
+    }
+    // One widget, a gesture at (x, y) (one press: a drag four cells right; three: a triple click), then each step
+    // sets the text and the wrap mode, with the app's selection after the next frame, from Core: a followed log,
+    // a replace that clamps the scroll, a wrap set after the text, a drag that selected nothing at release (Core
+    // paints "ew " but copies nothing; the app copies what is painted), and a line that goes and comes back.
+    type Step = (&'static str, Option<WrapMode>, Option<&'static str>);
+    let log = "aa\nbb\ncc\ndd";
+    let regrow: &[Step] = &[("ab", None, None), ("ab\ntwo words", None, Some("two words"))];
+    type Row = (bool, bool, &'static str, (u16, u16), u16, (u16, u16), &'static [Step]);
+    let rows: &[Row] = &[
+        (true, true, log, (4, 2), 3, (1, 1), &[("aa\nbb\ncc\ndd\nee", None, Some("ee"))]),
+        (true, true, log, (4, 2), 3, (1, 0), &[("one\ntwo", None, Some("one"))]),
+        (true, false, "ab cd\nxy", (4, 2), 3, (1, 1), &[("xab cd\nxcd", Some(WrapMode::Word), Some("xab cd"))]),
+        (false, false, "old", (6, 2), 1, (1, 1), &[("old\nnew stuff", None, Some("ew "))]),
+        (true, false, "old", (6, 2), 1, (1, 1), &[("old\nnew stuff", None, Some("ew st"))]),
+        (false, false, "ab\ncd", (8, 2), 3, (1, 1), regrow),
+        (true, false, "ab\ncd", (8, 2), 3, (1, 1), regrow),
+    ];
+    for &(is_code, follow, first, (width, height), presses, (x, y), steps) in rows {
+        let app = TestApp::new(8, 4);
+        let text = Text::new(&app, first).size(width, height);
+        let code = Code::new(&app).size(width, height).follow(follow).set_code(first);
+        let _ = if is_code { app.root().add(&code) } else { app.root().add(&text) };
+        app.render();
+        let end = if presses == 1 { x + 4 } else { x };
+        for _ in 0..presses {
+            app.mouse(down, x, y);
+            if presses == 1 {
+                app.mouse(drag, end, y);
+            }
+            app.mouse(up, end, y);
+        }
+        for &(content, wrap, expected) in steps {
+            if is_code {
+                code.set_code(content);
+                if let Some(wrap) = wrap {
+                    code.wrap(wrap);
+                }
+            } else {
+                text.set_text(content);
+            }
+            app.render();
+            assert_eq!(app.selected_text().as_deref(), expected, "code {is_code}, {first:?} then {content:?}");
+        }
+        // Scrolling afterwards leaves the selection on its text.
+        if is_code {
+            code.perform(ScrollAction::Up);
+            app.render();
+            assert_eq!(app.selected_text().as_deref(), steps[steps.len() - 1].2, "{first:?} scrolled");
+        }
+    }
 }
 
 #[test]
@@ -1519,7 +1710,7 @@ fn code_views_and_textareas_join_a_selection() {
     // Shift+arrow in the textarea keeps only its own part.
     notes.focus();
     app.press("shift+right");
-    assert_eq!(code.selected_text(), "");
+    assert_eq!(code.set_code("let a = 3;").selected_text(), "");
     assert_eq!(title.selected_text(), "");
     assert_eq!(notes.selected_text(), "note ");
 }
@@ -1578,6 +1769,22 @@ fn a_palette_refresh_reports_what_came_once_and_runs_a_queued_refresh_after() {
     app.advance(Duration::from_secs(1));
     assert_eq!(seen.borrow().len(), 2);
     assert_eq!(app.palette().and_then(|palette| palette.background), Some(Color::rgb(255, 255, 255)));
+    // Any one color is an answer: the wait ends the refresh with only that color.
+    let (rgb, n) = (Color::rgb(1, 2, 3), None);
+    let c = Some(rgb);
+    for (calls, reply, expected) in [
+        (3, OscColor::Palette(0, rgb), (c, n, n, n)),
+        (4, OscColor::Foreground(rgb), (n, c, n, n)),
+        (5, OscColor::Background(rgb), (n, n, c, n)),
+        (6, OscColor::Cursor(rgb), (n, n, n, c)),
+    ] {
+        app.refresh_palette();
+        app.event(Event::Color(reply));
+        app.advance(Duration::from_secs(1));
+        let palette = app.palette().unwrap();
+        let got = (palette.colors[0], palette.foreground, palette.background, palette.cursor);
+        assert_eq!((seen.borrow().len(), got), (calls, expected), "{reply:?}");
+    }
 }
 
 #[test]
@@ -1776,22 +1983,57 @@ fn accelerated_wheel_bursts_scroll_further() {
     assert_eq!(scroll.scroll_position().1, 1.0);
 }
 
+// Core's offsets: a sticky box follows only its start edge, and stays stuck after a scroll in a range of one cell.
 #[test]
-fn sticky_boxes_follow_the_edge_they_start_at() {
-    use opentui::widget::ScrollEdge;
-    let app = TestApp::new(20, 4);
-    let scroll = scroll_box_with_lines(&app, 2).sticky(true).sticky_start(ScrollEdge::Top);
-    for line in 2..10 {
-        scroll.add(&Text::new(&app, format!("line {line}")));
+fn sticky_boxes_follow_only_the_edge_they_start_at() {
+    use opentui::widget::ScrollEdge::{self, *};
+    // Edge, content size, explicit scroll, grown size, offset after growing with and without a frame in between.
+    let cases: [(ScrollEdge, u16, f64, u16, [f64; 2]); 11] = [
+        (Bottom, 3, 0.0, 6, [4.0, 4.0]),
+        (Bottom, 4, 1.0, 6, [1.0, 1.0]),
+        (Bottom, 6, 0.0, 7, [0.0, 0.0]),
+        (Bottom, 6, 2.0, 7, [2.0, 2.0]),
+        (Bottom, 6, f64::INFINITY, 7, [5.0, 5.0]),
+        (Top, 3, 1.0, 6, [0.0, 0.0]),
+        (Top, 3, f64::INFINITY, 6, [0.0, 0.0]),
+        (Top, 6, f64::INFINITY, 7, [4.0, 5.0]),
+        (Top, 6, 2.0, 7, [2.0, 2.0]),
+        (Right, 3, 0.0, 6, [4.0, 4.0]),
+        (Left, 6, f64::INFINITY, 7, [4.0, 5.0]),
+    ];
+    for ((edge, before, to, after, expected), frame) in cases.into_iter().flat_map(|case| [(case, 0), (case, 1)]) {
+        let (app, x) = (TestApp::new(4, 2), matches!(edge, Left | Right));
+        let scroll = ScrollBox::new(&app).size(2, 2).axes(x, !x).scrollbars(false).sticky(true).sticky_start(edge);
+        let size =
+            |view: &View, length: u16| if x { view.width(length).height(2) } else { view.width(2).height(length) };
+        let content = size(&View::new(&app).shrink(0.0), before);
+        app.root().add(&scroll.child(&content));
+        app.render();
+        scroll.scroll_to(if x { to } else { 0.0 }, if x { 0.0 } else { to });
+        if frame == 0 {
+            app.render();
+        }
+        size(&content, after);
+        app.render();
+        let (offset_x, offset_y) = scroll.scroll_position();
+        assert_eq!(if x { offset_x } else { offset_y }, expected[frame], "{edge:?} {before} {to} {after} {frame}");
     }
+    // Both axes: x has no edge, and setting one edge leaves the other axis's follow alone.
+    let app = TestApp::new(4, 2);
+    let scroll = ScrollBox::new(&app).size(2, 2).axes(true, true).scrollbars(false).sticky(true);
+    let content = View::new(&app).shrink(0.0).width(6).height(8);
+    app.root().add(&scroll.child(&content));
     app.render();
-    assert_eq!(scroll.scroll_position().1, 0.0);
-    scroll.perform(ScrollAction::Bottom);
+    scroll.scroll_to(f64::INFINITY, 3.0);
     app.render();
-    scroll.add(&Text::new(&app, "line 10"));
+    content.width(8).height(4);
     app.render();
-    assert_eq!(scroll.scroll_position().1, 7.0);
-    assert!(rows(&app)[3].starts_with("line 10"));
+    assert_eq!(scroll.scroll_position(), (4.0, 2.0));
+    scroll.sticky_start(Right);
+    app.render();
+    content.height(8);
+    app.render();
+    assert_eq!(scroll.scroll_position(), (6.0, 2.0));
 }
 
 #[test]
@@ -2009,6 +2251,99 @@ fn moves_into_an_atomic_extmark_go_to_its_nearer_edge() {
 }
 
 #[test]
+fn mouse_and_wheel_leave_the_cursor_outside_atomic_extmarks() {
+    use opentui::widget::ExtmarkOptions;
+    // One row of a 24x2 app; a click on row 1 clears a selection left. While a selection is left the cursor and the
+    // selection are `held`. A press's handlers see the pressed cell; then a pointer leaves the cursor at the nearer
+    // outer edge of the marks around it, a cleared drag at the side it came from, the wheel and the setter at the edge
+    // they moved toward. "press" drags through its other cells and types Z before the release. `then` is a key, a wheel step or an offset after the gesture.
+    let one = &[(2, 7)][..];
+    let pasted = "x [Pasted ~20 lines] y";
+    // Rows "@file ", "abcdefghijklmnopqrstuvwx", "yzabcdefghijklmnopqrstuv", "wxyz", "q": a wheel step lands on "wxyz".
+    let wrapped = "@file abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz\nq";
+    for (text, marks, from, gesture, held, to) in [
+        ("x @file y", one, 9, "click 2", None, 2),
+        ("x @file y", one, 9, "click 3", None, 2),
+        ("x @file y", one, 9, "click 5", None, 7),
+        ("x @file y", one, 9, "press 3", None, 3),
+        ("x @file y", one, 9, "press 3 5 3", None, 3),
+        (pasted, &[(2, 20)], 22, "click 15", None, 20),
+        ("x @file y", one, 9, "double-click 4", Some((4, (2, 7))), 2),
+        ("x @file y", one, 9, "double-click 4, offset 3", None, 2),
+        ("x @file y", one, 9, "drag 0 4", Some((4, (0, 5))), 2),
+        ("x @file y", one, 9, "drag 8 4", Some((4, (4, 9))), 7),
+        ("x @file y", one, 9, "drag 8 6", Some((6, (6, 9))), 7),
+        ("x @file y", one, 9, "drag 0 4, right", None, 7),
+        ("x @file y", one, 9, "drag 8 6, shift+left", Some((2, (2, 9))), 2),
+        ("x @file y", one, 9, "offset 1, shift+right", Some((7, (1, 8))), 7),
+        ("x @file y", one, 9, "drag 0 1, shift+right", Some((2, (0, 3))), 2),
+        ("b ca", &[(0, 3), (0, 4)], 4, "click 2", None, 4),
+        ("b ca", &[(0, 4), (0, 3)], 4, "click 2", None, 4),
+        ("abcdefgh", &[(0, 6), (2, 8)], 8, "click 3", None, 0),
+        ("abcdefgh", &[(2, 8), (0, 6)], 8, "click 3", None, 0),
+        ("b ca", &[(0, 3), (0, 4)], 0, "offset 2", None, 4),
+        ("b ca", &[(0, 4), (0, 3)], 4, "offset 2", None, 0),
+        ("abcd", &[(2, 4), (1, 3), (0, 2)], 0, "offset 1", None, 4),
+        ("ab\n@file\nc", &[(3, 8)], 2, "wheel down", None, 8),
+        ("ab\n@file\nc", &[(3, 8)], 10, "wheel up", None, 3),
+        (wrapped, &[(0, 5)], 60, "wheel up", None, 55),
+        ("abcd\n@file\nc", &[(5, 10)], 0, "double-click 2, wheel down", Some((7, (0, 4))), 5),
+    ] {
+        let app = TestApp::new(24, 2);
+        let area = Textarea::new(&app).set_text(text).height(1);
+        app.root().add(&area);
+        area.focus();
+        for &(start, end) in marks {
+            area.add_extmark(start..end, ExtmarkOptions::default().atomic());
+        }
+        area.set_cursor_offset(from);
+        app.render();
+        // As OpenCode's prompt: after a press, look up the mark under the cursor.
+        let pressed = Rc::new(Cell::new(None));
+        area.on_mouse({
+            let (area, pressed) = (area.clone(), Rc::clone(&pressed));
+            move |cx, event| {
+                if event.kind == MouseEventKind::Down(MouseButton::Left) {
+                    let (area, pressed) = (area.clone(), Rc::clone(&pressed));
+                    cx.app().defer(move |_| pressed.set(Some(area.cursor_offset())));
+                }
+            }
+        });
+        let (first, then) = gesture.split_once(", ").unwrap_or((gesture, ""));
+        let n: Vec<u16> = first.split(' ').filter_map(|n| n.parse().ok()).collect();
+        match first.split(' ').next().unwrap() {
+            "click" => app.click(n[0], 0),
+            "press" => {
+                app.mouse(MouseEventKind::Down(MouseButton::Left), n[0], 0);
+                n[1..].iter().for_each(|&x| app.mouse(MouseEventKind::Drag(MouseButton::Left), x, 0));
+                app.type_text("Z");
+                app.mouse(MouseEventKind::Up(MouseButton::Left), n[n.len() - 1], 0);
+                assert_eq!(area.text(), "x Z@file y", "{gesture}: typed before the release");
+            }
+            "double-click" => (0..2).for_each(|_| app.click(n[0], 0)),
+            "drag" => app.drag((n[0], 0), (n[1], 0)),
+            "offset" => drop(area.set_cursor_offset(u32::from(n[0]))),
+            _ => app.scroll(0, 0, first.ends_with("down")),
+        }
+        if first.starts_with("click") || first.starts_with("press") {
+            assert_eq!(pressed.get(), Some(u32::from(n[0])), "{gesture}: the press's handler");
+        }
+        match then.split_once(' ') {
+            Some(("wheel", way)) => app.scroll(0, 0, way == "down"),
+            Some(("offset", at)) => drop(area.set_cursor_offset(at.parse().unwrap())),
+            _ if !then.is_empty() => app.press(then),
+            _ => {}
+        }
+        let selection = area.view().selection().unwrap().filter(|(start, end)| start != end);
+        assert_eq!(selection.map(|range| (area.cursor_offset(), range)), held, "{gesture} in {text:?} with {marks:?}");
+        if selection.is_some() {
+            app.click(0, 1);
+        }
+        assert_eq!(area.cursor_offset(), to, "{gesture} from {from} in {text:?} with {marks:?}");
+    }
+}
+
+#[test]
 fn styled_extmarks_follow_text_across_lines_and_grow_inside() {
     use opentui::widget::ExtmarkOptions;
     let app = TestApp::new(20, 4);
@@ -2102,6 +2437,11 @@ fn the_console_shows_messages_from_any_thread() {
     // Following new messages; moving and resizing; Escape hides it.
     console.log(LogLevel::Error, "failed");
     assert!(rows(&app)[9].ends_with("ERROR failed"));
+    // Scrolled up, it keeps its place as messages arrive.
+    console.focus();
+    app.press("home");
+    console.log(LogLevel::Info, "later");
+    assert!(rows(&app)[8].ends_with("starting"), "{:?}", rows(&app));
     console.position(ConsolePosition::Right).size_percent(50.0);
     assert!(rows(&app)[0].starts_with("app content         "), "{:?}", rows(&app));
     console.focus();
@@ -2141,6 +2481,41 @@ fn drags_report_targets_and_drops() {
     log.borrow_mut().clear();
     app.drag((1, 0), (3, 0));
     assert!(log.borrow().is_empty());
+    // A press during a drag means the drag's release was lost: the press ends the drag, with its leaves before its own
+    // handlers and no drop, on the old target, elsewhere or on the source, and a drag it starts is its own.
+    let reenter = Rc::new(Cell::new(false));
+    app.root().on_mouse({
+        let (log, reenter) = (Rc::clone(&log), Rc::clone(&reenter));
+        move |cx, event| {
+            if event.kind == MouseEventKind::Down(MouseButton::Left) {
+                log.borrow_mut().push("press".to_owned());
+                if reenter.get() {
+                    let drag = MouseEvent { kind: MouseEventKind::Drag(MouseButton::Left), x: 22, y: 1, ..*event };
+                    cx.app().dispatch(Event::Mouse(drag));
+                }
+            }
+        }
+    });
+    for ((x, y), (to_x, to_y), drag) in [((22, 1), (23, 1), true), ((12, 1), (13, 1), true), ((1, 0), (22, 1), false)] {
+        log.borrow_mut().clear();
+        app.mouse(MouseEventKind::Down(MouseButton::Left), 1, 0);
+        app.mouse(MouseEventKind::Drag(MouseButton::Left), 22, 1);
+        app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+        if drag {
+            app.mouse(MouseEventKind::Drag(MouseButton::Left), to_x, to_y);
+        }
+        app.mouse(MouseEventKind::Up(MouseButton::Left), to_x, to_y);
+        assert_eq!(*log.borrow(), ["press", "right over", "right out", "press"]);
+    }
+    // A drag that the press's handler starts is the new gesture's: its own release ends it, with a drop.
+    log.borrow_mut().clear();
+    app.mouse(MouseEventKind::Down(MouseButton::Left), 1, 0);
+    app.mouse(MouseEventKind::Drag(MouseButton::Left), 22, 1);
+    reenter.set(true);
+    app.mouse(MouseEventKind::Down(MouseButton::Left), 1, 0);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), 22, 1);
+    let ends = ["press", "right over", "right out", "press", "right over", "right out", "drop on right at 22"];
+    assert_eq!(*log.borrow(), ends);
 }
 
 #[test]

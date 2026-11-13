@@ -1275,8 +1275,18 @@ const sweep_pieces = [_][]const u8{ "@\n", "$$_", "$$\n", "&mp;", "&amp;", "\n=\
 test "Markdown sweep: every pair of appends, then finish, under every option set" {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
+    // GFM (cmark-gfm): a task marker starts the item's paragraph; the rest of its line is that
+    // paragraph's text, not another block start (bigboi-1).
+    for ([_][2][]const u8{ .{ "- [x] - [x] word\n", "- [x] word" }, .{ "- [x] # hi\n", "# hi" } }) |row| {
+        const arena = arena_state.allocator();
+        const expected = try std.mem.concat(arena, u8, &.{ "<ul>\n<li><input checked=\"\" disabled=\"\" type=\"checkbox\"> ", row[1], "</li>\n</ul>\n" });
+        try std.testing.expectEqualStrings(try html.normalize(arena, expected), try html.normalize(arena, try wholeHtml(arena, "kinds", row[0])));
+    }
     // The tear prototype's repros (math on): A aborted in M2 before fd4ab4e19; B and D pass.
-    for ([_][]const []const u8{ &.{ "@\n$$_", "$$\n" }, &.{"&amp;\n===\n"}, &.{ "&amp;", "\n===\n" } }) |parts| {
+    // Then a task marker before more text (M3-a, M2 F9), an escaped backslash that ends an
+    // append inside `\(` and a lone one (bigboi-2), a `$` run that ends an append and a span decided after a prefix (bigboi-3, -5), and a held display
+    // math line after a fold, when its line ends, after its closer and closing a code span (bigboi-4).
+    for ([_][]const []const u8{ &.{ "@\n$$_", "$$\n" }, &.{"&amp;\n===\n"}, &.{ "&amp;", "\n===\n" }, &.{ "- [x] - [x] ", "**" }, &.{ "- [x] ", "- [x] ", "word " }, &.{ "\\(a b\\\\", ")", " now" }, &.{ "a \\(\u{e9} x\\", ")", " now" }, &.{ "$ $$", "$x$" }, &.{ "pay ($2", "$", ")." }, &.{ "some text\n\\[a $b$", " z\\]", "\n" }, &.{ "$$_s_s_ ", "\n" }, &.{ "$$a $b$ c$$", " " }, &.{ "] ```\n$", "$_```- [x]", "(" } }) |parts| {
         try std.testing.expect(try streamAgreesParts(arena_state.allocator(), "math tear", parts));
     }
     // E and F's inputs with the options M1 has (conceal and hyperlinks are M2's).
@@ -1741,8 +1751,32 @@ test "Markdown model: corpus rows split at random code points stream like one ap
     }
 }
 
+test "Markdown stream: the outermost link or image keeps its target while nested ones stream" {
+    // M3-b in the live walk: a node written a byte (or a few) at a time shows read_leaf after each
+    // call. Frames are not compared: the outer link takes over its parts' targets when it closes.
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    for ([_]usize{ 1, 2, 3 }) |width| {
+        var f: Fixture = undefined;
+        try f.init(.{});
+        defer f.deinit();
+        var sink: markdown.TailSink = .{ .allocator = gpa };
+        defer sink.deinit();
+        f.doc.tail_sink = &sink;
+        // Emphasis after the image restarts a walk inside the outer link.
+        for (try split(arena, "x [![<https://e.co> a@b.co](https://e/image) docs *now* more](https://e/outer) y", width)) |part| {
+            try f.doc.append(part);
+            try std.testing.expect(try writtenShowReadLeaf(arena, &f.doc, &sink, false));
+        }
+        try f.doc.finish();
+        try std.testing.expect(sink.mismatch_count == 0 and try liveShowsReadLeaf(arena, &f.doc, &sink));
+    }
+}
+
 test "Markdown read_leaf: display bytes, chunk styles, spans and the URL pool" {
-    const Row = struct { source: []const u8, math: bool = false, finish: bool = true, block: u32, chunks: []const struct { []const u8, []const u8, []const u8 } };
+    // A pending row reads the leaf while the stream is still open.
+    const Row = struct { source: []const u8, math: bool = false, pending: bool = false, block: u32, chunks: []const struct { []const u8, []const u8, []const u8 } };
     // Each chunk: its text, a scope summary and its link target.
     const rows = [_]Row{
         .{ .source = "see [docs](https://e.x/a) **now**", .block = 0, .chunks = &.{ .{ "see ", "", "" }, .{ "docs", "link", "https://e.x/a" }, .{ " ", "", "" }, .{ "now", "strong", "" } } },
@@ -1755,14 +1789,35 @@ test "Markdown read_leaf: display bytes, chunk styles, spans and the URL pool" {
         // One run closes a span and opens another (CommonMark 6.2).
         .{ .source = "*a***b**", .block = 0, .chunks = &.{ .{ "a", " italic", "" }, .{ "b", "strong", "" } } },
         // A pending word: an underscore between letters can neither open nor close, so B draws it.
-        .{ .source = "see ses_a", .finish = false, .block = 0, .chunks = &.{.{ "see ses_a", "", "" }} },
+        .{ .source = "see ses_a", .pending = true, .block = 0, .chunks = &.{.{ "see ses_a", "", "" }} },
+        // An image inside a link keeps the link's target, its autolinks and emails too (M3-b).
+        .{ .source = "[![<https://e.co> a@b.co](https://e/image) docs](https://e/outer)", .block = 0, .chunks = &.{.{ "https://e.co a@b.co docs", "link", "https://e/outer" }} },
+        // A math span the held pipe cuts shows as B drew it, literal (opus-2).
+        .{ .source = "\\(a|b\\) c", .math = true, .pending = true, .block = 0, .chunks = &.{.{ "(a", "", "" }} },
+        // A word is tokenized once white space follows it (M3-d).
+        .{ .source = "See [Updated](https://target)\n", .pending = true, .block = 0, .chunks = &.{ .{ "See ", "", "" }, .{ "Updated", "link", "https://target" } } },
+        // A `$` span that starts the last word shows once the byte after it decides it (bigboi-3).
+        .{ .source = "see $x$.", .math = true, .pending = true, .block = 0, .chunks = &.{ .{ "see ", "", "" }, .{ "x", "math", "" }, .{ ".", "", "" } } },
+        // ... after a decided prefix, each span (bigboi-5; a digit inside the TeX is not after it).
+        .{ .source = "pay ($2$).", .math = true, .pending = true, .block = 0, .chunks = &.{ .{ "pay (", "", "" }, .{ "2", "math", "" }, .{ ").", "", "" } } },
+        .{ .source = "A $x$!$y$.", .math = true, .pending = true, .block = 0, .chunks = &.{ .{ "A ", "", "" }, .{ "x", "math", "" }, .{ "!", "", "" }, .{ "y", "math", "" }, .{ ".", "", "" } } },
+        // A line that may still be a one-line display math block shows literal, the first or a
+        // later one, until a byte after its closer rules that out (bigboi-4).
+        .{ .source = "\\[b $c$ d\\]", .math = true, .pending = true, .block = 0, .chunks = &.{.{ "[b $c$ d]", "", "" }} },
+        .{ .source = "a\n\\[b $c$ d\\]", .math = true, .pending = true, .block = 0, .chunks = &.{.{ "a\n[b $c$ d]", "", "" }} },
+        .{ .source = "$$$$ $c$ d", .math = true, .pending = true, .block = 0, .chunks = &.{ .{ "$$$$ ", "", "" }, .{ "c", "math", "" }, .{ " d", "", "" } } },
+        // A `$$` closer may take one more `$` (the body ends in it); no span from an earlier line
+        // reads into the held line; a heading cannot become a block, so it is not held (bigboi-3).
+        .{ .source = "$$cost$ $b$ z$$$", .math = true, .pending = true, .block = 0, .chunks = &.{.{ "$$cost$ $b$ z$$$", "", "" }} },
+        .{ .source = "a $x\n\\[a$ b\\]", .math = true, .pending = true, .block = 0, .chunks = &.{.{ "a $x\n[a$ b]", "", "" }} },
+        .{ .source = "# \\[x $b$ y", .math = true, .pending = true, .block = 0, .chunks = &.{ .{ "[", "heading escape", "" }, .{ "x ", "heading", "" }, .{ "b", "headingmath", "" }, .{ " y", "heading", "" } } },
     };
     for (rows) |row| {
         var f: Fixture = undefined;
         try f.init(.{ .math = row.math });
         defer f.deinit();
         try f.doc.append(row.source);
-        if (row.finish) try f.doc.finish();
+        if (!row.pending) try f.doc.finish();
         var arena_state = std.heap.ArenaAllocator.init(gpa);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
@@ -1986,22 +2041,25 @@ test "Markdown limits: each store stays within its limit and a rejection publish
     }
 }
 
-const Work = struct { byte_count: usize, append_count: usize, counters: markdown.Counters, hooked: bool };
+const Work = struct { byte_count: usize, append_count: usize, counters: markdown.Counters, hooked: bool, held_max: usize };
 
-/// Streams `parts` into a fresh doc (with finish) and returns its work counters.
+/// Streams `parts` into a fresh doc (with finish) and returns its work counters and the most
+/// content the live leaf held after an append.
 fn work(options: markdown.Options, parts: []const []const u8) !Work {
     var f: Fixture = undefined;
     try f.init(options);
     defer f.deinit();
     var byte_count: usize = 0;
+    var held_max: usize = 0;
     for (parts) |part| {
         try f.doc.append(part);
         byte_count += part.len;
+        held_max = @max(held_max, f.doc.live.content.items.len);
     }
     try f.doc.finish();
     var hooked = false;
     for (f.doc.blocks.items) |b| hooked = hooked or b.flags.hooked;
-    return .{ .byte_count = byte_count, .append_count = parts.len, .counters = f.doc.counters, .hooked = hooked };
+    return .{ .byte_count = byte_count, .append_count = parts.len, .counters = f.doc.counters, .hooked = hooked, .held_max = held_max };
 }
 
 fn split(arena: std.mem.Allocator, text: []const u8, size: usize) ![]const []const u8 {
@@ -2119,11 +2177,19 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
         sent_factor: u64 = 1,
         /// Display bytes copied into buffers (tail writes, comparisons, holds): at most 2x.
         assembled_factor: u64 = 2,
+        /// The live leaf's content copy after any append, where settled words fold away.
+        held_max: u64 = std.math.maxInt(u64),
     };
     const rows = [_]Row{
         .{ .name = "list.md, 30-byte appends", .parts = try split(arena, try fixture(arena, "fixture list"), 30), .display_factor = 2 },
         .{ .name = "prose.md, 30-byte appends", .parts = try split(arena, try fixture(arena, "fixture prose"), 30), .display_factor = 2 },
         .{ .name = "an 8,192-byte line, 1-byte appends", .parts = try split(arena, line, 1) },
+        // A line that may become a display math block is held whole, drawn by B and parsed at
+        // finish: the worst per-byte series of the review round (512 to 16,384 bytes: inline 2.0,
+        // display 3.2, assembled 1.0 a byte; the copy holds the line).
+        .{ .name = "a held display math line, 3-byte appends", .options = .{ .math = true }, .parts = try split(arena, try std.mem.concat(arena, u8, &.{ "$$", line[0..4096] }), 3), .display_factor = 4, .held_max = 4098 },
+        // Settled words fold away at word ends too (bigboi-2: the copy kept the whole paragraph).
+        .{ .name = "an 8,192-byte line, word-sized appends", .parts = try split(arena, line, 5), .held_max = 16 },
         .{ .name = "some **x + 8,192 one-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"some **x"}, try split(arena, xs, 1) }), .sent_factor = 2 },
         .{ .name = "a stray backtick, 1-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"a `b "}, try split(arena, line, 1) }), .sent_factor = 2 },
         .{ .name = "a pending line of spaces, 1-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"text\n"}, try split(arena, spaces, 1), &.{"x\n"} }) },
@@ -2204,6 +2270,7 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
             .{ "display", c.display_byte_visits, row.display_factor * n + 64 },
             .{ "sent", c.tail_write_bytes, row.sent_factor * n + 64 },
             .{ "assembled", c.display_assembled_bytes, row.assembled_factor * n + 64 },
+            .{ "held", w.held_max, row.held_max },
         };
         for (bounds) |bound| {
             if (bound[1] <= bound[2]) continue;

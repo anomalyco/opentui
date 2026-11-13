@@ -8403,14 +8403,25 @@ export class FFIRenderLib {
     nativeResult("ot_scene_frame_cancel", this.opentui.symbols.ot_scene_frame_cancel(pointer, handle, id))
   }
 
-  public sceneHitTest(context: NativeContextHandle, session: SessionHandle, x: number, y: number): number {
+  /** `excluded` is a node's public number whose own hits the test skips, or zero. */
+  public sceneHitTest(
+    context: NativeContextHandle,
+    session: SessionHandle,
+    x: number,
+    y: number,
+    excluded = 0,
+  ): number {
     const handle = encodeContextHandle(context, session)
     toFFII32(x, "Scene hit x")
     toFFII32(y, "Scene hit y")
+    toSafeFFIU32Length(excluded, "Scene hit exclusion")
     // Hit tests never call back into JavaScript, so one output word serves every test.
     const output = this.hitTestOutput
-    const pointer = this.nativeContextPointer(context, "ot_scene_hit_test")
-    nativeResult("ot_scene_hit_test", this.opentui.symbols.ot_scene_hit_test(pointer, handle, x, y, output))
+    const pointer = this.nativeContextPointer(context, "ot_scene_hit_test_excluding")
+    nativeResult(
+      "ot_scene_hit_test_excluding",
+      this.opentui.symbols.ot_scene_hit_test_excluding(pointer, handle, x, y, excluded, output),
+    )
     return output[0]
   }
 

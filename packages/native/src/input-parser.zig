@@ -248,6 +248,11 @@ pub const InputParser = struct {
         if (!sink.hasRoomForOneByte()) return 0;
         // A new batch never extends a unit whose deadline already passed.
         self.expire(now_ns, sink);
+        // A deferred paste start continues only into a read that begins with the rest of its marker and more.
+        if (self.state == .csi and self.state.csi.deferred and self.pastePrefix()) {
+            const rest = "200~"[self.unit_len - 2 ..];
+            if (bytes.len > rest.len and std.mem.startsWith(u8, bytes, rest)) self.state.csi = .{ .alt = false, .deferred = false };
+        }
         var consumed: usize = 0;
         while (consumed < bytes.len) {
             if (!sink.hasRoomForOneByte()) break;
@@ -277,7 +282,7 @@ pub const InputParser = struct {
         if (self.expect.escape_prefix) return if (switch (self.state) {
             .escape => self.batch_left == 0,
             .csi => |csi| csi.held and csi.recovered and !self.expect.sentinel,
-            .string => |string| string.recovered and !self.expect.sentinel,
+            .string => |string| string.recovered and string.deferred and !self.expect.sentinel,
             else => false,
         }) self.since_ns else null;
         const waits = switch (self.state) {
@@ -382,15 +387,12 @@ pub const InputParser = struct {
             std.debug.assert(iterations <= 3);
             switch (self.state) {
                 .ground => self.ground(b, false, .of(false, b), sink),
-                // With `escape_prefix`, a unit that begins the read after its ESC is reinstated whole; a CSI then is no key.
-                .expired => if (self.expect.escape_prefix and self.batch_left > 0 and std.mem.indexOfScalar(u8, "[O]P_", b) != null) {
-                    _ = self.escapeByte(b, false, sink);
-                    if (b == '[') self.state.csi.recovered = true;
-                } else if (self.expect.sentinel and std.mem.indexOfScalar(u8, "[]P_", b) != null) {
-                    // With `escape_prefix` the read end was the timeout, so recovery goes on at once.
-                    if (self.expect.escape_prefix) self.begin(heldUnit(b), b) else self.state = .{ .recover = b };
-                } else if (b == '[' and !self.expect.escape_prefix) {
+                // With `escape_prefix`, the read end was the timeout: a `[` recovers only with its next byte in the read, and
+                // a `_` too, as a held Kitty graphics reply (no sentinel covers the file transport's).
+                .expired => if (b == '[' and (self.batch_left > 0 or !self.expect.escape_prefix)) {
                     self.state = .{ .recover = b };
+                } else if ((self.expect.sentinel or (self.expect.escape_prefix and b == '_' and self.batch_left > 0)) and std.mem.indexOfScalar(u8, "[]P_", b) != null) {
+                    if (self.expect.escape_prefix) self.begin(heldUnit(b), b) else self.state = .{ .recover = b };
                 } else {
                     self.state = .ground;
                     pending = b;
@@ -406,7 +408,7 @@ pub const InputParser = struct {
                 .recover => |introducer| if (self.recovered(introducer, b)) |state| {
                     // The Escape key was already emitted; the unit reinstates its ESC.
                     self.begin(state, introducer);
-                    self.append(b);
+                    if (state == .recover_sgr) self.append(b) else pending = b;
                 } else {
                     self.state = .ground;
                     emitKey(sink, &.{&.{introducer}}, introducer, .{}, .{ .flags = flags.key_typed, .text = &.{introducer} });
@@ -724,7 +726,10 @@ pub const InputParser = struct {
         if (!typed) return emitReply(sink, self.unit[start..self.unit_len], protocol, flags.reply_fragment);
         const introducer = self.unit[1];
         emitKey(sink, &.{self.unit[1..2]}, introducer, .{}, .{ .flags = flags.key_typed, .text = self.unit[1..2] });
-        if (self.unit_len > 2) emitReply(sink, self.unit[2..self.unit_len], protocol, flags.reply_fragment);
+        // With `escape_prefix`, a recovered APC that matched no Kitty graphics reply is at most `G` and a key letter: type it.
+        if (protocol == .apc and self.expect.escape_prefix) {
+            for (self.unit[2..self.unit_len]) |c| self.ground(c, false, .of(false, c), sink);
+        } else if (self.unit_len > 2) emitReply(sink, self.unit[2..self.unit_len], protocol, flags.reply_fragment);
     }
 
     /// `reply_only`: a held unit, which never decodes as a key.
@@ -842,8 +847,14 @@ pub const InputParser = struct {
         if (params.len == 0) return !self.state.csi.alt;
         if (self.kittyHeld()) return true;
         if (params[0] == '<') return allOf(params[1..], "0123456789;");
-        return (self.expect.replies and self.replyShaped()) or
+        return self.pastePrefix() or (self.expect.replies and self.replyShaped()) or
             (self.expect.kitty_keyboard and params[0] != '?' and Shape.of(params, true) != null);
+    }
+
+    /// Whether a CSI is a cut paste start that owes no Escape key or recovered introducer.
+    fn pastePrefix(self: *const InputParser) bool {
+        const csi = self.state.csi;
+        return !csi.alt and !csi.recovered and std.mem.startsWith(u8, "200", self.unit[2..self.unit_len]);
     }
 
     /// Whether the CSI parameters may begin a cursor position, pixel size, or private reply.
@@ -880,6 +891,8 @@ pub const InputParser = struct {
     /// The unit that a timed-out Escape, `introducer`, and `b` resume, if they may begin one.
     fn recovered(self: *const InputParser, introducer: u8, b: u8) ?State {
         if (introducer == '[' and b == '<') return .recover_sgr;
+        // Confirmed Kitty terminals send keys, replies, and focus this way, but no SS3 or X10 mouse; it is no second key.
+        if (self.expect.escape_prefix) return if (std.mem.indexOfScalar(u8, "0123456789?>ABCDEFHIOPQS", b) != null) .{ .csi = .{ .alt = false, .deferred = false, .recovered = true } } else null;
         if (introducer == '[' and b == 'M') return .{ .x10 = .{ .alt = false, .recovered = true } };
         if (introducer == '[' and b == '?' and self.expect.kitty_query and self.batch_left >= 2) return heldUnit('[');
         if (!self.expect.sentinel or !beginsReply(introducer, b)) return null;
@@ -894,8 +907,8 @@ pub const InputParser = struct {
         // A reply prefix continues a bare unit only while the host awaits the sentinel.
         if (params.len == 0) return (b == '<' and self.batch_left >= 1) or (b == 'M' and self.batch_left >= 3) or
             (self.expect.kitty_query and b == '?' and self.batch_left >= 2) or (self.expect.sentinel and beginsReply('[', b));
-        // Only `sentinel` defers these; a number continues toward a cursor or pixel size reply.
-        if (allDigits(params)) return digit or b == ';';
+        // With `sentinel`, a number continues toward a cursor or pixel size reply.
+        if (allDigits(params)) return self.expect.sentinel and (digit or b == ';');
         // Whether the field being read has a digit; a mode report's `$` follows its digits.
         const field = std.mem.trimEnd(u8, params, "$");
         const has_digit = isDigit(field[field.len - 1]);

@@ -36,7 +36,8 @@ test("an edit with trailingUnstable 0 parses like fresh content", () => {
 
 // Apps write stable blocks out once (OpenCode's split-footer scrollback), so a stable token must never change: after
 // each append and at the stream's end, the tokens are those of a fresh lex, and the stable ones are a prefix of the
-// final text's tokens and never fewer. In blocks split by single blank lines (paragraphs, tight lists), the next
+// final text's tokens and never fewer; while streaming, newly stable tokens have a block after them, where OpenCode
+// ends their rows. In blocks split by single blank lines (paragraphs, tight lists), the next
 // append after a blank line and the next block's first character makes the block before them stable; the next
 // blocks here never start with what a list holds for.
 test("streamed, the stable tokens are a growing prefix of the final text's tokens", () => {
@@ -44,7 +45,7 @@ test("streamed, the stable tokens are a growing prefix of the final text's token
   const random = (n: number) => ((seed = (Math.imul(seed, 48271) + 11) % 2147483647) >>> 0) % n
   const failures: string[] = []
   const progress = [
-    "a\n\nb\n\nc\n\nd\n\ne\n\nf\n",
+    "😀a\n\nb\n\nc\n\nd\n\ne\n\nf\n", // the end of the stable tokens counts UTF-16 units
     "Summary.\n\n1\n\n2\n\n3\n\nend\n",
     "- one\n- two\n- three\n- four\n- five\n- six\n\nDone.\n",
     "1. a\n2. b\n\nText one.\n\n- c\n- d\n- e\n\nText two.\n\n* f\n* g\n\nend\n",
@@ -58,6 +59,9 @@ test("streamed, the stable tokens are a growing prefix of the final text's token
     "> a\n>\n> b\nlazy\n\n> c\n\nend\n",
     "    code\n\n    more\n\ntext\n",
     "[r]: /u\n  'title'\n\nsee [r]\n\n[s]: /v\n",
+    // marked drops a repeated definition, and lets a label or title span blank lines or other blocks
+    "[r]: /u\n\n- [n]: /x\n\n> > [q]: /q\nlazy\n\nHello\n\n[r]: /v\n\n[r]: /w\n\n[q]: /v\n\n[n]: /y\n\nWorld\n\nEND\n",
+    '[part\n\npart\n\nmore\\]]: /a\n\n[t]: <b c> (one\n\ntwo)\n\n [u]: /c\n"th\\"ree\n\nfour"\n\n[v]: /d \'x\n# h\n# i\ny\'\n\nEND\n',
     "| a | b |\n|---|---|\n| 1 | 2 |\n\n| c |\n|---|\n\npara\n",
     "<pre>\na\n\nb\n</pre>\n\nx\n",
     "1) a\n\n   b\n\n 100) c\n\nend\n",
@@ -88,7 +92,8 @@ test("streamed, the stable tokens are a growing prefix of the final text's token
         if (
           state.stableTokenCount! < Math.max(stable, due) ||
           wrong ||
-          JSON.stringify(raws) !== JSON.stringify(lexed)
+          JSON.stringify(raws) !== JSON.stringify(lexed) ||
+          (piece && state.stableTokenCount! > stable && raws.slice(state.stableTokenCount).every((raw) => !raw.trim()))
         ) {
           failures.push(JSON.stringify(text))
           break
@@ -101,6 +106,28 @@ test("streamed, the stable tokens are a growing prefix of the final text's token
     }
   }
   expect(failures).toEqual([])
+})
+
+// An append walks only the tokens that are not stable yet, so the work per appended byte stays flat as the text grows.
+// The work counted is reads of a token's raw text, which every walk over the tokens does.
+test("streamed, the work per appended byte does not grow with the text", () => {
+  const readsPerByte = (blocks: number) => {
+    const block = (i: number) => `## Step ${i}\n\nThe parser keeps block ${i} once a later append confirms it.\n\n`
+    const doc = Array.from({ length: blocks }, (_, i) => block(i)).join("")
+    const counted = new WeakSet<object>()
+    let reads = 0
+    let state: ParseState | null = null
+    for (let end = 30; end < doc.length + 30; end += 30) {
+      state = parseMarkdownIncremental(doc.slice(0, end), state, 2)
+      for (const token of state.tokens.filter((token) => !counted.has(token))) {
+        const raw = token.raw
+        Object.defineProperty(token, "raw", { get: () => (reads++, raw) })
+        counted.add(token)
+      }
+    }
+    return reads / doc.length
+  }
+  expect(readsPerByte(240)).toBeLessThan(1.5 * readsPerByte(60))
 })
 
 test("handles content that diverges from start", () => {
@@ -136,6 +163,14 @@ test("parseMarkdownIncremental reports stableTokenCount for the reused prefix", 
   let edited: ParseState | null = null
   for (const text of ["alpha\n\nb", "alpha\n\nbc", "alphaX"]) edited = parseMarkdownIncremental(text, edited, 2)
   expect(edited!.tokens.map((token) => token.raw)).toEqual(["alphaX"])
+  // Blocks after a repeated definition, whose text marked drops from the tokens, still become stable
+  let repeated: ParseState | null = null
+  for (const text of ["[k]: /a\n\nb\n\n[k]: /c\n\nd\n\ne", "[k]: /a\n\nb\n\n[k]: /c\n\nd\n\ne\n\nf"])
+    repeated = parseMarkdownIncremental(text, repeated, 2)
+  expect(repeated!.tokens[repeated!.stableTokenCount! - 1]?.raw).toBe("d")
+  // The first definition of a label wins, also over one in a later quote
+  const quoted = parseMarkdownIncremental("[k]: /a\n\n> [k]: /c\n\nd\n\ne", null, 2)
+  expect(parseMarkdownIncremental(quoted.content + "\n\nf", quoted, 2).links?.k?.href).toBe("/a")
 })
 
 test("handles content truncation", () => {
@@ -307,17 +342,15 @@ test("falls back to full re-parse when incremental tail parse fails", () => {
   const content2 = "| A |\n|---|\n| 1 |\n| 2 |"
   const state1 = parseMarkdownIncremental(content1, null, 2)
 
-  const lexerRef = Lexer as unknown as { lex: typeof Lexer.lex }
+  const lexerRef = Lexer.prototype
   const originalLex = lexerRef.lex
   let lexCalls = 0
 
-  lexerRef.lex = ((src, options) => {
+  lexerRef.lex = function (this: Lexer, src) {
     lexCalls += 1
-    if (lexCalls === 1) {
-      throw new Error("incremental tail parse failed")
-    }
-    return originalLex(src, options)
-  }) as typeof Lexer.lex
+    if (lexCalls === 1) throw new Error("incremental tail parse failed")
+    return originalLex.call(this, src)
+  }
 
   try {
     const state2 = parseMarkdownIncremental(content2, state1, 2)
@@ -337,12 +370,12 @@ test("returns empty token list when both incremental and full parse fail", () =>
   const content2 = "| A |\n|---|\n| 1 |\n| 2 |"
   const state1 = parseMarkdownIncremental(content1, null, 2)
 
-  const lexerRef = Lexer as unknown as { lex: typeof Lexer.lex }
+  const lexerRef = Lexer.prototype
   const originalLex = lexerRef.lex
 
-  lexerRef.lex = (() => {
+  lexerRef.lex = () => {
     throw new Error("parse failed")
-  }) as typeof Lexer.lex
+  }
 
   try {
     const state2 = parseMarkdownIncremental(content2, state1, 2)

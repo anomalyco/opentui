@@ -380,23 +380,25 @@ fn a_color_scheme_notice_lets_the_app_read_the_new_palette() {
 // render, and `NoZwj` was reported although native draws it as `Unicode`. Under ConPTY's DECRPM 2027 "unrecognized"
 // reply, a ZWJ emoji measured 2 cells and drew 4: the table cell blanked it, the gutter sign was clipped, the input
 // wrote over "💻", and a snapshot lost its wrapped row.
+// Expected too: a surface rendered before the reply commits no rows until it renders again, as Core's `commitRows`.
+// Actual: it committed the old cells, so the footer's tail column was 4 where the terminal drew 6.
 #[test]
 fn widgets_measure_text_with_the_width_method_a_reply_switches_to() {
     use opentui::split::{Scrollback, SnapshotOptions};
     use opentui::widget::{LineNumbers, LineSign, WrapMode};
     let zwj = "👩\u{200d}💻";
-    // An environment variable, the replies and keys, the text, the method native draws with, the text's cells under it,
-    // the link snapshot, and the screen rows to check. Native draws NoZwj as Unicode but the emulator splits the emoji,
-    // so only the method's row and the cursor show the app's measurement.
+    // An environment variable, the replies and keys, the text, the method native draws with and whether the reply
+    // changed it, the text's cells under it, the link snapshot, and the screen rows to check. Native draws NoZwj as
+    // Unicode but the emulator splits the emoji, so only the method's row and the cursor show the app's measurement.
     // Only Ghostty's reply turns hyperlinks on; "l" updates the link before anything else reads the terminal state.
     let ghostty = &b"\x1b[?2027;2$y\x1bP>|ghostty 1.3.0\x1b\\lw"[..];
     let cases = [
-        (("TERM", "xterm-256color"), &b"\x1b[?2027;0$yw"[..], zwj, "Wcwidth", 4, "go (https://a.b)", 0..5),
-        (("TERM_PROGRAM", "vscode"), b"\x1b[?2027;2$yw", zwj, "Unicode", 2, "go", 0..5),
-        (("TERM", "xterm-256color"), ghostty, "বাংলা", "UnicodeWide", 4, "go!", 0..5),
-        (("OPENTUI_FORCE_NOZWJ", "1"), b"w", zwj, "Unicode", 2, "go (https://a.b)", 2..3),
+        (("TERM", "xterm-256color"), &b"\x1b[?2027;0$yw"[..], zwj, "Wcwidth", true, 4, "go (https://a.b)", 0..5),
+        (("TERM_PROGRAM", "vscode"), b"\x1b[?2027;2$yw", zwj, "Unicode", true, 2, "go", 0..5),
+        (("TERM", "xterm-256color"), ghostty, "বাংলা", "UnicodeWide", true, 4, "go!", 0..5),
+        (("OPENTUI_FORCE_NOZWJ", "1"), b"w", zwj, "Unicode", false, 2, "go (https://a.b)", 2..3),
     ];
-    for (variable, input, text, method, cells, link, checked) in cases {
+    for (variable, input, text, method, changed, cells, link, checked) in cases {
         let environment = vec![("TERM".into(), "xterm-256color".into()), (variable.0.into(), variable.1.into())];
         let options = RemoteOptions { width: 48, height: 5, environment };
         let mut client = Client::start(options, quiet(), move |app| {
@@ -413,6 +415,9 @@ fn widgets_measure_text_with_the_width_method_a_reply_switches_to() {
             // Made before the reply, as apps make their scrollback writer.
             let scrollback = Scrollback::new(app).unwrap();
             let link = Markdown::new(scrollback.app()).set_markdown("[go](https://a.b)");
+            let surface = scrollback.surface(true).unwrap();
+            surface.root().add(&Text::new(scrollback.app(), text));
+            surface.render().unwrap();
             app.on_key(move |cx, key| {
                 if key.matches("l") {
                     // Updates a paragraph without making a node, so only `hyperlinks` reads the terminal state.
@@ -434,7 +439,10 @@ fn widgets_measure_text_with_the_width_method_a_reply_switches_to() {
                     let link =
                         scrollback.snapshot(&link, SnapshotOptions::default()).unwrap().buffer.capture().unwrap();
                     let error = scrollback.app().session().context().last_error().unwrap();
-                    let label = format!("m={:?} {} {error:?}", cx.app().width_method(), link.text().trim_end());
+                    let stale = surface.commit_rows(0, 1, None, true).is_err();
+                    surface.render().unwrap();
+                    surface.commit_rows(0, 1, None, true).unwrap();
+                    let label = format!("m={:?} {stale} {} {error:?}", cx.app().width_method(), link.text().trim_end());
                     let label = Text::new(cx.app(), label);
                     cx.app().root().add(&label).add(&Text::new(cx.app(), shots.join(" ")));
                 } else if key.matches("i") {
@@ -455,7 +463,7 @@ fn widgets_measure_text_with_the_width_method_a_reply_switches_to() {
         let (pad, shot) = (" ".repeat(6 - cells as usize), if cells == 4 { "ab/cd" } else { "abcd" });
         let shots = vec![format!("{text}{shot}"); 3].join(" ");
         // The label ends with the Context's last error: the snapshots leave none.
-        let rows = [format!("{pad}{text}|"), format!("{text} 1 x"), format!("m={method} {link} None"), shots];
+        let rows = [format!("{pad}{text}|"), format!("{text} 1 x"), format!("m={method} {changed} {link} None"), shots];
         let rows = [&rows[..], &[format!("{text}yz")]].concat();
         let expected = (&rows[checked.clone()], Some((cells + 2, 4)));
         assert_eq!((&screen.lines[checked], screen.cursor.position), expected, "{variable:?}");

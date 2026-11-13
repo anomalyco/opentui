@@ -1201,7 +1201,7 @@ const Harness = struct {
         // A committed image also presents its placeholder cells.
         if (self.twins[candidate].cli.currentImages.items.len == 0) try testing.expectEqual(drafted, cellHash(self.twins[candidate].cli.currentRenderBuffer));
         for (drafted_hits[0..cells], 0..) |hit, index| {
-            try testing.expectEqual(hit, draft.state.hitToken(draft.cli, @intCast(index % draft.cli.width), @intCast(index / draft.cli.width)));
+            try testing.expectEqual(hit, draft.state.hitToken(draft.cli, @intCast(index % draft.cli.width), @intCast(index / draft.cli.width), 0));
         }
         try self.expectSamePresentation();
         if (spec.force) self.decoder_synced = true;
