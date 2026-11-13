@@ -1952,14 +1952,60 @@ pub const UnifiedTextBuffer = struct {
     /// that weight away from a line start splits the text: after zero-width text, and after a
     /// whole grapheme. Matches `EditBuffer.splitChunkAtWeight`.
     pub fn byteOffsetAtWeight(self: *const Self, weight: u32) u32 {
+        return self.byteAtCell(weight, false);
+    }
+
+    /// Grapheme queries keep a wcwidth ZWJ cluster whole even when cursor motion steps through it.
+    pub fn byteAtCell(self: *const Self, weight: u32, comptime whole_grapheme: bool) u32 {
         const found = self._rope.findByWeight(weight) orelse return self.getByteSize();
         const before = (self._rope.seekCountSum(iter_mod.leafCount, iter_mod.textBytes, found.leaf_index) orelse unreachable).sum;
         const chunk = found.leaf.asText() orelse return before;
         const target_col = weight - found.start_weight;
-        if (target_col == 0) return before;
+        if (!whole_grapheme and target_col == 0) return before;
         const ascii_only = (chunk.flags & TextChunk.Flags.ASCII_ONLY) != 0;
-        const split = utf8.findPosByWidth(chunk.getBytes(&self.mem_registry), target_col, self.tab_width, self.control_display, ascii_only, false, self.width_method);
+        const find = if (whole_grapheme) utf8.findGraphemePosByWidth else utf8.findPosByWidth;
+        const split = find(chunk.getBytes(&self.mem_registry), target_col, self.tab_width, self.control_display, ascii_only, false, self.width_method);
         return before + split.byte_offset;
+    }
+
+    /// The rope indexes bytes and cells, not UTF-16. Scan just the requested prefix without
+    /// flattening the document. `to_byte` rounds a split surrogate pair down to its scalar.
+    pub fn convertUtf16(self: *const Self, index: u32, comptime to_byte: bool) u32 {
+        const Walk = struct {
+            buffer: *const Self,
+            remaining: u32,
+            result: u32 = 0,
+
+            fn visit(ctx: *anyopaque, segment: *const Segment, _: u32) UnifiedRope.Node.WalkerResult {
+                const walk: *@This() = @ptrCast(@alignCast(ctx));
+                if (segment.asText()) |chunk| {
+                    const bytes = chunk.getBytes(&walk.buffer.mem_registry);
+                    if (chunk.isAsciiOnly()) {
+                        const n = @min(bytes.len, walk.remaining);
+                        walk.remaining -= n;
+                        walk.result += n;
+                    } else {
+                        var i: usize = 0;
+                        while (i < bytes.len and walk.remaining > 0) {
+                            const scalar = utf8.decodeUtf8Unchecked(bytes, i);
+                            const units: u32 = if (scalar.len == 4) 2 else 1;
+                            const take = if (to_byte) units else scalar.len;
+                            if (walk.remaining < take) return .{ .keep_walking = false };
+                            walk.remaining -= take;
+                            walk.result += if (to_byte) scalar.len else units;
+                            i += scalar.len;
+                        }
+                    }
+                } else if (segment.isBreak() and walk.remaining != 0) {
+                    walk.remaining -= 1;
+                    walk.result += 1;
+                }
+                return .{ .keep_walking = walk.remaining != 0 };
+            }
+        };
+        var walk: Walk = .{ .buffer = self, .remaining = index };
+        self._rope.walk(&walk, Walk.visit) catch unreachable;
+        return walk.result;
     }
 
     /// The cursor offset at text byte `byte`: the weight before it, where a byte inside a grapheme

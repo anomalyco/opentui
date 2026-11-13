@@ -822,6 +822,50 @@ fn capabilities_name_width_methods_multiplexers_and_forced_image_protocols() -> 
 }
 
 #[test]
+fn editor_converts_byte_indices_and_cells() -> Result<()> {
+    let context = context(1)?;
+    for method in [WidthMethod::Unicode, WidthMethod::UnicodeWide, WidthMethod::Wcwidth, WidthMethod::NoZwj] {
+        let buffer = EditBuffer::new(&context, method)?;
+        buffer.set_tab_width(4)?;
+        let emoji = if method == WidthMethod::NoZwj {
+            [("👩‍", 2), ("💻", 2)]
+        } else {
+            [("👩‍💻", if method == WidthMethod::Wcwidth { 4 } else { 2 }), ("", 0)]
+        };
+        let units =
+            [("a", 1), ("\t", 4), ("界", 2), emoji[0], emoji[1], ("e\u{301}", 1), ("\n", 1), ("\n", 1), ("\x0c", 2)];
+        buffer.set_text("a\t界👩‍💻e\u{301}\r\n\r\n\x0c", false)?;
+        let (mut index, mut offset) = (0, 0);
+        for (unit, width) in units {
+            for i in 0..unit.len() {
+                assert_eq!(buffer.byte_index_to_cell_offset(index + i)?, offset);
+            }
+            for c in 0..width {
+                assert_eq!(buffer.cell_offset_to_byte_index(offset + c)?, index);
+            }
+            assert_eq!(buffer.cell_offset_to_byte_index(buffer.byte_index_to_cell_offset(index)?)?, index);
+            index += unit.len();
+            offset += width;
+        }
+        assert_eq!(buffer.byte_index_to_cell_offset(index + 1)?, offset);
+        assert_eq!(buffer.cell_offset_to_byte_index(offset + 1)?, index);
+        buffer.set_text("\u{301}界", false)?;
+        assert_eq!(buffer.cell_offset_to_byte_index(0)?, "\u{301}".len());
+        let text = "ab\tcd";
+        for i in 0..text.len() {
+            buffer.set_text(text, false)?;
+            let pos = |i| -> Result<_> {
+                let p = buffer.position(EditQuery::Offset(buffer.byte_index_to_cell_offset(i)?))?.unwrap();
+                Ok((p.row, p.col))
+            };
+            buffer.delete_range(pos(i)?, pos(i + 1)?)?;
+            assert_eq!(buffer.text()?, format!("{}{}", &text[..i], &text[i + 1..]));
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn editor_nodes_paint_measure_and_edit_bound_buffers() -> Result<()> {
     // Session, two nodes, buffer, view, and capture lease.
     let context = context(6)?;

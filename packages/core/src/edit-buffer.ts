@@ -293,6 +293,18 @@ export class EditBuffer extends EventEmitter {
     )
   }
 
+  /** Converts a UTF-16 index in getText() to document cells (one per newline). Rounds down within a grapheme; clamps at EOF. */
+  public stringIndexToCellOffset(index: number): number {
+    this.guard()
+    return this.lib.contextEditBufferConvertOffset(this.native.handle.context, this.native.handle, index, true)
+  }
+
+  /** Converts document cells to a UTF-16 index in getText(). Rounds down within a grapheme, past zero-width text at a tie, and clamps at EOF. */
+  public cellOffsetToStringIndex(offset: number): number {
+    this.guard()
+    return this.lib.contextEditBufferConvertOffset(this.native.handle.context, this.native.handle, offset, false)
+  }
+
   public getTextRange(startOffset: number, endOffset: number): string {
     this.guard()
     if (startOffset >= endOffset) return ""

@@ -376,6 +376,27 @@ impl EditBuffer {
         Ok((raw.valid != 0).then_some(EditPosition { row: raw.row, col: raw.col, offset: raw.offset }))
     }
 
+    /// Converts a UTF-8 byte index in `text()` to document cells (one per newline). Rounds down within a grapheme
+    /// and clamps at EOF. The index need not be a char boundary.
+    pub fn byte_index_to_cell_offset(&self, index: usize) -> Result<u32> {
+        self.convert_offset(sys::OT_EDIT_BYTE_TO_CELL, u32::try_from(index).unwrap_or(u32::MAX))
+    }
+
+    /// Converts document cells to a UTF-8 byte index in `text()`. Rounds down within a grapheme, past zero-width
+    /// text at a tie, and clamps at EOF.
+    pub fn cell_offset_to_byte_index(&self, offset: u32) -> Result<usize> {
+        Ok(self.convert_offset(sys::OT_EDIT_CELL_TO_BYTE, offset)? as usize)
+    }
+
+    fn convert_offset(&self, conversion: u32, value: u32) -> Result<u32> {
+        let (context, handle) = self.raw();
+        let mut result = 0;
+        check("ot_edit_buffer_convert_offset", unsafe {
+            sys::ot_edit_buffer_convert_offset(context, handle, conversion, value, &mut result)
+        })?;
+        Ok(result)
+    }
+
     /// The text between two flattened document offsets.
     pub fn range(&self, start: u32, end: u32) -> Result<String> {
         let (context, handle) = self.raw();

@@ -5341,6 +5341,25 @@ export class FFIRenderLib {
     )
   }
 
+  public contextEditBufferConvertOffset(
+    context: NativeContextHandle,
+    editBuffer: ContextEditBufferHandle,
+    value: number,
+    toCell: boolean,
+  ): number {
+    const operation = "ot_edit_buffer_convert_offset"
+    const handle = encodeContextHandle(context, editBuffer)
+    const input = toSafeFFIU32Length(value, "Edit buffer index or offset")
+    const conversion = toCell ? nativeConstants.OT_EDIT_UTF16_TO_CELL : nativeConstants.OT_EDIT_CELL_TO_UTF16
+    const output = new Uint32Array(1)
+    const pointer = this.nativeContextPointer(context, operation)
+    nativeResult(
+      operation,
+      this.opentui.symbols.ot_edit_buffer_convert_offset(pointer, handle, conversion, input, output),
+    )
+    return output[0]
+  }
+
   public contextEditBufferMeasureText(
     context: NativeContextHandle,
     editBuffer: ContextEditBufferHandle,
