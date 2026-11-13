@@ -338,6 +338,16 @@ describe("ExtmarksController", () => {
     expect(textarea.cursorOffset).toBe(1)
   })
 
+  // A move that applies no rule, such as Home into a mark across lines, still ends outside it, at the nearer edge.
+  it("should keep the cursor outside a virtual extmark after Home", async () => {
+    await setup("ab\ncde")
+    textarea.focus()
+    textarea.cursorOffset = 6
+    extmarks.create({ start: 2, end: 5, virtual: true })
+    textarea.gotoLineHome()
+    expect(textarea.cursorOffset).toBe(2)
+  })
+
   describe("Virtual Extmark - Selection Mode", () => {
     it("should allow selection through virtual extmark", async () => {
       await setup("abcdefgh")
