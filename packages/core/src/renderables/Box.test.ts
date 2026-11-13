@@ -520,6 +520,8 @@ describe("BoxRenderable - per-side borders", () => {
     box.borderLeftColor = undefined
     expect(calls).toHaveBeenCalledTimes(2)
     expect(box.borderLeftColor).toBeUndefined()
+    // Clearing the last override drops the record again.
+    expect((box as unknown as { _sideOverrides?: unknown })._sideOverrides).toBeUndefined()
     calls.mockRestore()
   })
 
