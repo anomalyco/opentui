@@ -62,7 +62,6 @@ export class MarkdownDocument {
         result = this.lib.markdownWrite(this.context, this.doc, bytes, !extends_)
         this._content = content
         this._finished = false
-        this._committed = result.committed
       }
     }
     if (!streaming && !this._finished) result = this.finish()
@@ -97,7 +96,6 @@ export class MarkdownDocument {
   private finish(): NativeMarkdownResult {
     const result = this.lib.markdownFinish(this.context, this.doc)
     this._finished = true
-    this._committed = result.committed
     return result
   }
 

@@ -320,7 +320,6 @@ function holds(outer: Renderable, inner: Renderable): boolean {
 interface Shown {
   /** The block's record as last shown: a renderer runs again only when it changes. */
   record: NativeMarkdownBlock
-  kind: number
   /** What the block's parent holds: the default renderable, or a renderer's result. */
   renderable?: Renderable
   /**
@@ -593,7 +592,7 @@ export class MarkdownRenderable extends Renderable {
 
   /** Each block the document holds, in document order (the index is the block's id), with what shows it. */
   get blocks(): readonly { kind: MarkdownBlockKind; renderable: Renderable | undefined }[] {
-    return this._shown.map((shown) => ({ kind: kindNames[shown.kind]!, renderable: shown.renderable }))
+    return this._shown.map((shown) => ({ kind: kindNames[shown.record.kind]!, renderable: shown.renderable }))
   }
 
   /**
@@ -622,7 +621,7 @@ export class MarkdownRenderable extends Renderable {
     })
     // A table's cells run again together, as a table shows them.
     for (const table of tables) {
-      for (let at = table + 1; at < this.subtreeEnd(table); at++) this._shown[at]!.cell = undefined
+      for (let at = table + 1, end = this.subtreeEnd(table); at < end; at++) this._shown[at]!.cell = undefined
       this.fillTable(table)
     }
     this.requestRender()
@@ -632,8 +631,9 @@ export class MarkdownRenderable extends Renderable {
   public targetAt(x: number, y: number): string | undefined {
     const scene = this.ctx.nativeScene
     const hit = Renderable.renderablesByNumber.get(scene.hitTest(x, y))
+    if (!hit) return undefined
     const shown = this._shown.find((shown) => shown.targets && shown.default === hit)
-    if (!hit || !shown?.targets) return undefined
+    if (!shown?.targets) return undefined
     const byte = scene.textByteAt(hit, x, y)
     if (byte === undefined) return undefined
     return shown.targets.find(([start, end]) => start <= byte && byte < end)?.[2]
@@ -807,9 +807,9 @@ export class MarkdownRenderable extends Renderable {
         this.afterChange(index, refresh, true)
         return
       }
-      const same = old?.kind === block.kind || (isProse(block.kind) && isProse(old?.kind ?? -1))
+      const same = old?.record.kind === block.kind || (isProse(block.kind) && isProse(old?.record.kind ?? -1))
       const reuse = leaf && same && old!.default === old!.renderable ? old!.default : undefined
-      this._shown.push({ record: block, kind: block.kind, default: reuse })
+      this._shown.push({ record: block, default: reuse })
       if (reuse) old!.renderable = undefined
       if (!this.isHidden(index)) this.show(index, undefined)
       // The doc unbound the removed block's node.
@@ -818,10 +818,9 @@ export class MarkdownRenderable extends Renderable {
       // A list or item grows with each delta inside it; it is laid out again only when its flags or number change.
       layout = shown.record.flags !== block.flags || shown.record.number !== block.number
       // A kind change at the same index rebuilds, except that a paragraph that becomes a setext heading keeps its text.
-      const rebuild = shown.kind !== block.kind && !(isProse(shown.kind) && isProse(block.kind))
+      const rebuild = shown.record.kind !== block.kind && !(isProse(shown.record.kind) && isProse(block.kind))
       // A block listed for its output alone (a style or capability change) does not ask its renderer again.
       const changed = rebuild || !sameRecord(shown.record, block)
-      shown.kind = block.kind
       shown.record = block
       if (this.isHidden(index)) {
         // Shown with its parent.
@@ -893,7 +892,7 @@ export class MarkdownRenderable extends Renderable {
       parent = this._doc.blocks[parent]!.parent
     ) {
       const shown = this._shown[parent]!
-      if (shown.kind === md.OT_MD_TABLE || !shown.default) return true
+      if (shown.record.kind === md.OT_MD_TABLE || !shown.default) return true
     }
     return false
   }
@@ -1039,14 +1038,6 @@ export class MarkdownRenderable extends Renderable {
     code.drawUnstyledText = (block.flags & md.OT_MD_BLOCK_MATH) !== 0 || !this._streaming
     code.streaming = this._streaming
     code.content = this.leafText(index)
-  }
-
-  /** Shows a code block's new content in what shows it, or in what its renderer returns now. */
-  private updateCode(index: number): void {
-    if (this.isHidden(index)) return
-    const shown = this._shown[index]!
-    if (this.rendersCustom(this._doc.blocks[index]!)) this.show(index, shown.renderable)
-    else if (shown.default instanceof CodeRenderable) this.setCode(index, shown.default)
   }
 
   /** What a changed block changes besides its own renderable: text the host writes, the table or list around it. */
@@ -1306,7 +1297,7 @@ export class MarkdownRenderable extends Renderable {
       else if (renderable instanceof CodeRenderable) this.setCode(index, renderable)
       else if (renderable instanceof TextTableRenderable) {
         this.applyTableRenderableOptions(renderable, this.resolveTableRenderableOptions())
-        for (let at = index + 1; at < this.subtreeEnd(index); at++) this._shown[at]!.cell = undefined
+        for (let at = index + 1, end = this.subtreeEnd(index); at < end; at++) this._shown[at]!.cell = undefined
         tables.push(index)
       } else if (block.kind === md.OT_MD_LIST) lists.push(index)
       else if (block.kind === md.OT_MD_RULE && renderable instanceof BoxRenderable) {
