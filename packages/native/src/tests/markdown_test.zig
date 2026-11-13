@@ -1726,22 +1726,25 @@ test "Markdown limits: each store stays within its limit and a rejection publish
     }
 }
 
-const Work = struct { byte_count: usize, append_count: usize, counters: markdown.Counters, hooked: bool };
+const Work = struct { byte_count: usize, append_count: usize, counters: markdown.Counters, hooked: bool, held_max: usize };
 
-/// Streams `parts` into a fresh doc (with finish) and returns its work counters.
+/// Streams `parts` into a fresh doc (with finish) and returns its work counters and the most
+/// content the live leaf held after an append.
 fn work(options: markdown.Options, parts: []const []const u8) !Work {
     var f: Fixture = undefined;
     try f.init(options);
     defer f.deinit();
     var byte_count: usize = 0;
+    var held_max: usize = 0;
     for (parts) |part| {
         try f.doc.append(part);
         byte_count += part.len;
+        held_max = @max(held_max, f.doc.live.content.items.len);
     }
     try f.doc.finish();
     var hooked = false;
     for (f.doc.blocks.items) |b| hooked = hooked or b.flags.hooked;
-    return .{ .byte_count = byte_count, .append_count = parts.len, .counters = f.doc.counters, .hooked = hooked };
+    return .{ .byte_count = byte_count, .append_count = parts.len, .counters = f.doc.counters, .hooked = hooked, .held_max = held_max };
 }
 
 fn split(arena: std.mem.Allocator, text: []const u8, size: usize) ![]const []const u8 {
@@ -1859,11 +1862,15 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
         sent_factor: u64 = 1,
         /// Display bytes copied into buffers (tail writes, comparisons, holds): at most 2x.
         assembled_factor: u64 = 2,
+        /// The live leaf's content copy after any append, where settled words fold away.
+        held_max: u64 = std.math.maxInt(u64),
     };
     const rows = [_]Row{
         .{ .name = "list.md, 30-byte appends", .parts = try split(arena, try fixture(arena, "fixture list"), 30), .display_factor = 2 },
         .{ .name = "prose.md, 30-byte appends", .parts = try split(arena, try fixture(arena, "fixture prose"), 30), .display_factor = 2 },
         .{ .name = "an 8,192-byte line, 1-byte appends", .parts = try split(arena, line, 1) },
+        // Settled words fold away at word ends too (bigboi-2: the copy kept the whole paragraph).
+        .{ .name = "an 8,192-byte line, word-sized appends", .parts = try split(arena, line, 5), .held_max = 16 },
         .{ .name = "some **x + 8,192 one-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"some **x"}, try split(arena, xs, 1) }), .sent_factor = 2 },
         .{ .name = "a stray backtick, 1-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"a `b "}, try split(arena, line, 1) }), .sent_factor = 2 },
         .{ .name = "a pending line of spaces, 1-byte appends", .parts = try std.mem.concat(arena, []const u8, &.{ &.{"text\n"}, try split(arena, spaces, 1), &.{"x\n"} }) },
@@ -1944,6 +1951,7 @@ test "Markdown work: every counter stays linear in the document (invariant 4)" {
             .{ "display", c.display_byte_visits, row.display_factor * n + 64 },
             .{ "sent", c.tail_write_bytes, row.sent_factor * n + 64 },
             .{ "assembled", c.display_assembled_bytes, row.assembled_factor * n + 64 },
+            .{ "held", w.held_max, row.held_max },
         };
         for (bounds) |bound| {
             if (bound[1] <= bound[2]) continue;
