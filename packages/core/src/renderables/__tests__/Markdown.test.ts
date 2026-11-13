@@ -2655,7 +2655,7 @@ test("multiple markdown renderables share and clean up one renderer capability l
 type CorpusRow = [name: string, chunks: string[], html: string, fails: string[], text?: string[]]
 test("corpus text: frames match each row unless the row lists them", async () => {
   // Every listed check exists, and a frame check names one of the row's frames.
-  const check = /^(engine-(?:html|stream)|(core|rust|engine)-text:([1-9]\d*))$/
+  const check = /^(engine-(?:html|stream)|(core|rust|engine|ts)-text:([1-9]\d*))$/
   const rows = corpus.rows as unknown as CorpusRow[]
   const unknown = rows.flatMap(([name, , , fails, text]) =>
     fails
@@ -2686,6 +2686,31 @@ test("corpus text: frames match each row unless the row lists them", async () =>
       if ((frame === text![index]) === fails.includes(check)) wrong.push(`${name}|${check}`)
     }
     md.destroyRecursively()
+    // OpenCode's reasoning still shows Markdown through Tree-sitter (N10): its drift from each frame is listed.
+    const reasoning = new CodeRenderable(renderer, {
+      filetype: "markdown",
+      drawUnstyledText: false,
+      streaming: true,
+      conceal: true,
+      syntaxStyle,
+      treeSitterClient: markdownTreeSitterClient,
+      width: "100%",
+    })
+    renderer.root.add(reasoning)
+    for (const [index, chunk] of chunks.entries()) {
+      reasoning.content += chunk
+      await renderOnce()
+      await waitForHighlight(reasoning)
+      await renderOnce()
+      const frame = captureFrame()
+        .split("\n")
+        .map((line) => line.trimEnd())
+        .join("\n")
+        .trimEnd()
+      const check = `ts-text:${index + 1}`
+      if ((frame === text![index]) === fails.includes(check)) wrong.push(`${name}|${check}`)
+    }
+    reasoning.destroyRecursively()
   }
   expect(wrong).toEqual([])
 })
