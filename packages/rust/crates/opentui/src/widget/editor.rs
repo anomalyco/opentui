@@ -7,12 +7,11 @@ use crate::app::{App, Cx};
 use crate::error::Result;
 use crate::input::{KeyEvent, Keymap, MouseEvent, MouseEventKind};
 use crate::native::{
-    EditBuffer, EditCommand, EditQuery, EditorOptions, EditorQuery, EditorView, Highlight, Hooks, LayerRun, NodeKind,
+    EditBuffer, EditCommand, EditQuery, EditorOptions, EditorQuery, EditorView, Highlight, Hooks, NodeKind,
     SelectionColors, SelectionUnit, SyntaxStyle, Viewport, WrapMode,
 };
 use crate::style::{Color, Span, Style};
 use crate::syntax::{self, SyntaxTheme};
-use crate::sys;
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::rc::Rc;
@@ -921,23 +920,6 @@ impl EditorCore {
         Some(id)
     }
 
-    /// The group set of a piece's capture names, registered first with the table's palette. A name over the
-    /// group-set name bound is left out, and past the name count bound the outermost names go. Past the Context's
-    /// group-set bound there is none, and the piece paints plain rather than ending the app.
-    fn group_set(&self, names: Vec<&'static str>) -> Option<u32> {
-        if let Some(&id) = self.extmarks.borrow().group_sets.get(&names) {
-            return Some(id);
-        }
-        self.report(self.table()?.register_captures(&names))?;
-        let prefixed: Vec<String> = (names.iter().map(|name| format!("opentui.{name}")))
-            .filter(|name| name.len() <= sys::OT_GROUP_SET_NAME_BYTE_COUNT_MAX as usize)
-            .collect();
-        let kept = &prefixed[prefixed.len().saturating_sub(sys::OT_GROUP_SET_NAME_COUNT_MAX as usize)..];
-        let id = self.buffer.context().group_set(&kept.iter().map(String::as_str).collect::<Vec<_>>()).ok()?;
-        self.extmarks.borrow_mut().group_sets.insert(names, id);
-        Some(id)
-    }
-
     /// Uses `style` as the buffer's style table, registering extmark and syntax styles in it as needed.
     pub fn set_syntax_style(&self, style: &SyntaxStyle) {
         self.report(self.buffer.set_syntax_style(Some(style)));
@@ -947,7 +929,7 @@ impl EditorCore {
             extmarks.styles.clear();
         }
         // The table takes this editor's theme and names; editors sharing it paint the theme set last.
-        let names: Vec<&'static str> = self.extmarks.borrow().group_sets.keys().flatten().copied().collect();
+        let names = self.extmarks.borrow().group_sets.names();
         self.report(style.set_capture_theme(&self.syntax_theme.borrow()));
         self.report(style.register_captures(&names));
         self.refresh_extmarks();
@@ -1035,13 +1017,14 @@ impl EditorCore {
             return;
         }
         let text = self.text();
-        let (lists, pieces) = syntax::highlight_names(&text, filetype).unwrap_or_default();
-        let sets: Vec<Option<u32>> = lists.into_iter().map(|names| self.group_set(names)).collect();
-        let runs: Vec<LayerRun> = (pieces.into_iter())
-            .filter_map(|(range, list)| {
-                Some(LayerRun { start_byte: range.start as u32, end_byte: range.end as u32, group_set: sets[list]? })
-            })
-            .collect();
+        let named = syntax::highlight_names(&text, filetype).unwrap_or_default();
+        // Without pieces the editor makes no table, so one the app bound on the buffer stays.
+        let table = if named.0.is_empty() { None } else { self.table() };
+        let runs = match table {
+            Some(table) => self.extmarks.borrow_mut().group_sets.runs(&table, self.buffer.context(), named, |at| at),
+            None => Ok(Vec::new()),
+        };
+        let Some(runs) = self.report(runs) else { return };
         self.report(self.buffer.set_layer(extmarks::SYNTAX_LAYER, 0..u32::MAX, &runs));
     }
 
@@ -1160,6 +1143,8 @@ impl Behavior for EditorCore {
 #[cfg(all(test, feature = "tree-sitter"))]
 mod tests {
     use super::*;
+    use crate::native::LayerRun;
+    use crate::sys;
     use crate::testing::TestApp;
     use crate::widget::{Container, Textarea, Widget};
     use std::collections::HashMap;

@@ -1,4 +1,4 @@
-use super::editor::{EditorInfo, Viewport};
+use super::editor::{EditorInfo, LayerRun, SyntaxStyle, Viewport};
 use super::resource::{Resource, read_string};
 use super::{Context, Node, WidthMethod, WrapMode};
 use crate::error::{Result, check, count};
@@ -109,28 +109,23 @@ impl TextBuffer {
         })
     }
 
-    /// Replaces the text with `source`, styled by byte ranges that cover it in order, as highlighting gives them.
-    pub(crate) fn set_styled_ranges(&self, source: &str, ranges: &[(std::ops::Range<usize>, Style)]) -> Result<()> {
-        const OPERATION: &str = "ot_text_buffer_set_styled_text";
-        let chunks: Vec<sys::ot_styled_text_chunk> = ranges
-            .iter()
-            .filter(|(range, _)| !range.is_empty())
-            .map(|(range, style)| EncodedSpans::chunk(*style, range.len()))
-            .collect();
-        debug_assert_eq!(ranges.iter().map(|(range, _)| range.len()).sum::<usize>(), source.len());
-        let (bytes, count_chunks) = (count(OPERATION, source.len())?, count(OPERATION, chunks.len())?);
+    /// Uses `style` as the table layer runs' group sets and highlights' style ids resolve against, or none.
+    pub fn set_syntax_style(&self, style: Option<&SyntaxStyle>) -> Result<()> {
+        let style = style.map(SyntaxStyle::handle);
         let (context, handle) = self.raw();
-        check(OPERATION, unsafe {
-            sys::ot_text_buffer_set_styled_text(
-                context,
-                handle,
-                source.as_ptr(),
-                bytes,
-                chunks.as_ptr(),
-                count_chunks,
-                b"".as_ptr(),
-                0,
-            )
+        check("ot_text_buffer_set_syntax_style", unsafe {
+            sys::ot_text_buffer_set_syntax_style(context, handle, style.as_ref().map_or(std::ptr::null(), |s| s))
+        })
+    }
+
+    /// Replaces layer `layer_id` inside `range` with `runs`, as [`EditBuffer::set_layer`](super::EditBuffer::set_layer)
+    /// does: bytes count one per line break, as [`Self::text`] returns them. Appending keeps the layers; replacing or
+    /// clearing the text empties them. [`Code`](crate::widget::Code) sets layer 1 for filetype syntax.
+    pub fn set_layer(&self, layer_id: u32, range: std::ops::Range<u32>, runs: &[LayerRun]) -> Result<()> {
+        let length = count("ot_text_buffer_set_layer", runs.len())?;
+        let (context, handle) = self.raw();
+        check("ot_text_buffer_set_layer", unsafe {
+            sys::ot_text_buffer_set_layer(context, handle, layer_id, range.start, range.end, runs.as_ptr(), length)
         })
     }
 
