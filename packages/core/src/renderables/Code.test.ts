@@ -361,6 +361,10 @@ test("content work: each streamed delta sends the whole text to the highlighter 
       mockClient.highlightOnce = (content, filetype) => (
         count("highlightOnce", content.length), highlightOnce(content, filetype)
       )
+      // The mock answers an append from the same queue; counted once, as what reaches the worker.
+      mockClient.highlightAppend = (_id, _offset, text, filetype) => (
+        count("highlightAppend", text.length), highlightOnce(text, filetype)
+      )
       for (let end = 32; end < doc.length + 32; end += 32) {
         target.content = doc.slice(0, end)
         await renderOnce()
@@ -379,9 +383,9 @@ test("content work: each streamed delta sends the whole text to the highlighter 
     Object.assign(symbols, originals)
   }
   // 12 deltas of 32 bytes: Code sends the 371-byte document 6.7 times over. Markdown sends each delta to its engine
-  // once, which writes the prose natively; only the fence goes to the highlighter, as its code, and its highlight is
-  // written (the list markers are the two scene writes). Code sends the first delta as plain text too, so the block
-  // measures it before its first highlight lands.
+  // once, which writes the prose natively (the list markers are the two scene writes). Its 245-byte fence goes to the
+  // highlighter and to native once, as its first text and then appends; each reply writes a layer (record 312). Code
+  // sends the first delta as plain text too, so the block measures it before its first highlight lands.
   expect(doc.length).toBe(371)
   expect(work).toEqual({
     "code highlightOnce": [12, 2483],
@@ -389,8 +393,9 @@ test("content work: each streamed delta sends the whole text to the highlighter 
     "code ot_text_buffer_set_text": [1, 32],
     "markdown ot_markdown_append": [12, 371],
     "markdown ot_markdown_read_leaf": [9, 1219],
-    "markdown highlightOnce": [9, 1219],
-    "markdown ot_text_buffer_set_styled_text": [9, 1219],
+    "markdown highlightAppend": [9, 245],
+    "markdown ot_context_group_set": [1, 7],
+    "markdown ot_text_buffer_append": [8, 235],
     "markdown ot_scene_set_styled_text": [2, 4],
     "markdown ot_text_buffer_set_text": [1, 10],
     "markdown ot_text_buffer_create": [1, 0],
@@ -2231,7 +2236,8 @@ test.each([
   ["text", "3! 6!", "3 - 3 line1 6"],
   ["text", "f 3! 6!", "2 - 3 - 3 line1 6"],
   ["reasoning", "f 3 4 5! 6!", "1 - 3 - 4 - 5 - 5 line1 6"],
-  ["fence", "3 4 5! 6!", "3 - 4 - 5 - 5 line1 6"],
+  // A highlighted fence takes each append at once: its new line shows plain until the next reply (C4 PR 4).
+  ["fence", "3 4 5! 6!", "3 - 4 - 5 - 6 line1 6"],
   // Deltas faster than the highlight: a stale result never shows, since a prefix of the source need not render as a
   // prefix of the text.
   ["concealed", "3 4. 5. 6!", "3 - 4 - 5 - 6 - 5"],
