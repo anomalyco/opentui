@@ -133,6 +133,7 @@ export class InputRenderable extends TextareaRenderable {
     return kind === "height" ? 1 : super.defaultDimension(kind)
   }
 
+  /** The single-line text, indexed in UTF-16 code units, not cursor cells. */
   public get value(): string {
     return this.plainText
   }
@@ -253,6 +254,7 @@ export class InputRenderable extends TextareaRenderable {
     }
   }
 
+  /** Maximum input length in UTF-16 code units. */
   public get maxLength(): number {
     return this._maxLength
   }
@@ -264,6 +266,7 @@ export class InputRenderable extends TextareaRenderable {
     this._minLength = minLength
   }
 
+  /** Minimum length for submission in UTF-16 code units. */
   public get minLength(): number {
     return this._minLength
   }

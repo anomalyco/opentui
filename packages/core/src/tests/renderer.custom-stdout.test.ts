@@ -14,7 +14,7 @@ import { MarkdownRenderable } from "../renderables/Markdown.js"
 import { TextRenderable } from "../renderables/Text.js"
 import { link, t } from "../lib/styled-text.js"
 import { SyntaxStyle } from "../syntax-style.js"
-import { forceRenderStatus, holdOutputIdle, settle, settleUntil } from "../testing/harness.js"
+import { forceRenderStatus, holdOutputIdle, serviceReadyFrames, settleUntil } from "../testing/harness.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { createTestStdin, RecordingWriteStream } from "../testing/test-streams.js"
 import { NativeSessionRenderStatus } from "../zig.js"
@@ -1627,15 +1627,15 @@ test("raw output pressure delays a running renderer until the Session drains", a
   renderer.root.add(new TextRenderable(renderer, { content: `${"x".repeat(40)}\n${"y".repeat(40)}` }))
   renderer.start()
   clock.advance(40)
-  await settle(16)
+  await finishRender(renderer)
   expect(frames).toBe(0)
 
   stdout.release()
   for (let frame = 0; frame < 4; frame++) {
-    await settle(16)
+    await serviceReadyFrames(renderer)
     clock.advance(40)
   }
-  await settle(16)
+  await serviceReadyFrames(renderer)
   expect(frames).toBeGreaterThanOrEqual(3)
   expect(renderer.isRunning).toBe(true)
   expect(renderer.getSchedulerState().hasScheduledRender).toBe(true)
@@ -1757,7 +1757,7 @@ test.each(
 
     // A skip retries after Session idle; a failure waits for a later render request.
     await renderer.nativeScene.driver.idle()
-    await settle()
+    await serviceReadyFrames(renderer)
     clock.advance(1000)
     await finishRender(renderer)
     if (status === "Failed") {
@@ -2212,7 +2212,6 @@ test.each<{ action: string; sync: string[]; settled: string[] }>([
     }
     const done = rawModeActions[action]!(renderer).catch((error: Error) => error.message)
     const log = [...rawMode]
-    await settle(4)
     stdout.release()
     await done
     await renderer.idle()

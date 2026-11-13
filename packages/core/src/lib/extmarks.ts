@@ -4,7 +4,9 @@ import { NativeEditMarkOperation, type NativeEditMark } from "../zig.js"
 
 export interface Extmark {
   id: number
+  /** Inclusive document cell offset, counting one cell per newline. */
   start: number // Display-width offset (including newlines), NOT JS string index
+  /** Exclusive document cell offset, counting one cell per newline. */
   end: number // Display-width offset (including newlines), NOT JS string index
   virtual: boolean
   styleId?: number
@@ -14,7 +16,9 @@ export interface Extmark {
 }
 
 export interface ExtmarkOptions {
+  /** Inclusive document cell offset, counting one cell per newline. */
   start: number // Display-width offset (including newlines), NOT JS string index
+  /** Exclusive document cell offset, counting one cell per newline. */
   end: number // Display-width offset (including newlines), NOT JS string index
   virtual?: boolean
   styleId?: number
@@ -290,6 +294,7 @@ export class ExtmarksController {
     }
   }
 
+  /** Marks a half-open document cell range, counting one cell per newline. Returns a mark ID. */
   public create(options: ExtmarkOptions): number {
     if (this.destroyed) {
       throw new Error("ExtmarksController is destroyed")
@@ -338,6 +343,7 @@ export class ExtmarksController {
     return this.getAll().filter((e) => e.virtual)
   }
 
+  /** Looks up marks covering a document cell offset, counting one cell per newline. */
   public getAtOffset(offset: number): Extmark[] {
     return this.getAll().filter((e) => offset >= e.start && offset < e.end)
   }

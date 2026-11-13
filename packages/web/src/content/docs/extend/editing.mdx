@@ -54,11 +54,11 @@ Do not interchange these units:
 
 | Unit                  | Meaning                                                                    | Used by                                                           |
 | --------------------- | -------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| UTF-8 bytes           | Encoded storage and output-buffer capacity                                 | `TextBuffer.byteSize` and native text storage                     |
+| UTF-8 bytes           | Encoded storage, output-buffer capacity, Rust `str` indices and `len()`    | `TextBuffer.byteSize`, Rust `Textarea.text()` and `Input.value()` |
 | UTF-16 code units     | JavaScript string indexing and `string.length`                             | JavaScript only                                                   |
 | Unicode code points   | Scalar values                                                              | `setTabIndicator()` when given a string uses its first code point |
 | Graphemes             | User-perceived text clusters                                               | Cursor movement, deletion, and boundary snapping                  |
-| Display columns       | Terminal cell width under the selected width method                        | Rows, columns, highlights, selection, and cursor positions        |
+| Display columns       | Terminal cell width under the selected width method                        | Cursor columns, line highlights, viewport-local selection x       |
 | Global display offset | Display columns from the buffer start, with each line break counted as one | Cursor offsets, selections, ranges, and extmarks                  |
 
 `TextBuffer.length` is the sum of line display widths. It excludes line breaks. `TextBuffer.byteSize` is the UTF-8
@@ -127,18 +127,19 @@ click maps to the painted character. Reset the matching form when the selection 
 
 `EditBuffer.create(widthMethod, owner)` creates editable native text storage with one primary cursor.
 
-| Group               | API                                                                                                    |
-| ------------------- | ------------------------------------------------------------------------------------------------------ |
-| Replace content     | `setText`, `setTextOwned`, `replaceText`, `replaceTextOwned`, `clear`                                  |
-| Insert and delete   | `insertChar`, `insertText`, `deleteChar`, `deleteCharBackward`, `deleteRange`, `newLine`, `deleteLine` |
-| Move                | `moveCursorLeft`, `moveCursorRight`, `moveCursorUp`, `moveCursorDown`, `gotoLine`                      |
-| Set cursor          | `setCursor`, `setCursorToLineCol`, `setCursorByOffset`                                                 |
-| Read cursor         | `getCursorPosition`, `getNextWordBoundary`, `getPrevWordBoundary`, `getEOL`                            |
-| Convert coordinates | `offsetToPosition`, `positionToOffset`, `getLineStartOffset`, `measureText`                            |
-| Read text           | `getText`, `getTextRange`, `getTextRangeByCoords`, `getLineCount`                                      |
-| History             | `undo`, `redo`, `canUndo`, `canRedo`, `clearHistory`                                                   |
-| Style               | Default-style, syntax-style, and highlight methods shared with `TextBuffer`                            |
-| Diagnostics         | `debugLogRope` writes the native rope structure to the debug logger                                    |
+| Group                  | API                                                                                                    |
+| ---------------------- | ------------------------------------------------------------------------------------------------------ |
+| Replace content        | `setText`, `setTextOwned`, `replaceText`, `replaceTextOwned`, `clear`                                  |
+| Insert and delete      | `insertChar`, `insertText`, `deleteChar`, `deleteCharBackward`, `deleteRange`, `newLine`, `deleteLine` |
+| Move                   | `moveCursorLeft`, `moveCursorRight`, `moveCursorUp`, `moveCursorDown`, `gotoLine`                      |
+| Set cursor             | `setCursor`, `setCursorToLineCol`, `setCursorByOffset`                                                 |
+| Read cursor            | `getCursorPosition`, `getNextWordBoundary`, `getPrevWordBoundary`, `getEOL`                            |
+| Convert coordinates    | `offsetToPosition`, `positionToOffset`, `getLineStartOffset`, `measureText`                            |
+| Convert string indices | `stringIndexToCellOffset`, `cellOffsetToStringIndex`                                                   |
+| Read text              | `getText`, `getTextRange`, `getTextRangeByCoords`, `getLineCount`                                      |
+| History                | `undo`, `redo`, `canUndo`, `canRedo`, `clearHistory`                                                   |
+| Style                  | Default-style, syntax-style, and highlight methods shared with `TextBuffer`                            |
+| Diagnostics            | `debugLogRope` writes the native rope structure to the debug logger                                    |
 
 `setText()` resets history and the native add buffer. `replaceText()` creates an undo point. All replacement methods
 copy text into native-owned memory. The `Owned` variants retain the same public behavior without a borrowed-memory path.
@@ -160,15 +161,32 @@ paste never inserts ESC.
 `measureText(text)` returns the global display offset at the end of `text` as the buffer would lay it out, without
 storing it. It uses the buffer's width method, tab width, and control notation, and counts each line break as one.
 JavaScript width functions such as `Bun.stringWidth()` and `string-width` give controls and tabs no cells and count
-no line breaks, so do not use them for editor offsets. To map a string index in the buffer text to an offset, measure
-the text before it. To map an offset to a string index, take the length of `getTextRange(0, offset)`:
+no line breaks, so do not use them for editor offsets.
+
+| Core                                                                                                            | Rust                                                                         | Unit                                                                                                                      |
+| --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `plainText`, `getText()`, `getSelectedText()`                                                                   | `text()`, `value()`, `selected_text()`                                       | Index the returned string in UTF-16 units in JS, UTF-8 bytes in Rust.                                                     |
+| `cursorOffset`, `getCursorPosition().offset`, `setCursorByOffset`, `getTextRange`, selection and extmark bounds | `cursor_offset`, `set_cursor_offset`, `range`, `select_range`, `add_extmark` | Display cells from the document start, including one per newline. Ordinary ranges are half-open.                          |
+| `setCursor`, `deleteRange`, `getTextRangeByCoords`                                                              | `set_cursor`, `delete_range`                                                 | Zero-based logical line and display-cell column. `offsetToPosition` changes the origin, not the unit.                     |
+| `moveCursorLeft` / `Right`, `moveCursorUp` / `Down`                                                             | `MoveLeft` / `Right`, `MoveUp` / `Down`                                      | Left/right move by cursor stops, not string units. Up/down move by logical lines on a buffer or wrapped rows on a widget. |
+
+Use the helpers on `textarea.editBuffer` (Rust: `textarea.buffer()` or `input.buffer()`) to translate positions in
+the current buffer text. Each newline in that text is one LF. The helpers use the buffer's tab width and grapheme
+width method. An index inside a grapheme or a cell inside a tab or wide grapheme rounds down to its start. At a
+cell shared by zero-width text, the returned string index is **after** that text. Values past EOF clamp to EOF;
+Core takes unsigned 32-bit integers. Neither call moves the cursor.
 
 ```typescript
-buffer.setText("\f@file")
-const text = buffer.getText()
-const offset = buffer.measureText(text.slice(0, text.indexOf("@"))) // 2: ^L takes two cells
-buffer.getTextRange(0, offset).length // 1: the index of "@"
+buffer.setText("ab\tcd") // Default tab width: 2 cells
+const index = buffer.getText().indexOf("d") // 4
+const offset = buffer.stringIndexToCellOffset(index) // 5
+buffer.setCursorByOffset(offset)
+buffer.cellOffsetToStringIndex(buffer.getCursorPosition().offset) // 4
 ```
+
+In Rust, `byte_index_to_cell_offset(index: usize)` returns `Result<u32>` and
+`cell_offset_to_byte_index(offset: u32)` returns `Result<usize>`. Use the byte index to slice a `str` and the cell
+offset to edit. To delete a string span, convert **both** endpoints before looking up their logical line and column.
 
 To measure text that is not in a buffer, call `measureEditText(text, { widthMethod, tabWidth })`. It needs no
 `EditBuffer` or owner, and returns what `measureText()` returns on an edit buffer with that width method and tab width.

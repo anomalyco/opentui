@@ -10,7 +10,7 @@
 // been in. After each frame, the painted rows and the layout height are checked against the model; at the end every
 // reply is released and the settled frame is checked against the model's render of the current state. A failing
 // sequence is shrunk by removing commands, then by shortening text.
-import { expect, test } from "bun:test"
+import { afterAll, beforeAll, expect, test } from "bun:test"
 import { CodeRenderable } from "../Code.js"
 import { BoxRenderable } from "../Box.js"
 import { ScrollBoxRenderable } from "../ScrollBox.js"
@@ -127,15 +127,24 @@ const VIEW = 6
 // Spacer height above and below the block: far enough that scrolling away culls it.
 const ABOVE = 30
 
-async function run(start: Start, commands: Command[], trace?: string[]): Promise<void> {
-  const setup = await createTestRenderer({ width: 30, height: 10 })
-  const { renderer, renderOnce, captureCharFrame } = setup
-  const styles = [0.2, 0.8].map((v) =>
+let setup: Awaited<ReturnType<typeof createTestRenderer>>
+let styles: SyntaxStyle[]
+beforeAll(async () => {
+  setup = await createTestRenderer({ width: 30, height: 10 })
+  styles = [0.2, 0.8].map((v) =>
     SyntaxStyle.fromStyles(
       { default: { fg: RGBA.fromValues(1, 1, 1, 1) }, keyword: { fg: RGBA.fromValues(v, 0, 1, 1) } },
-      renderer.nativeScene,
+      setup.renderer.nativeScene,
     ),
   )
+})
+afterAll(async () => {
+  await setup.dispose()
+  for (const style of styles) style.destroy()
+})
+
+async function run(start: Start, commands: Command[], trace?: string[]): Promise<void> {
+  const { renderer, renderOnce, captureCharFrame } = setup
   const client = new ModelClient()
   try {
     const box = new ScrollBoxRenderable(renderer, { width: 30, height: VIEW })
@@ -449,8 +458,9 @@ async function run(start: Start, commands: Command[], trace?: string[]): Promise
         // A pending restore may still remove rows above.
         box.scrollTo(top())
         await renderOnce()
+        // An afterLayout write can start a highlight on the next frame, not this one.
+        if (pass > 0 && !client.pending.length && !block.isHighlighting && box.scrollTop === top()) break
         while (client.pending.length) client.reply(0)
-        await tick()
         await tick()
       }
       box.scrollTo(top())
@@ -489,9 +499,7 @@ async function run(start: Start, commands: Command[], trace?: string[]): Promise
         `settled plainText ${JSON.stringify(block.plainText)}, want ${JSON.stringify(wantRows.join("\n"))}`,
       )
   } finally {
-    renderer.destroy()
-    await renderer.closed
-    for (const s of styles) s.destroy()
+    for (const child of renderer.root.getChildren()) child.destroyRecursively()
   }
 }
 
