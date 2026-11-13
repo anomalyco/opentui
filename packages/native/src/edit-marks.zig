@@ -17,7 +17,8 @@ pub const Mark = struct {
     style: u32,
     start_byte: u32,
     end_byte: u32,
-    priority: u8,
+    /// At most 255 for a styled mark, which paints at it; any value for an unstyled one.
+    priority: u32,
     /// The text is one unit: an edit that changes part of it drops the mark.
     atomic: bool,
     style_value: bool,

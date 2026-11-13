@@ -941,7 +941,7 @@ pub const EditBuffer = struct {
         /// A SyntaxStyle id, unless `style_value` is set.
         style: u32 = 0,
         style_value: ?tb.StyleDefinition = null,
-        priority: u8 = 0,
+        priority: u32 = 0,
         /// Cursor offsets, `start <= end`; past the text they mean its end.
         start: u32,
         end: u32,

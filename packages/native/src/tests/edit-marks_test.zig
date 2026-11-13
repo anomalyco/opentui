@@ -474,7 +474,7 @@ test "styled edit marks paint and report as legacy range highlights do" {
                 } else unreachable else mark.style;
                 const start_row = iter.offsetToCoords(legacy.tb.rope(), offsets.start).?.row;
                 const end_row = iter.offsetToCoords(legacy.tb.rope(), offsets.end).?.row;
-                try legacy.tb.addHighlightByCharRange(offsets.start - start_row, offsets.end - end_row, id, mark.priority, @truncate(mark.id));
+                try legacy.tb.addHighlightByCharRange(offsets.start - start_row, offsets.end - end_row, id, @intCast(mark.priority), @truncate(mark.id));
             }
             try expectSameLines(marked, legacy);
             legacy.tb.clearAllHighlights();
@@ -538,6 +538,8 @@ test "edit marks through the C ABI reject malformed records and round-trip" {
     plain.kind = 4;
     plain.start = 0;
     plain.end = 9;
+    // Only a styled mark paints at its priority, so only a styled one is limited to 255.
+    plain.priority = 300;
     try std.testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_mark(&owner, &id, c.OT_EDIT_MARK_ADD, &plain, &out));
     try std.testing.expectEqual(@as(u32, 2), out);
     var marks: [2]c.ot_edit_mark = undefined;
@@ -550,7 +552,7 @@ test "edit marks through the C ABI reject malformed records and round-trip" {
     expected.start_byte = 1;
     expected.end_byte = 5;
     try std.testing.expectEqual(@as(u32, 2), marks[0].id);
-    try std.testing.expectEqual(@as(u32, 5), marks[0].end);
+    try std.testing.expectEqual([2]u32{ 5, 300 }, [2]u32{ marks[0].end, marks[0].priority });
     try std.testing.expectEqualDeep(expected, marks[1]);
     try std.testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_get_marks(&owner, &id, 1, 4, &marks, 2, &count));
     try std.testing.expectEqual(@as(u32, 0), count);
@@ -584,6 +586,8 @@ test "edit marks through the C ABI reject malformed records and round-trip" {
     plain.end = 4;
     plain.flags = c.OT_EDIT_MARK_STYLE_VALUE;
     plain.value = value;
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, editor_abi.ot_edit_buffer_mark(&owner, &id, c.OT_EDIT_MARK_ADD, &plain, &out));
+    plain.priority = 2;
     try std.testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_mark(&owner, &id, c.OT_EDIT_MARK_ADD, &plain, &out));
     try std.testing.expectEqual(c.OT_OK, editor_abi.ot_edit_buffer_command(&owner, &id, c.OT_EDIT_CURSOR_OFFSET, 2));
     try std.testing.expectEqual(c.OT_OK, abi.ot_edit_buffer_insert_text(&owner, &id, "\u{200d}", 3));

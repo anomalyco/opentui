@@ -1787,7 +1787,7 @@ ot_status ot_edit_buffer_set_layer(ot_context *, const ot_handle *, uint32_t lay
     uint32_t start_byte, uint32_t end_byte, const ot_highlight_run *runs, uint32_t run_count);
 
 /* Edit marks: ranges of the text that move with edits. Text inserted at a mark's start shifts it,
- * at its end leaves it, and strictly inside grows it. A delete clips a mark and drops it once
+ * at its end leaves it (so an empty mark stays), and strictly inside grows it. A delete clips a mark and drops it once
  * none of its text is left. An OT_EDIT_MARK_ATOMIC mark is one unit: an edit that changes part
  * of its text drops it, and the edit changes exactly the text it asked for. set_text and clear
  * drop every mark. Undo and redo restore the marks of the text they restore. Ids start at 1 and
@@ -1820,7 +1820,7 @@ typedef struct ot_edit_mark {
     uint32_t start_byte;
     uint32_t end_byte;
 } ot_edit_mark;
-/* ADD takes mark (id 0, priority <= 255) and writes the new id. REMOVE takes mark->id (the rest
+/* ADD takes mark (id 0, priority <= 255 when styled) and writes the new id. REMOVE takes mark->id (the rest
  * zero) and writes it back, or 0 when there was no such mark. CLEAR drops every mark; mark and
  * out_id are NULL. */
 ot_status ot_edit_buffer_mark(ot_context *, const ot_handle *, uint32_t operation,

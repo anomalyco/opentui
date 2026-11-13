@@ -243,7 +243,7 @@ pub fn ot_edit_buffer_mark(context: ?*Owner, id: ?*const c.ot_handle, operation:
 fn markFromC(ptr: ?*const c.ot_edit_mark) !eb.EditBuffer.MarkOptions {
     const value = try record(c.ot_edit_mark, ptr);
     const by_value = value.flags & c.OT_EDIT_MARK_STYLE_VALUE != 0;
-    if (value.id != 0 or value.start_byte != 0 or value.end_byte != 0 or value.priority > 255 or value.start > value.end or
+    if (value.id != 0 or value.start_byte != 0 or value.end_byte != 0 or (value.priority > 255 and (by_value or value.style != 0)) or value.start > value.end or
         value.flags & ~@as(u32, c.OT_EDIT_MARK_ATOMIC | c.OT_EDIT_MARK_STYLE_VALUE) != 0 or
         value.style & c.OT_STYLE_RUN_FLAG != 0 or (by_value and value.style != 0)) return error.InvalidOptions;
     if (!by_value and !std.meta.eql(value.value, std.mem.zeroes(c.ot_editor_style))) return error.InvalidOptions;
@@ -252,7 +252,7 @@ fn markFromC(ptr: ?*const c.ot_edit_mark) !eb.EditBuffer.MarkOptions {
         .atomic = value.flags & c.OT_EDIT_MARK_ATOMIC != 0,
         .style = value.style,
         .style_value = if (by_value) styleDefinition(try styleRecord(&value.value)) else null,
-        .priority = @intCast(value.priority),
+        .priority = value.priority,
         .start = value.start,
         .end = value.end,
     };
