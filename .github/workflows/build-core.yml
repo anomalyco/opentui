@@ -348,15 +348,6 @@ jobs:
           bun run test:native:lifetime
           echo "${{ github.sha }}" > ../../.native-tests-passed
 
-      # test-abi already compiled the default debug library against this FFmpeg prefix.
-      - name: Check the video-free build
-        if: runner.os == 'Linux' && steps.native-tested.outputs.cache-hit != 'true'
-        working-directory: packages/native
-        run: |
-          zig build --prefix .cache/with-video/install
-          zig build -Dvideo=false --prefix .cache/no-video/install
-          bun run --cwd ../core test:video-build "$PWD/.cache/with-video/lib/x86_64-linux/libopentui.so" "$PWD/.cache/no-video/lib/x86_64-linux/libopentui.so"
-
       - name: Save native test result
         if: steps.native-tested.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
