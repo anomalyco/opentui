@@ -4813,7 +4813,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
     // Leave raw mode as the suspend settles, before resume(); after destroy() the close leaves it after restoration.
     // Suspending a suspended Session writes nothing, and the input since then belongs to the next program.
-    const settled = nativeTransition.finally(() => this._isDestroyed || restored || this.leaveRawMode(true))
+    // Until then an exit signal destroys, so the close restores the terminal; after it, the next program owns signals.
+    const settled = nativeTransition.finally(() => {
+      this.removeExitListeners()
+      if (!this._isDestroyed && !restored) this.leaveRawMode(true)
+    })
     nativeTransition = this.trackNativeTerminalTransition(settled)
     if (this._controlState !== RendererControlState.EXPLICIT_SUSPENDED) {
       // A failed native split drain leaves the host suspended until the caller retries.
@@ -4829,7 +4833,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.clearSplitStartupCursorSeed()
 
     this.disableMouse()
-    this.removeExitListeners()
     for (const batch of [...this.replyBatches]) {
       if (batch.backstop !== null) this.clock.clearTimeout(batch.backstop)
       batch.backstop = null
