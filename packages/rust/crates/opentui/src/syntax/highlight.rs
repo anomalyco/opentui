@@ -585,25 +585,27 @@ impl Incremental {
     /// highlighted last. The edit is the bytes between their common start and their common end, which is valid for
     /// any change, so tree-sitter reparses at least what changed. `None` as [`highlights`].
     pub(crate) fn update(&mut self, mut text: String) -> Option<super::NamedRanges> {
+        // Taken first, so a tree and its text are kept together or not at all.
+        let (last, old) = (self.tree.take(), std::mem::take(&mut self.text));
+        self.padded = false;
         let registry = Arc::clone(&lock(&REGISTRY));
-        let entry = registry.resolve(&self.filetype);
+        let entry = registry.resolve(&self.filetype)?;
+        let compiled = entry.compiled()?;
         let len = text.len();
-        if entry.and_then(|entry| entry.compiled()).is_some_and(|compiled| padded(compiled, &text)) {
+        if padded(compiled, &text) {
             text.push('\n');
         }
-        let old = std::mem::replace(&mut self.text, text);
-        self.padded = self.text.len() > len;
-        let entry = entry?;
-        let reused = self.tree.take().filter(|(last, _)| Arc::ptr_eq(last, entry)).map(|(_, mut tree)| {
-            tree.edit(&edit(old.as_bytes(), self.text.as_bytes()));
+        let reused = last.filter(|(last, _)| Arc::ptr_eq(last, entry)).map(|(_, mut tree)| {
+            tree.edit(&edit(old.as_bytes(), text.as_bytes()));
             tree
         });
         #[cfg(test)]
         {
             self.fresh_parses += usize::from(reused.is_none());
         }
-        let (captures, tree) = captures(&registry, entry.compiled()?, &self.text, len, reused.as_ref())?;
-        self.tree = Some((Arc::clone(entry), tree));
+        let (captures, tree) = captures(&registry, compiled, &text, len, reused.as_ref())?;
+        self.padded = text.len() > len;
+        (self.tree, self.text) = (Some((Arc::clone(entry), tree)), text);
         let named = named_ranges(&self.text[..len], &captures);
         #[cfg(test)]
         {
@@ -914,5 +916,14 @@ mod tests {
         register("rust-variables", Grammar::new(tree_sitter_javascript::LANGUAGE, "(identifier) @variable")).unwrap();
         let text = "let x = 1; y".to_owned();
         assert_eq!(kept.update(text.clone()), Some(named_ranges(&text, &highlights(&text, "rv").unwrap())));
+        // An alias that stops resolving keeps no tree of an older text for when it resolves again (bigboi-1).
+        register_alias("c4-round", "rust");
+        let mut round = Incremental::new("c4-round");
+        round.update("fn main() { let x = 1; }\nfn g() {}\n".to_owned());
+        register_alias("c4-round", "c4-nothing");
+        assert!(round.update("// aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n".to_owned()).is_none());
+        register_alias("c4-round", "rust");
+        let text = "// aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n ".to_owned();
+        assert_eq!(round.update(text.clone()), Some(named_ranges(&text, &highlights(&text, "rust").unwrap())));
     }
 }
