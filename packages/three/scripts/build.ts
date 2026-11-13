@@ -75,7 +75,7 @@ console.log("Generating TypeScript declarations...")
 const coreRootDir = resolve(rootDir, "../core")
 const corePackageJsonPath = join(coreRootDir, "package.json")
 
-if (existsSync(corePackageJsonPath)) {
+if (!process.argv.includes("--skip-core-build") && existsSync(corePackageJsonPath)) {
   console.log("Ensuring @opentui/core declarations are up to date...")
 
   const coreBuildResult: SpawnSyncReturns<Buffer> = spawnSync("bun", ["run", "build:lib"], {

@@ -15,6 +15,7 @@ if [ "$1" != pull_request ]; then
     echo solid=true
     echo keymap=true
     echo qrcode=true
+    echo three=true
     echo ssh=true
     exit 0
 fi
@@ -80,4 +81,5 @@ echo "react=$react"
 echo "solid=$solid"
 echo "keymap=$keymap"
 echo "qrcode=$qrcode"
+echo "three=$shared"
 echo "ssh=$ssh"
