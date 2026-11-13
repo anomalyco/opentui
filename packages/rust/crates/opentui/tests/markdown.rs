@@ -1198,46 +1198,52 @@ impl model::Model for MathSoup {
 
 #[test]
 fn model_streamed_math_never_reverts() {
-    // CI budget: 64 documents of 24 pieces, every prefix; MODEL_SEEDS widens it. Conceal on and off agree once the
-    // engine stops drawing a span the held `|` cuts as math (below).
-    model::check(&MathSoup { agree: false }, 64, 24);
+    // CI budget: 64 documents of 24 pieces, every prefix; MODEL_SEEDS widens it.
+    model::check(&MathSoup { agree: true }, 64, 24);
     // Seed 466 of 640: the `|` cuts the span after an escaped `$`, which is no closer.
-    assert_eq!(model::Model::run(&MathSoup { agree: false }, &["$", "\\$", "|", "$", " ", "x"]), None);
+    assert_eq!(model::Model::run(&MathSoup { agree: true }, &["$", "\\$", "|", "$", " ", "x"]), None);
 }
 
-/// What the engine gets wrong until `harden/markdown-engine-fixes` reaches this branch: each row must still fail. A
-/// row that passes has its fix: move it to the corpus math rows, and turn `agree` on in the soup for opus-2.
 #[test]
-fn math_the_engine_gets_wrong_still_fails() {
+fn math_streams_as_decided_at_the_edges_the_reviews_found() {
     // The finding, the streamed chunks, and the frame after each chunk where native code writes the text (none: the
     // property alone).
     let rows: [(&str, &[&str], &[&str]); 4] = [
-        // A span the held `|` of a streamed line cuts is drawn, and given to a hook with conceal, as math.
-        ("opus-2, bigboi-1", &["$a", "|", "b$", " c"], &["$a", "$a", "$a", "$a"]),
-        // A split escaped backslash: the live parser reads its second half as a `\)` closer.
+        // A span the held `|` of a streamed line cuts stays text until the line decides it.
+        ("opus-2", &["$a", "|", "b$", " c"], &["$a", "$a", "$a", "$a"]),
+        // A split escaped backslash is no `\)` closer.
         ("bigboi-2", &["\\(a b\\\\", ")", " now"], &[]),
-        // A decided closer stays literal until the next word.
+        // A closer is decided by the character after it.
         ("bigboi-3", &["see $x$", "."], &["see $x$", "see x."]),
-        // Inline math shows in a line that becomes a display block at its newline.
+        // A line that may become a display block holds no inline math.
         ("bigboi-4", &["\\[a $b$ z\\]", "\n"], &[]),
     ];
     for (finding, chunks, frames) in rows {
         let app = TestApp::with_hyperlinks(40, 8);
         let markdown = Markdown::new(&app).extensions(&[MarkdownExtension::Math]).streaming(true);
         app.root().add(&markdown);
-        let shown: Vec<String> = chunks
-            .iter()
-            .map(|chunk| {
-                markdown.append(chunk);
-                frame(&app)
-            })
-            .collect();
-        let fails = math_streams_like_fresh_documents(&chunks.concat(), &chunk_ends(chunks), true).is_some()
-            || !frames.is_empty() && shown != frames.iter().map(|frame| format!("{frame}\n")).collect::<Vec<_>>();
-        assert!(fails, "{finding} passes now: move its row to the passing rows");
+        for (chunk, expected) in chunks.iter().zip(frames.iter().map(Some).chain(std::iter::repeat(None))) {
+            markdown.append(chunk);
+            if let Some(expected) = expected {
+                assert_eq!(frame(&app), format!("{expected}\n"), "{finding} after {chunk:?}");
+            }
+        }
+        assert_eq!(math_streams_like_fresh_documents(&chunks.concat(), &chunk_ends(chunks), true), None, "{finding}");
     }
-    let soup = MathSoup { agree: true };
-    use model::Model as _;
-    let disagree = (0..64).any(|seed| soup.run(&soup.generate(&mut model::Rng::new(seed), 24)).is_some());
-    assert!(disagree, "opus-2 passes now: turn `agree` on in model_streamed_math_never_reverts");
+    // bigboi-1: a hook gets the formula a held `|` cuts only once it is whole, with conceal and without.
+    for conceal in [true, false] {
+        let app = TestApp::new(40, 8);
+        let seen = Calls::default();
+        let record = seen.clone();
+        let markdown = Markdown::new(&app).extensions(&[MarkdownExtension::Math]).conceal(conceal).streaming(true);
+        markdown.inline_hook(move |spans, _| {
+            record.borrow_mut().extend(spans.iter().filter_map(|span| span.math.clone()));
+            spans
+        });
+        app.root().add(&markdown);
+        for chunk in ["pre $ab", "|cd$ ok", "\nnext\n"] {
+            markdown.append(chunk);
+        }
+        assert_eq!(*seen.borrow(), ["ab|cd"], "conceal {conceal}");
+    }
 }
