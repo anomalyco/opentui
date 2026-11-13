@@ -1,7 +1,7 @@
 import { describe, expect, it, afterEach, spyOn } from "bun:test"
 import { TextareaRenderable } from "../renderables/Textarea.js"
 import { createTestRenderer, type TestRenderer, type MockInput } from "../testing/test-renderer.js"
-import { type ExtmarksController } from "./extmarks.js"
+import { createExtmarksController, type ExtmarksController } from "./extmarks.js"
 import { SyntaxStyle } from "../syntax-style.js"
 import { RGBA } from "./RGBA.js"
 
@@ -1096,6 +1096,17 @@ describe("ExtmarksController", () => {
       // The view's rules stop too: the setter leaves the cursor inside the mark.
       textarea.cursorOffset = 4
       expect(textarea.cursorOffset).toBe(4)
+    })
+
+    // A second controller of the same view going leaves the view's rules to the first.
+    it("should keep a view's rules while another controller of it lives", async () => {
+      await setup("123456789\na@file now\n123456789")
+      textarea.focus()
+      extmarks.create({ start: 11, end: 16, virtual: true })
+      createExtmarksController(textarea.editBuffer, textarea.editorView).destroy()
+      textarea.cursorOffset = 23
+      currentMockInput.pressArrow("up")
+      expect(textarea.cursorOffset).toBe(10)
     })
 
     it("should clear all extmarks on destroy", async () => {

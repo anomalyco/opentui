@@ -192,9 +192,9 @@ export class ExtmarksController {
   public destroy(): void {
     if (this.destroyed) return
 
-    this.editorView._atomic = false
     const controllers = this.state.controllers
     controllers.splice(controllers.indexOf(this), 1)
+    this.editorView._atomic = controllers.some((controller) => controller.editorView === this.editorView)
     this.editBuffer._atomic = controllers.at(-1)?.atomic
     this.destroyed = true
   }
