@@ -470,6 +470,17 @@ describe("ExtmarksController", () => {
 
       expect(textarea.plainText).toBe("abc[INK]def")
     })
+
+    // Overlapping virtual extmarks are seen in creation order, not in start order.
+    it("should delete the first-created of overlapping virtual extmarks", async () => {
+      await setup("abcd")
+      textarea.focus()
+      textarea.cursorOffset = 4
+      extmarks.create({ start: 1, end: 4, virtual: true })
+      extmarks.create({ start: 0, end: 4, virtual: true })
+      currentMockInput.pressBackspace()
+      expect(textarea.plainText).toBe("a")
+    })
   })
 
   describe("Virtual Extmark - Delete Key", () => {
