@@ -1403,7 +1403,7 @@ const Harness = struct {
             const width = @min(x + @as(i64, @intFromFloat(cell.width)), clip.x + @as(i64, clip.width)) - @max(x, clip.x);
             const height = @min(y + @as(i64, @intFromFloat(cell.height)), clip.y + @as(i64, clip.height)) - @max(y, clip.y);
             if (width > 0 and height > 0) member_cells += @intCast(width * height);
-            if (width > 0 and height > 0 and node.kind == c.OT_SCENE_BOX and node.paint.borderSides != 0) if (node.control.box) |details| if (details.custom_border_chars) |chars| {
+            if (width > 0 and height > 0 and node.kind == c.OT_SCENE_BOX and node.paint.borderSides != 0) if (node.control.box.details) |details| if (details.custom_border_chars) |chars| {
                 self.stats.framed_boxes += @intFromBool(std.mem.indexOfScalar(u32, &chars, ' ') != null);
             };
         }

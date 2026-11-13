@@ -28,14 +28,6 @@ pub const BoxDetails = struct {
     bottom_title_alignment: u32 = 0,
     title_color: ?ansi.RGBA = null,
     custom_border_chars: ?[11]u32 = null,
-    /// Kept when the rest is replaced: titles and per-side overrides have separate setters.
-    sides: BoxSides = .{},
-
-    fn isEmpty(self: *const BoxDetails) bool {
-        return self.title.len == 0 and self.bottom_title.len == 0 and self.title_color == null and
-            self.custom_border_chars == null and self.title_alignment == 0 and self.bottom_title_alignment == 0 and
-            !self.sides.any();
-    }
 
     fn destroy(self: *BoxDetails, allocator: std.mem.Allocator) void {
         allocator.free(self.title);
@@ -55,6 +47,13 @@ pub const BoxSides = struct {
     pub fn any(self: *const BoxSides) bool {
         return self.style_sides | self.color_sides != 0;
     }
+};
+
+/// A box's optional records. Each is allocated only by the boxes that use it, so overrides
+/// cost nothing for boxes without them, titled or not.
+pub const BoxControl = struct {
+    details: ?*BoxDetails = null,
+    sides: ?*BoxSides = null,
 };
 
 pub const SliderOptions = struct {
@@ -500,7 +499,7 @@ pub const VideoState = struct {
 };
 
 const Control = union {
-    box: ?*BoxDetails,
+    box: BoxControl,
     slider: SliderOptions,
     arrow: ArrowOptions,
     editor: EditorOptions,
@@ -510,7 +509,10 @@ const Control = union {
 
     fn deinit(self: Control, kind: u32, allocator: std.mem.Allocator) void {
         switch (kind) {
-            api.OT_SCENE_BOX => if (self.box) |details| details.destroy(allocator),
+            api.OT_SCENE_BOX => {
+                if (self.box.details) |details| details.destroy(allocator);
+                if (self.box.sides) |sides| allocator.destroy(sides);
+            },
             api.OT_SCENE_ARROW => self.arrow.deinit(allocator),
             api.OT_SCENE_IMAGE => self.image.deinit(),
             api.OT_SCENE_VIDEO => self.video.deinit(allocator),
@@ -951,7 +953,7 @@ pub const Scene = struct {
             .skip = .{ .attention = storage.attention },
         };
         value.scene_node = node_ptr;
-        if (kind == api.OT_SCENE_BOX) value.scene_node.?.control = .{ .box = null };
+        if (kind == api.OT_SCENE_BOX) value.scene_node.?.control = .{ .box = .{} };
         if (kind == api.OT_SCENE_ARROW) value.scene_node.?.control = .{ .arrow = .{} };
         if (kind == api.OT_SCENE_EDITOR) value.scene_node.?.control = .{ .editor = .{} };
         if (kind == api.OT_SCENE_TEXT_VIEW) value.scene_node.?.control = .{ .text_view = .{} };
@@ -1348,20 +1350,20 @@ pub const Scene = struct {
             }
         }
         try checkWritable(value);
-        var next = options;
-        next.sides = if (node.control.box) |previous| previous.sides else .{};
         var replacement: ?*BoxDetails = null;
-        if (!next.isEmpty()) {
+        if (options.title.len != 0 or options.bottom_title.len != 0 or options.title_color != null or
+            options.custom_border_chars != null or options.title_alignment != 0 or options.bottom_title_alignment != 0)
+        {
             const details = try self.allocator.create(BoxDetails);
             errdefer self.allocator.destroy(details);
-            details.* = next;
+            details.* = options;
             details.title = try self.allocator.dupe(u8, options.title);
             errdefer self.allocator.free(details.title);
             details.bottom_title = try self.allocator.dupe(u8, options.bottom_title);
             replacement = details;
         }
-        if (node.control.box) |previous| previous.destroy(self.allocator);
-        node.control.box = replacement;
+        if (node.control.box.details) |previous| previous.destroy(self.allocator);
+        node.control.box.details = replacement;
     }
 
     /// Replaces the per-side overrides; a side without its mask bit has a zero value.
@@ -1379,17 +1381,14 @@ pub const Scene = struct {
             } else if (!std.mem.eql(u16, &color, &.{ 0, 0, 0, 0 })) return error.InvalidOptions;
         }
         try checkWritable(value);
-        if (node.control.box) |details| {
-            details.sides = sides;
-            if (details.isEmpty()) {
-                details.destroy(self.allocator);
-                node.control.box = null;
-            }
-        } else if (sides.any()) {
-            const details = try self.allocator.create(BoxDetails);
-            details.* = .{ .sides = sides };
-            node.control.box = details;
+        const box = &node.control.box;
+        if (!sides.any()) {
+            if (box.sides) |previous| self.allocator.destroy(previous);
+            box.sides = null;
+            return;
         }
+        if (box.sides == null) box.sides = try self.allocator.create(BoxSides);
+        box.sides.?.* = sides;
     }
 
     pub fn setHooks(self: *Scene, value: *native.NativeRenderable, flags: u32, generation: u64, initial_width: f64, initial_height: f64) !void {
@@ -3337,10 +3336,10 @@ pub const Scene = struct {
         return paint_options.borderSides != api.OT_BORDER_NONE or (paint_options.shouldFill != 0 and paint_options.background[3] != 0);
     }
 
-    fn paintBox(target: *buffer.OptimizedBuffer, paint_options: Paint, layout: Layout, focused: bool, details: ?*const BoxDetails) !void {
+    fn paintBox(target: *buffer.OptimizedBuffer, paint_options: Paint, layout: Layout, focused: bool, box: BoxControl) !void {
         if (hasBoxPaint(&paint_options)) {
             const border_color = if (paint_options.focusable and focused) paint_options.focusedBorderColor else paint_options.borderColor;
-            const options = details orelse &BoxDetails{};
+            const options = box.details orelse &BoxDetails{};
             const x: i32 = @intFromFloat(layout.screenX);
             const y: i32 = @intFromFloat(layout.screenY);
             const width: u32 = @intFromFloat(layout.width);
@@ -3354,8 +3353,8 @@ pub const Scene = struct {
             const title = if (options.title.len != 0) options.title else null;
             const bottom_title = if (options.bottom_title.len != 0) options.bottom_title else null;
             const fill = paint_options.shouldFill != 0;
-            if (options.sides.any()) {
-                const border = sideBorder(&paint_options, options, paint_options.focusable and focused);
+            if (box.sides) |overrides| {
+                const border = sideBorder(&paint_options, options, overrides, paint_options.focusable and focused);
                 // Without a title color, each title takes the color of its own side.
                 const title_colors: [2]ansi.RGBA = if (options.title_color) |color| .{ color, color } else .{ border.colors[0], border.colors[2] };
                 return target.drawBoxSidesChecked(x, y, width, height, &border, sides, paint_options.background, title_colors, fill, title, @intCast(options.title_alignment), bottom_title, @intCast(options.bottom_title_alignment));
@@ -3367,8 +3366,7 @@ pub const Scene = struct {
 
     /// Resolves per-side overrides against the box's paint. Custom glyphs win over styles,
     /// and focus colors every side.
-    fn sideBorder(paint_options: *const Paint, details: *const BoxDetails, focused: bool) buffer.BoxBorder {
-        const sides = &details.sides;
+    fn sideBorder(paint_options: *const Paint, details: *const BoxDetails, sides: *const BoxSides, focused: bool) buffer.BoxBorder {
         var styles: [4]u32 = undefined;
         var colors: [4]ansi.RGBA = undefined;
         for (0..4) |side| {

@@ -295,7 +295,6 @@ pub struct Element {
     /// values above no longer show its state and setters write even an equal value.
     bypassed: Cell<bool>,
     titles: RefCell<Titles>,
-    box_sides: Cell<BoxSides>,
     /// The hooks the widget itself registers; filters add [`Hooks::RENDER_BEFORE`] to learn the painted area.
     hooks: Cell<Hooks>,
     registered: Cell<Hooks>,
@@ -333,7 +332,6 @@ impl Element {
             text_options: Cell::new(TextOptions::default()),
             bypassed: Cell::new(false),
             titles: RefCell::new(Titles::default()),
-            box_sides: Cell::new(BoxSides::default()),
             hooks: Cell::new(Hooks::NONE),
             registered: Cell::new(Hooks::NONE),
             hook_generation: Cell::new(0),
@@ -427,12 +425,15 @@ impl Element {
         self.apply(|node| node.set_text_options(&options));
     }
 
+    /// The app keeps the overrides, so elements without them carry no copy.
     pub(crate) fn update_box_sides(&self, change: impl FnOnce(BoxSides) -> BoxSides) {
-        let sides = change(self.box_sides.get());
-        if self.cached() && sides == self.box_sides.get() {
+        let Some(app) = self.app.upgrade() else { return };
+        let previous = app.box_sides(self.num);
+        let sides = change(previous);
+        if self.cached() && sides == previous {
             return;
         }
-        self.box_sides.set(sides);
+        app.set_box_sides(self.num, sides);
         self.apply(|node| node.set_box_sides(&sides));
     }
 

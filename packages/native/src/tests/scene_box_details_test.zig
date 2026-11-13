@@ -167,7 +167,7 @@ test "Scene box sides validate, survive details and mask changes, repaint live, 
     for (&invalid) |sides| try testing.expectError(error.InvalidOptions, owner.sceneSetBoxSides(fixture.box, sides));
     try testing.expectError(error.WrongKind, owner.sceneSetBoxSides(fixture.root, styled(1, 1, 1, 1)));
     const node = (try owner.raw().getRenderable(fixture.box)).scene_node.?;
-    try testing.expect(node.control.box == null);
+    try testing.expect(node.control.box.sides == null);
 
     var sides = styled(1, 0, 0, 0);
     sides.color_sides = c.OT_BORDER_TOP;
@@ -194,13 +194,14 @@ test "Scene box sides validate, survive details and mask changes, repaint live, 
     try testing.expectEqual(@as(u32, '┍'), target.get(0, 0).?.char);
     try testing.expectEqual(sides.colors[3], target.get(5, 0).?.fg);
 
+    // Clearing either record frees it and keeps the other.
     try owner.sceneSetBoxSides(fixture.box, .{});
-    try testing.expectEqualStrings("x", node.control.box.?.title);
-    try owner.sceneSetBoxDetails(fixture.box, .{});
-    try testing.expect(node.control.box == null);
+    try testing.expect(node.control.box.sides == null);
+    try testing.expectEqualStrings("x", node.control.box.details.?.title);
     try owner.sceneSetBoxSides(fixture.box, sides);
-    try owner.sceneSetBoxSides(fixture.box, .{});
-    try testing.expect(node.control.box == null);
+    try owner.sceneSetBoxDetails(fixture.box, .{});
+    try testing.expect(node.control.box.details == null);
+    try testing.expectEqual(sides, node.control.box.sides.?.*);
 }
 
 test "Scene box details rejects invalid replacement before publication" {
@@ -235,7 +236,7 @@ fn replaceTitles(allocator: std.mem.Allocator) !void {
     defer owner.deinit() catch unreachable;
     const fixture = try setup(owner);
     try owner.sceneSetBoxDetails(fixture.box, .{ .title = "old", .bottom_title = "old", .custom_border_chars = custom });
-    const details = (try owner.raw().getRenderable(fixture.box)).scene_node.?.control.box.?;
+    const details = (try owner.raw().getRenderable(fixture.box)).scene_node.?.control.box.details.?;
     owner.sceneSetBoxDetails(fixture.box, .{ .title = "new", .bottom_title = "new", .custom_border_chars = custom }) catch |err| {
         try testing.expectEqualStrings("old", details.title);
         try testing.expectEqualStrings("old", details.bottom_title);

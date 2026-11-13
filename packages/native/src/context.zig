@@ -2860,7 +2860,7 @@ pub const Context = struct {
         const paint_fields = fields & ~@as(u32, api.OT_SCENE_PROPERTY_RESET_BORDER_CHARACTERS);
         try node.owner.setPaintPartial(value, paint_fields, paint);
         if (reset) {
-            if (node.control.box) |details| details.custom_border_chars = null;
+            if (node.control.box.details) |details| details.custom_border_chars = null;
         }
     }
 

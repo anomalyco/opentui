@@ -1913,7 +1913,7 @@ test "Context Box details ABI validates records before publishing titles and sty
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_box_details(&owner, &id, &details, &title, title.len, null, 0));
     @memset(&title, 'x');
     const node = (try owner.core.raw().getRenderable(box)).scene_node.?;
-    try std.testing.expectEqualStrings("owned", node.control.box.?.title);
+    try std.testing.expectEqualStrings("owned", node.control.box.details.?.title);
     for (0..7) |field| {
         var invalid = details;
         switch (field) {
@@ -1928,15 +1928,15 @@ test "Context Box details ABI validates records before publishing titles and sty
             else => unreachable,
         }
         try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_box_details(&owner, &id, &invalid, "new", 3, null, 0));
-        try std.testing.expectEqualStrings("owned", node.control.box.?.title);
+        try std.testing.expectEqualStrings("owned", node.control.box.details.?.title);
     }
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_box_details(&owner, &id, &details, null, 1, null, 0));
     const reset = c.OT_SCENE_PROPERTY_BORDER | c.OT_SCENE_PROPERTY_BORDER_STYLE | c.OT_SCENE_PROPERTY_RESET_BORDER_CHARACTERS;
     try std.testing.expectError(error.InvalidOptions, owner.core.scenePatchPaint(box, reset, .{ .borderStyle = 4, .borderSides = 15 }));
-    try std.testing.expect(node.control.box.?.custom_border_chars != null);
+    try std.testing.expect(node.control.box.details.?.custom_border_chars != null);
     try owner.core.scenePatchPaint(box, reset, .{ .borderStyle = 2, .borderSides = 15 });
-    try std.testing.expect(node.control.box.?.custom_border_chars == null);
-    try std.testing.expectEqualStrings("owned", node.control.box.?.title);
+    try std.testing.expect(node.control.box.details.?.custom_border_chars == null);
+    try std.testing.expectEqualStrings("owned", node.control.box.details.?.title);
     // Side records name their colors; the scene keeps them in OT_BORDER_* bit order.
     var sides = std.mem.zeroes(c.ot_scene_box_sides);
     sides.struct_size = @sizeOf(c.ot_scene_box_sides);
@@ -1949,7 +1949,7 @@ test "Context Box details ABI validates records before publishing titles and sty
     sides.right_color = .{ 3, 0, 0, 255 };
     sides.top_color = .{ 4, 0, 0, 255 };
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_box_sides(&owner, &id, &sides));
-    const accepted = node.control.box.?.sides;
+    const accepted = node.control.box.sides.?.*;
     try std.testing.expectEqual([4]u32{ 3, 0, 0, 1 }, accepted.styles);
     for (accepted.colors, 1..) |color, red| try std.testing.expectEqual(@as(u16, @intCast(red)), color[0]);
     sides.styles[1] = 1;
