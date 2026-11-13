@@ -50,9 +50,15 @@ fn views_style_and_color_each_border_side() {
     panel.border_sides(Sides::TOP).border_sides(Sides::ALL);
     assert_eq!(app.text(), "╔═t══════╗\n┃        ┃\n┖────────┚");
     assert_eq!(colors(&app), [blue, blue, blue, border, border]);
+    // Clearing one side shows the current base there, not the first one, and keeps the other overrides.
+    let green = Color::rgb(0, 160, 0);
+    panel.border_color_for(Sides::LEFT, Some(red)).border(BorderStyle::Rounded).border_color(green);
+    panel.border_style_for(Sides::TOP, None).border_color_for(Sides::TOP, None);
+    assert_eq!(app.text(), "┎─t──────┒\n┃        ┃\n┖────────┚");
+    assert_eq!(colors(&app), [green, green, green, red, green]);
     panel.border_style_for(Sides::ALL, None).border_color_for(Sides::ALL, None);
-    assert_eq!(app.text(), "┌─t──────┐\n│        │\n└────────┘");
-    assert_eq!(colors(&app), [border; 5]);
+    assert_eq!(app.text(), "╭─t──────╮\n│        │\n╰────────╯");
+    assert_eq!(colors(&app), [green; 5]);
 }
 
 #[test]

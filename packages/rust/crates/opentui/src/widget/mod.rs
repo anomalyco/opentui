@@ -79,7 +79,7 @@ use crate::layout::{
     Align, Display, Edge, FlexDirection, Gutter, Justify, LayoutMode, LayoutProperty, Length, Overflow, PositionType,
     Rect, Wrap,
 };
-use crate::native::{BoxDetails, BoxSides, Hooks, Node, NodeKind, Observation, Paint, SelectionUnit, TextOptions};
+use crate::native::{BoxDetails, Hooks, Node, NodeKind, Observation, Paint, SelectionUnit, TextOptions};
 use crate::post::{Filter, FilterCell, FilterId};
 use crate::style::{Alignment, Color};
 use std::cell::{Cell, RefCell};
@@ -273,6 +273,9 @@ pub(crate) struct Titles {
     pub bottom_title_alignment: Alignment,
     pub title_color: Option<Color>,
     pub border_chars: Option<[char; 11]>,
+    /// Whether [`View::border_color`] set the border color, which a border then keeps instead of the theme's. It
+    /// sits in this record's padding, so a view keeps its size with room for its side overrides.
+    pub border_color_set: bool,
 }
 
 /// The shared record behind every widget handle: its native node, tree links, handlers, and cached native options.
@@ -425,16 +428,12 @@ impl Element {
         self.apply(|node| node.set_text_options(&options));
     }
 
-    /// The app keeps the overrides, so elements without them carry no copy.
-    pub(crate) fn update_box_sides(&self, change: impl FnOnce(BoxSides) -> BoxSides) {
-        let Some(app) = self.app.upgrade() else { return };
-        let previous = app.box_sides(self.num);
-        let sides = change(previous);
-        if self.cached() && sides == previous {
-            return;
-        }
-        app.set_box_sides(self.num, sides);
-        self.apply(|node| node.set_box_sides(&sides));
+    pub(crate) fn border_color_set(&self) -> bool {
+        self.titles.borrow().border_color_set
+    }
+
+    pub(crate) fn set_border_color_set(&self) {
+        self.titles.borrow_mut().border_color_set = true;
     }
 
     pub(crate) fn update_titles(&self, change: impl FnOnce(&mut Titles)) {

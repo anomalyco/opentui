@@ -44,8 +44,8 @@ use crate::error::{Error, Result, Status};
 use crate::host::{Host, HostOptions};
 use crate::input::{Event, KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use crate::native::{
-    BoxSides, Context, Control, CursorUpdate, Draft, FrameOptions, HostRequest, MousePointer, ProgramStatus, Pump,
-    Remote, RenderOutcome, RendererState, Session, WidthMethod,
+    Context, Control, CursorUpdate, Draft, FrameOptions, HostRequest, MousePointer, ProgramStatus, Pump, Remote,
+    RenderOutcome, RendererState, Session, WidthMethod,
 };
 use crate::post::{Area, PostState};
 use crate::remote::RemoteTerminal;
@@ -292,9 +292,6 @@ pub(crate) struct AppInner {
     parent: std::cell::OnceCell<Session>,
     root: RefCell<Option<View>>,
     registry: RefCell<HashMap<u32, Weak<dyn Behavior>>>,
-    /// Per-side border overrides by widget number. Only views that set one have an entry, so widgets without
-    /// them carry nothing.
-    box_sides: RefCell<HashMap<u32, BoxSides>>,
     next_num: Cell<u32>,
     focus: RefCell<Option<Weak<dyn Behavior>>>,
     hover: RefCell<Vec<Weak<dyn Behavior>>>,
@@ -370,22 +367,6 @@ impl AppInner {
     pub(crate) fn unregister(&self, num: u32) {
         if let Ok(mut registry) = self.registry.try_borrow_mut() {
             registry.remove(&num);
-        }
-        if let Ok(mut all) = self.box_sides.try_borrow_mut() {
-            all.remove(&num);
-        }
-    }
-
-    pub(crate) fn box_sides(&self, num: u32) -> BoxSides {
-        self.box_sides.borrow().get(&num).copied().unwrap_or_default()
-    }
-
-    pub(crate) fn set_box_sides(&self, num: u32, sides: BoxSides) {
-        let mut all = self.box_sides.borrow_mut();
-        if sides == BoxSides::default() {
-            all.remove(&num);
-        } else {
-            all.insert(num, sides);
         }
     }
 
@@ -542,7 +523,6 @@ impl App {
             parent: std::cell::OnceCell::new(),
             root: RefCell::new(None),
             registry: RefCell::new(HashMap::new()),
-            box_sides: RefCell::new(HashMap::new()),
             next_num: Cell::new(1),
             focus: RefCell::new(None),
             hover: RefCell::new(Vec::new()),

@@ -1,14 +1,14 @@
 use super::{Behavior, Container, Element, build, handle};
 use crate::app::App;
-use crate::native::NodeKind;
+use crate::native::{BoxSides, NodeKind};
 use crate::style::{Alignment, BorderStyle, Color, Sides};
 use std::cell::Cell;
 use std::rc::Rc;
 
 pub(crate) struct ViewInner {
     element: Element,
-    /// Whether [`View::border_color`] set the border color, which a border then keeps instead of the theme's.
-    border_color_set: Cell<bool>,
+    /// Per-side border overrides, allocated only while one is set, so other views carry one null pointer.
+    sides: Cell<Option<Box<BoxSides>>>,
 }
 
 impl Behavior for ViewInner {
@@ -42,11 +42,11 @@ impl Container for View {}
 
 impl View {
     pub fn new(app: &App) -> Self {
-        Self(build(app, NodeKind::Box, |element| ViewInner { element, border_color_set: Cell::new(false) }))
+        Self(build(app, NodeKind::Box, |element| ViewInner { element, sides: Cell::new(None) }))
     }
 
     pub(crate) fn root(app: &App) -> Self {
-        Self(build(app, NodeKind::Root, |element| ViewInner { element, border_color_set: Cell::new(false) }))
+        Self(build(app, NodeKind::Root, |element| ViewInner { element, sides: Cell::new(None) }))
     }
 
     /// Draws a border on all four sides, in the theme's border color unless set with [`Self::border_color`].
@@ -79,7 +79,7 @@ impl View {
 
     /// The border color, before or after the border is set; the theme's border color by default.
     pub fn border_color(&self, color: Color) -> Self {
-        self.0.border_color_set.set(true);
+        self.0.element.set_border_color_set();
         self.0.element.update_paint(|paint| paint.border_color = color);
         self.clone()
     }
@@ -100,16 +100,14 @@ impl View {
     /// # Ok::<(), opentui::Error>(())
     /// ```
     pub fn border_style_for(&self, sides: Sides, style: Option<BorderStyle>) -> Self {
-        self.0.element.update_box_sides(|box_sides| box_sides.style(sides, style));
-        self.clone()
+        self.update_sides(|box_sides| box_sides.style(sides, style))
     }
 
     /// The border color of each side in `sides`, over [`Self::border_color`]; `None` lets them take that color
     /// again. A corner takes its top or bottom side's color; a title without [`Self::title_color`] takes its own
     /// side's. While focused, [`Self::focus_border_color`] colors every side.
     pub fn border_color_for(&self, sides: Sides, color: Option<Color>) -> Self {
-        self.0.element.update_box_sides(|box_sides| box_sides.color(sides, color));
-        self.clone()
+        self.update_sides(|box_sides| box_sides.color(sides, color))
     }
 
     /// The border color while this view or a descendant has focus. Makes the view track focus.
@@ -166,9 +164,28 @@ impl View {
         self.clone()
     }
 
+    /// Applies a change to the overrides, sending it unless it changes nothing; the last cleared override frees them.
+    fn update_sides(&self, change: impl FnOnce(BoxSides) -> BoxSides) -> Self {
+        let mut stored = self.0.sides.take();
+        let previous = stored.as_deref().copied().unwrap_or_default();
+        let sides = change(previous);
+        if !(self.0.element.cached() && sides == previous) {
+            self.0.element.apply(|node| node.set_box_sides(&sides));
+        }
+        if sides == BoxSides::default() {
+            stored = None;
+        } else if let Some(current) = stored.as_deref_mut() {
+            *current = sides;
+        } else {
+            stored = Some(Box::new(sides));
+        }
+        self.0.sides.set(stored);
+        self.clone()
+    }
+
     /// The theme's border color, unless [`Self::border_color`] chose one.
     fn border_color_or_theme(&self) -> Option<Color> {
-        if self.0.border_color_set.get() {
+        if self.0.element.border_color_set() {
             return None;
         }
         Some(self.0.element.app().map_or(Color::rgb(255, 255, 255), |app| app.theme().border))
