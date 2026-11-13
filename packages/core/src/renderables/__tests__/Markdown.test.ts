@@ -4228,6 +4228,14 @@ test.each([
   }
 })
 
+// A Markdown without a theme (a JavaScript caller, as in OpenCode's tests) has no copy of one to give its fences.
+test("a fence in Markdown without a theme shows its text", async () => {
+  const md = createMarkdownRenderable({ content: "```js\nlet a = 1\n```\n", syntaxStyle: undefined! })
+  renderer.root.add(md)
+  await renderMarkdownRenderable(md)
+  expect(captureFrame()).toContain("let a = 1")
+})
+
 // Design question 4: a fence frees its worker copy when its block closes, so a streaming answer holds a copy for its open
 // fence only. An open fence of a hidden answer, whose update hooks do not run, frees its copy when the stream ends.
 test("a streaming answer holds a worker copy only for its open fence", async () => {
