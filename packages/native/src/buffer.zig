@@ -85,15 +85,29 @@ pub const BoxBorder = struct {
         return .{ .lines = .{ h, v, h, v }, .corners = chars[0..4].*, .colors = @splat(color) };
     }
 
-    /// A uniform border reads one color, so uniform boxes keep today's per-box cost.
-    inline fn alphaMin(self: *const BoxBorder, comptime uniform_colors: bool) u8 {
-        if (uniform_colors) return ansi.alpha(self.colors[0]);
+    inline fn line(self: *const BoxBorder, comptime side: usize) u32 {
+        return self.lines[side];
+    }
+
+    inline fn corner(self: *const BoxBorder, comptime index: usize) u32 {
+        return self.corners[index];
+    }
+
+    inline fn sideColor(self: *const BoxBorder, comptime side: usize) RGBA {
+        return self.colors[side];
+    }
+
+    inline fn alphaMin(self: *const BoxBorder) u8 {
         return @min(@min(ansi.alpha(self.colors[0]), ansi.alpha(self.colors[1])), @min(ansi.alpha(self.colors[2]), ansi.alpha(self.colors[3])));
     }
 
-    inline fn alphaMax(self: *const BoxBorder, comptime uniform_colors: bool) u8 {
-        if (uniform_colors) return ansi.alpha(self.colors[0]);
+    inline fn alphaMax(self: *const BoxBorder) u8 {
         return @max(@max(ansi.alpha(self.colors[0]), ansi.alpha(self.colors[1])), @max(ansi.alpha(self.colors[2]), ansi.alpha(self.colors[3])));
+    }
+
+    fn singleWidth(self: *const BoxBorder) bool {
+        for (self.lines ++ self.corners) |char| if (!OptimizedBuffer.isSingleWidthBorderChar(char)) return false;
+        return true;
     }
 };
 
@@ -3127,8 +3141,8 @@ pub const OptimizedBuffer = struct {
 
     inline fn canUseTransparentBorderFastPath(
         self: *const OptimizedBuffer,
-        comptime uniform: bool,
-        border: *const BoxBorder,
+        borderChars: [*]const u32,
+        borderColor: RGBA,
         backgroundColor: RGBA,
         x: i32,
         y: i32,
@@ -3138,18 +3152,20 @@ pub const OptimizedBuffer = struct {
         // When border glyphs are width-1, opaque, and tracker-free, drawing them
         // over a transparent background is just a direct char/fg/attrs write
         // while keeping the destination background unchanged.
-        if (!(self.getCurrentOpacity() == 1.0 and
-            border.alphaMin(uniform) == 255 and
+        return self.getCurrentOpacity() == 1.0 and
+            ansi.alpha(borderColor) == 255 and
             ansi.alpha(backgroundColor) == 0 and
             self.isPointInScissor(x, y) and
             self.isPointInScissor(x + @as(i32, @intCast(width)) - 1, y + @as(i32, @intCast(height)) - 1) and
             !self.grapheme_tracker.hasAny() and
-            !self.link_tracker.hasAny())) return false;
-        // A uniform border repeats its horizontal and vertical glyph.
-        const lines = if (uniform) border.lines[0..2] else border.lines[0..];
-        for (lines) |char| if (!isSingleWidthBorderChar(char)) return false;
-        for (border.corners) |char| if (!isSingleWidthBorderChar(char)) return false;
-        return self.image_placements.items.len == 0 or !self.rectOverlapsImagePlacement(x, y, width, height);
+            !self.link_tracker.hasAny() and
+            isSingleWidthBorderChar(borderChars[@backingInt(BorderCharIndex.topLeft)]) and
+            isSingleWidthBorderChar(borderChars[@backingInt(BorderCharIndex.topRight)]) and
+            isSingleWidthBorderChar(borderChars[@backingInt(BorderCharIndex.bottomLeft)]) and
+            isSingleWidthBorderChar(borderChars[@backingInt(BorderCharIndex.bottomRight)]) and
+            isSingleWidthBorderChar(borderChars[@backingInt(BorderCharIndex.horizontal)]) and
+            isSingleWidthBorderChar(borderChars[@backingInt(BorderCharIndex.vertical)]) and
+            (self.image_placements.items.len == 0 or !self.rectOverlapsImagePlacement(x, y, width, height));
     }
 
     /// Draw a box with borders and optional fill
@@ -3215,8 +3231,267 @@ pub const OptimizedBuffer = struct {
         bottomTitle: ?[]const u8,
         bottomTitleAlignment: u8,
     ) !void {
-        const border = BoxBorder.uniform(borderChars, borderColor);
-        return self.drawBoxSidesInternal(checked_titles, true, x, y, width, height, &border, borderSides, backgroundColor, .{ titleColor, titleColor }, shouldFill, title, titleAlignment, bottomTitle, bottomTitleAlignment);
+        const opacity = self.getCurrentOpacity();
+
+        const border_bg_transparent = isFullyTransparent(opacity, borderColor, backgroundColor);
+        const has_title = title != null or bottomTitle != null;
+        const title_visible = has_title and !isFullyTransparent(opacity, titleColor, backgroundColor);
+        if (border_bg_transparent and !title_visible) {
+            if (self.image_placements.items.len == 0) return;
+            if (opacity == 0.0) return;
+        }
+        return self.drawVisibleBox(
+            checked_titles,
+            x,
+            y,
+            width,
+            height,
+            borderChars,
+            borderSides,
+            borderColor,
+            backgroundColor,
+            titleColor,
+            shouldFill,
+            title,
+            titleAlignment,
+            bottomTitle,
+            bottomTitleAlignment,
+            border_bg_transparent,
+            title_visible,
+            opacity,
+        );
+    }
+
+    fn drawVisibleBox(
+        self: *OptimizedBuffer,
+        comptime checked_titles: bool,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        borderChars: [*]const u32,
+        borderSides: BorderSides,
+        borderColor: RGBA,
+        backgroundColor: RGBA,
+        titleColor: RGBA,
+        shouldFill: bool,
+        title: ?[]const u8,
+        titleAlignment: u8,
+        bottomTitle: ?[]const u8,
+        bottomTitleAlignment: u8,
+        border_bg_transparent: bool,
+        title_visible: bool,
+        opacity: f32,
+    ) !void {
+        const startX = @max(0, x);
+        const startY = @max(0, y);
+        const endX = @min(@as(i32, @intCast(self.width)) - 1, x + @as(i32, @intCast(width)) - 1);
+        const endY = @min(@as(i32, @intCast(self.height)) - 1, y + @as(i32, @intCast(height)) - 1);
+
+        if (startX > endX or startY > endY) return;
+
+        const boxWidth = @as(u32, @intCast(endX - startX + 1));
+        const boxHeight = @as(u32, @intCast(endY - startY + 1));
+        if (!self.isRectInScissor(startX, startY, boxWidth, boxHeight)) return;
+        if (border_bg_transparent and !title_visible and !self.rectOverlapsImagePlacement(startX, startY, boxWidth, boxHeight)) return;
+
+        const isAtActualLeft = startX == x;
+        const isAtActualRight = endX == x + @as(i32, @intCast(width)) - 1;
+        const isAtActualTop = startY == y;
+        const isAtActualBottom = endY == y + @as(i32, @intCast(height)) - 1;
+
+        const titleLayout = self.computeBoxTitleLayout(title, borderSides.top, isAtActualTop, x, width, titleAlignment);
+        const bottomTitleLayout = self.computeBoxTitleLayout(bottomTitle, borderSides.bottom, isAtActualBottom, x, width, bottomTitleAlignment);
+
+        if (shouldFill) {
+            if (!borderSides.top and !borderSides.right and !borderSides.bottom and !borderSides.left) {
+                const fillWidth = @as(u32, @intCast(endX - startX + 1));
+                const fillHeight = @as(u32, @intCast(endY - startY + 1));
+                self.fillRect(@intCast(startX), @intCast(startY), fillWidth, fillHeight, backgroundColor);
+            } else {
+                const innerStartX = startX + if (borderSides.left and isAtActualLeft) @as(i32, 1) else @as(i32, 0);
+                const innerStartY = startY + if (borderSides.top and isAtActualTop) @as(i32, 1) else @as(i32, 0);
+                const innerEndX = endX - if (borderSides.right and isAtActualRight) @as(i32, 1) else @as(i32, 0);
+                const innerEndY = endY - if (borderSides.bottom and isAtActualBottom) @as(i32, 1) else @as(i32, 0);
+
+                if (innerEndX >= innerStartX and innerEndY >= innerStartY) {
+                    const fillWidth = @as(u32, @intCast(innerEndX - innerStartX + 1));
+                    const fillHeight = @as(u32, @intCast(innerEndY - innerStartY + 1));
+                    self.fillRect(@intCast(innerStartX), @intCast(innerStartY), fillWidth, fillHeight, backgroundColor);
+                }
+            }
+        }
+
+        // Special cases for extending vertical borders
+        const leftBorderOnly = borderSides.left and isAtActualLeft and !borderSides.top and !borderSides.bottom;
+        const rightBorderOnly = borderSides.right and isAtActualRight and !borderSides.top and !borderSides.bottom;
+        const bottomOnlyWithVerticals = borderSides.bottom and isAtActualBottom and !borderSides.top and (borderSides.left or borderSides.right);
+        const topOnlyWithVerticals = borderSides.top and isAtActualTop and !borderSides.bottom and (borderSides.left or borderSides.right);
+
+        const extendVerticalsToTop = leftBorderOnly or rightBorderOnly or bottomOnlyWithVerticals;
+        const extendVerticalsToBottom = leftBorderOnly or rightBorderOnly or topOnlyWithVerticals;
+        const useTransparentBorderFastPath = canUseTransparentBorderFastPath(self, borderChars, borderColor, backgroundColor, startX, startY, boxWidth, boxHeight);
+        const useOpaqueBorderFastPath = isFullyOpaque(opacity, borderColor, backgroundColor);
+        const image_aware = self.image_placements.items.len != 0;
+
+        // Draw horizontal borders
+        if (borderSides.top or borderSides.bottom) {
+            // Draw top border
+            if (borderSides.top and isAtActualTop) {
+                var drawX = startX;
+                while (drawX <= endX) : (drawX += 1) {
+                    if (startY >= 0 and startY < @as(i32, @intCast(self.height))) {
+                        if (titleLayout.shouldDraw and drawX >= titleLayout.startX and drawX <= titleLayout.endX) {
+                            continue;
+                        }
+
+                        var char = borderChars[@backingInt(BorderCharIndex.horizontal)];
+
+                        // Handle corners
+                        if (drawX == startX and isAtActualLeft) {
+                            char = if (borderSides.left) borderChars[@backingInt(BorderCharIndex.topLeft)] else borderChars[@backingInt(BorderCharIndex.horizontal)];
+                        } else if (drawX == endX and isAtActualRight) {
+                            char = if (borderSides.right) borderChars[@backingInt(BorderCharIndex.topRight)] else borderChars[@backingInt(BorderCharIndex.horizontal)];
+                        }
+
+                        if (useTransparentBorderFastPath) {
+                            self.setTransparentBorderCell(@intCast(drawX), @intCast(startY), char, borderColor);
+                        } else if (useOpaqueBorderFastPath) {
+                            self.set(@intCast(drawX), @intCast(startY), makeCell(char, borderColor, backgroundColor, 0));
+                        } else {
+                            const cell = makeCell(char, borderColor, backgroundColor, 0);
+                            if (image_aware)
+                                self.setCellWithAlphaBlendingCell(@intCast(drawX), @intCast(startY), cell)
+                            else
+                                self.setCellWithAlphaBlendingCellWithoutImages(@intCast(drawX), @intCast(startY), cell);
+                        }
+                    }
+                }
+            }
+
+            // Draw bottom border
+            if (borderSides.bottom and isAtActualBottom) {
+                var drawX = startX;
+                while (drawX <= endX) : (drawX += 1) {
+                    if (endY >= 0 and endY < @as(i32, @intCast(self.height))) {
+                        if (bottomTitleLayout.shouldDraw and drawX >= bottomTitleLayout.startX and drawX <= bottomTitleLayout.endX) {
+                            continue;
+                        }
+
+                        var char = borderChars[@backingInt(BorderCharIndex.horizontal)];
+
+                        // Handle corners
+                        if (drawX == startX and isAtActualLeft) {
+                            char = if (borderSides.left) borderChars[@backingInt(BorderCharIndex.bottomLeft)] else borderChars[@backingInt(BorderCharIndex.horizontal)];
+                        } else if (drawX == endX and isAtActualRight) {
+                            char = if (borderSides.right) borderChars[@backingInt(BorderCharIndex.bottomRight)] else borderChars[@backingInt(BorderCharIndex.horizontal)];
+                        }
+
+                        if (useTransparentBorderFastPath) {
+                            self.setTransparentBorderCell(@intCast(drawX), @intCast(endY), char, borderColor);
+                        } else if (useOpaqueBorderFastPath) {
+                            self.set(@intCast(drawX), @intCast(endY), makeCell(char, borderColor, backgroundColor, 0));
+                        } else {
+                            const cell = makeCell(char, borderColor, backgroundColor, 0);
+                            if (image_aware)
+                                self.setCellWithAlphaBlendingCell(@intCast(drawX), @intCast(endY), cell)
+                            else
+                                self.setCellWithAlphaBlendingCellWithoutImages(@intCast(drawX), @intCast(endY), cell);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Draw vertical borders
+        const verticalStartY = if (extendVerticalsToTop) startY else startY + if (borderSides.top and isAtActualTop) @as(i32, 1) else @as(i32, 0);
+        const verticalEndY = if (extendVerticalsToBottom) endY else endY - if (borderSides.bottom and isAtActualBottom) @as(i32, 1) else @as(i32, 0);
+
+        if (borderSides.left or borderSides.right) {
+            var drawY = verticalStartY;
+            while (drawY <= verticalEndY) : (drawY += 1) {
+                // Left border
+                if (borderSides.left and isAtActualLeft and startX >= 0 and startX < @as(i32, @intCast(self.width))) {
+                    if (useTransparentBorderFastPath) {
+                        self.setTransparentBorderCell(@intCast(startX), @intCast(drawY), borderChars[@backingInt(BorderCharIndex.vertical)], borderColor);
+                    } else if (useOpaqueBorderFastPath) {
+                        self.set(
+                            @intCast(startX),
+                            @intCast(drawY),
+                            makeCell(borderChars[@backingInt(BorderCharIndex.vertical)], borderColor, backgroundColor, 0),
+                        );
+                    } else {
+                        const cell = makeCell(borderChars[@backingInt(BorderCharIndex.vertical)], borderColor, backgroundColor, 0);
+                        if (image_aware)
+                            self.setCellWithAlphaBlendingCell(@intCast(startX), @intCast(drawY), cell)
+                        else
+                            self.setCellWithAlphaBlendingCellWithoutImages(@intCast(startX), @intCast(drawY), cell);
+                    }
+                }
+
+                // Right border
+                if (borderSides.right and isAtActualRight and endX >= 0 and endX < @as(i32, @intCast(self.width))) {
+                    if (useTransparentBorderFastPath) {
+                        self.setTransparentBorderCell(@intCast(endX), @intCast(drawY), borderChars[@backingInt(BorderCharIndex.vertical)], borderColor);
+                    } else if (useOpaqueBorderFastPath) {
+                        self.set(
+                            @intCast(endX),
+                            @intCast(drawY),
+                            makeCell(borderChars[@backingInt(BorderCharIndex.vertical)], borderColor, backgroundColor, 0),
+                        );
+                    } else {
+                        const cell = makeCell(borderChars[@backingInt(BorderCharIndex.vertical)], borderColor, backgroundColor, 0);
+                        if (image_aware)
+                            self.setCellWithAlphaBlendingCell(@intCast(endX), @intCast(drawY), cell)
+                        else
+                            self.setCellWithAlphaBlendingCellWithoutImages(@intCast(endX), @intCast(drawY), cell);
+                    }
+                }
+            }
+        }
+
+        if (titleLayout.shouldDraw) {
+            if (title) |titleText| {
+                if (checked_titles) {
+                    try self.drawTextChecked(titleText, titleLayout.startX, startY, titleColor, backgroundColor, 0);
+                } else {
+                    try self.drawTextClipped(titleText, titleLayout.startX, startY, titleColor, backgroundColor, 0);
+                }
+            }
+        }
+
+        if (bottomTitleLayout.shouldDraw) {
+            if (bottomTitle) |titleText| {
+                if (checked_titles) {
+                    try self.drawTextChecked(titleText, bottomTitleLayout.startX, endY, titleColor, backgroundColor, 0);
+                } else {
+                    try self.drawTextClipped(titleText, bottomTitleLayout.startX, endY, titleColor, backgroundColor, 0);
+                }
+            }
+        }
+    }
+
+    inline fn canUseTransparentSideBorderFastPath(
+        self: *const OptimizedBuffer,
+        border: *const BoxBorder,
+        backgroundColor: RGBA,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) bool {
+        // When border glyphs are width-1, opaque, and tracker-free, drawing them
+        // over a transparent background is just a direct char/fg/attrs write
+        // while keeping the destination background unchanged.
+        return self.getCurrentOpacity() == 1.0 and
+            border.alphaMin() == 255 and
+            ansi.alpha(backgroundColor) == 0 and
+            self.isPointInScissor(x, y) and
+            self.isPointInScissor(x + @as(i32, @intCast(width)) - 1, y + @as(i32, @intCast(height)) - 1) and
+            !self.grapheme_tracker.hasAny() and
+            !self.link_tracker.hasAny() and
+            border.singleWidth() and
+            (self.image_placements.items.len == 0 or !self.rectOverlapsImagePlacement(x, y, width, height));
     }
 
     /// A scene box whose sides differ in glyph or color; titles have their own colors.
@@ -3238,14 +3513,13 @@ pub const OptimizedBuffer = struct {
     ) !void {
         if (width > math.maxInt(i32) or height > math.maxInt(i32) or
             @as(i64, x) + width > math.maxInt(i32) or @as(i64, y) + height > math.maxInt(i32)) return error.InvalidDimensions;
-        return self.drawBoxSidesInternal(true, false, x, y, width, height, border, borderSides, backgroundColor, titleColors, shouldFill, title, titleAlignment, bottomTitle, bottomTitleAlignment);
+        return self.drawBoxSidesInternal(true, x, y, width, height, border, borderSides, backgroundColor, titleColors, shouldFill, title, titleAlignment, bottomTitle, bottomTitleAlignment);
     }
 
     /// titleColors are the top and the bottom title's.
     inline fn drawBoxSidesInternal(
         self: *OptimizedBuffer,
         comptime checked_titles: bool,
-        comptime uniform: bool,
         x: i32,
         y: i32,
         width: u32,
@@ -3262,16 +3536,15 @@ pub const OptimizedBuffer = struct {
     ) !void {
         const opacity = self.getCurrentOpacity();
 
-        const border_bg_transparent = opacity == 0.0 or (border.alphaMax(uniform) == 0 and ansi.alpha(backgroundColor) == 0);
+        const border_bg_transparent = opacity == 0.0 or (border.alphaMax() == 0 and ansi.alpha(backgroundColor) == 0);
         const title_visible = (title != null and !isFullyTransparent(opacity, titleColors[0], backgroundColor)) or
             (bottomTitle != null and !isFullyTransparent(opacity, titleColors[1], backgroundColor));
         if (border_bg_transparent and !title_visible) {
             if (self.image_placements.items.len == 0) return;
             if (opacity == 0.0) return;
         }
-        return self.drawVisibleBox(
+        return self.drawVisibleSideBox(
             checked_titles,
-            uniform,
             x,
             y,
             width,
@@ -3291,10 +3564,9 @@ pub const OptimizedBuffer = struct {
         );
     }
 
-    fn drawVisibleBox(
+    fn drawVisibleSideBox(
         self: *OptimizedBuffer,
         comptime checked_titles: bool,
-        comptime uniform: bool,
         x: i32,
         y: i32,
         width: u32,
@@ -3359,8 +3631,8 @@ pub const OptimizedBuffer = struct {
 
         const extendVerticalsToTop = leftBorderOnly or rightBorderOnly or bottomOnlyWithVerticals;
         const extendVerticalsToBottom = leftBorderOnly or rightBorderOnly or topOnlyWithVerticals;
-        const useTransparentBorderFastPath = canUseTransparentBorderFastPath(self, uniform, border, backgroundColor, startX, startY, boxWidth, boxHeight);
-        const useOpaqueBorderFastPath = opacity == 1.0 and border.alphaMin(uniform) == 255 and !isRGBAWithAlpha(backgroundColor);
+        const useTransparentBorderFastPath = canUseTransparentSideBorderFastPath(self, border, backgroundColor, startX, startY, boxWidth, boxHeight);
+        const useOpaqueBorderFastPath = opacity == 1.0 and border.alphaMin() == 255 and !isRGBAWithAlpha(backgroundColor);
         const image_aware = self.image_placements.items.len != 0;
 
         // Draw horizontal borders
@@ -3374,21 +3646,21 @@ pub const OptimizedBuffer = struct {
                             continue;
                         }
 
-                        var char = border.lines[0];
+                        var char = border.line(0);
 
                         // Handle corners
                         if (drawX == startX and isAtActualLeft) {
-                            char = if (borderSides.left) border.corners[0] else border.lines[0];
+                            char = if (borderSides.left) border.corner(0) else border.line(0);
                         } else if (drawX == endX and isAtActualRight) {
-                            char = if (borderSides.right) border.corners[1] else border.lines[0];
+                            char = if (borderSides.right) border.corner(1) else border.line(0);
                         }
 
                         if (useTransparentBorderFastPath) {
-                            self.setTransparentBorderCell(@intCast(drawX), @intCast(startY), char, border.colors[0]);
+                            self.setTransparentBorderCell(@intCast(drawX), @intCast(startY), char, border.sideColor(0));
                         } else if (useOpaqueBorderFastPath) {
-                            self.set(@intCast(drawX), @intCast(startY), makeCell(char, border.colors[0], backgroundColor, 0));
+                            self.set(@intCast(drawX), @intCast(startY), makeCell(char, border.sideColor(0), backgroundColor, 0));
                         } else {
-                            const cell = makeCell(char, border.colors[0], backgroundColor, 0);
+                            const cell = makeCell(char, border.sideColor(0), backgroundColor, 0);
                             if (image_aware)
                                 self.setCellWithAlphaBlendingCell(@intCast(drawX), @intCast(startY), cell)
                             else
@@ -3407,21 +3679,21 @@ pub const OptimizedBuffer = struct {
                             continue;
                         }
 
-                        var char = border.lines[2];
+                        var char = border.line(2);
 
                         // Handle corners
                         if (drawX == startX and isAtActualLeft) {
-                            char = if (borderSides.left) border.corners[2] else border.lines[2];
+                            char = if (borderSides.left) border.corner(2) else border.line(2);
                         } else if (drawX == endX and isAtActualRight) {
-                            char = if (borderSides.right) border.corners[3] else border.lines[2];
+                            char = if (borderSides.right) border.corner(3) else border.line(2);
                         }
 
                         if (useTransparentBorderFastPath) {
-                            self.setTransparentBorderCell(@intCast(drawX), @intCast(endY), char, border.colors[2]);
+                            self.setTransparentBorderCell(@intCast(drawX), @intCast(endY), char, border.sideColor(2));
                         } else if (useOpaqueBorderFastPath) {
-                            self.set(@intCast(drawX), @intCast(endY), makeCell(char, border.colors[2], backgroundColor, 0));
+                            self.set(@intCast(drawX), @intCast(endY), makeCell(char, border.sideColor(2), backgroundColor, 0));
                         } else {
-                            const cell = makeCell(char, border.colors[2], backgroundColor, 0);
+                            const cell = makeCell(char, border.sideColor(2), backgroundColor, 0);
                             if (image_aware)
                                 self.setCellWithAlphaBlendingCell(@intCast(drawX), @intCast(endY), cell)
                             else
@@ -3442,15 +3714,15 @@ pub const OptimizedBuffer = struct {
                 // Left border
                 if (borderSides.left and isAtActualLeft and startX >= 0 and startX < @as(i32, @intCast(self.width))) {
                     if (useTransparentBorderFastPath) {
-                        self.setTransparentBorderCell(@intCast(startX), @intCast(drawY), border.lines[3], border.colors[3]);
+                        self.setTransparentBorderCell(@intCast(startX), @intCast(drawY), border.line(3), border.sideColor(3));
                     } else if (useOpaqueBorderFastPath) {
                         self.set(
                             @intCast(startX),
                             @intCast(drawY),
-                            makeCell(border.lines[3], border.colors[3], backgroundColor, 0),
+                            makeCell(border.line(3), border.sideColor(3), backgroundColor, 0),
                         );
                     } else {
-                        const cell = makeCell(border.lines[3], border.colors[3], backgroundColor, 0);
+                        const cell = makeCell(border.line(3), border.sideColor(3), backgroundColor, 0);
                         if (image_aware)
                             self.setCellWithAlphaBlendingCell(@intCast(startX), @intCast(drawY), cell)
                         else
@@ -3461,15 +3733,15 @@ pub const OptimizedBuffer = struct {
                 // Right border
                 if (borderSides.right and isAtActualRight and endX >= 0 and endX < @as(i32, @intCast(self.width))) {
                     if (useTransparentBorderFastPath) {
-                        self.setTransparentBorderCell(@intCast(endX), @intCast(drawY), border.lines[1], border.colors[1]);
+                        self.setTransparentBorderCell(@intCast(endX), @intCast(drawY), border.line(1), border.sideColor(1));
                     } else if (useOpaqueBorderFastPath) {
                         self.set(
                             @intCast(endX),
                             @intCast(drawY),
-                            makeCell(border.lines[1], border.colors[1], backgroundColor, 0),
+                            makeCell(border.line(1), border.sideColor(1), backgroundColor, 0),
                         );
                     } else {
-                        const cell = makeCell(border.lines[1], border.colors[1], backgroundColor, 0);
+                        const cell = makeCell(border.line(1), border.sideColor(1), backgroundColor, 0);
                         if (image_aware)
                             self.setCellWithAlphaBlendingCell(@intCast(endX), @intCast(drawY), cell)
                         else

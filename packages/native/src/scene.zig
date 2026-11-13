@@ -3340,28 +3340,18 @@ pub const Scene = struct {
         if (hasBoxPaint(&paint_options)) {
             const border_color = if (paint_options.focusable and focused) paint_options.focusedBorderColor else paint_options.borderColor;
             const options = box.details orelse &BoxDetails{};
-            const x: i32 = @intFromFloat(layout.screenX);
-            const y: i32 = @intFromFloat(layout.screenY);
-            const width: u32 = @intFromFloat(layout.width);
-            const height: u32 = @intFromFloat(layout.height);
-            const sides: buffer.BorderSides = .{
-                .left = paint_options.borderSides & api.OT_BORDER_LEFT != 0,
-                .bottom = paint_options.borderSides & api.OT_BORDER_BOTTOM != 0,
-                .right = paint_options.borderSides & api.OT_BORDER_RIGHT != 0,
-                .top = paint_options.borderSides & api.OT_BORDER_TOP != 0,
-            };
-            const title = if (options.title.len != 0) options.title else null;
-            const bottom_title = if (options.bottom_title.len != 0) options.bottom_title else null;
-            const fill = paint_options.shouldFill != 0;
-            if (box.sides) |overrides| {
-                const border = sideBorder(&paint_options, options, overrides, paint_options.focusable and focused);
-                // Without a title color, each title takes the color of its own side.
-                const title_colors: [2]ansi.RGBA = if (options.title_color) |color| .{ color, color } else .{ border.colors[0], border.colors[2] };
-                return target.drawBoxSidesChecked(x, y, width, height, &border, sides, paint_options.background, title_colors, fill, title, @intCast(options.title_alignment), bottom_title, @intCast(options.bottom_title_alignment));
-            }
+            // Out of line, so boxes without overrides keep this path's code (D122).
+            if (box.sides) |overrides| return paintSideBox(target, paint_options, layout, paint_options.focusable and focused, options, overrides);
             const chars = if (options.custom_border_chars) |*custom| custom else &borders[paint_options.borderStyle];
-            try target.drawBoxChecked(x, y, width, height, chars, sides, border_color, paint_options.background, options.title_color orelse border_color, fill, title, @intCast(options.title_alignment), bottom_title, @intCast(options.bottom_title_alignment));
+            try target.drawBoxChecked(@intFromFloat(layout.screenX), @intFromFloat(layout.screenY), @intFromFloat(layout.width), @intFromFloat(layout.height), chars, border_sides[paint_options.borderSides], border_color, paint_options.background, options.title_color orelse border_color, paint_options.shouldFill != 0, if (options.title.len != 0) options.title else null, @intCast(options.title_alignment), if (options.bottom_title.len != 0) options.bottom_title else null, @intCast(options.bottom_title_alignment));
         }
+    }
+
+    noinline fn paintSideBox(target: *buffer.OptimizedBuffer, paint_options: Paint, layout: Layout, focused: bool, options: *const BoxDetails, overrides: *const BoxSides) !void {
+        const border = sideBorder(&paint_options, options, overrides, focused);
+        // Without a title color, each title takes the color of its own side.
+        const title_colors: [2]ansi.RGBA = if (options.title_color) |color| .{ color, color } else .{ border.colors[0], border.colors[2] };
+        try target.drawBoxSidesChecked(@intFromFloat(layout.screenX), @intFromFloat(layout.screenY), @intFromFloat(layout.width), @intFromFloat(layout.height), &border, border_sides[paint_options.borderSides], paint_options.background, title_colors, paint_options.shouldFill != 0, if (options.title.len != 0) options.title else null, @intCast(options.title_alignment), if (options.bottom_title.len != 0) options.bottom_title else null, @intCast(options.bottom_title_alignment));
     }
 
     /// Resolves per-side overrides against the box's paint. Custom glyphs win over styles,
@@ -4078,6 +4068,19 @@ const borders = [4][11]u32{
     .{ 0x2554, 0x2557, 0x255a, 0x255d, 0x2550, 0x2551, 0x2566, 0x2569, 0x2560, 0x2563, 0x256c },
     .{ 0x256d, 0x256e, 0x2570, 0x256f, 0x2500, 0x2502, 0x252c, 0x2534, 0x251c, 0x2524, 0x253c },
     .{ 0x250f, 0x2513, 0x2517, 0x251b, 0x2501, 0x2503, 0x2533, 0x253b, 0x2523, 0x252b, 0x254b },
+};
+
+/// The painter's sides for each accepted border mask (setPaintPartial rejects masks above 15):
+/// one load per box instead of four mask tests.
+const border_sides = blk: {
+    var table: [api.OT_BORDER_ALL + 1]buffer.BorderSides = undefined;
+    for (&table, 0..) |*sides, mask| sides.* = .{
+        .left = mask & api.OT_BORDER_LEFT != 0,
+        .bottom = mask & api.OT_BORDER_BOTTOM != 0,
+        .right = mask & api.OT_BORDER_RIGHT != 0,
+        .top = mask & api.OT_BORDER_TOP != 0,
+    };
+    break :blk table;
 };
 
 /// The stroke of each OT_BORDER_* style: light (single, rounded), double, heavy.
