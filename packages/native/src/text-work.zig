@@ -14,6 +14,8 @@ pub const Counts = struct {
     lines_shifted: u64 = 0,
     /// Partial layouts that reach the splice of their staged lines.
     splices: u64 = 0,
+    /// Edit steps that prepare a mark version before publishing a new root.
+    mark_preparations: u64 = 0,
     /// Measures that walk lines, and the logical lines they measure.
     measure_passes: u64 = 0,
     measure_lines: u64 = 0,

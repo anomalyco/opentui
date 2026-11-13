@@ -8,6 +8,7 @@ const model = @import("model.zig");
 const TestPools = @import("test-pools.zig").TestPools;
 const edit_buffer = @import("../edit-buffer.zig");
 const iter = @import("../text-buffer-iterators.zig");
+const work = @import("../text-work.zig");
 const ss = @import("../syntax-style.zig");
 const c = @import("context_abi_c");
 const abi = @import("../context-abi.zig");
@@ -227,7 +228,10 @@ const Harness = struct {
         defer eb.deinit();
         var m: Model = .{ .arena = arena };
         for (commands, 0..) |command, step| {
+            const plain = eb.tb.marks().len == 0;
+            _ = work.take();
             if (try apply(eb, &m, arena, command)) |property| return .{ .property = property, .step = step };
+            if (plain and work.take().mark_preparations != 0) return .{ .property = "empty mark work", .step = step };
             if (try check(eb, &m, arena)) |property| return .{ .property = property, .step = step };
         }
         return null;
