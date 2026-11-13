@@ -4338,11 +4338,11 @@ pub const Context = struct {
         switch (command) {
             .move_up => |atomic| {
                 view.view.moveUpVisual();
-                if (atomic) try view.edit.buffer.leaveAtomic(null);
+                if (atomic) try view.edit.buffer.leaveAtomic(from, false);
             },
             .move_down => |atomic| {
                 view.view.moveDownVisual();
-                if (atomic) try view.edit.buffer.leaveAtomic(from);
+                if (atomic) try view.edit.buffer.leaveAtomic(from, true);
             },
             .goto_line_end => view.view.gotoVisualLineEnd(),
             .delete_selection => try view.view.deleteSelectedText(),

@@ -1649,12 +1649,14 @@ ot_status ot_edit_buffer_set_tab_width(ot_context *, const ot_handle *edit_buffe
  * for DELETE_FORWARD, BACKSPACE, MOVE_LEFT and MOVE_RIGHT, the edge for KEEP_OUTSIDE (0 the nearer,
  * ties to the end; 1 the end; 2 the start), zero otherwise.
  * OT_EDIT_ATOMIC applies the cursor rules around atomic edit marks; of overlapping marks the oldest
- * counts first. Left from a mark's end goes one unit before its start, and before every mark that
- * unit is in; Right from its start, or from the unit before it, goes to its end and past the marks
- * that contain that end. Backspace at its end or Delete at its start deletes the whole mark as one
- * edit. CURSOR_OFFSET_ATOMIC moves to the offset as Left (toward the start) or Right (toward the
- * end) would, past a mark it lands in. KEEP_OUTSIDE moves a cursor that atomic marks surround to
- * the outer edge of all of them. A move under these rules ends outside every atomic mark. */
+ * counts first. Each move steps over one mark: Left from a mark's end goes one unit before its
+ * start, or to the start when another mark ends there; Right from its start, or from one cell before
+ * it, goes to its end. Backspace at a mark's end or Delete at its start deletes the whole mark as
+ * one edit (of marks with that edge there, the oldest). CURSOR_OFFSET_ATOMIC moves to the offset as
+ * Left (toward the start) or Right (toward the end) would, past a mark it lands in. KEEP_OUTSIDE
+ * moves the cursor to the start of its unit, then out of the atomic marks that surround it to the
+ * outer edge of all of them. A move under these rules ends on a unit start outside every atomic
+ * mark. */
 ot_status ot_edit_buffer_command(ot_context *, const ot_handle *, uint32_t command, uint32_t argument);
 /* redo is 0/1. Capacity must be at least 64, the native cursor-metadata bound,
  * before history is changed. No history returns zero bytes. */
@@ -1994,8 +1996,8 @@ ot_status ot_editor_view_set_scroll_margin(ot_context *, const ot_handle *, floa
 /* argument is offset, OT_SCENE_WRAP_*, or Unicode scalar (0 disables) for the
  * last three commands, zero or OT_EDIT_ATOMIC for MOVE_UP/MOVE_DOWN, and zero otherwise. With
  * OT_EDIT_ATOMIC a move that lands in an atomic edit mark leaves it: nearer its start, one unit
- * before it (outside the marks there), unless Down would end at or before where it started;
- * otherwise past its end and the marks that surround that end. */
+ * before it (outside the marks there); nearer its end, past it and the marks that surround that
+ * end. Down never ends at or before where it started, nor Up at or after it. */
 ot_status ot_editor_view_command(ot_context *, const ot_handle *, uint32_t command, uint32_t argument);
 /* Atomic selected delete-then-insert using native editor history and event order.
  * Without a selection inserts at the primary cursor. Input bytes are copied. */

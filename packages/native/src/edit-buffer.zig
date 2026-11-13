@@ -1021,21 +1021,12 @@ pub const EditBuffer = struct {
         return if (at.col > 0) offset - self.tb.getPrevGraphemeWidth(at.row, at.col) else offset -| 1;
     }
 
-    /// One unit before `start`, and before every atomic mark that unit is in.
+    /// One unit before the marks that surround `start`: Left steps over one chip. A chip that touches it
+    /// there stops it at the touching edge.
     fn unitBefore(self: *EditBuffer, start: u32) u32 {
-        var s = start;
-        while (true) {
-            const p = self.prevStop(s);
-            if (p == s) return p;
-            s = (self.oldestAtomic(p, 0, std.math.maxInt(u32)) orelse return p).start;
-        }
-    }
-
-    /// Past every atomic mark from `c` on that contains `end`.
-    fn forward(self: *const EditBuffer, c: u32, end: u32) u32 {
-        var e = end;
-        while (self.oldestAtomic(e, c, std.math.maxInt(u32))) |mark| e = mark.end;
-        return e;
+        const s = self.outside(start, false);
+        const p = self.prevStop(s);
+        return if (self.oldestAtomic(p, 0, std.math.maxInt(u32)) != null) s else p;
     }
 
     /// The first offset from `offset` toward the end or the start that no atomic mark surrounds.
@@ -1056,8 +1047,11 @@ pub const EditBuffer = struct {
         return x;
     }
 
-    /// Moves a cursor that atomic marks surround to the outer edge of them toward `toward`.
+    /// Moves the cursor to the start of the unit it is in, then, when atomic marks surround it, to the outer
+    /// edge of them toward `toward`.
     pub fn keepOutside(self: *EditBuffer, toward: Toward) !void {
+        const col = self.snapColumn(self.cursor.row, self.cursor.col);
+        if (col != self.cursor.col) try self.setCursor(self.cursor.row, col);
         const c = self.cursor.offset;
         const start = self.outside(c, false);
         if (start == c) return;
@@ -1070,12 +1064,13 @@ pub const EditBuffer = struct {
         try self.setCursorByOffset(if (to_end) end else start);
     }
 
-    /// Left from an atomic mark's end goes one unit before it; Right from at most a unit before its start to its end.
+    /// Left from an atomic mark's end goes one unit before it; Right from its start, or from one cell before it,
+    /// to its end. Each steps over one chip; a move ends outside every mark.
     pub fn moveAtomic(self: *EditBuffer, right: bool) !void {
         const c = self.cursor.offset;
         const mark = if (right) self.oldestAtomic(c + 1, c, std.math.maxInt(u32)) else if (c > 0) self.oldestAtomic(c - 1, 0, c) else null;
         if (mark) |m| {
-            try self.setCursorByOffset(if (right) self.forward(c, m.end) else self.unitBefore(m.start));
+            try self.setCursorByOffset(if (right) m.end else self.unitBefore(m.start));
         } else if (right) self.moveRight() else self.moveLeft();
         try self.keepOutside(if (right) .end else .start);
     }
@@ -1084,33 +1079,34 @@ pub const EditBuffer = struct {
     pub fn setCursorByOffsetAtomic(self: *EditBuffer, offset: u32) !void {
         const c = self.cursor.offset;
         const mark = if (offset > c) self.oldestAtomic(offset, c, std.math.maxInt(u32)) else if (offset < c) self.oldestAtomic(offset, 0, c) else null;
-        try self.setCursorByOffset(if (mark) |m| (if (offset > c) self.forward(c, m.end) else self.unitBefore(m.start)) else offset);
+        try self.setCursorByOffset(if (mark) |m| (if (offset > c) m.end else self.unitBefore(m.start)) else offset);
         try self.keepOutside(if (offset > c) .end else if (offset < c) .start else .nearer);
     }
 
-    /// After a vertical move from `from` (null for Up) into an atomic mark: nearer its start, one unit before it,
-    /// unless Down would go back to or before `from`; otherwise its end. Then outside the marks there, toward the
-    /// move.
-    pub fn leaveAtomic(self: *EditBuffer, from: ?u32) !void {
+    /// After a vertical move from `from` into an atomic mark: nearer its start, one unit before it, nearer its
+    /// end, past it; but Down never goes back to or before `from`, and Up never forward to or past it.
+    pub fn leaveAtomic(self: *EditBuffer, from: u32, down: bool) !void {
         const c = self.cursor.offset;
-        const mark = self.oldestAtomic(c, 0, std.math.maxInt(u32)) orelse return;
-        const p = self.prevStop(mark.start);
-        if (c - mark.start < mark.end - c and (from == null or p > from.?)) {
-            return self.setCursorByOffset(self.outside(p, from != null));
+        if (self.oldestAtomic(c, 0, std.math.maxInt(u32))) |mark| {
+            const p = self.prevStop(mark.start);
+            const end = self.outside(mark.end, true);
+            const to_start = if (c - mark.start < mark.end - c) !down or p > from else !down and end >= from;
+            try self.setCursorByOffset(if (to_start) self.outside(p, down) else end);
         }
-        try self.setCursorByOffset(self.outside(mark.end, true));
+        try self.keepOutside(if (down) .end else .start);
     }
 
-    /// Backspace at an atomic mark's end or Delete at its start deletes the whole mark as one edit.
+    /// Backspace at an atomic mark's end or Delete at its start deletes the whole mark as one edit; of marks
+    /// with that edge there, the oldest.
     pub fn deleteAtomic(self: *EditBuffer, forward_delete: bool) !void {
         const c = self.cursor.offset;
-        const mark = if (forward_delete) self.oldestAtomic(c, 0, std.math.maxInt(u32)) else if (c > 0) self.oldestAtomic(c - 1, 0, std.math.maxInt(u32)) else null;
-        if (mark) |m| if ((if (forward_delete) m.start else m.end) == c) {
+        const mark = if (forward_delete) self.oldestAtomic(c, c, std.math.maxInt(u32)) else if (c > 0) self.oldestAtomic(c - 1, 0, c) else null;
+        if (mark) |m| {
             const rope = self.tb.rope();
             const start = iter_mod.offsetToCoords(rope, m.start).?;
             const end = iter_mod.offsetToCoords(rope, m.end).?;
             return self.deleteRange(.{ .row = start.row, .col = start.col }, .{ .row = end.row, .col = end.col });
-        };
+        }
         if (forward_delete) try self.deleteForward() else try self.backspace();
     }
 

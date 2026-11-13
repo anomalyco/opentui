@@ -272,9 +272,12 @@ describe("ExtmarksController", () => {
       expect(textarea.cursorOffset).toBe(2)
     })
 
-    // A mark that touches or overlaps the one moved over is skipped too.
-    for (const end of [4, 5]) {
-      it(`should jump over virtual extmarks at 2..${end} and 4..6 when moving left`, async () => {
+    // A mark that overlaps the one moved over is skipped too; one that touches it is the next step.
+    for (const [end, to] of [
+      [4, 4],
+      [5, 1],
+    ]) {
+      it(`should jump over virtual extmarks at 2..${end} and 4..6 when moving left to ${to}`, async () => {
         await setup("ab@x@y")
 
         textarea.focus()
@@ -283,9 +286,24 @@ describe("ExtmarksController", () => {
         extmarks.create({ start: 4, end: 6, virtual: true })
 
         currentMockInput.pressArrow("left")
-        expect(textarea.cursorOffset).toBe(1)
+        expect(textarea.cursorOffset).toBe(to)
       })
     }
+
+    // Chips whose separator spaces were deleted: Right steps over one, Backspace deletes the one before the cursor
+    // and Delete the one after it.
+    it("should step over and delete touching virtual extmarks one at a time", async () => {
+      await setup("xx @a@b@c yy")
+      textarea.focus()
+      textarea.cursorOffset = 2
+      for (const start of [3, 5, 7]) extmarks.create({ start, end: start + 2, virtual: true })
+      currentMockInput.pressArrow("right")
+      expect(textarea.cursorOffset).toBe(5)
+      currentMockInput.pressKey("DELETE")
+      expect(textarea.plainText).toBe("xx @a@c yy")
+      currentMockInput.pressBackspace()
+      expect([textarea.plainText, textarea.cursorOffset]).toEqual(["xx @c yy", 3])
+    })
 
     it("should allow normal cursor movement left outside virtual extmark", async () => {
       await setup("abcdefgh")
@@ -305,6 +323,19 @@ describe("ExtmarksController", () => {
       currentMockInput.pressArrow("left")
       expect(textarea.cursorOffset).toBe(0)
     })
+  })
+
+  // The second cell of a wide character is not a stop: the setters go to its start.
+  it("should keep the cursor off the second cell of a wide character", async () => {
+    await setup("a日b")
+    textarea.focus()
+    textarea.cursorOffset = 0
+    extmarks.create({ start: 0, end: 1, virtual: true })
+    textarea.editBuffer.setCursorByOffset(2)
+    expect(textarea.cursorOffset).toBe(1)
+    textarea.cursorOffset = 4
+    textarea.cursorOffset = 2
+    expect(textarea.cursorOffset).toBe(1)
   })
 
   describe("Virtual Extmark - Selection Mode", () => {
@@ -482,6 +513,23 @@ describe("ExtmarksController", () => {
       currentMockInput.pressBackspace()
       expect(textarea.plainText).toBe("a")
     })
+
+    // An older mark around the cursor does not hide a newer one whose edge is there: Delete and Backspace take it
+    // whole.
+    for (const [at, key] of [
+      [3, "DELETE"],
+      [6, "BACKSPACE"],
+    ] as const) {
+      it(`should delete a whole nested virtual extmark with ${key} at ${at}`, async () => {
+        await setup("abcdefghijklmno")
+        textarea.focus()
+        textarea.cursorOffset = at
+        extmarks.create({ start: 1, end: 8, virtual: true })
+        extmarks.create({ start: 3, end: 6, virtual: true })
+        currentMockInput.pressKey(key)
+        expect(textarea.plainText).toBe("abcghijklmno")
+      })
+    }
   })
 
   describe("Virtual Extmark - Delete Key", () => {

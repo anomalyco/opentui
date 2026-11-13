@@ -247,6 +247,18 @@ describe("ExtmarksController - Multi-width Graphemes", () => {
       })
     }
 
+    // Up from the end of the wrapped mark lands nearer its end, which is where Up started: it goes before the mark.
+    it("Up from the end of a wrapped virtual extmark leaves it by its start", async () => {
+      await setup("日@mainrsxyzuvwABCDEFGH")
+      textarea.width = 6
+      await renderOnce()
+      extmarks.create({ start: 2, end: 15, virtual: true })
+      textarea.focus()
+      textarea.editBuffer.setCursorByOffset(15)
+      currentMockInput.pressArrow("up")
+      expect(textarea.editBuffer.getCursorPosition().offset).toBe(0)
+    })
+
     // A selection skips the mark logic: the second Shift+Down or Shift+Up, which extends one, stops inside the mark.
     for (const [key, from] of [
       ["down", 3],

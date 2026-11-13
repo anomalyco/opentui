@@ -345,15 +345,19 @@ const Harness = struct {
                 @memset(marks, null);
                 m.live = Model.dropped(.{ .cells = try arena.dupe(Cell, m.live.cells), .marks = marks });
             },
-            .cursor => |at| try eb.setCursorByOffset(range(stops, at, 0)[0][1]),
+            // An odd `at` is any cell offset, a stop or not, as the raw setter allows.
+            .cursor => |at| try eb.setCursorByOffset(if (at & 1 == 1) (at >> 1) % (stops[stops.len - 1][1] + 1) else range(stops, at, 0)[0][1]),
             .move => |move| {
                 const before = eb.getPrimaryCursor().offset;
                 const surrounded = surrounds(eb, before);
+                const on_stop = for (stops) |stop| {
+                    if (stop[1] == before) break true;
+                } else false;
                 switch (move) {
                     .left, .right => try eb.moveAtomic(move == .right),
                     .up, .down => {
                         if (move == .up) eb.moveUp() else eb.moveDown();
-                        try eb.leaveAtomic(if (move == .up) null else before);
+                        try eb.leaveAtomic(before, move == .down);
                     },
                     .set => |at| try eb.setCursorByOffsetAtomic(range(stops, at, 0)[0][1]),
                     .keep => |toward| try eb.keepOutside(toward),
@@ -363,42 +367,39 @@ const Harness = struct {
                     if (stop[1] == after) break;
                 } else return "stop";
                 if (surrounds(eb, after)) return "inside";
-                if ((move == .left and after > before) or (move == .right and after < before)) return "direction";
-                if (move == .keep and !surrounded and after != before) return "keep";
+                if (on_stop and (((move == .left or move == .up) and after > before) or ((move == .right or move == .down) and after < before))) return "direction";
+                if (move == .keep and on_stop and !surrounded and after != before) return "keep";
             },
             .delete_atomic => |forward| {
-                // The oldest atomic mark on the cell before the cursor (Backspace) or at it (Delete): whole
-                // when the cursor is at its end or start, else one code point.
+                // Of the atomic marks on the cell before the cursor (Backspace) or at it (Delete), the oldest
+                // that ends (starts) at the cursor goes whole; with none, one code point.
                 const cursor = eb.getPrimaryCursor().offset;
                 const b = for (stops) |stop| {
                     if (stop[1] == cursor) break stop[0];
-                } else return "stop";
+                } else return null;
                 const cells = m.live.cells;
                 if (if (forward) b == cells.len else b == 0) {
                     try eb.deleteAtomic(forward);
                     return null;
                 }
                 const cell = if (forward) b else b - 1;
-                var oldest: ?usize = null;
-                for (m.live.marks, 0..) |slot, index| {
-                    const mark = slot orelse continue;
-                    if (mark.atomic and cells[cell].cover & (@as(u64, 1) << @intCast(index)) != 0 and
-                        (oldest == null or mark.id < m.live.marks[oldest.?].?.id)) oldest = index;
-                }
                 var start = cell;
                 while (start > 0 and cells[start].byte & 0xC0 == 0x80) start -= 1;
                 var end = cell + 1;
                 while (end < cells.len and cells[end].byte & 0xC0 == 0x80) end += 1;
-                if (oldest) |index| {
+                var oldest: u32 = std.math.maxInt(u32);
+                for (m.live.marks, 0..) |slot, index| {
+                    const mark = slot orelse continue;
                     const bit = @as(u64, 1) << @intCast(index);
+                    if (!mark.atomic or cells[cell].cover & bit == 0 or mark.id > oldest) continue;
                     var first = cell;
                     while (first > 0 and cells[first - 1].cover & bit != 0) first -= 1;
                     var last = cell + 1;
                     while (last < cells.len and cells[last].cover & bit != 0) last += 1;
-                    if ((if (forward) first else last) == b) {
-                        start = first;
-                        end = last;
-                    }
+                    if ((if (forward) first else last) != b) continue;
+                    oldest = mark.id;
+                    start = first;
+                    end = last;
                 }
                 try eb.deleteAtomic(forward);
                 try m.storeUndo();
@@ -716,12 +717,15 @@ test "atomic marks: cursor rules match the hosts' tables" {
         .{ .text = wrapped, .width = 6, .marks = &.{ .{ 2, 15 }, .{ 14, 19 }, .{ 18, 23 }, .{ 22, 27 } }, .from = 0, .move = .down, .to = 27 },
         .{ .text = wrapped, .width = 6, .marks = &.{ .{ 2, 15 }, .{ 15, 17 } }, .from = 0, .move = .down, .to = 15 },
         .{ .text = "a\n\n@main.rs\nb", .marks = &.{.{ 3, 11 }}, .from = 2, .move = .down, .to = 11 },
+        // Down leaving nearer the start goes past the mark it is in, toward the move; Up never goes forward.
+        .{ .text = "0123456789\nabcdefghij\nxyz", .marks = &.{ .{ 14, 20 }, .{ 12, 15 } }, .from = 4, .move = .down, .to = 20 },
+        .{ .text = wrapped, .width = 6, .marks = &.{.{ 2, 15 }}, .from = 15, .move = .up, .to = 0 },
         // Overlapping marks: Up and Backspace take the mark added first, in either order.
         .{ .text = "0123456789\n0123456789\n0123456789", .marks = &.{ .{ 14, 20 }, .{ 11, 16 } }, .from = 26, .move = .up, .to = 11 },
         .{ .text = "0123456789\n0123456789\n0123456789", .marks = &.{ .{ 11, 16 }, .{ 14, 20 } }, .from = 26, .move = .up, .to = 20 },
         .{ .text = "abcd", .marks = &.{ .{ 1, 4 }, .{ 0, 4 } }, .from = 4, .move = .backspace, .to = 1, .after = "a" },
         .{ .text = "abcd", .marks = &.{ .{ 0, 4 }, .{ 1, 4 } }, .from = 4, .move = .backspace, .to = 0, .after = "" },
-        // Left and Right jump over a mark, and Left over marks that touch or overlap it.
+        // Left and Right jump over a mark, and Left over marks that overlap it; a touching one stops it at the edge.
         .{ .text = "abcdefgh", .marks = &.{.{ 3, 6 }}, .from = 2, .move = .right, .to = 6 },
         .{ .text = "abcdefgh", .marks = &.{.{ 3, 6 }}, .from = 0, .move = .right, .to = 1 },
         .{ .text = "abcdefgh", .marks = &.{.{ 3, 6 }}, .from = 7, .move = .left, .to = 6 },
@@ -729,8 +733,19 @@ test "atomic marks: cursor rules match the hosts' tables" {
         .{ .text = "abcdefgh", .marks = &.{.{ 3, 6 }}, .from = 2, .move = .left, .to = 1 },
         .{ .text = "abcdefghij", .marks = &.{ .{ 2, 4 }, .{ 5, 7 } }, .from = 1, .move = .right, .to = 4 },
         .{ .text = "abcdefghij", .marks = &.{ .{ 2, 4 }, .{ 5, 7 } }, .from = 4, .move = .right, .to = 7 },
-        .{ .text = "abcdefghij", .marks = &.{ .{ 1, 3 }, .{ 3, 5 } }, .from = 0, .move = .right, .to = 5 },
-        .{ .text = "ab@x@y", .marks = &.{ .{ 2, 4 }, .{ 4, 6 } }, .from = 6, .move = .left, .to = 1 },
+        // Chips that touch (a prompt whose separator spaces were deleted) are stepped over and deleted one at a time.
+        .{ .text = "abcdefghij", .marks = &.{ .{ 1, 3 }, .{ 3, 5 } }, .from = 0, .move = .right, .to = 3 },
+        .{ .text = "xx @a@b@c yy", .marks = &.{ .{ 3, 5 }, .{ 5, 7 }, .{ 7, 9 } }, .from = 2, .move = .right, .to = 5 },
+        .{ .text = "xx @a@b@c yy", .marks = &.{ .{ 3, 5 }, .{ 5, 7 }, .{ 7, 9 } }, .from = 9, .move = .left, .to = 7 },
+        .{ .text = "xx @a@b@c yy", .marks = &.{ .{ 3, 5 }, .{ 5, 7 }, .{ 7, 9 } }, .from = 5, .move = .backspace, .to = 3, .after = "xx @b@c yy" },
+        .{ .text = "xx @a@b@c yy", .marks = &.{ .{ 3, 5 }, .{ 5, 7 }, .{ 7, 9 } }, .from = 5, .move = .delete, .to = 5, .after = "xx @a@c yy" },
+        // Of overlapping marks, Delete and Backspace take the oldest with that edge at the cursor.
+        .{ .text = "abcdefghijklmno", .marks = &.{ .{ 1, 8 }, .{ 3, 6 } }, .from = 3, .move = .delete, .to = 3, .after = "abcghijklmno" },
+        .{ .text = "abcdefghijklmno", .marks = &.{ .{ 1, 8 }, .{ 3, 6 } }, .from = 6, .move = .backspace, .to = 3, .after = "abcghijklmno" },
+        // A cell inside a wide unit is not a stop: the atomic setter and KEEP_OUTSIDE go to the unit's start.
+        .{ .text = "a\u{65e5}b", .marks = &.{.{ 0, 1 }}, .from = 0, .move = .{ .atomic_set = 2 }, .to = 1 },
+        .{ .text = "a\u{65e5}b", .marks = &.{}, .from = 2, .move = .{ .keep = .nearer }, .to = 1 },
+        .{ .text = "ab@x@y", .marks = &.{ .{ 2, 4 }, .{ 4, 6 } }, .from = 6, .move = .left, .to = 4 },
         .{ .text = "ab@x@y", .marks = &.{ .{ 2, 5 }, .{ 4, 6 } }, .from = 6, .move = .left, .to = 1 },
         .{ .text = "\u{65e5}\u{65e5}\u{65e5}\u{65e5}@ab", .marks = &.{.{ 8, 11 }}, .from = 8, .move = .right, .to = 11 },
         .{ .text = "\u{65e5}\u{65e5}\u{65e5}\u{65e5}@ab", .marks = &.{.{ 8, 11 }}, .from = 11, .move = .right, .to = 11 },
@@ -802,6 +817,7 @@ test "atomic marks: cursor rules match the hosts' tables" {
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, editor_abi.ot_edit_buffer_command(&owner, &id, c.OT_EDIT_KEEP_OUTSIDE, 3));
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, editor_abi.ot_edit_buffer_command(&owner, &id, c.OT_EDIT_MOVE_UP, c.OT_EDIT_ATOMIC));
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, editor_abi.ot_editor_view_command(&owner, &view, c.OT_EDITOR_GOTO_LINE_END, c.OT_EDIT_ATOMIC));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, editor_abi.ot_editor_view_command(&owner, &view, c.OT_EDITOR_MOVE_UP, c.OT_EDIT_ATOMIC + 1));
 }
 
 /// Whether an atomic mark strictly contains cursor offset `offset`.
