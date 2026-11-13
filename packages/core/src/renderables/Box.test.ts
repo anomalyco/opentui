@@ -424,7 +424,11 @@ describe("BoxRenderable - per-side borders", () => {
     expect(captureFrame().split("\n")[0].trim()).toBe("")
     expect([child.x, child.y]).toEqual([0, 0])
     plain.borderBottomColor = "#ff0000"
+    plain.borderRightStyle = "heavy"
     expect(plain.border).toBe(false)
+    // Color reads are copies, as borderColor's are.
+    plain.borderBottomColor!.r = 0
+    expect(plain.borderBottomColor!.toInts()).toEqual(red)
   })
 
   test("focus colors every side and blur restores the overrides; titles take their side's color", async () => {
