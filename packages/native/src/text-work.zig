@@ -53,6 +53,11 @@ pub const Counts = struct {
     line_span_highlights: u64 = 0,
     /// Sift steps of the span builder's priority heap: its active-set work.
     span_heap_steps: u64 = 0,
+    /// `replaceTail` calls and the bytes each copies into the tail slot; rope rebuilds that
+    /// reclaim the arena.
+    tail_writes: u64 = 0,
+    tail_write_bytes: u64 = 0,
+    rope_rebuilds: u64 = 0,
 };
 
 const enabled = builtin.is_test;

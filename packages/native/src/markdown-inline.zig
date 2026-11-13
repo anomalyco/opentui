@@ -9,7 +9,10 @@ const tables = @import("markdown-tables.zig");
 
 /// Bounded stacks (design, memory model). Overflowing openers become literal text.
 pub const token_count_max: u32 = 4096;
-pub const delimiter_count_max: u32 = 1024;
+/// Delimiter runs that may still open or close, drawn concealed (D102): past it, the oldest
+/// expires. A closer that matches reveals the runs between, so this bounds how often a byte is
+/// written again (work property: sent bytes <= (3 + D)n).
+pub const delimiter_count_max: u32 = 32;
 pub const bracket_count_max: u32 = 64;
 /// CommonMark 4.7: at most 999 characters (code points) between a label's brackets.
 pub const label_codepoint_count_max: u32 = 999;
@@ -67,6 +70,9 @@ pub const Delimiter = struct {
     next: ?u32 = null,
     /// Head of the matches where this delimiter is the opener, newest first.
     opener_matches: ?u32 = null,
+    /// Per kind, the closer token of its latest match from this opener (0: none): the tokens
+    /// before it have the kind already, so a new match of the kind changes styles from there.
+    styled_to: [3]u32 = .{ 0, 0, 0 },
     /// First match where this delimiter is the closer and how many follow it in order.
     closer_first_match: u32 = 0,
     closer_match_count: u32 = 0,
@@ -85,6 +91,9 @@ pub const Match = struct {
     count: u32,
     /// Next older match of the same opener.
     next_for_opener: ?u32,
+    /// The opener's and the closer's tokens.
+    opener_token: u32 = 0,
+    closer_token: u32 = 0,
 };
 
 pub const Link = struct {
@@ -171,6 +180,8 @@ pub const Parser = struct {
     /// Top of the delimiter stack.
     delimiter_top: ?u32 = null,
     delimiter_stack_count: u32 = 0,
+    /// The most runs that waited on the stack at once.
+    delimiter_stack_max: u32 = 0,
     unresolved: bool = false,
     /// After one failed backtick search, the last start of each run length (cmark's rule), so
     /// later openers fail without searching again. Only a final parse fails a search.
@@ -195,6 +206,9 @@ pub const Parser = struct {
     /// The first token whose display changed since `takeChanged` (none: nothing changed).
     changed_from: u32 = std.math.maxInt(u32),
     extended_from: u32 = std.math.maxInt(u32),
+    /// The first opener a match since `takeChanged` took: the styles after it changed even
+    /// where its display did not (an optimistic opener).
+    matched_from: u32 = std.math.maxInt(u32),
     /// The first token whose delimiter expired (none: none did).
     expired_from: u32 = std.math.maxInt(u32),
     /// Bytes the tokenizer examined (counters; a construct retried after "need more" counts again).
@@ -212,7 +226,7 @@ pub const Parser = struct {
     /// Frees a store that grew past what one leaf's tail needs.
     pub fn releaseCapacity(self: *Parser) void {
         if (self.tokens.capacity > token_count_max) self.tokens.clearAndFree(self.allocator);
-        if (self.delimiters.capacity > delimiter_count_max) self.delimiters.clearAndFree(self.allocator);
+        if (self.delimiters.capacity > token_count_max) self.delimiters.clearAndFree(self.allocator);
         if (self.matches.capacity > token_count_max) self.matches.clearAndFree(self.allocator);
         if (self.links.capacity > bracket_count_max) self.links.clearAndFree(self.allocator);
         if (self.emails.capacity > bracket_count_max) self.emails.clearAndFree(self.allocator);
@@ -385,6 +399,7 @@ pub const Parser = struct {
         self.links.clearRetainingCapacity();
         self.changed_from = std.math.maxInt(u32);
         self.extended_from = std.math.maxInt(u32);
+        self.matched_from = std.math.maxInt(u32);
         self.expired_from = std.math.maxInt(u32);
     }
 
@@ -406,13 +421,16 @@ pub const Parser = struct {
         token: u32,
         /// The first text token that only grew at its end (none: none did).
         extended: u32,
+        /// The first opener a new match took (none: no match).
+        matched: u32,
     };
 
     /// What changed since the last call, and forgets it.
     pub fn takeChanged(self: *Parser) Changed {
-        const changed: Changed = .{ .token = self.changed_from, .extended = self.extended_from };
+        const changed: Changed = .{ .token = self.changed_from, .extended = self.extended_from, .matched = self.matched_from };
         self.changed_from = std.math.maxInt(u32);
         self.extended_from = std.math.maxInt(u32);
+        self.matched_from = std.math.maxInt(u32);
         return changed;
     }
 
@@ -502,12 +520,17 @@ pub const Parser = struct {
             _ = self.brackets.orderedRemove(0);
         }
         while (self.bottomDelimiter()) |bottom| {
-            const d = &self.delimiters.items[bottom];
-            if (d.token_index >= oldest_allowed) break;
-            d.expired = true;
-            self.expired_from = @min(self.expired_from, d.token_index);
-            self.removeDelimiter(bottom);
+            if (self.delimiters.items[bottom].token_index >= oldest_allowed) break;
+            self.expire(bottom);
         }
+    }
+
+    /// Delimiter `index` leaves the stack and never matches: it is literal (drawn so once the
+    /// leaf is final).
+    fn expire(self: *Parser, index: u32) void {
+        self.delimiters.items[index].expired = true;
+        self.expired_from = @min(self.expired_from, self.delimiters.items[index].token_index);
+        self.removeDelimiter(index);
     }
 
     fn bottomDelimiter(self: *const Parser) ?u32 {
@@ -664,29 +687,13 @@ pub const Parser = struct {
         const start = self.position;
         const count = runLength(self.subject, start, c);
         const end = start + count;
-        const before = previousCodePoint(self.subject, start);
-        const after = nextCodePoint(self.subject, end);
-        const before_space = isUnicodeWhitespace(before);
-        const after_space = isUnicodeWhitespace(after);
-        const before_punctuation = isUnicodePunctuation(before);
-        const after_punctuation = isUnicodePunctuation(after);
-        const left = !after_space and (!after_punctuation or before_space or before_punctuation);
-        const right = !before_space and (!before_punctuation or after_space or after_punctuation);
-        var can_open = left;
-        var can_close = right;
-        if (c == '_') {
-            can_open = left and (!right or before_punctuation);
-            can_close = right and (!left or after_punctuation);
-        }
-        if (c == '~' and count > 2) {
-            can_open = false;
-            can_close = false;
-        }
+        const can = flanking(self.subject, start, count, c);
+        const can_open = can.open;
+        const can_close = can.close;
         const token_index: u32 = @intCast(self.tokens.items.len);
         try self.push(.{ .start = start, .len = count, .kind = .delimiter, .aux = c });
         self.position = end;
         if (!can_open and !can_close) return;
-        if (self.delimiter_stack_count >= delimiter_count_max) return;
         const index: u32 = @intCast(self.delimiters.items.len);
         try self.delimiters.append(self.allocator, .{
             .token_index = token_index,
@@ -704,6 +711,9 @@ pub const Parser = struct {
         // A closer resolves as it arrives unless a bracket that may become a link holds it back:
         // the same matches as processing every closer at the end, in the same order.
         if (can_close and !self.activeBracket()) try self.processEmphasisFrom(index, null);
+        // Then the runs that wait are bounded: past the limit, the oldest expires.
+        if (self.delimiter_stack_count > delimiter_count_max) self.expire(self.bottomDelimiter().?);
+        self.delimiter_stack_max = @max(self.delimiter_stack_max, self.delimiter_stack_count);
     }
 
     fn activeBracket(self: *const Parser) bool {
@@ -784,11 +794,8 @@ pub const Parser = struct {
                     .{ .strong, 2 }
                 else
                     .{ .emphasis, 1 };
-                // The display showed the opener as closed by this kind already (optimistic) only
-                // when this match uses all of it with the kind its length implied.
-                if (opener.count != used or opener.opener_matches != null or kind != optimisticKind(opener.char, opener.original_count)) {
-                    self.markChanged(opener.token_index);
-                }
+                // The opener's bytes stay concealed (matched, or still waiting with what is left):
+                // what the match changes is the styles from it on, which `matched_from` reports.
                 opener.count -= used;
                 closer.count -= used;
                 self.markChanged(closer.token_index);
@@ -818,8 +825,18 @@ pub const Parser = struct {
 
     fn addMatch(self: *Parser, opener_index: u32, closer_index: u32, kind: MatchKind, count: u32) Error!void {
         const index: u32 = @intCast(self.matches.items.len);
-        try self.matches.append(self.allocator, .{ .kind = kind, .count = count, .next_for_opener = self.delimiters.items[opener_index].opener_matches });
-        self.delimiters.items[opener_index].opener_matches = index;
+        try self.matches.append(self.allocator, .{
+            .kind = kind,
+            .count = count,
+            .next_for_opener = self.delimiters.items[opener_index].opener_matches,
+            .opener_token = self.delimiters.items[opener_index].token_index,
+            .closer_token = self.delimiters.items[closer_index].token_index,
+        });
+        const opener = &self.delimiters.items[opener_index];
+        const styled_to = &opener.styled_to[@backingInt(kind)];
+        self.matched_from = @min(self.matched_from, if (styled_to.* != 0) styled_to.* else opener.token_index);
+        styled_to.* = self.delimiters.items[closer_index].token_index;
+        opener.opener_matches = index;
         const closer = &self.delimiters.items[closer_index];
         if (closer.closer_match_count == 0) closer.closer_first_match = index;
         assert(closer.closer_first_match + closer.closer_match_count == index);
@@ -1225,11 +1242,6 @@ pub fn delimiterOf(r: Result, index: u32) ?u32 {
     return null;
 }
 
-fn optimisticKind(c: u8, count: u32) MatchKind {
-    if (c == '~') return .strikethrough;
-    return if (count >= 2) .strong else .emphasis;
-}
-
 /// Display bytes of token `index` (read_leaf's text; the live display conceals an opener that
 /// still waits on the stack, as if it were closed: D93 Q4 B).
 pub fn tokenDisplayLength(r: Result, index: u32) u32 {
@@ -1370,7 +1382,99 @@ pub const PendingScan = struct {
     visits: u64 = 0,
 };
 
+/// A `*`, `_` or `~` run B drew concealed, at display offset `at` of the drawn bytes; it ends at
+/// content offset `end`.
+pub const PendingRun = struct { at: u32, end: u32, char: u8, count: u32, open: bool, close: bool };
+
+/// The spans drawn runs make, as process emphasis matches them (each closer with the nearest
+/// opener of its character before it; a strikethrough's runs of equal length), resolved as the
+/// runs come: a live leaf's runs grow at the end, and each is read once. B draws each span's
+/// kind on the bytes between its runs; an opener that waits styles nothing until its closer.
+pub fn kindBit(kind: MatchKind) u8 {
+    return @as(u8, 1) << @intCast(@backingInt(kind));
+}
+
+pub const PendingSpans = struct {
+    /// The openers that wait, oldest first (the parser's limit, and one more just read).
+    openers: [delimiter_count_max + 1]Opener = undefined,
+    opener_count: u32 = 0,
+    /// Per drawn byte, a bit per MatchKind of the spans over it.
+    kinds: std.ArrayListUnmanaged(u8) = .empty,
+    /// The runs read so far.
+    resolved: u32 = 0,
+    /// The most openers that waited at once.
+    openers_max: u32 = 0,
+    /// Cleared since a write read it: the drawing may differ, not only grow.
+    fresh: bool = true,
+
+    /// An opener's spans of a kind reach `styled_to[kind]`: a later span of the kind from it
+    /// marks only the bytes after.
+    const Opener = struct { at: u32, char: u8, count: u32, original: u32, close: bool, styled_to: [3]u32 };
+
+    pub fn clear(self: *PendingSpans) void {
+        self.opener_count = 0;
+        self.kinds.clearRetainingCapacity();
+        self.resolved = 0;
+        self.fresh = true;
+    }
+
+    pub fn deinit(self: *PendingSpans, allocator: std.mem.Allocator) void {
+        self.kinds.deinit(allocator);
+    }
+
+    /// Reads `runs` past the ones read (the same runs, more of them); returns the first drawn
+    /// byte whose kinds changed (maxInt: none), and adds the bytes marked to `marked`.
+    pub fn add(self: *PendingSpans, runs: []const PendingRun, allocator: std.mem.Allocator, marked: *u64) error{OutOfMemory}!u32 {
+        var first: u32 = std.math.maxInt(u32);
+        for (runs[self.resolved..]) |run| {
+            var count = run.count;
+            var i = self.opener_count;
+            while (run.close and count > 0 and i > 0) {
+                i -= 1;
+                const opener = &self.openers[i];
+                if (opener.char != run.char) continue;
+                if (run.char == '~' and opener.original != run.count) continue;
+                // The rule of three: a run that can both open and close.
+                if (run.char != '~' and (run.open or opener.close) and run.count % 3 != 0 and (opener.original + run.count) % 3 == 0) continue;
+                const used: u32 = if (run.char == '~') count else if (count >= 2 and opener.count >= 2) 2 else 1;
+                const kind: MatchKind = if (run.char == '~') .strikethrough else if (used == 2) .strong else .emphasis;
+                const from = @max(opener.at, opener.styled_to[@backingInt(kind)]);
+                if (from < run.at) {
+                    if (self.kinds.items.len < run.at) try self.kinds.appendNTimes(allocator, 0, run.at - self.kinds.items.len);
+                    for (self.kinds.items[from..run.at]) |*bits| bits.* |= kindBit(kind);
+                    marked.* += run.at - from;
+                    first = @min(first, from);
+                    opener.styled_to[@backingInt(kind)] = run.at;
+                }
+                opener.count -= used;
+                count -= used;
+                // Openers between the two are text now, and a spent one goes.
+                self.opener_count = i + @intFromBool(opener.count > 0);
+                if (opener.count > 0) i += 1;
+            }
+            if (run.open and count > 0) {
+                self.openers[self.opener_count] = .{ .at = run.at, .char = run.char, .count = count, .original = run.count, .close = run.close, .styled_to = .{ 0, 0, 0 } };
+                self.opener_count += 1;
+            }
+            // The parser's limit: past it, the oldest opener never matches (it stays concealed
+            // in the drawing; the parse of the word shows it).
+            if (self.opener_count > delimiter_count_max) {
+                std.mem.copyForwards(Opener, self.openers[0..delimiter_count_max], self.openers[1..self.opener_count]);
+                self.opener_count -= 1;
+            }
+            self.openers_max = @max(self.openers_max, self.opener_count);
+        }
+        self.resolved = @intCast(runs.len);
+        return first;
+    }
+};
+
 pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *PendingScan, allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) error{OutOfMemory}!void {
+    return renderPendingRuns(s, from, code_opener, scan, allocator, out, null);
+}
+
+/// renderPending that also notes the concealed runs in `runs`.
+pub fn renderPendingRuns(s: []const u8, from: u32, code_opener: ?u32, scan: *PendingScan, allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), runs: ?*std.ArrayListUnmanaged(PendingRun)) error{OutOfMemory}!void {
     // Bytes [from, resume) were read by the last call and held its stop.
     const continues = scan.stop == from;
     // No bytes past the stop: the scan's state (a code span, a tag) stands as it is.
@@ -1446,7 +1550,20 @@ pub fn renderPending(s: []const u8, from: u32, code_opener: ?u32, scan: *Pending
         const before = i;
         defer scan.visits += i - before;
         switch (c) {
-            '*', '_', '~' => i += runLength(s, i, c),
+            '*', '_', '~' => {
+                const run = runLength(s, i, c);
+                // B draws a run as matched while it may still open or close; the byte after it
+                // decides, so a run at the end waits for it, and one that can do neither
+                // (`snake_case`, `a * b`) is text.
+                if (i + run == s.len) return hold(scan, i, i, tag, .{ word_start, link, link_scanned });
+                const can = flanking(s, i, run, c);
+                if (!can.open and !can.close) {
+                    try out.appendSlice(allocator, s[i .. i + run]);
+                } else if (runs) |list| {
+                    try list.append(allocator, .{ .at = @intCast(out.items.len), .end = i + run, .char = c, .count = run, .open = can.open, .close = can.close });
+                }
+                i += run;
+            },
             '`' => {
                 // A run at the end may still grow: its length is not known yet.
                 if (i + runLength(s, i, c) == s.len) return hold(scan, i, i, tag, .{ word_start, link, link_scanned });
@@ -1582,6 +1699,21 @@ pub fn isAsciiPunctuation(c: u8) bool {
 }
 
 /// Code point before `at`, or '\n' at the start (CommonMark treats both ends as whitespace).
+/// Whether a run of `count` delimiters `c` at `start` can open and close spans (CommonMark §6.2).
+fn flanking(s: []const u8, start: u32, count: u32, c: u8) struct { open: bool, close: bool } {
+    const before = previousCodePoint(s, start);
+    const after = nextCodePoint(s, start + count);
+    const before_space = isUnicodeWhitespace(before);
+    const after_space = isUnicodeWhitespace(after);
+    const before_punctuation = isUnicodePunctuation(before);
+    const after_punctuation = isUnicodePunctuation(after);
+    const left = !after_space and (!after_punctuation or before_space or before_punctuation);
+    const right = !before_space and (!before_punctuation or after_space or after_punctuation);
+    if (c == '~' and count > 2) return .{ .open = false, .close = false };
+    if (c == '_') return .{ .open = left and (!right or before_punctuation), .close = right and (!left or after_punctuation) };
+    return .{ .open = left, .close = right };
+}
+
 fn previousCodePoint(s: []const u8, at: u32) u21 {
     if (at == 0) return '\n';
     var i = at - 1;

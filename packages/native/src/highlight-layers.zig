@@ -169,6 +169,28 @@ pub const Layers = struct {
         end_byte: u32,
         runs: []const LayerRun,
     ) Error!bool {
+        return self.setWithSpare(allocator, link_pool, layer_id, start_byte, end_byte, runs, null);
+    }
+
+    /// Runs of layer `layer_id` now (0 when it has none).
+    pub fn runCount(self: *const Layers, layer_id: u32) usize {
+        const found = self.position(layer_id);
+        return if (found.exists) self.items[found.index].runs.items.len else 0;
+    }
+
+    /// `set`, taking the new runs' storage from `spare` when it has room (then `spare` is the
+    /// layer's and empty after), so a caller that reserved it beforehand cannot see this fail
+    /// for memory.
+    pub fn setWithSpare(
+        self: *Layers,
+        allocator: Allocator,
+        link_pool: *link.LinkPool,
+        layer_id: u32,
+        start_byte: u32,
+        end_byte: u32,
+        runs: []const LayerRun,
+        spare: ?*std.ArrayListUnmanaged(LayerRun),
+    ) Error!bool {
         if (start_byte > end_byte) return Error.InvalidIndex;
         var previous_end = start_byte;
         for (runs) |run| {
@@ -194,6 +216,13 @@ pub const Layers = struct {
         if (result_len > 0 and !found.exists and self.count >= layer_count_max) return Error.LayerLimit;
 
         var next: std.ArrayListUnmanaged(LayerRun) = .empty;
+        if (spare) |list| {
+            if (list.capacity >= result_len) {
+                next = list.*;
+                next.clearRetainingCapacity();
+                list.* = .empty;
+            }
+        }
         errdefer next.deinit(allocator);
         try next.ensureTotalCapacity(allocator, result_len);
 
@@ -229,7 +258,12 @@ pub const Layers = struct {
         }
 
         if (found.exists) {
-            self.items[found.index].runs.deinit(allocator);
+            // The old storage goes back in an empty spare (the caller frees it or sets with it).
+            var old_runs = self.items[found.index].runs;
+            if (spare != null and spare.?.capacity == 0) {
+                old_runs.clearRetainingCapacity();
+                spare.?.* = old_runs;
+            } else old_runs.deinit(allocator);
             self.items[found.index].runs = next;
             if (result_len == 0) self.remove(allocator, found.index);
         } else {

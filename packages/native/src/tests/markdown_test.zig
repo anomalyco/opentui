@@ -167,9 +167,10 @@ pub fn writtenShowReadLeaf(arena: std.mem.Allocator, doc: *const Doc, sink: *mar
 fn nodeShowsReadLeaf(arena: std.mem.Allocator, doc: *const Doc, sink: *const markdown.TailSink, index: u32) !bool {
     const b = doc.blocks.items[index];
     if (!markdown.Doc.isBound(b)) return true;
-    const expected = (try doc.readLeaf(arena, index)).bytes.items;
-    if (std.mem.eql(u8, expected, sink.shown(index))) return true;
-    std.debug.print("leaf {d} shows '{s}', read_leaf '{s}'\n", .{ index, sink.shown(index), expected });
+    const leaf = try doc.readLeaf(arena, index);
+    const expected = leaf.bytes.items;
+    if (std.mem.eql(u8, expected, sink.shown(index)) and markdown.Doc.sameStyles(leaf, sink.shownStyles(index))) return true;
+    std.debug.print("leaf {d} shows '{s}', read_leaf '{s}' (styles {s})\n", .{ index, sink.shown(index), expected, if (std.mem.eql(u8, expected, sink.shown(index))) "differ" else "-" });
     return false;
 }
 
@@ -500,7 +501,7 @@ const model = @import("model.zig");
 
 /// Pieces the soup generator glues together: every block start, inline opener and line ending
 /// the engine has a state for.
-const soup = [_][]const u8{
+pub const soup = [_][]const u8{
     "- ",        "> ",  "```",      "```\n", "|",     " | ",      "| --- | --- |\n", "[x]",
     "[x]: /u\n", "**",  "*",        "_",     "`",     "$",        "10. ",            "1. ",
     "===",       "---", "\t",       "\r\n",  "\n",    "\n\n",     "word",            " ",
@@ -814,7 +815,18 @@ fn genericProperties(arena: std.mem.Allocator, doc: *const Doc, fed: Fed, option
         // A display byte is assembled when it is drawn pending, drawn up to a hold's cut, and
         // (once in a token) for the comparison and the cut: k = 4.
         .{ "(a) work: assembled bytes <= 4n", c.display_assembled_bytes, 4 * n + 64 },
-        .{ "(a) work: sent bytes <= 3n", c.tail_write_bytes, 3 * n + 64 },
+        // A closer that matches reveals the runs between: each byte once more for each run that
+        // waited before it when it came (D at most delimiter_count_max, D102).
+        .{ "(a) work: sent bytes <= (3 + D)n", c.tail_write_bytes, (3 + c.waiting_runs_max) * n + 64 },
+        // A node write restyles from the first token whose style may have changed: each token
+        // once when it arrives, once when a later call writes it again or it gains its first
+        // match kind, once for each further kind (k kinds the doc's closers made, at most 3),
+        // and once for each run that waited before it and is revealed (D), plus the last one
+        // per call.
+        .{ "(a) work: run token visits <= (1 + max(1, k) + D)n + calls", c.run_token_visits, (1 + @max(1, @popCount(c.restyled_kinds)) + c.waiting_runs_max) * n + calls + 64 },
+        // The walk reads a token's match records as it passes it: each match has two, and
+        // matches are at most n / 2.
+        .{ "(a) work: match reads <= (1 + max(1, k) + D)n + calls", c.match_reads, (1 + @max(1, @popCount(c.restyled_kinds)) + c.waiting_runs_max) * n + calls + 64 },
     };
     for (bounds) |bound| {
         if (bound[1] > bound[2]) {
@@ -954,6 +966,13 @@ const Family = enum {
     code_pipes,
     code_span_pipe,
     open_emphasis,
+    /// Tokens after an opener that never closes (each node write restyled them all).
+    open_emphasis_tokens,
+    /// Openers, then their closers in reverse: each closer's match encloses the last one's.
+    nested_closers,
+    /// Matches that share an opening run (`***a* ` then `b** `, or one long run then `b** `
+    /// closers), and spans inside one word (`*a*b`): no opener between is revealed.
+    shared_openers,
     heading,
     table_rows,
     wide_rows,
@@ -971,6 +990,8 @@ const FamilyCommand = union(enum) {
     /// The hook on, with this filter.
     filter: []const u8,
 };
+
+const nested_marks = [_][]const u8{ "*", "**", "***", "_", "__", "~~" };
 
 const Families = struct {
     pub const Command = FamilyCommand;
@@ -1018,6 +1039,57 @@ const Families = struct {
                 try out.appendSlice(arena, pick(random, &.{ "*", "**", "_", "text | *", "~~" }));
                 for (0..count) |_| try out.appendSlice(arena, pick(random, &.{ "ab ", "cd ", "e" }));
                 try out.appendSlice(arena, "end");
+            },
+            .open_emphasis_tokens => {
+                try out.appendSlice(arena, pick(random, &.{ "*open ", "**open ", "_o ", "[a ", "~~s " }));
+                for (0..count) |_| try out.appendSlice(arena, pick(random, &.{ "`c` ", "&amp; ", "\\* ", "<b> " }));
+            },
+            .nested_closers => {
+                // One mark for every level, or (mixed) one per level, closed in reverse.
+                const mixed = random.boolean();
+                const one = pick(random, &nested_marks);
+                const levels = try arena.alloc([]const u8, count);
+                for (levels) |*mark| mark.* = if (mixed) pick(random, &nested_marks) else one;
+                try out.appendSlice(arena, pick(random, &.{ "begin ", "", "`c` " }));
+                for (levels) |mark| try out.appendSlice(arena, try std.mem.concat(arena, u8, &.{ mark, pick(random, &.{ "a ", "`c` a ", "&amp; a " }) }));
+                var level = count;
+                while (level > 0) {
+                    level -= 1;
+                    try out.appendSlice(arena, try std.mem.concat(arena, u8, &.{ pick(random, &.{ "b", "`c`" }), levels[level], " " }));
+                }
+            },
+            .shared_openers => {
+                const mark = pick(random, &.{ "*", "_" });
+                try out.appendSlice(arena, pick(random, &.{ "begin ", "", "`c` " }));
+                switch (random.uintLessThan(u32, 4)) {
+                    0 => {
+                        for (0..count) |_| try out.appendSlice(arena, try std.mem.concat(arena, u8, &.{ mark, mark, mark, pick(random, &.{ "a", "`c`" }), mark, " " }));
+                        for (0..count) |_| try out.appendSlice(arena, try std.mem.concat(arena, u8, &.{ pick(random, &.{ "b", "`c`" }), mark, mark, " " }));
+                    },
+                    1 => {
+                        // One long run that every closer shares: `**` closers, or (leapfrogging the
+                        // run's per-kind ends) `*` and `**` in turn.
+                        const leap = random.boolean();
+                        for (0..3 * count) |_| try out.appendSlice(arena, mark);
+                        try out.appendSlice(arena, "a ");
+                        for (0..count) |n| try out.appendSlice(arena, try std.mem.concat(arena, u8, &.{ pick(random, &.{ "b", "`c`" }), mark, if (leap and n % 2 == 0) "" else mark, " " }));
+                    },
+                    2 => {
+                        // Runs of one to six marks around words and spaces, sharing openers and
+                        // closers at random (carbon-r3-1: "******a** **b*** c* d**").
+                        if (random.boolean()) try out.appendSlice(arena, "******a** **b*** c* d** ");
+                        for (0..count) |_| {
+                            for (0..1 + random.uintLessThan(usize, 6)) |_| try out.appendSlice(arena, mark);
+                            try out.appendSlice(arena, pick(random, &.{ "a", "b ", " c", "d", " " }));
+                        }
+                    },
+                    else => {
+                        // Spans inside one word, after an opener that may never close.
+                        try out.appendSlice(arena, pick(random, &.{ "", "~~x", "(*x" }));
+                        if (random.boolean()) try out.appendNTimes(arena, '*', 2 * count + 1);
+                        for (0..count) |_| try out.appendSlice(arena, pick(random, &.{ "*a*b", "**a**b", "*`c`*b", "_a_b" }));
+                    },
+                }
             },
             .heading => {
                 try out.appendSlice(arena, pick(random, &.{ "# ", "###### ", "> ## " }));
@@ -1142,6 +1214,11 @@ const Families = struct {
             }
             if (try genericProperties(step_arena.allocator(), &f.doc, fed, options, true)) |property| return .{ .property = property, .step = step };
             if (sink.mismatch_count > 0) return .{ .property = "every node shows read_leaf (P5)", .step = step };
+            // P5 at every call, styles included, while the document is small enough to read
+            // whole each time (carbon-r3-1 lost a style mid-stream that finish restored).
+            if (f.doc.source.items.len <= fresh_compare_byte_count_max and !try writtenShowReadLeaf(step_arena.allocator(), &f.doc, &sink, false)) {
+                return .{ .property = "every node shows read_leaf after every call (P5)", .step = step };
+            }
             if (command == .math or command == .filter) math_once = .{};
             if (!math_once.check(&f.doc)) return .{ .property = "(c) a math block never reverts to text", .step = step };
         }
@@ -1301,6 +1378,211 @@ test "Markdown stream: every prefix of mixed fragments equals a fresh doc of it,
 test "Markdown model: repeated constructs keep work linear, stores within limits and the pending layout exact" {
     var families: Families = .{};
     try model.check(Families, &families, .{ .seeds = 8, .steps = 0 });
+}
+
+test "Markdown model: tokens after an opener that never closes are restyled once each" {
+    // bigboi-2's stream: 2,054 bytes cost 262,656 run token visits when each node write
+    // restyled every live token; the work property holds it linear.
+    var families: Families = .{};
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var commands: std.ArrayListUnmanaged(FamilyCommand) = .empty;
+    try commands.append(arena, .{ .append = "*open " });
+    for (0..512) |_| try commands.append(arena, .{ .append = "`c` " });
+    try commands.append(arena, .finish);
+    if (try families.run(arena, commands.items)) |failure| {
+        std.debug.print("{s} at step {d}\n", .{ failure.property, failure.step });
+        return error.ModelFailure;
+    }
+}
+
+test "Markdown model: a triple-star closer whose matches enclose the last ones restyles only what they add" {
+    // bigboi-r3-2: `begin `, 64 times `***a `, then 64 times `b*** `, one piece per call: 8,385 run token
+    // visits. Each `***` closer adds both its kinds in one call, so each token is passed once
+    // when it arrives and once when its closer comes: 2n + calls, tighter than the (1 + k)n the
+    // work property allows for two kinds.
+    var f: Fixture = undefined;
+    try f.init(.{});
+    defer f.deinit();
+    var sink: markdown.TailSink = .{ .allocator = gpa };
+    defer sink.deinit();
+    f.doc.tail_sink = &sink;
+    var fed: Fed = .{};
+    const stream = [_]struct { []const u8, usize }{ .{ "begin ", 1 }, .{ "***a ", 64 }, .{ "b*** ", 64 } };
+    for (stream) |piece| for (0..piece[1]) |_| {
+        fed.add(piece[0].len);
+        try f.doc.append(piece[0]);
+    };
+    fed.add(f.doc.source.items.len);
+    try f.doc.finish();
+    try std.testing.expectEqual(@as(usize, 0), sink.mismatch_count);
+    try std.testing.expect(f.doc.counters.run_token_visits <= 2 * fed.byte_count + fed.call_count + 64);
+}
+
+test "Markdown model: streams the reviewers found quadratic keep work linear" {
+    const Piece = struct { []const u8, usize };
+    const rows = [_][]const Piece{
+        // Seed 81 at 1,000 seeds: each call closes a `~~` and the `**` around it; inside, the
+        // older `**` and `~~` give the two kinds by two matches.
+        &.{ .{ "begin ", 1 }, .{ "**a ~~b ", 64 }, .{ "c~~ d** ", 64 } },
+        // carbon-1: each `***a* ` leaves `**` open, each `b** ` closes one (41,792 visits at 128).
+        &.{ .{ "begin ", 1 }, .{ "***a* ", 128 }, .{ "b** ", 128 } },
+        // bigboi-r4-1: 128 strong matches share one opening run (16,643 visits).
+        &.{ .{ "begin ", 1 }, .{ repeat("*", 256) ++ "a ", 1 }, .{ "b** ", 128 } },
+        // carbon-2: spans inside one undecided word (16,512 visits at 128); and with an opener at
+        // the word's start that never closes.
+        &.{.{ "*a*b", 128 }},
+        &.{ .{ "~~x", 1 }, .{ "*a*b", 128 } },
+        // A closer that matches reveals the runs between (sent bytes 57,282 for 1,408 bytes before
+        // D102's limit), and the same nested inside one word.
+        &.{ .{ "begin ", 1 }, .{ "~~a *b ", 128 }, .{ "c~~ ", 128 } },
+        &.{ .{ "(*a", 128 }, .{ "a*)", 128 } },
+        // carbon-r3-1's leapfrog: `*` and `**` closers in turn on one run of 384.
+        &.{ .{ repeat("*", 384) ++ "a ", 1 }, .{ "b* c** ", 128 } },
+        // carbon-r2-2: one undecided word whose long run every `**` closer shares (8,385 visits).
+        &.{ .{ repeat("*", 257) ++ "x", 1 }, .{ "_a_b", 128 }, .{ "**c", 128 } },
+    };
+    var families: Families = .{};
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    for (rows, 0..) |row, index| {
+        const arena = arena_state.allocator();
+        var commands: std.ArrayListUnmanaged(FamilyCommand) = .empty;
+        for (row) |piece| for (0..piece[1]) |_| try commands.append(arena, .{ .append = piece[0] });
+        try commands.append(arena, .finish);
+        if (try families.run(arena, commands.items)) |failure| {
+            std.debug.print("row {d}: {s} at step {d}\n", .{ index, failure.property, failure.step });
+            return error.ModelFailure;
+        }
+    }
+}
+
+test "Markdown: spans that close in one word leave the waiting-run limit to the runs that wait" {
+    // carbon-r2-1: each closed `*a*` left a spent opener behind, and the 33rd evicted `~~`.
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    var f: Fixture = undefined;
+    try f.init(.{});
+    defer f.deinit();
+    try f.doc.append("~~x");
+    for (0..32) |_| try f.doc.append("*a*b");
+    try f.doc.append("y~~.");
+    const leaf = try f.doc.readLeaf(arena_state.allocator(), 0);
+    try std.testing.expect(leaf.chunks.items[0].scope.strikethrough);
+}
+
+test "Markdown: past delimiter_count_max waiting runs, the oldest never matches" {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // `~~` waits under 31 or 32 `*` openers; at 33 runs it expires and shows as text.
+    for ([_]usize{ 31, 32 }, [_][]const u8{ "a ", "~~a " }) |count, shown| {
+        var f: Fixture = undefined;
+        try f.init(.{});
+        defer f.deinit();
+        try f.doc.append("~~a ");
+        for (0..count) |_| try f.doc.append("*b ");
+        try f.doc.append("c~~");
+        try f.doc.finish();
+        const leaf = try f.doc.readLeaf(arena, 0);
+        try std.testing.expectStringStartsWith(leaf.bytes.items, shown);
+    }
+}
+
+// Words of an opening run of up to six of a mark, a letter and a closing run of up to three
+// (carbon-r3-1's "******a** **b*** c* d**" is one): one run's matches of two kinds, closed in turn,
+// streamed a byte and two at a time, every prefix against a fresh doc. Small documents, many.
+test "Markdown stream: words of shared runs stream like a fresh doc of each prefix (seeded)" {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const count: u64 = if (environment(arena_state.allocator(), "MARKDOWN_DIFFERENTIAL")) |t| 10 * try std.fmt.parseInt(u64, t, 10) else 2000;
+    for (0..count) |seed| {
+        _ = arena_state.reset(.retain_capacity);
+        const arena = arena_state.allocator();
+        var prng = std.Random.DefaultPrng.init(seed);
+        const random = prng.random();
+        const mark = (&[_]u8{ '*', '_' })[random.uintLessThan(usize, 2)];
+        var text: std.ArrayListUnmanaged(u8) = .empty;
+        for (0..3 + random.uintLessThan(usize, 10)) |word| {
+            if (word > 0) try text.append(arena, ' ');
+            try text.appendNTimes(arena, mark, random.uintLessThan(usize, 7));
+            try text.append(arena, 'a' + @as(u8, @intCast(word)));
+            try text.appendNTimes(arena, mark, random.uintLessThan(usize, 4));
+        }
+        for ([_]usize{ 1, 2 }) |width| {
+            if (!try streamAgreesParts(arena, "kinds", try split(arena, text.items, width))) {
+                std.debug.print("shared-run seed {d}, width {d}: \"{f}\"\n", .{ seed, width, std.zig.fmtString(text.items) });
+                return error.StreamMismatch;
+            }
+        }
+    }
+}
+
+// bigboi's prefix-frame differential over nested and shared delimiters (round 3): openers of mixed
+// marks, their closers in reverse, adjacent closers sometimes run together (`**` then `*` as `***`,
+// so one run closes two matches), interiors of text, code and links; each document streamed at
+// strides 1, 3, 5 and 8, every prefix against a fresh doc and every node against read_leaf.
+test "Markdown stream: nested and shared delimiters stream like a fresh doc of each prefix (seeded)" {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    // CI: 60 documents, 240 streams; MARKDOWN_DIFFERENTIAL widens it.
+    const count: u64 = if (environment(arena_state.allocator(), "MARKDOWN_DIFFERENTIAL")) |t| try std.fmt.parseInt(u64, t, 10) else 60;
+    // A heading's pipe holds nothing, a code span's pipe included (seed 601 of the mixed fragments).
+    const rows = [_][]const u8{ "begin *out ***a** b* tail q* e", "begin **out ***a* b** tail q** e", "# h `a | b`*e*<", "******a** **b*** c* d**" };
+    for (0..count + rows.len) |seed| {
+        _ = arena_state.reset(.retain_capacity);
+        const arena = arena_state.allocator();
+        var text: std.ArrayListUnmanaged(u8) = .empty;
+        if (seed < rows.len) {
+            try text.appendSlice(arena, rows[seed]);
+        } else {
+            var prng = std.Random.DefaultPrng.init(seed);
+            const random = prng.random();
+            const depth = 1 + random.uintLessThan(usize, 6);
+            const levels = try arena.alloc([]const u8, depth);
+            const interiors = [_][]const u8{ "a ", "`c` ", "[l](u) ", "x" };
+            try text.appendSlice(arena, (&[_][]const u8{ "begin ", "", "w " })[random.uintLessThan(usize, 3)]);
+            for (levels) |*mark| {
+                mark.* = nested_marks[random.uintLessThan(usize, nested_marks.len)];
+                try text.appendSlice(arena, mark.*);
+                try text.appendSlice(arena, interiors[random.uintLessThan(usize, interiors.len)]);
+            }
+            var level = depth;
+            while (level > 0) {
+                level -= 1;
+                try text.appendSlice(arena, (&[_][]const u8{ "b", "`c`", "" })[random.uintLessThan(usize, 3)]);
+                try text.appendSlice(arena, levels[level]);
+                // Run the next closer into this one now and then, or end the pair with a space.
+                if (random.uintLessThan(u32, 3) != 0) try text.appendSlice(arena, (&[_][]const u8{ " ", " t " })[random.uintLessThan(usize, 2)]);
+            }
+            try text.appendSlice(arena, (&[_][]const u8{ " e", " tail q* e", "" })[random.uintLessThan(usize, 3)]);
+        }
+        for ([_]usize{ 1, 3, 5, 8 }) |width| {
+            if (!try streamAgreesParts(arena, "kinds", try split(arena, text.items, width))) {
+                std.debug.print("nested seed {d}, width {d}: \"{f}\"\n", .{ seed, width, std.zig.fmtString(text.items) });
+                return error.StreamMismatch;
+            }
+        }
+    }
+}
+
+test "Markdown model: a closer whose match encloses the last one's restyles only what it adds" {
+    // bigboi-r2-2: `begin `, 64 times `*a `, then 64 times `b* `, one piece per call: 8,385 run token
+    // visits for 390 bytes when each closer walked the interiors already italic.
+    var families: Families = .{};
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var commands: std.ArrayListUnmanaged(FamilyCommand) = .empty;
+    try commands.append(arena, .{ .append = "begin " });
+    for (0..64) |_| try commands.append(arena, .{ .append = "*a " });
+    for (0..64) |_| try commands.append(arena, .{ .append = "b* " });
+    try commands.append(arena, .finish);
+    if (try families.run(arena, commands.items)) |failure| {
+        std.debug.print("{s} at step {d}\n", .{ failure.property, failure.step });
+        return error.ModelFailure;
+    }
 }
 
 /// B's last two exceptions to P7, taken before a step: a backtick opener drawn as a code span
@@ -1469,6 +1751,29 @@ test "Markdown model: corpus rows split at random code points stream like one ap
     }
 }
 
+test "Markdown stream: the outermost link or image keeps its target while nested ones stream" {
+    // M3-b in the live walk: a node written a byte (or a few) at a time shows read_leaf after each
+    // call. Frames are not compared: the outer link takes over its parts' targets when it closes.
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    for ([_]usize{ 1, 2, 3 }) |width| {
+        var f: Fixture = undefined;
+        try f.init(.{});
+        defer f.deinit();
+        var sink: markdown.TailSink = .{ .allocator = gpa };
+        defer sink.deinit();
+        f.doc.tail_sink = &sink;
+        // Emphasis after the image restarts a walk inside the outer link.
+        for (try split(arena, "x [![<https://e.co> a@b.co](https://e/image) docs *now* more](https://e/outer) y", width)) |part| {
+            try f.doc.append(part);
+            try std.testing.expect(try writtenShowReadLeaf(arena, &f.doc, &sink, false));
+        }
+        try f.doc.finish();
+        try std.testing.expect(sink.mismatch_count == 0 and try liveShowsReadLeaf(arena, &f.doc, &sink));
+    }
+}
+
 test "Markdown read_leaf: display bytes, chunk styles, spans and the URL pool" {
     // A pending row reads the leaf while the stream is still open.
     const Row = struct { source: []const u8, math: bool = false, pending: bool = false, block: u32, chunks: []const struct { []const u8, []const u8, []const u8 } };
@@ -1483,6 +1788,8 @@ test "Markdown read_leaf: display bytes, chunk styles, spans and the URL pool" {
         .{ .source = "- x\n\n      code\n       more\n", .block = 3, .chunks = &.{.{ "code\n more", "raw", "" }} },
         // One run closes a span and opens another (CommonMark 6.2).
         .{ .source = "*a***b**", .block = 0, .chunks = &.{ .{ "a", " italic", "" }, .{ "b", "strong", "" } } },
+        // A pending word: an underscore between letters can neither open nor close, so B draws it.
+        .{ .source = "see ses_a", .pending = true, .block = 0, .chunks = &.{.{ "see ses_a", "", "" }} },
         // An image inside a link keeps the link's target, its autolinks and emails too (M3-b).
         .{ .source = "[![<https://e.co> a@b.co](https://e/image) docs](https://e/outer)", .block = 0, .chunks = &.{.{ "https://e.co a@b.co docs", "link", "https://e/outer" }} },
         // A math span the held pipe cuts shows as B drew it, literal (opus-2).

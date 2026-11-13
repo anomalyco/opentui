@@ -93,7 +93,8 @@ fn corpus_matches_core_one_shot_and_streamed() {
             assert_eq!(frame(&app), expected, "{case} ({mode}), one shot");
             assert!(oneshot.with_markdown(|shown| shown == source) && oneshot.markdown() == source);
 
-            // Streamed in chunks, each frame equals a one-shot render of the source so far.
+            // Streamed in chunks, each frame equals a fresh streaming document of the source so far: the last line is
+            // pending in both.
             let streamed_app = TestApp::new(60, 80);
             let streamed = document(&streamed_app, conceal).streaming(true);
             let mut end = 0;
@@ -106,7 +107,7 @@ fn corpus_matches_core_one_shot_and_streamed() {
                 assert_eq!(ALLOCATIONS.with(Cell::get), allocations, "{case} ({mode}), read allocates");
                 assert_eq!(streamed.markdown(), &source[..end]);
                 let oneshot_app = TestApp::new(60, 80);
-                document(&oneshot_app, conceal).set_markdown(&source[..end]);
+                document(&oneshot_app, conceal).streaming(true).set_markdown(&source[..end]);
                 assert_eq!(frame(&streamed_app), frame(&oneshot_app), "{case} ({mode}), streamed to byte {end}");
             }
             streamed.streaming(false);
@@ -187,6 +188,36 @@ fn ending_the_stream_runs_code_block_renderers_again() {
     assert_eq!(frame(&app), "preview\n");
     markdown.streaming(false);
     assert_eq!(frame(&app), "x +\n");
+    // The other way: the default widget while streaming, the renderer's once the stream ends, though the closed
+    // fence did not change.
+    let app = TestApp::new(30, 4);
+    let markdown = Markdown::new(&app)
+        .streaming(true)
+        .code_block_renderer("latex", move |block| (!block.streaming).then(|| Text::new(block.app, "done").as_any()));
+    app.root().add(&markdown);
+    markdown.set_markdown("```latex\nx\n```\n\ntail\n");
+    assert_eq!(frame(&app), "x\n\ntail\n");
+    markdown.streaming(false);
+    assert_eq!(frame(&app), "done\n\ntail\n");
+    // Ending the stream asks each fence's renderer once (bigboi-r2-4): an open fence, a pending closer, a nested
+    // fence, and a closed fence with a tail.
+    for source in ["```latex\nx", "```latex\nx\n```", "- a\n\n  ```latex\n  x", "```latex\nx\n```\n\ntail\n"] {
+        let app = TestApp::new(30, 6);
+        let finished = Rc::new(Cell::new(0));
+        let count = finished.clone();
+        let markdown = Markdown::new(&app).streaming(true).code_block_renderer("latex", move |block| {
+            if block.streaming {
+                return None;
+            }
+            count.set(count.get() + 1);
+            (count.get() > 1).then(|| Text::new(block.app, "second call").as_any())
+        });
+        app.root().add(&markdown);
+        markdown.set_markdown(source);
+        markdown.streaming(false);
+        assert_eq!(finished.get(), 1, "{source:?}");
+        assert!(!frame(&app).contains("second call"), "{source:?}");
+    }
 }
 
 #[test]
@@ -226,8 +257,9 @@ fn code_block_renderers_learn_when_the_fence_closes() {
     app.root().add(&markdown);
     markdown.set_markdown("```latex\nx +");
     assert_eq!(frame(&app), "preview\n");
-    // The closing fence leaves the code as it was, and the renderer runs again while the document still streams.
-    markdown.append("\n```");
+    // The closing fence leaves the code as it was, and the renderer runs again while the document still streams. A
+    // closer counts once its line ends: until then the line may still grow into code.
+    markdown.append("\n```\n");
     assert_eq!(frame(&app), "x +\n");
     assert_eq!(*seen.borrow(), [("x +".to_owned(), false), ("x +".to_owned(), true)]);
 }
@@ -358,11 +390,16 @@ fn inline_hooks_rewrite_table_cells_without_targets() {
 fn the_inline_context_says_which_spans_are_table_cells() {
     let app = TestApp::new(20, 16);
     let seen: Rc<RefCell<Vec<(String, bool)>>> = Rc::default();
-    let record = seen.clone();
+    // The hook may read the whole document while it runs.
+    let document: Rc<RefCell<Option<Markdown>>> = Rc::default();
+    let (record, read) = (seen.clone(), document.clone());
     let markdown = Markdown::new(&app).streaming(true).inline_hook(move |spans, context| {
+        let whole = read.borrow().as_ref().map(Markdown::markdown).unwrap_or_default();
+        assert!(whole.starts_with("# Title\n\nText") && whole.contains(context.source), "{whole:?}");
         record.borrow_mut().push((context.source.to_owned(), context.table_cell));
         spans
     });
+    *document.borrow_mut() = Some(markdown.clone());
     app.root().add(&markdown);
     markdown.append("# Title\n\nText\n\n- item\n\n> quote\n\n| id |\n| -- |\n| cell |");
     // A streamed row refills the table; a re-run reaches a quote and a table.
@@ -385,6 +422,7 @@ fn the_inline_context_says_which_spans_are_table_cells() {
         ("more", cell),
     ];
     assert_eq!(*seen.borrow(), expected.map(|(source, cell)| (source.to_owned(), cell)));
+    document.borrow_mut().take();
 }
 
 #[test]
@@ -601,6 +639,82 @@ fn rerunning_the_inline_hook_touches_only_selected_blocks() {
 }
 
 #[test]
+fn a_hook_shows_its_inputs_and_its_targets_go_with_it() {
+    // A hook that shows the inline source: a new source with the same display shows.
+    let app = TestApp::new(20, 2);
+    let markdown = Markdown::new(&app).inline_hook(|_, context| vec![Span::raw(context.source.to_owned()).into()]);
+    app.root().add(&markdown);
+    markdown.set_markdown("*hi*");
+    assert_eq!(frame(&app), "*hi*\n");
+    markdown.set_markdown("_hi_");
+    assert_eq!(frame(&app), "_hi_\n");
+    // Where native code writes the text (a terminal with hyperlinks), the hook's targets go with the hook.
+    let app = TestApp::with_hyperlinks(20, 2);
+    let markdown = Markdown::new(&app)
+        .inline_hook(|_, _| vec![InlineSpan { span: Span::raw("hello"), code: false, target: Some("old".to_owned()) }]);
+    app.root().add(&markdown);
+    markdown.set_markdown("hi");
+    assert_eq!(frame(&app), "hello\n");
+    assert_eq!(markdown.target_at(1, 0).as_deref(), Some("old"));
+    markdown.remove_inline_hook();
+    assert_eq!(frame(&app), "hi\n");
+    assert_eq!(markdown.target_at(1, 0), None);
+}
+
+/// Sets up the session's terminal and drains its setup output, as a terminal that has not replied yet.
+fn activate_terminal(session: &opentui::native::Session) {
+    use opentui::native::{Pump, TerminalOptions};
+    session.setup_terminal(TerminalOptions::default()).unwrap();
+    let mut now = 0;
+    for _ in 0..4096 {
+        match session.pump(now, 1).unwrap() {
+            Pump::Idle | Pump::Closed => break,
+            Pump::Again => {}
+            Pump::WaitUntil(deadline) => now = deadline,
+            Pump::OutputPending => {
+                let mut bytes = [0; 4096];
+                let ticket = session.read_output(&mut bytes).unwrap().expect("pending output");
+                session.complete_output(ticket, true).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn an_option_change_after_a_hyperlink_reply_keeps_text_coming() {
+    // bigboi-r2-3: the terminal reports hyperlinks while the document streams; the next option change must send
+    // the flags it decides, so native code and the widget agree who writes the text.
+    let app = TestApp::new(30, 2);
+    let session = app.app().session();
+    activate_terminal(session);
+    let markdown = Markdown::new(&app).streaming(true).inline_hook(|spans, _| spans);
+    app.root().add(&markdown);
+    markdown.set_markdown("first");
+    assert_eq!(frame(&app), "first\n");
+    session.control(opentui::native::Control::CapabilityResponse(b"\x1bP>|ghostty 1.3.1\x1b\\")).unwrap();
+    assert!(session.capabilities().unwrap().flags.contains(opentui::native::CapabilityFlags::HYPERLINKS));
+    markdown.remove_inline_hook().append(" second");
+    assert_eq!(frame(&app), "first second\n");
+}
+
+#[test]
+fn a_conceal_round_trip_shows_what_a_fresh_widget_shows() {
+    // The math run's repro: the rebuild after conceal turned on again attached the paragraph's text anew, and it
+    // kept the source form the widget had written (`` ```word ```mermaid ``).
+    let app = TestApp::with_hyperlinks(40, 8);
+    let subject = Markdown::new(&app);
+    app.root().add(&subject);
+    subject.append("```").append("word ").append("```mermaid\n");
+    subject.conceal(false).append("- x ").conceal(true);
+    let fresh_app = TestApp::with_hyperlinks(40, 8);
+    let fresh = Markdown::new(&fresh_app);
+    fresh_app.root().add(&fresh);
+    fresh.set_markdown(subject.markdown());
+    assert_eq!(frame(&app), frame(&fresh_app));
+    assert!(app.render() == fresh_app.render(), "styles");
+}
+
+#[test]
 fn rerunning_without_a_hook_builds_nothing() {
     let app = TestApp::new(30, 6);
     let built = Rc::new(Cell::new(0));
@@ -641,4 +755,251 @@ fn inline_hooks_keep_source_mode() {
     let underlined: Vec<u32> =
         (0..60).filter(|&x| capture.cell(x, 0).unwrap().attributes.contains(Attributes::UNDERLINE)).collect();
     assert_eq!(underlined, (6..15).chain(20..38).collect::<Vec<_>>());
+}
+
+#[path = "support/model.rs"]
+mod model;
+
+/// What the model does to the document under test (the subject).
+#[derive(Clone, Debug)]
+enum Command {
+    Append(&'static str),
+    /// A replace with the first `keep` bytes of the source, as OpenCode's `trim()` does.
+    Set(usize),
+    /// A replace with the source and more, as a caller that sets the whole streamed text each time does.
+    Extend(&'static str),
+    Streaming(bool),
+    Conceal(bool),
+    /// Theme changes: scope styles, and the other colors.
+    Scopes(bool),
+    Colors(bool),
+    Renderer(bool),
+    Hook(bool),
+    /// The hook again on every block; its titles never change, so nothing may.
+    Rerun,
+}
+
+/// Pieces the generator glues together: block starts, inline markers, IDs the hook links, and line endings.
+const PIECES: [&str; 32] = [
+    "- ",
+    "> ",
+    "```",
+    "```mermaid\n",
+    "```\n",
+    "| a | b |\n",
+    "| - | - |\n",
+    "|",
+    "[x](/u)",
+    "[x]: /u\n",
+    "**",
+    "*",
+    "_",
+    "`",
+    "1. ",
+    "10. ",
+    "===",
+    "---",
+    "\n",
+    "\n\n",
+    "word ",
+    "ses_a",
+    " ses_b ",
+    "# ",
+    "<div>",
+    "&amp;",
+    "\\",
+    "    code",
+    "~~",
+    "www.a.b ",
+    "- [x] ",
+    "é",
+];
+
+/// The options a document has, which its fresh twin takes too.
+#[derive(Clone, Copy, Default)]
+struct Settings {
+    streaming: bool,
+    source_mode: bool,
+    scopes: bool,
+    other_colors: bool,
+    renderer: bool,
+    hook: bool,
+}
+
+/// Sets every setting on a fresh document.
+fn configure(markdown: &Markdown, settings: Settings) {
+    for command in [
+        Command::Conceal(settings.source_mode),
+        Command::Scopes(settings.scopes),
+        Command::Colors(settings.other_colors),
+        Command::Renderer(settings.renderer),
+        Command::Hook(settings.hook),
+        Command::Streaming(settings.streaming),
+    ] {
+        configure_one(markdown, &command, settings);
+    }
+}
+
+/// Sets the one setting `command` changes, as an app does, so a change reaches the subject alone.
+fn configure_one(markdown: &Markdown, command: &Command, settings: Settings) {
+    let titles: Titles = Rc::new(RefCell::new(HashMap::from([("ses_a", "Alpha"), ("ses_b", "Beta")])));
+    match command {
+        Command::Conceal(_) => drop(markdown.conceal(!settings.source_mode)),
+        Command::Scopes(_) => drop(markdown.scope_styles(settings.scopes)),
+        Command::Colors(_) => configure_colors(markdown, settings),
+        Command::Renderer(_) => configure_renderer(markdown, settings),
+        Command::Hook(_) if settings.hook => drop(markdown.inline_hook(session_links(&titles, &Calls::default()))),
+        Command::Hook(_) => drop(markdown.remove_inline_hook()),
+        Command::Streaming(_) => drop(markdown.streaming(settings.streaming)),
+        _ => {}
+    }
+}
+
+fn configure_colors(markdown: &Markdown, settings: Settings) {
+    if settings.other_colors {
+        let theme = opentui::theme::Theme::default();
+        let colors = opentui::widget::MarkdownColors {
+            heading: Color::rgb(200, 20, 20),
+            code_bg: Color::rgb(10, 10, 60),
+            ..opentui::widget::MarkdownColors::from_theme(&theme)
+        };
+        markdown.colors(colors);
+    } else {
+        markdown.colors(opentui::widget::MarkdownColors::from_theme(&opentui::theme::Theme::default()));
+    }
+}
+
+fn configure_renderer(markdown: &Markdown, settings: Settings) {
+    if settings.renderer {
+        markdown.code_block_renderer("mermaid", |block| {
+            Some(Text::new(block.app, format!("diagram {}", block.code)).as_any())
+        });
+    } else {
+        markdown.remove_code_block_renderer("mermaid");
+    }
+}
+
+/// The model's terminal shows hyperlinks or not: native code writes the text, or the widget does.
+struct MarkdownModel {
+    hyperlinks: bool,
+}
+
+impl MarkdownModel {
+    fn app(&self) -> TestApp {
+        if self.hyperlinks { TestApp::with_hyperlinks(40, 24) } else { TestApp::new(40, 24) }
+    }
+}
+
+impl model::Model for MarkdownModel {
+    type Command = Command;
+
+    fn generate(&self, rng: &mut model::Rng, steps: usize) -> Vec<Command> {
+        (0..steps)
+            .map(|_| match rng.below(24) {
+                0 => Command::Set(rng.below(64)),
+                1 => Command::Streaming(rng.below(2) == 0),
+                2 => Command::Conceal(rng.below(4) == 0),
+                3 => Command::Scopes(rng.below(2) == 0),
+                4 => Command::Colors(rng.below(2) == 0),
+                5 => Command::Renderer(rng.below(2) == 0),
+                6 => Command::Hook(rng.below(2) == 0),
+                7 => Command::Rerun,
+                8 => Command::Extend(rng.pick(&PIECES)),
+                _ => Command::Append(rng.pick(&PIECES)),
+            })
+            .collect()
+    }
+
+    fn simplify(&self, command: &Command) -> Vec<Command> {
+        match command {
+            Command::Set(keep) if *keep > 0 => vec![Command::Set(keep / 2)],
+            Command::Append(piece) if *piece != "word " => vec![Command::Append("word ")],
+            Command::Extend(piece) => vec![Command::Append(piece)],
+            _ => Vec::new(),
+        }
+    }
+
+    /// After every command: the document's frame, colors and attributes included, equals a fresh document's given the
+    /// same source and options (P1 at widget level, P6 with spans), and so does every cell's click target (P16). A
+    /// theme change changes no text (P11: it parses and writes nothing). A rerun of an unchanged hook changes nothing.
+    fn run(&self, commands: &[Command]) -> Option<model::Failure> {
+        let app = self.app();
+        let subject = Markdown::new(&app);
+        app.root().add(&subject);
+        let mut settings = Settings::default();
+        configure(&subject, settings);
+        for (step, command) in commands.iter().enumerate() {
+            let fail = |property| Some(model::Failure { property, step });
+            let before = app.render();
+            match *command {
+                Command::Append(piece) => drop(subject.append(piece)),
+                Command::Extend(piece) => drop(subject.set_markdown(subject.markdown() + piece)),
+                Command::Set(keep) => {
+                    let source = subject.markdown();
+                    let keep = (0..=keep.min(source.len())).rev().find(|&at| source.is_char_boundary(at)).unwrap_or(0);
+                    subject.set_markdown(&source[..keep]);
+                }
+                Command::Streaming(on) => settings.streaming = on,
+                Command::Conceal(off) => settings.source_mode = off,
+                Command::Scopes(on) => settings.scopes = on,
+                Command::Colors(on) => settings.other_colors = on,
+                Command::Renderer(on) => settings.renderer = on,
+                Command::Hook(on) => settings.hook = on,
+                Command::Rerun => drop(subject.rerun_inline_hook(|_| true)),
+            }
+            configure_one(&subject, command, settings);
+            let shown = app.render();
+            if matches!(command, Command::Scopes(_) | Command::Colors(_) | Command::Rerun)
+                && shown.text() != before.text()
+            {
+                return fail("theme or rerun changes no text (P11)");
+            }
+            let twin_app = self.app();
+            let twin = Markdown::new(&twin_app);
+            twin_app.root().add(&twin);
+            configure(&twin, settings);
+            twin.set_markdown(subject.markdown());
+            let fresh = twin_app.render();
+            if shown != fresh {
+                eprintln!("subject:\n{}\nfresh:\n{}", shown.text(), fresh.text());
+                return fail("frame equals a fresh document's, spans included (P1, P6)");
+            }
+            // With or without a hook: a removed hook's targets go too.
+            for (x, y) in (0..24u16).flat_map(|y| (0..40u16).map(move |x| (x, y))) {
+                if subject.target_at(x, y) != twin.target_at(x, y) {
+                    return fail("click targets equal a fresh document's (P16)");
+                }
+            }
+        }
+        None
+    }
+}
+
+#[test]
+fn model_streamed_documents_equal_fresh_ones() {
+    // CI budget: 48 seeds of 24 commands; MODEL_SEEDS widens it.
+    model::check(&MarkdownModel { hyperlinks: false }, 48, 24);
+}
+
+#[test]
+fn model_streamed_documents_equal_fresh_ones_where_native_code_writes_the_text() {
+    model::check(&MarkdownModel { hyperlinks: true }, 48, 24);
+}
+
+#[test]
+fn model_every_three_ownership_changes_equal_a_fresh_document() {
+    // bigboi's ownership model: who writes the text and who owns the targets, after every sequence of three.
+    let alphabet = [
+        Command::Hook(true),
+        Command::Hook(false),
+        Command::Rerun,
+        Command::Streaming(false),
+        Command::Set(0),
+        Command::Append("ses_a word "),
+        Command::Conceal(false),
+        Command::Conceal(true),
+    ];
+    for hyperlinks in [false, true] {
+        model::check_exhaustive(&MarkdownModel { hyperlinks }, &alphabet, 3);
+    }
 }

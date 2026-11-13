@@ -72,6 +72,7 @@ const image_tests = @import("tests/image_test.zig");
 const terminal_image_tests = @import("tests/terminal-image_test.zig");
 const kitty_transport_tests = @import("tests/kitty-transport_test.zig");
 const markdown_tests = @import("tests/markdown_test.zig");
+const markdown_abi_tests = @import("tests/markdown_abi_test.zig");
 const markdown_engine_tests = @import("markdown.zig");
 const lib_tests = @import("lib.zig");
 const clipboard_tests = @import("clipboard/host.zig");
@@ -170,6 +171,7 @@ comptime {
     _ = terminal_image_tests;
     _ = kitty_transport_tests;
     _ = markdown_tests;
+    _ = markdown_abi_tests;
     _ = markdown_engine_tests;
     _ = lib_tests;
     _ = clipboard_tests;
