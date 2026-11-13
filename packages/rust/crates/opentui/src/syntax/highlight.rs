@@ -555,9 +555,9 @@ pub(crate) struct Incremental {
     /// The text of the tree: the text highlighted last, with Markdown's added line ending if `padded`.
     text: String,
     padded: bool,
-    /// The last highlight, a whole query of the tree, for tests.
+    /// The texts highlighted since the last parse without a tree, for tests to replay.
     #[cfg(test)]
-    pub(crate) last: Option<super::NamedRanges>,
+    texts: Vec<String>,
 }
 
 #[cfg(test)]
@@ -574,7 +574,7 @@ impl Incremental {
             text: String::new(),
             padded: false,
             #[cfg(test)]
-            last: None,
+            texts: Vec::new(),
         }
     }
 
@@ -607,36 +607,18 @@ impl Incremental {
             tree
         });
         #[cfg(test)]
-        FRESH_PARSES.set(FRESH_PARSES.get() + usize::from(reused.is_none()));
+        {
+            FRESH_PARSES.set(FRESH_PARSES.get() + usize::from(reused.is_none()));
+            if reused.is_none() {
+                self.texts.clear();
+            }
+            self.texts.push(text[..len].to_owned());
+        }
         let (captures, tree) = captures(&registry, compiled, &text, len, reused.as_ref())?;
         self.padded = text.len() > len;
         (self.tree, self.text) = (Some((Arc::clone(entry), tree)), text);
-        let named = named_ranges(&self.text[..len], &captures);
-        #[cfg(test)]
-        {
-            self.last = Some(named.clone());
-        }
-        Some(named)
+        Some(named_ranges(&self.text[..len], &captures))
     }
-
-    /// Whether the tree of the text highlighted last has an error, for tests: there an edited tree may differ from a
-    /// fresh one.
-    #[cfg(test)]
-    pub(crate) fn has_error(&self) -> bool {
-        self.tree.as_ref().is_some_and(|(_, tree)| tree.root_node().has_error())
-    }
-}
-
-/// A theme with a color of its own for every capture name of the Rust, JavaScript and Markdown grammars, for tests that
-/// read capture names from frames.
-#[cfg(test)]
-pub(crate) fn injective_theme() -> SyntaxTheme {
-    for filetype in ["rust", "javascript", "markdown", "markdown_inline"] {
-        prewarm(filetype);
-    }
-    let names = lock(&NAMES).clone();
-    let color = |index: usize| crate::style::Color::rgb(index as u8, (index >> 8) as u8, 7);
-    names.into_iter().enumerate().map(|(index, name)| (name, crate::style::Style::new().fg(color(index)))).collect()
 }
 
 /// The edit from `old` to `new`: the bytes between their common start and, after it, their common end.
@@ -733,9 +715,85 @@ pub fn highlight(source: &str, filetype: &str, theme: &SyntaxTheme) -> Option<Ve
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::style::{Color, Style};
+
+    /// A theme with a color of its own for every capture name of the Rust, JavaScript and Markdown grammars, for tests
+    /// that read capture names from frames.
+    pub(crate) fn injective_theme() -> SyntaxTheme {
+        for filetype in ["rust", "javascript", "markdown", "markdown_inline"] {
+            prewarm(filetype);
+        }
+        let names = lock(&NAMES).clone();
+        let color = |index: usize| Color::rgb(index as u8, (index >> 8) as u8, 7);
+        names.into_iter().enumerate().map(|(index, name)| (name, Style::new().fg(color(index)))).collect()
+    }
+
+    /// C4 invariant 1: the styled byte ranges a widget's syntax layer over `text` shows with `theme`, covering it in
+    /// order as `highlight` styles it, and whether a fresh parse of `text` has an error. They are a fresh highlight's
+    /// (1a), and where a fresh parse has an error, with `own`, the widget's highlighter that highlighted `text` last,
+    /// those of its texts replayed here (1b). `None` without a grammar.
+    pub(crate) fn expected_ranges(
+        text: &str,
+        filetype: &str,
+        own: Option<&Incremental>,
+        theme: &SyntaxTheme,
+    ) -> Option<(super::super::StyledRanges, bool)> {
+        let registry = Arc::clone(&lock(&REGISTRY));
+        let compiled = registry.resolve(filetype)?.compiled()?;
+        let source = if padded(compiled, text) { format!("{text}\n") } else { text.to_owned() };
+        let (captures, tree) = captures(&registry, compiled, &source, text.len(), None)?;
+        let error = tree.root_node().has_error();
+        let own = own.filter(|_| error).map(|own| {
+            assert_eq!(own.texts.last().map(String::as_str), Some(text), "the highlighter is of another text");
+            replay(&registry, compiled, &own.texts)
+        });
+        Some((super::super::styled_ranges(own.unwrap_or_else(|| named_ranges(text, &captures)), theme), error))
+    }
+
+    /// The highlight after `texts`: a fresh parse of the first, then each next text parsed reusing the tree, edited
+    /// by an edit worked out here rather than by `edit`.
+    fn replay(registry: &Registry, compiled: &Compiled, texts: &[String]) -> crate::syntax::NamedRanges {
+        let (mut tree, mut old, mut named) = (None::<Tree>, String::new(), Default::default());
+        for text in texts {
+            let new = if padded(compiled, text) { format!("{text}\n") } else { text.clone() };
+            if let Some(tree) = &mut tree {
+                tree.edit(&reference_edit(old.as_bytes(), new.as_bytes()));
+            }
+            let (captures, next) = captures(registry, compiled, &new, text.len(), tree.as_ref()).expect("a parse");
+            (named, tree, old) = (named_ranges(text, &captures), Some(next), new);
+        }
+        named
+    }
+
+    /// The design's edit by indices: the longest common start, then the longest common end of what follows it, with
+    /// positions counted from the start of each text.
+    fn reference_edit(old: &[u8], new: &[u8]) -> InputEdit {
+        let mut start = 0;
+        while start < old.len() && start < new.len() && old[start] == new[start] {
+            start += 1;
+        }
+        let mut tail = 0;
+        while start + tail < old.len()
+            && start + tail < new.len()
+            && old[old.len() - 1 - tail] == new[new.len() - 1 - tail]
+        {
+            tail += 1;
+        }
+        let position = |text: &[u8], at: usize| {
+            let line_start = text[..at].iter().rposition(|&byte| byte == b'\n').map_or(0, |line| line + 1);
+            Point { row: text[..at].iter().filter(|&&byte| byte == b'\n').count(), column: at - line_start }
+        };
+        InputEdit {
+            start_byte: start,
+            old_end_byte: old.len() - tail,
+            new_end_byte: new.len() - tail,
+            start_position: position(new, start),
+            old_end_position: position(old, old.len() - tail),
+            new_end_position: position(new, new.len() - tail),
+        }
+    }
 
     /// The captured text and names, for readable assertions.
     fn captured(source: &str, filetype: &str) -> Vec<(String, &'static str)> {

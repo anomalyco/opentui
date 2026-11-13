@@ -254,28 +254,6 @@ impl CaptureSets {
     }
 }
 
-/// C4 invariant 1, for tests: the styled byte ranges a widget's syntax layer over `text` shows with `theme`, covering
-/// it in order as `highlight` styles it. They are a fresh highlight's (1a), and where a fresh parse has an error,
-/// with `own`, the widget's highlighter that highlighted `text` last, the whole query of its own tree (1b). Also
-/// returns whether the fresh parse had an error. `None` without a grammar.
-#[cfg(all(test, feature = "tree-sitter"))]
-pub(crate) fn expected_ranges(
-    text: &str,
-    filetype: &str,
-    own: Option<&Incremental>,
-    theme: &SyntaxTheme,
-) -> Option<(StyledRanges, bool)> {
-    let named = highlight::named_ranges(text, &highlights(text, filetype)?);
-    let mut fresh = Incremental::new(filetype);
-    fresh.update(text.to_owned());
-    let error = fresh.has_error();
-    let own = own.filter(|_| error).map(|own| {
-        assert_eq!(own.text(), text, "the highlighter's tree is of another text");
-        own.last.clone().expect("a highlight")
-    });
-    Some((styled_ranges(own.unwrap_or(named), theme), error))
-}
-
 #[cfg(feature = "tree-sitter")]
 type StyledRanges = Vec<(Range<usize>, Style)>;
 
@@ -300,7 +278,10 @@ pub(crate) type NamedRanges = (Vec<Vec<&'static str>>, Vec<(Range<usize>, usize)
 #[cfg(feature = "tree-sitter")]
 pub(crate) use highlight::Incremental;
 #[cfg(all(test, feature = "tree-sitter"))]
-pub(crate) use highlight::{FRESH_PARSES, injective_theme};
+pub(crate) use highlight::{
+    FRESH_PARSES,
+    tests::{expected_ranges, injective_theme},
+};
 
 /// Without the `tree-sitter` feature nothing has a grammar.
 #[cfg(not(feature = "tree-sitter"))]
