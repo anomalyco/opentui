@@ -173,6 +173,7 @@ export interface LayoutOptions extends BaseRenderableOptions {
 export interface RenderableOptions<T extends BaseRenderable = BaseRenderable> extends Partial<LayoutOptions> {
   width?: number | "auto" | `${number}%`
   height?: number | "auto" | `${number}%`
+  /** At equal zIndex, the later sibling in child order paints above and receives clicks at the overlap. */
   zIndex?: number
   visible?: boolean
   buffered?: boolean

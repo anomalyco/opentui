@@ -46,7 +46,7 @@ impl NodeKind {
 /// Common paint properties. `set_paint` replaces all of them; the defaults match a new native node.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Paint {
-    /// Paint order among siblings.
+    /// Paint order among siblings. On a tie, the later child paints above and wins the hit test at the overlap.
     pub z_index: i32,
     /// Multiplies with ancestor opacity, 0 through 1.
     pub opacity: f32,

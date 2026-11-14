@@ -1,0 +1,9 @@
+[
+  { "name": "insert front", "before": "BC", "key": "A", "after": "ABC", "frame": "CBA" },
+  { "name": "insert middle", "before": "AC", "key": "B", "after": "ABC", "frame": "CBA" },
+  { "name": "insert end", "before": "AB", "key": "C", "after": "ABC", "frame": "CBA" },
+  { "name": "move earlier", "before": "ABC", "key": "C", "after": "CAB", "frame": "BBA" },
+  { "name": "move later", "before": "ABC", "key": "A", "after": "BCA", "frame": "AAA" },
+  { "name": "reparent before", "before": "BC", "key": "A", "after": "ABC", "reparent": true, "frame": "CBA" },
+  { "name": "higher z wins", "before": "BC", "key": "A", "after": "ABC", "raised": "B", "frame": "BBA" }
+]

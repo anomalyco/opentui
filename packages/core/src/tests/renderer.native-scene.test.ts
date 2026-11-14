@@ -6,6 +6,7 @@ import { TextRenderable } from "../renderables/Text.js"
 import { CliRenderEvents } from "../renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { createTestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
+import siblingOrder from "./fixtures/sibling-paint-order.json" with { type: "json" }
 
 const setups: TestRendererSetup[] = []
 
@@ -31,6 +32,51 @@ test("ordinary renderer defaults to native scene ownership and presentation", as
   assert.ok(target.captureCharFrame().includes("native default"))
   assert.equal(target.renderer.hitTest(1, 0), text.num)
 })
+
+for (const row of siblingOrder) {
+  test(`sibling paint and hits: ${row.name}`, async () => {
+    const observe = async (fresh: boolean) => {
+      const { renderer, renderOnce, captureCharFrame } = await setup()
+      const parent = renderer.root
+      const nodes = [..."ABC"].map(
+        (key, i) =>
+          new TextRenderable(renderer, {
+            id: key,
+            content: key.repeat(3 - i),
+            position: "absolute",
+            width: 3 - i,
+            height: 1,
+            zIndex: Number(key === row.raised),
+          }),
+      )
+      const node = (key: string) => nodes["ABC".indexOf(key)]!
+      if (row.reparent) {
+        const other = new BoxRenderable(renderer, { width: 0, height: 0 })
+        parent.add(other)
+        if (!fresh) other.add(node(row.key))
+      }
+      for (const key of fresh ? row.after : row.before) parent.add(node(key))
+      if (!fresh) {
+        await renderOnce()
+        const next = row.after[row.after.indexOf(row.key) + 1]
+        parent.insertBefore(node(row.key), next ? node(next) : undefined)
+      }
+      await renderOnce()
+      return [
+        captureCharFrame().slice(0, 3),
+        [0, 1, 2]
+          .map((x) => {
+            const hit = renderer.hitTest(x, 0)
+            return nodes.find((node) => node.num === hit)?.id ?? "?"
+          })
+          .join(""),
+      ]
+    }
+    const fresh = await observe(true)
+    assert.deepEqual(fresh, [row.frame, row.frame])
+    assert.deepEqual(await observe(false), fresh)
+  })
+}
 
 test("renderOnce completes when an active live frame stops after failure", async () => {
   const target = await setup()
