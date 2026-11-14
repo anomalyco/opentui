@@ -327,7 +327,7 @@ impl EditorCore {
             // A Context too full for a buffer has failed already; the report ends the app this turn.
             None => panic!("opentui: failed to create an edit buffer: {:?}", app.check()),
         };
-        let view = match app.report(EditorView::new(&buffer, 1, 1)) {
+        let view = match app.report(EditorView::new(&buffer, 0, 0)) {
             Some(view) => view,
             None => panic!("opentui: failed to create an editor view: {:?}", app.check()),
         };
