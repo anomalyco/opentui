@@ -51,7 +51,7 @@ pub use node::{
     ArrowDirection, ArrowOptions, BoxDetails, Node, NodeKind, Observation, Paint, SliderOptions, TextInfo, TextOptions,
     WrapMode,
 };
-pub use record::{BoxSpec, GridSpec, Phase, Recorder};
+pub use record::{BoxSpec, GridSpec, PaintCell, Phase, Recorder};
 pub(crate) use resource::Resource;
 pub use session::{
     Capabilities, CapabilityFlags, Control, Corner, CursorPosition, CursorStyle, CursorUpdate, FrameStats,

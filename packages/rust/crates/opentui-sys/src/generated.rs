@@ -5,7 +5,7 @@ use core::ffi::c_void;
 
 /// FNV-1a 64-bit hash of the `opentui.h` these declarations were generated from.
 /// The build script rejects native artifacts whose header has a different hash.
-pub const OPENTUI_HEADER_FNV1A64: u64 = 0x60766efec2fea3e2;
+pub const OPENTUI_HEADER_FNV1A64: u64 = 0x42822ee861158746;
 
 pub type ot_status = i32;
 
@@ -833,6 +833,7 @@ pub const OT_SCENE_RECORD_EDITOR_VIEW: u32 = 9;
 pub const OT_SCENE_RECORD_SCENE_BODY: u32 = 10;
 pub const OT_SCENE_RECORD_IMAGE: u32 = 11;
 pub const OT_SCENE_RECORD_UNICODE: u32 = 12;
+pub const OT_SCENE_RECORD_CELLS: u32 = 13;
 pub const OT_SCENE_RECORD_GRAYSCALE_FOREGROUND: u32 = 1;
 pub const OT_SCENE_RECORD_GRAYSCALE_BACKGROUND: u32 = 2;
 pub const OT_SCENE_RECORD_GRAYSCALE_SUPERSAMPLED: u32 = 4;
@@ -4491,6 +4492,64 @@ const _: () = {
     assert!(core::mem::offset_of!(ot_scene_record_unicode, attributes) == 36);
     assert!(core::mem::offset_of!(ot_scene_record_unicode, foreground) == 40);
     assert!(core::mem::offset_of!(ot_scene_record_unicode, background) == 48);
+};
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ot_scene_cell {
+    pub character: u32,
+    pub attributes: u32,
+    pub foreground: [u16; 4],
+    pub background: [u16; 4],
+}
+
+// SAFETY: the record has no padding and only integer or float fields.
+unsafe impl Pod for ot_scene_cell {}
+
+impl Default for ot_scene_cell {
+    fn default() -> Self {
+        // SAFETY: every field is an integer, a float, or an array or record of them; all-zero is valid.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<ot_scene_cell>() == 24);
+    assert!(core::mem::align_of::<ot_scene_cell>() == 4);
+    assert!(core::mem::offset_of!(ot_scene_cell, character) == 0);
+    assert!(core::mem::offset_of!(ot_scene_cell, attributes) == 4);
+    assert!(core::mem::offset_of!(ot_scene_cell, foreground) == 8);
+    assert!(core::mem::offset_of!(ot_scene_cell, background) == 16);
+};
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ot_scene_record_cells {
+    pub header: ot_scene_record_header,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub count: u32,
+}
+
+// SAFETY: the record has no padding and only integer or float fields.
+unsafe impl Pod for ot_scene_record_cells {}
+
+impl Default for ot_scene_record_cells {
+    fn default() -> Self {
+        // SAFETY: every field is an integer, a float, or an array or record of them; all-zero is valid.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<ot_scene_record_cells>() == 24);
+    assert!(core::mem::align_of::<ot_scene_record_cells>() == 4);
+    assert!(core::mem::offset_of!(ot_scene_record_cells, header) == 0);
+    assert!(core::mem::offset_of!(ot_scene_record_cells, x) == 8);
+    assert!(core::mem::offset_of!(ot_scene_record_cells, y) == 12);
+    assert!(core::mem::offset_of!(ot_scene_record_cells, width) == 16);
+    assert!(core::mem::offset_of!(ot_scene_record_cells, count) == 20);
 };
 
 unsafe extern "C" {
