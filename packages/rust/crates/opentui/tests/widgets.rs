@@ -131,6 +131,43 @@ fn views_lay_out_borders_titles_and_text() {
 }
 
 #[test]
+fn views_style_and_color_each_border_side() {
+    let app = TestApp::new(10, 3);
+    let (red, blue) = (Color::rgb(255, 0, 0), Color::rgb(0, 0, 255));
+    let panel = View::new(&app)
+        .border_style_for(Sides::TOP, Some(BorderStyle::Double))
+        .border_color_for(Sides::TOP, Some(red))
+        .border(BorderStyle::Single)
+        .title("t")
+        .grow(1.0);
+    app.root().add(&panel);
+    assert_eq!(app.text(), "╒═t══════╕\n│        │\n└────────┘");
+    // A corner and a title without a color take their top or bottom side's color.
+    let colors = |app: &TestApp| {
+        let capture = app.render();
+        [(0, 0), (2, 0), (5, 0), (0, 1), (9, 2)].map(|(x, y)| capture.cell(x, y).unwrap().fg)
+    };
+    let border = app.theme().border;
+    assert_eq!(colors(&app), [red, red, red, border, border]);
+    // Overrides change live and survive a side mask change.
+    panel
+        .border_style_for(Sides::LEFT | Sides::RIGHT, Some(BorderStyle::Heavy))
+        .border_color_for(Sides::TOP, Some(blue));
+    panel.border_sides(Sides::TOP).border_sides(Sides::ALL);
+    assert_eq!(app.text(), "╔═t══════╗\n┃        ┃\n┖────────┚");
+    assert_eq!(colors(&app), [blue, blue, blue, border, border]);
+    // Clearing one side shows the current base there, not the first one, and keeps the other overrides.
+    let green = Color::rgb(0, 160, 0);
+    panel.border_color_for(Sides::LEFT, Some(red)).border(BorderStyle::Rounded).border_color(green);
+    panel.border_style_for(Sides::TOP, None).border_color_for(Sides::TOP, None);
+    assert_eq!(app.text(), "┎─t──────┒\n┃        ┃\n┖────────┚");
+    assert_eq!(colors(&app), [green, green, green, red, green]);
+    panel.border_style_for(Sides::ALL, None).border_color_for(Sides::ALL, None);
+    assert_eq!(app.text(), "╭─t──────╮\n│        │\n╰────────╯");
+    assert_eq!(colors(&app), [green; 5]);
+}
+
+#[test]
 fn rows_columns_gaps_and_visibility() {
     let app = TestApp::new(16, 3);
     let left = Text::new(&app, "left");

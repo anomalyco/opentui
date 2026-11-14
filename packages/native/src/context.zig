@@ -2516,6 +2516,13 @@ pub const Context = struct {
         try value.scene_node.?.owner.setBoxDetails(value, details);
     }
 
+    pub fn sceneSetBoxSides(self: *Context, handle: Handle, sides: scene.BoxSides) !void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const value = try self.scenePaintNode(handle);
+        try value.scene_node.?.owner.setBoxSides(value, sides);
+    }
+
     pub fn sceneSetImage(self: *Context, handle: Handle, source_handle: ?Handle, fit: image.Fit, protocol: image.RenderProtocol, buffer_handle: ?Handle) !void {
         try self.beginMutation();
         defer self.mutating = false;
@@ -2856,7 +2863,7 @@ pub const Context = struct {
         const paint_fields = fields & ~@as(u32, api.OT_SCENE_PROPERTY_RESET_BORDER_CHARACTERS);
         try node.owner.setPaintPartial(value, paint_fields, paint);
         if (reset) {
-            if (node.control.box) |details| details.custom_border_chars = null;
+            if (node.control.box.details) |details| details.custom_border_chars = null;
         }
     }
 

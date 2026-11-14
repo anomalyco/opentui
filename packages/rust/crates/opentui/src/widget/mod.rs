@@ -276,6 +276,9 @@ pub(crate) struct Titles {
     pub bottom_title_alignment: Alignment,
     pub title_color: Option<Color>,
     pub border_chars: Option<[char; 11]>,
+    /// Whether [`View::border_color`] set the border color, which a border then keeps instead of the theme's. It
+    /// sits in this record's padding, so a view keeps its size with room for its side overrides.
+    pub border_color_set: bool,
 }
 
 /// The shared record behind every widget handle: its native node, tree links, handlers, and cached native options.
@@ -427,6 +430,14 @@ impl Element {
         }
         self.text_options.set(options);
         self.apply(|node| node.set_text_options(&options));
+    }
+
+    pub(crate) fn border_color_set(&self) -> bool {
+        self.titles.borrow().border_color_set
+    }
+
+    pub(crate) fn set_border_color_set(&self) {
+        self.titles.borrow_mut().border_color_set = true;
     }
 
     pub(crate) fn update_titles(&self, change: impl FnOnce(&mut Titles)) {

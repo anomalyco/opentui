@@ -461,6 +461,26 @@ typedef struct ot_scene_box_details {
     uint32_t border_characters[11];
 } ot_scene_box_details;
 
+/* Per-side overrides of a box's paint border_style and border_color. Masks use the
+ * OT_BORDER_* side bits; styles[] is in that bit order (left, bottom, right, top). A side
+ * whose bit is clear takes the paint value, and its style or color must be zero. Zero
+ * masks clear the overrides. Overrides survive border mask changes and set_box_details;
+ * custom border characters still win over styles, and focus colors every side.
+ * Where unlike styles meet, a corner takes Unicode's mixed single/double or light/heavy
+ * glyph (rounded strokes are light), otherwise the top or bottom side's corner. A corner
+ * takes the top or bottom side's color; without a title color, each title takes its side's. */
+typedef struct ot_scene_box_sides {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t style_sides;
+    uint32_t color_sides;
+    uint32_t styles[4];
+    uint16_t left_color[4];
+    uint16_t bottom_color[4];
+    uint16_t right_color[4];
+    uint16_t top_color[4];
+} ot_scene_box_sides;
+
 typedef struct ot_scene_style_value {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -860,6 +880,7 @@ ot_status ot_scene_flush(ot_context *,
 ot_status ot_scene_set_surface(ot_context *, const ot_handle *node, const ot_handle *buffer);
 ot_status ot_scene_set_box_details(ot_context *, const ot_handle *node, const ot_scene_box_details *,
     const uint8_t *title, uint32_t title_bytes, const uint8_t *bottom_title, uint32_t bottom_title_bytes);
+ot_status ot_scene_set_box_sides(ot_context *, const ot_handle *node, const ot_scene_box_sides *);
 /* A box may filter its direct children against a root/box in the same Session.
  * The viewport handle is copied, not pinned. NULL disables filtering. A destroyed
  * viewport fails frame preparation until rebound or disabled. Every direct child

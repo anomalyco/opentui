@@ -1,5 +1,6 @@
 const std = @import("std");
 const repaint = @import("scene_fixture_test.zig").repaint;
+const present = @import("scene_fixture_test.zig").present;
 const testing = std.testing;
 const context = @import("../context.zig");
 const scene = @import("../scene.zig");
@@ -34,6 +35,185 @@ fn expectRow(target: *buffer.OptimizedBuffer, y: u32, text: []const u8) !void {
     for (text, 0..) |char, x| try testing.expectEqual(@as(u32, char), target.get(@intCast(x), y).?.char);
 }
 
+const c = @import("context_abi_c");
+const ansi = @import("../ansi.zig");
+
+/// Styles in OT_BORDER_* order: single, double, rounded, heavy.
+const horizontals = [4]u32{ '─', '═', '─', '━' };
+const verticals = [4]u32{ '│', '║', '│', '┃' };
+
+/// Corners (top-left, top-right, bottom-left, bottom-right) where top and bottom sides of
+/// the first style meet left and right sides of the second: Unicode's mixed glyph where one
+/// exists (rounded strokes are light), otherwise the top or bottom side's own corner.
+const joins = [4][4][4]u32{
+    .{ .{ '┌', '┐', '└', '┘' }, .{ '╓', '╖', '╙', '╜' }, .{ '┌', '┐', '└', '┘' }, .{ '┎', '┒', '┖', '┚' } },
+    .{ .{ '╒', '╕', '╘', '╛' }, .{ '╔', '╗', '╚', '╝' }, .{ '╒', '╕', '╘', '╛' }, .{ '╔', '╗', '╚', '╝' } },
+    .{ .{ '╭', '╮', '╰', '╯' }, .{ '╓', '╖', '╙', '╜' }, .{ '╭', '╮', '╰', '╯' }, .{ '┎', '┒', '┖', '┚' } },
+    .{ .{ '┍', '┑', '┕', '┙' }, .{ '┏', '┓', '┗', '┛' }, .{ '┍', '┑', '┕', '┙' }, .{ '┏', '┓', '┗', '┛' } },
+};
+
+/// Overrides every side's style; styles are given top, right, bottom, left.
+fn styled(top: u32, right: u32, bottom: u32, left: u32) scene.BoxSides {
+    return .{ .style_sides = c.OT_BORDER_ALL, .styles = .{ left, bottom, right, top } };
+}
+
+fn corners(target: *buffer.OptimizedBuffer) [4]u32 {
+    return .{ target.get(0, 0).?.char, target.get(11, 0).?.char, target.get(0, 2).?.char, target.get(11, 2).?.char };
+}
+
+test "Scene box sides join every pair of styles at each corner, and an absent side leaves no join" {
+    const owner = try context.Context.init(testing.allocator, testing.io, .{});
+    defer owner.deinit() catch unreachable;
+    const fixture = try setup(owner);
+    const target = (try owner.raw().getSessionRenderer(fixture.session)).getNextBuffer();
+    for (0..4) |horizontal| for (0..4) |vertical| {
+        const h: u32 = @intCast(horizontal);
+        const v: u32 = @intCast(vertical);
+        try owner.sceneSetBoxSides(fixture.box, styled(h, v, h, v));
+        try repaint(owner, fixture.session, options.background, true, 0);
+        try testing.expectEqual(joins[h][v], corners(target));
+        for ([_][2]u32{ .{ 5, 0 }, .{ 5, 2 } }) |cell| try testing.expectEqual(horizontals[h], target.get(cell[0], cell[1]).?.char);
+        for ([_][2]u32{ .{ 0, 1 }, .{ 11, 1 } }) |cell| try testing.expectEqual(verticals[v], target.get(cell[0], cell[1]).?.char);
+        if (h != v) continue;
+        // Overrides equal to the paint draw what the uniform box draws.
+        const sides_frame = try testing.allocator.dupe(u32, target.buffer.char);
+        defer testing.allocator.free(sides_frame);
+        try owner.sceneSetBoxSides(fixture.box, .{});
+        try owner.sceneSetPaint(fixture.box, .{ .borderSides = 15, .borderStyle = h });
+        try repaint(owner, fixture.session, options.background, true, 0);
+        try testing.expectEqualSlices(u32, sides_frame, target.buffer.char);
+        try owner.sceneSetPaint(fixture.box, .{ .borderSides = 15 });
+    };
+    // Each corner joins its own two sides; a side that is off leaves its neighbor's line or end.
+    const rows = [_]struct { mask: u32, sides: scene.BoxSides, corners: [4]u32 }{
+        .{ .mask = 15, .sides = styled(1, 3, 3, 0), .corners = .{ '╒', '╗', '┕', '┛' } },
+        .{ .mask = 15 & ~c.OT_BORDER_LEFT, .sides = styled(1, 3, 3, 0), .corners = .{ '═', '╗', '━', '┛' } },
+        .{ .mask = 15 & ~c.OT_BORDER_TOP, .sides = styled(1, 3, 3, 0), .corners = .{ '│', '┃', '┕', '┛' } },
+        .{ .mask = c.OT_BORDER_TOP | c.OT_BORDER_LEFT, .sides = styled(3, 1, 1, 1), .corners = .{ '┏', '━', '║', ' ' } },
+        // Custom glyphs win over side styles.
+        .{ .mask = 15, .sides = styled(1, 3, 3, 0), .corners = .{ 'A', 'B', 'C', 'D' } },
+    };
+    for (rows, 0..) |row, index| {
+        try owner.sceneSetPaint(fixture.box, .{ .borderSides = row.mask });
+        try owner.sceneSetBoxSides(fixture.box, row.sides);
+        if (index == rows.len - 1) try owner.sceneSetBoxDetails(fixture.box, .{ .custom_border_chars = custom });
+        try repaint(owner, fixture.session, options.background, true, 0);
+        try testing.expectEqual(row.corners, corners(target));
+    }
+}
+
+test "Scene box sides color each side, corners and titles by their top or bottom side, and focus colors all" {
+    const owner = try context.Context.init(testing.allocator, testing.io, .{});
+    defer owner.deinit() catch unreachable;
+    const fixture = try setup(owner);
+    const target = (try owner.raw().getSessionRenderer(fixture.session)).getNextBuffer();
+    const red = ansi.rgbColor(255, 0, 0, 255);
+    const green = ansi.rgbColor(0, 255, 0, 255);
+    const blue = ansi.rgbColor(0, 0, 255, 255);
+    const yellow = ansi.rgbColor(255, 255, 0, 255);
+    try owner.sceneSetBoxSides(fixture.box, .{ .color_sides = c.OT_BORDER_ALL, .colors = .{ yellow, blue, green, red } });
+    try owner.sceneSetBoxDetails(fixture.box, .{ .title = "t", .bottom_title = "b" });
+    // Cells: top line, right line, bottom line, left line, the four corners, both titles.
+    const cells = [_][2]u32{ .{ 5, 0 }, .{ 11, 1 }, .{ 5, 2 }, .{ 0, 1 }, .{ 0, 0 }, .{ 11, 0 }, .{ 0, 2 }, .{ 11, 2 }, .{ 2, 0 }, .{ 2, 2 } };
+    const focus = (scene.Paint{}).focusedBorderColor;
+    const rows = [_]struct { title_color: ?ansi.RGBA = null, focused: bool = false, colors: [cells.len]ansi.RGBA }{
+        .{ .colors = .{ red, green, blue, yellow, red, red, blue, blue, red, blue } },
+        .{ .title_color = green, .colors = .{ red, green, blue, yellow, red, red, blue, blue, green, green } },
+        .{ .focused = true, .colors = @splat(focus) },
+    };
+    // A transparent background takes the transparent fast path; an opaque one writes whole cells.
+    for ([_]ansi.RGBA{ .{ 0, 0, 0, 0 }, .{ 20, 20, 20, 255 } }) |background| {
+        try owner.sceneSetPaint(fixture.box, .{ .borderSides = 15, .focusable = true, .background = background });
+        for (rows) |row| {
+            try owner.sceneSetBoxDetails(fixture.box, .{ .title = "t", .bottom_title = "b", .title_color = row.title_color });
+            try owner.sceneSetFocus(fixture.box, row.focused);
+            try repaint(owner, fixture.session, options.background, true, 0);
+            try testing.expectEqual('t', target.get(2, 0).?.char);
+            for (cells, row.colors) |cell, color| try testing.expectEqual(color, target.get(cell[0], cell[1]).?.fg);
+        }
+    }
+    // A side without a color override shows the paint's current color, not the default white.
+    const purple = ansi.rgbColor(128, 0, 128, 255);
+    try owner.sceneSetFocus(fixture.box, false);
+    try owner.sceneSetPaint(fixture.box, .{ .borderSides = 15, .borderColor = purple });
+    try owner.sceneSetBoxSides(fixture.box, .{ .color_sides = c.OT_BORDER_TOP, .colors = .{ @splat(0), @splat(0), @splat(0), red } });
+    try repaint(owner, fixture.session, options.background, true, 0);
+    for (cells[0..4], [_]ansi.RGBA{ red, purple, purple, purple }) |cell, color| try testing.expectEqual(color, target.get(cell[0], cell[1]).?.fg);
+}
+
+test "Scene box sides blend a translucent side as a uniform box of its color does" {
+    const owner = try context.Context.init(testing.allocator, testing.io, .{});
+    defer owner.deinit() catch unreachable;
+    const fixture = try setup(owner);
+    const target = (try owner.raw().getSessionRenderer(fixture.session)).getNextBuffer();
+    const translucent = ansi.rgbColor(200, 100, 50, 128);
+    const white = (scene.Paint{}).borderColor;
+    for ([_]ansi.RGBA{ .{ 0, 0, 0, 0 }, .{ 20, 20, 20, 255 } }) |background| {
+        try owner.sceneSetPaint(fixture.box, .{ .borderSides = 15, .borderColor = translucent, .background = background });
+        try repaint(owner, fixture.session, options.background, true, 0);
+        const left = target.get(0, 1).?;
+        try owner.sceneSetPaint(fixture.box, .{ .borderSides = 15, .background = background });
+        try owner.sceneSetBoxSides(fixture.box, .{ .color_sides = c.OT_BORDER_LEFT, .colors = .{ translucent, @splat(0), @splat(0), @splat(0) } });
+        try repaint(owner, fixture.session, options.background, true, 0);
+        try testing.expectEqual(left, target.get(0, 1).?);
+        try testing.expectEqual(white, target.get(5, 0).?.fg);
+        try owner.sceneSetBoxSides(fixture.box, .{});
+    }
+}
+
+test "Scene box sides validate, survive details and mask changes, repaint live, and free when cleared" {
+    const owner = try context.Context.init(testing.allocator, testing.io, .{});
+    defer owner.deinit() catch unreachable;
+    const fixture = try setup(owner);
+    const red = ansi.rgbColor(255, 0, 0, 255);
+    var invalid = [_]scene.BoxSides{
+        .{ .style_sides = 16 },
+        .{ .color_sides = 16 },
+        .{ .style_sides = c.OT_BORDER_TOP, .styles = .{ 0, 0, 0, 4 } },
+        .{ .styles = .{ 0, 0, 0, 1 } },
+        .{ .colors = .{ @splat(0), @splat(0), @splat(0), red } },
+        .{ .color_sides = c.OT_BORDER_TOP, .colors = .{ @splat(0), @splat(0), @splat(0), .{ 256, 0, 0, 255 } } },
+    };
+    for (&invalid) |sides| try testing.expectError(error.InvalidOptions, owner.sceneSetBoxSides(fixture.box, sides));
+    try testing.expectError(error.WrongKind, owner.sceneSetBoxSides(fixture.root, styled(1, 1, 1, 1)));
+    const node = (try owner.raw().getRenderable(fixture.box)).scene_node.?;
+    try testing.expect(node.control.box.sides == null);
+
+    var sides = styled(1, 0, 0, 0);
+    sides.color_sides = c.OT_BORDER_TOP;
+    sides.colors[3] = red;
+    try owner.sceneSetBoxSides(fixture.box, sides);
+    try owner.sceneSetBoxDetails(fixture.box, .{ .title = "x" });
+    try owner.scenePatchPaint(fixture.box, c.OT_SCENE_PROPERTY_BORDER, .{ .borderSides = c.OT_BORDER_TOP });
+    try owner.scenePatchPaint(fixture.box, c.OT_SCENE_PROPERTY_BORDER, .{ .borderSides = 15 });
+    try repaint(owner, fixture.session, options.background, true, 0);
+    _ = try present(owner, fixture.session, true);
+    var bytes: [16 * 1024]u8 = undefined;
+    while (try owner.readOutput(fixture.session, &bytes)) |ticket| try owner.completeOutput(fixture.session, ticket, .written);
+    var target = (try owner.raw().getSessionRenderer(fixture.session)).getCurrentBuffer();
+    for ([_]u32{ '╒', '═', 'x' }, 0..) |char, x| try testing.expectEqual(char, target.get(@intCast(x), 0).?.char);
+    try testing.expectEqual(red, target.get(0, 0).?.fg);
+    try testing.expectEqual(red, target.get(2, 0).?.fg);
+
+    // A live change of one side's style and color paints in the next ordinary frame.
+    sides.styles[3] = 3;
+    sides.colors[3] = ansi.rgbColor(0, 255, 0, 255);
+    try owner.sceneSetBoxSides(fixture.box, sides);
+    try testing.expectEqual(@as(u32, 0), (try owner.sceneFrameStep(fixture.session, null, options)).kind);
+    target = (try owner.raw().getSessionRenderer(fixture.session)).getNextBuffer();
+    try testing.expectEqual(@as(u32, '┍'), target.get(0, 0).?.char);
+    try testing.expectEqual(sides.colors[3], target.get(5, 0).?.fg);
+
+    // Clearing either record frees it and keeps the other.
+    try owner.sceneSetBoxSides(fixture.box, .{});
+    try testing.expect(node.control.box.sides == null);
+    try testing.expectEqualStrings("x", node.control.box.details.?.title);
+    try owner.sceneSetBoxSides(fixture.box, sides);
+    try owner.sceneSetBoxDetails(fixture.box, .{});
+    try testing.expect(node.control.box.details == null);
+    try testing.expectEqual(sides, node.control.box.sides.?.*);
+}
+
 test "Scene box details rejects invalid replacement before publication" {
     const owner = try context.Context.init(testing.allocator, testing.io, .{});
     defer owner.deinit() catch unreachable;
@@ -66,7 +246,7 @@ fn replaceTitles(allocator: std.mem.Allocator) !void {
     defer owner.deinit() catch unreachable;
     const fixture = try setup(owner);
     try owner.sceneSetBoxDetails(fixture.box, .{ .title = "old", .bottom_title = "old", .custom_border_chars = custom });
-    const details = (try owner.raw().getRenderable(fixture.box)).scene_node.?.control.box.?;
+    const details = (try owner.raw().getRenderable(fixture.box)).scene_node.?.control.box.details.?;
     owner.sceneSetBoxDetails(fixture.box, .{ .title = "new", .bottom_title = "new", .custom_border_chars = custom }) catch |err| {
         try testing.expectEqualStrings("old", details.title);
         try testing.expectEqualStrings("old", details.bottom_title);

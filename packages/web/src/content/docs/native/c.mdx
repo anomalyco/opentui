@@ -114,6 +114,7 @@ The returned `ot_handle` values identify the native objects in later calls.
 
 `border_sides = 15` selects all four sides: left `1`, bottom `2`, right `4`, and top `8`.
 Border style `0` is single-line. The border also reserves one layout cell on each side.
+`ot_scene_set_box_sides` overrides the style or color of single sides, for example a double top line; a side without an override keeps the paint's.
 Default column layout and stretching place the label inside the full-width box.
 
 The paint record replaces all paint properties of the node. It is not a patch, so set `opacity = 1` for an opaque node.
