@@ -3494,8 +3494,9 @@ pub const Scene = struct {
                     });
                 }
                 if (mode == .paint) frame.filter = try self.childFilter(objects, value);
-                if (!dry and (mode == .paint or (self.hook_count == 0 and self.filter_count == 0))) {
-                    // The candidates walked the old order, so the next frame walks again.
+                if (!dry and (mode == .paint or self.hook_count == 0)) {
+                    // Without host hooks even a filtered candidate walk can take the final order.
+                    // If paint sorted after feedback instead, the candidates still hold the old order.
                     if (sortChildren(node) and mode == .paint) self.candidates.clearRetainingCapacity();
                 }
                 if (frame.filter) |filter| frame.culled = try self.cullCandidates(node, filter, .{ frame.parent.screenX, frame.parent.screenY });
