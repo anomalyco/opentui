@@ -175,19 +175,17 @@ describe("VideoRenderable", () => {
     const events: string[] = []
     const video = new VideoRenderable(renderer, { source: SILENT, autoplay: true, onReady: () => events.push("ready") })
     renderer.root.add(video)
-    expect(ticking()).toBe(true)
+    expect([video.playing, ticking()]).toEqual([true, false])
     video.autoplay = false
     video.source = undefined
     // Closing drops the report of the open it replaced.
     await Promise.resolve()
     expect(events).toEqual([])
-    expect(video.ready).toBe(false)
-    expect(video.playing).toBe(true)
-    expect(ticking()).toBe(false)
+    expect([video.ready, video.playing, ticking()]).toEqual([false, true, false])
     video.source = SILENT
-    expect(video.playing).toBe(true)
-    expect(ticking()).toBe(true)
+    expect([video.playing, ticking()]).toEqual([true, false])
     await setup.renderOnce()
+    expect(ticking()).toBe(true)
     video.destroy()
     expect(ticking()).toBe(false)
     await setup.renderOnce()
@@ -294,9 +292,9 @@ describe("VideoRenderable", () => {
     video.source = SILENT
     expect([video.playing, video.audio]).toEqual([false, true])
     video.autoplay = true
-    expect(video.playing).toBe(true)
-    expect(ticking()).toBe(true)
+    expect([video.playing, ticking()]).toEqual([true, false])
     await Promise.resolve()
+    expect(ticking()).toBe(true)
     video.pause()
     expect(video.playing).toBe(false)
   })
