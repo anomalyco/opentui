@@ -65,6 +65,60 @@ fn sibling_paint_and_hits_match_a_fresh_tree() {
 }
 
 #[test]
+fn resize_handlers_run_depth_first_in_paint_order() {
+    // H stands for a post-layout hook: the root's absolute, zero-height last child. A terminal resize resizes every
+    // node. The scroll box (S, its rows s0..s15 in `rows`) shows two rows; its rows all resize before their children,
+    // and the walk skips the children of the rows it culls.
+    let cases = [
+        ("child order", "", "A a1 a2 a21 rows t0 t1 B H"),
+        ("a raised child stays in its parent", "a1", "A a2 a21 a1 rows t0 t1 B H"),
+        ("a raised sibling comes after", "A", "rows t0 t1 B H A a1 a2 a21"),
+        ("a moved node comes first", "move", "H A a1 a2 a21 rows t0 t1 B"),
+        ("adding the last child again is a move", "readd", "H A a1 a2 a21 rows t0 t1 B"),
+        ("a node added during the walk waits for the next round", "add", "A a1 a2 a21 rows t0 t1 B H C"),
+    ];
+    let rows = (0..16).fold("S".to_owned(), |rows, row| format!("{rows} s{row}"));
+    type Log = Rc<RefCell<Vec<String>>>;
+    fn node<W: Widget>(log: &Log, name: &str, widget: W) -> W {
+        let (log, name) = (log.clone(), name.to_owned());
+        widget.on_resize(move |_, _| log.borrow_mut().push(name.clone()))
+    }
+    for (name, change, expected) in cases {
+        let app = TestApp::new(20, 10);
+        let log = Log::default();
+        let line = |name: &str| node(&log, name, View::new(&app).height(1));
+        let a = node(&log, "A", View::new(&app).grow(1.0).z_index(i32::from(change == "A")));
+        a.add(&line("a1").z_index(i32::from(change == "a1"))).add(&line("a2").child(&line("a21")));
+        let scroll = node(&log, "S", ScrollBox::new(&app).height(2).scrollbars(false));
+        for row in 0..16 {
+            scroll.add(&line(&format!("s{row}")).child(&line(&format!("t{row}"))));
+        }
+        let quarter = |name: &str| node(&log, name, View::new(&app).absolute().width(Length::percent(25.0)));
+        let hook = quarter("H").height(0);
+        app.root().add(&a).add(&scroll).add(&quarter("B").height(1)).add(&hook);
+        app.render();
+        log.borrow_mut().clear();
+        if change == "move" {
+            app.root().insert(3, &hook);
+        }
+        if change == "readd" {
+            app.root().add(&hook);
+        }
+        if change == "add" {
+            let (log, root, added) = (log.clone(), app.root(), Rc::new(Cell::new(false)));
+            a.on_resize(move |cx, _| {
+                if !added.replace(true) {
+                    root.add(&node(&log, "C", View::new(cx.app()).absolute().width(Length::percent(25.0))));
+                }
+            });
+        }
+        app.resize(30, 10);
+        app.render();
+        assert_eq!(log.borrow().join(" "), expected.replace("rows", &rows), "{name}");
+    }
+}
+
+#[test]
 fn views_lay_out_borders_titles_and_text() {
     let app = TestApp::new(20, 4);
     let panel = View::new(&app).border(BorderStyle::Rounded).title(" Hi ").padding_x(1).grow(1.0);
@@ -743,6 +797,120 @@ fn scroll_moves_to_the_end_follow_content_added_before_the_frame() {
     scroll.add(&Text::new(&app, "line 13"));
     app.render();
     assert_eq!(scroll.scroll_position().1, 3.0);
+}
+
+#[test]
+fn scroll_events_report_each_move_once_before_it_paints() {
+    // 10 lines in 4 rows scroll from 0 to 6. `|` ends a frame; an event is its cause and row (`x` and a column for a
+    // horizontal move); `H` is the resize handler of the root's last child. `bar` clicks the scrollbar's last row;
+    // `sticky` makes the box follow the bottom; `add` adds a line; `tall`, `wide`, `slim` and `narrow` resize the
+    // terminal, the last taller and wrapping every line to two rows; `poke` resizes only H; `arm` makes H scroll to
+    // row 2; `on` adds the scroll handler,
+    // which rows without it add first; `echo` adds a handler that scrolls by 2 once; `defer` scrolls to row 4 from a
+    // task an animation step defers; `sideways` makes the box follow its right edge over a 40-column row, and `widen`
+    // adds a 50-column row.
+    let cases: &[(&str, &[&str], &str)] = &[
+        ("wheel steps before a frame are one event", &["wheel", "wheel", "wheel", "F"], "Wheel 3 |"),
+        ("each frame reports its own moves", &["wheel", "F", "wheel", "F"], "Wheel 1 | Wheel 2 |"),
+        ("a key", &["down", "F"], "Key 1 |"),
+        ("nothing moved", &["home", "F", "wheel", "up", "F", "wheel", "F"], "| | Wheel 1 |"),
+        ("a handler's own move", &["echo", "wheel", "F", "wheel", "F"], "Wheel 1 Program 3 | Wheel 4 |"),
+        ("the scrollbar", &["bar", "F"], "Pointer 5 |"),
+        ("the program, before layout is known", &["3", "F", "F"], "Program 3 | |"),
+        ("a move to the end follows content added before the frame", &["end", "add", "F"], "Key 6 Key 7 |"),
+        ("a sticky box follows new content", &["sticky", "add", "F", "add", "F"], "Layout 7 | Layout 8 |"),
+        ("a clamp to a taller view", &["end", "F", "tall", "F"], "Key 6 | Layout 4 |"),
+        ("view and content resize at once", &["sticky", "add", "F", "narrow", "F"], "Layout 7 | Layout 15 H |"),
+        (
+            "view and content widen at once",
+            &["sideways", "F", "widen", "slim", "F"],
+            "Program x21 Program x20 | Layout x34 H |",
+        ),
+        ("a move between frames is reported before layout", &["wheel", "wide", "F"], "Wheel 1 H |"),
+        ("a move deferred to the frame is reported before layout", &["defer", "poke", "F"], "Program 4 H |"),
+        ("a handler's move during a frame is reported after it", &["arm", "wide", "F"], "H Program 2 |"),
+        ("moves before the first handler are not reported", &["5", "F", "on", "wide", "F"], "| H |"),
+        ("a key at the end follows new content", &["6", "F", "end", "add", "F"], "Program 6 | Key 7 |"),
+    ];
+    for &(name, steps, expected) in cases {
+        let app = TestApp::new(20, 4);
+        let scroll = ScrollBox::new(&app).grow(1.0);
+        for line in 0..10 {
+            scroll.add(&Text::new(&app, format!("line {line} of text")));
+        }
+        let (armed, log) = (Rc::new(Cell::new(false)), Rc::new(RefCell::new(Vec::new())));
+        let hook = View::new(&app).absolute().width(Length::percent(25.0)).height(0).on_resize({
+            let (scroll, armed, log) = (scroll.clone(), armed.clone(), log.clone());
+            move |_, _| {
+                log.borrow_mut().push("H".to_owned());
+                if armed.replace(false) {
+                    scroll.scroll_to(0.0, 2.0);
+                }
+            }
+        });
+        app.root().add(&scroll).add(&hook);
+        scroll.focus();
+        app.render();
+        log.borrow_mut().clear();
+        let listen = || {
+            scroll.on_scroll({
+                let (log, scroll) = (log.clone(), scroll.clone());
+                move |_, event| {
+                    assert_eq!(event.position, scroll.scroll_position());
+                    let at = match event.position {
+                        (0.0, y) => y.to_string(),
+                        (x, _) => format!("x{x}"),
+                    };
+                    log.borrow_mut().push(format!("{:?} {at}", event.cause));
+                }
+            })
+        };
+        if !steps.contains(&"on") {
+            listen();
+        }
+        for &step in steps {
+            match step {
+                "F" => {
+                    app.render();
+                    log.borrow_mut().push("|".into());
+                }
+                "wheel" => app.scroll(2, 1, true),
+                "bar" => app.click(19, 3),
+                "sticky" => drop(scroll.sticky(true)),
+                "add" => drop(scroll.add(&Text::new(&app, "added"))),
+                "tall" => app.resize(20, 6),
+                "narrow" => app.resize(12, 6),
+                "slim" => app.resize(16, 4),
+                "poke" => drop(hook.width(6)),
+                "on" => drop(listen()),
+                "echo" => drop(scroll.on_scroll({
+                    let (scroll, once) = (scroll.clone(), Cell::new(false));
+                    move |_, _| drop((!once.replace(true)).then(|| scroll.scroll_by(0.0, 2.0)))
+                })),
+                "defer" => {
+                    let scroll = scroll.clone();
+                    app.animate(move |cx, _| {
+                        let scroll = scroll.clone();
+                        cx.app().defer(move |_| drop(scroll.scroll_to(0.0, 4.0)));
+                        false
+                    });
+                }
+                "sideways" => {
+                    scroll.axes(true, false).sticky(true).sticky_start(opentui::widget::ScrollEdge::Right);
+                    scroll.add(&View::new(&app).width(40).height(1));
+                }
+                "widen" => drop(scroll.add(&View::new(&app).width(50).height(1))),
+                "arm" => armed.set(true),
+                "wide" => app.resize(24, 4),
+                "home" | "end" | "up" | "down" => app.press(step),
+                delta => drop(scroll.scroll_by(0.0, delta.parse().unwrap())),
+            }
+        }
+        assert_eq!(log.borrow().join(" "), expected, "{name}");
+        // The app's teardown releases a scroll handler that holds its own box.
+        drop((app, scroll, hook));
+        assert_eq!(Rc::strong_count(&log), 1, "{name}");
+    }
 }
 
 #[test]

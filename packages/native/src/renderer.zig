@@ -1884,6 +1884,14 @@ pub const CliRenderer = struct {
         return protocol == .sixel and self.placementExposed(placement);
     }
 
+    // Out of line, so the per-cell diff loop keeps its registers.
+    noinline fn shownBlank(self: *const CliRenderer, char: u32, protocol: ImageProtocol) bool {
+        if (!gp.isImageChar(char)) return false;
+        const id = gp.imageIdFromChar(char);
+        if (id == 0 or id > self.currentImages.items.len) return false;
+        return self.currentImages.items[id - 1].protocol == protocol;
+    }
+
     fn currentImageForPlacement(self: *const CliRenderer, placement_id: u32) ?CommittedImage {
         if (placement_id == 0 or placement_id > self.currentImages.items.len) return null;
         const committed = self.currentImages.items[placement_id - 1];
@@ -2674,15 +2682,17 @@ pub const CliRenderer = struct {
 
                 // Reserved graphics cells display as cleared space; their diff
                 // is placement-level. Only placements whose pixels must be
-                // (re)painted clear their cells, as one batched space run.
-                // Fallback placements materialize as ordinary cells and fall
-                // through to normal diffing.
+                // (re)painted clear their cells, as one batched space run, and
+                // so do cells the presented frame drew on another protocol:
+                // blocks left glyphs there, Sixel its pixels. Fallback
+                // placements materialize as ordinary cells and fall through to
+                // normal diffing.
                 if (cell_type == gp.CHAR_FLAG_IMAGE) blk: {
                     const id = gp.imageIdFromChar(cell.char);
                     if (id == 0 or id > image_dirty_items.len) break :blk;
                     const state = &image_dirty_items[id - 1];
                     if (state.protocol == .fallback) break :blk;
-                    if (!should_force and !state.clear and gp.isImageChar(currentCell.?.char)) {
+                    if (!should_force and !state.clear and self.shownBlank(currentCell.?.char, state.protocol)) {
                         if (runLength > 0) {
                             writer.writeAll(ansi.ANSI.reset) catch {};
                             runLength = 0;

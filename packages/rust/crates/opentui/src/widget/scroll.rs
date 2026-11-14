@@ -1,10 +1,10 @@
-use super::{Behavior, Container, Element, Slider, View, Widget, build, keymap_methods};
+use super::{Behavior, Callbacks, Container, Element, Slider, View, Widget, build, keymap_methods};
 use crate::app::{App, Cx, TimerId};
 use crate::input::{KeyEvent, Keymap, Modifiers, MouseButton, MouseEvent, MouseEventKind};
 use crate::layout::{Align, FlexDirection, Justify, LayoutMode, LayoutProperty, Length, Overflow, Wrap};
-use crate::native::{ArrowDirection, ArrowOptions, NodeKind, SliderOptions};
+use crate::native::{ArrowDirection, ArrowOptions, NodeKind, Observation, SliderOptions};
 use crate::style::Color;
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::VecDeque;
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
@@ -46,6 +46,29 @@ pub enum ScrollEdge {
     Bottom,
     Left,
     Right,
+}
+
+/// What moved a [`ScrollBox`] last, as [`ScrollBox::on_scroll`] reports it. A scroll that the next frame's layout
+/// applies again, such as a key's move to the end of content that grows meanwhile, keeps its cause.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ScrollCause {
+    Wheel,
+    /// A key, or [`ScrollBox::perform`].
+    Key,
+    /// A scrollbar, its arrows, or a selection drag near an edge.
+    Pointer,
+    /// [`ScrollBox::scroll_to`] and the other scrolls the program asks for.
+    Program,
+    /// A size change: a sticky box following its edge, or the offset clamped to a smaller range.
+    Layout,
+}
+
+/// A move of a [`ScrollBox`], from [`ScrollBox::on_scroll`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScrollEvent {
+    /// The new [`ScrollBox::scroll_position`].
+    pub position: (f64, f64),
+    pub cause: ScrollCause,
 }
 
 /// Turns mouse wheel steps into scrolled cells for a [`ScrollBox`].
@@ -180,6 +203,17 @@ pub(crate) struct ScrollInner {
     /// again, since it was clamped to limits from the frame before, which may predate content added since. Infinity
     /// stands for the end.
     requested: Cell<Option<(Targets, u64)>>,
+    /// Made by the first [`ScrollBox::on_scroll`], so a box without scroll handlers keeps only the empty cell.
+    listeners: OnceCell<Box<Listeners>>,
+}
+
+struct Listeners {
+    handlers: Callbacks<ScrollEvent>,
+    /// The position the handlers last heard, and the cause of the latest move since.
+    reported: Cell<(f64, f64)>,
+    cause: Cell<ScrollCause>,
+    /// Whether the app's list of moved boxes holds this box.
+    queued: Cell<bool>,
 }
 
 /// Unclamped positions a request aims for along x and y, or `None` for an axis it leaves alone.
@@ -194,26 +228,61 @@ impl ScrollInner {
         )
     }
 
-    /// Moves the content without changing which edges a sticky box follows.
-    fn apply(&self, x: f64, y: f64) {
+    /// Moves the content without changing which edges a sticky box follows. Returns whether it moved.
+    fn apply(&self, x: f64, y: f64) -> bool {
         let (max_x, max_y) = self.limits();
         let (scroll_x, scroll_y) = self.axes.get();
         let x = if scroll_x { x.clamp(0.0, max_x).round() } else { 0.0 };
         let y = if scroll_y { y.clamp(0.0, max_y).round() } else { 0.0 };
         if (x, y) == self.scroll.get() {
-            return;
+            return false;
         }
         self.scroll.set((x, y));
         self.content.translate(-x, -y);
         let (vertical, horizontal) = (self.vertical.options(), self.horizontal.options());
         self.vertical.set_options(SliderOptions { value: y, ..vertical });
         self.horizontal.set_options(SliderOptions { value: x, ..horizontal });
+        true
+    }
+
+    /// Queues the box for the app's next scroll report, while it has scroll handlers.
+    fn moved(&self, cause: ScrollCause) {
+        let Some(listeners) = self.listeners.get() else { return };
+        listeners.cause.set(cause);
+        if !listeners.queued.replace(true)
+            && let Some(app) = self.element.app()
+        {
+            app.queue_scroll(self.this.borrow().clone());
+        }
+    }
+
+    /// Runs the scroll handlers if the box moved since they last heard. The app calls this for queued boxes before a
+    /// frame and after it; the box's own layout calls it during the frame, which may queue the box once more.
+    pub(crate) fn report(&self, cx: &mut Cx<'_>) {
+        let Some(listeners) = self.listeners.get() else { return };
+        listeners.queued.set(false);
+        let position = self.scroll.get();
+        if listeners.reported.replace(position) == position {
+            return;
+        }
+        listeners.handlers.emit(cx, &ScrollEvent { position, cause: listeners.cause.get() });
+    }
+
+    /// Whether the content's own resize, which refreshes again, comes later in this layout round: until it does, the
+    /// content reports the size of its last resize, not the solved one.
+    fn content_resize_due(&self) -> bool {
+        let seen = self.content.rect();
+        let solved = self.content.element().query(|node| node.layout(Observation::Yoga)).unwrap_or_default();
+        // A reported size is at least one cell.
+        (solved.width.max(1.0), solved.height.max(1.0)) != (seen.width, seen.height)
     }
 
     /// Scrolls, then follows the edges the view reached.
-    fn scroll_to(&self, x: f64, y: f64) {
+    fn scroll_to(&self, x: f64, y: f64, cause: ScrollCause) {
         self.requested.set(None);
-        self.apply(x, y);
+        if self.apply(x, y) {
+            self.moved(cause);
+        }
         self.follow_reached_edges((true, true));
     }
 
@@ -222,7 +291,7 @@ impl ScrollInner {
     /// A relative move adds to the target of a request no frame has applied yet, as Core's does, so moves before a
     /// frame add up and clamp once. A target at or past the end is the end, so moves past the end do not add up,
     /// while moves past the start do. A zero move keeps that axis's target. `relative` is per axis, x then y.
-    fn request(&self, (x, y): (f64, f64), (relative_x, relative_y): (bool, bool)) {
+    fn request(&self, (x, y): (f64, f64), (relative_x, relative_y): (bool, bool), cause: ScrollCause) {
         if x.is_nan() || y.is_nan() {
             return;
         }
@@ -240,7 +309,13 @@ impl ScrollInner {
         };
         let (x, target_x) = aim(x, relative_x, pending.0, offset_x, max_x, content.width);
         let (y, target_y) = aim(y, relative_y, pending.1, offset_y, max_y, content.height);
-        self.apply(x, y);
+        // The next frame's layout applies the target with this cause.
+        if let Some(listeners) = self.listeners.get() {
+            listeners.cause.set(cause);
+        }
+        if self.apply(x, y) {
+            self.moved(cause);
+        }
         self.follow_reached_edges((target_x.is_some(), target_y.is_some()));
         // An axis the scroll left following keeps no target: the next frame follows its edge, as Core's does.
         let ((edge_x, edge_y), (stuck_x, stuck_y)) = (self.edges.get(), self.stuck.get());
@@ -264,9 +339,9 @@ impl ScrollInner {
         self.stuck.set((reached(set_x, stuck_x, edge_x, x, max_x), reached(set_y, stuck_y, edge_y, y, max_y)));
     }
 
-    fn scroll_by(&self, dx: f64, dy: f64) {
+    fn scroll_by(&self, dx: f64, dy: f64, cause: ScrollCause) {
         let (x, y) = self.scroll.get();
-        self.scroll_to(x + dx, y + dy);
+        self.scroll_to(x + dx, y + dy, cause);
     }
 
     /// Shows or hides each scrollbar with `show`, as the options call for at the last layout's sizes.
@@ -287,8 +362,9 @@ impl ScrollInner {
         }
     }
 
-    /// Refreshes scroll limits, scrollbars, and sticky scrolling after layout changed a size.
-    fn refresh(&self, app: &App) {
+    /// Refreshes scroll limits, scrollbars, and sticky scrolling after layout changed a size, and reports a move.
+    fn refresh(&self, cx: &mut Cx<'_>) {
+        let app = cx.app();
         let viewport = self.viewport.rect();
         let (max_x, max_y) = self.limits();
         let ((x, y), (edge_x, edge_y), (stuck_x, stuck_y)) = (self.scroll.get(), self.edges.get(), self.stuck.get());
@@ -317,10 +393,17 @@ impl ScrollInner {
         bar(&self.horizontal, max_x, x, viewport.width);
         self.show_bars(|bar, visible| self.toggle(app, bar, visible));
         // Re-apply even if unchanged: the limits may have moved under the current position.
-        self.scroll.set((f64::NAN, f64::NAN));
+        let before = self.scroll.replace((f64::NAN, f64::NAN));
         self.apply(x, y);
         if let Some(((requested_x, requested_y), _)) = requested {
             self.follow_reached_edges((requested_x.is_some(), requested_y.is_some()));
+        }
+        let Some(listeners) = self.listeners.get() else { return };
+        if self.scroll.get() != before {
+            self.moved(if requested.is_some() { listeners.cause.get() } else { ScrollCause::Layout });
+        }
+        if !self.content_resize_due() {
+            self.report(cx);
         }
     }
 
@@ -359,21 +442,21 @@ impl ScrollInner {
             ScrollAction::Top => (0.0, -content),
             ScrollAction::Bottom => (0.0, content),
         };
-        self.request(delta, (true, true));
+        self.request(delta, (true, true), ScrollCause::Key);
         self.acceleration.borrow_mut().reset();
         self.wheel.set((0.0, 0.0));
         true
     }
 
     /// Scrolls whole cells of an accumulated fractional distance. Returns whether the view moved.
-    fn scroll_fraction(&self, dx: f64, dy: f64) -> bool {
+    fn scroll_fraction(&self, dx: f64, dy: f64, cause: ScrollCause) -> bool {
         let (x, y) = self.wheel.get();
         let (x, y) = (x + dx, y + dy);
         let (whole_x, whole_y) = (x.trunc(), y.trunc());
         self.wheel.set((x - whole_x, y - whole_y));
         let before = self.scroll.get();
         if whole_x != 0.0 || whole_y != 0.0 {
-            self.scroll_by(whole_x, whole_y);
+            self.scroll_by(whole_x, whole_y, cause);
         }
         self.scroll.get() != before
     }
@@ -434,7 +517,7 @@ impl ScrollInner {
                 return false;
             }
             let distance = speed * elapsed.as_secs_f64();
-            if inner.scroll_fraction(dx * distance, dy * distance) {
+            if inner.scroll_fraction(dx * distance, dy * distance, ScrollCause::Pointer) {
                 cx.refresh_selection();
             }
             true
@@ -445,7 +528,7 @@ impl ScrollInner {
         let viewport = self.viewport.rect();
         let (dx, dy) = (dx * f64::from(viewport.width) * share, dy * f64::from(viewport.height) * share);
         let step = |delta: f64| if delta == 0.0 { 0.0 } else { delta.abs().max(1.0).copysign(delta) };
-        self.request((step(dx), step(dy)), (true, true));
+        self.request((step(dx), step(dy)), (true, true), ScrollCause::Pointer);
     }
 
     fn press_arrow(&self, cx: &mut Cx<'_>, direction: (f64, f64)) {
@@ -515,11 +598,14 @@ impl Behavior for ScrollInner {
         };
         let multiplier = self.acceleration.borrow_mut().tick(cx.now());
         // An unmoved inner scroll area lets an outer one scroll instead.
-        self.scroll_fraction(dx * multiplier, dy * multiplier)
+        self.scroll_fraction(dx * multiplier, dy * multiplier, ScrollCause::Wheel)
     }
 
     fn teardown(&self) {
         self.arrows.borrow_mut().clear();
+        if let Some(listeners) = self.listeners.get() {
+            listeners.handlers.clear();
+        }
     }
 }
 
@@ -648,6 +734,7 @@ impl ScrollBox {
             auto_scroll: Cell::new(None),
             arrow_timer: Cell::new(None),
             requested: Cell::new(None),
+            listeners: OnceCell::new(),
         });
         *inner.this.borrow_mut() = Rc::downgrade(&inner);
         let element = &inner.element;
@@ -696,7 +783,7 @@ impl ScrollBox {
         let weak: Weak<ScrollInner> = Rc::downgrade(&inner);
         let refresh = move |cx: &mut Cx<'_>, _: &crate::layout::Rect| {
             if let Some(inner) = weak.upgrade() {
-                inner.refresh(cx.app());
+                inner.refresh(cx);
             }
         };
         inner.viewport.on_resize(refresh.clone());
@@ -704,13 +791,13 @@ impl ScrollBox {
         let weak = Rc::downgrade(&inner);
         inner.vertical.on_change(move |_cx, value| {
             if let Some(inner) = weak.upgrade() {
-                inner.scroll_to(inner.scroll.get().0, value);
+                inner.scroll_to(inner.scroll.get().0, value, ScrollCause::Pointer);
             }
         });
         let weak = Rc::downgrade(&inner);
         inner.horizontal.on_change(move |_cx, value| {
             if let Some(inner) = weak.upgrade() {
-                inner.scroll_to(value, inner.scroll.get().1);
+                inner.scroll_to(value, inner.scroll.get().1, ScrollCause::Pointer);
             }
         });
         Self(inner)
@@ -772,7 +859,7 @@ impl ScrollBox {
             ScrollEdge::Right => ((Some(edge), edge_y), (f64::MAX, 0.0), (false, true)),
         };
         self.0.edges.set(edges);
-        self.0.request(position, relative);
+        self.0.request(position, relative, ScrollCause::Program);
         self.clone()
     }
 
@@ -841,10 +928,32 @@ impl ScrollBox {
         self.0.scroll.get()
     }
 
+    /// Called when the box moves, at most once per move and never when it did not move, before a frame paints it.
+    /// Moves made between frames (by the wheel, keys, scrollbars, the program, or tasks deferred to the frame) are
+    /// reported together at the start of the next frame, before its layout, with the cause of the last one. Moves the
+    /// frame's layout makes (a sticky box following its edge, a clamp, a scroll applied again to new content) are
+    /// reported during that layout, before the resize handlers of later widgets run (see [`Widget::on_resize`]), so
+    /// the last event before those handlers carries the position the frame paints. A move a handler makes during the
+    /// frame is reported then, if the box's layout runs after it, or after the frame paints.
+    ///
+    /// Core reports moves through its scrollbars' `onChange`, one axis each, without a cause.
+    pub fn on_scroll(&self, handler: impl FnMut(&mut Cx<'_>, &ScrollEvent) + 'static) -> Self {
+        let listeners = self.0.listeners.get_or_init(|| {
+            Box::new(Listeners {
+                handlers: Callbacks::default(),
+                reported: Cell::new(self.0.scroll.get()),
+                cause: Cell::new(ScrollCause::Program),
+                queued: Cell::new(false),
+            })
+        });
+        listeners.handlers.add(handler);
+        self.clone()
+    }
+
     /// Scrolls to a position, clamped to the content. Content added since the last frame counts: the next frame
     /// scrolls to the position again once its layout is known. A NaN position is ignored.
     pub fn scroll_to(&self, x: f64, y: f64) -> Self {
-        self.0.request((x, y), (false, false));
+        self.0.request((x, y), (false, false), ScrollCause::Program);
         self.clone()
     }
 
@@ -852,13 +961,13 @@ impl ScrollBox {
     /// as Core's do: two moves of 5 from the top of a range of 6 land at 6, and a move of 3 back lands at 3.
     /// Moving at or past the end stops at the end, so a move back from there starts at the end.
     pub fn scroll_by(&self, dx: f64, dy: f64) -> Self {
-        self.0.request((dx, dy), (true, true));
+        self.0.request((dx, dy), (true, true), ScrollCause::Program);
         self.clone()
     }
 
     /// Scrolls to the end of the content, including content added since the last frame.
     pub fn scroll_to_bottom(&self) -> Self {
-        self.0.request((0.0, f64::INFINITY), (true, true));
+        self.0.request((0.0, f64::INFINITY), (true, true), ScrollCause::Program);
         self.clone()
     }
 
@@ -886,7 +995,7 @@ impl ScrollBox {
             viewport.screen_x,
             viewport.screen_x + f64::from(viewport.width),
         );
-        self.0.scroll_by(dx, dy);
+        self.0.scroll_by(dx, dy, ScrollCause::Program);
         self.clone()
     }
 
