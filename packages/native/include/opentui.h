@@ -668,8 +668,15 @@ ot_status ot_scene_set_hooks(ot_context *, const ot_handle *node, const ot_scene
  * Paint options are copied on each accepted step; max_layout_rounds and
  * max_host_requests stay positive and fixed for the attempt. Yoga completes before host work. Filtered
  * text viewports advance only when refreshed or painted, not during candidate layout.
- * UPDATE runs at most once per node per attempt; getter refresh
- * and resize ordering preserve the mounted and newly placed node contracts.
+ * UPDATE runs at most once per node per attempt. Each layout round walks the
+ * tree depth first in paint order (z_index, then child order): a node's UPDATE,
+ * its RESIZE, then its children's subtrees, so its requests follow those of every
+ * earlier sibling's subtree. A child inserted or moved since its last refresh gets
+ * its RESIZE when the walk reaches its parent, before its siblings' subtrees; a
+ * move to the index the child already has counts. A
+ * node with a viewport (ot_scene_set_viewport) or a culling scroll node refreshes
+ * all its children before walking the subtrees of those it does not cull. A node
+ * inserted during the walk waits for the next round.
  * LAYOUT_CHANGED follows an actual Yoga solve, before updates. Layout/preparation
  * limits fail before paint. Failure cancels the attempt without presenting
  * partial cells or rolling back mutations.
