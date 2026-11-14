@@ -658,6 +658,10 @@ impl Host {
             self.next_wakeup(deadline).map(|until| until.saturating_duration_since(Instant::now()))
         };
         let ready = self.wait(timeout)?;
+        // The terminal paces waits for room as it reads: a macOS pseudo-terminal holds about a kilobyte, a frame
+        // takes several. Tests count the other returns.
+        #[cfg(test)]
+        tests::POLL_RETURNS.set(tests::POLL_RETURNS.get() + u64::from(!self.output_blocked));
         if ready.wake && self.wake.drain() {
             events.push(Event::Wake);
         }
@@ -673,8 +677,6 @@ impl Host {
         }
         self.flush()?;
         self.apply_resize(events)?;
-        #[cfg(test)]
-        tests::POLL_RETURNS.set(tests::POLL_RETURNS.get() + 1);
         self.query_pixels(PIXEL_REPLY_WINDOW)
     }
 
@@ -1120,7 +1122,7 @@ mod tests {
             app.clone().run().unwrap();
             assert!(app.frame_number() > 0, "slept through the first frame");
             let polls = POLL_RETURNS.get();
-            assert!((1..=6).contains(&polls), "split={split}: {polls} poll returns");
+            assert!((1..=6).contains(&polls), "split={split} answers={answers}: {polls} poll returns");
         };
         if let Ok(row) = std::env::var(CHILD) {
             let (split, answers) = row.split_once(',').unwrap();
