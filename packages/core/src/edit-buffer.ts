@@ -264,7 +264,7 @@ export class EditBuffer extends EventEmitter {
     return this.lib.contextEditBufferSetCursor(this.native.handle.context, this.native.handle, line, col)
   }
 
-  /** Sets the cursor in display cells from the document start, counting each newline as one cell. */
+  /** Sets the cursor in display cells from the document start, counting each newline as one cell. Offsets past the end clamp to the end. */
   public setCursorByOffset(offset: number): void {
     this.command(this.rules() ? NativeEditCommand.CursorOffsetAtomic : NativeEditCommand.CursorOffset, offset)
   }

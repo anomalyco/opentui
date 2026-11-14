@@ -312,7 +312,7 @@ export class EditorView {
     )
   }
 
-  /** Sets the cursor in document display cells, counting each newline as one. */
+  /** Sets the cursor in document display cells, counting each newline as one. Offsets past the end clamp to the end. */
   public setCursorByOffset(offset: number): void {
     this.command(NativeEditorCommand.CursorOffset, offset)
   }

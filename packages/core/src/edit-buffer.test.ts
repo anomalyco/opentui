@@ -301,6 +301,19 @@ describe("EditBuffer", () => {
       expect(cursor.row).toBe(1)
       expect(cursor.col).toBe(3)
     })
+
+    it("should clamp an offset past the end to the end of the document", () => {
+      // "cafe\u0301" is "café" decomposed: 5 UTF-16 units, 4 display cells
+      for (const text of ["", "ab\tcd", "ab\tcd\nxy", "cafe\u0301"]) {
+        buffer.setText(text)
+        const end = buffer.measureText(text)
+        for (const offset of [end, end + 1, 0xffffffff]) {
+          buffer.setCursorByOffset(1)
+          buffer.setCursorByOffset(offset)
+          expect(buffer.getCursorPosition()).toEqual({ ...buffer.offsetToPosition(end)!, offset: end })
+        }
+      }
+    })
   })
 
   describe("word boundary navigation", () => {
