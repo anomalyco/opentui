@@ -99,7 +99,7 @@ struct State {
     transition: Option<SplitTransition>,
     pending_mode: Option<Mode>,
     replay: Option<Replay>,
-    /// Waiting for setup's cursor report, and until when frames wait for it.
+    /// A late cursor report can still place the footer after the first frame's wait ends.
     seed_pending: bool,
     seed_until: Option<Instant>,
     /// The terminal is set up and not suspended.
@@ -295,22 +295,16 @@ impl SplitFooter {
         Ok(())
     }
 
-    /// Setup's capability replies are over; a cursor report no longer places the footer.
-    pub(crate) fn replies_ended(&self) {
+    /// Retire the first frame's wakeup after polling, even if the cursor report can still arrive.
+    pub(crate) fn expire_seed(&self, now: Instant, expecting_replies: bool) {
         let mut state = self.0.borrow_mut();
-        state.seed_pending = false;
-        state.seed_until = None;
+        state.seed_pending &= expecting_replies;
+        state.seed_until = state.seed_until.filter(|&until| expecting_replies && now < until);
     }
 
-    /// Whether frames wait for setup's cursor report.
-    pub(crate) fn blocked(&self, now: Instant) -> bool {
+    pub(crate) fn frame_deadline(&self) -> Option<Instant> {
         let state = self.0.borrow();
-        state.split_height > 0 && state.seed_blocks(now)
-    }
-
-    pub(crate) fn seed_deadline(&self) -> Option<Instant> {
-        let state = self.0.borrow();
-        state.seed_until.filter(|_| state.seed_pending)
+        state.seed_until.filter(|_| state.split_height > 0)
     }
 
     /// Whether a frame should be painted: snapshots wait, or a replay reset waits for one.
@@ -452,7 +446,7 @@ impl SplitFooter {
 impl State {
     /// Whether frames still wait for setup's cursor report: Core's `isSplitCursorSeedFrameBlocked`.
     fn seed_blocks(&self, now: Instant) -> bool {
-        self.seed_pending && self.seed_until.is_some_and(|until| now < until)
+        self.seed_until.is_some_and(|until| now < until)
     }
 
     fn renderer_size(&self) -> (u16, u16) {

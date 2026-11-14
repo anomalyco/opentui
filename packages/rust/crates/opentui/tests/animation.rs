@@ -697,3 +697,326 @@ fn teardown_releases_timelines_that_capture_themselves() {
     }
     assert_eq!(Rc::strong_count(&marker), 1);
 }
+
+// The shared animation clock. Frame rows and the seeded bound come from Core's vectors, which
+// `renderer.scheduling.test.ts` runs too.
+
+fn tick_vectors() -> serde_json::Value {
+    serde_json::from_str(include_str!("../../../../core/src/tests/animation-tick.conformance.json")).unwrap()
+}
+
+fn numbers(value: &serde_json::Value) -> Vec<f64> {
+    value.as_array().unwrap().iter().map(|number| number.as_f64().unwrap()).collect()
+}
+
+/// Frames and ticks per second after the first second, and each subscriber's gaps between ticks in ms.
+struct Animated {
+    frames: f64,
+    ticks: Vec<f64>,
+    gaps: Vec<Vec<f64>>,
+}
+
+/// Core's `animate`: subscribers at `rates` mounted at `offsets` (ms), each requesting a frame in its tick, plus
+/// redraws at the `content` times, on an idle loop stepped 1 ms at a time at up to 60 frames per second.
+fn animate(rates: &[f64], offsets: &[f64], live: bool, content: &[u64], seconds: u64) -> Animated {
+    let app = TestApp::with_options(4, 1, AppOptions { max_fps: 60, ..Default::default() });
+    let start = app.now();
+    let counts = Rc::new(RefCell::new(vec![(0, Vec::new(), None); rates.len()]));
+    let mut handles = Vec::new();
+    let mut frames = 0;
+    for millis in 0..(1 + seconds) * 1000 {
+        for (index, &fps) in rates.iter().enumerate() {
+            if offsets[index] as u64 != millis {
+                continue;
+            }
+            let counts = counts.clone();
+            handles.push(app.on_animation_tick(fps, move |cx, tick| {
+                let time = (cx.now() - start).as_secs_f64() * 1000.0;
+                if time <= 1000.0 {
+                    return;
+                }
+                let (ticks, gaps, last) = &mut counts.borrow_mut()[index];
+                *ticks += tick.ticks;
+                if let Some(last) = *last {
+                    gaps.push(time - last);
+                }
+                *last = Some(time);
+                cx.request_redraw();
+            }));
+        }
+        if live && millis == 0 {
+            app.animate(|_cx, _elapsed| true);
+        }
+        if content.contains(&millis) {
+            app.request_redraw();
+        }
+        let idle = app.idle(ms(1));
+        if millis >= 1000 {
+            frames += idle.frames;
+        }
+    }
+    let per_second = |count: u64| count as f64 / seconds as f64;
+    let counts = counts.take();
+    Animated {
+        frames: per_second(frames),
+        ticks: counts.iter().map(|(ticks, _, _)| per_second(*ticks)).collect(),
+        gaps: counts.into_iter().map(|(_, gaps, _)| gaps).collect(),
+    }
+}
+
+#[test]
+fn animation_ticks_share_frames_as_in_core() {
+    let (vectors, mut seen, mut expected) = (tick_vectors(), Vec::new(), Vec::new());
+    for row in vectors["frames"].as_array().unwrap() {
+        let (name, options) = (row[0].as_str().unwrap(), &row[3]);
+        // Rust has no tolerance option, and its timers fire on time.
+        if options.get("tolerance").is_some() {
+            continue;
+        }
+        let run = animate(&numbers(&row[1]), &numbers(&row[2]), options.get("live").is_some(), &[], 5);
+        seen.push((name, run.frames, run.ticks));
+        let (frames, ticks) = options.get("rust").map_or((&row[4], &row[5]), |rust| (&rust[0], &rust[1]));
+        expected.push((name, frames.as_f64().unwrap(), numbers(ticks)));
+    }
+    assert_eq!(seen, expected);
+}
+
+#[test]
+fn animation_frames_never_exceed_the_fastest_rate_plus_content() {
+    let bound = &tick_vectors()["bound"];
+    let mut seed = bound["seed"].as_u64().unwrap();
+    // Core's Park-Miller generator, so both suites draw the same trials.
+    let mut random = move || {
+        seed = seed * 48271 % 2147483647;
+        (seed - 1) as f64 / 2147483646.0
+    };
+    let mut below = move |count: usize| (random() * count as f64).floor() as usize;
+    let (bases, divisors, mixed) = (numbers(&bound["bases"]), numbers(&bound["divisors"]), numbers(&bound["mixed"]));
+    let seconds = bound["seconds"].as_u64().unwrap();
+    for trial in 0..bound["trials"].as_u64().unwrap() {
+        let base = bases[below(bases.len())];
+        let count = 1 + below(3);
+        let rates: Vec<f64> = (0..count)
+            .map(|_| match trial % 3 {
+                2 => mixed[below(mixed.len())],
+                _ => base / divisors[below(divisors.len())],
+            })
+            .collect();
+        let offsets: Vec<f64> = rates.iter().map(|_| below(200) as f64).collect();
+        let length = below(40);
+        let mut content: Vec<u64> = (0..length).map(|_| 1000 + below(2000) as u64).collect();
+        content.sort_unstable();
+        let alone = animate(&[], &[], false, &content, seconds);
+        let run = animate(&rates, &offsets, false, &content, seconds);
+        let context = format!("trial {trial}, rates {rates:?}, offsets {offsets:?}, frames {}", run.frames);
+        let fastest = rates.iter().copied().fold(0.0, f64::max);
+        assert!(run.frames <= fastest.min(60.0) + alone.frames, "{context}, alone {}", alone.frames);
+        for (index, &fps) in rates.iter().enumerate() {
+            // A tick runs on the first frame from half an interval before its due time; the fastest rate's frames
+            // come at least every 1000 / fastest ms, a 60 fps gap later at worst.
+            let slack = (1000.0 / fps).min(1000.0 / fastest) + 1000.0 / 60.0 + 1.0;
+            assert!((run.ticks[index] - fps).abs() <= 1.0, "{context}, ticks {:?}", run.ticks);
+            for gap in &run.gaps[index] {
+                assert!((gap - 1000.0 / fps).abs() <= slack, "{context}, subscriber {index}, gap {gap}");
+            }
+        }
+    }
+}
+
+/// Frames, wakeups, and ticks in one idle second.
+fn idle_second(app: &TestApp, ticks: &Cell<u64>) -> (u64, u64, u64) {
+    let before = ticks.get();
+    let idle = app.idle(ms(1000));
+    (idle.frames, idle.wakeups, ticks.get() - before)
+}
+
+/// A tick callback that counts its ticks and redraws, as a spinner does.
+fn spinner(ticks: &Rc<Cell<u64>>) -> impl FnMut(&mut Cx<'_>, Tick) + 'static {
+    let ticks = ticks.clone();
+    move |cx, tick| {
+        ticks.set(ticks.get() + tick.ticks);
+        cx.request_redraw();
+    }
+}
+
+#[test]
+fn widget_ticks_run_while_the_widget_is_drawn() {
+    let app = TestApp::with_options(4, 2, AppOptions { max_fps: 60, ..Default::default() });
+    let view = View::new(&app).width(1).height(1);
+    app.root().add(&view);
+    app.idle(ms(1000));
+    let ticks = Rc::new(Cell::new(0));
+    let mut rows = vec![("nothing animates", idle_second(&app, &ticks))];
+    let handle = view.on_animation_tick(12.5, spinner(&ticks));
+    rows.push(("drawn", idle_second(&app, &ticks)));
+    view.visible(false);
+    rows.push(("hidden", idle_second(&app, &ticks)));
+    rows.push(("still hidden", idle_second(&app, &ticks)));
+    view.visible(true);
+    rows.push(("shown again", idle_second(&app, &ticks)));
+    view.detach();
+    rows.push(("detached, handle kept", idle_second(&app, &ticks)));
+    app.root().add(&view);
+    rows.push(("added again", idle_second(&app, &ticks)));
+    drop(handle);
+    rows.push(("handle dropped", idle_second(&app, &ticks)));
+    let text = Text::new(&app, "-");
+    app.root().add(&text);
+    let kept = text.on_animation_tick(12.5, spinner(&ticks));
+    rows.push(("another widget", idle_second(&app, &ticks)));
+    text.detach();
+    drop(text);
+    rows.push(("that widget dropped, handle kept", idle_second(&app, &ticks)));
+    assert_eq!(
+        rows,
+        [
+            ("nothing animates", (0, 0, 0)),
+            // The first frame is the one that registers the widget's update hook.
+            ("drawn", (13, 12, 12)),
+            // The hiding frame is within the next tick's window and runs it; the tick after that parks: one wakeup, and
+            // its frame.
+            ("hidden", (2, 1, 1)),
+            ("still hidden", (0, 0, 0)),
+            ("shown again", (13, 12, 12)),
+            // The detaching frame waits for the frame cap (a wakeup); the next due time parks (another).
+            ("detached, handle kept", (2, 2, 0)),
+            ("added again", (13, 12, 12)),
+            ("handle dropped", (0, 0, 0)),
+            ("another widget", (13, 12, 12)),
+            ("that widget dropped, handle kept", (1, 1, 0)),
+        ]
+    );
+    drop(kept);
+}
+
+#[test]
+fn ticks_may_subscribe_and_end_animations_inside_a_tick() {
+    // Four subscribers due in the same frames, in this order: `a`, `b`, `d`, and `e`, bound to a drawn widget. The
+    // first tick of `a` subscribes `c`, ends `b` and itself, and detaches the widget. The callback of `b` owns `d`'s
+    // handle, and that of `a` the widget's last handle: both drop with their callbacks, before `d` and `e` are due.
+    // Only `c` ticks after that.
+    let app = TestApp::with_options(4, 2, AppOptions { max_fps: 60, ..Default::default() });
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let log = |name: &'static str| {
+        let calls = calls.clone();
+        move |cx: &mut Cx<'_>, _tick: Tick| {
+            calls.borrow_mut().push(name);
+            cx.request_redraw();
+        }
+    };
+    let widget = View::new(&app).width(1).height(1);
+    app.root().add(&widget);
+    let (handles, owned) = (Rc::new(RefCell::new(Vec::new())), Rc::new(RefCell::new(None)));
+    let a = app.on_animation_tick(20.0, {
+        let (handles, owned, log_a, mut log_c) = (handles.clone(), owned.clone(), log("a"), Some(log("c")));
+        move |cx, tick| {
+            log_a(cx, tick);
+            if let Some(widget) = &*owned.borrow() {
+                Widget::detach(widget);
+            }
+            let ended: Vec<AnimationTick> = handles.borrow_mut().drain(..).collect();
+            handles.borrow_mut().extend(log_c.take().map(|log_c| cx.on_animation_tick(20.0, log_c)));
+            drop(ended);
+        }
+    });
+    let owns_d = Rc::new(RefCell::new(None));
+    let b = app.on_animation_tick(20.0, {
+        let (owns_d, log_b) = (owns_d.clone(), log("b"));
+        move |cx, tick| {
+            let _ = &owns_d;
+            log_b(cx, tick);
+        }
+    });
+    *owns_d.borrow_mut() = Some(app.on_animation_tick(20.0, log("d")));
+    let _e = widget.on_animation_tick(20.0, log("e"));
+    handles.borrow_mut().extend([a, b]);
+    *owned.borrow_mut() = Some(widget);
+    drop((owned, owns_d));
+    let idle = app.idle(ms(1000));
+    let calls = calls.take();
+    assert_eq!(calls.first(), Some(&"a"));
+    assert!(calls[1..].iter().all(|&name| name == "c"), "{calls:?}");
+    assert_eq!((calls.len(), idle.frames), (20, 21));
+    handles.borrow_mut().clear();
+    assert_eq!(app.idle(ms(1000)), opentui::testing::Idle::default());
+}
+
+#[test]
+fn a_cancelled_timer_may_drop_an_animated_widget() {
+    // The timer's callback owns the widget's last handle; cancelling it ends the widget's ticks.
+    let app = TestApp::with_options(4, 2, AppOptions { max_fps: 60, ..Default::default() });
+    let widget = View::new(&app).width(1).height(1);
+    app.root().add(&widget);
+    let ticks = Rc::new(Cell::new(0));
+    let _handle = widget.on_animation_tick(20.0, spinner(&ticks));
+    app.idle(ms(1000));
+    widget.detach();
+    let timer = app.set_timeout(ms(10_000), move |_cx| drop(widget));
+    assert!(app.cancel_timer(timer));
+    // The detaching frame waits for the frame cap; no tick is due after it.
+    assert_eq!([idle_second(&app, &ticks), idle_second(&app, &ticks)], [(1, 1, 0), (0, 0, 0)]);
+    // A timer still pending when the app ends drops another such widget, and its handle, at teardown.
+    let other = View::new(&app);
+    let handle = other.on_animation_tick(20.0, spinner(&ticks));
+    app.set_timeout(ms(10_000), move |_cx| drop((other, handle)));
+    // And another a value that cancels a timer when it drops, as a playing video does.
+    struct CancelsOnDrop(App, TimerId);
+    impl Drop for CancelsOnDrop {
+        fn drop(&mut self) {
+            self.0.cancel_timer(self.1);
+        }
+    }
+    let cancels = CancelsOnDrop(app.app().clone(), app.set_timeout(ms(10_000), |_cx| {}));
+    app.set_timeout(ms(10_000), move |_cx| drop(cancels));
+}
+
+/// Starts a spinner on itself the first time it paints.
+struct PaintSpinner {
+    widget: RefCell<Option<AnyWidget>>,
+    ticks: Rc<Cell<u64>>,
+    handle: RefCell<Option<AnimationTick>>,
+}
+
+impl Component for PaintSpinner {
+    fn paint(&self, _painter: &mut Painter<'_>) {
+        if let Some(widget) = self.widget.take() {
+            *self.handle.borrow_mut() = Some(widget.on_animation_tick(12.5, spinner(&self.ticks)));
+        }
+    }
+}
+
+#[test]
+fn a_spinner_started_while_painting_ticks_from_its_first_due_time() {
+    let app = TestApp::with_options(4, 2, AppOptions { max_fps: 60, ..Default::default() });
+    let ticks = Rc::new(Cell::new(0));
+    let component = PaintSpinner { widget: RefCell::default(), ticks: ticks.clone(), handle: RefCell::default() };
+    let custom = Custom::new(&app, component).width(1).height(1);
+    custom.with(|component| *component.widget.borrow_mut() = Some(custom.as_any()));
+    app.root().add(&custom);
+    // The painting frame counts as drawing it, so its first due tick runs instead of parking.
+    assert_eq!(idle_second(&app, &ticks), (13, 12, 12));
+}
+
+#[test]
+fn a_late_frame_covers_the_due_times_it_missed() {
+    // Core's row: a subscriber at 12.5 fps from 50 ms first ticks at 160 ms. A late frame at 360 ms covers 160, 240
+    // and 320 ms, and 400 ms, which is within reach; the next tick, at 480 ms, is ordinary.
+    let app = TestApp::new(1, 1);
+    let ticks = Rc::new(RefCell::new(Vec::new()));
+    app.advance(ms(50));
+    let handle = app.on_animation_tick(12.5, {
+        let ticks = ticks.clone();
+        move |_cx, tick| ticks.borrow_mut().push(tick)
+    });
+    app.present().expect("frame");
+    app.advance(ms(310));
+    app.present().expect("frame");
+    app.idle(ms(120));
+    drop(handle);
+    assert_eq!(*ticks.borrow(), [Tick { elapsed: ms(310), ticks: 4 }, Tick { elapsed: ms(120), ticks: 1 }]);
+    for fps in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        let subscribed =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app.on_animation_tick(fps, |_, _| {})));
+        assert!(subscribed.is_err(), "{fps}");
+    }
+}

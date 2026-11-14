@@ -157,7 +157,8 @@ fn timers_fire_on_the_real_clock() {
 
 /// Where the timer that ends a run is armed: while a widget paints, from a task it defers while painting, from an
 /// animation such a task starts, from a timer callback, or from an animation that a hover handler starts once a
-/// frame's output is complete. `Quit` quits from a task the widget defers while painting instead.
+/// frame's output is complete. `Quit` quits from a task the widget defers while painting instead, and `Tick` from the
+/// third tick of a spinner that starts ticking on the widget while it paints.
 #[derive(Clone, Copy, Debug)]
 enum Arm {
     Paint,
@@ -166,6 +167,7 @@ enum Arm {
     Timer,
     Hover,
     Quit,
+    Tick,
 }
 
 /// Where an app runs: headless, on a remote terminal that never reads its output, on one whose first frame does not
@@ -188,6 +190,9 @@ struct Arming {
     noisy: bool,
     armed: Cell<bool>,
     quit: Quit,
+    /// The widget itself, for [`Arm::Tick`], and its spinner.
+    widget: RefCell<Option<AnyWidget>>,
+    spinner: RefCell<Option<AnimationTick>>,
 }
 
 /// Arms a 20 ms timer that quits and records when.
@@ -213,6 +218,17 @@ impl Component for Arming {
                 })
             }),
             Arm::Quit => self.app.defer(|cx| cx.quit()),
+            Arm::Tick => {
+                let (widget, quit, mut ticks) = (self.widget.take().expect("the widget"), self.quit.clone(), 0);
+                *self.spinner.borrow_mut() = Some(widget.on_animation_tick(50.0, move |cx, tick| {
+                    ticks += tick.ticks;
+                    if ticks >= 3 {
+                        quit.set(Some(Instant::now()));
+                        cx.quit();
+                    }
+                    cx.request_redraw();
+                }));
+            }
             Arm::Timer | Arm::Hover => {}
         }
         let cells = if self.noisy { 0..200 * 60 } else { 0..0 };
@@ -241,8 +257,13 @@ fn timers_armed_while_painting_fire_on_time() {
                 app.set_timeout(Duration::ZERO, move |cx| arm_quit(cx.app(), &quit));
             }
             let noisy = matches!(host, Host::Blocked | Host::Late);
-            let arming = Arming { app: app.clone(), arm, noisy, armed: Cell::new(false), quit: quit.clone() };
+            let (armed, spinner, quit_at) = (Cell::new(false), RefCell::new(None), quit.clone());
+            let arming =
+                Arming { app: app.clone(), arm, noisy, armed, quit: quit_at, widget: RefCell::new(None), spinner };
             let widget = Custom::new(&app, arming);
+            if let Arm::Tick = arm {
+                widget.with(|arming| *arming.widget.borrow_mut() = Some(widget.as_any()));
+            }
             if let Arm::Hover = arm {
                 // At 30 ms the pointer moves to the corner and the widget grows under it. That frame's output finishes
                 // when the client reads it, and only then does the hover reach the widget.
@@ -300,7 +321,9 @@ fn timers_armed_while_painting_fire_on_time() {
     };
     let rows = [Host::Headless, Host::Remote]
         .into_iter()
-        .flat_map(|host| [Arm::Paint, Arm::Defer, Arm::Animate, Arm::Timer, Arm::Quit].map(|arm| (arm, host)))
+        .flat_map(|host| {
+            [Arm::Paint, Arm::Defer, Arm::Animate, Arm::Timer, Arm::Quit, Arm::Tick].map(|arm| (arm, host))
+        })
         .chain([(Arm::Defer, Host::Blocked), (Arm::Hover, Host::Late)]);
     let late: Vec<_> = rows.filter(late).collect();
     assert!(late.is_empty(), "{late:?}");

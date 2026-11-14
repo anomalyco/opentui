@@ -496,13 +496,13 @@ export class VideoRenderable extends Renderable {
     }
   }
 
-  // Playback ticks at maxFps, which paints each frame and advances, ends or loops playback. A
-  // caller that already reported a failure passes report = false, so it reports once.
+  // Playback ticks at maxFps from the native start, which paints each frame and advances, ends or
+  // loops playback. A caller that already reported a failure passes report = false, so it reports once.
   private syncPlayback(report = true): void {
     if (this.isDestroyed) return
     let active = false
     try {
-      active = this._metadata !== null && (this._playRequested || this.readState().playing)
+      active = this._metadata !== null && !this._playRequested && this.readState().playing
     } catch (error) {
       if (report) this.reportError(error)
     }

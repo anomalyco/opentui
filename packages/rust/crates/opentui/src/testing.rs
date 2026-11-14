@@ -19,17 +19,28 @@ use crate::input::{Event, Input, KeyCode, KeyEvent, Modifiers, MouseButton, Mous
 pub use crate::native::{Capture, Cell};
 use std::cell::RefCell;
 use std::ops::Deref;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// An [`App`] without a terminal. It dereferences to the app, so widgets take `&app` as usual.
 ///
 /// Input methods dispatch immediately. [`Self::render`] paints a frame, presents it so hit tests and hover see it,
 /// and returns its cells. Native failures panic with the error, which suits tests; use [`Self::try_render`] to
 /// inspect them instead. As in Core's test renderer, native code checks each frame that it skips or repaints only
-/// in part against a full repaint, and fails the frame on a mismatch.
+/// in part against a full repaint, and fails the frame on a mismatch; [`Self::set_verify`] turns that check off.
 pub struct TestApp {
     app: App,
     parser: RefCell<Parser>,
+    /// When [`Self::idle`] last painted, for its frame slots.
+    last_frame: std::cell::Cell<Option<Instant>>,
+}
+
+/// What [`TestApp::idle`] cost.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Idle {
+    /// Frames painted.
+    pub frames: u64,
+    /// Times the loop woke from its sleep, for a timer or a frame slot.
+    pub wakeups: u64,
 }
 
 impl Deref for TestApp {
@@ -54,11 +65,10 @@ impl TestApp {
 
     pub fn with_options(width: u16, height: u16, options: AppOptions) -> Self {
         let app = App::manual(width, height, options).unwrap_or_else(|error| panic!("headless app: {error}"));
-        app.session()
-            .set_debug_flags(crate::sys::OT_SCENE_DEBUG_VERIFY)
-            .unwrap_or_else(|error| panic!("headless app: {error}"));
         let parser = RefCell::new(Parser::new(app.session()));
-        Self { app, parser }
+        let app = Self { app, parser, last_frame: std::cell::Cell::new(None) };
+        app.set_verify(true);
+        app
     }
 
     /// A `width` by `height` app whose terminal shows hyperlinks (OSC 8), as most terminals do: widgets take the
@@ -185,6 +195,31 @@ impl TestApp {
         self.settle();
     }
 
+    /// Runs the event loop with no input for `by` on the manual clock, as [`App::run`] does: it sleeps until the next
+    /// timer or, while a frame is wanted, the next frame slot at [`AppOptions::max_fps`], and paints. Returns what an
+    /// animation costs an idle app: the frames painted and the times the loop woke.
+    pub fn idle(&self, by: Duration) -> Idle {
+        let end = self.app.now() + by;
+        let mut idle = Idle::default();
+        loop {
+            self.settle();
+            let now = self.app.now();
+            let slot = |last: Option<Instant>| last.map_or(now, |last| (last + self.app.frame_interval()).max(now));
+            if self.needs_frame() && slot(self.last_frame.get()) == now {
+                self.present().unwrap_or_else(|error| panic!("idle frame: {error}"));
+                self.last_frame.set(Some(now));
+                idle.frames += 1;
+            }
+            let frame = self.needs_frame().then(|| slot(self.last_frame.get()));
+            let next = self.app.next_timer().into_iter().chain(frame).min().filter(|&next| next <= end);
+            self.app.advance_clock(next.unwrap_or(end).saturating_duration_since(now));
+            if next.is_none() {
+                return idle;
+            }
+            idle.wakeups += 1;
+        }
+    }
+
     /// Runs queued tasks from other threads until `condition` holds or `timeout` passes, in real time. Returns
     /// whether the condition held. For work that finishes on other threads, such as `App::spawn` tasks.
     pub fn wait_until(&self, timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
@@ -221,6 +256,14 @@ impl TestApp {
     pub fn present(&self) -> Result<()> {
         self.settle();
         self.app.present_headless(false).map(drop)
+    }
+
+    /// Turns the check of skipped and partly repainted frames off, or back on; it starts on. The check repaints such
+    /// a frame in full into a scratch buffer, which an app never does, so it makes a still frame half again as slow.
+    /// Timing probes turn it off. Cells and work counts are the same either way.
+    pub fn set_verify(&self, verify: bool) {
+        let flags = if verify { crate::sys::OT_SCENE_DEBUG_VERIFY } else { 0 };
+        self.app.session().set_debug_flags(flags).unwrap_or_else(|error| panic!("set_verify: {error}"));
     }
 
     /// The text of a freshly rendered frame, one line per row, without trailing spaces.
