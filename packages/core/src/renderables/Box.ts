@@ -8,6 +8,7 @@ import {
   type BorderStyle,
   borderCharsToArray,
   getBorderSides,
+  isValidBorderStyle,
   parseBorderStyle,
 } from "../lib/index.js"
 import { type ColorInput, RGBA, parseColor } from "../lib/RGBA.js"
@@ -28,6 +29,16 @@ export interface BoxOptions<TRenderable extends Renderable = BoxRenderable> exte
   bottomTitle?: string
   bottomTitleAlignment?: "left" | "center" | "right"
   focusedBorderColor?: ColorInput
+  /** One side's style over `borderStyle`; undefined takes `borderStyle`. It draws no side: `border` chooses those. */
+  borderTopStyle?: BorderStyle | undefined
+  borderRightStyle?: BorderStyle | undefined
+  borderBottomStyle?: BorderStyle | undefined
+  borderLeftStyle?: BorderStyle | undefined
+  /** One side's color over `borderColor`; undefined takes `borderColor`. `focusedBorderColor` still colors every side. */
+  borderTopColor?: ColorInput | undefined
+  borderRightColor?: ColorInput | undefined
+  borderBottomColor?: ColorInput | undefined
+  borderLeftColor?: ColorInput | undefined
   focusable?: boolean
   gap?: number | `${number}%`
   rowGap?: number | `${number}%`
@@ -46,6 +57,33 @@ function isGapType(value: any): value is number | undefined {
 
 function borderMask(sides: BorderSidesConfig): number {
   return (sides.left ? 1 : 0) | (sides.bottom ? 2 : 0) | (sides.right ? 4 : 0) | (sides.top ? 8 : 0)
+}
+
+// Side indexes follow the border mask's bits: left, bottom, right, top.
+const LEFT = 0
+const BOTTOM = 1
+const RIGHT = 2
+const TOP = 3
+const SIDE_STYLE_OPTIONS = ["borderLeftStyle", "borderBottomStyle", "borderRightStyle", "borderTopStyle"] as const
+const SIDE_COLOR_OPTIONS = ["borderLeftColor", "borderBottomColor", "borderRightColor", "borderTopColor"] as const
+
+/** A box's per-side overrides; only boxes that set one hold them. */
+interface SideOverrides {
+  styles: (BorderStyle | undefined)[]
+  colors: (RGBA | undefined)[]
+}
+
+/** An invalid style is ignored, as CSS ignores an invalid declaration: the side takes `borderStyle`. */
+function parseSideStyle(value: unknown): BorderStyle | undefined {
+  if (value == null || isValidBorderStyle(value)) return value ?? undefined
+  console.warn(
+    `Invalid border side style "${value}", using borderStyle. Valid values are: single, double, rounded, heavy`,
+  )
+  return undefined
+}
+
+function isEmpty(sides: SideOverrides): boolean {
+  return sides.styles.every((style) => style === undefined) && sides.colors.every((color) => color === undefined)
 }
 
 export class BoxRenderable extends Renderable {
@@ -67,6 +105,8 @@ export class BoxRenderable extends Renderable {
   protected _titleAlignment: "left" | "center" | "right"
   protected _bottomTitle?: string
   protected _bottomTitleAlignment: "left" | "center" | "right"
+  // Declared, not initialized: a box without overrides never gets the property, so it costs nothing (D122).
+  declare private _sideOverrides: SideOverrides | undefined
 
   protected _defaultOptions = {
     backgroundColor: "transparent",
@@ -123,6 +163,7 @@ export class BoxRenderable extends Renderable {
       ) {
         this.setNativeBoxDetails()
       }
+      this.applySideOptions(options)
 
       const hasInitialGapProps =
         options.gap !== undefined || options.rowGap !== undefined || options.columnGap !== undefined
@@ -235,6 +276,118 @@ export class BoxRenderable extends Renderable {
     this._focusedBorderColor = newColor
     this.initializeBorder()
     this.requestRender()
+  }
+
+  // Per-side overrides. Reads return what was set, not the resolved paint; undefined takes the base again.
+  public get borderTopStyle(): BorderStyle | undefined {
+    return this._sideOverrides?.styles[TOP]
+  }
+
+  public set borderTopStyle(value: BorderStyle | undefined) {
+    this.setSideStyle(TOP, value)
+  }
+
+  public get borderRightStyle(): BorderStyle | undefined {
+    return this._sideOverrides?.styles[RIGHT]
+  }
+
+  public set borderRightStyle(value: BorderStyle | undefined) {
+    this.setSideStyle(RIGHT, value)
+  }
+
+  public get borderBottomStyle(): BorderStyle | undefined {
+    return this._sideOverrides?.styles[BOTTOM]
+  }
+
+  public set borderBottomStyle(value: BorderStyle | undefined) {
+    this.setSideStyle(BOTTOM, value)
+  }
+
+  public get borderLeftStyle(): BorderStyle | undefined {
+    return this._sideOverrides?.styles[LEFT]
+  }
+
+  public set borderLeftStyle(value: BorderStyle | undefined) {
+    this.setSideStyle(LEFT, value)
+  }
+
+  public get borderTopColor(): RGBA | undefined {
+    return this.sideColor(TOP)
+  }
+
+  public set borderTopColor(value: ColorInput | undefined) {
+    this.setSideColor(TOP, value)
+  }
+
+  public get borderRightColor(): RGBA | undefined {
+    return this.sideColor(RIGHT)
+  }
+
+  public set borderRightColor(value: ColorInput | undefined) {
+    this.setSideColor(RIGHT, value)
+  }
+
+  public get borderBottomColor(): RGBA | undefined {
+    return this.sideColor(BOTTOM)
+  }
+
+  public set borderBottomColor(value: ColorInput | undefined) {
+    this.setSideColor(BOTTOM, value)
+  }
+
+  public get borderLeftColor(): RGBA | undefined {
+    return this.sideColor(LEFT)
+  }
+
+  public set borderLeftColor(value: ColorInput | undefined) {
+    this.setSideColor(LEFT, value)
+  }
+
+  private sideColor(side: number): RGBA | undefined {
+    const color = this._sideOverrides?.colors[side]
+    return color ? RGBA.clone(color) : undefined
+  }
+
+  private setSideStyle(side: number, value: BorderStyle | undefined): void {
+    const style = parseSideStyle(value)
+    if (this._sideOverrides?.styles[side] === style) return
+    this.publishSides((sides) => (sides.styles[side] = style))
+  }
+
+  private setSideColor(side: number, value: ColorInput | undefined): void {
+    const color = value == null ? undefined : RGBA.clone(parseColor(value))
+    if (color === undefined && this._sideOverrides?.colors[side] === undefined) return
+    this.publishSides((sides) => (sides.colors[side] = color))
+  }
+
+  /** One native call per change; the overrides go away when the last one clears. */
+  private publishSides(change: (sides: SideOverrides) => void): void {
+    if (this.isFreed()) return
+    const current = this._sideOverrides
+    const next: SideOverrides = current
+      ? { styles: [...current.styles], colors: [...current.colors] }
+      : { styles: [undefined, undefined, undefined, undefined], colors: [undefined, undefined, undefined, undefined] }
+    change(next)
+    this._ctx.nativeScene.setBoxSides(this, next)
+    this._sideOverrides = isEmpty(next) ? undefined : next
+    this.requestRender()
+  }
+
+  private applySideOptions(options: BoxOptions): void {
+    for (let side = LEFT; side <= TOP; side++) {
+      const style = options[SIDE_STYLE_OPTIONS[side]]
+      const color = options[SIDE_COLOR_OPTIONS[side]]
+      if (style !== undefined || color != null) {
+        this.publishSides((sides) => {
+          for (let index = LEFT; index <= TOP; index++) {
+            sides.styles[index] = parseSideStyle(options[SIDE_STYLE_OPTIONS[index]])
+            const input = options[SIDE_COLOR_OPTIONS[index]]
+            sides.colors[index] = input == null ? undefined : RGBA.clone(parseColor(input))
+          }
+        })
+        return
+      }
+    }
   }
 
   public get title(): string | undefined {

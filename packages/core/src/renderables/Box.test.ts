@@ -3,6 +3,8 @@ import { BoxRenderable, type BoxOptions } from "./Box.js"
 import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
 import type { BorderStyle } from "../lib/border.js"
 import { RGBA } from "../lib/RGBA.js"
+import { ScrollBoxRenderable } from "./ScrollBox.js"
+import sideConformance from "./box-sides.conformance.json" with { type: "json" }
 
 let testRenderer: TestRenderer
 let renderOnce: () => Promise<void>
@@ -339,4 +341,230 @@ describe("BoxRenderable - no-op rendering", () => {
     expect(getCellForeground(0, 0)).toEqual([0, 0, 255, 255])
     expect(getCellForeground(2, 0)).toEqual([0, 0, 255, 255])
   })
+})
+
+describe("BoxRenderable - per-side borders", () => {
+  type Side = "Top" | "Right" | "Bottom" | "Left"
+  // A cell on each side line of an 8x4 box at the origin.
+  const lineCells: Record<Side, [number, number]> = { Top: [3, 0], Right: [7, 1], Bottom: [3, 3], Left: [0, 1] }
+  const horizontal = (side: Side) => side === "Top" || side === "Bottom"
+  type Ints = [number, number, number, number]
+  const gray: Ints = [128, 128, 128, 255]
+  const green: Ints = [0, 255, 0, 255]
+  const red: Ints = [255, 0, 0, 255]
+
+  function addBox(options: BoxOptions = {}): BoxRenderable {
+    const box = new BoxRenderable(testRenderer, {
+      width: 8,
+      height: 4,
+      border: true,
+      borderColor: "#808080",
+      ...options,
+    })
+    testRenderer.root.add(box)
+    return box
+  }
+
+  function line(side: Side): [string, number[]] {
+    const [x, y] = lineCells[side]
+    return [getCellChar(x, y), getCellForeground(x, y)]
+  }
+
+  test.each(["Top", "Right", "Bottom", "Left"] as const)(
+    "the %s longhands override one side over a changed base, survive mask toggles and clear to the current base",
+    async (side) => {
+      const box = addBox()
+      const set = box as unknown as Record<string, unknown>
+      set[`border${side}Style`] = "double"
+      set[`border${side}Color`] = "#ff0000"
+      expect(set[`border${side}Style`]).toBe("double")
+      expect((set[`border${side}Color`] as RGBA).toInts()).toEqual(red)
+      await renderOnce()
+      expect(line(side)).toEqual([horizontal(side) ? "═" : "║", red])
+      // A base write changes the other sides only; hiding and showing the side keeps its overrides.
+      box.borderStyle = "rounded"
+      box.borderColor = "#00ff00"
+      box.border = (["top", "right", "bottom", "left"] as const).filter((name) => name !== side.toLowerCase())
+      box.border = true
+      await renderOnce()
+      expect(line(side)).toEqual([horizontal(side) ? "═" : "║", red])
+      const other: Side = horizontal(side) ? "Left" : "Top"
+      expect(line(other)).toEqual([horizontal(other) ? "─" : "│", green])
+      // Clearing shows the current base, not the one in place when the override was set.
+      set[`border${side}Style`] = undefined
+      set[`border${side}Color`] = undefined
+      expect(set[`border${side}Style`]).toBeUndefined()
+      expect(set[`border${side}Color`]).toBeUndefined()
+      await renderOnce()
+      expect(line(side)).toEqual([horizontal(side) ? "─" : "│", green])
+      expect(getCellChar(0, 0)).toBe("╭")
+    },
+  )
+
+  test("constructor options draw what setters draw, and a longhand alone draws no side", async () => {
+    const options = { borderTopStyle: "heavy", borderLeftColor: "#ff0000", borderRightStyle: "double" } as const
+    const fromOptions = addBox(options)
+    await renderOnce()
+    const expected = captureFrame()
+    const leftColor = getCellForeground(0, 1)
+    fromOptions.destroy()
+    // A destroyed box ignores the write, as its other paint setters do.
+    fromOptions.borderTopStyle = "single"
+    const fromSetters = addBox()
+    Object.assign(fromSetters, options)
+    await renderOnce()
+    expect(captureFrame()).toBe(expected)
+    expect(getCellForeground(0, 1)).toEqual(leftColor)
+    expect(leftColor).toEqual(red)
+    fromSetters.destroy()
+
+    const plain = new BoxRenderable(testRenderer, { width: 8, height: 4, borderTopStyle: "double" })
+    const child = new BoxRenderable(testRenderer, { width: 1, height: 1, backgroundColor: "#ff0000" })
+    plain.add(child)
+    testRenderer.root.add(plain)
+    await renderOnce()
+    expect(plain.border).toBe(false)
+    expect(captureFrame().split("\n")[0].trim()).toBe("")
+    expect([child.x, child.y]).toEqual([0, 0])
+    plain.borderBottomColor = "#ff0000"
+    plain.borderRightStyle = "heavy"
+    expect(plain.border).toBe(false)
+    // Color reads are copies, as borderColor's are.
+    plain.borderBottomColor!.r = 0
+    expect(plain.borderBottomColor!.toInts()).toEqual(red)
+  })
+
+  test("focus colors every side and blur restores the overrides; titles take their side's color", async () => {
+    const box = addBox({
+      focusable: true,
+      focusedBorderColor: "#0000ff",
+      borderTopColor: "#ff0000",
+      borderBottomColor: "#00ff00",
+      title: "ab",
+      bottomTitle: "cd",
+    })
+    await renderOnce()
+    expect([getCellForeground(2, 0), getCellForeground(2, 3), getCellForeground(0, 1)]).toEqual([red, green, gray])
+    box.focus()
+    await renderOnce()
+    for (const [x, y] of [
+      [2, 0],
+      [2, 3],
+      [0, 1],
+      [5, 0],
+    ])
+      expect(getCellForeground(x, y)).toEqual([0, 0, 255, 255])
+    box.blur()
+    await renderOnce()
+    expect([getCellForeground(2, 0), getCellForeground(2, 3), getCellForeground(5, 3)]).toEqual([red, green, green])
+    box.titleColor = "#808080"
+    await renderOnce()
+    expect([getCellForeground(2, 0), getCellForeground(2, 3)]).toEqual([gray, gray])
+  })
+
+  test("custom glyphs win over side styles until a border style write clears them", async () => {
+    const custom = {
+      topLeft: "+",
+      topRight: "+",
+      bottomLeft: "+",
+      bottomRight: "+",
+      horizontal: "-",
+      vertical: "|",
+      topT: "+",
+      bottomT: "+",
+      leftT: "+",
+      rightT: "+",
+      cross: "+",
+    }
+    const box = addBox({ customBorderChars: custom, borderTopStyle: "double" })
+    await renderOnce()
+    expect(captureFrame().split("\n")[0].slice(0, 8)).toBe("+------+")
+    // Double meets heavy: Unicode has no mixed corner, so the top side's own corner.
+    box.borderStyle = "heavy"
+    await renderOnce()
+    expect(captureFrame().split("\n")[0].slice(0, 8)).toBe("╔══════╗")
+    expect(getCellChar(0, 1)).toBe("┃")
+  })
+
+  test("a ScrollBox root takes longhands directly and through rootOptions", async () => {
+    const scroll = new ScrollBoxRenderable(testRenderer, {
+      width: 8,
+      height: 4,
+      border: true,
+      borderColor: "#808080",
+      borderTopStyle: "double",
+      rootOptions: { borderLeftColor: "#ff0000" },
+    })
+    testRenderer.root.add(scroll)
+    await renderOnce()
+    expect(scroll.borderTopStyle).toBe("double")
+    expect(line("Top")[0]).toBe("═")
+    expect(line("Left")[1]).toEqual(red)
+    scroll.rootOptions = { borderLeftColor: undefined }
+    scroll.borderTopStyle = undefined
+    await renderOnce()
+    expect(line("Left")[1]).toEqual(gray)
+    expect(line("Top")[0]).toBe("─")
+  })
+
+  test("existing typed reads keep their scalar types", () => {
+    const box = addBox({ borderStyle: "double", borderTopStyle: "heavy", borderTopColor: "#ff0000" })
+    const style: BorderStyle = box.borderStyle
+    const color: RGBA = box.borderColor
+    const options: BoxOptions = { borderStyle: "rounded", borderTopStyle: "single" }
+    const optionStyle: BorderStyle = options.borderStyle ?? "single"
+    expect([style, color.toInts(), optionStyle]).toEqual(["double", gray, "rounded"])
+  })
+
+  test("boxes without overrides make no side call and hold no override record", () => {
+    const calls = spyOn(testRenderer.nativeScene, "setBoxSides")
+    const box = addBox({ borderTopStyle: undefined, borderTopColor: undefined })
+    box.borderLeftStyle = undefined
+    box.borderLeftColor = undefined
+    expect(calls).not.toHaveBeenCalled()
+    expect(Object.keys(box)).not.toContain("_sideOverrides")
+    box.borderLeftColor = "#ff0000"
+    box.borderLeftColor = undefined
+    expect(calls).toHaveBeenCalledTimes(2)
+    expect(box.borderLeftColor).toBeUndefined()
+    // Clearing the last override drops the record again.
+    expect((box as unknown as { _sideOverrides?: unknown })._sideOverrides).toBeUndefined()
+    calls.mockRestore()
+  })
+
+  test("an invalid side style warns and leaves the side on borderStyle", () => {
+    const box = addBox({ borderTopStyle: "dotted" as BorderStyle })
+    expect(box.borderTopStyle).toBeUndefined()
+    expect(warnSpy).toHaveBeenCalled()
+  })
+
+  // Rust's View draws the same frames (tests/widgets.rs).
+  test.each(sideConformance.rows as unknown as [string, Record<string, unknown>, string[], string[]][])(
+    "conformance: %s",
+    async (_name, spec, rows, foreground) => {
+      const { width, height, ...options } = spec as unknown as { width: number; height: number } & BoxOptions
+      const setup = await createTestRenderer({ width, height })
+      const box = new BoxRenderable(setup.renderer, { width, height, ...options })
+      setup.renderer.root.add(box)
+      await setup.renderOnce()
+      const frame = setup.captureCharFrame().split("\n").slice(0, height)
+      expect(frame.map((row) => row.trimEnd())).toEqual(rows)
+      const palette = sideConformance.palette as Record<string, string>
+      const colors = setup.renderer.currentRenderBuffer.withBuffers(({ fg }) =>
+        foreground.map((letters, y) =>
+          [...letters]
+            .map((letter, x) => {
+              if (letter === ".") return "."
+              const index = (y * width + x) * 4
+              const cell = RGBA.fromArray(fg.slice(index, index + 4)).toInts()
+              const expected = RGBA.fromHex(palette[letter]).toInts()
+              return cell.every((channel, at) => channel === expected[at]) ? letter : "?"
+            })
+            .join(""),
+        ),
+      )
+      expect(colors).toEqual(foreground)
+      setup.renderer.destroy()
+    },
+  )
 })

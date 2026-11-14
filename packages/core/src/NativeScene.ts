@@ -25,6 +25,7 @@ import {
   type NativeScenePaint,
   type NativeScenePaintUpdate,
   type NativeSceneBoxDetails,
+  type NativeSceneBoxSides,
   type NativeSceneTextOptions,
   type NativeSceneSliderOptions,
   type NativeSceneArrowOptions,
@@ -405,6 +406,12 @@ export class NativeScene {
   setBoxDetails(renderable: Renderable, details: NativeSceneBoxDetails): void {
     this.flushStaged()
     this.driver.renderLib.sceneSetBoxDetails(this.driver.context, renderable._getSceneHandle(this), details)
+  }
+
+  /** Only boxes with overrides call this, so boxes without them cost nothing more (D122). */
+  setBoxSides(renderable: Renderable, sides: NativeSceneBoxSides): void {
+    this.flushStaged()
+    this.driver.renderLib.sceneSetBoxSides(this.driver.context, renderable._getSceneHandle(this), sides)
   }
 
   /** Border style clears custom glyphs in the same staged record as border widths. */

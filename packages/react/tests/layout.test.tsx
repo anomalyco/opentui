@@ -291,6 +291,37 @@ describe("React Renderer | Layout Tests", () => {
       expect(frame).toMatchSnapshot()
     })
 
+    it("sets, updates and clears per-side border props and style keys", async () => {
+      type Top = "double" | "heavy" | undefined
+      let setSides: (sides: { top: Top; bottomColor?: string }) => void = () => {}
+      function TestComponent() {
+        const [sides, _setSides] = useState<{ top: Top; bottomColor?: string }>({
+          top: "double",
+          bottomColor: "#ff0000",
+        })
+        setSides = _setSides
+        // A removed style key and a prop set to undefined both clear the override.
+        const style = sides.bottomColor === undefined ? {} : { borderBottomColor: sides.bottomColor }
+        return <box border width={8} height={3} borderTopStyle={sides.top} style={style} />
+      }
+      testSetup = await testRender(<TestComponent />, { width: 8, height: 3 })
+      const rows = () => testSetup.captureCharFrame().split("\n").slice(0, 3)
+      const bottomColor = () =>
+        testSetup.renderer.currentRenderBuffer.withBuffers(({ fg }) => [...fg.slice((2 * 8 + 3) * 4, (2 * 8 + 4) * 4)])
+
+      await testSetup.renderOnce()
+      expect(rows()).toEqual(["╒══════╕", "│      │", "└──────┘"])
+      const red = bottomColor()
+      act(() => setSides({ top: "heavy" }))
+      await testSetup.renderOnce()
+      expect(rows()).toEqual(["┍━━━━━━┑", "│      │", "└──────┘"])
+      expect(bottomColor()).not.toEqual(red)
+      act(() => setSides({ top: undefined, bottomColor: "#ff0000" }))
+      await testSetup.renderOnce()
+      expect(rows()[0]).toBe("┌──────┐")
+      expect(bottomColor()).toEqual(red)
+    })
+
     it("should support focusable prop and controlled focus state", async () => {
       let boxRef: any
       let setFocused: (value: boolean) => void

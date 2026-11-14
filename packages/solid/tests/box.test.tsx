@@ -43,6 +43,32 @@ describe("Box Component", () => {
     expect(boxRef.focused).toBe(false)
   })
 
+  it("sets, updates and clears per-side border props and style keys", async () => {
+    const [top, setTop] = createSignal<"double" | "heavy" | undefined>("double")
+    const [bottomColor, setBottomColor] = createSignal<string | undefined>("#ff0000")
+    testSetup = await testRender(
+      () => <box border width={8} height={3} borderTopStyle={top()} style={{ borderBottomColor: bottomColor() }} />,
+      { width: 8, height: 3 },
+    )
+    const rows = () => testSetup.captureCharFrame().split("\n").slice(0, 3)
+    const bottomFg = () =>
+      testSetup.renderer.currentRenderBuffer.withBuffers(({ fg }) =>
+        RGBA.fromArray(fg.slice((2 * 8 + 3) * 4, (2 * 8 + 4) * 4)).toInts(),
+      )
+
+    await testSetup.renderOnce()
+    expect(rows()).toEqual(["╒══════╕", "│      │", "└──────┘"])
+    expect(bottomFg()).toEqual([255, 0, 0, 255])
+    setTop("heavy")
+    setBottomColor(undefined)
+    await testSetup.renderOnce()
+    expect(rows()).toEqual(["┍━━━━━━┑", "│      │", "└──────┘"])
+    expect(bottomFg()).toEqual([255, 255, 255, 255])
+    setTop(undefined)
+    await testSetup.renderOnce()
+    expect(rows()[0]).toBe("┌──────┐")
+  })
+
   it("should blend transparent border foreground against the box background", async () => {
     const panel = RGBA.fromHex("#123456")
 
