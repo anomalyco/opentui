@@ -137,8 +137,9 @@ impl<A: ?Sized> Callbacks<A> {
         }
     }
 
+    /// Drops every handler after the borrow, so what a handler owns may add or remove handlers as it drops.
     pub fn clear(&self) {
-        self.0.borrow_mut().clear();
+        self.0.take();
     }
 }
 
