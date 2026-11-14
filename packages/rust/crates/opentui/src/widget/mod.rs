@@ -454,6 +454,12 @@ impl Element {
         self.sync_hooks();
     }
 
+    /// Registers the hook that tells which frames draw the widget: a paint slot, whose clip shows whether any of it is
+    /// in view. The root has no paint slot and nothing clips it; its update tells.
+    pub(crate) fn report_draws(&self) {
+        self.add_hooks(if self.root { Hooks::UPDATE } else { Hooks::RENDER_BEFORE });
+    }
+
     /// The hooks the widget registers itself. Its own drawing records in the latest of their paint phases.
     pub(crate) fn own_hooks(&self) -> Hooks {
         self.hooks.get()
@@ -724,6 +730,24 @@ impl Widget for AnyWidget {
     }
 }
 
+/// A widget handle that does not keep the widget alive, from [`Widget::downgrade`]. State that a widget owns can hold
+/// one without a reference cycle.
+#[derive(Clone)]
+pub struct WeakWidget(Weak<dyn Behavior>);
+
+impl WeakWidget {
+    /// The widget, while another handle keeps it alive.
+    pub fn upgrade(&self) -> Option<AnyWidget> {
+        self.0.upgrade().map(AnyWidget)
+    }
+}
+
+impl std::fmt::Debug for WeakWidget {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_tuple("WeakWidget").field(&self.upgrade().map(|widget| widget.id())).finish()
+    }
+}
+
 /// Layout, focus, and event methods shared by every widget.
 ///
 /// Methods that set a property take `&self` and return a clone of the handle, so they chain while building and work
@@ -755,15 +779,20 @@ pub trait Widget: Clone + 'static {
         AnyWidget(self.element().behavior().expect("a live widget has a behavior"))
     }
 
-    /// [`App::on_animation_tick`] while this widget is drawn, as Core's `animationFps`: a hidden, detached, or culled
-    /// widget wakes the app at most twice more, then not until a frame draws it again, which resumes the ticks. The
-    /// animation also ends when the widget drops.
+    /// A handle to this widget that does not keep it alive.
+    fn downgrade(&self) -> WeakWidget {
+        WeakWidget(self.element().this.clone())
+    }
+
+    /// [`App::on_animation_tick`] while this widget is drawn, as Core's `animationFps`: a hidden, detached, culled, or
+    /// fully clipped widget, such as a row scrolled out of view, wakes the app at most twice more, then not until a
+    /// frame draws it again, which resumes the ticks. The animation also ends when the widget drops.
+    /// [`AnimationTick::follow`] adds more widgets.
     fn on_animation_tick(&self, fps: f64, callback: impl FnMut(&mut Cx<'_>, Tick) + 'static) -> AnimationTick {
-        let element = self.element();
-        let Some(app) = element.app() else { return AnimationTick::ended() };
-        // Each frame that draws the widget sends it an update.
-        element.add_hooks(Hooks::UPDATE);
-        app.subscribe_tick(fps, Some(element.num), callback)
+        let Some(app) = self.element().app() else { return AnimationTick::ended() };
+        let tick = app.on_animation_tick(fps, callback);
+        tick.follow(self);
+        tick
     }
 
     // Layout.

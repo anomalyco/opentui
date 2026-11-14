@@ -867,6 +867,19 @@ fn widget_ticks_run_while_the_widget_is_drawn() {
     text.detach();
     drop(text);
     rows.push(("that widget dropped, handle kept", idle_second(&app, &ticks)));
+    // On screen, though its rounded or unrounded area has no cell in view: native draws the text at the truncated row,
+    // and the empty boxes may show children that overflow them.
+    let anchor = View::new(&app).height(0).add(&Text::new(&app, "-").absolute());
+    for widget in [
+        Text::new(&app, "-").absolute().position(Edge::Top, 0).translate(0.0, -0.5).as_any(),
+        View::new(&app).width(0).height(0).as_any(),
+        anchor.as_any(),
+    ] {
+        app.root().add(&widget);
+        let _handle = widget.on_animation_tick(12.5, spinner(&ticks));
+        rows.push(("on screen, no cell of its own", idle_second(&app, &ticks)));
+        widget.detach();
+    }
     assert_eq!(
         rows,
         [
@@ -884,9 +897,111 @@ fn widget_ticks_run_while_the_widget_is_drawn() {
             ("handle dropped", (0, 0, 0)),
             ("another widget", (13, 12, 12)),
             ("that widget dropped, handle kept", (1, 1, 0)),
+            ("on screen, no cell of its own", (13, 12, 12)),
+            ("on screen, no cell of its own", (13, 13, 12)),
+            ("on screen, no cell of its own", (13, 12, 12)),
         ]
     );
     drop(kept);
+}
+
+#[test]
+fn a_shared_tick_runs_while_any_of_its_widgets_is_drawn() {
+    // One spinner value painted by two widgets, bound through weak handles, as a value that outlives them is.
+    let app = TestApp::with_options(4, 2, AppOptions { max_fps: 60, ..Default::default() });
+    let (a, b) = (Text::new(&app, "-"), Text::new(&app, "-"));
+    app.root().add(&a).add(&b);
+    let (weak_a, weak_b) = (a.downgrade(), b.downgrade());
+    app.idle(ms(1000));
+    let ticks = Rc::new(Cell::new(0));
+    let handle = app.on_animation_tick(12.5, spinner(&ticks));
+    for weak in [&weak_a, &weak_b] {
+        handle.follow(&weak.upgrade().expect("a live widget"));
+    }
+    let mut rows = vec![("both drawn", idle_second(&app, &ticks))];
+    a.visible(false);
+    rows.push(("one drawn", idle_second(&app, &ticks)));
+    b.visible(false);
+    rows.push(("neither drawn", idle_second(&app, &ticks)));
+    rows.push(("still neither", idle_second(&app, &ticks)));
+    b.visible(true);
+    rows.push(("one shown again", idle_second(&app, &ticks)));
+    b.detach();
+    drop(b);
+    rows.push(("drawn one dropped", idle_second(&app, &ticks)));
+    a.visible(true);
+    rows.push(("other shown", idle_second(&app, &ticks)));
+    a.detach();
+    drop(a);
+    rows.push(("both dropped, handle kept", idle_second(&app, &ticks)));
+    let late = Text::new(&app, "-");
+    app.root().add(&late);
+    handle.follow(&late);
+    rows.push(("ended: a widget followed later is ignored", idle_second(&app, &ticks)));
+    assert_eq!(
+        rows,
+        [
+            ("both drawn", (13, 12, 12)),
+            // Hiding one costs its frame at the frame cap, and nothing more.
+            ("one drawn", (13, 13, 12)),
+            ("neither drawn", (2, 1, 1)),
+            ("still neither", (0, 0, 0)),
+            ("one shown again", (13, 12, 12)),
+            ("drawn one dropped", (2, 2, 0)),
+            ("other shown", (13, 12, 12)),
+            ("both dropped, handle kept", (1, 1, 0)),
+            ("ended: a widget followed later is ignored", (1, 0, 0)),
+        ]
+    );
+    assert!(weak_a.upgrade().is_none() && weak_b.upgrade().is_none());
+    drop(handle);
+}
+
+#[test]
+fn widget_ticks_park_while_the_widget_is_clipped_out_of_view() {
+    // A short list, which the scroll box does not cull: rows out of its two-row viewport are clipped, not culled. The
+    // spinner row is a code view, which takes updates of its own even when clipped.
+    let app = TestApp::with_options(4, 4, AppOptions { max_fps: 60, ..Default::default() });
+    let scroll = ScrollBox::new(&app).height(2).scrollbars(false);
+    let (spinner_row, tall) = (Code::new(&app).height(1), View::new(&app).height(2).shrink(0.0));
+    scroll.add(&spinner_row).add(&Text::new(&app, "-")).add(&tall).add(&Text::new(&app, "-"));
+    app.root().add(&scroll);
+    app.idle(ms(1000));
+    let ticks = Rc::new(Cell::new(0));
+    let handle = spinner_row.on_animation_tick(12.5, spinner(&ticks));
+    let mut rows = vec![("in view", idle_second(&app, &ticks))];
+    // Just out: the row ends where the viewport starts.
+    scroll.scroll_to(0.0, 1.0);
+    rows.push(("scrolled out", idle_second(&app, &ticks)));
+    rows.push(("still out", idle_second(&app, &ticks)));
+    scroll.scroll_to(0.0, 0.0);
+    rows.push(("scrolled back", idle_second(&app, &ticks)));
+    drop(handle);
+    // The tall row shows its first line at offset 1 and its last at offset 3.
+    let tall_tick = tall.on_animation_tick(12.5, spinner(&ticks));
+    rows.push(("below the viewport", idle_second(&app, &ticks)));
+    for offset in [1.0, 3.0] {
+        scroll.scroll_to(0.0, offset);
+        rows.push(("partly clipped", idle_second(&app, &ticks)));
+    }
+    drop(tall_tick);
+    // The root has no paint slot; it is always drawn.
+    let _root = app.root().on_animation_tick(12.5, spinner(&ticks));
+    rows.push(("root", idle_second(&app, &ticks)));
+    assert_eq!(
+        rows,
+        [
+            ("in view", (13, 12, 12)),
+            // The scrolling frame waits for the frame cap; the next due time parks.
+            ("scrolled out", (2, 2, 0)),
+            ("still out", (0, 0, 0)),
+            ("scrolled back", (13, 12, 12)),
+            ("below the viewport", (2, 1, 0)),
+            ("partly clipped", (13, 12, 12)),
+            ("partly clipped", (13, 12, 13)),
+            ("root", (13, 13, 12)),
+        ]
+    );
 }
 
 #[test]

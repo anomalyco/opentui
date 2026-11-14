@@ -1,10 +1,11 @@
 //! The shared animation clock, Core's `renderer.onAnimationTick` (#1803). Due index `i` of a subscriber at `fps` is
 //! at `i * 1000 / fps` ms from the app clock's start, so equal rates tick together. One app timer wakes the loop at
 //! the earliest due time: the fastest rate's own, slower rates' at the end of their window, so they share its frames.
-//! Every frame, whatever caused it, first runs each tick due within its window. A subscriber bound to a widget ticks
-//! only while the widget is drawn, as Core's `Renderable.animationFps` does.
+//! Every frame, whatever caused it, first runs each tick due within its window. A subscriber that follows widgets
+//! ticks only while one of them is drawn, as Core's `Renderable.animationFps` does for one.
 
 use super::{App, AppInner, Cx, HandlerId, TimerId};
+use crate::widget::Widget;
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
@@ -32,8 +33,8 @@ struct Ticker {
     /// The time of the last tick, in ms.
     last: f64,
     callback: TickCallback,
-    /// The widget whose drawing gates the ticks, and the last frame that drew it.
-    widget: Option<u32>,
+    /// The widgets whose drawing gates the ticks, none for an app-wide animation, and the last frame that drew one.
+    widgets: Vec<u32>,
     drawn: u64,
     /// Not drawn at a due time: out of the timer until the widget's next draw.
     parked: bool,
@@ -74,6 +75,27 @@ impl AnimationTick {
     pub(crate) fn ended() -> Self {
         Self { app: Weak::new(), id: HandlerId::next() }
     }
+
+    /// Ticks only while a frame draws `widget` or another widget this animation follows, as
+    /// [`Widget::on_animation_tick`] does for one, and ends when the last of them drops. The animation does not keep
+    /// `widget` alive, so a value that several widgets paint can follow each of them. `widget` belongs to the same app.
+    pub fn follow(&self, widget: &impl Widget) {
+        let Some(app) = self.app.upgrade().map(App::from_inner) else { return };
+        let element = widget.element();
+        element.report_draws();
+        let resumed = {
+            let mut animations = app.0.animations.borrow_mut();
+            let ticker = animations.ticks.as_mut().and_then(|ticks| ticks.tickers.iter_mut().find(|t| t.id == self.id));
+            ticker.is_some_and(|ticker| {
+                ticker.widgets.push(element.id());
+                // Followed while painting, the widget counts as drawn by this frame.
+                ticker.mark(app.0.frame.get(), || app.tick_time())
+            })
+        };
+        if resumed {
+            app.schedule_ticks();
+        }
+    }
 }
 
 /// The last due index a frame at `time` reaches. A subscriber starts from the next one, so it never ticks in the
@@ -92,15 +114,6 @@ impl App {
     ///
     /// Panics unless `fps` is positive and finite.
     pub fn on_animation_tick(&self, fps: f64, callback: impl FnMut(&mut Cx<'_>, Tick) + 'static) -> AnimationTick {
-        self.subscribe_tick(fps, None, callback)
-    }
-
-    pub(crate) fn subscribe_tick(
-        &self,
-        fps: f64,
-        widget: Option<u32>,
-        callback: impl FnMut(&mut Cx<'_>, Tick) + 'static,
-    ) -> AnimationTick {
         assert!(fps > 0.0 && fps.is_finite(), "fps must be positive and finite, got {fps}");
         let time = self.tick_time();
         let id = HandlerId::next();
@@ -110,9 +123,8 @@ impl App {
             next: reach(time, fps) + 1,
             last: time,
             callback: Rc::new(RefCell::new(callback)),
-            widget,
-            // Subscribed while painting, the widget counts as drawn by this frame.
-            drawn: self.0.frame.get(),
+            widgets: Vec::new(),
+            drawn: 0,
             parked: false,
         };
         self.0.animations.borrow_mut().ticks.get_or_insert_default().tickers.push(ticker);
@@ -120,9 +132,13 @@ impl App {
         AnimationTick { app: Rc::downgrade(&self.0), id }
     }
 
-    /// Ends the subscribers bound to a widget that drops.
+    /// Forgets a widget that drops, and ends the subscribers that followed only it.
     pub(crate) fn end_widget_ticks(&self, widget: u32) {
-        self.end_ticks(|ticker| ticker.widget == Some(widget));
+        self.end_ticks(|ticker| {
+            let count = ticker.widgets.len();
+            ticker.widgets.retain(|&followed| followed != widget);
+            count != ticker.widgets.len() && ticker.widgets.is_empty()
+        });
     }
 
     /// Ends the subscribers `ended` selects. They drop after the borrow: their callbacks may own other handles.
@@ -202,21 +218,15 @@ impl App {
         self.schedule_ticks();
     }
 
-    /// A frame drew `widget`: its subscribers count the frame, and parked ones resume from their next due time.
-    pub(super) fn mark_drawn(&self, widget: u32) {
+    /// A frame drew the widgets `drawn` selects: their subscribers count the frame, and parked ones resume from their
+    /// next due time. One pass over the subscribers, so the cost is that of the followed widgets.
+    pub(super) fn mark_drawn(&self, drawn: impl Fn(u32) -> bool) {
         let resumed = {
             let mut animations = self.0.animations.borrow_mut();
             let Some(ticks) = animations.ticks.as_mut() else { return };
             let mut resumed = false;
-            for ticker in ticks.tickers.iter_mut().filter(|ticker| ticker.widget == Some(widget)) {
-                ticker.drawn = self.0.frame.get();
-                if ticker.parked {
-                    let time = self.tick_time();
-                    ticker.parked = false;
-                    ticker.next = reach(time, ticker.fps) + 1;
-                    ticker.last = time;
-                    resumed = true;
-                }
+            for ticker in ticks.tickers.iter_mut().filter(|ticker| ticker.widgets.iter().any(|&widget| drawn(widget))) {
+                resumed |= ticker.mark(self.0.frame.get(), || self.tick_time());
             }
             resumed
         };
@@ -227,6 +237,20 @@ impl App {
 }
 
 impl Ticker {
+    /// Counts frame `frame` as drawing a followed widget; a parked subscriber resumes from its next due time after
+    /// `time`. Returns whether it resumed.
+    fn mark(&mut self, frame: u64, time: impl FnOnce() -> f64) -> bool {
+        self.drawn = frame;
+        if !self.parked {
+            return false;
+        }
+        let time = time();
+        self.parked = false;
+        self.next = reach(time, self.fps) + 1;
+        self.last = time;
+        true
+    }
+
     /// The callback and its tick when one is due at `time`, after `painted` frames. A widget the last frame did not
     /// draw parks instead.
     fn due(&mut self, time: f64, painted: u64) -> Option<(TickCallback, Tick)> {
@@ -234,7 +258,7 @@ impl Ticker {
         if self.parked || reach < self.next {
             return None;
         }
-        if self.widget.is_some() && self.drawn < painted {
+        if !self.widgets.is_empty() && self.drawn < painted {
             self.parked = true;
             return None;
         }
