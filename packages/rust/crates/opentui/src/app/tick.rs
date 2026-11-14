@@ -5,7 +5,6 @@
 //! ticks only while one of them is drawn, as Core's `Renderable.animationFps` does for one.
 
 use super::{App, AppInner, Cx, HandlerId, TimerId};
-use crate::native::Hooks;
 use crate::widget::Widget;
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -83,8 +82,7 @@ impl AnimationTick {
     pub fn follow(&self, widget: &impl Widget) {
         let Some(app) = self.app.upgrade().map(App::from_inner) else { return };
         let element = widget.element();
-        // Each frame that draws the widget sends it an update.
-        element.add_hooks(Hooks::UPDATE);
+        element.report_draws();
         let resumed = {
             let mut animations = app.0.animations.borrow_mut();
             let ticker = animations.ticks.as_mut().and_then(|ticks| ticks.tickers.iter_mut().find(|t| t.id == self.id));

@@ -1488,11 +1488,21 @@ impl App {
         self.0.filter_areas.borrow_mut().clear();
         self.0.in_frame.set(true);
         // Only an app with ticks tells them which widgets the frame draws, so the others pay nothing per request. A
-        // subscription made during the frame counts it as drawn already.
+        // subscription made during the frame counts it as drawn already. A widget clipped out of view is not drawn;
+        // the root, which has no paint slot, always is.
         let draft = if self.0.animations.borrow().ticks.is_some() {
+            let root = self.root().id();
             self.0.session.frame(&options, |request| {
-                if let HostRequest::Update { num, .. } = request {
-                    self.mark_drawn(num);
+                match &request {
+                    HostRequest::Update { num, .. } if *num == root => self.mark_drawn(root),
+                    HostRequest::Record { slots, .. } => {
+                        for slot in slots.iter() {
+                            if let (_, _, 1.., 1..) = slot.visible_rect() {
+                                self.mark_drawn(slot.num);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
                 self.host_request(request)
             })

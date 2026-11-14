@@ -942,6 +942,50 @@ fn a_shared_tick_runs_while_any_of_its_widgets_is_drawn() {
 }
 
 #[test]
+fn widget_ticks_park_while_the_widget_is_clipped_out_of_view() {
+    // A short list, which the scroll box does not cull: rows out of its two-row viewport are clipped, not culled. The
+    // spinner row is a code view, which takes updates of its own even when clipped.
+    let app = TestApp::with_options(4, 4, AppOptions { max_fps: 60, ..Default::default() });
+    let scroll = ScrollBox::new(&app).height(2).scrollbars(false);
+    let (spinner_row, tall) = (Code::new(&app).height(1), View::new(&app).height(2).shrink(0.0));
+    scroll.add(&spinner_row).add(&Text::new(&app, "-")).add(&tall).add(&Text::new(&app, "-"));
+    app.root().add(&scroll);
+    app.idle(ms(1000));
+    let ticks = Rc::new(Cell::new(0));
+    let handle = spinner_row.on_animation_tick(12.5, spinner(&ticks));
+    let mut rows = vec![("in view", idle_second(&app, &ticks))];
+    scroll.scroll_to(0.0, 3.0);
+    rows.push(("scrolled out", idle_second(&app, &ticks)));
+    rows.push(("still out", idle_second(&app, &ticks)));
+    scroll.scroll_to(0.0, 0.0);
+    rows.push(("scrolled back", idle_second(&app, &ticks)));
+    drop(handle);
+    // The tall row shows its first line at offset 1 and its last at offset 3.
+    let tall_tick = tall.on_animation_tick(12.5, spinner(&ticks));
+    for offset in [1.0, 3.0] {
+        scroll.scroll_to(0.0, offset);
+        rows.push(("partly clipped", idle_second(&app, &ticks)));
+    }
+    drop(tall_tick);
+    // The root has no paint slot; it is always drawn.
+    let _root = app.root().on_animation_tick(12.5, spinner(&ticks));
+    rows.push(("root", idle_second(&app, &ticks)));
+    assert_eq!(
+        rows,
+        [
+            ("in view", (13, 12, 12)),
+            // The scrolling frame waits for the frame cap; the next due time parks.
+            ("scrolled out", (2, 2, 0)),
+            ("still out", (0, 0, 0)),
+            ("scrolled back", (13, 12, 12)),
+            ("partly clipped", (13, 12, 12)),
+            ("partly clipped", (13, 13, 12)),
+            ("root", (13, 12, 12)),
+        ]
+    );
+}
+
+#[test]
 fn ticks_may_subscribe_and_end_animations_inside_a_tick() {
     // Four subscribers due in the same frames, in this order: `a`, `b`, `d`, and `e`, bound to a drawn widget. The
     // first tick of `a` subscribes `c`, ends `b` and itself, and detaches the widget. The callback of `b` owns `d`'s

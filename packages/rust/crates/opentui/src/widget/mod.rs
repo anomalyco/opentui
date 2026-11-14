@@ -454,6 +454,12 @@ impl Element {
         self.sync_hooks();
     }
 
+    /// Registers the hook that tells which frames draw the widget: a paint slot, whose clip shows whether any of it is
+    /// in view. The root has no paint slot and nothing clips it; its update tells.
+    pub(crate) fn report_draws(&self) {
+        self.add_hooks(if self.root { Hooks::UPDATE } else { Hooks::RENDER_BEFORE });
+    }
+
     /// The hooks the widget registers itself. Its own drawing records in the latest of their paint phases.
     pub(crate) fn own_hooks(&self) -> Hooks {
         self.hooks.get()
@@ -778,9 +784,10 @@ pub trait Widget: Clone + 'static {
         WeakWidget(self.element().this.clone())
     }
 
-    /// [`App::on_animation_tick`] while this widget is drawn, as Core's `animationFps`: a hidden, detached, or culled
-    /// widget wakes the app at most twice more, then not until a frame draws it again, which resumes the ticks. The
-    /// animation also ends when the widget drops. [`AnimationTick::follow`] adds more widgets.
+    /// [`App::on_animation_tick`] while this widget is drawn, as Core's `animationFps`: a hidden, detached, culled, or
+    /// fully clipped widget, such as a row scrolled out of view, wakes the app at most twice more, then not until a
+    /// frame draws it again, which resumes the ticks. The animation also ends when the widget drops.
+    /// [`AnimationTick::follow`] adds more widgets.
     fn on_animation_tick(&self, fps: f64, callback: impl FnMut(&mut Cx<'_>, Tick) + 'static) -> AnimationTick {
         let Some(app) = self.element().app() else { return AnimationTick::ended() };
         let tick = app.on_animation_tick(fps, callback);
