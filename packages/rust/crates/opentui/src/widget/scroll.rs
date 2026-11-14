@@ -69,8 +69,6 @@ pub struct ScrollEvent {
     /// The new [`ScrollBox::scroll_position`].
     pub position: (f64, f64),
     pub cause: ScrollCause,
-    /// False while a scroll the program asked for waits for the next frame's layout, which may move the box again.
-    pub settled: bool,
 }
 
 /// Turns mouse wheel steps into scrolled cells for a [`ScrollBox`].
@@ -267,10 +265,7 @@ impl ScrollInner {
         if listeners.reported.replace(position) == position {
             return;
         }
-        let frame = cx.app().frame_number();
-        let pending = |((x, y), at): (Targets, u64)| at == frame && (x.is_some() || y.is_some());
-        let settled = !self.requested.get().is_some_and(pending);
-        listeners.handlers.emit(cx, &ScrollEvent { position, cause: listeners.cause.get(), settled });
+        listeners.handlers.emit(cx, &ScrollEvent { position, cause: listeners.cause.get() });
     }
 
     /// Whether the content's own resize, which refreshes again, comes later in this layout round: until it does, the
@@ -934,11 +929,12 @@ impl ScrollBox {
     }
 
     /// Called when the box moves, at most once per move and never when it did not move, before a frame paints it.
-    /// Moves made between frames (by the wheel, keys, scrollbars, or the program) are reported together at the start
-    /// of the next frame, with the cause of the last one. Moves the frame's layout makes (a sticky box following its
-    /// edge, a clamp, a program scroll applied again) are reported during that layout, before the resize handlers of
-    /// later widgets run (see [`Widget::on_resize`]). A move a handler makes during the frame is reported then, if
-    /// the box's layout runs after it, or after the frame paints.
+    /// Moves made between frames (by the wheel, keys, scrollbars, the program, or tasks deferred to the frame) are
+    /// reported together at the start of the next frame, before its layout, with the cause of the last one. Moves the
+    /// frame's layout makes (a sticky box following its edge, a clamp, a scroll applied again to new content) are
+    /// reported during that layout, before the resize handlers of later widgets run (see [`Widget::on_resize`]), so
+    /// the last event before those handlers carries the position the frame paints. A move a handler makes during the
+    /// frame is reported then, if the box's layout runs after it, or after the frame paints.
     ///
     /// Core reports moves through its scrollbars' `onChange`, one axis each, without a cause.
     pub fn on_scroll(&self, handler: impl FnMut(&mut Cx<'_>, &ScrollEvent) + 'static) -> Self {

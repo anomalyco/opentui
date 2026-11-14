@@ -764,26 +764,36 @@ fn scroll_moves_to_the_end_follow_content_added_before_the_frame() {
 
 #[test]
 fn scroll_events_report_each_move_once_before_it_paints() {
-    // 10 lines in 4 rows scroll from 0 to 6. `|` ends a frame; an event is its cause and row, `~` while unsettled; `H`
-    // is the resize handler of the root's last child. `bar` clicks the scrollbar's last row; `sticky` makes the box
-    // follow the bottom; `add` adds a line; `tall`, `wide` and `narrow` resize the terminal, the last taller and
-    // wrapping every line to two rows; `arm` makes H scroll to row 2; `on` adds the scroll handler, which rows without it add first.
+    // 10 lines in 4 rows scroll from 0 to 6. `|` ends a frame; an event is its cause and row (`x` and a column for a
+    // horizontal move); `H` is the resize handler of the root's last child. `bar` clicks the scrollbar's last row;
+    // `sticky` makes the box follow the bottom; `add` adds a line; `tall`, `wide`, `slim` and `narrow` resize the
+    // terminal, the last taller and wrapping every line to two rows; `poke` resizes only H; `arm` makes H scroll to
+    // row 2; `on` adds the scroll handler,
+    // which rows without it add first; `echo` adds a handler that scrolls by 2 once; `defer` scrolls to row 4 from a
+    // task an animation step defers; `sideways` makes the box follow its right edge over a 40-column row, and `widen`
+    // adds a 50-column row.
     let cases: &[(&str, &[&str], &str)] = &[
         ("wheel steps before a frame are one event", &["wheel", "wheel", "wheel", "F"], "Wheel 3 |"),
         ("each frame reports its own moves", &["wheel", "F", "wheel", "F"], "Wheel 1 | Wheel 2 |"),
-        ("a key", &["down", "F"], "Key 1 ~ |"),
-        ("nothing moved", &["home", "F", "wheel", "up", "F"], "| |"),
+        ("a key", &["down", "F"], "Key 1 |"),
+        ("nothing moved", &["home", "F", "wheel", "up", "F", "wheel", "F"], "| | Wheel 1 |"),
+        ("a handler's own move", &["echo", "wheel", "F", "wheel", "F"], "Wheel 1 Program 3 | Wheel 4 |"),
         ("the scrollbar", &["bar", "F"], "Pointer 5 |"),
-        ("the program, before layout is known", &["3", "F", "F"], "Program 3 ~ | |"),
-        ("a move to the end follows content added before the frame", &["end", "add", "F"], "Key 6 ~ Key 7 |"),
+        ("the program, before layout is known", &["3", "F", "F"], "Program 3 | |"),
+        ("a move to the end follows content added before the frame", &["end", "add", "F"], "Key 6 Key 7 |"),
         ("a sticky box follows new content", &["sticky", "add", "F", "add", "F"], "Layout 7 | Layout 8 |"),
-        ("a clamp to a taller view", &["end", "F", "tall", "F"], "Key 6 ~ | Layout 4 |"),
+        ("a clamp to a taller view", &["end", "F", "tall", "F"], "Key 6 | Layout 4 |"),
         ("view and content resize at once", &["sticky", "add", "F", "narrow", "F"], "Layout 7 | Layout 15 H |"),
+        (
+            "view and content widen at once",
+            &["sideways", "F", "widen", "slim", "F"],
+            "Program x21 Program x20 | Layout x34 H |",
+        ),
         ("a move between frames is reported before layout", &["wheel", "wide", "F"], "Wheel 1 H |"),
-        ("a handler's move during a frame is reported after it", &["arm", "wide", "F"], "H Program 2 ~ |"),
+        ("a move deferred to the frame is reported before layout", &["defer", "poke", "F"], "Program 4 H |"),
+        ("a handler's move during a frame is reported after it", &["arm", "wide", "F"], "H Program 2 |"),
         ("moves before the first handler are not reported", &["5", "F", "on", "wide", "F"], "| H |"),
-        ("a key at the end follows new content", &["6", "F", "end", "add", "F"], "Program 6 ~ | Key 7 |"),
-        ("a sticky box sent to the end keeps no target", &["sticky", "end", "F"], "Key 6 |"),
+        ("a key at the end follows new content", &["6", "F", "end", "add", "F"], "Program 6 | Key 7 |"),
     ];
     for &(name, steps, expected) in cases {
         let app = TestApp::new(20, 4);
@@ -810,8 +820,11 @@ fn scroll_events_report_each_move_once_before_it_paints() {
                 let (log, scroll) = (log.clone(), scroll.clone());
                 move |_, event| {
                     assert_eq!(event.position, scroll.scroll_position());
-                    let settled = if event.settled { "" } else { " ~" };
-                    log.borrow_mut().push(format!("{:?} {}{settled}", event.cause, event.position.1));
+                    let at = match event.position {
+                        (0.0, y) => y.to_string(),
+                        (x, _) => format!("x{x}"),
+                    };
+                    log.borrow_mut().push(format!("{:?} {at}", event.cause));
                 }
             })
         };
@@ -830,7 +843,26 @@ fn scroll_events_report_each_move_once_before_it_paints() {
                 "add" => drop(scroll.add(&Text::new(&app, "added"))),
                 "tall" => app.resize(20, 6),
                 "narrow" => app.resize(12, 6),
+                "slim" => app.resize(16, 4),
+                "poke" => drop(hook.width(6)),
                 "on" => drop(listen()),
+                "echo" => drop(scroll.on_scroll({
+                    let (scroll, once) = (scroll.clone(), Cell::new(false));
+                    move |_, _| drop((!once.replace(true)).then(|| scroll.scroll_by(0.0, 2.0)))
+                })),
+                "defer" => {
+                    let scroll = scroll.clone();
+                    app.animate(move |cx, _| {
+                        let scroll = scroll.clone();
+                        cx.app().defer(move |_| drop(scroll.scroll_to(0.0, 4.0)));
+                        false
+                    });
+                }
+                "sideways" => {
+                    scroll.axes(true, false).sticky(true).sticky_start(opentui::widget::ScrollEdge::Right);
+                    scroll.add(&View::new(&app).width(40).height(1));
+                }
+                "widen" => drop(scroll.add(&View::new(&app).width(50).height(1))),
                 "arm" => armed.set(true),
                 "wide" => app.resize(24, 4),
                 "home" | "end" | "up" | "down" => app.press(step),

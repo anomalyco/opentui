@@ -1477,8 +1477,8 @@ impl App {
     pub(crate) fn paint_with(&self, preserve_unwritten: bool) -> Result<Draft> {
         let started = Instant::now();
         self.run_animations();
-        self.report_scrolls();
         self.drain_deferred();
+        self.report_scrolls();
         let callbacks = started.elapsed();
         self.check()?;
         self.0.dirty.set(false);
