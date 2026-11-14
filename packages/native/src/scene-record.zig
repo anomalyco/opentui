@@ -146,7 +146,7 @@ fn zeroHandle(value: c.ot_handle) bool {
 }
 
 /// Command record types. SLOT records frame the commands and are not one.
-pub const Command = enum(u32) { draw = 1, stack, grid, @"packed", supersample, grayscale, color_matrix, text_view, editor_view, scene_body, image, unicode };
+pub const Command = enum(u32) { draw = 1, stack, grid, @"packed", supersample, grayscale, color_matrix, text_view, editor_view, scene_body, image, unicode, cells };
 
 fn command(operation: u32) !Command {
     return std.enums.fromInt(Command, operation) orelse error.InvalidOptions;
@@ -207,6 +207,11 @@ fn commandSize(operation: Command, body: []const u8) !usize {
         .text_view, .editor_view, .scene_body => return @sizeOf(c.ot_scene_record_view),
         .image => return @sizeOf(c.ot_scene_record_image),
         .unicode => return @sizeOf(c.ot_scene_record_unicode),
+        .cells => {
+            const value = try fixed(c.ot_scene_record_cells, body);
+            if (value.width == 0) return error.InvalidOptions;
+            return @sizeOf(c.ot_scene_record_cells) + @as(usize, value.count) * @sizeOf(c.ot_scene_cell);
+        },
     }
 }
 
@@ -354,6 +359,10 @@ pub fn fingerprint(owner: *Context, member: *const native.NativeRenderable, byte
                     const live = if (raw.getUnicode(handleFromC(value.unicode))) |_| true else |_| false;
                     hasher.update(&[_]u8{@intFromBool(live)});
                 },
+                .cells => {
+                    const value = fixed(c.ot_scene_record_cells, body) catch unreachable;
+                    result.rows(value.y, @as(i64, value.y) + (std.math.divCeil(u32, value.count, value.width) catch unreachable));
+                },
             }
         }
     }
@@ -459,6 +468,21 @@ fn run(owner: *Context, target: *buffer.OptimizedBuffer, floor: usize, operation
         .unicode => {
             const value = try fixed(c.ot_scene_record_unicode, body);
             try owner.drawUnicodeOn(target, handleFromC(value.unicode), value.index, value.x, value.y, value.foreground, value.background, value.attributes);
+        },
+        .cells => {
+            const value = try fixed(c.ot_scene_record_cells, body);
+            const cells: [*]const c.ot_scene_cell = @ptrCast(@alignCast(body[@sizeOf(c.ot_scene_record_cells)..].ptr));
+            var draw: context.BufferDraw = .{ .operation = .cell_blend };
+            for (cells[0..value.count], 0..) |cell, position| {
+                // A position past the i32 range lies outside every target, as a saturated one does.
+                draw.x = value.x +| @as(i32, @intCast(position % value.width));
+                draw.y = value.y +| @as(i32, @intCast(position / value.width));
+                draw.char = cell.character;
+                draw.attributes = cell.attributes;
+                draw.foreground = cell.foreground;
+                draw.background = cell.background;
+                try owner.drawBufferOn(target, true, &draw, &.{}, &.{});
+            }
         },
     }
 }

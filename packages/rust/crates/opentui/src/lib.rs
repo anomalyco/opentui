@@ -92,7 +92,7 @@ pub mod prelude {
     pub use crate::layout::{
         Align, Edge, FlexDirection, Justify, LayoutMode, Length, Overflow, PositionType, Rect, Wrap,
     };
-    pub use crate::native::{MousePointer, SelectionColors, WrapMode};
+    pub use crate::native::{MousePointer, PaintCell, SelectionColors, WrapMode};
     pub use crate::post::{Channels, ColorMatrix, Filter, Surface};
     pub use crate::style::{Alignment, Attributes, BorderStyle, Color, Sides, Span, Style, Stylize};
     pub use crate::theme::{Theme, ThemeMode};

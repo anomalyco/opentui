@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 5fa79f61d55241e0f0880f4ed1566ab8c3adb686bc5f4691510beef9c4ba838d
+// ABI audit SHA-256: 786212e471cc111912efdbf28bc8c8b7a3060976b765a6874c3ad38ac808f8f6
 
 export const OT_CONTEXT_ABI_VERSION = 2
 export const OT_OK = 0
@@ -820,6 +820,7 @@ export const OT_SCENE_RECORD_EDITOR_VIEW = 9
 export const OT_SCENE_RECORD_SCENE_BODY = 10
 export const OT_SCENE_RECORD_IMAGE = 11
 export const OT_SCENE_RECORD_UNICODE = 12
+export const OT_SCENE_RECORD_CELLS = 13
 export const OT_SCENE_RECORD_GRAYSCALE_FOREGROUND = 1
 export const OT_SCENE_RECORD_GRAYSCALE_BACKGROUND = 2
 export const OT_SCENE_RECORD_GRAYSCALE_SUPERSAMPLED = 4
@@ -2520,6 +2521,27 @@ export const nativeLayouts = {
       background: { offset: 48, size: 8, alignment: 2, type: "[4]u16" },
     },
   },
+  ot_scene_cell: {
+    size: 24,
+    alignment: 4,
+    fields: {
+      character: { offset: 0, size: 4, alignment: 4, type: "u32" },
+      attributes: { offset: 4, size: 4, alignment: 4, type: "u32" },
+      foreground: { offset: 8, size: 8, alignment: 2, type: "[4]u16" },
+      background: { offset: 16, size: 8, alignment: 2, type: "[4]u16" },
+    },
+  },
+  ot_scene_record_cells: {
+    size: 24,
+    alignment: 4,
+    fields: {
+      header: { offset: 0, size: 8, alignment: 4, type: "ot_scene_record_header" },
+      x: { offset: 8, size: 4, alignment: 4, type: "i32" },
+      y: { offset: 12, size: 4, alignment: 4, type: "i32" },
+      width: { offset: 16, size: 4, alignment: 4, type: "u32" },
+      count: { offset: 20, size: 4, alignment: 4, type: "u32" },
+    },
+  },
 } as const
 
 export const nativeConstants = {
@@ -3340,6 +3362,7 @@ export const nativeConstants = {
   OT_SCENE_RECORD_SCENE_BODY: 10,
   OT_SCENE_RECORD_IMAGE: 11,
   OT_SCENE_RECORD_UNICODE: 12,
+  OT_SCENE_RECORD_CELLS: 13,
   OT_SCENE_RECORD_GRAYSCALE_FOREGROUND: 1,
   OT_SCENE_RECORD_GRAYSCALE_BACKGROUND: 2,
   OT_SCENE_RECORD_GRAYSCALE_SUPERSAMPLED: 4,

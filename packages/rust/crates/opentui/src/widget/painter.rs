@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::native::{BoxSpec, Buffer, GridSpec, Hooks, PaintSlot, Phase, Recorder, TextView, WidthMethod};
+use crate::native::{BoxSpec, Buffer, GridSpec, Hooks, PaintCell, PaintSlot, Phase, Recorder, TextView, WidthMethod};
 use crate::post::ColorMatrix;
 use crate::style::{Color, Style};
 
@@ -123,6 +123,39 @@ impl<'a> Painter<'a> {
     /// Draws one single-cell character.
     pub fn cell(&mut self, x: i32, y: i32, character: char, style: Style) {
         self.record(|recorder, (left, top)| recorder.cell(left + x, top + y, character, style, true));
+    }
+
+    /// Draws cells in rows of `width` from a local position, each as [`Self::cell`] draws it. One record holds the
+    /// whole run, so prefer it over a loop of [`Self::cell`]; a widget that keeps its [`PaintCell`]s records them
+    /// with one copy. A zero `width` draws nothing.
+    ///
+    /// ```no_run
+    /// use opentui::prelude::*;
+    ///
+    /// /// Cells built when the content changes, and recorded again on every frame.
+    /// struct Canvas {
+    ///     width: u32,
+    ///     cells: Vec<PaintCell>,
+    /// }
+    ///
+    /// impl Canvas {
+    ///     fn new(text: &str) -> Self {
+    ///         let cells: Vec<_> = text.chars().map(|character| PaintCell::new(character, Style::new().bold())).collect();
+    ///         Self { width: cells.len() as u32, cells }
+    ///     }
+    /// }
+    ///
+    /// impl Component for Canvas {
+    ///     fn paint(&self, painter: &mut Painter<'_>) {
+    ///         painter.cells(0, 0, self.width, &self.cells);
+    ///     }
+    /// }
+    /// ```
+    pub fn cells(&mut self, x: i32, y: i32, width: u32, cells: &[PaintCell]) {
+        if width == 0 {
+            return;
+        }
+        self.record(|recorder, (left, top)| recorder.cells(left + x, top + y, width, cells));
     }
 
     pub fn draw_box(&mut self, x: i32, y: i32, width: u32, height: u32, spec: &BoxSpec<'_>) {

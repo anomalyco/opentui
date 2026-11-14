@@ -444,7 +444,7 @@ test "Scene body draws nothing unprepared, clips to the target under any scissor
     try testing.expectError(error.WrongKind, f.owner.drawSceneBody(target, null, view, 0, 0));
 }
 
-const Command = enum { box, grid, packed_cells, supersample, grayscale, color_matrix, text_view, editor_view, scene_text, scene_box, image, unicode };
+const Command = enum { box, grid, packed_cells, supersample, grayscale, color_matrix, text_view, editor_view, scene_text, scene_box, image, unicode, cells };
 
 const Resources = struct {
     text: context.Handle,
@@ -518,6 +518,11 @@ fn appendCommand(recording: *Recording, command: Command, resources: Resources) 
         .scene_box => recording.append(c.ot_scene_record_view{ .header = recordHeader(c.OT_SCENE_RECORD_SCENE_BODY), .source = cHandle(resources.scene_box), .x = 2, .y = 1 }, &.{}),
         .image => recording.append(c.ot_scene_record_image{ .header = recordHeader(c.OT_SCENE_RECORD_IMAGE), .image = cHandle(resources.image), .options = .{ .struct_size = @sizeOf(c.ot_image_draw_options), .abi_version = c.OT_CONTEXT_ABI_VERSION, .flags = 0, .protocol = c.OT_IMAGE_PROTOCOL_BLOCKS, .x = 8, .y = 2, .width = 2, .height = 1, .pixel_width = 0, .pixel_height = 0, .source_x = 0, .source_y = 0, .source_width = 0, .source_height = 0, .reserved = .{ 0, 0 } } }, &.{}),
         .unicode => recording.append(c.ot_scene_record_unicode{ .header = recordHeader(c.OT_SCENE_RECORD_UNICODE), .unicode = cHandle(resources.unicode), .index = 1, .x = 11, .y = 3, .attributes = 1, .foreground = white, .background = blue }, &.{}),
+        // Three cells in rows of two: a wide character, a combining mark, and a translucent background.
+        .cells => {
+            const cells = [_]c.ot_scene_cell{ .{ .character = 0xe9, .attributes = 1, .foreground = white, .background = .{ 0, 0, 200, 128 } }, .{ .character = 0x754c, .attributes = 0, .foreground = white, .background = blue }, .{ .character = 0x301, .attributes = 4, .foreground = white, .background = blue } };
+            recording.append(c.ot_scene_record_cells{ .header = recordHeader(c.OT_SCENE_RECORD_CELLS), .x = 8, .y = 1, .width = 2, .count = cells.len }, std.mem.sliceAsBytes(&cells));
+        },
     }
 }
 
@@ -589,7 +594,7 @@ test "Scene record rejects malformed streams before presenting cells" {
     defer f.deinit();
     const child = try node(f.owner, f.id, f.root, 1, 2, 0);
     try f.owner.sceneSetHooks(child, c.OT_SCENE_HOOK_RENDER_AFTER, 1, 2, 1);
-    var cases: [8]Recording = .{ .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{} };
+    var cases: [10]Recording = .{ .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{} };
     // A command before any slot.
     cases[0].text("a", 0, 0);
     // A phase the slot did not register.
@@ -612,6 +617,12 @@ test "Scene record rejects malformed streams before presenting cells" {
     // An invalid command body fails during playback.
     cases[7].slot(0, c.OT_SCENE_RECORD_PHASE_AFTER);
     cases[7].text("\xff", 0, 0);
+    // CELLS rows of no cells, and more cells than the record holds.
+    const cell: c.ot_scene_cell = .{ .character = 'c', .attributes = 0, .foreground = .{ 255, 255, 255, 255 }, .background = .{ 0, 0, 0, 255 } };
+    for (cases[8..], [_][2]u32{ .{ 0, 1 }, .{ 1, 2 } }) |*recording, shape| {
+        recording.slot(0, c.OT_SCENE_RECORD_PHASE_AFTER);
+        recording.append(c.ot_scene_record_cells{ .header = recordHeader(c.OT_SCENE_RECORD_CELLS), .x = 0, .y = 0, .width = shape[0], .count = shape[1] }, std.mem.asBytes(&cell));
+    }
     for (&cases, 0..) |*recording, index| {
         const request = try f.step(null, options, c.OT_SCENE_FRAME_RECORD, null);
         if (index == 6) @memset(recording.bytes[recording.len - 4 .. recording.len], 0);
@@ -696,7 +707,7 @@ test "Scene record fails corrupted recordings cleanly and keeps the Session pain
     // A valid stream with every command in all three phases of one slot, then a second slot.
     var valid: Recording = .{};
     for (std.enums.values(Command), 0..) |command, index| {
-        if (index % 4 == 0) valid.slot(0, @intCast(index / 4));
+        if (index % 5 == 0) valid.slot(0, @intCast(index / 5));
         appendCommand(&valid, command, resources);
     }
     valid.stack(c.OT_BUFFER_STACK_PUSH_SCISSOR, 1, 3, 1);
@@ -862,6 +873,63 @@ test "Scene image crop selects the source rectangle it fits" {
     try testing.expectError(error.WrongKind, f.owner.sceneSetCrop(f.root, null));
 }
 
+// One random run of cells a frame, as a CELLS record on one twin and as CELL_BLEND records on
+// the other, over text, inside a random clip and opacity: wide characters cut by a row's end,
+// the clip or the screen, combining marks, controls, every attribute, and translucent and
+// default colors. VERIFY checks each kept or banded frame, and both twins damage equal rows.
+test "Scene record CELLS paints what CELL_BLEND records paint" {
+    const width = 10;
+    const twins = [2]Fixture{ try Fixture.init(testing.allocator, width, 4, .{}), try Fixture.init(testing.allocator, width, 4, .{}) };
+    defer for (twins) |twin| twin.deinit();
+    for (twins) |twin| {
+        try twin.owner.sceneSetDebugFlags(twin.id, c.OT_SCENE_DEBUG_VERIFY);
+        try twin.owner.sceneSetHooks(try placed(twin, c.OT_SCENE_CUSTOM, 2, 0, 0, width), c.OT_SCENE_HOOK_RENDER_AFTER, 1, width, 1);
+    }
+    const characters = [_]u32{ 'a', 'Z', 0xe9, 0x2500, 0x2588, 0x754c, 0x1f600, 0x301, 0x200d, '\t' };
+    const colors = [_][4]u16{ ansi.rgbColor(200, 40, 0, 255), ansi.rgbColor(0, 90, 200, 128), ansi.rgbColor(9, 9, 9, 0), ansi.defaultColor(255, 255, 255, 255) };
+    for (0..512) |seed| {
+        var prng = std.Random.DefaultPrng.init(seed);
+        const random = prng.random();
+        // Text on one row only, so a frame damages just the rows its run writes.
+        const text_row = random.intRangeLessThan(i32, 0, 4);
+        var runs: [2]Recording = .{ .{}, .{} };
+        for (&runs) |*run| {
+            run.slot(0, c.OT_SCENE_RECORD_PHASE_AFTER);
+            run.draw(textRecord(0, text_row, 0, c.OT_BUFFER_DRAW_HAS_BACKGROUND), null, "0123456789", "");
+        }
+        if (random.boolean()) {
+            const clip: c.ot_scene_record_stack = .{ .header = recordHeader(c.OT_SCENE_RECORD_STACK), .operation = c.OT_BUFFER_STACK_PUSH_SCISSOR, .x = random.intRangeAtMost(i32, -1, 8), .y = random.intRangeAtMost(i32, -1, 3), .width = random.uintAtMost(u32, 8), .height = random.uintAtMost(u32, 4), .opacity = 0 };
+            for (&runs) |*run| run.append(clip, &.{});
+        }
+        const opacity = ([_]f32{ 1, 0.5, 0 })[random.uintLessThan(usize, 3)];
+        for (&runs) |*run| run.stack(c.OT_BUFFER_STACK_PUSH_OPACITY, 0, 0, opacity);
+        var cells: [24]c.ot_scene_cell = undefined;
+        for (&cells) |*cell| cell.* = .{
+            .character = characters[random.uintLessThan(usize, characters.len)],
+            .attributes = random.int(u32) & ansi.TextAttributes.ATTRIBUTE_BASE_MASK,
+            .foreground = colors[random.uintLessThan(usize, colors.len)],
+            .background = colors[random.uintLessThan(usize, colors.len)],
+        };
+        const run: c.ot_scene_record_cells = .{ .header = recordHeader(c.OT_SCENE_RECORD_CELLS), .x = random.intRangeAtMost(i32, -3, width), .y = random.intRangeAtMost(i32, -2, 4), .width = random.intRangeAtMost(u32, 1, 6), .count = random.uintAtMost(u32, cells.len) };
+        runs[0].append(run, std.mem.sliceAsBytes(cells[0..run.count]));
+        for (cells[0..run.count], 0..) |cell, index| {
+            const at: [2]i32 = .{ run.x + @as(i32, @intCast(index % run.width)), run.y + @as(i32, @intCast(index / run.width)) };
+            runs[1].draw(c.ot_buffer_draw_cell{ .header = drawHeader(c.ot_buffer_draw_cell, c.OT_BUFFER_DRAW_CELL_BLEND), .x = at[0], .y = at[1], .character = cell.character, .attributes = cell.attributes, .foreground = cell.foreground, .background = cell.background }, null, "", "");
+        }
+        errdefer std.debug.print("seed {}\n", .{seed});
+        var done: [2]scene.FrameRequest = undefined;
+        for (twins, &runs, &done) |twin, *recording, *frame| frame.* = try submit(twin, try twin.step(null, options, c.OT_SCENE_FRAME_RECORD, null), recording);
+        try twins[0].expectSameCells(twins[1]);
+        var damage: [2]u32 = undefined;
+        for (twins, done, &damage) |twin, frame, *rows| {
+            _ = try twin.owner.sceneFrameCommit(twin.id, frame, false);
+            try @import("scene_frame_test.zig").drain(twin.owner, twin.id);
+            rows.* = (try twin.owner.sceneGetStats(twin.id)).frameWork.damage_rows;
+        }
+        try testing.expectEqual(damage[0], damage[1]);
+    }
+}
+
 fn fingerprint(f: Fixture, recording: *const Recording, hooks: u32) !scene_record.Fingerprint {
     const slots = [_]scene.PaintSlot{.{ .node = f.root, .num = 1, .hooks = hooks, .hook_generation = 1, .layout = .{}, .public_layout = null, .clip = .{ .x = 0, .y = 0, .width = 1, .height = 1 }, .opacity = 1 }};
     var segments: [1]scene_record.Segments = undefined;
@@ -896,6 +964,7 @@ test "Scene record fingerprints bound the rows each command kind writes" {
         .{ .command = .{ .command = .scene_box }, .print = .{ .top = 1, .bottom = max } },
         .{ .command = .{ .command = .image }, .print = .{ .image = true } },
         .{ .command = .{ .command = .unicode }, .print = .{ .top = 3, .bottom = 4 } },
+        .{ .command = .{ .command = .cells }, .print = .{ .top = 1, .bottom = 3 } },
         .{ .command = .{ .draw = .text }, .print = .{ .top = 2, .bottom = 3 } },
         .{ .command = .{ .draw = .fill }, .print = .{ .top = -1, .bottom = 0 } },
         // A source's height bounds a composition; a stale source draws nothing.
