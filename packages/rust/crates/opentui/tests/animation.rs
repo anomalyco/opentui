@@ -867,6 +867,19 @@ fn widget_ticks_run_while_the_widget_is_drawn() {
     text.detach();
     drop(text);
     rows.push(("that widget dropped, handle kept", idle_second(&app, &ticks)));
+    // On screen, though its rounded or unrounded area has no cell in view: native draws the text at the truncated row,
+    // and the empty boxes may show children that overflow them.
+    let anchor = View::new(&app).height(0).add(&Text::new(&app, "-").absolute());
+    for widget in [
+        Text::new(&app, "-").absolute().position(Edge::Top, 0).translate(0.0, -0.5).as_any(),
+        View::new(&app).width(0).height(0).as_any(),
+        anchor.as_any(),
+    ] {
+        app.root().add(&widget);
+        let _handle = widget.on_animation_tick(12.5, spinner(&ticks));
+        rows.push(("on screen, no cell of its own", idle_second(&app, &ticks)));
+        widget.detach();
+    }
     assert_eq!(
         rows,
         [
@@ -884,6 +897,9 @@ fn widget_ticks_run_while_the_widget_is_drawn() {
             ("handle dropped", (0, 0, 0)),
             ("another widget", (13, 12, 12)),
             ("that widget dropped, handle kept", (1, 1, 0)),
+            ("on screen, no cell of its own", (13, 12, 12)),
+            ("on screen, no cell of its own", (13, 13, 12)),
+            ("on screen, no cell of its own", (13, 12, 12)),
         ]
     );
     drop(kept);
@@ -954,7 +970,8 @@ fn widget_ticks_park_while_the_widget_is_clipped_out_of_view() {
     let ticks = Rc::new(Cell::new(0));
     let handle = spinner_row.on_animation_tick(12.5, spinner(&ticks));
     let mut rows = vec![("in view", idle_second(&app, &ticks))];
-    scroll.scroll_to(0.0, 3.0);
+    // Just out: the row ends where the viewport starts.
+    scroll.scroll_to(0.0, 1.0);
     rows.push(("scrolled out", idle_second(&app, &ticks)));
     rows.push(("still out", idle_second(&app, &ticks)));
     scroll.scroll_to(0.0, 0.0);
@@ -962,6 +979,7 @@ fn widget_ticks_park_while_the_widget_is_clipped_out_of_view() {
     drop(handle);
     // The tall row shows its first line at offset 1 and its last at offset 3.
     let tall_tick = tall.on_animation_tick(12.5, spinner(&ticks));
+    rows.push(("below the viewport", idle_second(&app, &ticks)));
     for offset in [1.0, 3.0] {
         scroll.scroll_to(0.0, offset);
         rows.push(("partly clipped", idle_second(&app, &ticks)));
@@ -978,9 +996,10 @@ fn widget_ticks_park_while_the_widget_is_clipped_out_of_view() {
             ("scrolled out", (2, 2, 0)),
             ("still out", (0, 0, 0)),
             ("scrolled back", (13, 12, 12)),
+            ("below the viewport", (2, 1, 0)),
             ("partly clipped", (13, 12, 12)),
-            ("partly clipped", (13, 13, 12)),
-            ("root", (13, 12, 12)),
+            ("partly clipped", (13, 12, 13)),
+            ("root", (13, 13, 12)),
         ]
     );
 }

@@ -128,23 +128,6 @@ pub struct PaintSlot {
     pub paint: Rect,
 }
 
-impl PaintSlot {
-    /// The part of the node that drawing can reach, as `(x, y, width, height)` from its top-left cell: its area cut
-    /// by its clip.
-    pub(crate) fn visible_rect(&self) -> (i32, i32, u32, u32) {
-        let (left, top) = (self.paint.screen_x.floor() as i32, self.paint.screen_y.floor() as i32);
-        let (width, height) = (self.paint.width.max(0.0) as u32, self.paint.height.max(0.0) as u32);
-        let (x, y, clip_width, clip_height) = self.clip;
-        let span = |start: i32, length: u32, origin: i32, size: u32| {
-            let from = (i64::from(start) - i64::from(origin)).max(0);
-            let to = (i64::from(start) + i64::from(length) - i64::from(origin)).min(i64::from(size));
-            (from as i32, (to - from).max(0) as u32)
-        };
-        let ((x, width), (y, height)) = (span(x, clip_width, left, width), span(y, clip_height, top, height));
-        (x, y, width, height)
-    }
-}
-
 /// Work a frame attempt asks the host to do before it continues.
 pub enum HostRequest<'a> {
     /// Run the node's update work.

@@ -52,7 +52,16 @@ impl<'a> Painter<'a> {
     /// ancestors' clips, such as a scroll box's viewport. Drawing outside it is discarded, so large widgets can skip
     /// it.
     pub fn visible_rect(&self) -> (i32, i32, u32, u32) {
-        self.slot.visible_rect()
+        let (left, top) = self.origin();
+        let (width, height) = self.size();
+        let (x, y, clip_width, clip_height) = self.slot.clip;
+        let span = |start: i32, length: u32, origin: i32, size: u32| {
+            let from = (i64::from(start) - i64::from(origin)).max(0);
+            let to = (i64::from(start) + i64::from(length) - i64::from(origin)).min(i64::from(size));
+            (from as i32, (to - from).max(0) as u32)
+        };
+        let ((x, width), (y, height)) = (span(x, clip_width, left, width), span(y, clip_height, top, height));
+        (x, y, width, height)
     }
 
     /// The display width of `text` in cells, as native drawing measures it.

@@ -56,7 +56,7 @@ use crate::theme::{Theme, ThemeMode};
 use crate::widget::{AnyWidget, Behavior, Callbacks, Element, Painter, ScrollInner, View, Widget};
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Deref;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
@@ -1494,13 +1494,24 @@ impl App {
             let root = self.root().id();
             self.0.session.frame(&options, |request| {
                 match &request {
-                    HostRequest::Update { num, .. } if *num == root => self.mark_drawn(root),
+                    HostRequest::Update { num, .. } if *num == root => self.mark_drawn(|widget| widget == root),
                     HostRequest::Record { slots, .. } => {
-                        for slot in slots.iter() {
-                            if let (_, _, 1.., 1..) = slot.visible_rect() {
-                                self.mark_drawn(slot.num);
-                            }
-                        }
+                        // Drawn when its area, at least one cell per axis since children may overflow it, meets the
+                        // clip.
+                        let meets = |start: f64, size: f32, clip: i32, clip_size: u32| {
+                            start < f64::from(clip) + f64::from(clip_size)
+                                && start + f64::from(size.max(1.0)) > f64::from(clip)
+                        };
+                        let drawn: HashSet<u32> = slots
+                            .iter()
+                            .filter(|slot| {
+                                let ((x, y, width, height), paint) = (slot.clip, &slot.paint);
+                                meets(paint.screen_x, paint.width, x, width)
+                                    && meets(paint.screen_y, paint.height, y, height)
+                            })
+                            .map(|slot| slot.num)
+                            .collect();
+                        self.mark_drawn(|widget| drawn.contains(&widget));
                     }
                     _ => {}
                 }

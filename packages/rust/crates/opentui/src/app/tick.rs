@@ -218,13 +218,14 @@ impl App {
         self.schedule_ticks();
     }
 
-    /// A frame drew `widget`: its subscribers count the frame, and parked ones resume from their next due time.
-    pub(super) fn mark_drawn(&self, widget: u32) {
+    /// A frame drew the widgets `drawn` selects: their subscribers count the frame, and parked ones resume from their
+    /// next due time. One pass over the subscribers, so the cost is that of the followed widgets.
+    pub(super) fn mark_drawn(&self, drawn: impl Fn(u32) -> bool) {
         let resumed = {
             let mut animations = self.0.animations.borrow_mut();
             let Some(ticks) = animations.ticks.as_mut() else { return };
             let mut resumed = false;
-            for ticker in ticks.tickers.iter_mut().filter(|ticker| ticker.widgets.contains(&widget)) {
+            for ticker in ticks.tickers.iter_mut().filter(|ticker| ticker.widgets.iter().any(|&widget| drawn(widget))) {
                 resumed |= ticker.mark(self.0.frame.get(), || self.tick_time());
             }
             resumed
