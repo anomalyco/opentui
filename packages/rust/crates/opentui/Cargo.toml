@@ -37,6 +37,7 @@ tree-sitter-md = { version = "0.5", optional = true }
 tree-sitter-rust = { version = "0.24", optional = true }
 tree-sitter-typescript = { version = "0.23", optional = true }
 tree-sitter-zig = { version = "1.1", optional = true }
+unicode-segmentation = "1.13"
 
 [dev-dependencies]
 # Reads the conformance vectors that Core's tests run too.

@@ -16,6 +16,7 @@ use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::rc::Rc;
 use std::sync::Arc;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// What a key does in an [`Input`](super::Input) or [`Textarea`](super::Textarea). Bind keys to actions with
 /// `bind`, or run one directly with `perform`.
@@ -449,7 +450,8 @@ impl EditorCore {
         text.chars().map(|character| self.units(character)).sum()
     }
 
-    /// Cuts `text` so the document stays within the maximum length, given `removed` units being replaced.
+    /// Cuts `text` so the document stays within the maximum length, given `removed` units being replaced. A grapheme
+    /// cluster that does not fit whole is left out.
     fn limit(&self, text: &str, removed: usize) -> String {
         let max = self.max_length.get();
         if max == usize::MAX {
@@ -457,7 +459,9 @@ impl EditorCore {
         }
         let current = if text.is_empty() { 0 } else { self.length(&self.text()) };
         let mut room = max.saturating_sub(current.saturating_sub(removed));
-        text.chars().take_while(|c| room.checked_sub(self.units(*c)).map(|left| room = left).is_some()).collect()
+        text.graphemes(true)
+            .take_while(|g| room.checked_sub(self.length(g)).map(|left| room = left).is_some())
+            .collect()
     }
 
     fn clear_selection_state(&self) {

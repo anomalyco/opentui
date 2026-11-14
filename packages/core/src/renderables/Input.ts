@@ -9,10 +9,17 @@ import {
 export type InputAction = TextareaAction
 export type InputKeyBinding = TextareaKeyBinding
 
-/** Cuts `text` to at most `max` UTF-16 code units, leaving out a character that does not fit whole. */
+const graphemes = new Intl.Segmenter()
+
+/** Cuts `text` to at most `max` UTF-16 code units, leaving out a grapheme cluster that does not fit whole. */
 function fit(text: string, max: number): string {
-  const cut = text.substring(0, max)
-  return (text.codePointAt(cut.length - 1) ?? 0) > 0xffff ? cut.slice(0, -1) : cut
+  if (text.length <= max) return text
+  let end = 0
+  for (const { segment } of graphemes.segment(text)) {
+    if (end + segment.length > max) break
+    end += segment.length
+  }
+  return text.slice(0, end)
 }
 
 export interface InputRenderableOptions extends Omit<
