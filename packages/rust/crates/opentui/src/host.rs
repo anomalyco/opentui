@@ -1166,6 +1166,27 @@ mod tests {
     }
 
     #[test]
+    fn a_host_loop_wakes_for_its_first_footer_frame() {
+        for leave in [false, true] {
+            let (terminal, _link) = RemoteTerminal::new(RemoteOptions::default(), || {}).unwrap();
+            let options = HostOptions { split_footer: Some(3), ..HostOptions::default() };
+            let mut host = Host::start_remote(terminal, options).unwrap();
+            if leave {
+                host.split_footer().unwrap().leave().unwrap();
+                assert!(host.can_render().unwrap(), "the main screen still waits for the footer");
+            } else {
+                // No App supplies a frame deadline. The host must wake before the caller's backstop.
+                let backstop = Instant::now() + Duration::from_secs(2);
+                let mut events = Vec::new();
+                while !host.can_render().unwrap() {
+                    host.poll(Some(backstop), &mut events).unwrap();
+                    assert!(Instant::now() < backstop, "poll slept through the first frame");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn sizes_fit_the_cell_limit() {
         assert_eq!(fit((80, 24), 512 * 512), (80, 24));
         assert_eq!(fit((1000, 1000), 512 * 512), (1000, 262));
