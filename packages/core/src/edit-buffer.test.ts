@@ -302,24 +302,17 @@ describe("EditBuffer", () => {
       expect(cursor.col).toBe(3)
     })
 
-    it("should clamp a past-the-end offset to the end, not the start", () => {
-      buffer.setText("ab\tcd") // 6 display cells
-
-      buffer.setCursorByOffset(6)
-      expect(buffer.getCursorPosition()).toEqual({ row: 0, col: 6, offset: 6 })
-
-      buffer.setCursorByOffset(7)
-      expect(buffer.getCursorPosition()).toEqual({ row: 0, col: 6, offset: 6 })
-
-      buffer.setCursorByOffset(0xffffffff)
-      expect(buffer.getCursorPosition()).toEqual({ row: 0, col: 6, offset: 6 })
-    })
-
-    it("should clamp a UTF-16 length past the cell count to the end", () => {
-      buffer.setText("cafe\u0301") // "café" decomposed: 5 UTF-16 units, 4 display cells
-
-      buffer.setCursorByOffset(buffer.getText().length)
-      expect(buffer.getCursorPosition()).toEqual({ row: 0, col: 4, offset: 4 })
+    it("should clamp an offset past the end to the end of the document", () => {
+      // "cafe\u0301" is "café" decomposed: 5 UTF-16 units, 4 display cells
+      for (const text of ["", "ab\tcd", "ab\tcd\nxy", "cafe\u0301"]) {
+        buffer.setText(text)
+        const end = buffer.measureText(text)
+        for (const offset of [end, end + 1, 0xffffffff]) {
+          buffer.setCursorByOffset(1)
+          buffer.setCursorByOffset(offset)
+          expect(buffer.getCursorPosition()).toEqual({ ...buffer.offsetToPosition(end)!, offset: end })
+        }
+      }
     })
   })
 
