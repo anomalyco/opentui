@@ -768,6 +768,7 @@ ot_status ot_scene_create_node(ot_context *, const ot_handle *session, uint32_t 
  * OT_INTERNAL_ERROR until its nodes are destroyed. Destroy, detach, blur, clearing a measure provider, and selection
  * RESET still succeed. */
 ot_status ot_scene_destroy_node(ot_context *, const ot_handle *node);
+/* Siblings with equal z_index paint in child order. At an overlap, the later child wins the hit test. */
 ot_status ot_scene_move_node(ot_context *, const ot_handle *node, const ot_handle *parent, uint32_t index);
 /* Detaches every child of node, as moving each to NULL from first to last would, in
  * time linear in the child count. On error no child is detached. */

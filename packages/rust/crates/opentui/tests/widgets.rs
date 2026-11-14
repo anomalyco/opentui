@@ -13,6 +13,55 @@ fn rows(app: &TestApp) -> Vec<String> {
 }
 
 #[test]
+fn sibling_paint_and_hits_match_a_fresh_tree() {
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_str(include_str!("../../../../core/src/tests/fixtures/sibling-paint-order.json")).unwrap();
+    for row in rows {
+        let key = row["key"].as_str().unwrap();
+        let after = row["after"].as_str().unwrap();
+        let observe = |fresh: bool| {
+            let app = TestApp::new(3, 1);
+            let nodes = ["A", "B", "C"].map(|k| {
+                let width = 3 - "ABC".find(k).unwrap();
+                Text::new(&app, k.repeat(width))
+                    .absolute()
+                    .width(width as u32)
+                    .height(1)
+                    .z_index(i32::from(row["raised"] == k))
+            });
+            let parent = app.root();
+            let other = View::new(&app).width(0).height(0);
+            let child = &nodes["ABC".find(key).unwrap()];
+            if row["reparent"] == true {
+                parent.add(&other);
+                if !fresh {
+                    other.add(child);
+                }
+            }
+            for k in (if fresh { after } else { row["before"].as_str().unwrap() }).chars() {
+                parent.add(&nodes["ABC".find(k).unwrap()]);
+            }
+            if !fresh {
+                app.present().unwrap();
+                parent.insert(after.find(key).unwrap() + usize::from(row["reparent"] == true), child);
+            }
+            let frame = app.text();
+            let hits = (0..3)
+                .map(|x| {
+                    let hit = app.session().hit_test(x, 0).unwrap();
+                    nodes.iter().zip('A'..='C').find(|(n, _)| Some(n.id()) == hit).map_or('?', |(_, k)| k)
+                })
+                .collect::<String>();
+            (frame, hits)
+        };
+        let fresh = observe(true);
+        let expected = row["frame"].as_str().unwrap();
+        assert_eq!((&*fresh.0, &*fresh.1), (expected, expected), "{row}");
+        assert_eq!(observe(false), fresh, "{row}");
+    }
+}
+
+#[test]
 fn views_lay_out_borders_titles_and_text() {
     let app = TestApp::new(20, 4);
     let panel = View::new(&app).border(BorderStyle::Rounded).title(" Hi ").padding_x(1).grow(1.0);

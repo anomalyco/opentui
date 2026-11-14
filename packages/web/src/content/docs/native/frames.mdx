@@ -133,6 +133,7 @@ For each node, native code takes these steps before it paints the node's childre
 
 An after hook on the box would therefore draw before the label, not after the whole subtree.
 Native code sorts siblings by `z_index` within each parent. It does not sort all nodes globally.
+Siblings with equal `z_index` paint in child order: the later child paints above and takes the click at an overlap.
 
 Each phase starts with only the slot's clip and opacity on the drawing stacks.
 `STACK` commands push and pop above that entry but cannot remove it. Native code resets the stacks between phases.

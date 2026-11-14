@@ -954,7 +954,7 @@ pub trait Widget: Clone + 'static {
 
     // Paint.
 
-    /// Paint order among siblings.
+    /// Paint order among siblings. On a tie, the later child paints above and receives clicks at the overlap.
     fn z_index(&self, z_index: i32) -> Self {
         self.element().update_paint(|paint| paint.z_index = z_index);
         self.clone()

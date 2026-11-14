@@ -153,6 +153,12 @@ describe("native renderer stats", () => {
     // refresh before selection, culled ones too.
     expect(await refreshes()).toBe(0)
     expect(await refreshes()).toBe(0)
+    const [first, second] = scrollbox.getChildren()
+    scrollbox.insertBefore(second!, first!)
+    await result.renderOnce()
+    expect(result.captureCharFrame().split("\n")[0]).toContain("row 1")
+    await result.renderOnce()
+    expect(renderer.getNativeStats().frameWork).toMatchObject({ candidateVisits: 0, paintVisits: 0 })
     scrollbox.scrollTo(500)
     expect(await refreshes()).toBe(0)
     scrollbox.add(new TextRenderable(renderer, { content: "appended" }))

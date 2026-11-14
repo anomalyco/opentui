@@ -1,8 +1,9 @@
 //! Headless apps on the real clock: frames, terminal writes, timers, and driving from another thread.
 
 use opentui::app::{HeadlessOptions, HeadlessWrite};
-use opentui::input::Event;
+use opentui::input::{Event, MouseEvent, MouseEventKind};
 use opentui::prelude::*;
+use opentui::remote::{OUTPUT_BYTES_MAX, RemoteOptions, RemoteTerminal};
 use opentui::testing::TestApp;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -152,6 +153,157 @@ fn timers_fire_on_the_real_clock() {
         }
     });
     app.run().expect("run");
+}
+
+/// Where the timer that ends a run is armed: while a widget paints, from a task it defers while painting, from an
+/// animation such a task starts, from a timer callback, or from an animation that a hover handler starts once a
+/// frame's output is complete. `Quit` quits from a task the widget defers while painting instead.
+#[derive(Clone, Copy, Debug)]
+enum Arm {
+    Paint,
+    Defer,
+    Animate,
+    Timer,
+    Hover,
+    Quit,
+}
+
+/// Where an app runs: headless, on a remote terminal that never reads its output, on one whose first frame does not
+/// fit the output buffer, or on one whose client reads its output only after 300 ms.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Host {
+    Headless,
+    Remote,
+    Blocked,
+    Late,
+}
+
+type Quit = Rc<Cell<Option<Instant>>>;
+
+/// A widget that arms a timer the first time it paints. A noisy one paints each cell in its own color, about 20
+/// bytes a cell.
+struct Arming {
+    app: App,
+    arm: Arm,
+    noisy: bool,
+    armed: Cell<bool>,
+    quit: Quit,
+}
+
+/// Arms a 20 ms timer that quits and records when.
+fn arm_quit(app: &App, quit: &Quit) {
+    let quit = quit.clone();
+    app.set_timeout(Duration::from_millis(20), move |cx| {
+        quit.set(Some(Instant::now()));
+        cx.quit();
+    });
+}
+
+impl Component for Arming {
+    fn paint(&self, painter: &mut Painter<'_>) {
+        let quit = self.quit.clone();
+        match self.arm {
+            _ if self.armed.replace(true) => {}
+            Arm::Paint => arm_quit(&self.app, &quit),
+            Arm::Defer => self.app.defer(move |cx| arm_quit(cx.app(), &quit)),
+            Arm::Animate => self.app.defer(move |cx| {
+                cx.animate(move |cx, _| {
+                    arm_quit(cx.app(), &quit);
+                    false
+                })
+            }),
+            Arm::Quit => self.app.defer(|cx| cx.quit()),
+            Arm::Timer | Arm::Hover => {}
+        }
+        let cells = if self.noisy { 0..200 * 60 } else { 0..0 };
+        for (x, y) in cells.map(|cell| (cell % 200, cell / 200)) {
+            painter.fill(x, y, 1, 1, Color::rgb(x as u8, (y * 4) as u8, ((x * 7 + y * 13) % 251) as u8));
+        }
+    }
+}
+
+#[test]
+fn timers_armed_while_painting_fire_on_time() {
+    // Runs an app whose only wakeup after its first frame is the timer `arm` sets up, with an unrelated 60 s timer
+    // pending, and returns when the timer quit (for `Quit`, when the run ended). A timer or quit the loop misses waits
+    // for the next unrelated wakeup: the watchdog, or a remote terminal's 5 s capability window closing.
+    let late = |&(arm, host): &(Arm, Host)| {
+        let run = move |terminal: Option<RemoteTerminal>| {
+            let app = match terminal {
+                Some(terminal) => App::remote(terminal, AppOptions::default().with_theme(Theme::dark())).unwrap(),
+                None => headless(10, 1),
+            };
+            watchdog(&app);
+            app.set_timeout(Duration::from_secs(60), |_| {});
+            let quit = Quit::default();
+            if let Arm::Timer = arm {
+                let quit = quit.clone();
+                app.set_timeout(Duration::ZERO, move |cx| arm_quit(cx.app(), &quit));
+            }
+            let noisy = matches!(host, Host::Blocked | Host::Late);
+            let arming = Arming { app: app.clone(), arm, noisy, armed: Cell::new(false), quit: quit.clone() };
+            let widget = Custom::new(&app, arming);
+            if let Arm::Hover = arm {
+                // At 30 ms the pointer moves to the corner and the widget grows under it. That frame's output finishes
+                // when the client reads it, and only then does the hover reach the widget.
+                let quit = quit.clone();
+                app.root().add(&widget.clone().height(0).on_hover(move |cx, entered| {
+                    let quit = quit.clone();
+                    if entered {
+                        cx.animate(move |cx, _| {
+                            arm_quit(cx.app(), &quit);
+                            false
+                        });
+                    }
+                }));
+                app.set_timeout(Duration::from_millis(30), move |cx| {
+                    let event = MouseEvent { kind: MouseEventKind::Moved, x: 0, y: 0, modifiers: Modifiers::NONE };
+                    cx.app().dispatch(Event::Mouse(event));
+                    widget.height(60);
+                });
+            } else {
+                app.root().add(&widget.grow(1.0));
+            }
+            // The result is not checked: a blocked terminal times out restoring itself after the quit.
+            let _ = app.run();
+            if let Arm::Quit = arm {
+                quit.set(Some(Instant::now()));
+            }
+            quit.get()
+        };
+        let started = Instant::now();
+        let quit = if host == Host::Headless {
+            run(None)
+        } else {
+            let options = RemoteOptions { width: 200, height: 60, ..RemoteOptions::default() };
+            let (terminal, link) = RemoteTerminal::new(options, || {}).expect("a remote terminal");
+            // Output already waiting leaves no room for a noisy frame, or room for the first frame but not a noisy one.
+            let waiting = match host {
+                Host::Blocked => OUTPUT_BYTES_MAX - 16 * 1024,
+                Host::Late => OUTPUT_BYTES_MAX - 128 * 1024,
+                _ => 0,
+            };
+            terminal.write(&vec![b' '; waiting], Duration::ZERO).expect("fill the output");
+            if host == Host::Late {
+                let link = link.clone();
+                // Twice: what the first take makes room for comes after it.
+                std::thread::spawn(move || {
+                    for delay in [300, 50] {
+                        std::thread::sleep(Duration::from_millis(delay));
+                        while !link.take_output(1 << 20).is_empty() {}
+                    }
+                });
+            }
+            std::thread::spawn(move || run(Some(terminal))).join().expect("the app thread")
+        };
+        quit.is_none_or(|quit| quit - started > Duration::from_secs(2))
+    };
+    let rows = [Host::Headless, Host::Remote]
+        .into_iter()
+        .flat_map(|host| [Arm::Paint, Arm::Defer, Arm::Animate, Arm::Timer, Arm::Quit].map(|arm| (arm, host)))
+        .chain([(Arm::Defer, Host::Blocked), (Arm::Hover, Host::Late)]);
+    let late: Vec<_> = rows.filter(late).collect();
+    assert!(late.is_empty(), "{late:?}");
 }
 
 #[test]
