@@ -301,6 +301,26 @@ describe("EditBuffer", () => {
       expect(cursor.row).toBe(1)
       expect(cursor.col).toBe(3)
     })
+
+    it("should clamp a past-the-end offset to the end, not the start", () => {
+      buffer.setText("ab\tcd") // 6 display cells
+
+      buffer.setCursorByOffset(6)
+      expect(buffer.getCursorPosition()).toEqual({ row: 0, col: 6, offset: 6 })
+
+      buffer.setCursorByOffset(7)
+      expect(buffer.getCursorPosition()).toEqual({ row: 0, col: 6, offset: 6 })
+
+      buffer.setCursorByOffset(0xffffffff)
+      expect(buffer.getCursorPosition()).toEqual({ row: 0, col: 6, offset: 6 })
+    })
+
+    it("should clamp a UTF-16 length past the cell count to the end", () => {
+      buffer.setText("cafe\u0301") // "café" decomposed: 5 UTF-16 units, 4 display cells
+
+      buffer.setCursorByOffset(buffer.getText().length)
+      expect(buffer.getCursorPosition()).toEqual({ row: 0, col: 4, offset: 4 })
+    })
   })
 
   describe("word boundary navigation", () => {

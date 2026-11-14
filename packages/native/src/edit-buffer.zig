@@ -272,7 +272,8 @@ pub const EditBuffer = struct {
     }
 
     pub fn setCursorByOffset(self: *EditBuffer, offset: u32) !void {
-        const coords = iter_mod.offsetToCoords(self.tb.rope(), offset) orelse iter_mod.Coords{ .row = 0, .col = 0 };
+        // Past the end clamps to EOF like byteAtOffset, not to the document start.
+        const coords = iter_mod.offsetToCoords(self.tb.rope(), @min(offset, self.tb.rope().totalWeight())) orelse iter_mod.Coords{ .row = 0, .col = 0 };
         try self.setCursor(coords.row, coords.col);
     }
 
