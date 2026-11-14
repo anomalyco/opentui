@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 /// Input methods dispatch immediately. [`Self::render`] paints a frame, presents it so hit tests and hover see it,
 /// and returns its cells. Native failures panic with the error, which suits tests; use [`Self::try_render`] to
 /// inspect them instead. As in Core's test renderer, native code checks each frame that it skips or repaints only
-/// in part against a full repaint, and fails the frame on a mismatch.
+/// in part against a full repaint, and fails the frame on a mismatch; [`Self::set_verify`] turns that check off.
 pub struct TestApp {
     app: App,
     parser: RefCell<Parser>,
@@ -65,11 +65,10 @@ impl TestApp {
 
     pub fn with_options(width: u16, height: u16, options: AppOptions) -> Self {
         let app = App::manual(width, height, options).unwrap_or_else(|error| panic!("headless app: {error}"));
-        app.session()
-            .set_debug_flags(crate::sys::OT_SCENE_DEBUG_VERIFY)
-            .unwrap_or_else(|error| panic!("headless app: {error}"));
         let parser = RefCell::new(Parser::new(app.session()));
-        Self { app, parser, last_frame: std::cell::Cell::new(None) }
+        let app = Self { app, parser, last_frame: std::cell::Cell::new(None) };
+        app.set_verify(true);
+        app
     }
 
     /// A `width` by `height` app whose terminal shows hyperlinks (OSC 8), as most terminals do: widgets take the
@@ -257,6 +256,14 @@ impl TestApp {
     pub fn present(&self) -> Result<()> {
         self.settle();
         self.app.present_headless(false).map(drop)
+    }
+
+    /// Turns the check of skipped and partly repainted frames off, or back on; it starts on. The check repaints such
+    /// a frame in full into a scratch buffer, which an app never does, so it makes a still frame half again as slow.
+    /// Timing probes turn it off. Cells and work counts are the same either way.
+    pub fn set_verify(&self, verify: bool) {
+        let flags = if verify { crate::sys::OT_SCENE_DEBUG_VERIFY } else { 0 };
+        self.app.session().set_debug_flags(flags).unwrap_or_else(|error| panic!("set_verify: {error}"));
     }
 
     /// The text of a freshly rendered frame, one line per row, without trailing spaces.

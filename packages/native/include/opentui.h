@@ -3345,6 +3345,7 @@ ot_status ot_buffer_color_matrix(ot_context *, const ot_handle *, const ot_scene
 #define OT_SCENE_RECORD_SCENE_BODY UINT32_C(10)
 #define OT_SCENE_RECORD_IMAGE UINT32_C(11)
 #define OT_SCENE_RECORD_UNICODE UINT32_C(12)
+#define OT_SCENE_RECORD_CELLS UINT32_C(13)
 #define OT_SCENE_RECORD_GRAYSCALE_FOREGROUND UINT32_C(1)
 #define OT_SCENE_RECORD_GRAYSCALE_BACKGROUND UINT32_C(2)
 #define OT_SCENE_RECORD_GRAYSCALE_SUPERSAMPLED UINT32_C(4)
@@ -3464,6 +3465,25 @@ typedef struct ot_scene_record_unicode {
     uint16_t foreground[4];
     uint16_t background[4];
 } ot_scene_record_unicode;
+
+/* One cell of a CELLS record, with the fields of ot_buffer_draw_cell. */
+typedef struct ot_scene_cell {
+    uint32_t character;
+    uint32_t attributes;
+    uint16_t foreground[4];
+    uint16_t background[4];
+} ot_scene_cell;
+
+/* Followed by count ot_scene_cell records, in rows of width cells from (x, y).
+ * Each cell draws as an OT_BUFFER_DRAW_CELL_BLEND record at its position would,
+ * in order. width must be nonzero. */
+typedef struct ot_scene_record_cells {
+    ot_scene_record_header header;
+    int32_t x;
+    int32_t y;
+    uint32_t width;
+    uint32_t count;
+} ot_scene_record_cells;
 
 /* Retain one offscreen storage generation under the same limits and raw-plane
  * restrictions as Session leases. The snapshot requires exact size/version and
