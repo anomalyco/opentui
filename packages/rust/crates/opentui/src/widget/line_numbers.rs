@@ -67,7 +67,7 @@ pub(crate) struct GutterState {
     pub hidden: HashSet<u32>,
     pub numbers: HashMap<u32, u64>,
     pub colors: HashMap<u32, LineColor>,
-    pub signs: HashMap<u32, LineSign>,
+    pub signs: HashMap<u32, Rc<LineSign>>,
     /// The widest before and after signs, in cells.
     pub sign_widths: (u32, u32),
 }
@@ -402,7 +402,7 @@ impl LineNumbers {
     pub(crate) fn replace_lines(
         &self,
         colors: HashMap<u32, LineColor>,
-        signs: HashMap<u32, LineSign>,
+        signs: HashMap<u32, Rc<LineSign>>,
         numbers: HashMap<u32, u64>,
         hidden: HashSet<u32>,
     ) {
@@ -415,7 +415,7 @@ impl LineNumbers {
 
     /// Sets zero-based `line`'s sign.
     pub fn line_sign(&self, line: u32, sign: LineSign) -> Self {
-        self.0.gutter.state.borrow_mut().signs.insert(line, sign);
+        self.0.gutter.state.borrow_mut().signs.insert(line, Rc::new(sign));
         self.0.gutter.measure_signs();
         self.clone()
     }

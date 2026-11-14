@@ -1953,6 +1953,20 @@ fn diffs_show_unified_and_split_views_with_numbers_signs_and_colors() {
 
     diff.set_diff("@@ broken\n");
     assert_eq!(rows(&app)[0], "Error parsing diff: unknown hunk header on line 1:");
+
+    // Same displayed text: changing every marker adds map buckets, not a string allocation per row.
+    diff.view(DiffView::Unified);
+    let context = format!("@@ -1,128 +1,128 @@\n{}", " x\n".repeat(128));
+    diff.set_diff(&context);
+    let rebuild = |patch: &str| {
+        let before = allocations::count();
+        diff.set_diff(patch);
+        allocations::count() - before
+    };
+    for (ranges, line) in [("-0,0 +1,128", "+x\n"), ("-1,128 +0,0", "-x\n")] {
+        let signed = format!("@@ {ranges} @@\n{}", line.repeat(128));
+        assert!(rebuild(&signed) < rebuild(&context) + 128, "each {line:?} row allocated its own sign");
+    }
 }
 
 #[test]
