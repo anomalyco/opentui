@@ -1,0 +1,472 @@
+base 0.8.3
++ @opentui/core/testing: method MockTreeSitterClient.highlightAppend(_copyId: number, _offset: number, text: string, filetype: string): Promise<{ highlights?: SimpleHighlight[]; warning?: string; error?: string; }>
+- @opentui/core: class MouseParser
+- @opentui/core: class StdinParser
+- @opentui/core: class VRenderable extends Renderable
+- @opentui/core: const ATTRIBUTE_BASE_BITS = 8
++ @opentui/core: const ATTRIBUTE_BASE_BITS: 8
+- @opentui/core: const ATTRIBUTE_BASE_MASK = 255
++ @opentui/core: const ATTRIBUTE_BASE_MASK: 255
+- @opentui/core: const nonAlphanumericKeys: string[]
+- @opentui/core: const parseKeypress: (s?: Buffer | string, options?: ParseKeypressOptions) => ParsedKey | null
+- @opentui/core: const vstyles: { bold: (...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; italic: (...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; underline: (...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; dim: (...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; blink: (...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; inverse: (...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; hidden: (...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; strikethrough: (...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; boldItalic: (...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; boldUnderline: (...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; italicUnderline: (...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; boldItalicUnderline: (...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; color: (color: string | RGBA, ...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; bgColor: (bgColor: string | RGBA, ...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; fg: (color: string | RGBA, ...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; bg: (bgColor: string | RGBA, ...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; styled: (attributes?: number, ...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; }
+- @opentui/core: construct RenderableConstructor(ctx: RenderContext, options: P): Renderable
+- @opentui/core: constructor StdinParser(options?: StdinParserOptions)
+- @opentui/core: constructor VRenderable(ctx: RenderContext, options: VRenderableOptions)
++ @opentui/core: enum-member NativeEditCommand.CursorOffsetAtomic = 13
++ @opentui/core: enum-member NativeEditCommand.KeepOutside = 14
+- @opentui/core: function ASCIIFont(props?: ASCIIFontOptions, ...children: VChild[]): ProxiedVNode<typeof ASCIIFontRenderable>
+- @opentui/core: function Box(props?: BoxOptions, ...children: VChild[]): ProxiedVNode<typeof BoxRenderable>
+- @opentui/core: function Code(props: CodeOptions, ...children: VChild[]): ProxiedVNode<typeof CodeRenderable>
+- @opentui/core: function FrameBuffer(props: FrameBufferOptions, ...children: VChild[]): ProxiedVNode<typeof FrameBufferRenderable>
+- @opentui/core: function Generic(props?: VRenderableOptions, ...children: VChild[]): ProxiedVNode<typeof VRenderable>
+- @opentui/core: function Input(props?: InputRenderableOptions, ...children: VChild[]): ProxiedVNode<typeof InputRenderable>
+- @opentui/core: function ScrollBox(props?: ScrollBoxOptions, ...children: VChild[]): ProxiedVNode<typeof ScrollBoxRenderable>
+- @opentui/core: function Select(props?: SelectRenderableOptions, ...children: VChild[]): ProxiedVNode<typeof SelectRenderable>
+- @opentui/core: function TabSelect(props?: TabSelectRenderableOptions, ...children: VChild[]): ProxiedVNode<typeof TabSelectRenderable>
+- @opentui/core: function Text(props?: TextOptions & { content?: any; }, ...children: VChild[] | TextNodeRenderable[]): ProxiedVNode<typeof TextRenderable>
+- @opentui/core: function createMarkdownCodeBlockRenderer(renderers: MarkdownCodeBlockRendererMap): MarkdownOptions["renderNode"]
++ @opentui/core: function createMarkdownCodeBlockRenderer(renderers: MarkdownCodeBlockRendererMap): MarkdownOptions["renderBlock"]
+- @opentui/core: function delegate<ConstructorType extends RenderableConstructor<any>, TargetMap extends Record<keyof InstanceType<ConstructorType>, string>, const Mapping extends Partial<TargetMap>>(mapping: ValidateShape<Mapping, TargetMap>, vnode: ProxiedVNode<ConstructorType>): ProxiedVNode<ConstructorType>
+- @opentui/core: function delegate<ConstructorType extends RenderableConstructor<any>, const Mapping extends DelegateMap<InstanceType<ConstructorType>>>(mapping: ValidateShape<Mapping, string>, vnode: VNode & { type: ConstructorType; }): VNode
+- @opentui/core: function delegate<Factory extends InstantiateFn<any>, InnerNode extends InferNode<Factory>, TargetMap extends Record<keyof InnerNode, string>, const Mapping extends Partial<TargetMap>>(mapping: ValidateShape<Mapping, TargetMap>, vnode: Factory): Renderable
+- @opentui/core: function h<P>(type: Construct<P>, props?: P, ...children: VChild[]): VNode<P> | ProxiedVNode<any>
+- @opentui/core: function h<P>(type: FunctionalConstruct<P>, props?: P, ...children: VChild[]): VNode<P>
+- @opentui/core: function h<TCtor extends RenderableConstructor<any>>(type: TCtor, props?: TCtor extends RenderableConstructor<infer P> ? P : never, ...children: VChild[]): ProxiedVNode<TCtor>
+- @opentui/core: function instantiate<NodeType extends VNode | Renderable>(ctx: RenderContext, node: NodeType): InstantiateFn<NodeType>
+- @opentui/core: function isVNode(node: any): node is VNode
+- @opentui/core: function maybeMakeRenderable(ctx: RenderContext, node: Renderable | VNode<any, any[]> | unknown): Renderable | null
++ @opentui/core: function parseAlignContent(value: string | null | undefined): Align
++ @opentui/core: function parseKeypress(s?: Buffer | string, options?: ParseKeypressOptions): ParsedKey | null
++ @opentui/core: function parseLayoutMode(value: string | null | undefined): number
++ @opentui/core: function setRenderableProp(node: BaseRenderable, name: string, value: any, prev: any): void
+- @opentui/core: function wrapWithDelegates<T extends InstanceType<RenderableConstructor>>(instance: T, delegateMap: Record<string, string> | undefined): T
+- @opentui/core: interface BlockState
+- @opentui/core: interface InputRenderableOptions extends Omit<TextareaOptions, "height" | "minHeight" | "maxHeight" | "initialValue">
++ @opentui/core: interface InputRenderableOptions extends Omit<TextareaOptions, "height" | "minHeight" | "maxHeight" | "initialValue" | "onSubmit">
++ @opentui/core: interface MarkdownBlock
++ @opentui/core: interface MarkdownCodeBlock extends MarkdownBlock
++ @opentui/core: interface MarkdownInlineContext
++ @opentui/core: interface MarkdownInlineSpan
+- @opentui/core: interface ParseState
+- @opentui/core: interface PendingCall
+- @opentui/core: interface RenderableConstructor<P extends RenderableOptions<any> = RenderableOptions<any>>
+- @opentui/core: interface StdinParserOptions
+- @opentui/core: interface StdinParserProtocolContext
+- @opentui/core: interface VNode<P = any, C = VChild[]>
+- @opentui/core: interface VRenderableOptions extends RenderableOptions<VRenderable>
+- @opentui/core: abstract method BaseRenderable.add(obj: BaseRenderable | unknown, index?: number): number
++ @opentui/core: abstract method BaseRenderable.add(obj: unknown, index?: number): number
+- @opentui/core: abstract method BaseRenderable.insertBefore(obj: BaseRenderable | unknown, anchor: BaseRenderable | unknown): void
++ @opentui/core: abstract method BaseRenderable.insertBefore(obj: unknown, anchor: unknown): void
++ @opentui/core: method EditBuffer.cellOffsetToStringIndex(offset: number): number
++ @opentui/core: method EditBuffer.stringIndexToCellOffset(index: number): number
+- @opentui/core: method ExtmarksController.adjustExtmarksAfterDeletion(deleteOffset: number, length: number, updateHighlights?: boolean): void
++ @opentui/core: method FFIRenderLib.contextEditBufferConvertOffset(context: NativeContextHandle, editBuffer: ContextEditBufferHandle, value: number, toCell: boolean): number
++ @opentui/core: method FFIRenderLib.contextEditBufferGetMarks(context: NativeContextHandle, editBuffer: ContextEditBufferHandle, id?: number, kind?: number): NativeEditMark[]
++ @opentui/core: method FFIRenderLib.contextEditBufferMark(context: NativeContextHandle, editBuffer: ContextEditBufferHandle, operation: NativeEditMarkOperation, mark?: Partial<NativeEditMark>): number
++ @opentui/core: method FFIRenderLib.contextGroupSet(context: NativeContextHandle, names: readonly string[]): number
++ @opentui/core: method FFIRenderLib.contextTextBufferSetLayer(context: NativeContextHandle, text: ContextTextBufferHandle, layerId: number, start: number, end: number, runs: Uint32Array): void
++ @opentui/core: method FFIRenderLib.markdownBind(context: NativeContextHandle, doc: ContextMarkdownHandle, block: number, node: SceneNodeHandle): void
++ @opentui/core: method FFIRenderLib.markdownCreate(context: NativeContextHandle, options: NativeMarkdownOptions): ContextMarkdownHandle
++ @opentui/core: method FFIRenderLib.markdownDestroy(context: NativeContextHandle, doc: ContextMarkdownHandle): void
++ @opentui/core: method FFIRenderLib.markdownFinish(context: NativeContextHandle, doc: ContextMarkdownHandle): NativeMarkdownResult
++ @opentui/core: method FFIRenderLib.markdownGetSource(context: NativeContextHandle, doc: ContextMarkdownHandle, start?: number, end?: number): string
++ @opentui/core: method FFIRenderLib.markdownReadChanges(context: NativeContextHandle, doc: ContextMarkdownHandle, count: number): NativeMarkdownBlock[]
++ @opentui/core: method FFIRenderLib.markdownReadLeaf(context: NativeContextHandle, doc: ContextMarkdownHandle, block: number): NativeMarkdownLeaf
++ @opentui/core: method FFIRenderLib.markdownReadSource(context: NativeContextHandle, doc: ContextMarkdownHandle, block: number): string
++ @opentui/core: method FFIRenderLib.markdownSetOptions(context: NativeContextHandle, doc: ContextMarkdownHandle, options: NativeMarkdownOptions): NativeMarkdownResult
++ @opentui/core: method FFIRenderLib.markdownWrite(context: NativeContextHandle, doc: ContextMarkdownHandle, bytes: Uint8Array, replace: boolean): NativeMarkdownResult
+- @opentui/core: method FFIRenderLib.sceneGetLayout(context: NativeContextHandle, node: SceneNodeHandle, observation?: boolean | "paint"): NativeSceneLayout
++ @opentui/core: method FFIRenderLib.sceneGetLayout(context: NativeContextHandle, node: SceneNodeHandle, observation?: boolean | "paint" | "content"): NativeSceneLayout
++ @opentui/core: method FFIRenderLib.sceneGetTextByteAt(context: NativeContextHandle, node: SceneNodeHandle, x: number, y: number): number | undefined
+- @opentui/core: method FFIRenderLib.sceneHitTest(context: NativeContextHandle, session: SessionHandle, x: number, y: number): number
++ @opentui/core: method FFIRenderLib.sceneHitTest(context: NativeContextHandle, session: SessionHandle, x: number, y: number, excluded?: number): number
++ @opentui/core: method FFIRenderLib.scenePainted(context: NativeContextHandle, node: SceneNodeHandle): boolean
++ @opentui/core: method FFIRenderLib.sceneReachesHooks(context: NativeContextHandle, node: SceneNodeHandle): boolean
++ @opentui/core: method MarkdownRenderable.rerunInlineHook(select: (source: string) => boolean): void
++ @opentui/core: method MarkdownRenderable.targetAt(x: number, y: number): string | undefined
+- @opentui/core: method MouseParser.parseAllMouseEvents(data: Buffer | Uint8Array): RawMouseEvent[]
+- @opentui/core: method MouseParser.parseMouseEvent(data: Buffer | Uint8Array): RawMouseEvent | null
+- @opentui/core: method MouseParser.reset(): void
+- @opentui/core: method Renderable.add(obj: Renderable | VNode<any, any[]> | unknown, index?: number): number
++ @opentui/core: method Renderable.add(obj: Renderable, index?: number): number
++ @opentui/core: method Renderable.getAlignContent(): Align
++ @opentui/core: method Renderable.getAspectRatio(): number
+- @opentui/core: method Renderable.insertBefore(obj: Renderable | VNode<any, any[]> | unknown, anchor?: Renderable | unknown): number
++ @opentui/core: method Renderable.insertBefore(obj: Renderable, anchor?: Renderable): number
+- @opentui/core: method ScrollBoxContent.add(obj: Renderable | VNode<any, any[]>, index?: number): number
++ @opentui/core: method ScrollBoxContent.add(obj: Renderable, index?: number): number
+- @opentui/core: method ScrollBoxContent.insertBefore(obj: Renderable | VNode<any, any[]> | unknown, anchor?: Renderable | unknown): number
++ @opentui/core: method ScrollBoxContent.insertBefore(obj: Renderable, anchor?: Renderable): number
+- @opentui/core: method StdinParser.abortPendingStartupCursorCpr(): void
+- @opentui/core: method StdinParser.destroy(): void
+- @opentui/core: method StdinParser.drain(onEvent: (event: StdinEvent) => void): void
+- @opentui/core: method StdinParser.flushTimeout(nowMsValue?: number): void
+- @opentui/core: method StdinParser.hasPendingPixelResolutionResponse(): boolean
+- @opentui/core: method StdinParser.pausePendingTimeout(): void
+- @opentui/core: method StdinParser.push(data: Uint8Array): void
+- @opentui/core: method StdinParser.read(): StdinEvent | null
+- @opentui/core: method StdinParser.reset(): void
+- @opentui/core: method StdinParser.resetMouseState(): void
+- @opentui/core: method StdinParser.resumePendingTimeout(): void
+- @opentui/core: method StdinParser.updateProtocolContext(patch: Partial<StdinParserProtocolContext>): void
++ @opentui/core: method TextRenderable.add(obj: never, index?: number): number
+- @opentui/core: method TextRenderable.insertBefore(obj: BaseRenderable | any, anchor?: TextNodeRenderable): number
++ @opentui/core: method TextRenderable.insertBefore(obj: TextNodeRenderable | StyledText | string, anchor?: TextNodeRenderable): number
++ @opentui/core: method TextRenderable.insertBefore(obj: never, anchor?: never): number
+- @opentui/core: protected method VRenderable.renderSelf(buffer: OptimizedBuffer, deltaTime: number): void
++ @opentui/core: property ASCIIFontRenderable.selectionBg: RGBA | undefined
++ @opentui/core: property ASCIIFontRenderable.selectionFg: RGBA | undefined
+- @opentui/core: property BlockState.canUpdateInPlace: boolean
+- @opentui/core: property BlockState.marginTop?: number
+- @opentui/core: property BlockState.renderable: Renderable
+- @opentui/core: property BlockState.tableContentCache?: TableContentCache
+- @opentui/core: property BlockState.token: MarkedToken
+- @opentui/core: property BlockState.tokenRaw: string
+- @opentui/core: property BlockState.tracksInterBlockMargin?: boolean
+- @opentui/core: property CliRendererConfig.experimental_nativeInput?: boolean
+- @opentui/core: property CliRendererConfig.stdinParserMaxBufferBytes?: number
++ @opentui/core: property DiffRenderable.treeSitterClient: TreeSitterClient | undefined
++ @opentui/core: readonly property EditBuffer.isDestroyed: boolean
++ @opentui/core: property EditBufferRenderable.scrollMargin: number
++ @opentui/core: property LayoutOptions.alignContent?: AlignString
++ @opentui/core: property LayoutOptions.aspectRatio?: number
++ @opentui/core: property LayoutOptions.layoutMode?: LayoutModeString
++ @opentui/core: property LineNumberRenderable.hideLineNumbers: LineNumberOptions["hideLineNumbers"]
++ @opentui/core: property LineNumberRenderable.lineColors: LineNumberOptions["lineColors"]
++ @opentui/core: property LineNumberRenderable.lineNumbers: LineNumberOptions["lineNumbers"]
++ @opentui/core: property LineNumberRenderable.lineSigns: LineNumberOptions["lineSigns"]
++ @opentui/core: readonly property MarkdownBlock.checked?: boolean
++ @opentui/core: readonly property MarkdownBlock.children: readonly MarkdownBlock[]
++ @opentui/core: readonly property MarkdownBlock.closed?: boolean
++ @opentui/core: readonly property MarkdownBlock.index: number
++ @opentui/core: readonly property MarkdownBlock.info?: string
++ @opentui/core: readonly property MarkdownBlock.kind: MarkdownBlockKind
++ @opentui/core: readonly property MarkdownBlock.lang?: string
++ @opentui/core: readonly property MarkdownBlock.level?: number
++ @opentui/core: readonly property MarkdownBlock.ordered?: boolean
++ @opentui/core: readonly property MarkdownBlock.raw: string
++ @opentui/core: readonly property MarkdownBlock.start?: number
++ @opentui/core: readonly property MarkdownBlock.text: string
++ @opentui/core: readonly property MarkdownCodeBlock.closed: boolean
++ @opentui/core: readonly property MarkdownCodeBlock.info: string
++ @opentui/core: readonly property MarkdownCodeBlock.kind: "code"
++ @opentui/core: readonly property MarkdownCodeBlock.lang: string
++ @opentui/core: readonly property MarkdownCodeBlock.type: "code"
++ @opentui/core: property MarkdownInlineContext.conceal: boolean
++ @opentui/core: property MarkdownInlineContext.source: string
++ @opentui/core: property MarkdownInlineContext.syntaxStyle: SyntaxStyle
++ @opentui/core: property MarkdownInlineContext.tableCell: boolean
++ @opentui/core: property MarkdownInlineSpan.attributes?: number
++ @opentui/core: property MarkdownInlineSpan.bg?: RGBA
++ @opentui/core: property MarkdownInlineSpan.code: boolean
++ @opentui/core: property MarkdownInlineSpan.fg?: RGBA
++ @opentui/core: property MarkdownInlineSpan.link?: { url: string; }
++ @opentui/core: property MarkdownInlineSpan.math?: string
++ @opentui/core: property MarkdownInlineSpan.target?: string
++ @opentui/core: property MarkdownInlineSpan.text: string
++ @opentui/core: property MarkdownOptions.extensions?: readonly "math"[]
++ @opentui/core: property MarkdownOptions.inlineHook?: MarkdownInlineHook
++ @opentui/core: property MarkdownOptions.inlineHookFilter?: readonly string[]
+- @opentui/core: property MarkdownOptions.internalBlockMode?: "coalesced" | "top-level"
++ @opentui/core: property MarkdownOptions.renderBlock?: (block: MarkdownBlock, context: RenderNodeContext) => Renderable | undefined | null
+- @opentui/core: property MarkdownOptions.renderNode?: (token: Token, context: RenderNodeContext) => Renderable | undefined | null
+- @opentui/core: protected property MarkdownRenderable._contentDefaultOptions: { content: string; conceal: true; concealCode: false; streaming: false; internalBlockMode: "coalesced"; }
++ @opentui/core: protected property MarkdownRenderable._contentDefaultOptions: { content: string; conceal: true; concealCode: false; streaming: false; }
++ @opentui/core: readonly property MarkdownRenderable.blocks: readonly { kind: MarkdownBlockKind; renderable: Renderable | undefined; }[]
++ @opentui/core: readonly property MarkdownRenderable.committedBlockCount: number
++ @opentui/core: property MarkdownRenderable.extensions: readonly "math"[]
++ @opentui/core: property MarkdownRenderable.inlineHook: MarkdownInlineHook | undefined
++ @opentui/core: property MarkdownRenderable.inlineHookFilter: readonly string[] | undefined
+- @opentui/core: property MarkdownRenderable.internalBlockMode: "coalesced" | "top-level"
++ @opentui/core: property MarkdownRenderable.renderBlock: MarkdownOptions["renderBlock"] | undefined
+- @opentui/core: property MarkdownRenderable.renderNode: MarkdownOptions["renderNode"] | undefined
++ @opentui/core: property MarkdownRenderable.treeSitterClient: TreeSitterClient | undefined
++ @opentui/core: property NativeEditorStyle.suppliedAttributes?: number | null
+- @opentui/core: property ParseState.content: string
+- @opentui/core: property ParseState.stableTokenCount?: number
+- @opentui/core: property ParseState.tokens: MarkedToken[]
+- @opentui/core: property PendingCall.args: any[]
+- @opentui/core: property PendingCall.isProperty?: boolean
+- @opentui/core: property PendingCall.method: string
++ @opentui/core: property Renderable.alignContent: AlignString | null | undefined
++ @opentui/core: property Renderable.aspectRatio: number | null | undefined
++ @opentui/core: property Renderable.layoutMode: LayoutModeString | null | undefined
+- @opentui/core: property SelectRenderable.keyBindings: SelectKeyBinding[]
++ @opentui/core: property SelectRenderable.keyBindings: SelectKeyBinding[] | null | undefined
+- @opentui/core: readonly property StdinParser.bufferCapacity: number
+- @opentui/core: property StdinParserOptions.armTimeouts?: boolean
+- @opentui/core: property StdinParserOptions.clock?: Clock
+- @opentui/core: property StdinParserOptions.maxPendingBytes?: number
+- @opentui/core: property StdinParserOptions.onTimeoutFlush?: () => void
+- @opentui/core: property StdinParserOptions.protocolContext?: Partial<StdinParserProtocolContext>
+- @opentui/core: property StdinParserOptions.timeoutMs?: number
+- @opentui/core: property StdinParserOptions.useKittyKeyboard?: boolean
+- @opentui/core: property StdinParserProtocolContext.explicitWidthCprActive: boolean
+- @opentui/core: property StdinParserProtocolContext.kittyKeyboardEnabled: boolean
+- @opentui/core: property StdinParserProtocolContext.pixelResolutionQueryActive: boolean
+- @opentui/core: property StdinParserProtocolContext.privateCapabilityRepliesActive: boolean
+- @opentui/core: property StdinParserProtocolContext.replySentinelActive: boolean
+- @opentui/core: property StdinParserProtocolContext.startupCursorCprActive: boolean
++ @opentui/core: property StyleDefinition.strikethrough?: boolean
++ @opentui/core: property StyleDefinitionInput.strikethrough?: boolean
+- @opentui/core: property TabSelectRenderable.keyBindings: TabSelectKeyBinding[]
++ @opentui/core: property TabSelectRenderable.keyBindings: TabSelectKeyBinding[] | null | undefined
++ @opentui/core: property TextTableOptions.columnAlignments?: TextTableColumnAlignment[]
++ @opentui/core: property TextTableRenderable.columnAlignments: TextTableColumnAlignment[]
+- @opentui/core: property TextareaRenderable.keyBindings: KeyBinding[]
++ @opentui/core: property TextareaRenderable.keyBindings: KeyBinding[] | null | undefined
+- @opentui/core: property ThemeTokenStyle.style: { foreground?: ColorInput; background?: ColorInput; bold?: boolean; italic?: boolean; underline?: boolean; dim?: boolean; }
++ @opentui/core: property ThemeTokenStyle.style: { foreground?: ColorInput; background?: ColorInput; bold?: boolean; italic?: boolean; underline?: boolean; dim?: boolean; strikethrough?: boolean; }
+- @opentui/core: property VNode.[BrandedVNode]: true
+- @opentui/core: property VNode.children?: C
+- @opentui/core: property VNode.props?: P
+- @opentui/core: property VNode.type: Construct<P>
+- @opentui/core: property VRenderableOptions.render?: (this: VRenderable | VRenderableOptions, buffer: OptimizedBuffer, deltaTime: number, renderable: VRenderable) => void
+- @opentui/core: type Construct<P = any> = RenderableConstructor<P extends RenderableOptions<any> ? P : never> | FunctionalConstruct<P>
+- @opentui/core: type DelegateMap<T> = Partial<Record<keyof T, string>>
+- @opentui/core: type FunctionalConstruct<P = any> = (props: P, children?: VChild[]) => VNode
+- @opentui/core: type InstantiateFn<NodeType extends VNode | Renderable> = Renderable & { __node?: NodeType; }
++ @opentui/core: type LayoutModeString = "flex" | "list"
++ @opentui/core: type MarkdownBlockKind = "paragraph" | "heading" | "code" | "html" | "rule" | "table" | "row" | "cell" | "quote" | "list" | "item"
+- @opentui/core: type MarkdownCodeBlockRenderer = (token: Tokens.Code, context: RenderNodeContext) => Renderable | undefined | null
++ @opentui/core: type MarkdownCodeBlockRenderer = (block: MarkdownCodeBlock, context: RenderNodeContext) => Renderable | undefined | null
++ @opentui/core: type MarkdownInlineHook = (spans: MarkdownInlineSpan[], context: MarkdownInlineContext) => MarkdownInlineSpan[]
+- @opentui/core: type NativeSessionControl = { kind: "capability-response"; bytes: Uint8Array; } | { kind: "palette-query"; bytes: Uint8Array; } | { kind: "title"; title: string; } | { kind: "mouse"; mode: "disabled" | "drag" | "motion"; } | { kind: "kitty-keyboard-flags"; flags: number; } | { kind: "program-status"; status: ProgramStatus; } | { kind: "query-pixel-resolution"; sentinel?: boolean; } | { kind: "restore-modes" | "query-theme-colors" | "reset-background"; }
++ @opentui/core: type NativeSessionControl = { kind: "capability-response"; bytes: Uint8Array; } | { kind: "palette-query"; bytes: Uint8Array; sentinel?: boolean; } | { kind: "title"; title: string; } | { kind: "mouse"; mode: "disabled" | "drag" | "motion"; } | { kind: "kitty-keyboard-flags"; flags: number; } | { kind: "program-status"; status: ProgramStatus; } | { kind: "query-pixel-resolution" | "query-theme-colors"; sentinel?: boolean; } | { kind: "restore-modes" | "reset-background" | "end-reply-sentinel"; }
+- @opentui/core: type ProxiedVNode<TCtor extends RenderableConstructor<any>> = VNode<TCtor extends RenderableConstructor<infer P> ? P : any> & { [K in keyof InstanceType<TCtor>]: InstanceType<TCtor>[K] extends (...args: infer Args) => any ? (...args: Args) => ProxiedVNode<TCtor> : InstanceType<TCtor>[K]; }
+- @opentui/core: type StdinEvent = { type: "key"; raw: string; key: ParsedKey; } | { type: "mouse"; raw: string; encoding: "sgr" | "x10"; event: RawMouseEvent; } | { type: "paste"; bytes: Uint8Array; metadata?: PasteMetadata; } | { type: "response"; protocol: StdinResponseProtocol; sequence: string; }
+- @opentui/core: type StdinResponseProtocol = "csi" | "cpr" | "osc" | "dcs" | "apc" | "unknown"
++ @opentui/core: type TextTableColumnAlignment = "left" | "center" | "right"
+- @opentui/core: type TreeSitterWorkerRequest = { type: "INIT"; dataPath: string; treeSitterWasmPath?: string; } | { type: "ADD_FILETYPE_PARSER"; filetypeParser: FiletypeParserOptions; } | { type: "PRELOAD_PARSER"; filetype: string; messageId: string; } | { type: "INITIALIZE_PARSER"; bufferId: number; version: number; content: string; filetype: string; messageId: string; } | { type: "HANDLE_EDITS"; bufferId: number; version: number; content: string; edits: Edit[]; } | { type: "GET_PERFORMANCE"; messageId: string; } | { type: "RESET_BUFFER"; bufferId: number; version: number; content: string; edits: Edit[]; } | { type: "DISPOSE_BUFFER"; bufferId: number; } | { type: "ONESHOT_HIGHLIGHT"; content: string; filetype: string; messageId: string; } | { type: "UPDATE_DATA_PATH"; dataPath: string; messageId: string; } | { type: "CLEAR_CACHE"; messageId: string; }
++ @opentui/core: type TreeSitterWorkerRequest = { type: "INIT"; dataPath: string; treeSitterWasmPath?: string; } | { type: "ADD_FILETYPE_PARSER"; filetypeParser: FiletypeParserOptions; } | { type: "PRELOAD_PARSER"; filetype: string; messageId: string; } | { type: "INITIALIZE_PARSER"; bufferId: number; version: number; content: string; filetype: string; messageId: string; } | { type: "HANDLE_EDITS"; bufferId: number; version: number; content: string; edits: Edit[]; } | { type: "GET_PERFORMANCE"; messageId: string; } | { type: "RESET_BUFFER"; bufferId: number; version: number; content: string; edits: Edit[]; } | { type: "DISPOSE_BUFFER"; bufferId: number; } | { type: "ONESHOT_HIGHLIGHT"; content: string; filetype: string; messageId: string; } | { type: "APPEND_HIGHLIGHT"; copyId: number; offset: number; text: string; filetype: string; messageId: string; } | { type: "DISPOSE_COPY"; copyId: number; } | { type: "UPDATE_DATA_PATH"; dataPath: string; messageId: string; } | { type: "CLEAR_CACHE"; messageId: string; }
+- @opentui/core: type VChild = VNode | Renderable | VChild[] | null | undefined | false
+- @opentui/core: type ValidateShape<Given, AllowedKeys> = { [K in keyof Given]: K extends keyof AllowedKeys ? NonNullable<Given[K]> : never; }
+- @opentui/react: type GetNonStyledProperties<TConstructor> = TConstructor extends RenderableConstructor<TextRenderable> ? NonStyledProps | "content" : TConstructor extends RenderableConstructor<BoxRenderable> ? NonStyledProps | "title" | "bottomTitle" : TConstructor extends RenderableConstructor<ASCIIFontRenderable> ? NonStyledProps | "text" | "selectable" : TConstructor extends RenderableConstructor<InputRenderable> ? NonStyledProps | "placeholder" | "value" : TConstructor extends RenderableConstructor<TextareaRenderable> ? NonStyledProps | "placeholder" | "initialValue" : TConstructor extends RenderableConstructor<CodeRenderable> ? NonStyledProps | "content" | "filetype" | "syntaxStyle" | "treeSitterClient" | "conceal" | "drawUnstyledText" : TConstructor extends RenderableConstructor<MarkdownRenderable> ? NonStyledProps | "content" | "syntaxStyle" | "treeSitterClient" | "conceal" | "renderNode" : TConstructor extends RenderableConstructor<ImageRenderable> ? NonStyledProps | "source" : TConstructor extends RenderableConstructor<VideoRenderable> ? NonStyledProps | "source" | "autoplay" | "loop" | "audio" | "muted" | "volume" | "avSyncOffsetMs" | "maxFps" : NonStyledProps
++ @opentui/react: type GetNonStyledProperties<TConstructor> = TConstructor extends RenderableConstructor<TextRenderable> ? NonStyledProps | "content" : TConstructor extends RenderableConstructor<BoxRenderable> ? NonStyledProps | "title" | "bottomTitle" : TConstructor extends RenderableConstructor<ASCIIFontRenderable> ? NonStyledProps | "text" | "selectable" : TConstructor extends RenderableConstructor<InputRenderable> ? NonStyledProps | "placeholder" | "value" : TConstructor extends RenderableConstructor<TextareaRenderable> ? NonStyledProps | "placeholder" | "initialValue" : TConstructor extends RenderableConstructor<CodeRenderable> ? NonStyledProps | "content" | "filetype" | "syntaxStyle" | "treeSitterClient" | "conceal" | "drawUnstyledText" : TConstructor extends RenderableConstructor<MarkdownRenderable> ? NonStyledProps | "content" | "syntaxStyle" | "treeSitterClient" | "conceal" | "renderBlock" : TConstructor extends RenderableConstructor<ImageRenderable> ? NonStyledProps | "source" : TConstructor extends RenderableConstructor<VideoRenderable> ? NonStyledProps | "source" | "autoplay" | "loop" | "audio" | "muted" | "volume" | "avSyncOffsetMs" | "maxFps" : NonStyledProps
+- @opentui/solid: type GetNonStyledProperties<TConstructor> = TConstructor extends RenderableConstructor<TextRenderable> ? NonStyledProps | "content" : TConstructor extends RenderableConstructor<BoxRenderable> ? NonStyledProps | "title" | "bottomTitle" : TConstructor extends RenderableConstructor<ASCIIFontRenderable> ? NonStyledProps | "text" | "selectable" : TConstructor extends RenderableConstructor<InputRenderable> ? NonStyledProps | "minLength" | "maxLength" | "placeholder" | "value" : TConstructor extends RenderableConstructor<CodeRenderable> ? NonStyledProps | "content" | "filetype" | "syntaxStyle" | "treeSitterClient" : TConstructor extends RenderableConstructor<MarkdownRenderable> ? NonStyledProps | "content" | "syntaxStyle" | "treeSitterClient" | "conceal" | "renderNode" : TConstructor extends RenderableConstructor<ImageRenderable> ? NonStyledProps | "source" : TConstructor extends RenderableConstructor<VideoRenderable> ? NonStyledProps | "source" | "autoplay" | "loop" | "audio" | "muted" | "volume" | "avSyncOffsetMs" | "maxFps" : NonStyledProps
++ @opentui/solid: type GetNonStyledProperties<TConstructor> = TConstructor extends RenderableConstructor<TextRenderable> ? NonStyledProps | "content" : TConstructor extends RenderableConstructor<BoxRenderable> ? NonStyledProps | "title" | "bottomTitle" : TConstructor extends RenderableConstructor<ASCIIFontRenderable> ? NonStyledProps | "text" | "selectable" : TConstructor extends RenderableConstructor<InputRenderable> ? NonStyledProps | "minLength" | "maxLength" | "placeholder" | "value" : TConstructor extends RenderableConstructor<CodeRenderable> ? NonStyledProps | "content" | "filetype" | "syntaxStyle" | "treeSitterClient" : TConstructor extends RenderableConstructor<MarkdownRenderable> ? NonStyledProps | "content" | "syntaxStyle" | "treeSitterClient" | "conceal" | "renderBlock" : TConstructor extends RenderableConstructor<ImageRenderable> ? NonStyledProps | "source" : TConstructor extends RenderableConstructor<VideoRenderable> ? NonStyledProps | "source" | "autoplay" | "loop" | "audio" | "muted" | "volume" | "avSyncOffsetMs" | "maxFps" : NonStyledProps
+- @opentui/three: readonly property ThreeRenderable.aspectRatio: number
++ @opentui/three: property ThreeRenderable.aspectRatio: number
++ opentui.h: const OT_ATTR_BASE_MASK = 255
++ opentui.h: const OT_ATTR_BLINK = 16
++ opentui.h: const OT_ATTR_BOLD = 1
++ opentui.h: const OT_ATTR_DIM = 2
++ opentui.h: const OT_ATTR_HIDDEN = 64
++ opentui.h: const OT_ATTR_INVERSE = 32
++ opentui.h: const OT_ATTR_ITALIC = 4
++ opentui.h: const OT_ATTR_LINK_MASK = 16777215
++ opentui.h: const OT_ATTR_LINK_SHIFT = 8
++ opentui.h: const OT_ATTR_STRIKETHROUGH = 128
++ opentui.h: const OT_ATTR_UNDERLINE = 8
++ opentui.h: const OT_CELL_CHAR_CONTINUATION = 3221225472
++ opentui.h: const OT_CELL_CHAR_GRAPHEME = 2147483648
++ opentui.h: const OT_CELL_CHAR_IMAGE = 1073741824
++ opentui.h: const OT_CELL_CHAR_KIND_MASK = 3221225472
++ opentui.h: const OT_COLOR_ANSI_0 = 0
++ opentui.h: const OT_COLOR_ANSI_1 = 8388608
++ opentui.h: const OT_COLOR_ANSI_10 = 65280
++ opentui.h: const OT_COLOR_ANSI_11 = 16776960
++ opentui.h: const OT_COLOR_ANSI_12 = 255
++ opentui.h: const OT_COLOR_ANSI_13 = 16711935
++ opentui.h: const OT_COLOR_ANSI_14 = 65535
++ opentui.h: const OT_COLOR_ANSI_15 = 16777215
++ opentui.h: const OT_COLOR_ANSI_2 = 32768
++ opentui.h: const OT_COLOR_ANSI_3 = 8421376
++ opentui.h: const OT_COLOR_ANSI_4 = 128
++ opentui.h: const OT_COLOR_ANSI_5 = 8388736
++ opentui.h: const OT_COLOR_ANSI_6 = 32896
++ opentui.h: const OT_COLOR_ANSI_7 = 12632256
++ opentui.h: const OT_COLOR_ANSI_8 = 8421504
++ opentui.h: const OT_COLOR_ANSI_9 = 16711680
++ opentui.h: const OT_COLOR_CUBE_BASE = 55
++ opentui.h: const OT_COLOR_CUBE_STEP = 40
++ opentui.h: const OT_COLOR_GRAY_BASE = 8
++ opentui.h: const OT_COLOR_GRAY_STEP = 10
++ opentui.h: const OT_CONTROL_END_REPLY_SENTINEL = 12
++ opentui.h: const OT_CURSOR_STYLE_BLOCK = 0
++ opentui.h: const OT_CURSOR_STYLE_DEFAULT = 3
++ opentui.h: const OT_CURSOR_STYLE_LINE = 1
++ opentui.h: const OT_CURSOR_STYLE_UNDERLINE = 2
++ opentui.h: const OT_DIAGNOSTIC_QUEUE_MAX = 64
++ opentui.h: const OT_DISPLAY_CONTENTS = 2
++ opentui.h: const OT_EDITOR_STYLE_ATTRIBUTE_MASK = 8
++ opentui.h: const OT_EDIT_ATOMIC = 1
++ opentui.h: const OT_EDIT_BYTE_TO_CELL = 0
++ opentui.h: const OT_EDIT_CELL_TO_BYTE = 1
++ opentui.h: const OT_EDIT_CELL_TO_UTF16 = 3
++ opentui.h: const OT_EDIT_CURSOR_OFFSET_ATOMIC = 13
++ opentui.h: const OT_EDIT_KEEP_OUTSIDE = 14
++ opentui.h: const OT_EDIT_MARK_ADD = 0
++ opentui.h: const OT_EDIT_MARK_ANY_KIND = 4294967295
++ opentui.h: const OT_EDIT_MARK_ATOMIC = 1
++ opentui.h: const OT_EDIT_MARK_CLEAR = 2
++ opentui.h: const OT_EDIT_MARK_REMOVE = 1
++ opentui.h: const OT_EDIT_MARK_STYLE_VALUE = 2
++ opentui.h: const OT_EDIT_UTF16_TO_CELL = 2
++ opentui.h: const OT_EMBEDDED_TERMINAL_BUTTON_FIVE = 5
++ opentui.h: const OT_EMBEDDED_TERMINAL_BUTTON_FOUR = 4
++ opentui.h: const OT_EMBEDDED_TERMINAL_BUTTON_LEFT = 1
++ opentui.h: const OT_EMBEDDED_TERMINAL_BUTTON_MIDDLE = 3
++ opentui.h: const OT_EMBEDDED_TERMINAL_BUTTON_NONE = -1
++ opentui.h: const OT_EMBEDDED_TERMINAL_BUTTON_RIGHT = 2
++ opentui.h: const OT_EMBEDDED_TERMINAL_BUTTON_SEVEN = 7
++ opentui.h: const OT_EMBEDDED_TERMINAL_BUTTON_SIX = 6
++ opentui.h: const OT_EMBEDDED_TERMINAL_BUTTON_UNKNOWN = 0
++ opentui.h: const OT_EMBEDDED_TERMINAL_CURSOR_BAR = 0
++ opentui.h: const OT_EMBEDDED_TERMINAL_CURSOR_BLOCK = 1
++ opentui.h: const OT_EMBEDDED_TERMINAL_CURSOR_BLOCK_HOLLOW = 3
++ opentui.h: const OT_EMBEDDED_TERMINAL_CURSOR_UNDERLINE = 2
++ opentui.h: const OT_EMBEDDED_TERMINAL_INPUT_BYTES_MAX = 1048576
++ opentui.h: const OT_EMBEDDED_TERMINAL_KEY_PRESS = 1
++ opentui.h: const OT_EMBEDDED_TERMINAL_KEY_RELEASE = 0
++ opentui.h: const OT_EMBEDDED_TERMINAL_KEY_REPEAT = 2
++ opentui.h: const OT_EMBEDDED_TERMINAL_MOD_ALT = 4
++ opentui.h: const OT_EMBEDDED_TERMINAL_MOD_CAPS_LOCK = 16
++ opentui.h: const OT_EMBEDDED_TERMINAL_MOD_CTRL = 2
++ opentui.h: const OT_EMBEDDED_TERMINAL_MOD_NUM_LOCK = 32
++ opentui.h: const OT_EMBEDDED_TERMINAL_MOD_SHIFT = 1
++ opentui.h: const OT_EMBEDDED_TERMINAL_MOD_SUPER = 8
++ opentui.h: const OT_EMBEDDED_TERMINAL_MOUSE_MOTION = 2
++ opentui.h: const OT_EMBEDDED_TERMINAL_MOUSE_PRESS = 0
++ opentui.h: const OT_EMBEDDED_TERMINAL_MOUSE_RELEASE = 1
++ opentui.h: const OT_EMBEDDED_TERMINAL_RESPONSE_BYTES_MAX = 1048576
++ opentui.h: const OT_GROUP_SET_NAME_BYTE_COUNT_MAX = 64
++ opentui.h: const OT_GROUP_SET_NAME_COUNT_MAX = 16
++ opentui.h: const OT_IMAGE_ENCODED_BYTES_MAX = 67108864
++ opentui.h: const OT_INPUT_EXPECT_ESCAPE_PREFIX = 16
++ opentui.h: const OT_KITTY_KEYBOARD_ALL = 31
++ opentui.h: const OT_KITTY_KEYBOARD_ALL_KEYS_AS_ESCAPES = 8
++ opentui.h: const OT_KITTY_KEYBOARD_ALTERNATE_KEYS = 4
++ opentui.h: const OT_KITTY_KEYBOARD_DISAMBIGUATE = 1
++ opentui.h: const OT_KITTY_KEYBOARD_EVENT_TYPES = 2
++ opentui.h: const OT_KITTY_KEYBOARD_REPORT_TEXT = 16
++ opentui.h: const OT_LAYOUT_CONTENT = 3
++ opentui.h: const OT_LAYOUT_MODE_FLEX = 0
++ opentui.h: const OT_LAYOUT_MODE_LIST = 1
++ opentui.h: const OT_MD_BLOCK_ALIGN_LEFT = 4096
++ opentui.h: const OT_MD_BLOCK_ALIGN_RIGHT = 8192
++ opentui.h: const OT_MD_BLOCK_BLANK_AFTER = 64
++ opentui.h: const OT_MD_BLOCK_CHECKED = 32
++ opentui.h: const OT_MD_BLOCK_CLOSED = 1
++ opentui.h: const OT_MD_BLOCK_FENCED = 128
++ opentui.h: const OT_MD_BLOCK_HEADER = 1024
++ opentui.h: const OT_MD_BLOCK_HOOKED = 256
++ opentui.h: const OT_MD_BLOCK_MATH = 512
++ opentui.h: const OT_MD_BLOCK_OPEN = 2048
++ opentui.h: const OT_MD_BLOCK_ORDERED = 4
++ opentui.h: const OT_MD_BLOCK_SETEXT = 2
++ opentui.h: const OT_MD_BLOCK_TASK = 16
++ opentui.h: const OT_MD_BLOCK_TIGHT = 8
++ opentui.h: const OT_MD_CODE = 2
++ opentui.h: const OT_MD_CONCEAL = 1
++ opentui.h: const OT_MD_HEADING = 1
++ opentui.h: const OT_MD_HOOK = 8
++ opentui.h: const OT_MD_HOOK_FILTER_BYTE_COUNT_MAX = 256
++ opentui.h: const OT_MD_HTML = 3
++ opentui.h: const OT_MD_HYPERLINKS = 2
++ opentui.h: const OT_MD_ITEM = 10
++ opentui.h: const OT_MD_LIST = 9
++ opentui.h: const OT_MD_MATH = 4
++ opentui.h: const OT_MD_PARAGRAPH = 0
++ opentui.h: const OT_MD_QUOTE = 8
++ opentui.h: const OT_MD_RULE = 4
++ opentui.h: const OT_MD_SPAN_CODE = 1
++ opentui.h: const OT_MD_SPAN_MATH = 2
++ opentui.h: const OT_MD_TABLE = 5
++ opentui.h: const OT_MD_TABLE_CELL = 7
++ opentui.h: const OT_MD_TABLE_ROW = 6
++ opentui.h: const OT_SCENE_RECORD_CELLS = 13
++ opentui.h: const OT_SCENE_SCROLL_PADDING_MAX = 65535
++ opentui.h: const OT_SPLIT_SNAPSHOTS_MAX = 64
++ opentui.h: const OT_STYLE_ENUM_LAYOUT_MODE = 11
++ opentui.h: const OT_STYLE_ENUM_LAYOUT_MODE_MAX = 1
++ opentui.h: const OT_YOGA_ERRATA_ABSOLUTE_PERCENT_AGAINST_INNER_SIZE = 4
++ opentui.h: const OT_YOGA_ERRATA_ABSOLUTE_POSITION_WITHOUT_INSETS_EXCLUDES_PADDING = 2
++ opentui.h: const OT_YOGA_ERRATA_ALL = 2147483647
++ opentui.h: const OT_YOGA_ERRATA_CLASSIC = 2147483646
++ opentui.h: const OT_YOGA_ERRATA_NONE = 0
++ opentui.h: const OT_YOGA_ERRATA_STRETCH_FLEX_BASIS = 1
++ opentui.h: const OT_YOGA_EXPERIMENTAL_FEATURE_WEB_FLEX_BASIS = 0
++ opentui.h: const OT_YOGA_LOG_LEVEL_DEBUG = 3
++ opentui.h: const OT_YOGA_LOG_LEVEL_ERROR = 0
++ opentui.h: const OT_YOGA_LOG_LEVEL_FATAL = 5
++ opentui.h: const OT_YOGA_LOG_LEVEL_INFO = 2
++ opentui.h: const OT_YOGA_LOG_LEVEL_VERBOSE = 4
++ opentui.h: const OT_YOGA_LOG_LEVEL_WARN = 1
++ opentui.h: const OT_YOGA_NODE_TYPE_DEFAULT = 0
++ opentui.h: const OT_YOGA_NODE_TYPE_TEXT = 1
++ opentui.h: field ot_edit_mark.abi_version: uint32_t, offset 4
++ opentui.h: field ot_edit_mark.end: uint32_t, offset 64
++ opentui.h: field ot_edit_mark.end_byte: uint32_t, offset 72
++ opentui.h: field ot_edit_mark.flags: uint32_t, offset 16
++ opentui.h: field ot_edit_mark.id: uint32_t, offset 8
++ opentui.h: field ot_edit_mark.kind: uint32_t, offset 12
++ opentui.h: field ot_edit_mark.priority: uint32_t, offset 56
++ opentui.h: field ot_edit_mark.start: uint32_t, offset 60
++ opentui.h: field ot_edit_mark.start_byte: uint32_t, offset 68
++ opentui.h: field ot_edit_mark.struct_size: uint32_t, offset 0
++ opentui.h: field ot_edit_mark.style: uint32_t, offset 20
++ opentui.h: field ot_edit_mark.value: ot_editor_style, offset 24
++ opentui.h: field ot_highlight_run.end_byte: uint32_t, offset 4
++ opentui.h: field ot_highlight_run.group_set: uint32_t, offset 8
++ opentui.h: field ot_highlight_run.start_byte: uint32_t, offset 0
++ opentui.h: field ot_markdown_block.flags: uint16_t, offset 10
++ opentui.h: field ot_markdown_block.index: uint32_t, offset 0
++ opentui.h: field ot_markdown_block.info_end_byte: uint32_t, offset 24
++ opentui.h: field ot_markdown_block.info_start_byte: uint32_t, offset 20
++ opentui.h: field ot_markdown_block.kind: uint16_t, offset 8
++ opentui.h: field ot_markdown_block.number: uint32_t, offset 28
++ opentui.h: field ot_markdown_block.parent_index: uint32_t, offset 4
++ opentui.h: field ot_markdown_block.source_end_byte: uint32_t, offset 16
++ opentui.h: field ot_markdown_block.source_start_byte: uint32_t, offset 12
++ opentui.h: field ot_markdown_options.abi_version: uint32_t, offset 4
++ opentui.h: field ot_markdown_options.flags: uint32_t, offset 8
++ opentui.h: field ot_markdown_options.hook_filter: uint8_t[256], offset 40
++ opentui.h: field ot_markdown_options.hook_filter_byte_count: uint32_t, offset 32
++ opentui.h: field ot_markdown_options.reserved: uint32_t, offset 36
++ opentui.h: field ot_markdown_options.source_byte_limit: uint32_t, offset 12
++ opentui.h: field ot_markdown_options.struct_size: uint32_t, offset 0
++ opentui.h: field ot_markdown_options.syntax_style: ot_handle, offset 16
++ opentui.h: field ot_markdown_result.changed_block_count: uint32_t, offset 0
++ opentui.h: field ot_markdown_result.committed_top_level_count: uint32_t, offset 4
++ opentui.h: field ot_markdown_result.removed_from_index: uint32_t, offset 8
++ opentui.h: field ot_scene_cell.attributes: uint32_t, offset 4
++ opentui.h: field ot_scene_cell.background: uint16_t[4], offset 16
++ opentui.h: field ot_scene_cell.character: uint32_t, offset 0
++ opentui.h: field ot_scene_cell.foreground: uint16_t[4], offset 8
++ opentui.h: field ot_scene_record_cells.count: uint32_t, offset 20
++ opentui.h: field ot_scene_record_cells.header: ot_scene_record_header, offset 0
++ opentui.h: field ot_scene_record_cells.width: uint32_t, offset 16
++ opentui.h: field ot_scene_record_cells.x: int32_t, offset 8
++ opentui.h: field ot_scene_record_cells.y: int32_t, offset 12
++ opentui.h: function ot_context_group_set(ot_context *, const uint8_t *names, uint32_t name_byte_count, const uint32_t *name_end_bytes, uint32_t name_count, uint32_t *out_group_set): ot_status
++ opentui.h: function ot_edit_buffer_convert_offset(ot_context *, const ot_handle *edit_buffer, uint32_t conversion, uint32_t value, uint32_t *out_value): ot_status
++ opentui.h: function ot_edit_buffer_get_marks(ot_context *, const ot_handle *, uint32_t id, uint32_t kind, ot_edit_mark *marks, uint32_t capacity, uint32_t *out_count): ot_status
++ opentui.h: function ot_edit_buffer_mark(ot_context *, const ot_handle *, uint32_t operation, const ot_edit_mark *mark, uint32_t *out_id): ot_status
++ opentui.h: function ot_edit_buffer_set_layer(ot_context *, const ot_handle *, uint32_t layer_id, uint32_t start_byte, uint32_t end_byte, const ot_highlight_run *runs, uint32_t run_count): ot_status
++ opentui.h: function ot_markdown_append(ot_context *, const ot_handle *doc, const uint8_t *bytes, uint32_t byte_count, ot_markdown_result *out): ot_status
++ opentui.h: function ot_markdown_bind(ot_context *, const ot_handle *doc, uint32_t block_index, const ot_handle *text_node): ot_status
++ opentui.h: function ot_markdown_create(ot_context *, const ot_markdown_options *, ot_handle *out_doc): ot_status
++ opentui.h: function ot_markdown_destroy(ot_context *, const ot_handle *doc): ot_status
++ opentui.h: function ot_markdown_finish(ot_context *, const ot_handle *doc, ot_markdown_result *out): ot_status
++ opentui.h: function ot_markdown_get_source(ot_context *, const ot_handle *doc, const uint8_t **out_bytes, uint32_t *out_byte_count): ot_status
++ opentui.h: function ot_markdown_read_changes(ot_context *, const ot_handle *doc, ot_markdown_block *blocks, uint32_t block_capacity, uint32_t *out_block_count): ot_status
++ opentui.h: function ot_markdown_read_leaf(ot_context *, const ot_handle *doc, uint32_t block_index, uint8_t *bytes, uint32_t byte_capacity, uint32_t *out_byte_count, ot_styled_text_chunk *chunks, uint32_t *spans, uint32_t chunk_capacity, uint32_t *out_chunk_count, uint8_t *urls, uint32_t url_byte_capacity, uint32_t *out_url_byte_count): ot_status
++ opentui.h: function ot_markdown_read_source(ot_context *, const ot_handle *doc, uint32_t block_index, uint8_t *bytes, uint32_t byte_capacity, uint32_t *out_byte_count): ot_status
++ opentui.h: function ot_markdown_set(ot_context *, const ot_handle *doc, const uint8_t *bytes, uint32_t byte_count, ot_markdown_result *out): ot_status
++ opentui.h: function ot_markdown_set_options(ot_context *, const ot_handle *doc, const ot_markdown_options *, ot_markdown_result *out): ot_status
++ opentui.h: function ot_scene_clear_children(ot_context *, const ot_handle *node): ot_status
++ opentui.h: function ot_scene_get_text_byte_at(ot_context *, const ot_handle *node, int32_t x, int32_t y, uint32_t *out_byte): ot_status
++ opentui.h: function ot_scene_hit_test_excluding(ot_context *, const ot_handle *session, int32_t x, int32_t y, uint32_t excluded_num, uint32_t *out_num): ot_status
++ opentui.h: function ot_scene_painted(ot_context *, const ot_handle *node, uint32_t *out_painted): ot_status
++ opentui.h: function ot_scene_reaches_hooks(ot_context *, const ot_handle *node, uint32_t *out_reached): ot_status
++ opentui.h: function ot_text_buffer_set_layer(ot_context *, const ot_handle *, uint32_t layer_id, uint32_t start_byte, uint32_t end_byte, const ot_highlight_run *runs, uint32_t run_count): ot_status
++ opentui.h: struct ot_edit_mark
++ opentui.h: struct ot_highlight_run
++ opentui.h: struct ot_markdown_block
++ opentui.h: struct ot_markdown_options
++ opentui.h: struct ot_markdown_result
++ opentui.h: struct ot_scene_cell
++ opentui.h: struct ot_scene_record_cells
