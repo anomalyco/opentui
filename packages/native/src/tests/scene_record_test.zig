@@ -594,7 +594,7 @@ test "Scene record rejects malformed streams before presenting cells" {
     defer f.deinit();
     const child = try node(f.owner, f.id, f.root, 1, 2, 0);
     try f.owner.sceneSetHooks(child, c.OT_SCENE_HOOK_RENDER_AFTER, 1, 2, 1);
-    var cases: [10]Recording = .{ .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{} };
+    var cases: [12]Recording = .{ .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{} };
     // A command before any slot.
     cases[0].text("a", 0, 0);
     // A phase the slot did not register.
@@ -617,11 +617,11 @@ test "Scene record rejects malformed streams before presenting cells" {
     // An invalid command body fails during playback.
     cases[7].slot(0, c.OT_SCENE_RECORD_PHASE_AFTER);
     cases[7].text("\xff", 0, 0);
-    // CELLS rows of no cells, and more cells than the record holds.
-    const cell: c.ot_scene_cell = .{ .character = 'c', .attributes = 0, .foreground = .{ 255, 255, 255, 255 }, .background = .{ 0, 0, 0, 255 } };
-    for (cases[8..], [_][2]u32{ .{ 0, 1 }, .{ 1, 2 } }) |*recording, shape| {
+    // CELLS rows of no cells, more cells than the record holds, a surrogate cell, and width 0 with no cells.
+    for (cases[8..], [_][3]u32{ .{ 0, 1, 'c' }, .{ 1, 2, 'c' }, .{ 1, 1, 0xd800 }, .{ 0, 0, 'c' } }) |*recording, shape| {
+        const cell: c.ot_scene_cell = .{ .character = shape[2], .attributes = 0, .foreground = .{ 255, 255, 255, 255 }, .background = .{ 0, 0, 0, 255 } };
         recording.slot(0, c.OT_SCENE_RECORD_PHASE_AFTER);
-        recording.append(c.ot_scene_record_cells{ .header = recordHeader(c.OT_SCENE_RECORD_CELLS), .x = 0, .y = 0, .width = shape[0], .count = shape[1] }, std.mem.asBytes(&cell));
+        recording.append(c.ot_scene_record_cells{ .header = recordHeader(c.OT_SCENE_RECORD_CELLS), .x = 0, .y = 0, .width = shape[0], .count = shape[1] }, std.mem.asBytes(&cell)[0 .. @as(usize, @sizeOf(c.ot_scene_cell)) * @min(shape[1], 1)]);
     }
     for (&cases, 0..) |*recording, index| {
         const request = try f.step(null, options, c.OT_SCENE_FRAME_RECORD, null);

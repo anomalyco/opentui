@@ -92,7 +92,8 @@ pub(crate) mod records {
 }
 
 /// One cell for [`Recorder::cells`], in the form native code reads, so a widget can keep a run of them and record it
-/// again with one copy.
+/// again with one copy. It holds one `char`, as [`Recorder::cell`] does; a grapheme cluster of several code points
+/// needs [`Recorder::text`].
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PaintCell(sys::ot_scene_cell);
