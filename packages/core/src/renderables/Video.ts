@@ -502,7 +502,7 @@ export class VideoRenderable extends Renderable {
     if (this.isDestroyed) return
     let active = false
     try {
-      active = this._metadata !== null && this.readState().playing
+      active = this._metadata !== null && !this._playRequested && this.readState().playing
     } catch (error) {
       if (report) this.reportError(error)
     }

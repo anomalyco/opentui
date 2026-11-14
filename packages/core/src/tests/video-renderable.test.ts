@@ -250,23 +250,29 @@ describe("VideoRenderable", () => {
   test("a native state failure during update reports through onError", async () => {
     const errors: Error[] = []
     const video = new VideoRenderable(renderer, {
-      source: SILENT,
       width: 20,
       height: 6,
       autoplay: true,
-      onError: (error) => errors.push(error),
+      onError: (e) => errors.push(e),
     })
     renderer.root.add(video)
     const lib = renderer.nativeScene.videoNode(video).lib
-    const read = spyOn(lib, "videoGetState").mockImplementation(() => {
-      throw new Error("state unavailable")
-    })
-    try {
-      await renderUntil(() => errors.length > 0)
-    } finally {
-      read.mockRestore()
+    // The start, then a tick during playback, each report a failed read once.
+    for (const count of [1, 2]) {
+      const read = spyOn(lib, "videoGetState").mockImplementation(() => {
+        throw new Error("state unavailable")
+      })
+      try {
+        if (count === 1) video.source = SILENT
+        await renderUntil(() => errors.length >= count)
+        await setup.renderOnce()
+      } finally {
+        read.mockRestore()
+      }
+      expect([errors.length, ticking()]).toEqual([count, false])
+      video.play()
     }
-    expect(errors.map((error) => error.message)).toEqual(["state unavailable"])
+    expect(errors.map((e) => e.message)).toEqual(["state unavailable", "state unavailable"])
   })
 
   test("play and pause report a native state failure through onError", () => {
