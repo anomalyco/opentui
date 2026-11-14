@@ -527,7 +527,9 @@ fn placed(f: Fixture, kind: u32, num: u32, x: f64, y: f64, width: f32) !context.
     try f.owner.sceneSetStyle(child, 4, 1, 0, 1, if (kind == c.OT_SCENE_BOX) 3 else 1, 1);
     try f.owner.sceneSetStyle(child, 0, 6, 0, 0, 2, 0);
     try f.owner.sceneSetPaint(child, .{ .translateX = x, .translateY = y, .borderSides = if (kind == c.OT_SCENE_BOX) c.OT_BORDER_ALL else 0, .background = .{ 0, 0, 120, 255 } });
-    try f.owner.sceneMoveNode(child, f.root, 0);
+    // Record slot numbers in these fixtures follow creation order.
+    const siblings = (try f.owner.raw().getRenderable(f.root)).scene_node.?.children.items;
+    try f.owner.sceneMoveNode(child, f.root, @intCast(siblings.len));
     return child;
 }
 
