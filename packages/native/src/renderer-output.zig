@@ -510,7 +510,7 @@ pub const FeedBackend = struct {
         return .failed;
     }
 
-    fn uploadLimit(self: *FeedBackend) u64 {
+    pub fn uploadLimit(self: *const FeedBackend) u64 {
         return if (self.feed.bounded()) self.feed.atomicByteLimit() else std.math.maxInt(u64);
     }
 
