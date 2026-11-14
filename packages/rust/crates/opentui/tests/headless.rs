@@ -171,13 +171,15 @@ enum Arm {
 }
 
 /// Where an app runs: headless, on a remote terminal that never reads its output, on one whose first frame does not
-/// fit the output buffer, or on one whose client reads its output only after 300 ms.
+/// fit the output buffer, on one whose client reads its output only after 300 ms, or nowhere: a [`TestApp`] dropped
+/// without running.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Host {
     Headless,
     Remote,
     Blocked,
     Late,
+    Test,
 }
 
 type Quit = Rc<Cell<Option<Instant>>>;
@@ -376,4 +378,137 @@ fn spawned_tasks_wake_the_loop() {
     );
     app.run().expect("run");
     assert_eq!(answer.get(), 42);
+}
+
+/// Calls the app as it drops, as a value that queued work owns may at teardown: defers a task that owns `inner`,
+/// starts a timer and a tick, adds and removes a key handler, adds a message handler, cancels, posts a task that posts
+/// as it drops, spawns a task whose completion owns the app, and quits.
+struct Reenters {
+    app: App,
+    inner: Option<Box<Reenters>>,
+    cancel: Option<Box<dyn FnOnce()>>,
+    drops: Rc<Cell<u32>>,
+    ran: Rc<Cell<bool>>,
+}
+
+/// Posts as it drops.
+struct Posts(AppProxy);
+
+impl Drop for Posts {
+    fn drop(&mut self) {
+        let _ = self.0.post(|_| {});
+    }
+}
+
+impl Drop for Reenters {
+    fn drop(&mut self) {
+        self.drops.set(self.drops.get() + 1);
+        let (app, inner, ran) = (&self.app, self.inner.take(), self.ran.clone());
+        app.defer(move |_| {
+            drop(inner);
+            ran.set(true);
+        });
+        app.set_timeout(Duration::ZERO, |_| {});
+        drop(app.on_animation_tick(60.0, |_, _| {}));
+        let key = app.on_key(|_, _| {});
+        app.remove_handler(key);
+        app.on_message(|_, _: &u8| {});
+        if let Some(cancel) = self.cancel.take() {
+            cancel();
+        }
+        let posts = Posts(app.proxy());
+        let _ = app.proxy().post(move |_| drop(posts));
+        #[cfg(feature = "tokio")]
+        app.spawn(std::future::pending::<()>(), {
+            let (app, ran) = (app.clone(), self.ran.clone());
+            move |_, ()| drop((app, ran))
+        });
+        app.quit();
+    }
+}
+
+/// What owns a [`Reenters`] when the app ends: a task deferred before any frame, a pending timer, a key or message
+/// handler, or a pending task's completion handler that cancels another task.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Holder {
+    Defer,
+    Timer,
+    Key,
+    Message,
+    #[cfg(feature = "tokio")]
+    Task,
+}
+
+/// Ends an app on `host` whose `holder` owns a [`Reenters`] before any frame. Returns how many `Reenters` dropped,
+/// whether a task deferred at teardown ran, and how many owners its flag has left with the app still alive.
+fn tear_down(host: Host, holder: Holder) -> (u32, bool, usize) {
+    let (drops, ran) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(false)));
+    let reenters = |app: &App, cancel: Option<Box<dyn FnOnce()>>| {
+        let (drops, ran) = (drops.clone(), ran.clone());
+        let inner = Reenters { app: app.clone(), inner: None, cancel: None, drops: drops.clone(), ran: ran.clone() };
+        Reenters { app: app.clone(), inner: Some(Box::new(inner)), cancel, drops, ran }
+    };
+    let hold = |app: &App| match holder {
+        Holder::Defer => {
+            let reenters = reenters(app, None);
+            app.defer(move |_| drop(reenters));
+        }
+        Holder::Timer => {
+            let reenters = reenters(app, None);
+            app.set_timeout(Duration::from_secs(60), move |_| drop(reenters));
+        }
+        Holder::Key => {
+            let reenters = reenters(app, None);
+            app.on_key(move |_, _| _ = &reenters);
+        }
+        Holder::Message => {
+            let reenters = reenters(app, None);
+            app.on_message(move |_, _: &u8| _ = &reenters);
+        }
+        #[cfg(feature = "tokio")]
+        Holder::Task => {
+            let other = app.spawn(std::future::pending::<()>(), |_, ()| {});
+            let reenters = reenters(app, Some(Box::new(move || other.abort())));
+            app.spawn(std::future::pending::<()>(), move |_, ()| drop(reenters));
+        }
+    };
+    let (app, _link) = match host {
+        Host::Test => {
+            let app = TestApp::new(4, 1);
+            hold(app.app());
+            drop(app);
+            return (drops.get(), ran.get(), Rc::strong_count(&ran));
+        }
+        Host::Remote => {
+            let (terminal, link) = RemoteTerminal::new(RemoteOptions::default(), || {}).expect("a remote terminal");
+            (App::remote(terminal, AppOptions::default().with_theme(Theme::dark())).expect("remote app"), Some(link))
+        }
+        _ => (headless(4, 1), None),
+    };
+    watchdog(&app);
+    hold(&app);
+    app.set_timeout(Duration::ZERO, |cx| cx.quit());
+    app.clone().run().expect("run");
+    (drops.get(), ran.get(), Rc::strong_count(&ran))
+}
+
+#[test]
+fn work_queued_at_teardown_may_call_the_app_as_it_drops() {
+    // Work still queued when an app ends before a frame drops at teardown, and what it owns may call the app as it
+    // drops. Nothing panics or hangs, everything drops, and nothing deferred meanwhile runs.
+    let holders = [Holder::Defer, Holder::Timer, Holder::Key, Holder::Message];
+    #[cfg(feature = "tokio")]
+    let holders = [holders.as_slice(), &[Holder::Task]].concat();
+    let rows = [Host::Test, Host::Headless, Host::Remote].into_iter().flat_map(|host| {
+        // A running app runs deferred tasks before it quits.
+        holders.iter().filter(move |&&holder| host == Host::Test || holder != Holder::Defer).map(move |&h| (host, h))
+    });
+    let wrong: Vec<_> = rows
+        .filter(|&(host, holder)| {
+            let (sender, receiver) = mpsc::channel();
+            std::thread::spawn(move || sender.send(tear_down(host, holder)).expect("the test waits"));
+            receiver.recv_timeout(Duration::from_secs(10)) != Ok((2, false, 1))
+        })
+        .collect();
+    assert!(wrong.is_empty(), "{wrong:?}");
 }

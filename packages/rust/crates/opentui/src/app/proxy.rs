@@ -57,8 +57,11 @@ impl Shared {
     pub fn close(&self) {
         let mut queue = self.lock();
         queue.closed = true;
-        queue.tasks.clear();
         queue.waker = None;
+        // Tasks drop after the lock: what they own may post.
+        let tasks = std::mem::take(&mut queue.tasks);
+        drop(queue);
+        drop(tasks);
     }
 }
 
