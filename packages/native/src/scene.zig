@@ -3494,8 +3494,9 @@ pub const Scene = struct {
                     });
                 }
                 if (mode == .paint) frame.filter = try self.childFilter(objects, value);
-                if (!dry and (mode == .paint or self.hook_count == 0)) {
-                    // Without host hooks even a filtered candidate walk can take the final order.
+                if (!dry and (mode == .paint or (self.hook_count == 0 and !frame.filtered))) {
+                    // Without host hooks, candidates can sort before entering a filtering subtree.
+                    // Inside it, only paint knows which parents are visible.
                     // If paint sorted after feedback instead, the candidates still hold the old order.
                     if (sortChildren(node) and mode == .paint) self.candidates.clearRetainingCapacity();
                 }

@@ -1500,6 +1500,8 @@ fn runParity(seed: u64, steps: usize) !Stats {
 }
 
 test "Scene twin Sessions match a forced full-frame reference on every frame" {
+    // Candidate preparation must not sort siblings inside a culled row that paint does not visit.
+    _ = try runParity(150, 256);
     var total: Stats = .{};
     for (0..64) |seed| {
         errdefer std.debug.print("seed {d}\n", .{seed});
