@@ -40,6 +40,7 @@
     "src/renderables/EditBufferRenderable.test.ts",
     "src/renderables/EmbeddedTerminal.test.ts",
     "src/renderables/Input.test.ts",
+    "src/renderables/Input.key-bindings.test.ts",
     "src/renderables/Select.test.ts",
     "src/renderables/Slider.test.ts",
     "src/renderables/TimeToFirstDraw.test.ts",
