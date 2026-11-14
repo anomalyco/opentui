@@ -512,8 +512,6 @@ pub const Node = struct {
     paint_children: std.ArrayListUnmanaged(*native.NativeRenderable) = .empty,
     // Strictly increasing along paint_children, so a sorted batch of children is in paint order.
     paint_rank: u64 = 0,
-    // Scene.last_placement when the node joined its parent: equal z paints in attachment order.
-    attach_order: u64 = 0,
     sort_dirty: bool = false,
     layout_flags: packed struct {
         // Newly placed hidden children expose geometry once, without paint membership.
@@ -977,13 +975,16 @@ pub const Scene = struct {
             }
             try yoga.check(yoga.yogaNodeMoveChildChecked(target.childYoga(parent), value.yoga_node, index));
             const previous = node.parent;
-            if (previous) |old| removeChild(&old.scene_node.?.children, value);
+            if (previous) |old| {
+                const slot = removeChild(&old.scene_node.?.children, value);
+                if (old == parent and slot != index) target.sort_dirty = true;
+            }
             target.children.insertAssumeCapacity(index, value);
             staleCull(parent);
             if (previous != parent) {
                 if (previous) |old| self.detach(value, old);
                 const siblings = target.paint_children.items;
-                if (siblings.len != 0 and siblings[siblings.len - 1].scene_node.?.paint.zIndex > node.paint.zIndex) target.sort_dirty = true;
+                if (index != siblings.len or (siblings.len != 0 and siblings[siblings.len - 1].scene_node.?.paint.zIndex > node.paint.zIndex)) target.sort_dirty = true;
                 node.paint_rank = if (siblings.len == 0) 0 else siblings[siblings.len - 1].scene_node.?.paint_rank + 1;
                 target.paint_children.appendAssumeCapacity(value);
                 node.parent = parent;
@@ -1014,7 +1015,6 @@ pub const Scene = struct {
         if (new_placement) {
             self.last_placement += 1;
             node.placement = self.last_placement;
-            if (reparented) node.attach_order = self.last_placement;
         } else if (destination == null) node.placement = 0;
         node.layout_flags.needs_layout = true;
         self.visibility_epoch +%= 1;
@@ -1054,7 +1054,7 @@ pub const Scene = struct {
     /// Takes a node out of its parent's paint children, attention, and counts.
     fn detach(self: *Scene, value: *native.NativeRenderable, parent: *native.NativeRenderable) void {
         const node = value.scene_node.?;
-        removeChild(&parent.scene_node.?.paint_children, value);
+        _ = removeChild(&parent.scene_node.?.paint_children, value);
         if (node.skip.attention_index != no_slot) dropAttention(parent.scene_node.?, node.skip.attention_index);
         countBelow(parent, node.skip.update_below, node.skip.filters_below, node.skip.scrolls_below, false);
         node.parent = null;
@@ -3844,8 +3844,10 @@ fn overlaps(filter: Filter, layout: Layout) bool {
         layout.screenX <= viewport.screenX + viewport.width and layout.screenX + layout.width >= viewport.screenX;
 }
 
-fn removeChild(children: *std.ArrayListUnmanaged(*native.NativeRenderable), value: *native.NativeRenderable) void {
-    _ = children.orderedRemove(childIndex(children.items, value));
+fn removeChild(children: *std.ArrayListUnmanaged(*native.NativeRenderable), value: *native.NativeRenderable) u32 {
+    const index = childIndex(children.items, value);
+    _ = children.orderedRemove(index);
+    return index;
 }
 
 /// Hosts remove children in order, from the first or from the last, so the search starts at both ends.
@@ -3865,7 +3867,7 @@ fn paintLessThan(_: void, left: *native.NativeRenderable, right: *native.NativeR
     const a = left.scene_node.?;
     const b = right.scene_node.?;
     if (builtin.is_test) a.owner.test_sort_steps += 1;
-    return if (a.paint.zIndex == b.paint.zIndex) a.attach_order < b.attach_order else a.paint.zIndex < b.paint.zIndex;
+    return a.paint.zIndex < b.paint.zIndex;
 }
 
 fn rankLessThan(_: void, left: *native.NativeRenderable, right: *native.NativeRenderable) bool {
@@ -3875,6 +3877,8 @@ fn rankLessThan(_: void, left: *native.NativeRenderable, right: *native.NativeRe
 /// Returns whether the order changed.
 fn sortChildren(node: *Node) bool {
     if (!node.sort_dirty) return false;
+    // Stable sort from child order, not from the result of the previous z sort.
+    @memcpy(node.paint_children.items, node.children.items);
     std.mem.sort(*native.NativeRenderable, node.paint_children.items, {}, paintLessThan);
     for (node.paint_children.items, 0..) |child, index| {
         if (builtin.is_test) node.owner.test_sort_steps += 1;

@@ -51,15 +51,26 @@ fn expectTop(f: Fixture, child: context.Handle) !void {
     for (0..2) |x| try testing.expectEqual(node.num, try f.owner.sceneHitTest(f.id, @intCast(x), 0));
 }
 
-test "Scene equal-z siblings paint in attachment order however z reached them" {
-    // A is attached before B and both end at z 2, as in a fresh scene where B is on top.
-    for ([_]enum { fresh, between, reply, history }{ .fresh, .between, .reply, .history }) |when| {
+test "Scene equal-z siblings paint in child order however the tree reached it" {
+    for ([_]enum { fresh, between, reply, history, prepend, move }{ .fresh, .between, .reply, .history, .prepend, .move }) |when| {
         const f = try Fixture.init(testing.allocator, 2, 1, .{});
         defer f.deinit();
         const a = try box(f.owner, f.id, 2, if (when == .history) 0 else 2);
-        const b = try box(f.owner, f.id, 3, if (when == .fresh) 2 else 0);
+        const b = try box(f.owner, f.id, 3, if (when == .between or when == .reply or when == .history) 0 else 2);
         const hook = try box(f.owner, f.id, 4, -1);
-        for ([_]context.Handle{ a, b, hook }, 0..) |child, index| try f.owner.sceneMoveNode(child, f.root, @intCast(index));
+        if (when == .prepend or when == .move) {
+            try f.owner.sceneMoveNode(b, f.root, 0);
+            if (when == .move) try f.owner.sceneMoveNode(a, f.root, 1);
+            try frame(f, &.{});
+            try expectTop(f, if (when == .move) a else b);
+            try f.owner.sceneMoveNode(a, f.root, 0);
+            try frame(f, &.{});
+            try expectTop(f, b);
+            continue;
+        }
+        try f.owner.sceneMoveNode(a, f.root, 0);
+        try f.owner.sceneMoveNode(b, f.root, 1);
+        try f.owner.sceneMoveNode(hook, f.root, 2);
         try f.owner.sceneSetHooks(hook, 1, 1, 2, 1);
         if (when == .history) {
             try frame(f, &.{hook});
