@@ -1820,6 +1820,8 @@ fn line_numbers_follow_wrapping_signs_and_colors() {
     let editor = Textarea::new(&app).grow(1.0);
     editor.set_text("one\ntwo is long\nthree");
     let numbered = LineNumbers::new(&app, &editor).grow(1.0);
+    // Before the first frame the editor has no width, so it wraps nothing.
+    assert_eq!(editor.view().info(false).unwrap().total_virtual_line_count, 3);
     app.root().add(&numbered);
     assert_eq!(rows(&app), [" 1 one", " 2 two is long", " 3 three", ""]);
     assert_eq!(app.render().cell(1, 0).unwrap().fg, app.theme().muted);
