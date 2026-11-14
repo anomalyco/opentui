@@ -1685,8 +1685,9 @@ impl App {
             headless.clear();
         }
         self.0.messages.borrow_mut().clear();
-        self.0.timers.borrow_mut().clear();
+        // Animations first: a timer callback that drops an animated widget then finds no ticks to end.
         self.0.animations.take();
+        self.0.timers.borrow_mut().clear();
         self.0.filter_areas.borrow_mut().clear();
         let timelines = std::mem::take(&mut *self.0.timelines.borrow_mut());
         for timeline in timelines.iter().filter_map(Weak::upgrade) {

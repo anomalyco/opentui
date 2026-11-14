@@ -955,6 +955,10 @@ fn a_cancelled_timer_may_drop_an_animated_widget() {
     assert!(app.cancel_timer(timer));
     // The detaching frame waits for the frame cap; no tick is due after it.
     assert_eq!([idle_second(&app, &ticks), idle_second(&app, &ticks)], [(1, 1, 0), (0, 0, 0)]);
+    // A timer still pending when the app ends drops another such widget, and its handle, at teardown.
+    let other = View::new(&app);
+    let handle = other.on_animation_tick(20.0, spinner(&ticks));
+    app.set_timeout(ms(10_000), move |_cx| drop((other, handle)));
 }
 
 #[test]

@@ -110,7 +110,8 @@ impl App {
             last: time,
             callback: Rc::new(RefCell::new(callback)),
             widget,
-            drawn: self.painted_frames(),
+            // Subscribed while painting, the widget counts as drawn by this frame.
+            drawn: self.0.frame.get(),
             parked: false,
         };
         self.0.animations.borrow_mut().ticks.get_or_insert_default().tickers.push(ticker);
@@ -184,7 +185,7 @@ impl App {
             Some(ticks) => ticks.tickers.iter().map(|ticker| ticker.id).collect(),
             None => return,
         };
-        let (time, painted) = (self.tick_time(), self.painted_frames());
+        let (time, painted) = (self.tick_time(), self.0.frame.get());
         for id in ids {
             let due = {
                 let mut animations = self.0.animations.borrow_mut();
