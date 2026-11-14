@@ -5,7 +5,7 @@ use crate::error::{Error, Result};
 use crate::native::Capture;
 use crate::widget::Callbacks;
 use std::cell::{Cell, RefCell};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// How [`App::headless`] sets up an app without a terminal that runs in real time: each frame's cells, and what it
 /// would write to the terminal, go to handlers instead. A test harness or a remote driver runs it, as OpenCode's
@@ -168,7 +168,7 @@ impl App {
             self.headless_write(HeadlessWrite::Title(title));
         }
         self.request_redraw();
-        let interval = Duration::from_secs(1) / self.0.options.max_fps.max(1);
+        let interval = self.frame_interval();
         let mut last_frame: Option<Instant> = None;
         loop {
             self.drain_proxy();

@@ -72,7 +72,7 @@ pub use crate::native::{
     TerminalCursor, VideoInfo, VideoState, WrapMode,
 };
 
-use crate::app::{App, AppInner, Cx, HandlerId};
+use crate::app::{AnimationTick, App, AppInner, Cx, HandlerId, Tick};
 use crate::error::Result;
 use crate::input::{KeyEvent, MouseEvent};
 use crate::layout::{
@@ -307,6 +307,7 @@ impl Drop for Element {
     fn drop(&mut self) {
         if let Some(app) = self.app.upgrade() {
             app.unregister(self.num);
+            App::from_inner(app).end_widget_ticks(self.num);
         }
     }
 }
@@ -748,6 +749,17 @@ pub trait Widget: Clone + 'static {
 
     fn as_any(&self) -> AnyWidget {
         AnyWidget(self.element().behavior().expect("a live widget has a behavior"))
+    }
+
+    /// [`App::on_animation_tick`] while this widget is drawn, as Core's `animationFps`: a hidden, detached, or culled
+    /// widget wakes the app at most twice more, then not until a frame draws it again, which resumes the ticks. The
+    /// animation also ends when the widget drops.
+    fn on_animation_tick(&self, fps: f64, callback: impl FnMut(&mut Cx<'_>, Tick) + 'static) -> AnimationTick {
+        let element = self.element();
+        let Some(app) = element.app() else { return AnimationTick::ended() };
+        // Each frame that draws the widget sends it an update.
+        element.add_hooks(Hooks::UPDATE);
+        app.subscribe_tick(fps, Some(element.num), callback)
     }
 
     // Layout.

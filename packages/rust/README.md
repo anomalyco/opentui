@@ -516,6 +516,38 @@ request frames only while they play. A playing timeline keeps itself alive
 until it finishes; handlers may capture timelines and widgets, and the app
 breaks those cycles when it ends.
 
+Animations that step at a rate, such as spinners and pulses, tick on Core's
+shared animation clock instead. `on_animation_tick` calls back `fps` times a
+second until its handle drops. All subscribers share frames: equal rates tick
+together, and slower ones tick in the fastest one's frames, so a 25 fps pulse
+and two 12.5 fps spinners cost 25 frames a second, not 50. A tick that comes
+late counts the steps it covers in `tick.ticks`. The widget form ticks only
+while the widget is drawn: hidden or detached, it wakes the app at most twice
+more and then costs nothing until it is drawn again, and it ends with the
+widget.
+
+```rust
+let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+let mut step = 0;
+let spinner = Text::new(&app, frames[0]);
+let ticking = spinner.on_animation_tick(12.5, {
+    let spinner = spinner.clone();
+    move |_cx, tick| {
+        step = (step + tick.ticks as usize) % frames.len();
+        spinner.set_text(frames[step]);
+    }
+});
+// Keep `ticking` while the spinner should spin; dropping it stops the spinner.
+```
+
+`app.on_animation_tick(fps, ...)` is the same clock without a widget. Use
+`app.animate` for work on every frame, including rates at or above
+`AppOptions::max_fps`: a tick timer would wake the app about twice for each
+frame it gets. With nothing subscribed, the app sets
+no timer, so an idle app with nothing animating never wakes. In tests,
+`TestApp::idle(duration)` runs the loop on the manual clock and returns the
+frames and wakeups that cost.
+
 ### Debugging
 
 `app.console()` is Core's debug console: an overlay, hidden until shown, that
