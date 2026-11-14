@@ -266,6 +266,7 @@ impl Side {
         }
         let (mut line_colors, mut signs, mut numbers, mut hidden) =
             (HashMap::new(), HashMap::new(), HashMap::new(), HashSet::new());
+        let (mut added, mut removed) = (None, None);
         for (index, line) in lines.iter().enumerate() {
             let index = index as u32;
             match line.number {
@@ -285,11 +286,12 @@ impl Side {
                 Kind::Empty => continue,
             };
             line_colors.insert(index, LineColor::new(gutter, content));
-            match line.kind {
-                Kind::Added => signs.insert(index, LineSign::after(" +", colors.added_sign)),
-                Kind::Removed => signs.insert(index, LineSign::after(" -", colors.removed_sign)),
-                _ => None,
+            let (sign, text, color) = match line.kind {
+                Kind::Added => (&mut added, " +", colors.added_sign),
+                Kind::Removed => (&mut removed, " -", colors.removed_sign),
+                _ => continue,
             };
+            signs.insert(index, Rc::clone(sign.get_or_insert_with(|| Rc::new(LineSign::after(text, color)))));
         }
         self.numbers.replace_lines(line_colors, signs, numbers, hidden);
     }

@@ -7,6 +7,9 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
+#[path = "support/allocations.rs"]
+mod allocations;
+
 fn rows(app: &TestApp) -> Vec<String> {
     let capture = app.render();
     (0..capture.height).map(|y| capture.row(y).trim_end().to_owned()).collect()
@@ -1373,9 +1376,11 @@ fn display_math_without_a_renderer_shows_plain_tex() {
 fn highlighted_code_restyles_appends_and_theme_changes() {
     use opentui::syntax::SyntaxTheme;
     use opentui::widget::Code;
-    let app = TestApp::new(30, 2);
+    let app = TestApp::new(30, 3);
     let code = Code::new(&app).filetype("rs").grow(1.0);
     app.root().add(&code);
+    let other = Code::new(&app).filetype("rs").set_code("let peer;").height(1);
+    app.root().add(&other);
     code.append("let a = 1;");
     code.append(" // done");
     let capture = app.render();
@@ -1391,9 +1396,16 @@ fn highlighted_code_restyles_appends_and_theme_changes() {
     // Two appends keep the shown highlight: the tail stays plain until the worker's lands.
     code.append(" let c;").append(" let d;");
     assert_eq!(app.render().cell(7, 1).unwrap().fg, app.theme().foreground);
-    code.syntax_theme(SyntaxTheme::new().style("keyword", Style::new().fg(Color::RED)));
+    let mut theme = SyntaxTheme::new().style("keyword", Style::new().fg(Color::RED));
+    for i in 0..128 {
+        theme.set(format!("unused.{i}"), Style::new());
+    }
+    let before = allocations::count();
+    code.syntax_theme(theme);
+    assert!(allocations::count() - before < 128, "restyling copied the unused scopes");
     let capture = app.render();
     assert_eq!(capture.cell(0, 0).unwrap().fg, Color::RED);
+    assert_eq!(capture.cell(0, 2).unwrap().fg, keyword);
     assert_eq!(capture.cell(11, 0).unwrap().fg, app.theme().foreground);
     code.filetype(None);
     assert_eq!(app.render().cell(0, 0).unwrap().fg, app.theme().foreground);
@@ -1990,6 +2002,20 @@ fn diffs_show_unified_and_split_views_with_numbers_signs_and_colors() {
 
     diff.set_diff("@@ broken\n");
     assert_eq!(rows(&app)[0], "Error parsing diff: unknown hunk header on line 1:");
+
+    // Same displayed text: changing every marker adds map buckets, not a string allocation per row.
+    diff.view(DiffView::Unified);
+    let context = format!("@@ -1,128 +1,128 @@\n{}", " x\n".repeat(128));
+    diff.set_diff(&context);
+    let rebuild = |patch: &str| {
+        let before = allocations::count();
+        diff.set_diff(patch);
+        allocations::count() - before
+    };
+    for (ranges, line) in [("-0,0 +1,128", "+x\n"), ("-1,128 +0,0", "-x\n")] {
+        let signed = format!("@@ {ranges} @@\n{}", line.repeat(128));
+        assert!(rebuild(&signed) < rebuild(&context) + 128, "each {line:?} row allocated its own sign");
+    }
 }
 
 #[test]
