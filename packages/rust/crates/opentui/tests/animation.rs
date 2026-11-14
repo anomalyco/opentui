@@ -890,6 +890,58 @@ fn widget_ticks_run_while_the_widget_is_drawn() {
 }
 
 #[test]
+fn a_shared_tick_runs_while_any_of_its_widgets_is_drawn() {
+    // One spinner value painted by two widgets, bound through weak handles, as a value that outlives them is.
+    let app = TestApp::with_options(4, 2, AppOptions { max_fps: 60, ..Default::default() });
+    let (a, b) = (Text::new(&app, "-"), Text::new(&app, "-"));
+    app.root().add(&a).add(&b);
+    let (weak_a, weak_b) = (a.downgrade(), b.downgrade());
+    app.idle(ms(1000));
+    let ticks = Rc::new(Cell::new(0));
+    let handle = app.on_animation_tick(12.5, spinner(&ticks));
+    for weak in [&weak_a, &weak_b] {
+        handle.follow(&weak.upgrade().expect("a live widget"));
+    }
+    let mut rows = vec![("both drawn", idle_second(&app, &ticks))];
+    a.visible(false);
+    rows.push(("one drawn", idle_second(&app, &ticks)));
+    b.visible(false);
+    rows.push(("neither drawn", idle_second(&app, &ticks)));
+    rows.push(("still neither", idle_second(&app, &ticks)));
+    b.visible(true);
+    rows.push(("one shown again", idle_second(&app, &ticks)));
+    b.detach();
+    drop(b);
+    rows.push(("drawn one dropped", idle_second(&app, &ticks)));
+    a.visible(true);
+    rows.push(("other shown", idle_second(&app, &ticks)));
+    a.detach();
+    drop(a);
+    rows.push(("both dropped, handle kept", idle_second(&app, &ticks)));
+    let late = Text::new(&app, "-");
+    app.root().add(&late);
+    handle.follow(&late);
+    rows.push(("ended: a widget followed later is ignored", idle_second(&app, &ticks)));
+    assert_eq!(
+        rows,
+        [
+            ("both drawn", (13, 12, 12)),
+            // Hiding one costs its frame at the frame cap, and nothing more.
+            ("one drawn", (13, 13, 12)),
+            ("neither drawn", (2, 1, 1)),
+            ("still neither", (0, 0, 0)),
+            ("one shown again", (13, 12, 12)),
+            ("drawn one dropped", (2, 2, 0)),
+            ("other shown", (13, 12, 12)),
+            ("both dropped, handle kept", (1, 1, 0)),
+            ("ended: a widget followed later is ignored", (1, 0, 0)),
+        ]
+    );
+    assert!(weak_a.upgrade().is_none() && weak_b.upgrade().is_none());
+    drop(handle);
+}
+
+#[test]
 fn ticks_may_subscribe_and_end_animations_inside_a_tick() {
     // Four subscribers due in the same frames, in this order: `a`, `b`, `d`, and `e`, bound to a drawn widget. The
     // first tick of `a` subscribes `c`, ends `b` and itself, and detaches the widget. The callback of `b` owns `d`'s
