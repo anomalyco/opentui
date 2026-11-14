@@ -632,7 +632,7 @@ impl Code {
     /// longer grows, such as a finished tool output. For Rust they take about 40 bytes per byte of text. The view
     /// paints as before, and a theme still restyles it. A highlight still running drops its tree when it lands.
     ///
-    /// It is a hint, not a mode: the next change highlights the whole text again, once, and keeps a tree again.
+    /// It is a hint, not a mode: the next change keeps a tree again, and may highlight the whole text once to get it.
     /// Calling it twice, or on a view without a tree, does nothing.
     pub fn finish(&self) -> Self {
         self.0.set_closed(true);
