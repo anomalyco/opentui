@@ -40,10 +40,10 @@ impl Timers {
         id
     }
 
-    pub fn cancel(&mut self, id: TimerId) -> bool {
-        let before = self.entries.len();
-        self.entries.retain(|entry| entry.id != id);
-        self.entries.len() != before
+    /// Removes a timer and returns its callback, for the caller to drop outside any borrow.
+    pub fn cancel(&mut self, id: TimerId) -> Option<TimerCallback> {
+        let index = self.entries.iter().position(|entry| entry.id == id)?;
+        Some(self.entries.swap_remove(index).callback)
     }
 
     pub fn next_due(&self) -> Option<Instant> {
@@ -70,7 +70,8 @@ impl Timers {
         }
     }
 
-    pub fn clear(&mut self) {
-        self.entries.clear();
+    /// Removes every timer and returns them, for the caller to drop outside any borrow. Ids keep counting.
+    pub fn clear(&mut self) -> impl Sized + use<> {
+        std::mem::take(&mut self.entries)
     }
 }

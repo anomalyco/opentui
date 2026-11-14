@@ -7,6 +7,9 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
+#[path = "support/allocations.rs"]
+mod allocations;
+
 fn rows(app: &TestApp) -> Vec<String> {
     let capture = app.render();
     (0..capture.height).map(|y| capture.row(y).trim_end().to_owned()).collect()
@@ -986,6 +989,77 @@ fn custom_components_paint_and_handle_input() {
     assert_eq!(rows(&app)[1], " count 42");
 }
 
+/// A run of cells paints what the same cells drawn one by one paint, over frames that change: characters that
+/// packed cells draw as blocks, wide characters cut by a row's end, a clip or the screen, combining marks,
+/// attributes, and translucent and default colors.
+#[test]
+fn cell_runs_paint_like_single_cells() {
+    struct Run {
+        cells: Vec<(char, Style)>,
+        width: u32,
+        at: (i32, i32),
+        clip: bool,
+        batched: bool,
+    }
+    impl Component for Run {
+        fn paint(&self, painter: &mut Painter<'_>) {
+            let draw = |painter: &mut Painter<'_>| {
+                let (x, y) = self.at;
+                if self.batched {
+                    let cells: Vec<_> =
+                        self.cells.iter().map(|&(character, style)| PaintCell::new(character, style)).collect();
+                    painter.cells(x, y, self.width, &cells);
+                    return;
+                }
+                for (index, &(character, style)) in (0u32..).zip(&self.cells).filter(|_| self.width != 0) {
+                    painter.cell(x + (index % self.width) as i32, y + (index / self.width) as i32, character, style);
+                }
+            };
+            if self.clip { painter.clip(1, 1, 5, 2, draw) } else { draw(painter) }
+        }
+    }
+    let bold = "aé─Z".chars().map(|character| (character, Style::new().bold())).collect::<Vec<_>>();
+    let twins = [false, true].map(|batched| {
+        let app = TestApp::new(10, 4);
+        // The single cells paint without the frame check, which must change no cell.
+        app.set_verify(batched);
+        let run = Run { cells: bold.clone(), width: 4, at: (0, 0), clip: false, batched };
+        let run = Custom::new(&app, run).absolute().position(Edge::Left, 1).width(9).height(4);
+        app.root().add(&Text::new(&app, "0123456789\n9876543210\n0123456789\n9876543210")).add(&run);
+        (app, run)
+    });
+    let capture = twins[1].0.render();
+    assert_eq!(capture.row(0), "0aé─Z56789");
+    assert!((1..5).all(|x| capture.cell(x, 0).unwrap().attributes == Attributes::BOLD));
+    assert_eq!(twins[0].0.render(), capture);
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut next = |below: u64| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state % below
+    };
+    let characters = ['a', 'é', '─', '█', '界', '😀', '\u{301}', '\t'];
+    let colors = [None, Some(Color::rgb(200, 40, 0)), Some(Color::rgba(0, 90, 200, 128)), Some(Color::TRANSPARENT)];
+    for seed in 0..64 {
+        let cells: Vec<_> = (0..next(25))
+            .map(|_| {
+                let style = Style {
+                    fg: colors[next(4) as usize],
+                    bg: colors[next(4) as usize],
+                    attributes: Attributes::from_bits(next(256) as u8),
+                };
+                (characters[next(characters.len() as u64) as usize], style)
+            })
+            .collect();
+        let (width, at, clip) = (next(7) as u32, (next(14) as i32 - 3, next(7) as i32 - 2), next(2) == 1);
+        for (_, run) in &twins {
+            run.update(|run| (run.cells, run.width, run.at, run.clip) = (cells.clone(), width, at, clip));
+        }
+        assert_eq!(twins[0].0.render(), twins[1].0.render(), "seed {seed}");
+    }
+}
+
 #[test]
 fn native_failures_end_the_frame_with_an_error() {
     let app = TestApp::new(10, 1);
@@ -1059,9 +1133,12 @@ fn syntax_fg(app: &TestApp, name: &str) -> Color {
 fn code_highlights_numbers_lines_and_scrolls() {
     use opentui::widget::Code;
     let app = TestApp::new(24, 3);
-    let code = Code::new(&app).filetype("rust").line_numbers(true).grow(1.0);
+    let code = Code::new(&app).filetype("rust").line_numbers(true).wrap(WrapMode::Word).grow(1.0);
     let source: String = (1..=12).map(|line| format!("let x{line} = \"v\"; // c\n")).collect();
     code.set_code(source.trim_end());
+    // Before its first layout the view has no width, so it wraps nothing: 12 rows, not one per character.
+    assert_eq!(code.scroll_to(u32::MAX).scroll_position(), 12);
+    code.scroll_to(0);
     app.root().add(&code);
     // Core's gutter: at least three cells, with one cell of padding on each side of the number.
     assert_eq!(rows(&app), ["  1 let x1 = \"v\"; // c", "  2 let x2 = \"v\"; // c", "  3 let x3 = \"v\"; // c"]);
@@ -1410,9 +1487,11 @@ fn display_math_without_a_renderer_shows_plain_tex() {
 fn highlighted_code_restyles_appends_and_theme_changes() {
     use opentui::syntax::SyntaxTheme;
     use opentui::widget::Code;
-    let app = TestApp::new(30, 2);
+    let app = TestApp::new(30, 3);
     let code = Code::new(&app).filetype("rs").grow(1.0);
     app.root().add(&code);
+    let other = Code::new(&app).filetype("rs").set_code("let peer;").height(1);
+    app.root().add(&other);
     code.append("let a = 1;");
     code.append(" // done");
     let capture = app.render();
@@ -1428,9 +1507,16 @@ fn highlighted_code_restyles_appends_and_theme_changes() {
     // Two appends keep the shown highlight: the tail stays plain until the worker's lands.
     code.append(" let c;").append(" let d;");
     assert_eq!(app.render().cell(7, 1).unwrap().fg, app.theme().foreground);
-    code.syntax_theme(SyntaxTheme::new().style("keyword", Style::new().fg(Color::RED)));
+    let mut theme = SyntaxTheme::new().style("keyword", Style::new().fg(Color::RED));
+    for i in 0..128 {
+        theme.set(format!("unused.{i}"), Style::new());
+    }
+    let before = allocations::count();
+    code.syntax_theme(theme);
+    assert!(allocations::count() - before < 128, "restyling copied the unused scopes");
     let capture = app.render();
     assert_eq!(capture.cell(0, 0).unwrap().fg, Color::RED);
+    assert_eq!(capture.cell(0, 2).unwrap().fg, keyword);
     assert_eq!(capture.cell(11, 0).unwrap().fg, app.theme().foreground);
     code.filetype(None);
     assert_eq!(app.render().cell(0, 0).unwrap().fg, app.theme().foreground);
@@ -1903,6 +1989,8 @@ fn line_numbers_follow_wrapping_signs_and_colors() {
     let editor = Textarea::new(&app).grow(1.0);
     editor.set_text("one\ntwo is long\nthree");
     let numbered = LineNumbers::new(&app, &editor).grow(1.0);
+    // Before the first frame the editor has no width, so it wraps nothing.
+    assert_eq!(editor.view().info(false).unwrap().total_virtual_line_count, 3);
     app.root().add(&numbered);
     assert_eq!(rows(&app), [" 1 one", " 2 two is long", " 3 three", ""]);
     assert_eq!(app.render().cell(1, 0).unwrap().fg, app.theme().muted);
@@ -2027,6 +2115,20 @@ fn diffs_show_unified_and_split_views_with_numbers_signs_and_colors() {
 
     diff.set_diff("@@ broken\n");
     assert_eq!(rows(&app)[0], "Error parsing diff: unknown hunk header on line 1:");
+
+    // Same displayed text: changing every marker adds map buckets, not a string allocation per row.
+    diff.view(DiffView::Unified);
+    let context = format!("@@ -1,128 +1,128 @@\n{}", " x\n".repeat(128));
+    diff.set_diff(&context);
+    let rebuild = |patch: &str| {
+        let before = allocations::count();
+        diff.set_diff(patch);
+        allocations::count() - before
+    };
+    for (ranges, line) in [("-0,0 +1,128", "+x\n"), ("-1,128 +0,0", "-x\n")] {
+        let signed = format!("@@ {ranges} @@\n{}", line.repeat(128));
+        assert!(rebuild(&signed) < rebuild(&context) + 128, "each {line:?} row allocated its own sign");
+    }
 }
 
 #[test]

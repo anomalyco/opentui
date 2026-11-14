@@ -15,6 +15,7 @@ use crate::syntax::{Incremental, SyntaxTheme};
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// What a key does in an [`Input`](super::Input) or [`Textarea`](super::Textarea). Bind keys to actions with
 /// `bind`, or run one directly with `perform`.
@@ -306,7 +307,7 @@ pub(crate) struct EditorCore {
     cursor_options: Cell<EditorOptions>,
     pub on_cursor: Callbacks<(u32, u32)>,
     filetype: RefCell<Option<String>>,
-    syntax_theme: RefCell<SyntaxTheme>,
+    syntax_theme: RefCell<Arc<SyntaxTheme>>,
     /// The content epoch highlighted last, or `None` when the next frame highlights the text.
     highlighted: Cell<Option<u64>>,
     /// The highlighter of the filetype, with the tree of the text it highlighted last.
@@ -326,7 +327,7 @@ impl EditorCore {
             // A Context too full for a buffer has failed already; the report ends the app this turn.
             None => panic!("opentui: failed to create an edit buffer: {:?}", app.check()),
         };
-        let view = match app.report(EditorView::new(&buffer, 1, 1)) {
+        let view = match app.report(EditorView::new(&buffer, 0, 0)) {
             Some(view) => view,
             None => panic!("opentui: failed to create an editor view: {:?}", app.check()),
         };
@@ -358,7 +359,7 @@ impl EditorCore {
             cursor_options: Cell::new(EditorOptions { color: theme.cursor, ..Default::default() }),
             on_cursor: Callbacks::default(),
             filetype: RefCell::new(None),
-            syntax_theme: RefCell::new(SyntaxTheme::from_theme(&theme)),
+            syntax_theme: RefCell::new(Arc::new(SyntaxTheme::from_theme(&theme))),
             highlighted: Cell::new(None),
             incremental: RefCell::new(None),
             #[cfg(test)]
@@ -891,6 +892,7 @@ impl EditorCore {
     pub fn set_syntax_theme(&self, theme: SyntaxTheme) {
         // Without a table yet there is nothing to restyle, and no table to make: one the app bound stays.
         let table = self.extmarks.borrow().syntax.clone();
+        let theme = Arc::new(theme);
         let restyled = table.is_some_and(|table| self.report(table.set_capture_theme(&theme)) == Some(true));
         if restyled || *self.syntax_theme.borrow() != theme {
             *self.syntax_theme.borrow_mut() = theme;

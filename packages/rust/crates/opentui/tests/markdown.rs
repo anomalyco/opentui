@@ -9,32 +9,13 @@ use opentui::widget::{
     AnyWidget, ColumnWidthMode, Container, InlineContext, InlineSpan, Markdown, MarkdownExtension,
     MarkdownTableOptions, ScrollBox, Text, View, Widget,
 };
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 
-thread_local! {
-    /// Allocations made on this thread, so a test can check that a read allocates nothing.
-    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
-}
-
-struct Counting;
-
-#[global_allocator]
-static ALLOCATOR: Counting = Counting;
-
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.with(|count| count.set(count.get() + 1));
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
+#[path = "support/allocations.rs"]
+mod allocations;
 
 const CASES: [&str; 6] = ["code", "emphasis", "headings", "links", "lists", "tables"];
 
@@ -102,9 +83,9 @@ fn corpus_matches_core_one_shot_and_streamed() {
                 let next = (end + 7..=source.len()).find(|&next| source.is_char_boundary(next)).unwrap_or(source.len());
                 streamed.append(&source[end..next]);
                 end = next;
-                let allocations = ALLOCATIONS.with(Cell::get);
+                let allocations = allocations::count();
                 assert!(streamed.with_markdown(|shown| shown == &source[..end]), "{case} ({mode}), read at byte {end}");
-                assert_eq!(ALLOCATIONS.with(Cell::get), allocations, "{case} ({mode}), read allocates");
+                assert_eq!(allocations::count(), allocations, "{case} ({mode}), read allocates");
                 assert_eq!(streamed.markdown(), &source[..end]);
                 let oneshot_app = TestApp::new(60, 80);
                 document(&oneshot_app, conceal).streaming(true).set_markdown(&source[..end]);
@@ -274,11 +255,11 @@ fn math_leaves_streamed_prose_to_native_code() {
         let app = TestApp::with_hyperlinks(40, 8);
         let markdown = Markdown::new(&app).extensions(extensions).streaming(true);
         app.root().add(&markdown);
-        let before = ALLOCATIONS.with(Cell::get);
+        let before = allocations::count();
         for chunk in ["Some ", "**bold** ", "text\n\n", "streams ", "in."] {
             markdown.append(chunk);
         }
-        ALLOCATIONS.with(Cell::get) - before
+        allocations::count() - before
     };
     assert_eq!(allocations(&[MarkdownExtension::Math]), allocations(&[]));
 }

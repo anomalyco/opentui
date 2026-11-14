@@ -85,14 +85,14 @@ pub use error::{Error, Result, Status};
 /// The types most apps use.
 pub mod prelude {
     pub use crate::animation::{Easing, Timeline, Tween};
-    pub use crate::app::{App, AppOptions, AppProxy, Cx, HandlerId, TimerId};
+    pub use crate::app::{AnimationTick, App, AppOptions, AppProxy, Cx, HandlerId, Tick, TimerId};
     pub use crate::input::{
         Event, KeyCode, KeyEvent, Keymap, Modifiers, MouseButton, MouseEvent, MouseEventKind, Shortcut,
     };
     pub use crate::layout::{
         Align, Edge, FlexDirection, Justify, LayoutMode, Length, Overflow, PositionType, Rect, Wrap,
     };
-    pub use crate::native::{MousePointer, SelectionColors, WrapMode};
+    pub use crate::native::{MousePointer, PaintCell, SelectionColors, WrapMode};
     pub use crate::post::{Channels, ColorMatrix, Filter, Surface};
     pub use crate::style::{Alignment, Attributes, BorderStyle, Color, Sides, Span, Style, Stylize};
     pub use crate::theme::{Theme, ThemeMode};

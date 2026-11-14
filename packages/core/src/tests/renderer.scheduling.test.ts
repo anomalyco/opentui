@@ -5,6 +5,13 @@ import { serviceReadyFrames } from "../testing/harness.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { createTestRenderer } from "../testing/test-renderer.js"
 import type { AnimationTickOptions } from "../types.js"
+import vectors from "./animation-tick.conformance.json" with { type: "json" }
+
+type Options = { tolerance?: number; early?: boolean; live?: boolean }
+const conformance = vectors as unknown as {
+  frames: [string, number[], number[], Options, number, number[]][]
+  bound: { seed: number; trials: number; seconds: number; bases: number[]; divisors: number[]; mixed: number[] }
+}
 
 test("destroy cancels queued animation and frame continuations, including reentrant requests", async () => {
   const { renderer, renderOnce } = await createTestRenderer({ width: 2, height: 1 })
@@ -74,48 +81,33 @@ async function animate(
   return { frames: frames / seconds, ticks: ticks.map((count) => count / seconds), gaps }
 }
 
-// rates (fps), mount offsets (ms), options → frames/s and ticks/s each. Before the shared clock, each component
-// armed its own timer and the renderer drew the union of their steps: 40 frames/s for the issue row.
-const frameRows: [string, number[], number[], Parameters<typeof animate>[2], number, number[]][] = [
-  ["idle", [], [], {}, 0, []],
-  ["one at 20 fps", [20], [0], {}, 20, [20]],
-  ["one at 12.5 fps", [12.5], [0], {}, 12.6, [12.6]],
-  ["issue 350: 20, 12.5 and 10 fps share the 20 fps frames", [20, 12.5, 10], [0, 17, 31], {}, 20, [20, 12.4, 10]],
-  ["10 and 12.5 fps", [10, 12.5], [0, 23], {}, 12.6, [10, 12.6]],
-  ["25 and 20 fps", [25, 20], [0, 9], {}, 25, [25, 20]],
-  ["equal rates mounted apart tick together", [12.5, 12.5], [0, 30], {}, 12.6, [12.6, 12.6]],
-  ["OpenCode's spinners", [25, 12.5, 12.5], [0, 13, 57], {}, 25, [25, 12.4, 12.4]],
-  ["tolerance 0 keeps exact due times", [20, 12.5, 10], [0, 17, 31], { tick: { tolerance: 0 } }, 30, [20, 12.6, 10]],
-  ["tolerance 0 with timers that fire 1 ms early", [20], [0], { tick: { tolerance: 0 }, early: true }, 20, [20]],
-  // Slower subscribers also tick up to their tolerance late, so close rates that never align share frames.
-  ["close rates 20, 19 and 18 fps", [20, 19, 18], [0, 7, 13], {}, 20, [20, 19, 18]],
-  ["close rates 25, 24 and 23 fps", [25, 24, 23], [0, 7, 13], {}, 25, [25, 24, 23]],
-  ["above maxFps, ticks arrive as counts", [100], [0], {}, 62.6, [100.2]],
-  ["a live loop adds no frames for ticks", [20], [0], { live: true }, 62.4, [20]],
-]
-
-for (const [name, rates, offsets, options, frames, ticks] of frameRows) {
+// rates (fps), mount offsets (ms), options → frames/s and ticks/s each, shared with the Rust binding. Before the
+// shared clock, each component armed its own timer and the renderer drew the union of their steps: 40 frames/s for
+// the issue row.
+for (const [name, rates, offsets, { tolerance, early, live }, frames, ticks] of conformance.frames) {
   test(`animation ticks: ${name}`, async () => {
-    const result = await animate(rates, offsets, options)
+    const tick = tolerance === undefined ? undefined : { tolerance }
+    const result = await animate(rates, offsets, { tick, early, live })
     expect({ frames: result.frames, ticks: result.ticks }).toEqual({ frames, ticks })
   })
 }
 
 test("animation ticks: frames never exceed the fastest rate plus content frames (seeded)", async () => {
-  let seed = 350
+  const { bound } = conformance
+  let seed = bound.seed
   const random = () => ((seed = (seed * 48271) % 2147483647) - 1) / 2147483646
   const pick = <T>(list: T[]) => list[Math.floor(random() * list.length)]
-  for (let trial = 0; trial < 12; trial++) {
-    const base = pick([50, 25, 20, 12.5])
+  for (let trial = 0; trial < bound.trials; trial++) {
+    const base = pick(bound.bases)
     const rates = Array.from({ length: 1 + Math.floor(random() * 3) }, () =>
-      trial % 3 === 2 ? pick([60, 33, 25, 24, 23, 20, 19, 18, 15, 13.3, 12, 11.5, 10, 4]) : base / pick([1, 2, 4]),
+      trial % 3 === 2 ? pick(bound.mixed) : base / pick(bound.divisors),
     )
     const offsets = rates.map(() => Math.floor(random() * 200))
     const content = Array.from({ length: Math.floor(random() * 40) }, () => 1000 + Math.floor(random() * 2000)).sort(
       (a, b) => a - b,
     )
-    const alone = await animate([], [], { content: [...content], seconds: 2 })
-    const { frames, ticks, gaps } = await animate(rates, offsets, { content, seconds: 2 })
+    const alone = await animate([], [], { content: [...content], seconds: bound.seconds })
+    const { frames, ticks, gaps } = await animate(rates, offsets, { content, seconds: bound.seconds })
     const context = JSON.stringify({ trial, rates, offsets, frames, alone: alone.frames })
     const fastest = Math.max(...rates)
     expect(frames, context).toBeLessThanOrEqual(Math.min(60, fastest) + alone.frames)

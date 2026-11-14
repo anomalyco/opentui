@@ -9,6 +9,7 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::ops::Range;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// Default colors and attributes for text without a highlight. `None` fields stay unset.
 fn encode_style(style: Style) -> sys::ot_editor_style {
@@ -56,7 +57,7 @@ pub struct SyntaxStyle(Rc<Resource>, Rc<RefCell<CapturePalette>>);
 /// The syntax theme an editor last set on a table, and the capture names and whole lists registered from it.
 #[derive(Default)]
 struct CapturePalette {
-    theme: SyntaxTheme,
+    theme: Arc<SyntaxTheme>,
     names: BTreeSet<&'static str>,
     lists: BTreeSet<Vec<&'static str>>,
 }
@@ -74,7 +75,7 @@ impl SyntaxStyle {
 
     /// Makes `theme` the table's capture palette, registering every capture name seen on the table again; the
     /// last theme set wins for all editors sharing the table. Returns whether the palette changed.
-    pub(crate) fn set_capture_theme(&self, theme: &SyntaxTheme) -> Result<bool> {
+    pub(crate) fn set_capture_theme(&self, theme: &Arc<SyntaxTheme>) -> Result<bool> {
         if self.1.borrow().theme == *theme {
             return Ok(false);
         }

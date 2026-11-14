@@ -91,6 +91,26 @@ pub(crate) mod records {
     }
 }
 
+/// One cell for [`Recorder::cells`], in the form native code reads, so a widget can keep a run of them and record it
+/// again with one copy. It holds one `char`, as [`Recorder::cell`] does; a grapheme cluster of several code points
+/// needs [`Recorder::text`].
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PaintCell(sys::ot_scene_cell);
+
+impl PaintCell {
+    /// A character drawn as [`Recorder::cell`] draws it with `blend`.
+    pub fn new(character: char, style: Style) -> Self {
+        let record = records::cell(0, 0, character, style, true);
+        Self(sys::ot_scene_cell {
+            character: record.character,
+            attributes: record.attributes,
+            foreground: record.foreground,
+            background: record.background,
+        })
+    }
+}
+
 /// A paint phase of one slot. Native code plays them around the node's own drawing, before its children.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Phase {
@@ -274,6 +294,23 @@ impl Recorder {
         self.draw(&records::cell(x, y, character, style, blend), None, &[], &[])
     }
 
+    /// Draws cells in rows of `width` from a position, each as [`Self::cell`] draws it with `blend`, in one record.
+    pub fn cells(&mut self, x: i32, y: i32, width: u32, cells: &[PaintCell]) -> Result<()> {
+        if width == 0 {
+            return Err(Error::Usage("paint cells need a nonzero row width"));
+        }
+        let record = sys::ot_scene_record_cells {
+            header: sys::ot_scene_record_header { size: 0, operation: sys::OT_SCENE_RECORD_CELLS },
+            x,
+            y,
+            width,
+            count: crate::error::count("ot_scene_record_cells", cells.len())?,
+        };
+        // SAFETY: PaintCell is a transparent ot_scene_cell, which has no padding and only integer fields.
+        let bytes = unsafe { std::slice::from_raw_parts(cells.as_ptr().cast::<u8>(), size_of_val(cells)) };
+        self.command(&record, &[bytes])
+    }
+
     pub fn draw_box(&mut self, x: i32, y: i32, width: u32, height: u32, spec: &BoxSpec<'_>) -> Result<()> {
         let record = records::draw_box(x, y, width, height, spec);
         self.draw(&record, None, spec.title.as_bytes(), spec.bottom_title.as_bytes())
@@ -416,6 +453,9 @@ mod tests {
         assert_eq!(word(&recorder, 16), draw.next_multiple_of(8) as u32);
         assert_eq!(word(&recorder, 20), sys::OT_SCENE_RECORD_DRAW);
         assert_eq!(bytes.len(), 16 + draw.next_multiple_of(8));
+        // Native code rejects a run of cells without a row width, and with it the whole frame.
+        assert!(matches!(recorder.cells(0, 0, 0, &[PaintCell::default()]), Err(Error::Usage(_))));
+        assert_eq!(recorder.bytes().len(), 16 + draw.next_multiple_of(8));
         Ok(())
     }
 
