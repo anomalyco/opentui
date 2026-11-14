@@ -1136,8 +1136,9 @@ pub trait Widget: Clone + 'static {
     /// siblings and all their descendants. Siblings go by [`Self::z_index`], then child order. So a handler on the
     /// root's last child, with no sibling above its z-index, reads this round's [`rect`](Self::rect) of every
     /// other widget. Exceptions: a widget added or moved since its last layout is resized when the walk reaches its
-    /// parent, before its siblings' descendants; a [`ScrollBox`]'s rows all come before their children, and the
-    /// children of rows it culls are skipped. A widget added during the walk waits for the next round.
+    /// parent, before its siblings; adding a child again counts as a move even where it already is, so keep such a
+    /// last child in place and insert new siblings before it. A [`ScrollBox`]'s rows all come before their children,
+    /// and the children of rows it culls are skipped. A widget added during the walk waits for the next round.
     fn on_resize(&self, handler: impl FnMut(&mut Cx<'_>, &Rect) + 'static) -> Self {
         self.element().handlers.resize.add(handler);
         self.element().add_hooks(Hooks::RESIZE);

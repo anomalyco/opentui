@@ -672,7 +672,8 @@ ot_status ot_scene_set_hooks(ot_context *, const ot_handle *node, const ot_scene
  * tree depth first in paint order (z_index, then child order): a node's UPDATE,
  * its RESIZE, then its children's subtrees, so its requests follow those of every
  * earlier sibling's subtree. A child inserted or moved since its last refresh gets
- * its RESIZE when the walk reaches its parent, before its siblings' subtrees. A
+ * its RESIZE when the walk reaches its parent, before its siblings' subtrees; a
+ * move to the index the child already has counts. A
  * node with a viewport (ot_scene_set_viewport) or a culling scroll node refreshes
  * all its children before walking the subtrees of those it does not cull. A node
  * inserted during the walk waits for the next round.

@@ -74,6 +74,7 @@ fn resize_handlers_run_depth_first_in_paint_order() {
         ("a raised child stays in its parent", "a1", "A a2 a21 a1 rows t0 t1 B H"),
         ("a raised sibling comes after", "A", "rows t0 t1 B H A a1 a2 a21"),
         ("a moved node comes first", "move", "H A a1 a2 a21 rows t0 t1 B"),
+        ("adding the last child again is a move", "readd", "H A a1 a2 a21 rows t0 t1 B"),
         ("a node added during the walk waits for the next round", "add", "A a1 a2 a21 rows t0 t1 B H C"),
     ];
     let rows = (0..16).fold("S".to_owned(), |rows, row| format!("{rows} s{row}"));
@@ -99,6 +100,9 @@ fn resize_handlers_run_depth_first_in_paint_order() {
         log.borrow_mut().clear();
         if change == "move" {
             app.root().insert(3, &hook);
+        }
+        if change == "readd" {
+            app.root().add(&hook);
         }
         if change == "add" {
             let (log, root, added) = (log.clone(), app.root(), Rc::new(Cell::new(false)));
