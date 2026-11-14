@@ -1741,11 +1741,6 @@ impl App {
             timeline.teardown();
         }
         self.0.proxy.close();
-        #[cfg(feature = "tokio")]
-        {
-            self.0.tasks.take();
-            self.0.runtime.take();
-        }
         self.close_clipboard();
         crate::console::unregister(self.0.console_id.get());
         self.0.console.take();
@@ -1760,12 +1755,16 @@ impl App {
             widget.element().teardown();
         }
         crate::pty::teardown(self);
-        // Tasks deferred until now, also while the above dropped, are dropped without running.
+        // Tasks deferred or spawned until now, also while the above dropped, are dropped without running.
         for _ in 0..TURN_WORK_MAX {
+            #[cfg(feature = "tokio")]
+            self.0.tasks.take();
             if self.0.deferred.take().is_empty() {
                 break;
             }
         }
+        #[cfg(feature = "tokio")]
+        self.0.runtime.take();
     }
 
     // Headless driving for tests.

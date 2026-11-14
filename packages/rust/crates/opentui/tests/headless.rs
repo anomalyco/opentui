@@ -382,7 +382,7 @@ fn spawned_tasks_wake_the_loop() {
 
 /// Calls the app as it drops, as a value that queued work owns may at teardown: defers a task that owns `inner`,
 /// starts a timer and a tick, adds and removes a key handler, adds a message handler, cancels, posts a task that posts
-/// as it drops, and quits.
+/// as it drops, spawns a task whose completion owns the app, and quits.
 struct Reenters {
     app: App,
     inner: Option<Box<Reenters>>,
@@ -418,6 +418,11 @@ impl Drop for Reenters {
         }
         let posts = Posts(app.proxy());
         let _ = app.proxy().post(move |_| drop(posts));
+        #[cfg(feature = "tokio")]
+        app.spawn(std::future::pending::<()>(), {
+            let (app, ran) = (app.clone(), self.ran.clone());
+            move |_, ()| drop((app, ran))
+        });
         app.quit();
     }
 }
