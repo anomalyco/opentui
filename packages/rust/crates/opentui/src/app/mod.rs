@@ -53,7 +53,7 @@ use crate::post::{Area, PostState};
 use crate::remote::RemoteTerminal;
 use crate::term::{QueryPort, TerminalPalette};
 use crate::theme::{Theme, ThemeMode};
-use crate::widget::{AnyWidget, Behavior, Callbacks, Element, Painter, View, Widget};
+use crate::widget::{AnyWidget, Behavior, Callbacks, Element, Painter, ScrollInner, View, Widget};
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
@@ -324,6 +324,8 @@ pub(crate) struct AppInner {
     timers: RefCell<timer::Timers>,
     animations: RefCell<Animations>,
     timelines: RefCell<Vec<Weak<crate::animation::TimelineInner>>>,
+    /// Scroll boxes with scroll handlers that moved since the last report.
+    scrolled: RefCell<Vec<Weak<ScrollInner>>>,
     deferred: RefCell<VecDeque<Deferred>>,
     handlers: AppHandlers,
     messages: RefCell<HashMap<TypeId, MessageHandlers>>,
@@ -555,6 +557,7 @@ impl App {
             timers: RefCell::new(timer::Timers::default()),
             animations: RefCell::default(),
             timelines: RefCell::new(Vec::new()),
+            scrolled: RefCell::new(Vec::new()),
             deferred: RefCell::new(VecDeque::new()),
             handlers: AppHandlers::default(),
             messages: RefCell::new(HashMap::new()),
@@ -1411,6 +1414,21 @@ impl App {
         self.0.timers.borrow().next_due()
     }
 
+    pub(crate) fn queue_scroll(&self, scroll: Weak<ScrollInner>) {
+        self.0.scrolled.borrow_mut().push(scroll);
+    }
+
+    /// Runs the scroll handlers of the boxes that moved since the last report. Moves they make wait for the next one.
+    fn report_scrolls(&self) {
+        if self.0.scrolled.borrow().is_empty() {
+            return;
+        }
+        let scrolled = std::mem::take(&mut *self.0.scrolled.borrow_mut());
+        for scroll in scrolled.iter().filter_map(Weak::upgrade) {
+            scroll.report(&mut Cx::new(self));
+        }
+    }
+
     /// Whether the turn asked to quit, fail, suspend, or release the terminal, which the top of the event loop does.
     fn ends_turn(&self) -> bool {
         self.0.quit.get()
@@ -1460,6 +1478,7 @@ impl App {
         let started = Instant::now();
         self.run_animations();
         self.drain_deferred();
+        self.report_scrolls();
         let callbacks = started.elapsed();
         self.check()?;
         self.0.dirty.set(false);
@@ -1484,6 +1503,8 @@ impl App {
         self.check()?;
         let draft = draft?;
         self.post_process(&draft)?;
+        // Moves made during the frame that no layout of their box reported.
+        self.report_scrolls();
         self.record_frame_stats(started, callbacks);
         Ok(draft)
     }
