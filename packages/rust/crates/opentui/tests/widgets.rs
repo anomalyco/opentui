@@ -65,6 +65,56 @@ fn sibling_paint_and_hits_match_a_fresh_tree() {
 }
 
 #[test]
+fn resize_handlers_run_depth_first_in_paint_order() {
+    // H stands for a post-layout hook: the root's absolute, zero-height last child. A terminal resize resizes every
+    // node. The scroll box (S, its rows s0..s15 in `rows`) shows two rows; its rows all resize before their children,
+    // and the walk skips the children of the rows it culls.
+    let cases = [
+        ("child order", "", "A a1 a2 a21 rows t0 t1 B H"),
+        ("a raised child stays in its parent", "a1", "A a2 a21 a1 rows t0 t1 B H"),
+        ("a raised sibling comes after", "A", "rows t0 t1 B H A a1 a2 a21"),
+        ("a moved node comes first", "move", "H A a1 a2 a21 rows t0 t1 B"),
+        ("a node added during the walk waits for the next round", "add", "A a1 a2 a21 rows t0 t1 B H C"),
+    ];
+    let rows = (0..16).fold("S".to_owned(), |rows, row| format!("{rows} s{row}"));
+    type Log = Rc<RefCell<Vec<String>>>;
+    fn node<W: Widget>(log: &Log, name: &str, widget: W) -> W {
+        let (log, name) = (log.clone(), name.to_owned());
+        widget.on_resize(move |_, _| log.borrow_mut().push(name.clone()))
+    }
+    for (name, change, expected) in cases {
+        let app = TestApp::new(20, 10);
+        let log = Log::default();
+        let line = |name: &str| node(&log, name, View::new(&app).height(1));
+        let a = node(&log, "A", View::new(&app).grow(1.0).z_index(i32::from(change == "A")));
+        a.add(&line("a1").z_index(i32::from(change == "a1"))).add(&line("a2").child(&line("a21")));
+        let scroll = node(&log, "S", ScrollBox::new(&app).height(2).scrollbars(false));
+        for row in 0..16 {
+            scroll.add(&line(&format!("s{row}")).child(&line(&format!("t{row}"))));
+        }
+        let quarter = |name: &str| node(&log, name, View::new(&app).absolute().width(Length::percent(25.0)));
+        let hook = quarter("H").height(0);
+        app.root().add(&a).add(&scroll).add(&quarter("B").height(1)).add(&hook);
+        app.render();
+        log.borrow_mut().clear();
+        if change == "move" {
+            app.root().insert(3, &hook);
+        }
+        if change == "add" {
+            let (log, root, added) = (log.clone(), app.root(), Rc::new(Cell::new(false)));
+            a.on_resize(move |cx, _| {
+                if !added.replace(true) {
+                    root.add(&node(&log, "C", View::new(cx.app()).absolute().width(Length::percent(25.0))));
+                }
+            });
+        }
+        app.resize(30, 10);
+        app.render();
+        assert_eq!(log.borrow().join(" "), expected.replace("rows", &rows), "{name}");
+    }
+}
+
+#[test]
 fn views_lay_out_borders_titles_and_text() {
     let app = TestApp::new(20, 4);
     let panel = View::new(&app).border(BorderStyle::Rounded).title(" Hi ").padding_x(1).grow(1.0);

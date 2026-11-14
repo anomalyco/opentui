@@ -1128,6 +1128,13 @@ pub trait Widget: Clone + 'static {
     }
 
     /// Called during a frame when layout changes the widget's size.
+    ///
+    /// Each layout round calls these handlers depth first in paint order: a widget's come after those of its earlier
+    /// siblings and all their descendants. Siblings go by [`Self::z_index`], then child order. So a handler on the
+    /// root's last child, with no sibling above its z-index, reads this round's [`rect`](Self::rect) of every
+    /// other widget. Exceptions: a widget added or moved since its last layout is resized when the walk reaches its
+    /// parent, before its siblings' descendants; a [`ScrollBox`]'s rows all come before their children, and the
+    /// children of rows it culls are skipped. A widget added during the walk waits for the next round.
     fn on_resize(&self, handler: impl FnMut(&mut Cx<'_>, &Rect) + 'static) -> Self {
         self.element().handlers.resize.add(handler);
         self.element().add_hooks(Hooks::RESIZE);
