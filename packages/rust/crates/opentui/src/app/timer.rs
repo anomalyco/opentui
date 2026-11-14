@@ -70,7 +70,8 @@ impl Timers {
         }
     }
 
-    pub fn clear(&mut self) {
-        self.entries.clear();
+    /// Removes every timer and returns them, for the caller to drop outside any borrow. Ids keep counting.
+    pub fn clear(&mut self) -> impl Sized + use<> {
+        std::mem::take(&mut self.entries)
     }
 }

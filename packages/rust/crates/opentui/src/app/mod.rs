@@ -1467,7 +1467,18 @@ impl App {
         let options = FrameOptions { background: self.theme().background, preserve_unwritten, ..Default::default() };
         self.0.filter_areas.borrow_mut().clear();
         self.0.in_frame.set(true);
-        let draft = self.0.session.frame(&options, |request| self.host_request(request));
+        // Only an app with ticks tells them which widgets the frame draws, so the others pay nothing per request. A
+        // subscription made during the frame counts it as drawn already.
+        let draft = if self.0.animations.borrow().ticks.is_some() {
+            self.0.session.frame(&options, |request| {
+                if let HostRequest::Update { num, .. } = request {
+                    self.mark_drawn(num);
+                }
+                self.host_request(request)
+            })
+        } else {
+            self.0.session.frame(&options, |request| self.host_request(request))
+        };
         self.0.in_frame.set(false);
         crate::native::resume_measure_panic();
         self.check()?;
@@ -1504,7 +1515,6 @@ impl App {
     fn host_request(&self, request: HostRequest<'_>) -> Result<()> {
         match request {
             HostRequest::Update { num, .. } => {
-                self.mark_drawn(num);
                 if let Some(widget) = self.lookup(num) {
                     widget.update(&mut Cx::new(self));
                 }
@@ -1697,9 +1707,10 @@ impl App {
             headless.clear();
         }
         self.0.messages.borrow_mut().clear();
-        // Animations first: a timer callback that drops an animated widget then finds no ticks to end.
+        // Callbacks drop after each borrow: what they own may end ticks or cancel timers as it drops.
         self.0.animations.take();
-        self.0.timers.borrow_mut().clear();
+        let timers = self.0.timers.borrow_mut().clear();
+        drop(timers);
         self.0.filter_areas.borrow_mut().clear();
         let timelines = std::mem::take(&mut *self.0.timelines.borrow_mut());
         for timeline in timelines.iter().filter_map(Weak::upgrade) {

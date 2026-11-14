@@ -541,7 +541,9 @@ let ticking = spinner.on_animation_tick(12.5, {
 ```
 
 `app.on_animation_tick(fps, ...)` is the same clock without a widget. Use
-`app.animate` for work on every frame. With nothing subscribed, the app sets
+`app.animate` for work on every frame, including rates at or above
+`AppOptions::max_fps`: a tick timer would wake the app about twice for each
+frame it gets. With nothing subscribed, the app sets
 no timer, so an idle app with nothing animating never wakes. In tests,
 `TestApp::idle(duration)` runs the loop on the manual clock and returns the
 frames and wakeups that cost.

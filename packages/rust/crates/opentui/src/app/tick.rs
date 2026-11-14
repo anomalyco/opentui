@@ -87,7 +87,8 @@ impl App {
     /// rates tick in the same frames, and slower rates tick in the fastest rate's frames, so several animations cost
     /// the frames of the fastest. A frame late for a due time covers it: [`Tick::ticks`] counts the due times. The
     /// callback runs before the frame paints, and a redraw it requests is that frame. With nothing subscribed the
-    /// app sets no timer. [`Self::animate`] instead runs work on every frame.
+    /// app sets no timer. [`Self::animate`] instead runs work on every frame: use it for rates at or above
+    /// [`AppOptions::max_fps`](super::AppOptions::max_fps), which a tick timer would wake for about twice a frame.
     ///
     /// Panics unless `fps` is positive and finite.
     pub fn on_animation_tick(&self, fps: f64, callback: impl FnMut(&mut Cx<'_>, Tick) + 'static) -> AnimationTick {

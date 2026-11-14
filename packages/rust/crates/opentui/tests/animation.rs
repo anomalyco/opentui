@@ -959,6 +959,42 @@ fn a_cancelled_timer_may_drop_an_animated_widget() {
     let other = View::new(&app);
     let handle = other.on_animation_tick(20.0, spinner(&ticks));
     app.set_timeout(ms(10_000), move |_cx| drop((other, handle)));
+    // And another a value that cancels a timer when it drops, as a playing video does.
+    struct CancelsOnDrop(App, TimerId);
+    impl Drop for CancelsOnDrop {
+        fn drop(&mut self) {
+            self.0.cancel_timer(self.1);
+        }
+    }
+    let cancels = CancelsOnDrop(app.app().clone(), app.set_timeout(ms(10_000), |_cx| {}));
+    app.set_timeout(ms(10_000), move |_cx| drop(cancels));
+}
+
+/// Starts a spinner on itself the first time it paints.
+struct PaintSpinner {
+    widget: RefCell<Option<AnyWidget>>,
+    ticks: Rc<Cell<u64>>,
+    handle: RefCell<Option<AnimationTick>>,
+}
+
+impl Component for PaintSpinner {
+    fn paint(&self, _painter: &mut Painter<'_>) {
+        if let Some(widget) = self.widget.take() {
+            *self.handle.borrow_mut() = Some(widget.on_animation_tick(12.5, spinner(&self.ticks)));
+        }
+    }
+}
+
+#[test]
+fn a_spinner_started_while_painting_ticks_from_its_first_due_time() {
+    let app = TestApp::with_options(4, 2, AppOptions { max_fps: 60, ..Default::default() });
+    let ticks = Rc::new(Cell::new(0));
+    let component = PaintSpinner { widget: RefCell::default(), ticks: ticks.clone(), handle: RefCell::default() };
+    let custom = Custom::new(&app, component).width(1).height(1);
+    custom.with(|component| *component.widget.borrow_mut() = Some(custom.as_any()));
+    app.root().add(&custom);
+    // The painting frame counts as drawing it, so its first due tick runs instead of parking.
+    assert_eq!(idle_second(&app, &ticks), (13, 12, 12));
 }
 
 #[test]
