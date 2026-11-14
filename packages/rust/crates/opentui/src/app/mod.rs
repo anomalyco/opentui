@@ -1638,9 +1638,11 @@ impl App {
                 continue;
             }
             let now = Instant::now();
-            // The frame cap's next slot, while a frame is wanted.
-            let earliest =
-                (self.wants_frame() || host.wants_frame()).then(|| last_frame.map_or(now, |last| last + interval));
+            // The first frame may wait for the cursor report; later frames wait for the frame cap's next slot.
+            let earliest = (self.wants_frame() || host.wants_frame()).then(|| match last_frame {
+                Some(last) => last + interval,
+                None => host.frame_deadline().unwrap_or(now),
+            });
             let mut framed = false;
             if earliest.is_some_and(|earliest| now >= earliest) && host.can_render()? {
                 let draft = self.paint()?;
