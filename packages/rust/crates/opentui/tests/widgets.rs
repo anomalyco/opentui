@@ -973,9 +973,12 @@ fn syntax_fg(app: &TestApp, name: &str) -> Color {
 fn code_highlights_numbers_lines_and_scrolls() {
     use opentui::widget::Code;
     let app = TestApp::new(24, 3);
-    let code = Code::new(&app).filetype("rust").line_numbers(true).grow(1.0);
+    let code = Code::new(&app).filetype("rust").line_numbers(true).wrap(WrapMode::Word).grow(1.0);
     let source: String = (1..=12).map(|line| format!("let x{line} = \"v\"; // c\n")).collect();
     code.set_code(source.trim_end());
+    // Before its first layout the view has no width, so it wraps nothing: 12 rows, not one per character.
+    assert_eq!(code.scroll_to(u32::MAX).scroll_position(), 12);
+    code.scroll_to(0);
     app.root().add(&code);
     // Core's gutter: at least three cells, with one cell of padding on each side of the number.
     assert_eq!(rows(&app), ["  1 let x1 = \"v\"; // c", "  2 let x2 = \"v\"; // c", "  3 let x3 = \"v\"; // c"]);
