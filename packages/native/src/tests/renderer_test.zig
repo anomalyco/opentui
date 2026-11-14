@@ -4068,8 +4068,9 @@ test "FeedBackend - skipped frame retries unsent terminal controls" {
 }
 
 // 413: a frame publishes the image uploads that fit it, in placement order, and later frames send
-// the rest; a frame that fits is published byte for byte, and an upload larger than a frame draws
-// as blocks. The limit is the first frame's measured cells plus the uploads in `fit`, plus `delta`.
+// the rest; a frame that fits is published byte for byte, and an upload larger than a frame is sent
+// as a copy that fits one, or draws as blocks when no copy can. The limit is the first frame's
+// measured cells plus the uploads in `fit`, plus `delta`.
 test "FeedBackend - image uploads wait for the frames they fit" {
     const Row = struct {
         name: []const u8,
@@ -4091,13 +4092,18 @@ test "FeedBackend - image uploads wait for the frames they fit" {
         solid_second: bool = false,
         remove_first_at: ?u32 = null,
         retransport: bool = false,
-        // A pixel size for every image, a crop of its middle 16x16, and text the last uploading
-        // frame sends.
+        // A pixel size for every image, a crop of its middle 16x16, and text a frame sends.
         pixels: ?u32 = null,
         crop: bool = false,
         sends: ?[]const u8 = null,
-        // The images move a cell right from this frame on.
+        // The images move a cell right from this frame on; a cell covers the top-left cell.
         move_at: ?u32 = null,
+        cover: bool = false,
+        // The source rectangle, 12 pixels shorter, starts 4 pixels down and moves down 4 pixels on
+        // frames 1 and 2 (a scroll); the upload must be the whole image resized.
+        scroll: bool = false,
+        // From this frame on, the images have no pixel size (a terminal resize clears it).
+        unsized_at: ?u32 = null,
         // The 32x32 image: compressible, noise, noise as a PNG, or two rows of opaque noise
         // repeated, as a PNG (small as a PNG, large as a Sixel).
         big: enum { pixels, noise, png, rows_png } = .pixels,
@@ -4121,25 +4127,40 @@ test "FeedBackend - image uploads wait for the frames they fit" {
         .{ .name = "kitty one a frame in order", .protocol = .kitty, .sizes = &.{ 16, 16, 16, 16 }, .fit = 0b0001, .uploads = &.{ &.{1}, &.{2}, &.{3}, &.{4} } },
         .{ .name = "kitty resize while one waits", .protocol = .kitty, .sizes = &.{ 16, 16, 16 }, .fit = 0b011, .resize = true, .uploads = &.{ &.{ 1, 2 }, &.{3} } },
         .{ .name = "kitty changing image does not starve", .protocol = .kitty, .sizes = &.{ 16, 16, 16 }, .fit = 0b001, .changing = true, .uploads = &.{ &.{1}, &.{2}, &.{1}, &.{3} } },
-        .{ .name = "kitty alone over a frame", .protocol = .kitty, .sizes = &.{16}, .cells = false, .fit = 0b1, .delta = -1, .retransport = true, .uploads = &.{&.{}}, .blocks = 1 },
-        .{ .name = "kitty alone over a frame, size changes twice", .protocol = .kitty, .sizes = &.{16}, .cells = false, .fit = 0b1, .delta = -1, .growing = true, .uploads = &.{ &.{}, &.{}, &.{}, &.{} }, .blocks = 1 },
-        // 419: the full 32x32 image is over the frame, a copy at the placement's 24x24 pixels fits.
-        // The copy follows size changes, and moved later, it is placed again, not sent again.
-        .{ .name = "kitty copy at the placement fits", .protocol = .kitty, .sizes = &.{32}, .pixels = 24, .growing = true, .fit = 0, .delta = 3500, .sends = "f=32,s=26,v=26,", .move_at = 3, .uploads = &.{ &.{}, &.{1}, &.{1}, &.{} } },
+        .{ .name = "kitty alone over a frame", .protocol = .kitty, .sizes = &.{16}, .cells = false, .fit = 0b1, .delta = -1, .retransport = true, .sends = "c=4,r=2,x=0,y=0,w=14,h=14,", .uploads = &.{ &.{}, &.{1} } },
+        // Runs around a cover map the copy's pixels.
+        .{ .name = "kitty copy under a cover", .protocol = .kitty, .sizes = &.{16}, .cells = false, .fit = 0b1, .delta = -1, .cover = true, .sends = "x=0,y=7,w=14,h=7,", .uploads = &.{ &.{}, &.{1} } },
+        // A pixel size that grows keeps a copy sized by the frame.
+        .{ .name = "kitty alone over a frame, size changes twice", .protocol = .kitty, .sizes = &.{16}, .cells = false, .fit = 0b1, .delta = -1, .growing = true, .uploads = &.{ &.{}, &.{1}, &.{}, &.{} } },
+        // 419: the full 32x32 image is over the frame by its known size, so its first frame sends a copy
+        // of the whole image that fits. Size changes and a move place it again, not send it again.
+        .{ .name = "kitty whole copy fits", .protocol = .kitty, .sizes = &.{32}, .pixels = 24, .growing = true, .fit = 0, .delta = 3500, .sends = "f=32,s=24,v=24,", .move_at = 3, .uploads = &.{ &.{1}, &.{}, &.{}, &.{} } },
         // Another image or opacity, or a copy by the 4x rule that grows out of it, tries the full
         // image again.
+        .{ .name = "kitty whole copy scrolls", .protocol = .kitty, .sizes = &.{32}, .pixels = 24, .scroll = true, .fit = 0, .delta = 3500, .sends = "x=0,y=9,w=24,h=15,", .uploads = &.{ &.{1}, &.{}, &.{} } },
         .{ .name = "kitty copy by the rule grows out of it", .protocol = .kitty, .sizes = &.{32}, .pixels = 16, .growing = true, .fit = 0b1, .delta = 6000, .sends = "f=32,s=32,v=32,", .uploads = &.{ &.{1}, &.{1} } },
         .{ .name = "kitty copy by the rule waits, then grows out of it", .protocol = .kitty, .sizes = &.{32}, .pixels = 16, .growing = true, .text = true, .fit = 0, .delta = 500, .sends = "f=32,s=32,v=32,", .uploads = &.{ &.{}, &.{1} } },
-        .{ .name = "kitty copy of a crop, then a crop that fits", .protocol = .kitty, .sizes = &.{32}, .pixels = 16, .crop = true, .swap_at = 2, .fit = 0, .delta = 3500, .sends = "f=32,s=20,v=20,", .uploads = &.{ &.{}, &.{1}, &.{1} } },
-        .{ .name = "kitty copy at half opacity, then the PNG", .protocol = .kitty, .sizes = &.{32}, .pixels = 24, .big = .rows_png, .opaque_at = 2, .fit = 0, .delta = 3500, .sends = "f=100,", .uploads = &.{ &.{}, &.{1}, &.{1} } },
+        .{ .name = "kitty copy of a crop, then a crop that fits", .protocol = .kitty, .sizes = &.{32}, .pixels = 16, .crop = true, .swap_at = 2, .fit = 0, .delta = 3500, .sends = "f=32,s=20,v=20,", .uploads = &.{ &.{1}, &.{}, &.{1} } },
+        .{ .name = "kitty copy at half opacity, then the PNG", .protocol = .kitty, .sizes = &.{32}, .pixels = 24, .big = .rows_png, .opaque_at = 2, .fit = 0, .delta = 3500, .sends = "f=100,", .uploads = &.{ &.{1}, &.{}, &.{1} } },
         // A copy that waits keeps its image under any transport or source.
-        .{ .name = "kitty zlib copy waits behind a changing image", .protocol = .kitty, .sizes = &.{ 16, 32 }, .pixels = 24, .big = .noise, .changing = true, .transport = 1, .fit = 0b01, .delta = 2000, .uploads = &.{ &.{1}, &.{2}, &.{1}, &.{1} } },
-        .{ .name = "kitty PNG copy waits behind a frame of cells", .protocol = .kitty, .sizes = &.{32}, .pixels = 24, .big = .png, .text_rows = 2, .fit = 0, .delta = 3500, .uploads = &.{ &.{}, &.{}, &.{1} } },
-        .{ .name = "kitty zlib copy alone just over a frame", .protocol = .kitty, .sizes = &.{32}, .pixels = 24, .big = .noise, .transport = 1, .cells = false, .fit = 0, .delta = 3120, .uploads = &.{ &.{}, &.{}, &.{} }, .blocks = 1 },
+        .{ .name = "kitty zlib copy waits behind a changing image", .protocol = .kitty, .sizes = &.{ 16, 32 }, .pixels = 24, .big = .noise, .changing = true, .transport = 1, .fit = 0b01, .delta = 2200, .uploads = &.{ &.{1}, &.{2}, &.{1}, &.{1} } },
+        .{ .name = "kitty PNG copy waits behind the first frame", .protocol = .kitty, .sizes = &.{32}, .pixels = 24, .big = .png, .fit = 0, .delta = 500, .sends = "f=32,", .uploads = &.{ &.{}, &.{1} } },
+        // A copy at the placement's pixels is over a frame too, so a smaller one is sent.
+        .{ .name = "kitty zlib copy shrinks to fit a frame", .protocol = .kitty, .sizes = &.{32}, .pixels = 24, .big = .noise, .transport = 1, .cells = false, .fit = 0, .delta = 3120, .sends = "f=32,s=21,v=21,", .uploads = &.{ &.{}, &.{1} } },
         .{ .name = "kitty alone without a pixel size", .protocol = .kitty, .sizes = &.{32}, .pixels = 0, .cells = false, .fit = 0b1, .delta = -1, .uploads = &.{&.{}}, .blocks = 1 },
+        // A live copy whose pixel size drops to 0 tries the full image, then draws blocks.
+        .{ .name = "kitty copy loses its pixel size", .protocol = .kitty, .sizes = &.{16}, .cells = false, .fit = 0b1, .delta = -1, .unsized_at = 2, .uploads = &.{ &.{}, &.{1}, &.{}, &.{} }, .blocks = 1 },
+        // A whole copy that waits behind the first frame needs no pixel size either.
+        .{ .name = "kitty whole copy waits without a pixel size", .protocol = .kitty, .sizes = &.{32}, .pixels = 24, .big = .png, .fit = 0, .delta = 500, .unsized_at = 0, .sends = "f=32,", .uploads = &.{ &.{}, &.{1} } },
+        // A whole copy needs no pixel size: it stays on the terminal while the size is unknown.
+        .{ .name = "kitty whole copy without a pixel size", .protocol = .kitty, .sizes = &.{32}, .pixels = 24, .big = .png, .fit = 0, .delta = 3500, .unsized_at = 1, .uploads = &.{ &.{1}, &.{} } },
+        // An opaque raw image of 16 chunks that fits its frame exactly is sent whole.
+        .{ .name = "kitty raw image that fits exactly", .protocol = .kitty, .sizes = &.{128}, .fit = 0b1, .uploads = &.{&.{1}} },
+        // A file upload sends a path, so a PNG larger than a frame is sent whole.
+        .{ .name = "kitty file PNG over a frame by its size", .protocol = .kitty, .sizes = &.{32}, .pixels = 24, .big = .png, .transport = 2, .fit = 0b1, .delta = -1, .sends = "s=32,v=32,", .uploads = &.{ &.{}, &.{1} } },
         .{ .name = "kitty waits behind a frame of cells", .protocol = .kitty, .sizes = &.{ 16, 16, 16 }, .fit = 0b011, .text_rows = 2, .uploads = &.{ &.{ 1, 2 }, &.{}, &.{3} } },
         .{ .name = "kitty file transport cells first", .protocol = .kitty, .sizes = &.{ 16, 16 }, .text = true, .fit = 0b01, .delta = -1, .transport = 2, .uploads = &.{ &.{}, &.{ 1, 2 } } },
-        .{ .name = "kitty zlib neighbor of a removed oversize image", .protocol = .kitty, .sizes = &.{ 16, 16 }, .fit = 0b10, .transport = 1, .solid_second = true, .remove_first_at = 2, .uploads = &.{ &.{2}, &.{}, &.{1} } },
+        .{ .name = "kitty zlib neighbor of a removed oversize image", .protocol = .kitty, .sizes = &.{ 16, 16 }, .fit = 0b10, .transport = 1, .solid_second = true, .remove_first_at = 2, .uploads = &.{ &.{2}, &.{1}, &.{1} } },
         .{ .name = "sixel fits", .protocol = .sixel, .sizes = &.{ 16, 16 }, .fit = 0b11, .uploads = &.{&.{ 1, 2 }} },
         .{ .name = "sixel one byte over", .protocol = .sixel, .sizes = &.{ 16, 16 }, .fit = 0b11, .delta = -1, .uploads = &.{ &.{1}, &.{2} } },
         .{ .name = "sixel later waits behind a waiting one", .protocol = .sixel, .sizes = &.{ 16, 32, 16 }, .fit = 0b101, .uploads = &.{ &.{1}, &.{}, &.{3} }, .blocks = 1 },
@@ -4166,11 +4187,14 @@ test "FeedBackend - image uploads wait for the frames they fit" {
                 const value = if (swapped) swap else first;
                 const size = if (swapped) value.width() else first_size;
                 const handle: u32 = @intCast(index + 1 + if (row.changing and index == 0) frame * 16 else if (swapped) @as(u32, 64) else 0);
-                const pixels = (row.pixels orelse size) + @intFromBool(row.kittyFrom(frame)) + if (row.growing) @min(frame, 2) else 0;
+                const sized = row.unsized_at == null or frame < row.unsized_at.?;
+                const pixels = if (!sized) 0 else (row.pixels orelse size) + @intFromBool(row.kittyFrom(frame)) + if (row.growing) @min(frame, 2) else 0;
                 const crop: u32 = if (row.crop) (size - 16) / 2 else 0;
+                const top: u32 = if (row.scroll) (@as(u32, @min(frame, 2)) + 1) * 4 else crop;
                 const moved: i32 = if (row.move_at != null and frame >= row.move_at.?) 1 else 0;
-                _ = try next.drawImage(value, handle, moved + if (row.overlap) 0 else @as(i32, @intCast(index * 9)), 0, size / 4, size / 8, pixels, pixels, crop, crop, size - 2 * crop, size - 2 * crop, if (row.kittyFrom(frame)) .kitty else row.protocol);
+                _ = try next.drawImage(value, handle, moved + if (row.overlap) 0 else @as(i32, @intCast(index * 9)), 0, size / 4, size / 8, pixels, pixels, crop, top, size - 2 * crop, size - 2 * crop - if (row.scroll) @as(u32, 12) else 0, if (row.kittyFrom(frame)) .kitty else row.protocol);
             }
+            if (row.cover) next.set(0, 0, .{ .char = 'c', .fg = ansi.rgbColor(255, 255, 255, 255), .bg = ansi.rgbColor(0, 0, 0, 255), .attributes = 0 });
         }
     };
     var pools = TestPools.init(std.testing.allocator);
@@ -4190,6 +4214,11 @@ test "FeedBackend - image uploads wait for the frames they fit" {
     random.random().bytes(&pixels);
     const twenty = try image.createFromRgba(std.testing.allocator, pixels[0 .. 20 * 20 * 4], 20, 20, 20 * 4);
     defer twenty.deinit();
+    const wide_bytes = try std.testing.allocator.alloc(u8, 128 * 128 * 4);
+    defer std.testing.allocator.free(wide_bytes);
+    for (wide_bytes, 0..) |*byte, index| byte.* = if (index % 4 == 3) 255 else @truncate((index *% 2654435761) >> 11);
+    const wide = try image.createFromRgba(std.testing.allocator, wide_bytes, 128, 128, 128 * 4);
+    defer wide.deinit();
     var bigs = [_]*image.Image{ big, undefined, undefined, undefined };
     for (bigs[1..], 1..) |*value, kind| {
         if (kind == 3) for (0..32 * 32) |index| {
@@ -4204,7 +4233,7 @@ test "FeedBackend - image uploads wait for the frames they fit" {
         errdefer std.debug.print("row: {s}\n", .{row.name});
         var drawn: [4]*image.Image = undefined;
         if (row.transport == 2 and @import("builtin").os.tag == .windows) continue;
-        for (row.sizes, 0..) |size, index| drawn[index] = if (size == 32) bigs[@backingInt(row.big)] else if (row.solid_second) (if (index == 1) solid else noisy) else small;
+        for (row.sizes, 0..) |size, index| drawn[index] = if (size == 128) wide else if (size == 32) bigs[@backingInt(row.big)] else if (row.solid_second) (if (index == 1) solid else noisy) else small;
         // Measure the first frame and each upload without a limit.
         var roomy = try TestRenderer.create(std.testing.allocator, 40, 6, &pools.graphemes, &pools.links);
         defer roomy.deinit();
@@ -4264,8 +4293,17 @@ test "FeedBackend - image uploads wait for the frames they fit" {
             try std.testing.expectEqualSlices(u32, expected, kept[0..count]);
             const escapes = std.mem.count(u8, output.items, if (row.protocol == .kitty or row.kittyFrom(frame)) "\x1b_Ga=t" else "\x1bP");
             try std.testing.expectEqual(count, escapes);
-            if (count != 0) sent = std.mem.find(u8, output.items, row.sends orelse "") != null;
-            if (frame == 0 and count == row.sizes.len) try std.testing.expectEqualStrings(roomy.lastOutput(), output.items);
+            if (row.sends) |text| sent = sent or std.mem.find(u8, output.items, text) != null;
+            if (row.scroll and count != 0) {
+                const start = std.mem.find(u8, output.items, "\x1b_Ga=t").?;
+                const end = std.mem.findPos(u8, output.items, std.mem.findPos(u8, output.items, start, "m=0").?, "\x1b\\").? + 2;
+                const uploaded = try terminal_image_test.decodeKittyChunks(output.items[start..end]);
+                defer std.testing.allocator.free(uploaded);
+                const resized = try image.resize(std.testing.allocator, drawn[0], 24, 24, .area);
+                defer resized.deinit();
+                try std.testing.expectEqualSlices(u8, try resized.ensurePixels(), uploaded);
+            }
+            if (frame == 0 and count == row.sizes.len and row.fit + 1 == @as(u32, 1) << @intCast(row.sizes.len)) try std.testing.expectEqualStrings(roomy.lastOutput(), output.items);
             // Trimming uploads keeps the frame's own controls.
             if (output.items.len != 0) try std.testing.expect(std.mem.find(u8, output.items, ansi.ANSI.hideCursor) != null);
             // A frame keeps nothing it left out: a file upload's lease goes too.

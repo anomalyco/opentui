@@ -219,12 +219,16 @@ const CommittedImage = struct {
     // Kitty runs placed for a partial reservation, ids KITTY_RUN_ID_MIN up.
     kitty_runs: u32 = 0,
     // The upload alone was larger than one frame. A full image is tried once more as a
-    // copy at the placement's pixel size; otherwise the placement draws as blocks while
-    // its pixel size and source size stay the same. A retry's copy that waits is marked too.
+    // copy that fits a frame; otherwise the placement draws as blocks while its pixel
+    // size and source size stay the same. A retry's copy that waits is marked too.
     oversize: bool = false,
-    // The Kitty transmit is a copy of the source rectangle at the placement's pixel size.
-    copied: bool = false,
+    copy: KittyCopy = .none,
 };
+
+// What a live Kitty transmit holds (`kittyCopySize`): the image, the source rectangle scaled
+// to the placement's pixels, or the whole image scaled to fit a frame, whose visible part the
+// placement escape selects.
+const KittyCopy = enum { none, crop, whole };
 
 // Run placement ids start above every buffer placement id. Kitty scopes
 // placement ids to an image id and each owner has its own image id, so runs
@@ -1408,7 +1412,7 @@ pub const CliRenderer = struct {
         placement: OptimizedBuffer.ImagePlacement,
         image_id: u32,
     ) !void {
-        const transmit = try self.kittyPlacementTransmit(placement, .pixels, kittyDownscaleApplies(placement));
+        const transmit = try self.kittyPlacementTransmit(placement, .pixels, if (kittyDownscaleApplies(placement)) .crop else .none);
         defer if (transmit.owned) transmit.image.deinit();
         // Scrollback has no retained source to retry after a failed file upload.
         // Keep it self-contained; compression still applies when explicitly requested.
@@ -1801,8 +1805,8 @@ pub const CliRenderer = struct {
         if (protocol == .sixel and !native_image.dimensionsWithinLimits(placement.pixel_width, placement.pixel_height)) return .fallback;
         if (protocol == .fallback) return protocol;
         const committed = self.sameUpload(placement) orelse return protocol;
-        // A full Kitty image that was too large is sent once more as a copy at the placement's pixel size.
-        if (committed.oversize and (committed.protocol != .kitty or committed.copied or !copySmaller(placement))) return .fallback;
+        // A full Kitty image that was too large is sent once more as a copy that fits a frame.
+        if (committed.oversize and (committed.protocol != .kitty or committed.copy != .none or !hasPixelSize(placement))) return .fallback;
         return protocol;
     }
 
@@ -1818,23 +1822,77 @@ pub const CliRenderer = struct {
         return committed;
     }
 
-    // A copy at the placement's pixel size has fewer pixels than the image.
-    fn copySmaller(placement: OptimizedBuffer.ImagePlacement) bool {
-        const pixel_area = @as(u64, placement.pixel_width) * placement.pixel_height;
-        return pixel_area > 0 and pixel_area < @as(u64, placement.image.width()) * placement.image.height();
+    fn hasPixelSize(placement: OptimizedBuffer.ImagePlacement) bool {
+        return placement.pixel_width != 0 and placement.pixel_height != 0;
     }
 
-    // The live Kitty transmit is a copy at the placement's pixel size: by the 4x rule, or when the
-    // full image was too large (a Kitty entry marked oversize, or a copy not by the rule; blocks
-    // and Sixel entries never tried it). The full upload depends only on the image and its
-    // opacity, so the copy outlives a size change. Scrollback snapshots use the rule alone.
-    fn kittyCopies(self: *const CliRenderer, placement: OptimizedBuffer.ImagePlacement) bool {
-        if (kittyDownscaleApplies(placement)) return true;
-        const committed = self.currentImageForPlacement(placement.placement_id) orelse return false;
+    // The live Kitty transmit is a crop by the 4x rule, the whole image when the full upload's
+    // known size is over a frame, or a crop when the full image was too large (a Kitty entry
+    // marked oversize, or a copy not by the rule; blocks and Sixel entries never tried it). The
+    // full upload depends only on the image and its opacity, so the copy outlives a size change.
+    // Scrollback snapshots use the rule alone.
+    fn kittyCopy(self: *const CliRenderer, placement: OptimizedBuffer.ImagePlacement) KittyCopy {
+        if (kittyDownscaleApplies(placement)) return .crop;
+        if (self.kittyFullOver(placement)) return .whole;
+        const committed = self.currentImageForPlacement(placement.placement_id) orelse return .none;
         const too_large = committed.protocol == .kitty and
-            if (committed.copied) !kittyDownscaleApplies(committed) else committed.oversize;
-        return too_large and committed.image_handle == placement.image_handle and committed.opacity == placement.opacity and
-            copySmaller(placement);
+            if (committed.copy != .none) !kittyDownscaleApplies(committed) else committed.oversize;
+        return if (too_large and committed.image_handle == placement.image_handle and committed.opacity == placement.opacity and
+            hasPixelSize(placement)) .crop else .none;
+    }
+
+    // A raw Kitty upload goes out in base64 chunks of 3072 payload bytes, each in an escape with
+    // its keys: 13 bytes at least, 64 at most (tmux included).
+    fn kittyWireBytes(payload: u64, escape: u64) u64 {
+        return (payload + 2) / 3 * 4 + (payload + 3071) / 3072 * escape;
+    }
+
+    // The full upload is over a frame by a size known before encoding: a PNG passed through, or
+    // raw pixels sent raw. Zlib's size is known after compressing, and a file upload sends a path;
+    // those learn it from the frame (`oversize`).
+    fn kittyFullOver(self: *const CliRenderer, placement: OptimizedBuffer.ImagePlacement) bool {
+        if (self.kittyTransport.mode == .file) return false;
+        const image = placement.image;
+        const payload = if (image.encoded_png != null and placement.opacity == 255)
+            image.encoded_png.?.len
+        else if (self.kittyTransport.mode == .raw)
+            @as(u64, image.width()) * image.height() * kittyPixelBytes(placement)
+        else
+            return false;
+        return kittyWireBytes(payload, 13) > self.backend.uploadLimit();
+    }
+
+    fn kittyPixelBytes(placement: anytype) u64 {
+        return if (placement.image.metadata.has_alpha != 0 or placement.opacity < 255) 4 else 3;
+    }
+
+    // The copy's size: the placement's pixels (a crop) or the image's (whole) when its raw upload
+    // fits a frame, else scaled down with its aspect until it fits with an eighth of the frame
+    // left for the frame's cells. The terminal scales the copy to the placement's cells.
+    fn kittyCopySize(self: *const CliRenderer, placement: OptimizedBuffer.ImagePlacement, copy: KittyCopy) [2]u32 {
+        const full = if (copy == .whole) [2]u32{ placement.image.width(), placement.image.height() } else [2]u32{ placement.pixel_width, placement.pixel_height };
+        // The inverse of `kittyWireBytes` with 64-byte escapes, less their rounding and the
+        // placement escapes the upload carries.
+        const payload: u64 = @intCast(@as(u128, self.backend.uploadLimit() -| 256) * 3072 / (4096 + 64));
+        const fits = payload / kittyPixelBytes(placement);
+        const area = @as(u64, full[0]) * full[1];
+        if (area <= fits) return full;
+        const scale = @sqrt(@as(f64, @floatFromInt(fits - fits / 8)) / @as(f64, @floatFromInt(area)));
+        var size: [2]u32 = undefined;
+        for (&size, full) |*side, pixels| {
+            side.* = @max(1, @as(u32, @intFromFloat(@as(f64, @floatFromInt(pixels)) * scale)));
+        }
+        return size;
+    }
+
+    // The placement's source rectangle in the transmitted image's pixels: x, y, width, height.
+    fn kittySource(self: *const CliRenderer, placement: OptimizedBuffer.ImagePlacement, copy: KittyCopy) [4]u32 {
+        if (copy == .none) return .{ placement.source_x, placement.source_y, placement.source_width, placement.source_height };
+        const size = self.kittyCopySize(placement, copy);
+        if (copy == .crop) return .{ 0, 0, size[0], size[1] };
+        const x = kittySourceSpan(0, size[0], placement.source_x, placement.source_width, placement.image.width()) orelse SourceSpan{ .start = 0, .len = size[0] };
+        const y = kittySourceSpan(0, size[1], placement.source_y, placement.source_height, placement.image.height()) orelse SourceSpan{ .start = 0, .len = size[1] };
+        return .{ x.start, y.start, x.len, y.len };
     }
 
     // Existing overlay cells are repainted by normal cell diffing. The Sixel
@@ -2008,11 +2066,11 @@ pub const CliRenderer = struct {
                 .reservation_intact = reservation.intact,
                 .reservation_hash = reservation.hash,
                 .kitty_runs = if (protocol == .kitty and !reservation.intact)
-                    self.writeKittyReservationRuns({}, placement, 0, self.kittyCopies(placement), false) catch unreachable
+                    self.writeKittyReservationRuns({}, placement, 0, self.kittyCopy(placement), false) catch unreachable
                 else
                     0,
                 .oversize = protocol == .fallback and if (self.sameUpload(placement)) |committed| committed.oversize else false,
-                .copied = protocol == .kitty and self.kittyCopies(placement),
+                .copy = if (protocol == .kitty) self.kittyCopy(placement) else .none,
             });
         }
     }
@@ -2093,21 +2151,23 @@ pub const CliRenderer = struct {
         self: *CliRenderer,
         placement: OptimizedBuffer.ImagePlacement,
         crop: KittyTransmitCrop,
-        downscaled: bool,
+        copy: KittyCopy,
     ) !KittyTransmit {
         const source = placement.image;
-        if (downscaled or (crop == .pixels and kittyCropApplies(placement))) {
+        if (copy != .none or (crop == .pixels and kittyCropApplies(placement))) {
+            const whole = copy == .whole;
             const cropped = try native_image.extract(
                 self.allocator,
                 source,
-                placement.source_x,
-                placement.source_y,
-                placement.source_width,
-                placement.source_height,
+                if (whole) 0 else placement.source_x,
+                if (whole) 0 else placement.source_y,
+                if (whole) source.width() else placement.source_width,
+                if (whole) source.height() else placement.source_height,
             );
-            if (downscaled) {
+            if (copy != .none) {
                 defer cropped.deinit();
-                const resized = try native_image.resize(self.allocator, cropped, placement.pixel_width, placement.pixel_height, .area);
+                const size = self.kittyCopySize(placement, copy);
+                const resized = try native_image.resize(self.allocator, cropped, size[0], size[1], .area);
                 if (placement.opacity < 255) try applyAlphaOpacity(resized, placement.opacity);
                 return .{ .image = resized, .owned = true };
             }
@@ -2140,13 +2200,10 @@ pub const CliRenderer = struct {
         writer: anytype,
         placement: OptimizedBuffer.ImagePlacement,
         image_id: u32,
-        downscaled: bool,
+        copy: KittyCopy,
         tmux: bool,
     ) !u32 {
-        const src_x0: u32 = if (downscaled) 0 else placement.source_x;
-        const src_y0: u32 = if (downscaled) 0 else placement.source_y;
-        const src_w: u32 = if (downscaled) placement.pixel_width else placement.source_width;
-        const src_h: u32 = if (downscaled) placement.pixel_height else placement.source_height;
+        const src_x0, const src_y0, const src_w, const src_h = self.kittySource(placement, copy);
         const z = terminal_image.kittyPlacementZ(placement.placement_id);
         var run_index: u32 = 0;
         var band_y: u32 = 0;
@@ -2204,14 +2261,16 @@ pub const CliRenderer = struct {
         else
             null) else null;
         const image_id = self.kittyImageId(placement.placement_id);
-        const downscaled = self.kittyCopies(placement);
+        const copy = self.kittyCopy(placement);
         const reservation = self.placementReservationState(placement.placement_id);
+        // A whole copy depends only on the image and its opacity; a crop also on its rectangle.
         const retransmit = if (previous) |committed| blk: {
-            const previous_downscaled = committed.copied;
             const source_changed = committed.source_x != placement.source_x or committed.source_y != placement.source_y or
                 committed.source_width != placement.source_width or committed.source_height != placement.source_height;
-            break :blk committed.opacity != placement.opacity or previous_downscaled != downscaled or
-                (downscaled and (source_changed or committed.pixel_width != placement.pixel_width or committed.pixel_height != placement.pixel_height));
+            var shown = placement;
+            shown.pixel_width, shown.pixel_height = .{ committed.pixel_width, committed.pixel_height };
+            break :blk committed.opacity != placement.opacity or committed.copy != copy or
+                (copy == .crop and (source_changed or !std.mem.eql(u32, &self.kittyCopySize(shown, copy), &self.kittyCopySize(placement, copy))));
         } else false;
         const geometry_changed = if (previous) |committed|
             committed.x != placement.x or committed.y != placement.y or committed.width != placement.width or
@@ -2245,7 +2304,7 @@ pub const CliRenderer = struct {
         if (transmits) self.beginUpload(writer, placement);
         defer if (transmits) self.endUpload(writer, placement.placement_id);
         if (transmits) {
-            const transmit = try self.kittyPlacementTransmit(placement, .escape, downscaled);
+            const transmit = try self.kittyPlacementTransmit(placement, .escape, copy);
             defer if (transmit.owned) transmit.image.deinit();
             const directory = if (self.kittyTransport.mode == .file) self.kittyTempDirectory() else "";
             try self.kittyTransport.transmit(self.allocator, writer, transmit.image, image_id, tmux, directory);
@@ -2253,13 +2312,11 @@ pub const CliRenderer = struct {
         }
         if (placement.x < 0 or placement.y < 0) return;
         if (!reservation.intact) {
-            _ = try self.writeKittyReservationRuns(writer, placement, image_id, downscaled, tmux);
+            _ = try self.writeKittyReservationRuns(writer, placement, image_id, copy, tmux);
             return;
         }
-        // A downscaled transmit already contains exactly the placement's
-        // source rectangle; otherwise the full image was transmitted and the
-        // placement escape selects the visible portion.
-        const normalized = downscaled;
+        // The placement escape selects the visible part of what was transmitted.
+        const source = self.kittySource(placement, copy);
         try terminal_image.writeKittyPlacement(
             writer,
             image_id,
@@ -2268,10 +2325,10 @@ pub const CliRenderer = struct {
             @intCast(placement.y + @as(i32, @intCast(self.renderOffset))),
             placement.width,
             placement.height,
-            if (normalized) 0 else placement.source_x,
-            if (normalized) 0 else placement.source_y,
-            if (downscaled) placement.pixel_width else placement.source_width,
-            if (downscaled) placement.pixel_height else placement.source_height,
+            source[0],
+            source[1],
+            source[2],
+            source[3],
             terminal_image.kittyPlacementZ(placement.placement_id),
             tmux,
         );
@@ -2328,10 +2385,11 @@ pub const CliRenderer = struct {
             const staged = &self.pendingImages.items[upload.placement_id - 1];
             std.debug.assert(staged.placement_id == upload.placement_id);
             if (staged.protocol == .kitty) self.kittyTransport.discard(self.kittyImageId(upload.placement_id));
-            // A retry's copy that waits keeps its image, marked to be copied again.
-            const retry = upload.state == .deferred and staged.copied and !kittyDownscaleApplies(staged.*);
+            // A retry's crop that waits keeps its image, marked to be copied again. A whole copy
+            // is chosen again from the image alone, so it waits as a full upload does.
+            const retry = upload.state == .deferred and staged.copy == .crop and !kittyDownscaleApplies(staged.*);
             if (upload.state == .too_large or retry) staged.oversize = true else staged.image_handle = 0;
-            if (retry) staged.copied = false;
+            if (retry) staged.copy = .none;
         }
     }
 

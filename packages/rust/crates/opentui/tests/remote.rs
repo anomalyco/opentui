@@ -538,3 +538,49 @@ fn images_switch_to_kitty_graphics_when_the_terminal_reports_support_after_the_f
     client.send(b"q");
     client.finish().expect("the app thread").expect("the app");
 }
+
+// Expected: an image whose upload is larger than a frame, in a Contain view at HiDPI cells as in an image preview
+// dialog, goes out in its first frame as one Kitty copy that fits the frame, placed over the view's cells.
+// Actual: the full upload, then a copy at the view's pixel size, were each too large: two blank frames, then half blocks.
+#[test]
+fn an_image_larger_than_a_frame_shows_a_kitty_copy_that_fits_one() {
+    use opentui::native::{Image, ImageFit, ImageProtocol, SessionOptions};
+    use opentui::widget::ImageView;
+    let mut app_options = quiet();
+    app_options.host.session =
+        SessionOptions { chunk_size: 16 * 1024, span_capacity: 16, max_bytes: 256 * 1024, control_capacity: 4096 };
+    let mut client = Client::start(RemoteOptions::default(), app_options, |app| {
+        let mut seed = 1u32;
+        let noise: Vec<u8> = (0..600 * 480 * 4)
+            .map(|index| {
+                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                if index % 4 == 3 { 255 } else { (seed >> 16) as u8 }
+            })
+            .collect();
+        let image = Image::from_rgba(app.session().context(), 600, 480, &noise).unwrap();
+        let view = ImageView::new(app).protocol(ImageProtocol::Kitty).fit(ImageFit::Contain).size(30, 10);
+        let view = view.image(Some(image));
+        app.on_key(move |cx, key| {
+            if key.matches("o") {
+                cx.app().root().add(&view);
+            } else if key.matches("q") {
+                cx.quit();
+            }
+        });
+    });
+    client.wait_for("\x1b[14t");
+    // Cells of 20x42 pixels: the view is 600x420, and the image fits it at 525x420, 882 KB as raw RGB in base64.
+    client.send(b"\x1b[4;1008;1600to");
+    client.take_until("the image", |client| client.text().contains("a=p,") || client.text().contains('\u{2580}'));
+    let text = client.text();
+    assert!(!text.contains('\u{2580}') && !text.contains('\u{2584}'), "half blocks");
+    assert_eq!(text.matches("\x1b_Ga=t,").count(), 1);
+    // The copy is placed whole over the view's cells.
+    let (_, upload) = text.split_once("\x1b_Ga=t,").unwrap();
+    let (upload, place) = upload.split_once("a=p,").unwrap();
+    let keys: Vec<&str> = upload.split([',', ';']).take(3).collect();
+    let whole = format!("c=26,r=10,x=0,y=0,w={},h={},", &keys[1][2..], &keys[2][2..]);
+    assert!(upload.len() < 256 * 1024 && place.contains(&whole), "{keys:?} {place:?}");
+    client.send(b"q");
+    client.finish().expect("the app thread").expect("the app");
+}
