@@ -509,12 +509,7 @@ pub const UnifiedTextBufferView = struct {
 
         // A width of zero is a view not laid out yet: wrapping at it gives every character its own row.
         if (vp) |viewport| {
-            const width: ?u32 = if (viewport.width > 0) viewport.width else null;
-            if (self.wrap_width != width) {
-                self.wrap_width = width;
-                self.virtual_lines_dirty = true;
-                self.truncation_applied = false;
-            }
+            self.setWrapWidth(if (viewport.width > 0) viewport.width else null);
         } else {
             self.truncation_applied = false;
         }
