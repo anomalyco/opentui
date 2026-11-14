@@ -454,11 +454,11 @@ impl Host {
         host.session.setup_terminal(options.terminal)?;
         let now = Instant::now();
         host.capability_until = now.checked_add(options.capability_window);
-        host.expect_replies(now)?;
         host.drive_until(TerminalState::Active)?;
         if let Some(split) = &host.split {
             split.setup_done(Instant::now());
         }
+        host.expect_replies(Instant::now())?;
         // Its reply is one of setup's: expected within the capability window.
         host.query_pixels(options.capability_window.min(PIXEL_REPLY_WINDOW))?;
         Ok(host)
@@ -1082,14 +1082,22 @@ mod tests {
 
         const CHILD: &str = "OPENTUI_TEST_LOCAL_FOOTER";
         const REPLY: &[u8] = b"\x1b[4;1R\x1b[4;480;800t";
-        let run = |split: bool, answers: bool, remote, late: Option<RemoteLink>| {
+        let window = HostOptions::default().capability_window;
+        let run = |split: bool, answers: bool, remote, late: Option<RemoteLink>, window: Duration| {
             let mut options = AppOptions::default().with_theme(Theme::dark());
             options.host.split_footer = split.then_some(3);
+            options.host.capability_window = window;
             let app = match remote {
                 Some(terminal) => App::remote(terminal, options),
                 None => App::new(options),
             }
             .unwrap();
+            if window.is_zero() {
+                app.animate(|_, _| {
+                    assert_eq!(POLL_RETURNS.get(), 0, "the first frame waited for a poll");
+                    false
+                });
+            }
             if let Some(link) = late {
                 // The first frame's wait has expired; its reply still places the footer during the capability window.
                 app.animate(move |_, _| {
@@ -1116,7 +1124,7 @@ mod tests {
         };
         if let Ok(row) = std::env::var(CHILD) {
             let (split, answers) = row.split_once(',').unwrap();
-            run(split.parse().unwrap(), answers.parse().unwrap(), None, None);
+            run(split.parse().unwrap(), answers.parse().unwrap(), None, None, window);
             return;
         }
         for split in [false, true] {
@@ -1125,7 +1133,7 @@ mod tests {
                 if answers {
                     link.send_input(REPLY);
                 }
-                run(split, answers, Some(terminal), None);
+                run(split, answers, Some(terminal), None, window);
 
                 // A Unix pty answers only when its driver does. ConPTY answers cursor queries itself.
                 if cfg!(unix) {
@@ -1150,7 +1158,11 @@ mod tests {
             }
         }
         let (terminal, link) = RemoteTerminal::new(RemoteOptions::default(), || {}).unwrap();
-        run(true, true, Some(terminal), Some(link));
+        run(true, true, Some(terminal), Some(link), window);
+        // Even the explicit-width probe's cursor-shaped reply cannot place the footer after the window.
+        let (terminal, link) = RemoteTerminal::new(RemoteOptions::default(), || {}).unwrap();
+        link.send_input(b"\x1b[2;2R");
+        run(true, false, Some(terminal), None, Duration::ZERO);
     }
 
     #[test]
