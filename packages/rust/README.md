@@ -325,6 +325,11 @@ started when the app learns which languages it will show. A highlight that
 needs the grammar meanwhile waits for that compile instead of starting another,
 so frames do not change. It returns `false` for a filetype without a grammar.
 
+A highlighted `Code` keeps its parse tree, so an append parses only the new
+text. The tree takes about 40 bytes per byte of Rust. `Code::finish` frees it
+when the text stops growing, such as a finished tool output; the view paints as
+before, and a later change parses the whole text once.
+
 ### Your own widgets
 
 Implement `Component` and wrap it in `Custom`. Painting uses local coordinates

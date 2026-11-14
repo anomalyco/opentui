@@ -49,7 +49,8 @@ pub(crate) struct CodeInner {
     /// The highlighter with the tree of the highlighted start, while no highlight runs. An append hands it only the
     /// appended bytes; replacing the text or filetype drops it.
     pub(crate) incremental: RefCell<Option<Incremental>>,
-    /// Whether the text is a closed Markdown fence, which drops its tree once its last highlight landed.
+    /// Whether the view was finished, or is a closed Markdown fence, since its text last changed: it drops its tree
+    /// once its last highlight landed.
     closed: Cell<bool>,
     source: RefCell<String>,
     /// The source offsets of its CRLF pairs. The buffer counts one byte per line break, so a layer run edge moves left
@@ -266,8 +267,8 @@ impl CodeInner {
         self.release_closed();
     }
 
-    /// A closed Markdown fence drops its tree once its last highlight landed: its text no longer grows. A running
-    /// highlight holds the tree until it lands.
+    /// A finished view drops its tree once its last highlight landed: its text no longer grows. A running highlight
+    /// holds the tree until it lands.
     fn release_closed(&self) {
         if self.closed.get() && !self.stale.get() {
             self.incremental.take();
@@ -302,6 +303,7 @@ impl CodeInner {
 
     /// Highlights changed text at the next frame. As in Core, the selection starts over at the same cells.
     fn changed(&self) {
+        self.closed.set(false);
         self.mark_stale();
         self.gutter.changed();
         if self.selection.get().is_some() {
@@ -626,6 +628,17 @@ impl Code {
         self.0.source.borrow().clone()
     }
 
+    /// Frees the parse tree that highlighting keeps for the next append, and its copy of the text: for text that no
+    /// longer grows, such as a finished tool output. For Rust they take about 40 bytes per byte of text. The view
+    /// paints as before, and a theme still restyles it. A highlight still running drops its tree when it lands.
+    ///
+    /// It is a hint, not a mode: the next change keeps a tree again, and may highlight the whole text once to get it.
+    /// Calling it twice, or on a view without a tree, does nothing.
+    pub fn finish(&self) -> Self {
+        self.0.set_closed(true);
+        self.clone()
+    }
+
     /// Highlights the text as a filetype, such as `"rust"`, or shows it plain with `None`. Extensions, file names,
     /// and fence tags work too: `"rs"`, `"main.rs"`, `"ts"`. It needs the `tree-sitter` feature and a grammar for the
     /// filetype; without them the text is plain. See [`syntax`](crate::syntax).
@@ -801,8 +814,8 @@ pub(crate) mod tests {
 
     // P12 and C4 invariants 1, 2, 4, 8, 9 and 10: every frame equals a buffer written with the styled text of the
     // highlighted start of the source and the rest plain, as the styled-ranges view painted it, over appends (CRLF
-    // whole and split), replacements, filetype and theme changes, and writes through `buffer()` before an append or
-    // while a highlight runs; a settled view highlights all its text. The styled text is a fresh highlight's, or
+    // whole and split), replacements, filetype and theme changes, `finish`, and writes through `buffer()` before an
+    // append or while a highlight runs; a settled view highlights all its text. The styled text is a fresh highlight's, or
     // where a fresh parse has an error, the view's own tree's. Since its last replacement, a settled view handed its
     // highlights each byte once and parsed without a tree once.
     #[test]
@@ -841,9 +854,12 @@ pub(crate) mod tests {
             // parses without a tree on this thread since. Only `compare` and a write by another caller render, and
             // that write's append replaces the text too.
             let mut replaced = (0, 0);
+            // Whether the view was finished since its text last changed, and since its last replacement.
+            let finished = Cell::new((false, false));
             let mut compare = |settled: bool| {
                 if code.0.highlighted.get().is_none() && code.0.pending.borrow().is_none() {
                     replaced = (code.0.handed.get(), 0);
+                    finished.set((finished.get().0, finished.get().0));
                 }
                 let parses = syntax::FRESH_PARSES.get();
                 let got = if settled { settle(&app, std::slice::from_ref(&code)) } else { app.render() };
@@ -860,7 +876,12 @@ pub(crate) mod tests {
                 if settled && filetype.as_deref().is_some_and(syntax::has_grammar) {
                     assert_eq!(start, source.len(), "seed {seed}: settled with a plain tail");
                     let since = (code.0.handed.get() - replaced.0, replaced.1, own.is_some());
-                    assert_eq!(since, (source.len(), 1, true), "seed {seed}: highlights since {source:?} was replaced");
+                    // A finished view keeps no tree, and its next change parses afresh and keeps one again.
+                    if let (now, true) = finished.get() {
+                        assert_eq!(since.2, !now, "seed {seed}: kept a tree, finished {now}");
+                    } else {
+                        assert_eq!(since, (source.len(), 1, true), "seed {seed}: highlights since {source:?} replaced");
+                    }
                 } else if settled {
                     // Without a grammar nothing is copied for a highlight (bigboi-2).
                     assert_eq!((own.is_none(), code.0.handed.get()), (true, replaced.0), "seed {seed}: plain text");
@@ -907,7 +928,8 @@ pub(crate) mod tests {
             // Seed 3 highlights with every worker thread failing to start (bigboi-5).
             DENY_THREADS.set(seed == 3);
             for _ in 0..40 {
-                match next(12) {
+                let before = (code.code(), code.0.filetype.borrow().clone());
+                match next(13) {
                     0..=4 => drop(code.append(PIECES[next(PIECES.len())])),
                     5 => drop(code.set_code((0..next(8)).map(|_| PIECES[next(PIECES.len())]).collect::<String>())),
                     6 => {
@@ -930,11 +952,20 @@ pub(crate) mod tests {
                         if next(2) == 0 { code.buffer().append("!") } else { code.buffer().clear(true) }.unwrap();
                         if code.0.pending.borrow().is_none() {
                             code.append(PIECES[next(PIECES.len())]);
+                            finished.set((false, finished.get().1));
                         }
                         compare(true);
                     }
                     9 => compare(false),
+                    // Also twice, without a tree, during a highlight, before a theme switch.
+                    12 => {
+                        code.finish();
+                        finished.set((true, true));
+                    }
                     _ => compare(true),
+                }
+                if (code.code(), code.0.filetype.borrow().clone()) != before {
+                    finished.set((false, finished.get().1));
                 }
             }
             DENY_THREADS.set(false);
