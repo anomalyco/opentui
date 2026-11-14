@@ -618,6 +618,14 @@ test "renderer does not retransmit Sixel when overlay text changes" {
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 1, 2, 2, 0, 0, 1, 1, .sixel));
     _ = test_renderer.render(false);
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1bP0;1;0q") != null);
+
+    // A background change under the still image keeps its cells: a space there would erase the pixels.
+    next = test_renderer.renderer.getNextBuffer();
+    next.clear(ansi.rgbColor(32, 43, 61, 255), null);
+    try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 1, 2, 2, 0, 0, 1, 1, .sixel));
+    _ = test_renderer.render(false);
+    try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1b[1;1H ") == null);
+    try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1bP0;1;0q") == null);
 }
 
 test "renderer replays a wide grapheme that starts before a Sixel placement" {
@@ -1042,6 +1050,45 @@ test "renderer keeps a Kitty image whole under an overlapping Kitty image" {
     try expectKittyPlacementDeleted(&test_renderer, covered, 2, 2);
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, covered, "a=p"));
     try std.testing.expect(std.mem.find(u8, covered, ",p=2147483648,c=1,r=1,x=0,y=0,w=1,h=1,C=1,z=-1073741823") != null);
+}
+
+// A dialog's image over a Kitty image closes. Blocks left their glyphs and Sixel its pixels in
+// the cells, which are drawn over the Kitty image unless the closing frame clears them. A Kitty
+// image left the cells blank, so they stay as they are.
+test "renderer clears an uncovered Kitty image's cells by what covered them" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const red: [16]u8 = @bitCast(@as([4][4]u8, @splat(.{ 255, 0, 0, 255 })));
+    const blue: [64]u8 = @bitCast(@as([16][4]u8, @splat(.{ 0, 0, 255, 255 })));
+    const value = try image.createFromRgba(std.testing.allocator, &red, 2, 2, 8);
+    defer value.deinit();
+    const cover = try image.createFromRgba(std.testing.allocator, &blue, 4, 4, 16);
+    defer cover.deinit();
+    const rows = [_]struct { image.RenderProtocol, bool }{ .{ .blocks, true }, .{ .sixel, true }, .{ .kitty, false } };
+    for (rows) |row| {
+        const protocol, const cleared = row;
+        var test_renderer = try TestRenderer.create(std.testing.allocator, 3, 2, &pools.graphemes, &pools.links);
+        defer test_renderer.deinit();
+        var next = test_renderer.renderer.getNextBuffer();
+        try std.testing.expect(try next.drawImage(value, 1, 0, 0, 2, 2, 4, 4, 0, 0, 2, 2, .kitty));
+        try std.testing.expect(try next.drawImage(cover, 2, 0, 0, 2, 2, 4, 4, 0, 0, 4, 4, protocol));
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
+
+        next = test_renderer.renderer.getNextBuffer();
+        try std.testing.expect(try next.drawImage(value, 1, 0, 0, 2, 2, 4, 4, 0, 0, 2, 2, .kitty));
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
+        const output = test_renderer.memory.lastWrite();
+        try std.testing.expectEqual(cleared, std.mem.find(u8, output, "\x1b[1;1H  ") != null and std.mem.find(u8, output, "\x1b[2;1H  ") != null);
+
+        var terminal: ghostty_vt.vt.Terminal = try .init(std.testing.io, std.testing.allocator, .{ .cols = 3, .rows = 2 });
+        defer terminal.deinit(std.testing.allocator);
+        var stream = terminal.vtStream();
+        defer stream.deinit();
+        stream.nextSlice(test_renderer.memory.bytes.items);
+        const screen = try terminal.plainString(std.testing.allocator);
+        defer std.testing.allocator.free(screen);
+        try std.testing.expectEqualStrings("\n", std.mem.trim(u8, screen, " "));
+    }
 }
 
 test "renderer merges uncovered Kitty rows into one placement" {
