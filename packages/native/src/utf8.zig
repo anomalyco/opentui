@@ -81,8 +81,8 @@ pub const TabStopResult = struct {
 };
 
 /// Classifies a layout break opportunity. Line wrapping and editor word motion
-/// share the same scan, but the two boundary sets differ: every kind is a
-/// line-break opportunity, while only word-ending kinds are word boundaries.
+/// share the same scan, but wrapping checks punctuation against the following
+/// text, while only word-ending kinds are word boundaries.
 pub const LayoutWrapBreakKind = enum(u8) {
     none,
     whitespace,
@@ -104,8 +104,7 @@ pub const LayoutWrapBreakKind = enum(u8) {
 /// Direct byte and display-column metadata for a wrap opportunity.
 /// The window identifies the grapheme that creates the break, not the position
 /// after it; consumers use byteEnd()/colEnd() to cross the boundary.
-/// Line wrapping may break at every entry; word motion must filter through
-/// `kind.isWordBoundary()`.
+/// Line wrapping validates punctuation candidates; word motion must filter through `kind.isWordBoundary()`.
 pub const LayoutWrapBreak = struct {
     byte_start: u32,
     col_start: u32,
@@ -192,6 +191,18 @@ inline fn unicodeLayoutWrapBreakKind(cp: u21) LayoutWrapBreakKind {
         0xFF1F, // FULLWIDTH QUESTION MARK
         => .punctuation,
         else => .none,
+    };
+}
+
+/// Line wrapping keeps closing punctuation attached
+pub inline fn isLineClosingPunctuation(cp: u21) bool {
+    if (cp <= 0x7F) return switch (cp) {
+        '.', ',', ';', ':', '!', '?', ')', ']', '}' => true,
+        else => false,
+    };
+    return switch (uucode.get(.general_category, cp)) {
+        .punctuation_close, .punctuation_final_quote => true,
+        else => cp != 0x00AD and cp != 0x2010 and unicodeLayoutWrapBreakKind(cp) == .punctuation,
     };
 }
 

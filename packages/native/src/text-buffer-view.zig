@@ -2089,6 +2089,7 @@ pub const UnifiedTextBufferView = struct {
             pending_word_pieces: if (wrap_mode == .word) std.ArrayListUnmanaged(PendingWordPiece) else void = if (wrap_mode == .word) .empty else {},
             pending_word_width_cols: if (wrap_mode == .word) u32 else void = if (wrap_mode == .word) 0 else {},
             pending_word_last_class: if (wrap_mode == .word) utf8.WordClass else void = if (wrap_mode == .word) .other else {},
+            pending_punctuation_break: if (wrap_mode == .word) bool else void = if (wrap_mode == .word) false else {},
             source_line_has_non_whitespace: if (wrap_mode == .word) bool else void = if (wrap_mode == .word) false else {},
             word_chunk: if (wrap_mode == .word) ?*const TextChunk else void = if (wrap_mode == .word) null else {},
             word_chunk_col_start: if (wrap_mode == .word) u32 else void = if (wrap_mode == .word) 0 else {},
@@ -2224,6 +2225,7 @@ pub const UnifiedTextBufferView = struct {
                 wctx.pending_word_pieces.clearRetainingCapacity();
                 wctx.pending_word_width_cols = 0;
                 wctx.pending_word_last_class = .other;
+                wctx.pending_punctuation_break = false;
             }
 
             fn dropPendingWordPrefix(wctx: *@This(), count: usize) void {
@@ -2453,6 +2455,20 @@ pub const UnifiedTextBufferView = struct {
                 const col_end = @min(wrap_break.colEnd(), chunk.width_cols);
                 const byte_end = @min(wrap_break.byteEnd(), @as(u32, @intCast(chunk_bytes.len)));
                 if (col_end < wctx.word_chunk_col_start or byte_end < wctx.word_chunk_byte_start) return;
+                if (wrap_break.kind == .punctuation) {
+                    if (byte_end < chunk_bytes.len) {
+                        if (utf8.isLineClosingPunctuation(utf8.decodeUtf8Unchecked(chunk_bytes, byte_end).cp)) return;
+                    } else {
+                        // The next chunk decides whether this punctuation ends the wrapping piece.
+                        queuePendingWordPiece(wctx, chunk, wctx.word_chunk_col_start, col_end - wctx.word_chunk_col_start, wctx.word_chunk_byte_start, byte_end);
+                        wctx.pending_word_last_class = .other;
+                        wctx.pending_punctuation_break = true;
+                        wctx.word_chunk_col_start = col_end;
+                        wctx.word_chunk_byte_start = byte_end;
+                        wctx.source_line_has_non_whitespace = true;
+                        return;
+                    }
+                }
                 if (wrap_break.kind == .whitespace) {
                     processWhitespaceBreak(wctx, chunk, wctx.word_chunk_col_start, wctx.word_chunk_byte_start, wrap_break);
                     if (wctx.failed) return;
@@ -2490,6 +2506,13 @@ pub const UnifiedTextBufferView = struct {
 
             fn processWordChunk(wctx: *@This(), chunk: *const TextChunk) void {
                 const chunk_bytes = chunk.getBytes(wctx.text_buffer.memRegistry());
+                if (wctx.pending_punctuation_break and chunk_bytes.len > 0) {
+                    wctx.pending_punctuation_break = false;
+                    if (!utf8.isLineClosingPunctuation(utf8.decodeUtf8Unchecked(chunk_bytes, 0).cp)) {
+                        finalizePendingWord(wctx);
+                        if (wctx.failed) return;
+                    }
+                }
                 // Reuse existing caches, but retain cold layout only for medium
                 // non-ASCII chunks; vectorized ASCII and small/large chunks stream.
                 const cached_layout = chunk.getCachedLayoutInfo(wctx.text_buffer.tabWidth(), wctx.text_buffer.widthMethod());
