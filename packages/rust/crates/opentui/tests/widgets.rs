@@ -984,6 +984,8 @@ fn cell_runs_paint_like_single_cells() {
     let bold = "aé─Z".chars().map(|character| (character, Style::new().bold())).collect::<Vec<_>>();
     let twins = [false, true].map(|batched| {
         let app = TestApp::new(10, 4);
+        // The single cells paint without the frame check, which must change no cell.
+        app.set_verify(batched);
         let run = Run { cells: bold.clone(), width: 4, at: (0, 0), clip: false, batched };
         let run = Custom::new(&app, run).absolute().position(Edge::Left, 1).width(9).height(4);
         app.root().add(&Text::new(&app, "0123456789\n9876543210\n0123456789\n9876543210")).add(&run);
