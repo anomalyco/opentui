@@ -54,7 +54,10 @@ pub use markdown::{
     MarkdownTableStyle,
 };
 pub use painter::Painter;
-pub use scroll::{LinearScroll, MacOsScroll, ScrollAcceleration, ScrollAction, ScrollBox, ScrollEdge};
+pub(crate) use scroll::ScrollInner;
+pub use scroll::{
+    LinearScroll, MacOsScroll, ScrollAcceleration, ScrollAction, ScrollBox, ScrollCause, ScrollEdge, ScrollEvent,
+};
 pub use select::{Select, SelectAction, SelectOption};
 pub use slider::{Slider, SliderAction};
 pub use table::{Column, ColumnWidth, Table, TableAction};

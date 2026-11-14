@@ -759,6 +759,88 @@ fn scroll_moves_to_the_end_follow_content_added_before_the_frame() {
 }
 
 #[test]
+fn scroll_events_report_each_move_once_before_it_paints() {
+    // 10 lines in 4 rows scroll from 0 to 6. `|` ends a frame; an event is its cause and row, `~` while unsettled; `H`
+    // is the resize handler of the root's last child. `bar` clicks the scrollbar's last row; `sticky` makes the box
+    // follow the bottom; `add` adds a line; `tall`, `wide` and `narrow` resize the terminal, the last taller and
+    // wrapping every line to two rows; `arm` makes H scroll to row 2; `on` adds the scroll handler, which rows without it add first.
+    let cases: &[(&str, &[&str], &str)] = &[
+        ("wheel steps before a frame are one event", &["wheel", "wheel", "wheel", "F"], "Wheel 3 |"),
+        ("each frame reports its own moves", &["wheel", "F", "wheel", "F"], "Wheel 1 | Wheel 2 |"),
+        ("a key", &["down", "F"], "Key 1 ~ |"),
+        ("nothing moved", &["home", "F", "wheel", "up", "F"], "| |"),
+        ("the scrollbar", &["bar", "F"], "Pointer 5 |"),
+        ("the program, before layout is known", &["3", "F", "F"], "Program 3 ~ | |"),
+        ("a move to the end follows content added before the frame", &["end", "add", "F"], "Key 6 ~ Key 7 |"),
+        ("a sticky box follows new content", &["sticky", "add", "F", "add", "F"], "Layout 7 | Layout 8 |"),
+        ("a clamp to a taller view", &["end", "F", "tall", "F"], "Key 6 ~ | Layout 4 |"),
+        ("view and content resize at once", &["sticky", "add", "F", "narrow", "F"], "Layout 7 | Layout 15 H |"),
+        ("a move between frames is reported before layout", &["wheel", "wide", "F"], "Wheel 1 H |"),
+        ("a handler's move during a frame is reported after it", &["arm", "wide", "F"], "H Program 2 ~ |"),
+        ("moves before the first handler are not reported", &["5", "F", "on", "wide", "F"], "| H |"),
+        ("a key at the end follows new content", &["6", "F", "end", "add", "F"], "Program 6 ~ | Key 7 |"),
+        ("a sticky box sent to the end keeps no target", &["sticky", "end", "F"], "Key 6 |"),
+    ];
+    for &(name, steps, expected) in cases {
+        let app = TestApp::new(20, 4);
+        let scroll = ScrollBox::new(&app).grow(1.0);
+        for line in 0..10 {
+            scroll.add(&Text::new(&app, format!("line {line} of text")));
+        }
+        let (armed, log) = (Rc::new(Cell::new(false)), Rc::new(RefCell::new(Vec::new())));
+        let hook = View::new(&app).absolute().width(Length::percent(25.0)).height(0).on_resize({
+            let (scroll, armed, log) = (scroll.clone(), armed.clone(), log.clone());
+            move |_, _| {
+                log.borrow_mut().push("H".to_owned());
+                if armed.replace(false) {
+                    scroll.scroll_to(0.0, 2.0);
+                }
+            }
+        });
+        app.root().add(&scroll).add(&hook);
+        scroll.focus();
+        app.render();
+        log.borrow_mut().clear();
+        let listen = || {
+            scroll.on_scroll({
+                let (log, scroll) = (log.clone(), scroll.clone());
+                move |_, event| {
+                    assert_eq!(event.position, scroll.scroll_position());
+                    let settled = if event.settled { "" } else { " ~" };
+                    log.borrow_mut().push(format!("{:?} {}{settled}", event.cause, event.position.1));
+                }
+            })
+        };
+        if !steps.contains(&"on") {
+            listen();
+        }
+        for &step in steps {
+            match step {
+                "F" => {
+                    app.render();
+                    log.borrow_mut().push("|".into());
+                }
+                "wheel" => app.scroll(2, 1, true),
+                "bar" => app.click(19, 3),
+                "sticky" => drop(scroll.sticky(true)),
+                "add" => drop(scroll.add(&Text::new(&app, "added"))),
+                "tall" => app.resize(20, 6),
+                "narrow" => app.resize(12, 6),
+                "on" => drop(listen()),
+                "arm" => armed.set(true),
+                "wide" => app.resize(24, 4),
+                "home" | "end" | "up" | "down" => app.press(step),
+                delta => drop(scroll.scroll_by(0.0, delta.parse().unwrap())),
+            }
+        }
+        assert_eq!(log.borrow().join(" "), expected, "{name}");
+        // The app's teardown releases a scroll handler that holds its own box.
+        drop((app, scroll, hook));
+        assert_eq!(Rc::strong_count(&log), 1, "{name}");
+    }
+}
+
+#[test]
 fn tab_moves_focus_in_tree_order_and_skips_hidden_widgets() {
     let app = TestApp::new(20, 6);
     let first = Input::new(&app);
