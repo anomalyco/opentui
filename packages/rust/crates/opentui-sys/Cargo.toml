@@ -9,5 +9,6 @@ description = "Raw FFI declarations for OpenTUI's checked C ABI"
 
 [features]
 default = ["static"]
-# Link libopentui.a instead of libopentui.so or libopentui.dylib. Windows links opentui.dll either way.
+# Link libopentui.a instead of libopentui.so or libopentui.dylib, and on Windows MSVC opentui-static.lib instead of
+# opentui.dll. The Windows GNU targets link opentui.dll either way.
 static = []

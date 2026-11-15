@@ -65,8 +65,8 @@ imports, and `opentui.dll`. Static linkage also needs the platform libraries, an
 on macOS the C++ runtime; the Linux archive carries its own, private libc++. The
 Windows archive is built for MinGW and carries the parts of Zig's MinGW runtime
 that MSVC lacks, among them libc++, so MSVC links it too: it also needs
-`ntdll`, `user32`, and `legacy_stdio_definitions`. `zig build -Dall` builds all
-supported targets.
+`ntdll`, `user32`, `bcrypt`, and `legacy_stdio_definitions`. `zig build -Dall`
+builds all supported targets.
 
 Native video statically links a decode-only LGPL FFmpeg build into the libraries.
 `bun run build` builds it first with [`scripts/build-ffmpeg.ts`](scripts/build-ffmpeg.ts)
