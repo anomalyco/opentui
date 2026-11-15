@@ -1070,28 +1070,61 @@ fn base_layout_fallback_matches_non_latin_layouts() {
 }
 
 #[test]
-fn timed_leader_expires_its_sequence() {
-    let keymap = Keymap::new();
-    let calls = calls();
-    let leader = addons::timed_leader(&keymap, "leader", "ctrl+x", Duration::from_millis(2000)).unwrap();
+fn timed_leader_expires_on_the_apps_clock() {
+    // Wired as an app wires it: after each key, a timer on the app's clock for the leader's latest generation.
+    let app = crate::testing::TestApp::new(10, 2);
+    let (keymap, calls) = (Keymap::new(), calls());
+    let leader = Rc::new(addons::timed_leader(&keymap, "leader", "ctrl+x", Duration::from_millis(2000)).unwrap());
     keymap
-        .register_layer(Layer::new().command(record(&calls, "new")).binding(Binding::new("<leader>gn").cmd("new")))
+        .register_layer(
+            Layer::new()
+                .command(record(&calls, "new"))
+                .bindings([Binding::new("<leader>gn").cmd("new"), Binding::new("dd").cmd("new")]),
+        )
         .forget();
-    assert!(leader.deadline().is_none());
-    press(&keymap, "ctrl+x");
-    let deadline = leader.deadline().expect("armed");
-    assert!(!leader.expire(Instant::now()));
-    press(&keymap, "g");
-    assert!(leader.deadline().unwrap() >= deadline);
-    assert!(leader.expire(Instant::now() + Duration::from_millis(2000)));
-    assert!(pending(&keymap).is_empty());
-    assert!(leader.deadline().is_none());
-    press(&keymap, "ctrl+x");
-    press(&keymap, "g");
-    press(&keymap, "n");
-    assert!(leader.deadline().is_none());
+    let timer = Rc::new(Cell::new(None));
+    app.on_key({
+        let (keymap, leader) = (keymap.clone(), leader.clone());
+        move |cx, key| {
+            keymap.handle_key(key);
+            if let Some(previous) = timer.take() {
+                cx.cancel_timer(previous);
+            }
+            if let Some(generation) = leader.armed() {
+                let leader = leader.clone();
+                timer.set(Some(cx.set_timeout(leader.timeout(), move |_| {
+                    leader.expire(generation);
+                })));
+            }
+        }
+    });
+    // Only a sequence that starts with the leader arms it.
+    app.press("d");
+    assert_eq!((pending(&keymap).len(), leader.armed()), (1, None));
+    app.press("d");
     assert_eq!(taken(&calls), ["new"]);
-    leader.dispose();
+    app.press("ctrl+x");
+    app.advance(Duration::from_millis(1999));
+    assert_eq!(pending(&keymap).len(), 1);
+    app.advance(Duration::from_millis(1));
+    assert!(pending(&keymap).is_empty());
+    assert_eq!(leader.armed(), None);
+    // A later stroke arms a new generation, which the old one's expiry leaves alone.
+    app.press("ctrl+x");
+    let first = leader.armed().expect("armed");
+    app.advance(Duration::from_millis(1000));
+    app.press("g");
+    assert!(!leader.expire(first));
+    app.advance(Duration::from_millis(1999));
+    assert_eq!(pending(&keymap).len(), 2);
+    // A completed sequence disarms the leader, and its last generation expires nothing.
+    let last = leader.armed().expect("armed");
+    app.press("n");
+    assert_eq!(taken(&calls), ["new"]);
+    assert_eq!(leader.armed(), None);
+    assert!(!leader.expire(last));
+    drop(app);
+    Rc::into_inner(leader).expect("the app's handlers are gone").dispose();
     assert!(keymap.parse_key_sequence("<leader>").unwrap().is_empty());
 }
 

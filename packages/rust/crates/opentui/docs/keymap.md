@@ -77,7 +77,7 @@ they mean in TypeScript.
 | `registerEscapeClearsPendingSequence`                 | `addons::escape_clears_pending_sequence`                                                                                                                                     |
 | `registerBackspacePopsPendingSequence`                | `addons::backspace_pops_pending_sequence`                                                                                                                                    |
 | `registerManagedTextareaLayer`                        | `addons::managed_textarea_layer`: the `input.*` commands and Core's default textarea bindings, with the app's overrides first; the commands call back with an `EditorAction` |
-| `registerTimedLeader`                                 | `addons::timed_leader`: returns a `TimedLeader` whose `deadline()` the app schedules and whose `expire(now)` clears the leader sequence                                      |
+| `registerTimedLeader`                                 | `addons::timed_leader`: a `TimedLeader`; after each key the app times `timeout()` for `armed()`'s generation and calls `expire(generation)`, which clears the sequence       |
 
 ## Not ported
 

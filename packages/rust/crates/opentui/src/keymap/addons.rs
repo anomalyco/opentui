@@ -7,7 +7,7 @@ use crate::input::KeyCode;
 use crate::widget::EditorAction;
 use std::cell::Cell;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Splits keys such as `"ctrl+c,ctrl+d"` into one binding per key.
 pub fn comma_bindings<T: Clone + PartialEq + 'static>(keymap: &Keymap<T>) -> Disposer {
@@ -124,19 +124,22 @@ pub fn leader<T: Clone + PartialEq + 'static>(keymap: &Keymap<T>, name: &str, tr
     keymap.register_token(name, trigger)
 }
 
-/// A leader token whose pending sequence clears when no key follows in time. The keymap has no clock: schedule a
-/// timer for [`deadline`](Self::deadline) and call [`expire`](Self::expire) when it fires. Dropping it removes the
-/// token, as [`dispose`](Self::dispose) does.
+/// A leader token whose pending sequence clears when no key follows in time. The keymap has no clock: after each key,
+/// while the leader is [`armed`](Self::armed), schedule [`timeout`](Self::timeout) on the app's timer and pass the
+/// generation to [`expire`](Self::expire) when it fires. Dropping it removes the token, as
+/// [`dispose`](Self::dispose) does.
 #[must_use = "dropping a TimedLeader removes its token"]
 pub struct TimedLeader<T> {
     keymap: WeakKeymap<T>,
-    deadline: Rc<Cell<Option<Instant>>>,
+    timeout: Duration,
+    /// A count of pending-sequence changes, and whether the current sequence starts with the trigger.
+    armed: Rc<Cell<(u64, bool)>>,
     disposer: Disposer,
 }
 
-/// Registers a leader token, as [`leader`] does, and arms a timeout whenever a pending sequence starts with the
-/// trigger. Each further stroke restarts the timeout. `@opentui/keymap` defaults the timeout to 1,500 ms; OpenCode
-/// uses 2,000 ms.
+/// Registers a leader token, as [`leader`] does, and arms the leader whenever a pending sequence starts with the
+/// trigger. Each further stroke arms it again, with a new generation. `@opentui/keymap` defaults the timeout to
+/// 1,500 ms; OpenCode uses 2,000 ms.
 pub fn timed_leader<T: Clone + PartialEq + 'static>(
     keymap: &Keymap<T>,
     name: &str,
@@ -145,32 +148,36 @@ pub fn timed_leader<T: Clone + PartialEq + 'static>(
 ) -> Result<TimedLeader<T>, String> {
     let trigger = trigger.into();
     let trigger_stroke = keymap.parse_key(trigger.clone())?.stroke;
-    let deadline = Rc::new(Cell::new(None));
+    let armed = Rc::new(Cell::new((0, false)));
     let sync = {
-        let deadline = deadline.clone();
+        let armed = armed.clone();
         move |sequence: &[super::KeySequencePart]| {
-            let armed = sequence.first().is_some_and(|part| part.stroke == trigger_stroke);
-            deadline.set(armed.then(|| Instant::now() + timeout));
+            let leads = sequence.first().is_some_and(|part| part.stroke == trigger_stroke);
+            armed.set((armed.get().0 + 1, leads));
         }
     };
     let token = leader(keymap, name, trigger);
     sync(&keymap.pending_sequence());
     let listener = keymap.on_pending_sequence(sync);
-    Ok(TimedLeader { keymap: keymap.downgrade(), deadline, disposer: Disposer::all(vec![token, listener]) })
+    Ok(TimedLeader { keymap: keymap.downgrade(), timeout, armed, disposer: Disposer::all(vec![token, listener]) })
 }
 
 impl<T: Clone + PartialEq + 'static> TimedLeader<T> {
-    /// When the leader sequence expires, while one is pending.
-    pub fn deadline(&self) -> Option<Instant> {
-        self.deadline.get()
+    /// The generation of the pending leader sequence, while one is pending.
+    pub fn armed(&self) -> Option<u64> {
+        let (generation, armed) = self.armed.get();
+        armed.then_some(generation)
     }
 
-    /// Clears the leader sequence if `now` is past its deadline. Returns whether it did.
-    pub fn expire(&self, now: Instant) -> bool {
-        if self.deadline.get().is_none_or(|deadline| now < deadline) {
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
+    /// Clears the leader sequence if it is still at `generation`: no stroke came since. Returns whether it did.
+    pub fn expire(&self, generation: u64) -> bool {
+        if self.armed() != Some(generation) {
             return false;
         }
-        self.deadline.set(None);
         if let Some(keymap) = self.keymap.upgrade() {
             keymap.clear_pending_sequence();
         }
@@ -178,7 +185,6 @@ impl<T: Clone + PartialEq + 'static> TimedLeader<T> {
     }
 
     pub fn dispose(self) {
-        self.deadline.set(None);
         self.disposer.dispose();
     }
 }
