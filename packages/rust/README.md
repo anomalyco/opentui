@@ -114,6 +114,14 @@ targets, and the MSVC targets without the `static` feature, link
 beside the `.exe`. The build copies it where `cargo run` and `cargo test` find
 it.
 
+To check that OpenTUI works inside an executable on a new target, such as
+`aarch64-pc-windows-msvc`, run the `selftest` example there: `cargo run -p
+opentui-sys --example selftest`, with the app's `RUSTFLAGS`. On the main thread and
+a second one, it throws and catches a C++ exception in native code, checks that
+native thread-locals are per thread, and captures a native stack trace from the
+unwind tables. It prints one line per check and exits with status 1 if any
+fails. An app can run the same checks with `opentui_sys::ot_debug_selftest`.
+
 To link `libopentui.so`, `libopentui.dylib`, or `opentui.dll` instead, turn
 the default features off (`default-features = false`, or
 `--no-default-features`). Cargo

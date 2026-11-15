@@ -56,6 +56,7 @@ for linkage in $modes; do
     "$cargo" test --locked --manifest-path "$manifest" --workspace $defaults --features "$features"
     "$cargo" build --locked --manifest-path "$manifest" -p opentui -p opentui-ssh --examples $defaults \
         --features "$features"
+    "$cargo" run --locked --manifest-path "$manifest" -p opentui-sys --example selftest $defaults
     RUSTDOCFLAGS='-D warnings' "$cargo" doc --locked --manifest-path "$manifest" -p opentui -p opentui-ssh --no-deps \
         $defaults --features "$features"
     # An app on opentui's features of this pass links as the pass says. Built alone, since opentui-ssh's defaults would
