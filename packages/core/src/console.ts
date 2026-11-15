@@ -345,6 +345,22 @@ function wrapDisplayCells(text: string, firstCells: number, restCells: number): 
   return segments
 }
 
+/**
+ * Converts a display-cell column of `text` to a UTF-16 string index: the combined length of every grapheme that
+ * ends at or before `cell`. A cell inside a wide grapheme snaps to that grapheme's start.
+ */
+function cellOffsetToStringIndex(text: string, cell: number): number {
+  if (cell <= 0) return 0
+  let index = 0
+  let cells = 0
+  for (const { segment } of graphemeSegmenter.segment(text)) {
+    cells += stringWidth(segment)
+    if (cells > cell) break
+    index += segment.length
+  }
+  return index
+}
+
 export class TerminalConsole extends EventEmitter {
   private isVisible: boolean = false
   private isFocused: boolean = false
@@ -863,26 +879,25 @@ export class TerminalConsole extends EventEmitter {
       const selectionRange = this.getLineSelectionRange(absoluteLineIndex)
 
       if (selectionRange) {
-        const adjustedStart = Math.max(0, selectionRange.start)
-        const adjustedEnd = Math.min(fullText.length, selectionRange.end)
+        const { start, end, startCell, endCell } = selectionRange
 
-        if (adjustedStart > 0) {
-          this.frameBuffer.drawText(fullText.substring(0, adjustedStart), 1, lineY, levelColor)
+        if (startCell > 0) {
+          this.frameBuffer.drawText(fullText.substring(0, start), 1, lineY, levelColor)
         }
 
-        if (adjustedStart < adjustedEnd) {
-          this.frameBuffer.fillRect(1 + adjustedStart, lineY, adjustedEnd - adjustedStart, 1, this._rgbaSelection)
+        if (startCell < endCell) {
+          this.frameBuffer.fillRect(1 + startCell, lineY, endCell - startCell, 1, this._rgbaSelection)
           this.frameBuffer.drawText(
-            fullText.substring(adjustedStart, adjustedEnd),
-            1 + adjustedStart,
+            fullText.substring(start, end),
+            1 + startCell,
             lineY,
             levelColor,
             this._rgbaSelection,
           )
         }
 
-        if (adjustedEnd < fullText.length) {
-          this.frameBuffer.drawText(fullText.substring(adjustedEnd), 1 + adjustedEnd, lineY, levelColor)
+        if (end < fullText.length) {
+          this.frameBuffer.drawText(fullText.substring(end), 1 + endCell, lineY, levelColor)
         }
       } else {
         this.frameBuffer.drawText(fullText, 1, lineY, levelColor)
@@ -1037,17 +1052,9 @@ export class TerminalConsole extends EventEmitter {
       if (i < 0 || i >= this._displayLines.length) continue
       const line = this._displayLines[i]
       const fullText = (line.indent ? " ".repeat(INDENT_WIDTH) : "") + line.text
-      let text = fullText
-
-      if (i === selection.startLine && i === selection.endLine) {
-        text = fullText.substring(selection.startCol, selection.endCol)
-      } else if (i === selection.startLine) {
-        text = fullText.substring(selection.startCol)
-      } else if (i === selection.endLine) {
-        text = fullText.substring(0, selection.endCol)
-      }
-
-      lines.push(text)
+      // Selection columns are display cells; substring needs UTF-16 indices.
+      const range = this.getLineSelectionRange(i)
+      lines.push(range ? fullText.substring(range.start, range.end) : "")
     }
 
     return lines.join("\n")
@@ -1118,7 +1125,14 @@ export class TerminalConsole extends EventEmitter {
     }
   }
 
-  private getLineSelectionRange(lineIndex: number): { start: number; end: number } | null {
+  /**
+   * Selection range of one line: `startCell`/`endCell` are display-cell columns for painting, `start`/`end` are
+   * UTF-16 indices of the same span for text extraction. Selection columns come from mouse cells, so the two
+   * pairs differ on lines with wide graphemes.
+   */
+  private getLineSelectionRange(
+    lineIndex: number,
+  ): { start: number; end: number; startCell: number; endCell: number } | null {
     const selection = this.normalizeSelection()
     if (!selection) return null
 
@@ -1129,20 +1143,26 @@ export class TerminalConsole extends EventEmitter {
     const line = this._displayLines[lineIndex]
     if (!line) return null
 
-    const fullTextLength = (line.indent ? INDENT_WIDTH : 0) + line.text.length
+    const fullText = (line.indent ? " ".repeat(INDENT_WIDTH) : "") + line.text
+    const fullTextCells = stringWidth(fullText)
 
-    let start = 0
-    let end = fullTextLength
+    let startCell = 0
+    let endCell = fullTextCells
 
     if (lineIndex === selection.startLine) {
-      start = Math.max(0, selection.startCol)
+      startCell = Math.max(0, selection.startCol)
     }
     if (lineIndex === selection.endLine) {
-      end = Math.min(fullTextLength, selection.endCol)
+      endCell = Math.min(fullTextCells, selection.endCol)
     }
 
-    if (start >= end) return null
-    return { start, end }
+    if (startCell >= endCell) return null
+    return {
+      start: cellOffsetToStringIndex(fullText, startCell),
+      end: cellOffsetToStringIndex(fullText, endCell),
+      startCell,
+      endCell,
+    }
   }
 
   public handleMouse(event: MouseEvent): boolean {

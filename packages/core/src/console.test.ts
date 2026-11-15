@@ -238,6 +238,57 @@ describe("TerminalConsole", () => {
       expect(text).toBe("Line\nSecond Line\nThird")
     })
 
+    test("should extract text by display cells, not UTF-16 units, on wide chars", () => {
+      terminalConsole = new TerminalConsole(mockRenderer as any, {
+        position: ConsolePosition.BOTTOM,
+        sizePercent: 30,
+      })
+
+      // "中a" is 3 display cells (中 is 2) but only 2 UTF-16 units.
+      terminalConsole["_displayLines"] = [{ text: "中a", level: "LOG" as any, indent: false }]
+      terminalConsole["_selectionStart"] = { line: 0, col: 2 }
+      terminalConsole["_selectionEnd"] = { line: 0, col: 3 }
+
+      expect(terminalConsole["getSelectedText"]()).toBe("a")
+
+      terminalConsole["_selectionStart"] = { line: 0, col: 0 }
+      terminalConsole["_selectionEnd"] = { line: 0, col: 3 }
+      expect(terminalConsole["getSelectedText"]()).toBe("中a")
+    })
+
+    test("should extract multi-line selections across wide chars", () => {
+      terminalConsole = new TerminalConsole(mockRenderer as any, {
+        position: ConsolePosition.BOTTOM,
+        sizePercent: 30,
+      })
+
+      terminalConsole["_displayLines"] = [
+        { text: "中x", level: "LOG" as any, indent: false }, // 3 cells, 2 units
+        { text: "y中", level: "LOG" as any, indent: false },
+      ]
+      terminalConsole["_selectionStart"] = { line: 0, col: 2 }
+      terminalConsole["_selectionEnd"] = { line: 1, col: 1 }
+
+      expect(terminalConsole["getSelectedText"]()).toBe("x\ny")
+    })
+
+    test("should report selection range in both cells and string indices", () => {
+      terminalConsole = new TerminalConsole(mockRenderer as any, {
+        position: ConsolePosition.BOTTOM,
+        sizePercent: 30,
+      })
+
+      terminalConsole["_displayLines"] = [{ text: "中a", level: "LOG" as any, indent: false }]
+      terminalConsole["_selectionStart"] = { line: 0, col: 0 }
+      terminalConsole["_selectionEnd"] = { line: 0, col: 3 }
+
+      expect(terminalConsole["getLineSelectionRange"](0)).toEqual({ start: 0, end: 2, startCell: 0, endCell: 3 })
+
+      terminalConsole["_selectionStart"] = { line: 0, col: 2 }
+      terminalConsole["_selectionEnd"] = { line: 0, col: 3 }
+      expect(terminalConsole["getLineSelectionRange"](0)).toEqual({ start: 1, end: 2, startCell: 2, endCell: 3 })
+    })
+
     test("should clear selection on clearSelection", () => {
       terminalConsole = new TerminalConsole(mockRenderer as any, {
         position: ConsolePosition.BOTTOM,
