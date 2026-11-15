@@ -1807,6 +1807,7 @@ test "writeClipboard - Screen framing crosses the 252-byte boundary" {
 
 // The environment is adopted as an app forwards it, so SSH_CONNECTION makes it a remote client's. GNU screen
 // answers no query, so its TERM (forwarded by ssh) or STY names it there too; a tmux XTVERSION reply wins.
+// TMUX or a tmux TERM names tmux there too: its XTVERSION reply comes after the graphics query.
 // With STY and TMUX both set, a local session checks TMUX first; a remote one counts it as screen (D71a).
 test "multiplexer sets clipboard framing, OSC 52, widths and the graphics query, also behind ssh" {
     const screen = "\x1bP\x1b]52;c;dGVzdA==\x07\x1b\\";
@@ -1820,10 +1821,11 @@ test "multiplexer sets clipboard framing, OSC 52, widths and the graphics query,
         .{ .env = "TERM=screen.xterm-256color SSH_CONNECTION=1", .mux = .screen, .osc52 = true, .width = .wcwidth, .graphics = false, .clipboard = screen },
         .{ .env = "STY=1.pts-0.box TMUX=/tmp/tmux-1000/default,1,0", .mux = .tmux, .osc52 = true, .width = .wcwidth, .graphics = false, .clipboard = tmux },
         .{ .env = "STY=1.pts-0.box TMUX=/tmp/tmux-1000/default,1,0 SSH_CONNECTION=1", .mux = .screen, .osc52 = true, .width = .wcwidth, .graphics = false, .clipboard = screen },
-        .{ .env = "TERM=screen-256color TMUX=/tmp/tmux-1000/default,1,0 SSH_CONNECTION=1", .mux = .none, .osc52 = false, .width = .unicode, .graphics = true, .clipboard = plain },
+        .{ .env = "TERM=screen-256color TMUX=/tmp/tmux-1000/default,1,0 SSH_CONNECTION=1", .mux = .tmux, .osc52 = false, .width = .wcwidth, .graphics = false, .clipboard = tmux },
         .{ .env = "TERM=screen-256color SSH_CONNECTION=1", .reply = "\x1bP>|tmux 3.8\x1b\\", .mux = .tmux, .osc52 = true, .width = .unicode, .graphics = false, .clipboard = tmux },
         .{ .env = "ZELLIJ=0 SSH_CONNECTION=1", .mux = .none, .osc52 = false, .width = .unicode, .graphics = true, .clipboard = plain },
-        .{ .env = "TERM=tmux-256color SSH_CONNECTION=1", .mux = .none, .osc52 = false, .width = .unicode, .graphics = true, .clipboard = plain },
+        .{ .env = "TMUX=/tmp/tmux-1000/default,1,0 SSH_CONNECTION=1", .mux = .tmux, .osc52 = false, .width = .wcwidth, .graphics = false, .clipboard = tmux },
+        .{ .env = "TERM=tmux-256color SSH_CONNECTION=1", .mux = .tmux, .osc52 = false, .width = .wcwidth, .graphics = false, .clipboard = tmux },
     };
     for (rows, 0..) |row, index| {
         errdefer std.debug.print("multiplexer row {d}\n", .{index});

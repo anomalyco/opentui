@@ -759,7 +759,9 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
     // The explicit override, for screen with `truecolor on` or a terminal that answers no query.
     const force_truecolor = env_map.get("OPENTUI_FORCE_TRUECOLOR") orelse "";
     if (std.mem.eql(u8, force_truecolor, "1") or std.mem.eql(u8, force_truecolor, "true")) self.caps.rgb = true;
-    // A remote client's environment names only GNU screen, which answers no query: TERM forwarded by ssh, or STY.
+    // A remote client's environment names only the multiplexers the startup probes pass through unidentified:
+    // GNU screen, which answers no query, and tmux, whose XTVERSION reply arrives after the graphics query it would
+    // turn into the pane title. TERM is forwarded by ssh; STY and TMUX come from a multiplexer on the server.
     const remote_env = self.identityEnv() == null;
     if (!self.term_info.from_xtversion) {
         if (!remote_env and env_map.get("TMUX") != null) {
@@ -777,13 +779,13 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
             self.skip_graphics_query = true;
             self.caps.explicit_cursor_positioning = true;
             self.caps.osc52 = true;
-        } else if (!remote_env) {
+        } else {
             const term = env_map.get("TERM") orelse "";
-            if (std.mem.startsWith(u8, term, "tmux")) {
+            if (env_map.get("TMUX") != null or std.mem.startsWith(u8, term, "tmux")) {
                 self.multiplexer = .tmux;
                 self.caps.explicit_cursor_positioning = true;
             }
-            if (std.mem.find(u8, term, "alacritty") != null) {
+            if (!remote_env and std.mem.find(u8, term, "alacritty") != null) {
                 self.caps.explicit_cursor_positioning = true;
             }
         }
