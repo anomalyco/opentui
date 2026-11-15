@@ -16,7 +16,8 @@
 //! MSVC's does not.
 //!
 //! Every object is also rewritten in place so that link.exe accepts its COMDAT
-//! sections (see fixComdats).
+//! sections (see fixComdats) and does not warn about MinGW-only directives
+//! (see blankExcludeSymbols).
 
 const std = @import("std");
 
@@ -155,7 +156,10 @@ pub fn main(init: std.process.Init) !void {
     } else false;
     if (!loads_shim) return fail("the Zig object uses nothing from the shim, so a linker may never read its directives", .{});
 
-    for (own.items) |member| try fixComdats(member);
+    for (own.items) |member| {
+        try fixComdats(member);
+        try blankExcludeSymbols(member);
+    }
     const shim_copy = try std.fmt.allocPrint(arena, "{s}/{s}", .{ work, own.getLast().name });
     try cwd.writeFile(io, .{ .sub_path = shim_copy, .data = own.getLast().data });
     // Numbered names: the runtime archives repeat some, such as misc.obj.
@@ -163,6 +167,7 @@ pub fn main(init: std.process.Init) !void {
     try argv.appendSlice(arena, &.{ zig, "ar", "q", output, shim_copy });
     for (added.items, 0..) |i, n| {
         try fixComdats(runtime.items[i]);
+        try blankExcludeSymbols(runtime.items[i]);
         const path = try std.fmt.allocPrint(arena, "{s}/{d}-{s}", .{ work, n, basename(runtime.items[i].name) });
         try cwd.writeFile(io, .{ .sub_path = path, .data = runtime.items[i].data });
         try argv.append(arena, path);
@@ -319,6 +324,34 @@ const Coff = struct {
         coff.data[aux + 14] = 0;
     }
 };
+
+/// MinGW objects carry -exclude-symbols directives, which keep their names out
+/// of a DLL that MinGW's linker builds by exporting everything. link.exe knows
+/// no such option and warns about every one (LNK4229), thousands of lines per
+/// link. Blanks them in place; other directives stay.
+fn blankExcludeSymbols(member: Member) !void {
+    const coff = try Coff.init(member);
+    for (0..coff.sections) |i| {
+        if (!std.mem.eql(u8, try coff.sectionName(i), ".drectve")) continue;
+        const header = coff.section_table + i * 40;
+        const directives = coff.data[read(u32, coff.data, header + 20)..][0..read(u32, coff.data, header + 16)];
+        var at: usize = 0;
+        while (at < directives.len) {
+            if (directives[at] == ' ') {
+                at += 1;
+                continue;
+            }
+            var end = at;
+            var quoted = false;
+            while (end < directives.len and (quoted or directives[end] != ' ')) : (end += 1) {
+                if (directives[end] == '"') quoted = !quoted;
+            }
+            const token = directives[at..end];
+            if (std.mem.startsWith(u8, token, "-exclude-symbols:") or std.mem.startsWith(u8, token, "/exclude-symbols:")) @memset(token, ' ');
+            at = end;
+        }
+    }
+}
 
 /// link.exe takes a COMDAT section's symbol from the entry right after the
 /// section's own symbol, and stops with LNK1143 ("no symbol for COMDAT
