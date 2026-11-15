@@ -655,8 +655,7 @@ impl App {
         if !self.0.in_frame.get()
             && let Some(parent) = self.0.parent.get()
         {
-            #[expect(clippy::let_underscore_must_use, reason = "unreported: the only error path ends the run")]
-            let _ = self.0.session.sync_detached(parent);
+            self.report(self.0.session.sync_detached(parent));
         }
         &self.0.session
     }

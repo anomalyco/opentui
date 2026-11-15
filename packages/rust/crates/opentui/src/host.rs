@@ -805,7 +805,10 @@ impl Host {
                 if is_cursor_report(reply)
                     && let Some(split) = &self.split
                 {
-                    #[expect(clippy::let_underscore_must_use, reason = "unreported: the only error path ends the run")]
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "no failure found that a cursor report reaches: the session is open and between frames"
+                    )]
                     let _ = split.cursor_reported();
                 }
             }

@@ -108,7 +108,6 @@ impl App {
         let known: Vec<_> = palette.colors.iter().map_while(|color| *color).collect();
         let epoch = self.0.palette_epoch.get() + 1;
         self.0.palette_epoch.set(epoch);
-        #[expect(clippy::let_underscore_must_use, reason = "unreported: the only error path ends the run")]
-        let _ = self.0.session.set_palette_state(&known, palette.foreground, palette.background, epoch);
+        self.report(self.0.session.set_palette_state(&known, palette.foreground, palette.background, epoch));
     }
 }
