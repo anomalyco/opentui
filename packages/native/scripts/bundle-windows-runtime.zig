@@ -14,10 +14,13 @@
 //! UCRT and the SDK provide. The build fails when a symbol stays unresolved, or
 //! when a member to add has constructors, which MinGW's start-up code runs and
 //! MSVC's does not.
+//!
+//! Every object is also rewritten in place so that link.exe accepts its COMDAT
+//! sections (see fixComdats).
 
 const std = @import("std");
 
-const Member = struct { name: []const u8, data: []const u8 };
+const Member = struct { name: []const u8, data: []u8 };
 const Names = std.StringHashMapUnmanaged(void);
 const Object = struct {
     defined: []const []const u8,
@@ -65,7 +68,7 @@ pub fn main(init: std.process.Init) !void {
     // externals, not imports, and the UCRT has none of them. The other libraries are the runtime.
     var runtime: std.ArrayList(Member) = .empty;
     for (try libraries(arena, io, line.?)) |path| {
-        const members = try readArchive(arena, io, path);
+        const members = try readArchive(arena, path, try cwd.readFileAlloc(io, path, arena, .unlimited));
         var imports = false;
         for (members) |member| {
             const name = importName(member.data) orelse continue;
@@ -85,8 +88,10 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    // The input's members are slices of its bytes, so the output starts from them once they are rewritten.
+    const input_bytes = try cwd.readFileAlloc(io, input, arena, .unlimited);
     var own: std.ArrayList(Member) = .empty;
-    try own.appendSlice(arena, try readArchive(arena, io, input));
+    try own.appendSlice(arena, try readArchive(arena, input, input_bytes));
     try own.append(arena, .{ .name = std.fs.path.basename(shim), .data = try cwd.readFileAlloc(io, shim, arena, .unlimited) });
     var defined: Names = .empty;
     var queue: std.ArrayList([]const u8) = .empty;
@@ -117,15 +122,19 @@ pub fn main(init: std.process.Init) !void {
         return fail("neither the MinGW runtime nor MSVC defines:{s}", .{names.items});
     }
 
+    for (own.items) |member| try fixComdats(member);
+    const shim_copy = try std.fmt.allocPrint(arena, "{s}/{s}", .{ work, own.getLast().name });
+    try cwd.writeFile(io, .{ .sub_path = shim_copy, .data = own.getLast().data });
     // Numbered names: the runtime archives repeat some, such as misc.obj.
     var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(arena, &.{ zig, "ar", "q", output, shim });
+    try argv.appendSlice(arena, &.{ zig, "ar", "q", output, shim_copy });
     for (added.items, 0..) |i, n| {
+        try fixComdats(runtime.items[i]);
         const path = try std.fmt.allocPrint(arena, "{s}/{d}-{s}", .{ work, n, basename(runtime.items[i].name) });
         try cwd.writeFile(io, .{ .sub_path = path, .data = runtime.items[i].data });
         try argv.append(arena, path);
     }
-    try cwd.writeFile(io, .{ .sub_path = output, .data = try cwd.readFileAlloc(io, input, arena, .unlimited) });
+    try cwd.writeFile(io, .{ .sub_path = output, .data = input_bytes });
     _ = try run(arena, io, argv.items);
     try cwd.deleteTree(io, work);
 }
@@ -156,9 +165,9 @@ fn basename(name: []const u8) []const u8 {
     return name[slash + 1 ..];
 }
 
-/// The members of a GNU or COFF archive, as Zig and llvm-ar write them.
-fn readArchive(arena: std.mem.Allocator, io: std.Io, path: []const u8) ![]Member {
-    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited);
+/// The members of a GNU or COFF archive, as Zig and llvm-ar write them, as
+/// slices of its bytes.
+fn readArchive(arena: std.mem.Allocator, path: []const u8, bytes: []u8) ![]Member {
     if (!std.mem.startsWith(u8, bytes, "!<arch>\n")) return fail("{s} is not an archive", .{path});
     var members: std.ArrayList(Member) = .empty;
     var names: []const u8 = "";
@@ -195,35 +204,133 @@ fn importName(data: []const u8) ?[]const u8 {
     return std.mem.sliceTo(data[20..], 0);
 }
 
-/// The external names a COFF object defines and uses, and whether it has
-/// GCC-style constructor or destructor sections. Zig writes no big COFF
-/// objects for these targets, so one fails the build.
-fn parse(arena: std.mem.Allocator, member: Member) !Object {
-    const data = member.data;
-    if (data.len < 20 or read(u16, data, 0) == 0) return fail("{s}: not a COFF object", .{member.name});
-    const sections: usize = read(u16, data, 2);
-    const symtab: usize = read(u32, data, 8);
-    const count: usize = read(u32, data, 12);
-    const section_table = 20 + @as(usize, read(u16, data, 16));
-    const strings = symtab + count * 18;
-    if (section_table + sections * 40 > data.len or strings > data.len) return fail("{s}: truncated COFF object", .{member.name});
+/// A COFF object's section and symbol tables. Zig writes no big COFF objects
+/// for these targets, so one fails the build.
+const Coff = struct {
+    data: []u8,
+    sections: usize,
+    symtab: usize,
+    count: usize,
+    section_table: usize,
+    strings: usize,
 
+    fn init(member: Member) !Coff {
+        const data = member.data;
+        if (data.len < 20 or read(u16, data, 0) == 0) return fail("{s}: not a COFF object", .{member.name});
+        const coff: Coff = .{
+            .data = data,
+            .sections = read(u16, data, 2),
+            .symtab = read(u32, data, 8),
+            .count = read(u32, data, 12),
+            .section_table = 20 + @as(usize, read(u16, data, 16)),
+            .strings = read(u32, data, 8) + @as(usize, read(u32, data, 12)) * 18,
+        };
+        if (coff.section_table + coff.sections * 40 > data.len or coff.strings > data.len) {
+            return fail("{s}: truncated COFF object", .{member.name});
+        }
+        return coff;
+    }
+
+    /// Section `i`, counting from 0; long names are "/offset" into the string table.
+    fn sectionName(coff: Coff, i: usize) ![]const u8 {
+        const raw = coff.data[coff.section_table + i * 40 ..][0..8];
+        if (raw[0] != '/') return std.mem.sliceTo(raw, 0);
+        return std.mem.sliceTo(coff.data[coff.strings + try std.fmt.parseInt(usize, std.mem.sliceTo(raw[1..], 0), 10) ..], 0);
+    }
+
+    fn symbolName(coff: Coff, at: usize) []const u8 {
+        const raw = coff.data[at..][0..8];
+        if (read(u32, raw, 0) == 0) return std.mem.sliceTo(coff.data[coff.strings + read(u32, raw, 4) ..], 0);
+        return std.mem.sliceTo(raw, 0);
+    }
+
+    fn comdat(coff: Coff, i: usize) bool {
+        return read(u32, coff.data, coff.section_table + i * 40 + 36) & 0x1000 != 0;
+    }
+
+    /// Turns COMDAT section `i`, whose definition aux record is at `aux`, into an ordinary section.
+    fn ordinary(coff: Coff, i: usize, aux: usize) void {
+        const flags = coff.data[coff.section_table + i * 40 + 36 ..][0..4];
+        std.mem.writeInt(u32, flags, std.mem.readInt(u32, flags, .little) & ~@as(u32, 0x1000), .little);
+        coff.data[aux + 14] = 0;
+    }
+};
+
+/// link.exe takes a COMDAT section's symbol from the entry right after the
+/// section's own symbol, and stops with LNK1143 ("no symbol for COMDAT
+/// section") when that entry is not one; lld does not ask. LLVM's MinGW mode
+/// writes two kinds of COMDAT without one:
+/// - unwind data in GNU-style linkonce sections, .xdata$name and .pdata$name
+///   with selection "any". Each becomes associative to the COMDAT .text$name,
+///   as LLVM's MSVC mode emits it, so it stays exactly when its function does.
+///   Zig's own objects hold the unwind data of many functions in one .xdata$
+///   and one .pdata$; those become ordinary sections.
+/// - weak definitions (libc++abi's operator new and delete) in "no duplicates"
+///   sections, whose symbol comes later in the table. They become ordinary
+///   sections, which still reject a duplicate, and so does their unwind data.
+/// Ordinary sections are never dropped, so they keep what they refer to. Any
+/// other COMDAT without its symbol fails the build. Only section flags and aux
+/// records change, so nothing moves.
+fn fixComdats(member: Member) !void {
+    const coff = try Coff.init(member);
+    const data = coff.data;
+    // Code first: unwind data follows what becomes of its function.
+    for ([_]bool{ false, true }) |unwind_pass| {
+        var i: usize = 0;
+        while (i < coff.count) : (i += 1 + data[coff.symtab + i * 18 + 17]) {
+            const at = coff.symtab + i * 18;
+            const number = read(i16, data, at + 12);
+            // A section's own symbol: static, with an aux record, named as the section.
+            if (data[at + 16] != 3 or data[at + 17] == 0 or number <= 0) continue;
+            const section: usize = @intCast(number - 1);
+            if (!coff.comdat(section)) continue;
+            const name = try coff.sectionName(section);
+            if (!std.mem.eql(u8, coff.symbolName(at), name)) continue;
+            const aux = at + 18;
+            const next = i + 1 + data[at + 17];
+            // Associative, or followed by its COMDAT symbol.
+            if (data[aux + 14] == 5 or (next < coff.count and read(i16, data, coff.symtab + next * 18 + 12) == number)) continue;
+            const unwind = std.mem.startsWith(u8, name, ".xdata$") or std.mem.startsWith(u8, name, ".pdata$");
+            if (unwind != unwind_pass) continue;
+            if (!unwind) {
+                if (data[aux + 14] != 1) return fail("{s}: COMDAT section {s} has no symbol", .{ member.name, name });
+                coff.ordinary(section, aux);
+                continue;
+            }
+            const suffix = name[".xdata$".len..];
+            const text = for (0..coff.sections) |t| {
+                const candidate = try coff.sectionName(t);
+                if (suffix.len > 0 and std.mem.startsWith(u8, candidate, ".text$") and std.mem.eql(u8, candidate[".text$".len..], suffix)) break t;
+            } else if (suffix.len == 0) {
+                coff.ordinary(section, aux);
+                continue;
+            } else return fail("{s}: {s} has no .text${s}", .{ member.name, name, suffix });
+            if (!coff.comdat(text)) {
+                coff.ordinary(section, aux);
+                continue;
+            }
+            data[aux + 14] = 5;
+            std.mem.writeInt(u16, data[aux + 12 ..][0..2], @intCast(text + 1), .little);
+        }
+    }
+}
+
+/// The external names a COFF object defines and uses, and whether it has
+/// GCC-style constructor or destructor sections.
+fn parse(arena: std.mem.Allocator, member: Member) !Object {
+    const coff = try Coff.init(member);
+    const data = coff.data;
     var constructors = false;
-    for (0..sections) |i| {
-        const raw = data[section_table + i * 40 ..][0..8];
-        const name = if (raw[0] == '/')
-            std.mem.sliceTo(data[strings + try std.fmt.parseInt(usize, std.mem.sliceTo(raw[1..], 0), 10) ..], 0)
-        else
-            std.mem.sliceTo(raw, 0);
+    for (0..coff.sections) |i| {
+        const name = try coff.sectionName(i);
         constructors = constructors or std.mem.startsWith(u8, name, ".ctors") or std.mem.startsWith(u8, name, ".dtors");
     }
     var defined: std.ArrayList([]const u8) = .empty;
     var undefined_names: std.ArrayList([]const u8) = .empty;
     var i: usize = 0;
-    while (i < count) : (i += 1 + data[symtab + i * 18 + 17]) {
-        const at = symtab + i * 18;
-        const raw = data[at..][0..8];
-        const name = if (read(u32, raw, 0) == 0) std.mem.sliceTo(data[strings + read(u32, raw, 4) ..], 0) else std.mem.sliceTo(raw, 0);
+    while (i < coff.count) : (i += 1 + data[coff.symtab + i * 18 + 17]) {
+        const at = coff.symtab + i * 18;
+        const name = coff.symbolName(at);
         switch (data[at + 16]) {
             // External: undefined with no section and no size, else defined, or common.
             2 => try (if (read(i16, data, at + 12) == 0 and read(u32, data, at + 8) == 0) &undefined_names else &defined).append(arena, name),
