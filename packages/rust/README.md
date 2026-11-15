@@ -55,8 +55,8 @@ of a release, set `OPENTUI_LIB_DIR` to their directory. It wins over the
 checkout's build. Give an absolute path: Cargo reads a relative one from
 `crates/opentui-sys`. A Cargo `git` dependency on this repository has no native
 build, so it needs `OPENTUI_LIB_DIR`. An npm platform package ships only the
-shared library, so on Linux and macOS it needs the default features off (see
-below).
+shared library, so it needs the default features off (see below), except with
+the Windows GNU targets.
 
 These platforms are supported:
 
@@ -88,7 +88,12 @@ the host, and warns and leaves video out without it.
 
 The default native library includes FFmpeg under LGPL-2.1-or-later, even if
 your app never uses `VideoView`. `opentui-sys` ships `LICENSE-FFMPEG` and
-`FFMPEG-SOURCE.md`; the Rust code is MIT-licensed. To link OpenTUI without
+`FFMPEG-SOURCE.md`; the Rust code is MIT-licensed. The library also carries
+code under its own notices: Yoga (`LICENSE-YOGA`), Zig's runtime
+(`LICENSE-ZIG`), on Linux and Windows LLVM's libc++, libc++abi and libunwind
+(`LICENSE-LLVM`), and on Windows the MinGW-w64 runtime (`LICENSE-MINGW-W64`)
+and its gdtoa code (`LICENSE-GDTOA`). Ship these notices with an app that
+links OpenTUI statically, or with `opentui.dll`. To link OpenTUI without
 FFmpeg, run `sh scripts/prepare-zig-deps.sh` and `zig build -Dvideo=false
 -Doptimize=ReleaseFast` in `packages/native`. Set `OPENTUI_LIB_DIR` to the
 absolute path of the resulting `lib/<artifact directory>` when you run Cargo.
@@ -99,14 +104,19 @@ writes it, and `bun run check:abi` fails when it is stale. Do not edit it. The
 bindings are valid only for the exact header they were generated from, and the
 build fails if the artifacts' header differs.
 
-By default the crate links `libopentui.a` on Linux and macOS, so an
-executable needs no OpenTUI file at run time, and on Linux no libc++ either.
-Windows always links `opentui.dll`, through its import library `opentui.lib`:
-ship `opentui.dll` beside the `.exe`. The build copies it where `cargo run`
-and `cargo test` find it.
+By default the crate links `libopentui.a` on Linux and macOS, and
+`opentui-static.lib` on the Windows MSVC targets, so an executable needs no
+OpenTUI file at run time, and on Linux no libc++ either. Built with
+`RUSTFLAGS='-C target-feature=+crt-static'`, a Windows `.exe` needs no Visual
+C++ runtime DLL either, so it is the only file to ship. The Windows GNU
+targets, and the MSVC targets without the `static` feature, link
+`opentui.dll` through its import library `opentui.lib`: ship `opentui.dll`
+beside the `.exe`. The build copies it where `cargo run` and `cargo test` find
+it.
 
-To link `libopentui.so` or `libopentui.dylib` instead, turn the default
-features off (`default-features = false`, or `--no-default-features`). Cargo
+To link `libopentui.so`, `libopentui.dylib`, or `opentui.dll` instead, turn
+the default features off (`default-features = false`, or
+`--no-default-features`). Cargo
 merges features across the app's graph, so every crate in it that depends on
 `opentui` must turn them off. The workspace's tests and examples find the library through an rpath; other
 executables need their own rpath, `LD_LIBRARY_PATH` on Linux, or
@@ -125,9 +135,12 @@ Features:
   own libc++, so the program needs only libc. That libc++ is private to
   OpenTUI, so C++ code elsewhere in the program keeps its own runtime,
   libstdc++ or libc++, shared or static. On macOS this also links the system
-  frameworks OpenTUI uses for the clipboard, audio, and video. Windows links
-  `opentui.dll` with or without it: OpenTUI's Windows archive is built for
-  MinGW with libc++, which neither Rust Windows toolchain links.
+  frameworks OpenTUI uses for the clipboard, audio, and video. On the Windows
+  MSVC targets it links `opentui-static.lib`, which is built for MinGW and
+  carries the parts of MinGW's runtime that MSVC lacks, among them libc++, so
+  C++ code elsewhere in the program keeps MSVC's runtime. The Windows GNU
+  targets link `opentui.dll` with or without it: their own MinGW runtimes are
+  not the one the archive was built for.
 - `tokio`: `App::spawn` runs futures on a Tokio runtime and finishes them on
   the UI thread.
 - `log`: `console::init_logger` shows the `log` crate's records in the debug

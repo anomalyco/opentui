@@ -684,10 +684,106 @@ jobs:
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
 
-      # Windows links opentui.dll with the default features too; test.sh runs one pass with them.
+      # A bottle hit has no opentui-static.lib; Rust (Windows, static MSVC) links it.
       - name: Test
         working-directory: packages/rust
         run: sh test.sh shared
+
+  # Not in the gate. With the default static feature, an MSVC executable carries opentui-static.lib, the MinGW archive
+  # with what of MinGW's runtime MSVC lacks. This links one for each Windows architecture with the C runtime linked in
+  # too, checks that neither imports OpenTUI's DLL, and runs the x64 tests with no opentui.dll anywhere; then again
+  # for x64 as Rust builds by default: optimized (/OPT:REF,ICF) with the C runtime DLL. The arm64 library has no
+  # FFmpeg, and nothing runs on arm64.
+  rust-windows-static:
+    name: Rust (Windows, static MSVC)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: blacksmith-8vcpu-windows-2025
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Zig
+        uses: ./.github/actions/setup-zig
+
+      # No other Windows job saves the lib kind.
+      - name: Restore Zig cache
+        id: zig-cache
+        uses: ./.github/actions/restore-zig-cache
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
+          kind: lib
+          save: true
+
+      # Windows test jobs save the build job's cross-built x64 prefix under this key. Without it, as for arm64, the
+      # archive has no video and the video tests skip.
+      - name: Restore FFmpeg build cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            packages/native/.cache/ffmpeg/prefix
+            packages/native/.cache/ffmpeg/downloads
+          key: ffmpeg-v1-${{ runner.os }}-${{ hashFiles('packages/native/scripts/build-ffmpeg.ts', '.zig-version') }}
+
+      - name: Build the Windows archives
+        working-directory: packages/native
+        run: |
+          sh scripts/prepare-zig-deps.sh
+          for target in x86_64-windows-gnu aarch64-windows-gnu; do
+            zig build -Doptimize=ReleaseFast -Dlibrary-target=$target
+          done
+          rm lib/*-windows/opentui.dll lib/*-windows/opentui.lib
+
+      - name: Save Zig cache
+        if: steps.zig-cache.outputs.save == 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: .zig-cache
+          key: ${{ steps.zig-cache.outputs.key }}
+
+      - name: Install the pinned toolchain
+        working-directory: packages/rust
+        run: |
+          rustup toolchain install
+          rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/rust
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Cargo puts build script output directories on PATH, and build.rs copies opentui.dll into its own only when it
+      # links the DLL.
+      - name: Test static linking
+        working-directory: packages/rust
+        run: |
+          vswhere="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+          dumpbin=$(cygpath -u "$("$vswhere" -latest -products '*' -find 'VC/Tools/MSVC/**/bin/Hostx64/x64/dumpbin.exe' | sed -n 1p)")
+          # imports <exe> <pattern>: fails when the executable imports a DLL that matches.
+          imports() {
+            "$dumpbin" -nologo -dependents "$1" | tee "$RUNNER_TEMP/dependents.txt"
+            if grep -Eiq "$2" "$RUNNER_TEMP/dependents.txt"; then
+              echo "::error::$1 imports a DLL that matches $2"
+              exit 1
+            fi
+          }
+          for target in x86_64-pc-windows-msvc aarch64-pc-windows-msvc; do
+            cargo build --locked -p opentui --example hello --target $target
+            imports target/$target/debug/examples/hello.exe 'opentui|vcruntime'
+          done
+          cargo test --locked -p opentui --target x86_64-pc-windows-msvc --test headless --test widgets --test video
+          # Rust's defaults: the C runtime DLL, where the archive's CRT imports go through ucrt.lib.
+          RUSTFLAGS= cargo build --locked --release -p opentui --example hello --target x86_64-pc-windows-msvc
+          imports target/x86_64-pc-windows-msvc/release/examples/hello.exe opentui
+          RUSTFLAGS= cargo test --locked --release -p opentui --target x86_64-pc-windows-msvc --test headless --test widgets
 
   # Not in the gate yet, like Rust (Windows), and push-only for the same reason.
   rust-macos:

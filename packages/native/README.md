@@ -62,8 +62,24 @@ From `packages/native`, `bun run build` installs the header and libraries under
 `lib/<target>/` for the host target. Linux and macOS produce `libopentui.a` beside
 the shared library. Windows produces `opentui-static.lib`, `opentui.lib` for DLL
 imports, and `opentui.dll`. Static linkage also needs the platform libraries, and
-on macOS and Windows the C++ runtime; the Linux archive carries its own, private
-libc++. `zig build -Dall` builds all supported targets.
+on macOS the C++ runtime; the Linux archive carries its own, private libc++. The
+Windows archive is built for MinGW and carries the parts of Zig's MinGW runtime
+that MSVC lacks, among them libc++, so MSVC links it too: it also needs
+`ntdll`, `user32`, `bcrypt`, and `legacy_stdio_definitions`. `zig build -Dall`
+builds all supported targets.
+
+The libraries also contain runtime code under its own notices, which a
+program that ships them must carry: Yoga's layout engine (MIT,
+[`THIRD_PARTY_LICENSES/YOGA`](THIRD_PARTY_LICENSES/YOGA), the vendored
+`yoga/LICENSE`) and Zig's compiler-rt and standard library (MIT,
+[`THIRD_PARTY_LICENSES/ZIG`](THIRD_PARTY_LICENSES/ZIG)) in all of them;
+LLVM's libc++, libc++abi, and libunwind (Apache-2.0 WITH LLVM-exception,
+[`THIRD_PARTY_LICENSES/LLVM`](THIRD_PARTY_LICENSES/LLVM)) in the Windows and
+Linux ones; and on Windows the MinGW-w64 runtime (ZPL 2.1,
+[`THIRD_PARTY_LICENSES/MINGW-W64`](THIRD_PARTY_LICENSES/MINGW-W64)) with its
+gdtoa number conversion ([`THIRD_PARTY_LICENSES/GDTOA`](THIRD_PARTY_LICENSES/GDTOA)).
+The release archives and npm packages ship them as `LICENSE-YOGA`,
+`LICENSE-ZIG`, `LICENSE-LLVM`, `LICENSE-MINGW-W64`, and `LICENSE-GDTOA`.
 
 Native video statically links a decode-only LGPL FFmpeg build into the libraries.
 `bun run build` builds it first with [`scripts/build-ffmpeg.ts`](scripts/build-ffmpeg.ts)

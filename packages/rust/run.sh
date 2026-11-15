@@ -22,7 +22,7 @@ case ${1:-} in
     chat) example=chat; package=opentui-ssh; shift ;;
 esac
 [ "$#" -le 1 ] || usage
-# The static feature is a default one; Windows links opentui.dll either way.
+# The static feature is a default one; the Windows GNU targets link opentui.dll either way.
 case ${1:-shared} in
     shared) defaults=--no-default-features ;;
     static) defaults= ;;

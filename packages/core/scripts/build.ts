@@ -339,6 +339,11 @@ export default module.default
       [join(nativeRoot, "src", "vendor", "ffmpeg", "COPYING.LGPLv2.1"), "LICENSE-FFMPEG"],
       [join(nativeRoot, "src", "vendor", "ffmpeg", "README.md"), "FFMPEG-SOURCE.md"],
       [join(nativeRoot, "src", "vendor", "ffmpeg", "LICENSE-ZLIB"), "LICENSE-ZLIB"],
+      [join(nativeRoot, "THIRD_PARTY_LICENSES", "YOGA"), "LICENSE-YOGA"],
+      [join(nativeRoot, "THIRD_PARTY_LICENSES", "ZIG"), "LICENSE-ZIG"],
+      [join(nativeRoot, "THIRD_PARTY_LICENSES", "LLVM"), "LICENSE-LLVM"],
+      [join(nativeRoot, "THIRD_PARTY_LICENSES", "MINGW-W64"), "LICENSE-MINGW-W64"],
+      [join(nativeRoot, "THIRD_PARTY_LICENSES", "GDTOA"), "LICENSE-GDTOA"],
     ] as const) {
       if (!existsSync(source)) throw new Error(`Required native license file is missing: ${source}`)
       copyFileSync(source, join(nativeDir, destination))

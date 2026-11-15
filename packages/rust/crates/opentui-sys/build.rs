@@ -47,9 +47,12 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/generated.rs");
     let dir = native_lib_dir(platform);
-    // OpenTUI's Windows archive is built for MinGW with libc++, which neither Rust Windows toolchain links, so Windows
-    // links opentui.dll with or without the static feature.
-    let static_link = env::var_os("CARGO_FEATURE_STATIC").is_some() && !windows;
+    // OpenTUI's Windows archive is built for MinGW against the UCRT and carries the parts of MinGW's runtime that MSVC
+    // lacks. Rust's GNU targets bring MinGW runtimes of their own, so they link opentui.dll with or without the static
+    // feature.
+    let msvc = target.ends_with("-windows-msvc");
+    let static_link = env::var_os("CARGO_FEATURE_STATIC").is_some() && (msvc || !windows);
+    let archive = if msvc { "opentui-static.lib" } else { "libopentui.a" };
     // A crt-static Unix executable has no dynamic loader, so nothing loads the shared library and it crashes at start.
     // Rust's musl targets default to crt-static, which CARGO_CFG_TARGET_FEATURE does not list.
     let features = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
@@ -62,7 +65,7 @@ fn main() {
     );
     // Windows links a DLL through its import library.
     let files: &[&str] = if static_link {
-        &["opentui.h", "libopentui.a"]
+        &["opentui.h", archive]
     } else if windows {
         &["opentui.h", shared_library, "opentui.lib"]
     } else {
@@ -73,7 +76,7 @@ fn main() {
         // Watch the path as given: a canonical path follows a symlink and would keep watching its old target.
         println!("cargo:rerun-if-changed={}", path.display());
         // npm's platform packages ship the shared library only.
-        let shared = if *file == "libopentui.a" && dir.join(shared_library).is_file() {
+        let shared = if *file == archive && dir.join(shared_library).is_file() {
             format!(
                 ". This directory has no static archive: to link {shared_library} instead, turn off the default static \
                  feature (default-features = false, or --no-default-features)"
@@ -107,11 +110,17 @@ fn main() {
     if static_link {
         // Apple's linker takes libopentui.dylib over libopentui.a from one directory, so search one without the dylib.
         // The copy keeps the source's mode, so a read-only source leaves a copy that a rerun cannot overwrite.
-        let _ = fs::remove_file(out.join("libopentui.a"));
-        fs::copy(library.join("libopentui.a"), out.join("libopentui.a")).expect("copy libopentui.a into OUT_DIR");
+        let _ = fs::remove_file(out.join(archive));
+        fs::copy(library.join(archive), out.join(archive)).expect("copy the static archive into OUT_DIR");
         println!("cargo:rustc-link-search=native={}", out.display());
-        println!("cargo:rustc-link-lib=static=opentui");
-        if target.ends_with("-apple-darwin") {
+        println!("cargo:rustc-link-lib=static={}", if msvc { "opentui-static" } else { "opentui" });
+        if msvc {
+            // The DLLs the archive imports from besides the C runtime, and the out-of-line printf and scanf functions
+            // that MinGW's headers call and MSVC's define inline.
+            for name in ["kernel32", "ntdll", "user32", "bcrypt", "legacy_stdio_definitions"] {
+                println!("cargo:rustc-link-lib={name}");
+            }
+        } else if target.ends_with("-apple-darwin") {
             // What OpenTUI's build links libopentui.dylib against: the clipboard uses AppKit, Foundation, ImageIO, and
             // the Objective-C runtime, audio CoreFoundation, CoreAudio, and AudioToolbox, and video decoding the last
             // five frameworks. macOS's libc++ includes libc++abi.

@@ -4,6 +4,7 @@
 import { readdirSync, readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import process from "node:process"
+import { gunzipSync } from "node:zlib"
 import { variantName, variants, zigOutputName } from "../packages/core/scripts/variants"
 import { NODE26_MIN_VERSION } from "./node26.mjs"
 
@@ -132,16 +133,43 @@ if (optional.length !== packages.size || !optional.every((name) => packages.has(
   )
 }
 
-for (const [name, source] of Object.entries({
-  "LICENSE-FFMPEG": "COPYING.LGPLv2.1",
-  "FFMPEG-SOURCE.md": "README.md",
-  "LICENSE-ZLIB": "LICENSE-ZLIB",
+for (const [name, owner] of Object.entries({
+  "LICENSE-FFMPEG": "packages/native/src/vendor/ffmpeg/COPYING.LGPLv2.1",
+  "FFMPEG-SOURCE.md": "packages/native/src/vendor/ffmpeg/README.md",
+  "LICENSE-ZLIB": "packages/native/src/vendor/ffmpeg/LICENSE-ZLIB",
+  "LICENSE-YOGA": "packages/native/THIRD_PARTY_LICENSES/YOGA",
+  "LICENSE-ZIG": "packages/native/THIRD_PARTY_LICENSES/ZIG",
+  "LICENSE-LLVM": "packages/native/THIRD_PARTY_LICENSES/LLVM",
+  "LICENSE-MINGW-W64": "packages/native/THIRD_PARTY_LICENSES/MINGW-W64",
+  "LICENSE-GDTOA": "packages/native/THIRD_PARTY_LICENSES/GDTOA",
 })) {
   const copy = `packages/rust/crates/opentui-sys/${name}`
-  const owner = `packages/native/src/vendor/ffmpeg/${source}`
   if (!readFileSync(join(root, copy)).equals(readFileSync(join(root, owner)))) {
     problems.add(`${copy}: differs from ${owner}`)
   }
+}
+
+// Yoga's licence travels inside the vendored Zig dependency archive, a gzipped tar of 512-byte headers and blocks.
+const yogaNotice = "packages/native/THIRD_PARTY_LICENSES/YOGA"
+const archive = gunzipSync(readFileSync(join(root, "packages/native/src/vendor/zig-deps.tar.gz")))
+let yogaLicense: Buffer | undefined
+for (let at = 0; at + 512 <= archive.length && archive[at] !== 0; ) {
+  const name = archive
+    .subarray(at, at + 100)
+    .toString("utf8")
+    .replace(/\0.*$/s, "")
+  const size = Number.parseInt(
+    archive
+      .subarray(at + 124, at + 136)
+      .toString("utf8")
+      .trim() || "0",
+    8,
+  )
+  if (name.replace(/^\.\//, "") === "yoga/LICENSE") yogaLicense = archive.subarray(at + 512, at + 512 + size)
+  at += 512 + Math.ceil(size / 512) * 512
+}
+if (!yogaLicense?.equals(readFileSync(join(root, yogaNotice)))) {
+  problems.add(`${yogaNotice}: differs from yoga/LICENSE in packages/native/src/vendor/zig-deps.tar.gz`)
 }
 
 for (const problem of problems) console.error(problem)
