@@ -423,7 +423,9 @@ fn addVideoDependencies(b: *std.Build, module: *std.Build.Module, target: std.Bu
     var lines = std.mem.tokenizeAny(u8, objects, "\r\n");
     while (lines.next()) |object| module.addObjectFile(.{ .cwd_relative = b.pathJoin(&.{ prefix, object }) });
     switch (target.result.os.tag) {
-        .windows => module.linkSystemLibrary("bcrypt", .{}),
+        // A system import library: pkg-config has nothing for it, and on CI's Windows runners Strawberry Perl's
+        // pkg-config.BAT fails and fails the compile step.
+        .windows => module.linkSystemLibrary("bcrypt", .{ .use_pkg_config = .no }),
         .macos => {
             module.linkFramework("VideoToolbox", .{});
             module.linkFramework("CoreMedia", .{});
