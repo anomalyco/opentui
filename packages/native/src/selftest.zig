@@ -22,16 +22,18 @@ fn threadLocalsSeparate() bool {
     const Thread = struct {
         fn run(seen: *u32) void {
             seen.* = thread_value;
-            thread_value = 2;
         }
     };
+    // Once any caller has set it, a shared copy never reads as the initial value again.
     thread_value = 1;
-    defer thread_value = 0x5e1f;
     var seen: u32 = 0;
     const thread = std.Thread.spawn(.{}, Thread.run, .{&seen}) catch return false;
     thread.join();
-    return seen == 0x5e1f and thread_value == 1;
+    return seen == 0x5e1f;
 }
+
+// Zig 0.17's Windows module lookup changes its module list under a shared lock.
+var module_lookup: std.Io.Mutex = .init;
 
 const unwind_depth = 3;
 
@@ -46,6 +48,8 @@ fn unwindWorks() bool {
     // name, and Zig 0.17's getModuleSlide does not compile for Windows.
     const debug_info = std.debug.getSelfDebugInfo() catch return false;
     const io = std.Options.debug_io;
+    module_lookup.lockUncancelable(io);
+    defer module_lookup.unlock(io);
     if (builtin.os.tag == .windows) {
         _ = debug_info.getModuleName(io, returns[0]) catch return false;
     } else {
