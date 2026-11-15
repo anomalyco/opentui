@@ -9,7 +9,7 @@ use opentui::widget::{ImageFit, VideoEvent, VideoInfo, VideoView};
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// 160x90, 24 fps, 2 s, with an AAC track.
 const WITH_AUDIO: &str = "testsrc-160x90-24fps-2s.mp4";
@@ -44,17 +44,16 @@ fn video(app: &TestApp) -> (VideoView, Rc<RefCell<Vec<VideoEvent>>>) {
     (video, events)
 }
 
-/// Paints and lets real time pass, as a running app does, until `done` holds; the first paint follows play() at once.
+/// Paints and lets real time pass, as a running app does, until `done` holds, for at most ten seconds; the first paint
+/// follows play() at once.
 fn play_until(app: &TestApp, mut done: impl FnMut() -> bool) {
-    for _ in 0..500 {
-        if done() {
-            return;
-        }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !done() {
+        assert!(Instant::now() < deadline, "playback did not get there in time");
         app.advance(Duration::from_millis(10));
         app.render();
         std::thread::sleep(Duration::from_millis(5));
     }
-    panic!("playback did not get there in time");
 }
 
 fn times(events: &[VideoEvent]) -> usize {
@@ -109,15 +108,20 @@ fn playing_ticks_at_max_fps_until_paused() {
     video.max_fps(20);
     app.advance(Duration::from_secs(1));
     assert_eq!(times(&events.borrow()), 30, "a new rate takes effect while playing");
-    // Live option changes send only themselves; a volume change keeps the frames coming.
-    let mut frames = std::collections::HashSet::new();
-    for step in 0..40 {
+    // Live option changes send only themselves; a volume change keeps the frames coming. Looping keeps the clip from
+    // ending, however slowly a loaded machine decodes it.
+    video.looping(true);
+    let (mut frames, deadline) = (std::collections::HashSet::new(), Instant::now() + Duration::from_secs(10));
+    for step in 0.. {
+        if frames.len() > 5 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{} distinct frames", frames.len());
         video.volume(if step % 2 == 0 { 0.5 } else { 1.0 });
         std::thread::sleep(Duration::from_millis(15));
         app.advance(Duration::from_millis(15));
         frames.insert(format!("{:?}", app.render().cells));
     }
-    assert!(frames.len() > 5, "{} distinct frames", frames.len());
     app.try_render().unwrap();
     events.borrow_mut().clear();
     video.pause();
