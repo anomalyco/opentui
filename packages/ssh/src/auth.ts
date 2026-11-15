@@ -108,10 +108,10 @@ export interface Authenticator {
 /**
  * Reconstruct a `ParsedKey` from an attempt's `key` so we can verify its
  * signature ourselves: ssh2 surfaces only `{ algo, data }` with no `.verify()`.
- * `parseOneKey` accepts the OpenSSH one-line form rebuilt here.
+ * Parse the raw blob; `key.algorithm` is client-controlled text.
  */
 function parseAttemptKey(key: PublicKey) {
-  return parseOneKey(`${key.algorithm} ${key.blob.toString("base64")}`)
+  return parseOneKey(key.blob)
 }
 
 /**
