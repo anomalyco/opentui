@@ -323,6 +323,35 @@ const Coff = struct {
         std.mem.writeInt(u32, flags, std.mem.readInt(u32, flags, .little) & ~@as(u32, 0x1000), .little);
         coff.data[aux + 14] = 0;
     }
+
+    /// The aux record of section `i`'s own symbol.
+    fn definition(coff: Coff, i: usize) !?usize {
+        var s: usize = 0;
+        while (s < coff.count) : (s += 1 + coff.data[coff.symtab + s * 18 + 17]) {
+            const at = coff.symtab + s * 18;
+            if (coff.data[at + 16] != 3 or coff.data[at + 17] == 0 or read(i16, coff.data, at + 12) != @as(i32, @intCast(i + 1))) continue;
+            if (std.mem.eql(u8, coff.symbolName(at), try coff.sectionName(i))) return at + 18;
+        }
+        return null;
+    }
+
+    /// Makes the "no duplicates" COMDATs that section `i` refers to ordinary sections.
+    fn ordinaryTargets(coff: Coff, member: Member, i: usize) !void {
+        const header = coff.section_table + i * 40;
+        if (read(u32, coff.data, header + 36) & 0x0100_0000 != 0) return fail("{s}: too many relocations", .{member.name});
+        const relocations: usize = read(u32, coff.data, header + 24);
+        for (0..read(u16, coff.data, header + 32)) |r| {
+            const symbol: usize = read(u32, coff.data, relocations + r * 10 + 4);
+            const number = read(i16, coff.data, coff.symtab + symbol * 18 + 12);
+            if (number <= 0 or !coff.comdat(@intCast(number - 1))) continue;
+            const target: usize = @intCast(number - 1);
+            const aux = (try coff.definition(target)) orelse return fail("{s}: COMDAT section {d} has no definition", .{ member.name, target + 1 });
+            if (coff.data[aux + 14] != 1) {
+                return fail("{s}: shared unwind data covers {s}, which a linker may drop", .{ member.name, try coff.sectionName(target) });
+            }
+            coff.ordinary(target, aux);
+        }
+    }
 };
 
 /// MinGW objects carry -exclude-symbols directives, which keep their names out
@@ -365,14 +394,18 @@ fn blankExcludeSymbols(member: Member) !void {
 /// - weak definitions (libc++abi's operator new and delete) in "no duplicates"
 ///   sections, whose symbol comes later in the table. They become ordinary
 ///   sections, which still reject a duplicate, and so does their unwind data.
-/// Ordinary sections are never dropped, so they keep what they refer to. Any
-/// other COMDAT without its symbol fails the build. Only section flags and aux
-/// records change, so nothing moves.
+/// Ordinary sections are never dropped, so they keep what they refer to. The
+/// functions a shared .pdata$ covers become ordinary too: linkers fold only
+/// COMDATs as identical code (/OPT:ICF), and a folded function would leave its
+/// entry in the shared table beside the survivor's. Any other COMDAT without its
+/// symbol fails the build. Only section flags and aux records change, so
+/// nothing moves.
 fn fixComdats(member: Member) !void {
     const coff = try Coff.init(member);
     const data = coff.data;
-    // Code first: unwind data follows what becomes of its function.
-    for ([_]bool{ false, true }) |unwind_pass| {
+    // Code first, then Zig's shared unwind data, which may make more code ordinary, then the rest of the unwind data,
+    // which follows what became of its function.
+    for ([_]u2{ 0, 1, 2 }) |pass| {
         var i: usize = 0;
         while (i < coff.count) : (i += 1 + data[coff.symtab + i * 18 + 17]) {
             const at = coff.symtab + i * 18;
@@ -388,19 +421,21 @@ fn fixComdats(member: Member) !void {
             // Associative, or followed by its COMDAT symbol.
             if (data[aux + 14] == 5 or (next < coff.count and read(i16, data, coff.symtab + next * 18 + 12) == number)) continue;
             const unwind = std.mem.startsWith(u8, name, ".xdata$") or std.mem.startsWith(u8, name, ".pdata$");
-            if (unwind != unwind_pass) continue;
+            const suffix = if (unwind) name[".xdata$".len..] else "";
+            if (pass != @as(u2, if (!unwind) 0 else if (suffix.len == 0) 1 else 2)) continue;
             if (!unwind) {
                 if (data[aux + 14] != 1) return fail("{s}: COMDAT section {s} has no symbol", .{ member.name, name });
                 coff.ordinary(section, aux);
                 continue;
             }
-            const suffix = name[".xdata$".len..];
+            if (suffix.len == 0) {
+                coff.ordinary(section, aux);
+                if (name[1] == 'p') try coff.ordinaryTargets(member, section);
+                continue;
+            }
             const text = for (0..coff.sections) |t| {
                 const candidate = try coff.sectionName(t);
-                if (suffix.len > 0 and std.mem.startsWith(u8, candidate, ".text$") and std.mem.eql(u8, candidate[".text$".len..], suffix)) break t;
-            } else if (suffix.len == 0) {
-                coff.ordinary(section, aux);
-                continue;
+                if (std.mem.startsWith(u8, candidate, ".text$") and std.mem.eql(u8, candidate[".text$".len..], suffix)) break t;
             } else return fail("{s}: {s} has no .text${s}", .{ member.name, name, suffix });
             if (!coff.comdat(text)) {
                 coff.ordinary(section, aux);
