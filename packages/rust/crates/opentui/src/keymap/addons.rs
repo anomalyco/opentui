@@ -124,10 +124,37 @@ pub fn leader<T: Clone + PartialEq + 'static>(keymap: &Keymap<T>, name: &str, tr
     keymap.register_token(name, trigger)
 }
 
-/// A leader token whose pending sequence clears when no key follows in time. The keymap has no clock: after each key,
-/// while the leader is [`armed`](Self::armed), schedule [`timeout`](Self::timeout) on the app's timer and pass the
-/// generation to [`expire`](Self::expire) when it fires. Dropping it removes the token, as
-/// [`dispose`](Self::dispose) does.
+/// A leader token whose pending sequence clears when no key follows in time. The keymap has no clock: in a
+/// [`Keymap::on_pending_sequence`] listener registered after the leader, while it is [`armed`](Self::armed), schedule
+/// [`timeout`](Self::timeout) on the app's timer and pass the generation to [`expire`](Self::expire) when it fires.
+/// A timer of an earlier generation does nothing. Dropping it removes the token, as [`dispose`](Self::dispose) does.
+///
+/// ```
+/// use opentui::keymap::{Binding, Command, Keymap, Layer, addons};
+/// use opentui::testing::TestApp;
+/// use std::{rc::Rc, time::Duration};
+///
+/// let app = TestApp::new(10, 2);
+/// let keymap = Keymap::<()>::new();
+/// let leader = Rc::new(addons::timed_leader(&keymap, "leader", "ctrl+x", Duration::from_secs(2)).unwrap());
+/// let layer = Layer::new().command(Command::new("new", |_| {})).binding(Binding::new("<leader>n").cmd("new"));
+/// keymap.register_layer(layer).forget();
+/// let timers = app.app().clone();
+/// keymap
+///     .on_pending_sequence(move |_| {
+///         if let Some(generation) = leader.armed() {
+///             let leader = leader.clone();
+///             timers.set_timeout(leader.timeout(), move |_| { leader.expire(generation); });
+///         }
+///     })
+///     .forget();
+/// let keys = keymap.clone();
+/// app.on_key_capture(move |_, key| { keys.handle_key(key); });
+/// app.press("ctrl+x");
+/// assert_eq!(keymap.pending_sequence().len(), 1);
+/// app.advance(Duration::from_secs(2));
+/// assert!(keymap.pending_sequence().is_empty());
+/// ```
 #[must_use = "dropping a TimedLeader removes its token"]
 pub struct TimedLeader<T> {
     keymap: WeakKeymap<T>,
@@ -169,6 +196,7 @@ impl<T: Clone + PartialEq + 'static> TimedLeader<T> {
         armed.then_some(generation)
     }
 
+    /// How long a pending leader sequence waits for the next stroke.
     pub fn timeout(&self) -> Duration {
         self.timeout
     }

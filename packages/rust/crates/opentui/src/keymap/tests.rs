@@ -1071,7 +1071,8 @@ fn base_layout_fallback_matches_non_latin_layouts() {
 
 #[test]
 fn timed_leader_expires_on_the_apps_clock() {
-    // Wired as an app wires it: after each key, a timer on the app's clock for the leader's latest generation.
+    // Wired as an app wires it: a capture handler stops the keys the keymap handles, and each change of the pending
+    // sequence sets a timer on the app's clock for the leader's latest generation.
     let app = crate::testing::TestApp::new(10, 2);
     let (keymap, calls) = (Keymap::new(), calls());
     let leader = Rc::new(addons::timed_leader(&keymap, "leader", "ctrl+x", Duration::from_millis(2000)).unwrap());
@@ -1082,19 +1083,34 @@ fn timed_leader_expires_on_the_apps_clock() {
                 .bindings([Binding::new("<leader>gn").cmd("new"), Binding::new("dd").cmd("new")]),
         )
         .forget();
-    let timer = Rc::new(Cell::new(None));
-    app.on_key({
-        let (keymap, leader) = (keymap.clone(), leader.clone());
+    let other = Rc::new(Cell::new(true));
+    keymap
+        .register_layer(
+            Layer::new()
+                .enabled(Condition::when({
+                    let other = other.clone();
+                    move || other.get()
+                }))
+                .command(record(&calls, "other"))
+                .binding(Binding::new("<leader>a").cmd("other")),
+        )
+        .forget();
+    app.on_key_capture({
+        let keymap = keymap.clone();
         move |cx, key| {
-            keymap.handle_key(key);
-            if let Some(previous) = timer.take() {
-                cx.cancel_timer(previous);
+            if keymap.handle_key(key).handled {
+                cx.stop_propagation();
             }
+        }
+    });
+    let listener = keymap.on_pending_sequence({
+        let (app, leader) = (app.app().clone(), leader.clone());
+        move |_| {
             if let Some(generation) = leader.armed() {
                 let leader = leader.clone();
-                timer.set(Some(cx.set_timeout(leader.timeout(), move |_| {
+                app.set_timeout(leader.timeout(), move |_| {
                     leader.expire(generation);
-                })));
+                });
             }
         }
     });
@@ -1109,6 +1125,16 @@ fn timed_leader_expires_on_the_apps_clock() {
     app.advance(Duration::from_millis(1));
     assert!(pending(&keymap).is_empty());
     assert_eq!(leader.armed(), None);
+    // A layer that turns off mid-sequence changes the sequence without a key, and the timeout starts again.
+    app.press("ctrl+x");
+    app.advance(Duration::from_millis(500));
+    other.set(false);
+    assert_eq!(pending(&keymap).len(), 1);
+    app.advance(Duration::from_millis(1999));
+    assert_eq!(pending(&keymap).len(), 1);
+    app.advance(Duration::from_millis(1));
+    assert!(pending(&keymap).is_empty(), "still pending 2,000 ms after the layer turned off");
+    other.set(true);
     // A later stroke arms a new generation, which the old one's expiry leaves alone.
     app.press("ctrl+x");
     let first = leader.armed().expect("armed");
@@ -1123,6 +1149,7 @@ fn timed_leader_expires_on_the_apps_clock() {
     assert_eq!(taken(&calls), ["new"]);
     assert_eq!(leader.armed(), None);
     assert!(!leader.expire(last));
+    listener.dispose();
     drop(app);
     Rc::into_inner(leader).expect("the app's handlers are gone").dispose();
     assert!(keymap.parse_key_sequence("<leader>").unwrap().is_empty());
