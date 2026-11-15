@@ -540,6 +540,9 @@ test "renderer avoids automatic synchronized redraws over live tmux Sixel" {
 
         // Clear the image; after its committed placement is gone, auto sync resumes.
         try std.testing.expectEqual(renderer.RenderStatus.rendered, target.render(true));
+        const removal_output = target.lastOutput();
+        try std.testing.expectEqual(@intFromBool(sync), std.mem.count(u8, removal_output, ansi.ANSI.syncSet));
+        try std.testing.expectEqual(@intFromBool(sync), std.mem.count(u8, removal_output, ansi.ANSI.syncReset));
         try next.drawText("PLAIN", 0, 1, ansi.rgbColor(255, 255, 255, 255), null, 0);
         try std.testing.expectEqual(renderer.RenderStatus.rendered, target.render(true));
         const plain_output = target.lastOutput();
