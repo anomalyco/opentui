@@ -7,7 +7,7 @@
 //! cannot give an MSVC program. A MinGW link takes the same members from here
 //! instead of from its own copy of Zig's runtime.
 //!
-//! Usage: bundle-windows-runtime <zig> <target> <optimize> <probe.cpp> <shim.obj> <in.lib> <out.lib>
+//! Usage: bundle-windows-runtime <zig> <target> <optimize> <probe.cpp> <shim.c> <in.lib> <out.lib>
 //!
 //! As in bundle-libcxx.zig, the runtime archives come from the linker line of a
 //! C++ probe for the same target and mode. Its import libraries say what the
@@ -65,16 +65,22 @@ pub fn main(init: std.process.Init) !void {
     var provided: Names = .empty;
     for (msvc_runtime) |name| try provided.put(arena, name, {});
     // Import libraries say what DLLs provide; MinGW's POSIX aliases in them, such as close for _close, are weak
-    // externals, not imports, and the UCRT has none of them. The other libraries are the runtime.
+    // externals, not imports, and the UCRT has none of them. The other libraries are the runtime. With crt-static
+    // the UCRT is libucrt.lib, which defines its functions and no __imp_ pointers, so only the plain names count.
     var runtime: std.ArrayList(Member) = .empty;
+    var crt_functions: Names = .empty;
     for (try libraries(arena, io, line.?)) |path| {
         const members = try readArchive(arena, path, try cwd.readFileAlloc(io, path, arena, .unlimited));
+        const crt = std.mem.startsWith(u8, basename(path), "api-ms-win-crt-");
         var imports = false;
         for (members) |member| {
             const name = importName(member.data) orelse continue;
             imports = true;
-            try provided.put(arena, name, {});
-            try provided.put(arena, try std.fmt.allocPrint(arena, "__imp_{s}", .{name}), {});
+            // The import's type: 0 code, 1 data, 2 const.
+            const code = read(u16, member.data, 18) & 3 == 0;
+            if (crt and code) try crt_functions.put(arena, name, {});
+            if (!crt or code) try provided.put(arena, name, {});
+            if (!crt) try provided.put(arena, try std.fmt.allocPrint(arena, "__imp_{s}", .{name}), {});
         }
         if (!imports) try runtime.appendSlice(arena, members);
     }
@@ -92,7 +98,8 @@ pub fn main(init: std.process.Init) !void {
     const input_bytes = try cwd.readFileAlloc(io, input, arena, .unlimited);
     var own: std.ArrayList(Member) = .empty;
     try own.appendSlice(arena, try readArchive(arena, input, input_bytes));
-    try own.append(arena, .{ .name = std.fs.path.basename(shim), .data = try cwd.readFileAlloc(io, shim, arena, .unlimited) });
+    const shim_object = try compileShim(arena, io, zig, target, shim, work, &.{});
+    try own.append(arena, shim_object);
     var defined: Names = .empty;
     var queue: std.ArrayList([]const u8) = .empty;
     for (own.items) |member| {
@@ -100,11 +107,16 @@ pub fn main(init: std.process.Init) !void {
         for (object.defined) |name| try defined.put(arena, name, {});
         try queue.appendSlice(arena, object.undefined);
     }
-    // Members to add, in the order they are found.
+    // Members to add, in the order they are found, and CRT functions called through __imp_ pointers.
     var added: std.ArrayList(usize) = .empty;
     var missing: Names = .empty;
+    var imported: Names = .empty;
     while (queue.pop()) |name| {
         if (defined.contains(name) or provided.contains(name)) continue;
+        if (std.mem.startsWith(u8, name, "__imp_") and crt_functions.contains(name["__imp_".len..])) {
+            try imported.put(arena, name["__imp_".len..], {});
+            continue;
+        }
         const i = index.get(name) orelse {
             try missing.put(arena, name, {});
             continue;
@@ -122,6 +134,27 @@ pub fn main(init: std.process.Init) !void {
         return fail("neither the MinGW runtime nor MSVC defines:{s}", .{names.items});
     }
 
+    // The shim again, now with a pointer for each of those functions. An /alternatename directive makes the pointer
+    // stand for __imp_name only when nothing else defines it, as with libucrt.lib; an import library's own pointer,
+    // in a link with the UCRT DLL or MinGW's runtime, takes precedence. A linker reads directives only from members
+    // it loads, and the Zig object, which every OpenTUI program loads, loads the shim.
+    var names: std.ArrayList([]const u8) = .empty;
+    var it = imported.keyIterator();
+    while (it.next()) |name| try names.append(arena, name.*);
+    std.mem.sortUnstable([]const u8, names.items, {}, lessThan);
+    own.items[own.items.len - 1] = try compileShim(arena, io, zig, target, shim, work, names.items);
+    const shim_symbols = try parse(arena, own.getLast());
+    for (shim_symbols.undefined) |name| {
+        if (!defined.contains(name) and !provided.contains(name)) return fail("the shim needs {s}", .{name});
+    }
+    const loads_shim = zig_object: for (own.items[0 .. own.items.len - 1]) |member| {
+        if (!std.mem.endsWith(u8, member.name, "_zcu.obj")) continue;
+        for ((try parse(arena, member)).undefined) |name| {
+            for (shim_symbols.defined) |symbol| if (std.mem.eql(u8, symbol, name)) break :zig_object true;
+        }
+    } else false;
+    if (!loads_shim) return fail("the Zig object uses nothing from the shim, so a linker may never read its directives", .{});
+
     for (own.items) |member| try fixComdats(member);
     const shim_copy = try std.fmt.allocPrint(arena, "{s}/{s}", .{ work, own.getLast().name });
     try cwd.writeFile(io, .{ .sub_path = shim_copy, .data = own.getLast().data });
@@ -137,6 +170,37 @@ pub fn main(init: std.process.Init) !void {
     try cwd.writeFile(io, .{ .sub_path = output, .data = input_bytes });
     _ = try run(arena, io, argv.items);
     try cwd.deleteTree(io, work);
+}
+
+/// Compiles the shim's source for the target, with a pointer to each CRT
+/// function in `imported` that stands in for its __imp_ pointer.
+fn compileShim(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    zig: []const u8,
+    target: []const u8,
+    source: []const u8,
+    work: []const u8,
+    imported: []const []const u8,
+) !Member {
+    const cwd = std.Io.Dir.cwd();
+    var text: std.ArrayList(u8) = .empty;
+    try text.appendSlice(arena, try cwd.readFileAlloc(io, source, arena, .unlimited));
+    for (imported, 0..) |name, n| try text.print(arena,
+        \\__asm__(".section .drectve,\"yn\"\n.ascii \" /alternatename:__imp_{0s}=__ot_imp_{0s}\"\n.text");
+        \\extern char ot_crt_{1d}[] __asm__("{0s}");
+        \\void *ot_crt_pointer_{1d} __asm__("__ot_imp_{0s}") = ot_crt_{1d};
+        \\
+    , .{ name, n });
+    const c = try std.fmt.allocPrint(arena, "{s}/windows-msvc-shim.c", .{work});
+    const object = try std.fmt.allocPrint(arena, "{s}/windows-msvc-shim.obj", .{work});
+    try cwd.writeFile(io, .{ .sub_path = c, .data = text.items });
+    _ = try run(arena, io, &.{ zig, "cc", "-target", target, "-std=c11", "-O2", "-g0", "-c", c, "-o", object });
+    return .{ .name = "windows-msvc-shim.obj", .data = try cwd.readFileAlloc(io, object, arena, .unlimited) };
+}
+
+fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.lessThan(u8, a, b);
 }
 
 /// The existing absolute paths of .lib files on the probe's linker line. Zig

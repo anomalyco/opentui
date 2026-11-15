@@ -946,14 +946,7 @@ fn buildTarget(
             const run = b.addRunArtifact(bundleTool(b, windows));
             run.addArgs(&.{ b.graph.zig_exe, zig_target, @tagName(optimize) });
             run.addFileArg(b.addWriteFiles().add("probe.cpp", "int opentui_probe;\n"));
-            if (windows) {
-                const shim = b.addObject(.{
-                    .name = "windows-msvc-shim",
-                    .root_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true }),
-                });
-                shim.root_module.addCSourceFile(.{ .file = b.path("src/windows-msvc-shim.c"), .flags = &.{"-std=c11"} });
-                run.addArtifactArg(shim);
-            }
+            if (windows) run.addFileArg(b.path("src/windows-msvc-shim.c"));
             run.addArtifactArg(lib);
             const name = if (windows) "opentui-static.lib" else "libopentui.a";
             const archive = run.addOutputFileArg(name);

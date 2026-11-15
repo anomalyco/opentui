@@ -1,5 +1,6 @@
 // What OpenTUI's MinGW objects take from MinGW's runtime that an MSVC program cannot.
-// scripts/bundle-windows-runtime.zig adds this object to opentui-static.lib. MinGW's POSIX names
+// scripts/bundle-windows-runtime.zig compiles this, with the CRT import pointers it generates,
+// into opentui-static.lib. MinGW's POSIX names
 // are import library aliases of the UCRT's underscored functions, which Microsoft's import
 // libraries lack, and winpthreads sets up its clocks in a constructor that MSVC's start-up code
 // never runs. No headers: MinGW's declare some of these names as imports.
@@ -23,6 +24,18 @@ __declspec(dllimport) int __stdcall QueryPerformanceCounter(int64_t *count);
 __declspec(dllimport) int __stdcall QueryPerformanceFrequency(int64_t *frequency);
 __declspec(dllimport) void __stdcall GetSystemTimePreciseAsFileTime(uint64_t *time);
 __declspec(dllimport) void __stdcall Sleep(uint32_t milliseconds);
+__declspec(dllimport) void *__stdcall GetModuleHandleW(const unsigned short *name);
+__declspec(dllimport) void *__stdcall GetProcAddress(void *module, const char *name);
+
+// Zig's stack traces (std.debug.SelfInfo) track loaded DLLs with LdrRegisterDllNotification, which
+// ntdll.dll exports and the Windows SDK's ntdll.lib does not: look it up at run time, as Zig does
+// for its own MSVC static libraries. STATUS_NOT_IMPLEMENTED should ntdll.dll ever lack it.
+typedef long(__stdcall *ot_ldr_register_dll_notification)(unsigned long, void *, void *, void **);
+long __stdcall LdrRegisterDllNotification(unsigned long flags, void *callback, void *context, void **cookie) {
+    ot_ldr_register_dll_notification real = (ot_ldr_register_dll_notification)GetProcAddress(
+        GetModuleHandleW((const unsigned short *)L"ntdll.dll"), "LdrRegisterDllNotification");
+    return real ? real(flags, callback, context, cookie) : (long)0xC0000002;
+}
 
 int close(int fd) { return _close(fd); }
 int read(int fd, void *buffer, unsigned count) { return _read(fd, buffer, count); }
