@@ -197,22 +197,30 @@ fn a_slow_client_holds_output_back_without_stalling_the_app() {
     client.wait_for("Hello remote");
     // A transport learns how long the app's close may take, to wait that long before it gives up on the client.
     assert_eq!(client.link.close_bound(), bound);
-    // The client stops reading for a while; the app keeps running but its output waits.
-    std::thread::sleep(Duration::from_millis(300));
-    let held = client.link.take_output(usize::MAX);
-    assert!(held.len() <= OUTPUT_BYTES_MAX, "the link held {} bytes", held.len());
-    assert!(held.len() > OUTPUT_BYTES_MAX / 2, "the app filled the link: {} bytes", held.len());
+    // The client stops reading until the app fills the link; the app keeps running but its output waits. A loaded
+    // machine fills it more slowly, so each pause that leaves room is followed by one twice as long.
+    let mut pause = Duration::from_millis(300);
+    loop {
+        std::thread::sleep(pause);
+        let held = client.link.take_output(usize::MAX).len();
+        assert!(held <= OUTPUT_BYTES_MAX, "the link held {held} bytes");
+        if held == OUTPUT_BYTES_MAX {
+            break;
+        }
+        pause *= 2;
+        assert!(pause < Duration::from_secs(10), "the app filled {held} bytes of the link");
+    }
     // The link fills again, and the client quits and reads 64 bytes every 20 ms: the frame queued behind the link
-    // would take seconds. Bytes keep moving, so the close goes on until its cap of ten timeouts, then drops that
+    // would take over a minute. Bytes keep moving, so the close goes on until its cap of ten timeouts, then drops that
     // frame and restores the terminal behind what the link holds.
-    std::thread::sleep(Duration::from_millis(300));
+    std::thread::sleep(pause);
     client.send(b"q");
     let quit = Instant::now();
     while !client.app.as_ref().expect("the app thread").is_finished() {
+        assert!(quit.elapsed() < bound * 3 / 2, "the close took {:?}", quit.elapsed());
         client.output.extend(client.link.take_output(64));
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(quit.elapsed() < Duration::from_secs(2), "the close took {:?}", quit.elapsed());
     client.wait_for(LEAVE_ALT);
     client.finish().expect("the app thread").expect("the app");
 }
