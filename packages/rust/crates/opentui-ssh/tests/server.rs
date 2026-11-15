@@ -564,10 +564,14 @@ impl<T: Sync> Probe<T> {
 #[test]
 fn only_queues_and_plain_values_cross_threads() {
     // (Send, Sync). Only a native context's creating thread may call it, so every owner of native state stays there.
-    // A session moves to its own thread, and its handler builds the app's context there.
+    // A session moves to its own thread, and its handler builds the app's context there. The rows are the native
+    // wrappers, the app, host and split types that hold them, and the types that cross threads; widgets, which hold a
+    // Node, have none.
     use opentui::native::{self, Buffer, Capture, ClipboardOperation, ClipboardService, Context, Draft, EditBuffer};
     use opentui::native::{EditorView, EmbeddedTerminal, Image, Node, OutputTicket, Recorder, SyntaxStyle, TextBuffer};
-    use opentui::{audio::Audio, input::Parser, native::TextView, pty::Pty, remote::*, testing::TestApp};
+    use opentui::split::{Scrollback, ScrollbackSurface, SplitFooter, SplitSnapshot};
+    use opentui::{audio::Audio, console::Console, host::Host, input::Parser, native::TextView, pty::Pty};
+    use opentui::{remote::*, testing::TestApp};
     macro_rules! threads {
         ($($ty:ty => $want:expr,)*) => {
             [$((stringify!($ty), (Probe::<$ty>::SEND, Probe::<$ty>::SYNC), $want)),*]
@@ -579,7 +583,8 @@ fn only_queues_and_plain_values_cross_threads() {
         SyntaxStyle => (false, false), TextBuffer => (false, false), TextView => (false, false),
         Image => (false, false), EmbeddedTerminal => (false, false), Draft => (false, false),
         App => (false, false), TestApp => (false, false), Pty => (false, false), Audio => (false, false),
-        Parser => (false, false),
+        Parser => (false, false), Host => (false, false), Console => (false, false), SplitFooter => (false, false),
+        Scrollback => (false, false), ScrollbackSurface => (false, false), SplitSnapshot => (false, false),
         AppProxy => (true, true), RemoteTerminal => (true, true), RemoteLink => (true, true),
         Recorder => (true, true), ClipboardOperation => (true, true), OutputTicket => (true, true),
         Capture => (true, true), opentui::Error => (true, true),
