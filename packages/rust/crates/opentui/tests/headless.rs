@@ -244,7 +244,7 @@ impl Component for Arming {
 fn timers_armed_while_painting_fire_on_time() {
     // Runs an app whose only wakeup after its first frame is the timer `arm` sets up, with an unrelated 60 s timer
     // pending, and returns when the timer quit (for `Quit`, when the run ended). A timer or quit the loop misses waits
-    // for the next unrelated wakeup: the watchdog, or a remote terminal's 5 s capability window closing.
+    // for the next unrelated wakeup: the watchdog, or a remote terminal's 5 s capability and pixel reply windows closing.
     let late = |&(arm, host): &(Arm, Host)| {
         let run = move |terminal: Option<RemoteTerminal>| {
             let app = match terminal {
@@ -309,17 +309,18 @@ fn timers_armed_while_painting_fire_on_time() {
             terminal.write(&vec![b' '; waiting], Duration::ZERO).expect("fill the output");
             if host == Host::Late {
                 let link = link.clone();
-                // Twice: what the first take makes room for comes after it.
+                // From 300 ms on until the app is done: what one take makes room for comes after it.
                 std::thread::spawn(move || {
-                    for delay in [300, 50] {
-                        std::thread::sleep(Duration::from_millis(delay));
-                        while !link.take_output(1 << 20).is_empty() {}
+                    std::thread::sleep(Duration::from_millis(300));
+                    while !link.is_finished() {
+                        link.take_output(1 << 20);
+                        std::thread::sleep(Duration::from_millis(1));
                     }
                 });
             }
             std::thread::spawn(move || run(Some(terminal))).join().expect("the app thread")
         };
-        quit.is_none_or(|quit| quit - started > Duration::from_secs(2))
+        quit.is_none_or(|quit| quit - started > Duration::from_secs(4))
     };
     let rows = [Host::Headless, Host::Remote]
         .into_iter()
