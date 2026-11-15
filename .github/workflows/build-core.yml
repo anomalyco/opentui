@@ -714,11 +714,14 @@ jobs:
       - name: Setup Zig
         uses: ./.github/actions/setup-zig
 
+      # No other Windows job saves the lib kind.
       - name: Restore Zig cache
+        id: zig-cache
         uses: ./.github/actions/restore-zig-cache
         with:
           zig-version: ${{ env.ZIG_VERSION }}
           kind: lib
+          save: true
 
       # Windows test jobs save the build job's cross-built x64 prefix under this key. Without it, as for arm64, the
       # archive has no video and the video tests skip.
@@ -739,11 +742,23 @@ jobs:
           done
           rm lib/*-windows/opentui.dll lib/*-windows/opentui.lib
 
+      - name: Save Zig cache
+        if: steps.zig-cache.outputs.save == 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: .zig-cache
+          key: ${{ steps.zig-cache.outputs.key }}
+
       - name: Install the pinned toolchain
         working-directory: packages/rust
         run: |
           rustup toolchain install
           rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/rust
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Cargo puts build script output directories on PATH, and build.rs copies opentui.dll into its own only when it
       # links the DLL.
