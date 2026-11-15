@@ -474,6 +474,7 @@ fn addYogaDependencies(b: *std.Build, module: *std.Build.Module, test_allocator:
         .flags = flags,
     });
     module.addCSourceFile(.{ .file = b.path("src/yoga-bridge.cpp"), .flags = flags });
+    module.addCSourceFile(.{ .file = b.path("src/selftest.cpp"), .flags = flags });
 }
 
 fn ghosttyVtAvailable(target: std.Build.ResolvedTarget) bool {

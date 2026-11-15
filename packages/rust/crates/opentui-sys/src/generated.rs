@@ -5,7 +5,7 @@ use core::ffi::c_void;
 
 /// FNV-1a 64-bit hash of the `opentui.h` these declarations were generated from.
 /// The build script rejects native artifacts whose header has a different hash.
-pub const OPENTUI_HEADER_FNV1A64: u64 = 0xfcf352f7f1c874b8;
+pub const OPENTUI_HEADER_FNV1A64: u64 = 0xe526d47734bb45b7;
 
 pub type ot_status = i32;
 
@@ -816,6 +816,10 @@ pub const OT_INPUT_TIMEOUT_NS: u64 = 20000000;
 pub const OT_DIAGNOSTIC_MESSAGE_BYTES: u32 = 4096;
 pub const OT_DIAGNOSTIC_TRUNCATED: u32 = 1;
 pub const OT_DIAGNOSTIC_QUEUE_MAX: u32 = 64;
+pub const OT_SELFTEST_CXX_EXCEPTION: u32 = 1;
+pub const OT_SELFTEST_THREAD_LOCAL: u32 = 2;
+pub const OT_SELFTEST_UNWIND: u32 = 4;
+pub const OT_SELFTEST_ALL: u32 = 7;
 pub const OT_SCENE_RECORD_BYTES_MAX: u32 = 67108864;
 pub const OT_SCENE_RECORD_PHASE_BEFORE: u32 = 0;
 pub const OT_SCENE_RECORD_PHASE_SELF: u32 = 1;
@@ -4765,6 +4769,7 @@ unsafe extern "C" {
     pub fn ot_scene_frame_acquire_buffer_lease(context: *mut ot_context, session: *const ot_handle, frame_request: *const ot_scene_frame_request, which: u32, out_snapshot: *mut ot_buffer_lease_snapshot) -> ot_status;
     pub fn ot_scene_frame_commit(context: *mut ot_context, session: *const ot_handle, frame_request: *const ot_scene_frame_request, force: u32, out_status: *mut u32) -> ot_status;
     pub fn ot_context_abi_version() -> u32;
+    pub fn ot_debug_selftest(checks: u32) -> u32;
     pub fn ot_context_create(options: *const ot_context_options, out_context: *mut *mut ot_context) -> ot_status;
     pub fn ot_context_destroy(context: *mut ot_context) -> ot_status;
     pub fn ot_context_get_last_error(context: *mut ot_context, out_error: *mut ot_context_error) -> ot_status;

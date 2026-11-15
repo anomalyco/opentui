@@ -87,6 +87,7 @@ const context_terminal_abi_tests = @import("context-terminal-abi.zig");
 const context_input_abi_tests = @import("context-input-abi.zig");
 const context_text_abi_tests = @import("context-text-abi.zig");
 const context_unicode_abi_tests = @import("context-unicode-abi.zig");
+const selftest_tests = @import("selftest.zig");
 const context_reuse_tests = @import("tests/context-reuse_test.zig");
 const diagnostics_tests = @import("tests/diagnostics_test.zig");
 const edit_buffer_atomicity_tests = @import("tests/edit-buffer-atomicity_test.zig");
@@ -185,6 +186,7 @@ comptime {
     _ = context_input_abi_tests;
     _ = context_text_abi_tests;
     _ = context_unicode_abi_tests;
+    _ = selftest_tests;
     _ = context_reuse_tests;
     _ = diagnostics_tests;
     _ = edit_buffer_atomicity_tests;

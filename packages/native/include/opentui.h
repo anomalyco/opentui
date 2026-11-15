@@ -3156,6 +3156,22 @@ typedef struct ot_diagnostic_drain {
 
 uint32_t ot_context_abi_version(void);
 
+#define OT_SELFTEST_CXX_EXCEPTION UINT32_C(1)
+#define OT_SELFTEST_THREAD_LOCAL UINT32_C(2)
+#define OT_SELFTEST_UNWIND UINT32_C(4)
+#define OT_SELFTEST_ALL UINT32_C(7)
+
+/* Diagnostic for programs that link the library statically, to check that the
+ * runtime pieces the library needs work in the final executable. Runs the
+ * OT_SELFTEST_* checks in checks and returns the bits of those that failed;
+ * unknown bits count as failed. CXX_EXCEPTION throws a C++ exception three
+ * frames down and catches it by base class, running each frame's destructor.
+ * THREAD_LOCAL starts a thread and checks that it and the calling thread each
+ * see their own copy of a native thread-local. UNWIND captures a native stack
+ * trace from the unwind tables and looks up the module of a frame. Any thread
+ * may call it, with no context. */
+uint32_t ot_debug_selftest(uint32_t checks);
+
 /* Create a context without setting up a terminal or starting worker threads.
  * Both pointers must be non-NULL and correctly aligned. Options are borrowed
  * only for this call. The function checks options before native allocation
