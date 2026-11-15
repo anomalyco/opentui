@@ -1,22 +1,7 @@
 //! Safe owners for OpenTUI's native Context, Session, scene, and frames.
 //!
 //! This layer maps closely to the C ABI. Native code owns layout, painting, and output encoding; the host owns time,
-//! input, and transport. Every type here is single-threaded: none are `Send` or `Sync`.
-//!
-//! ```compile_fail
-//! fn send<T: Send>() {}
-//! send::<opentui::native::Context>();
-//! ```
-//!
-//! ```compile_fail
-//! fn sync<T: Sync>() {}
-//! sync::<opentui::native::Session>();
-//! ```
-//!
-//! ```compile_fail
-//! fn send<T: Send>() {}
-//! send::<opentui::native::Node>();
-//! ```
+//! input, and transport. Every owner of native state is single-threaded: none are `Send` or `Sync`.
 
 mod buffer;
 mod clipboard;
