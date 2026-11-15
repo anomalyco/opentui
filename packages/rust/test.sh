@@ -20,10 +20,6 @@ case ${1:-all} in
     shared|static) modes=$1 ;;
     *) usage ;;
 esac
-if [ "$platform" = x86_64-windows ]; then
-    # Windows links opentui.dll with or without the static feature, so one pass with the default features checks both.
-    modes=shared
-fi
 # Without OPENTUI_LIB_DIR, the crates link this checkout's packages/native/lib/$platform.
 if [ -n "${OPENTUI_LIB_DIR:-}" ]; then
     # Cargo on Windows needs a Windows path, which MSYS's `pwd -W` prints.
@@ -48,7 +44,7 @@ for linkage in $modes; do
     features=opentui/tokio,opentui/log,opentui/tree-sitter
     # The static feature is a default one.
     defaults=
-    [ "$linkage" = static ] || [ "$platform" = x86_64-windows ] || defaults=--no-default-features
+    [ "$linkage" = static ] || defaults=--no-default-features
     export CARGO_TARGET_DIR="$here/target/test-$linkage"
     # Without optional features, highlighting falls back to plain text. CI only lints that; the run below repeats the rest.
     if [ "$linkage" = shared ]; then
