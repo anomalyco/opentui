@@ -937,15 +937,25 @@ fn buildTarget(
     const build_step_name = try std.fmt.allocPrint(b.allocator, "build-{s}", .{output_name});
     const build_step = b.step(build_step_name, try std.fmt.allocPrint(b.allocator, "Build for {s}", .{description}));
     for (createLibraries(b, target, optimize, build_options, macos_sdk_path)) |lib| {
-        if (lib.isStaticLibrary() and target.result.os.tag == .linux) {
-            // Linux has no system libc++ to count on, so the archive carries Zig's. The shared library installs the
-            // header.
-            const run = b.addRunArtifact(bundleLibcxxTool(b));
+        const windows = target.result.os.tag == .windows;
+        if (lib.isStaticLibrary() and (windows or target.result.os.tag == .linux)) {
+            // Linux has no system libc++ to count on, so the archive carries Zig's. MSVC has none of MinGW's
+            // runtime, so the Windows archive carries what of it MSVC lacks. The shared library installs the header.
+            const run = b.addRunArtifact(bundleTool(b, windows));
             run.addArgs(&.{ b.graph.zig_exe, zig_target, @tagName(optimize) });
             run.addFileArg(b.addWriteFiles().add("probe.cpp", "int opentui_probe;\n"));
+            if (windows) {
+                const shim = b.addObject(.{
+                    .name = "windows-msvc-shim",
+                    .root_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true }),
+                });
+                shim.root_module.addCSourceFile(.{ .file = b.path("src/windows-msvc-shim.c"), .flags = &.{"-std=c11"} });
+                run.addArtifactArg(shim);
+            }
             run.addArtifactArg(lib);
-            const archive = run.addOutputFileArg("libopentui.a");
-            const install_archive = b.addInstallFileWithDir(archive, .{ .custom = install_path }, "libopentui.a");
+            const name = if (windows) "opentui-static.lib" else "libopentui.a";
+            const archive = run.addOutputFileArg(name);
+            const install_archive = b.addInstallFileWithDir(archive, .{ .custom = install_path }, name);
             build_step.dependOn(&install_archive.step);
             b.getInstallStep().dependOn(&install_archive.step);
             continue;
@@ -967,17 +977,20 @@ fn buildTarget(
     }
 }
 
-var bundle_libcxx_tool: ?*std.Build.Step.Compile = null;
+var bundle_tools: [2]?*std.Build.Step.Compile = .{ null, null };
 
-fn bundleLibcxxTool(b: *std.Build) *std.Build.Step.Compile {
-    if (bundle_libcxx_tool == null) bundle_libcxx_tool = b.addExecutable(.{
-        .name = "bundle-libcxx",
+/// scripts/bundle-windows-runtime.zig, or scripts/bundle-libcxx.zig for Linux.
+fn bundleTool(b: *std.Build, windows: bool) *std.Build.Step.Compile {
+    const tool = &bundle_tools[@intFromBool(windows)];
+    const name = if (windows) "bundle-windows-runtime" else "bundle-libcxx";
+    if (tool.* == null) tool.* = b.addExecutable(.{
+        .name = name,
         .root_module = b.createModule(.{
-            .root_source_file = b.path("scripts/bundle-libcxx.zig"),
+            .root_source_file = b.path(b.fmt("scripts/{s}.zig", .{name})),
             .target = b.graph.host,
         }),
     });
-    return bundle_libcxx_tool.?;
+    return tool.*.?;
 }
 
 fn createLibraries(

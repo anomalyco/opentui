@@ -62,8 +62,11 @@ From `packages/native`, `bun run build` installs the header and libraries under
 `lib/<target>/` for the host target. Linux and macOS produce `libopentui.a` beside
 the shared library. Windows produces `opentui-static.lib`, `opentui.lib` for DLL
 imports, and `opentui.dll`. Static linkage also needs the platform libraries, and
-on macOS and Windows the C++ runtime; the Linux archive carries its own, private
-libc++. `zig build -Dall` builds all supported targets.
+on macOS the C++ runtime; the Linux archive carries its own, private libc++. The
+Windows archive is built for MinGW and carries the parts of Zig's MinGW runtime
+that MSVC lacks, among them libc++, so MSVC links it too: it also needs
+`ntdll`, `user32`, and `legacy_stdio_definitions`. `zig build -Dall` builds all
+supported targets.
 
 Native video statically links a decode-only LGPL FFmpeg build into the libraries.
 `bun run build` builds it first with [`scripts/build-ffmpeg.ts`](scripts/build-ffmpeg.ts)
