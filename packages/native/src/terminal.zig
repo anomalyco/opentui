@@ -418,7 +418,7 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     self.recordKittyQuery();
 
     // Inside tmux, graphics replies cannot describe the passthrough endpoint.
-    if (!self.skip_graphics_query and !self.isInTmux()) try tty.writeAll(ansi.ANSI.kittyGraphicsQuery);
+    if (!self.skip_graphics_query and !self.isInTmux() and !self.remoteTmuxHint()) try tty.writeAll(ansi.ANSI.kittyGraphicsQuery);
     // Its reply settles the 2026 decision and Sixel; sentinel mode sends it at the end of setup instead.
     if (!self.reply_sentinel) try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
 
@@ -759,9 +759,7 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
     // The explicit override, for screen with `truecolor on` or a terminal that answers no query.
     const force_truecolor = env_map.get("OPENTUI_FORCE_TRUECOLOR") orelse "";
     if (std.mem.eql(u8, force_truecolor, "1") or std.mem.eql(u8, force_truecolor, "true")) self.caps.rgb = true;
-    // A remote client's environment names only the multiplexers the startup probes pass through unidentified:
-    // GNU screen, which answers no query, and tmux, whose XTVERSION reply arrives after the graphics query it would
-    // turn into the pane title. TERM is forwarded by ssh; STY and TMUX come from a multiplexer on the server.
+    // A remote client's environment names only GNU screen, which answers no query: TERM forwarded by ssh, or STY.
     const remote_env = self.identityEnv() == null;
     if (!self.term_info.from_xtversion) {
         if (!remote_env and env_map.get("TMUX") != null) {
@@ -779,13 +777,13 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
             self.skip_graphics_query = true;
             self.caps.explicit_cursor_positioning = true;
             self.caps.osc52 = true;
-        } else {
+        } else if (!remote_env) {
             const term = env_map.get("TERM") orelse "";
-            if (env_map.get("TMUX") != null or std.mem.startsWith(u8, term, "tmux")) {
+            if (std.mem.startsWith(u8, term, "tmux")) {
                 self.multiplexer = .tmux;
                 self.caps.explicit_cursor_positioning = true;
             }
-            if (!remote_env and std.mem.find(u8, term, "alacritty") != null) {
+            if (std.mem.find(u8, term, "alacritty") != null) {
                 self.caps.explicit_cursor_positioning = true;
             }
         }
@@ -1319,6 +1317,16 @@ fn identityEnv(self: *const Terminal) ?*const std.process.Environ.Map {
     const forwarded = if (self.host_env_map) |*host_env_map| env_map == host_env_map else false;
     if (self.opts.remote_mode == .auto and self.remote and forwarded) return null;
     return env_map;
+}
+
+/// A remote client's TMUX (a tmux server started from an ssh login) or tmux TERM (ssh from a client tmux):
+/// tmux shows an unwrapped graphics query as its pane title, and its XTVERSION reply comes after the startup
+/// batch. The hint only holds that query back; like the other identity keys, it does not name the multiplexer.
+fn remoteTmuxHint(self: *const Terminal) bool {
+    if (self.identityEnv() != null) return false;
+    const env = self.opts.env_map orelse return false;
+    const tmux: []const u8 = env.get("TMUX") orelse "";
+    return tmux.len > 0 or std.mem.startsWith(u8, env.get("TERM") orelse "", "tmux");
 }
 
 /// TERM comes from the innermost terminal. TERM_PROGRAM can be inherited from the terminal that
