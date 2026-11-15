@@ -343,8 +343,10 @@ fn a_remote_app_copies_and_reports_status_through_the_client_terminal() {
 }
 
 // Expected: after the terminal says its color scheme changed (`?997`), an app can ask for the palette again and gets
-// the new colors, as Core's `getPalette` does after `clearPaletteCache`.
-// Actual: the palette was read only at startup, and the notice reached no handler.
+// the new colors, as Core's `getPalette` does after `clearPaletteCache`. Default colors the terminal did not report
+// get Core's fallbacks, so native code takes the palette.
+// Actual: the palette was read only at startup, and the notice reached no handler. Native code rejected a palette
+// without default colors, here the startup one and the refresh without OSC 10, as an invalid argument.
 #[test]
 fn a_color_scheme_notice_lets_the_app_read_the_new_palette() {
     let options = AppOptions { palette_size: 2, ..quiet() };
@@ -364,13 +366,14 @@ fn a_color_scheme_notice_lets_the_app_read_the_new_palette() {
             }
         });
     });
-    // The startup query: answer only the device attributes, so the app starts with no palette.
+    // The startup query: answer only the device attributes, so the app starts with no colors.
     client.wait_for("\x1b]4;1;?\x07");
     client.send(b"\x1b[?62;22c");
     client.wait_for("waiting");
     client.send(b"\x1b[?997;2n");
     client.wait_for("\x1b]4;0;?\x07\x1b]4;1;?\x07\x1b]10;?\x07\x1b]11;?\x07\x1b]12;?\x07");
-    client.send(b"\x1b]4;0;rgb:ffff/0000/0000\x07\x1b]4;1;rgb:00/ff/00\x1b\\\x1b]10;rgb:00/00/00\x07");
+    // No OSC 10 answer: the refresh ends on its wait.
+    client.send(b"\x1b]4;0;rgb:ffff/0000/0000\x07\x1b]4;1;rgb:00/ff/00\x1b\\");
     client.send(b"\x1b]11;rgb:ff/ff/ff\x07\x1b]12;rgb:80/80/80\x07");
     client.wait_for("new palette");
     client.send(b"q");

@@ -1095,7 +1095,8 @@ impl Session {
     }
 
     /// Tells native code the terminal's palette and default colors, so it can choose palette colors for RGB ones on
-    /// terminals without true color. `epoch` marks a new palette. Requires an active terminal.
+    /// terminals without true color. `epoch` marks a new palette. Requires an active terminal. A default color the
+    /// terminal did not report falls back to white on black, as in Core.
     pub fn set_palette_state(
         &self,
         palette: &[Color],
@@ -1105,7 +1106,8 @@ impl Session {
     ) -> Result<()> {
         let lanes = |color: Color| [u16::from(color.r), u16::from(color.g), u16::from(color.b), u16::from(color.a)];
         let palette: Vec<u16> = palette.iter().take(256).flat_map(|&color| lanes(color)).collect();
-        let (foreground, background) = (foreground.map(lanes), background.map(lanes));
+        let foreground = lanes(foreground.unwrap_or(Color::DEFAULT_FOREGROUND));
+        let background = lanes(background.unwrap_or(Color::DEFAULT_BACKGROUND));
         let (context, session) = self.raw();
         check("ot_session_set_palette_state", unsafe {
             sys::ot_session_set_palette_state(
@@ -1113,8 +1115,8 @@ impl Session {
                 session,
                 palette.as_ptr(),
                 (palette.len() / 4) as u32,
-                foreground.as_ref().map_or(std::ptr::null(), |lanes| lanes.as_ptr()),
-                background.as_ref().map_or(std::ptr::null(), |lanes| lanes.as_ptr()),
+                foreground.as_ptr(),
+                background.as_ptr(),
                 epoch,
             )
         })
