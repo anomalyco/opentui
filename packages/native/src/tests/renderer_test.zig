@@ -493,6 +493,62 @@ test "renderer honors forced Sixel through tmux independently of tmux DA" {
     try std.testing.expect(std.mem.find(u8, output, "\x1b\x1bP0;1;0q") != null);
 }
 
+test "renderer avoids automatic synchronized redraws over live tmux Sixel" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
+    defer value.deinit();
+
+    const cases = [_]struct { tmux: bool, sync: terminal_mod.SynchronizedOutput }{
+        .{ .tmux = true, .sync = .auto },
+        .{ .tmux = true, .sync = .always },
+        .{ .tmux = true, .sync = .never },
+        .{ .tmux = false, .sync = .auto },
+    };
+    for (cases) |case| {
+        var target = try TestRenderer.create(std.testing.allocator, 4, 2, &pools.graphemes, &pools.links);
+        defer target.deinit();
+        target.renderer.terminal.multiplexer = if (case.tmux) .tmux else .none;
+        target.renderer.terminal.synchronized_output = case.sync;
+        const next = target.renderer.getNextBuffer();
+        try std.testing.expect(try next.drawImage(value, 1, 0, 0, 2, 1, 2, 2, 0, 0, 1, 1, .sixel));
+        try next.drawText("X", 1, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, target.render(true));
+        const output = target.lastOutput();
+        const sixel = std.mem.find(u8, output, if (case.tmux) ansi.ANSI.tmuxDcsStart else "\x1bP0;1;0q") orelse return error.TestUnexpectedResult;
+        const overlay = std.mem.findLast(u8, output, "X") orelse return error.TestUnexpectedResult;
+        try std.testing.expect(overlay > sixel);
+        const sync = case.sync != .never and !(case.tmux and case.sync == .auto);
+        try std.testing.expectEqual(@intFromBool(sync), std.mem.count(u8, output, ansi.ANSI.syncSet));
+        try std.testing.expectEqual(@intFromBool(sync), std.mem.count(u8, output, ansi.ANSI.syncReset));
+        if (sync) {
+            const start = std.mem.find(u8, output, ansi.ANSI.syncSet).?;
+            const end = std.mem.find(u8, output, ansi.ANSI.syncReset).?;
+            try std.testing.expect(start < sixel);
+            try std.testing.expect(end > overlay);
+        }
+
+        // A text-only diff must not erase an unchanged, still-visible Sixel.
+        try std.testing.expect(try next.drawImage(value, 1, 0, 0, 2, 1, 2, 2, 0, 0, 1, 1, .sixel));
+        try next.drawText("X", 1, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
+        try next.drawText("TEXT", 0, 1, ansi.rgbColor(255, 255, 255, 255), null, 0);
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, target.render(false));
+        const text_output = target.lastOutput();
+        try std.testing.expect(std.mem.find(u8, text_output, "\x1bP") == null);
+        try std.testing.expectEqual(sync, std.mem.startsWith(u8, text_output, ansi.ANSI.syncSet));
+        try std.testing.expectEqual(sync, std.mem.endsWith(u8, text_output, ansi.ANSI.syncReset));
+
+        // Clear the image; after its committed placement is gone, auto sync resumes.
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, target.render(true));
+        try next.drawText("PLAIN", 0, 1, ansi.rgbColor(255, 255, 255, 255), null, 0);
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, target.render(true));
+        const plain_output = target.lastOutput();
+        const plain_sync = case.sync != .never;
+        try std.testing.expectEqual(plain_sync, std.mem.startsWith(u8, plain_output, ansi.ANSI.syncSet));
+        try std.testing.expectEqual(plain_sync, std.mem.endsWith(u8, plain_output, ansi.ANSI.syncReset));
+    }
+}
+
 test "renderer enables focus tracking after late tmux detection without passthrough probes" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
