@@ -59,6 +59,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// Waits until a flag is set, or its sender is gone. Unlike `wait_for` itself, holds no read guard afterwards.
 async fn raised(flag: &mut watch::Receiver<bool>) {
+    #[expect(clippy::let_underscore_must_use, reason = "a sender that is gone ends the wait too")]
     let _ = flag.wait_for(|raised| *raised).await;
 }
 
@@ -193,7 +194,10 @@ impl Shared {
     /// Reports an error, with the client's address and user name when known.
     fn report(&self, error: Error, peer: Option<SocketAddr>, user: Option<&str>) {
         let report = ErrorReport { error: &error, peer, user };
-        // A panicking error handler must not take a network thread with it.
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "a panicking error handler must not take a network thread with it"
+        )]
         let _ = catch_unwind(AssertUnwindSafe(|| (self.on_error)(&report)));
     }
 
@@ -293,6 +297,7 @@ impl Server {
         if tokio::runtime::Handle::try_current().is_ok() {
             // Blocking on the server's runtime from inside another runtime panics; a thread of its own may block.
             std::thread::scope(|scope| {
+                #[expect(clippy::let_underscore_must_use, reason = "a panic in close already went to the panic hook")]
                 let _ = scope.spawn(|| self.close_now()).join();
             });
         } else {
@@ -328,6 +333,7 @@ impl Server {
         self.shared.closed.send_replace(true);
         // Let clients leave, and disconnect the rest.
         let joined = later(leave_until, FAREWELL_TIMEOUT).into();
+        #[expect(clippy::let_underscore_must_use, reason = "after the timeout the runtime's shutdown ends the rest")]
         let _ = runtime.block_on(async { tokio::time::timeout_at(joined, accepting).await });
         runtime.shutdown_timeout(Duration::from_secs(1));
         let (closed, changed) = &self.done;
@@ -357,6 +363,7 @@ impl Server {
                     result = shutdown_signal() => result,
                     () = raised(&mut closing) => Ok(()),
                 };
+                #[expect(clippy::let_underscore_must_use, reason = "the receiver left first, which is a normal ending")]
                 let _ = sender.send(result);
             });
         }
@@ -411,6 +418,7 @@ async fn accept(listener: TcpListener, ssh: Arc<russh::server::Config>, shared: 
 
 async fn connection(socket: TcpStream, peer: SocketAddr, ssh: Arc<russh::server::Config>, shared: Arc<Shared>) {
     // Nagle's algorithm would hold a frame's last packets until the client's delayed acknowledgement.
+    #[expect(clippy::let_underscore_must_use, reason = "without it frames still arrive, only later")]
     let _ = socket.set_nodelay(true);
     let login_deadline = tokio::time::Instant::now() + LOGIN_GRACE;
     let authenticated = Arc::new(OnceLock::new());
@@ -472,6 +480,7 @@ async fn connection(socket: TcpStream, peer: SocketAddr, ssh: Arc<russh::server:
         (None, Some(until)) if tokio::time::timeout_at(until.into(), &mut running).await.is_ok() => return,
         (None, _) => "the server closed",
     };
+    #[expect(clippy::let_underscore_must_use, reason = "the peer may already be gone")]
     let _ = handle.disconnect(Disconnect::ByApplication, reason.into(), String::new()).await;
 }
 
@@ -585,6 +594,7 @@ impl Connection {
     fn verdict(&mut self, identity: Option<Identity>) -> Verdict {
         match identity {
             Some(identity) => {
+                #[expect(clippy::let_underscore_must_use, reason = "after a second login, reports keep the first user")]
                 let _ = self.authenticated.set(identity.user().to_owned());
                 self.identity = Some(identity);
                 Verdict::Accept
@@ -650,11 +660,13 @@ impl Connection {
                 let code = run_handler(&shared, app_session, &denied);
                 // Before the transport learns the exit status, so only its own share of the slot remains.
                 drop(slot);
+                #[expect(clippy::let_underscore_must_use, reason = "the receiver left first, which is a normal ending")]
                 let _ = done.send(code);
             })
         };
         if let Err(error) = spawned {
             shared.report(error.into(), Some(self.peer), self.identity.as_ref().map(Identity::user));
+            #[expect(clippy::let_underscore_must_use, reason = "the peer may already be gone")]
             let _ = session.close(channel);
             return Ok(true);
         }
@@ -969,6 +981,7 @@ async fn transport(transport: Transport) {
     backlog.flush(&link);
     backlog.room.notify_one();
     if connected {
+        #[expect(clippy::let_underscore_must_use, reason = "the peer may already be gone")]
         let farewell = async {
             let _ = handle.exit_status_request(channel, code).await;
             let _ = handle.eof(channel).await;
@@ -978,6 +991,7 @@ async fn transport(transport: Transport) {
     // Before the channel closes, so a client that sees it close can start another session at once.
     drop(slot);
     if connected {
+        #[expect(clippy::let_underscore_must_use, reason = "the peer may already be gone")]
         let _ = tokio::time::timeout(FAREWELL_TIMEOUT, handle.close(channel)).await;
     }
     closed.store(true, Ordering::SeqCst);

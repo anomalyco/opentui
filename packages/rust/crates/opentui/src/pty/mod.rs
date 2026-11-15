@@ -119,6 +119,7 @@ struct PtyInner {
 
 impl Drop for PtyInner {
     fn drop(&mut self) {
+        #[expect(clippy::let_underscore_must_use, reason = "the thread-local is gone only at thread exit")]
         let _ = PTYS.try_with(|ptys| ptys.try_borrow_mut().map(|mut ptys| ptys.remove(&self.id)));
         self.shared.lock().shutdown = true;
         self.shared.notify();
@@ -126,6 +127,7 @@ impl Drop for PtyInner {
         // detach from it.
         self.process.close(&self.shared);
         for thread in self.threads.get_mut().drain(..) {
+            #[expect(clippy::let_underscore_must_use, reason = "a worker's panic already went to the panic hook")]
             let _ = thread.join();
         }
     }

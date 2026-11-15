@@ -172,6 +172,7 @@ fn a_client_that_stops_reading_outlasts_the_maximum_timeout() {
     let config = ServerConfig::new().max_timeout(Duration::from_secs(2));
     let (server, _) = start(config, move |session| {
         let result = busy_app(&session)?.run();
+        #[expect(clippy::let_underscore_must_use, reason = "the test may stop listening first")]
         let _ = returned.send(());
         result
     });
@@ -246,6 +247,7 @@ fn one_session_behind_on_input_freezes_the_other_sessions_on_its_connection() {
         // A paste the busy app cannot take yet: more than its 256 KiB of input room. Sent from a task of its own, so
         // a server that holds back only this channel cannot stall the test.
         let paste = tokio::spawn(async move {
+            #[expect(clippy::let_underscore_must_use, reason = "the server may close the channel first")]
             let _ = busy.data_bytes(vec![b'x'; 512 * 1024]).await;
             busy
         });
@@ -381,6 +383,7 @@ fn closing_the_server_cuts_off_a_slow_clients_restoration() {
         let restored = until_restored(&mut channel).await;
         // The client leaves once it has its terminal back, as OpenSSH's does once the channel closes.
         drop(channel);
+        #[expect(clippy::let_underscore_must_use, reason = "the server may already be gone")]
         let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "").await;
         tokio::task::spawn_blocking(move || closing.join().unwrap()).await.unwrap();
         assert!(restored, "the server dropped the client before its terminal was restored");

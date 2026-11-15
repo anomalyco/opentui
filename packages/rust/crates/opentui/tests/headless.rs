@@ -19,6 +19,7 @@ fn watchdog(app: &App) {
     let proxy = app.proxy();
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(20));
+        #[expect(clippy::let_underscore_must_use, reason = "the run may have ended already")]
         let _ = proxy.post(|cx| cx.fail(Error::Usage("the watchdog ended the run")));
     });
 }
@@ -37,6 +38,7 @@ fn drive<T: Send + 'static>(
             receiver.recv_timeout(Duration::from_secs(10)).expect("the UI thread answers")
         };
         drive(&call);
+        #[expect(clippy::let_underscore_must_use, reason = "the run may have ended already")]
         let _ = proxy.quit();
     });
 }
@@ -287,7 +289,10 @@ fn timers_armed_while_painting_fire_on_time() {
             } else {
                 app.root().add(&widget.grow(1.0));
             }
-            // The result is not checked: a blocked terminal times out restoring itself after the quit.
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "a blocked terminal times out restoring itself after the quit"
+            )]
             let _ = app.run();
             if let Arm::Quit = arm {
                 quit.set(Some(Instant::now()));
@@ -396,6 +401,7 @@ struct Posts(AppProxy);
 
 impl Drop for Posts {
     fn drop(&mut self) {
+        #[expect(clippy::let_underscore_must_use, reason = "the app may be gone")]
         let _ = self.0.post(|_| {});
     }
 }
@@ -417,6 +423,7 @@ impl Drop for Reenters {
             cancel();
         }
         let posts = Posts(app.proxy());
+        #[expect(clippy::let_underscore_must_use, reason = "the app may be gone")]
         let _ = app.proxy().post(move |_| drop(posts));
         #[cfg(feature = "tokio")]
         app.spawn(std::future::pending::<()>(), {

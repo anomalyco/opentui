@@ -126,6 +126,7 @@ impl Process {
                 }
             });
             if reaper.is_err() {
+                #[expect(clippy::let_underscore_must_use, reason = "a program that already exited has nothing to end")]
                 let _ = self.terminate();
             }
         }
@@ -136,6 +137,7 @@ impl Process {
                 unsafe { CancelSynchronousIo(reader.as_raw_handle()) };
                 std::thread::sleep(Duration::from_millis(1));
             }
+            #[expect(clippy::let_underscore_must_use, reason = "a worker's panic already went to the panic hook")]
             let _ = reader.join();
         }
     }
@@ -189,6 +191,7 @@ pub(super) fn spawn(
     };
     // Without its threads the program cannot be served: end it and its pseudoconsole, which stops a reader.
     let abandon = |error: io::Error| {
+        #[expect(clippy::let_underscore_must_use, reason = "a program that already exited has nothing to end")]
         let _ = process.terminate();
         process.close(&shared);
         error
@@ -388,7 +391,10 @@ impl Control {
                 let room = state.output.len() < OUTPUT_MAX;
                 (std::mem::take(&mut state.input), unposted, room, state.closed, state.received)
             };
-            // A failed write means the pseudoconsole closed; nothing reads the input anymore.
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "a failed write means the pseudoconsole closed; nothing reads the input anymore"
+            )]
             let _ = self.write(&input);
             if unposted || retry {
                 match post(&self.proxy, self.id) {

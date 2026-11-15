@@ -46,12 +46,14 @@ impl Room {
     fn say(&self, text: String, notice: bool) {
         let line = Line { text, notice };
         for (_, proxy) in self.members.lock().unwrap_or_else(PoisonError::into_inner).iter() {
+            #[expect(clippy::let_underscore_must_use, reason = "a member that left has no app to wake")]
             let _ = proxy.send(line.clone());
         }
     }
 
     fn refresh(&self) {
         for (_, proxy) in self.members.lock().unwrap_or_else(PoisonError::into_inner).iter() {
+            #[expect(clippy::let_underscore_must_use, reason = "a member that left has no app to wake")]
             let _ = proxy.send(Refresh);
         }
     }

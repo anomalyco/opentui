@@ -330,6 +330,7 @@ pub(crate) mod tests {
     // still in the pipe (here, because the reader is busy with an earlier line) was lost; the reader later handed it
     // to the console of an app that was gone.
     #[test]
+    #[expect(clippy::let_underscore_must_use, reason = "either side of a channel may leave first")]
     fn stderr_capture_stop_loses_text_the_reader_has_not_read_yet() {
         use std::sync::mpsc;
         let _guard = STDERR_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());

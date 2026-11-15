@@ -69,6 +69,7 @@ fn run_app() -> Result<()> {
                 static RELEASES: AtomicU32 = AtomicU32::new(0);
                 println!("lifecycle released {}", RELEASES.fetch_add(1, Ordering::Relaxed) + 1);
                 let mut line = String::new();
+                #[expect(clippy::let_underscore_must_use, reason = "a closed stdin reads as an empty line")]
                 let _ = std::io::stdin().read_line(&mut line);
                 println!("lifecycle read {}", line.trim_end());
                 if line.trim_end() == "quit" {

@@ -184,7 +184,10 @@ impl VideoView {
 
     /// Closes the open file. A video that was playing plays the next file it opens.
     pub fn close(&self) {
-        // Closing only fails for a node native code never created, which the app already reported.
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "closing only fails for a node native code never created, which the app already reported"
+        )]
         let _ = self.load(None);
     }
 

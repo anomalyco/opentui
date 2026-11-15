@@ -7,6 +7,9 @@ publish = false
 links = "opentui"
 description = "Raw FFI declarations for OpenTUI's checked C ABI"
 
+[lints]
+workspace = true
+
 [features]
 default = ["static"]
 # Link libopentui.a instead of libopentui.so or libopentui.dylib, and on Windows MSVC opentui-static.lib instead of

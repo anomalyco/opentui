@@ -135,6 +135,7 @@ impl Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
+        #[expect(clippy::let_underscore_must_use, reason = "a drop has no caller to report to")]
         let _ = self.leave_raw();
     }
 }

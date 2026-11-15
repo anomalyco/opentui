@@ -6,6 +6,9 @@ license.workspace = true
 publish = false
 description = "Serve OpenTUI apps over SSH, one app per session"
 
+[lints]
+workspace = true
+
 [features]
 default = ["static"]
 # opentui's static feature.

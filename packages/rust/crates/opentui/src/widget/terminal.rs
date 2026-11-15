@@ -95,7 +95,10 @@ impl TerminalInner {
         }
         let pty = self.pty.borrow().clone();
         if let Some(pty) = pty {
-            // Input after the program exited, or beyond the queue's bound, has nowhere to go.
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "input after the program exited, or beyond the queue's bound, has nowhere to go"
+            )]
             let _ = pty.write(&bytes);
         }
         if !self.on_data.is_empty()
@@ -165,6 +168,7 @@ impl TerminalInner {
         self.flush_responses();
         let pty = self.pty.borrow().clone();
         if let Some(pty) = pty {
+            #[expect(clippy::let_underscore_must_use, reason = "only a closed pseudoconsole refuses a size")]
             let _ = pty.resize(cols, rows);
         }
         self.on_terminal_resize.emit(cx, &(cols, rows));

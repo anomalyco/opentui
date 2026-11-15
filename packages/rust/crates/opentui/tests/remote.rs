@@ -49,6 +49,7 @@ impl Client {
     fn start(options: RemoteOptions, app_options: AppOptions, build: impl FnOnce(&App) + Send + 'static) -> Self {
         let (wake, woken) = mpsc::channel();
         let (terminal, link) = RemoteTerminal::new(options, move || {
+            #[expect(clippy::let_underscore_must_use, reason = "the test may stop listening first")]
             let _ = wake.send(());
         })
         .expect("create a remote terminal");
@@ -84,6 +85,7 @@ impl Client {
                 return;
             }
             assert!(Instant::now() < deadline, "timed out waiting for {what}; output so far: {:?}", self.text());
+            #[expect(clippy::let_underscore_must_use, reason = "a timeout only starts the next check")]
             let _ = self.woken.recv_timeout(Duration::from_millis(50));
         }
     }
@@ -221,6 +223,7 @@ fn a_slow_client_holds_output_back_without_stalling_the_app() {
 fn a_message_before_the_app_goes_straight_to_the_client() {
     let (wake, woken) = mpsc::channel();
     let (terminal, link) = RemoteTerminal::new(RemoteOptions::default(), move || {
+        #[expect(clippy::let_underscore_must_use, reason = "the test may stop listening first")]
         let _ = wake.send(());
     })
     .expect("create a remote terminal");

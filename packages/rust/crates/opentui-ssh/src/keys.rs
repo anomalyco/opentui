@@ -127,6 +127,7 @@ fn load_or_generate(path: &Path) -> Result<LoadedKey, Error> {
     temporary.push(format!(".{}.{nanos}.{}.tmp", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
     let temporary = PathBuf::from(temporary);
     let saved = write_private(&temporary, text.as_bytes()).and_then(|()| fs::hard_link(&temporary, path));
+    #[expect(clippy::let_underscore_must_use, reason = "a failed write may leave no temporary file")]
     let _ = fs::remove_file(&temporary);
     match saved {
         Ok(()) => Ok(LoadedKey { key, source: format!("generated {shown}") }),

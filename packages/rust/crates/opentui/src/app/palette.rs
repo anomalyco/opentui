@@ -37,7 +37,10 @@ impl App {
             let mut request: Vec<u8> =
                 (0..size).flat_map(|index| format!("\x1b]4;{index};?\x07").into_bytes()).collect();
             request.extend_from_slice(b"\x1b]10;?\x07\x1b]11;?\x07\x1b]12;?\x07");
-            // A terminal that refuses the query answers nothing, and the wait ends the refresh.
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "a terminal that refuses the query answers nothing, and the wait ends the refresh"
+            )]
             let _ = self.0.session.control(Control::PaletteQuery(&request));
         }
         let timer = self.set_timeout(REFRESH_WAIT, |cx| cx.app().finish_palette_refresh());
@@ -105,6 +108,7 @@ impl App {
         let known: Vec<_> = palette.colors.iter().map_while(|color| *color).collect();
         let epoch = self.0.palette_epoch.get() + 1;
         self.0.palette_epoch.set(epoch);
+        #[expect(clippy::let_underscore_must_use, reason = "unreported: the only error path ends the run")]
         let _ = self.0.session.set_palette_state(&known, palette.foreground, palette.background, epoch);
     }
 }
