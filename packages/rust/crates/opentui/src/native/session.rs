@@ -36,9 +36,12 @@ impl Default for SessionOptions {
 /// Whether the renderer may trust the local terminal environment.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Remote {
-    /// Detect remote sessions, such as SSH, and take only the color depth from forwarded hints for them: a `TERM`
-    /// containing `256color`, a `COLORTERM` of `truecolor` or `24bit` (ignored inside GNU screen, which gets 256
-    /// colors), and `OPENTUI_FORCE_TRUECOLOR` of `1` or `true`, which forces 24-bit color.
+    /// Detect remote sessions, such as SSH, and take only these forwarded hints for them: a `TERM` containing
+    /// `256color`, a `COLORTERM` of `truecolor` or `24bit` (ignored inside GNU screen, which gets 256 colors),
+    /// `OPENTUI_FORCE_TRUECOLOR` of `1` or `true`, which forces 24-bit color, and the `OPENTUI_FORCE_WCWIDTH`,
+    /// `OPENTUI_FORCE_UNICODE` and `OPENTUI_FORCE_NOZWJ` width overrides. GNU screen, which answers no query, is
+    /// detected from `STY` or a `TERM` starting with `screen` without `TMUX`. A nonempty `TMUX` or a `TERM` starting
+    /// with `tmux` only leaves out the startup graphics query; tmux itself is detected from its XTVERSION reply.
     #[default]
     Auto,
     Local,
