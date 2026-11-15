@@ -88,7 +88,12 @@ the host, and warns and leaves video out without it.
 
 The default native library includes FFmpeg under LGPL-2.1-or-later, even if
 your app never uses `VideoView`. `opentui-sys` ships `LICENSE-FFMPEG` and
-`FFMPEG-SOURCE.md`; the Rust code is MIT-licensed. To link OpenTUI without
+`FFMPEG-SOURCE.md`; the Rust code is MIT-licensed. The library also carries
+runtime code under its own notices: Zig's (`LICENSE-ZIG`), and on Linux and
+Windows LLVM's libc++, libc++abi and libunwind (`LICENSE-LLVM`); on Windows,
+also the MinGW-w64 runtime (`LICENSE-MINGW-W64`) and its gdtoa code
+(`LICENSE-GDTOA`). Ship these notices with an app that links OpenTUI
+statically, or with `opentui.dll`. To link OpenTUI without
 FFmpeg, run `sh scripts/prepare-zig-deps.sh` and `zig build -Dvideo=false
 -Doptimize=ReleaseFast` in `packages/native`. Set `OPENTUI_LIB_DIR` to the
 absolute path of the resulting `lib/<artifact directory>` when you run Cargo.

@@ -132,13 +132,16 @@ if (optional.length !== packages.size || !optional.every((name) => packages.has(
   )
 }
 
-for (const [name, source] of Object.entries({
-  "LICENSE-FFMPEG": "COPYING.LGPLv2.1",
-  "FFMPEG-SOURCE.md": "README.md",
-  "LICENSE-ZLIB": "LICENSE-ZLIB",
+for (const [name, owner] of Object.entries({
+  "LICENSE-FFMPEG": "packages/native/src/vendor/ffmpeg/COPYING.LGPLv2.1",
+  "FFMPEG-SOURCE.md": "packages/native/src/vendor/ffmpeg/README.md",
+  "LICENSE-ZLIB": "packages/native/src/vendor/ffmpeg/LICENSE-ZLIB",
+  "LICENSE-ZIG": "packages/native/THIRD_PARTY_LICENSES/ZIG",
+  "LICENSE-LLVM": "packages/native/THIRD_PARTY_LICENSES/LLVM",
+  "LICENSE-MINGW-W64": "packages/native/THIRD_PARTY_LICENSES/MINGW-W64",
+  "LICENSE-GDTOA": "packages/native/THIRD_PARTY_LICENSES/GDTOA",
 })) {
   const copy = `packages/rust/crates/opentui-sys/${name}`
-  const owner = `packages/native/src/vendor/ffmpeg/${source}`
   if (!readFileSync(join(root, copy)).equals(readFileSync(join(root, owner)))) {
     problems.add(`${copy}: differs from ${owner}`)
   }
