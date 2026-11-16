@@ -5,6 +5,7 @@
 use super::{Binding, Command, Condition, Disposer, Expansion, Key, Keymap, Layer, Stroke, WeakKeymap};
 use crate::input::KeyCode;
 use crate::widget::EditorAction;
+use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -159,7 +160,7 @@ pub fn leader<T: Clone + PartialEq + 'static>(keymap: &Keymap<T>, name: &str, tr
 pub struct TimedLeader<T> {
     keymap: WeakKeymap<T>,
     trigger: Stroke,
-    timeout: Duration,
+    timeout: Cell<Duration>,
     disposer: Disposer,
 }
 
@@ -175,7 +176,7 @@ pub fn timed_leader<T: Clone + PartialEq + 'static>(
     let trigger = trigger.into();
     let stroke = keymap.parse_key(trigger.clone())?.stroke;
     let disposer = leader(keymap, name, trigger);
-    Ok(TimedLeader { keymap: keymap.downgrade(), trigger: stroke, timeout, disposer })
+    Ok(TimedLeader { keymap: keymap.downgrade(), trigger: stroke, timeout: Cell::new(timeout), disposer })
 }
 
 impl<T: Clone + PartialEq + 'static> TimedLeader<T> {
@@ -188,9 +189,14 @@ impl<T: Clone + PartialEq + 'static> TimedLeader<T> {
 
     /// How long a pending leader sequence waits for the next stroke.
     pub fn timeout(&self) -> Duration {
-        self.timeout
+        self.timeout.get()
     }
 
+    /// Changes the timeout, as a live setting does. A timer already set keeps its delay; the next arming waits
+    /// `timeout`.
+    pub fn set_timeout(&self, timeout: Duration) {
+        self.timeout.set(timeout);
+    }
 
     /// Clears the leader sequence if it is still at `generation`: no stroke came since. Returns whether it did.
     pub fn expire(&self, generation: u64) -> bool {

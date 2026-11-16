@@ -1129,6 +1129,16 @@ fn timed_leader_expires_on_the_apps_clock() {
     app.advance(Duration::from_millis(1));
     assert!(pending(&keymap).is_empty());
     assert_eq!(timed.armed(), None);
+    // A new timeout applies from the next arming: the pending sequence keeps its timer, and the next stroke takes it.
+    app.press("ctrl+x");
+    timed.set_timeout(Duration::from_millis(250));
+    app.advance(Duration::from_millis(250));
+    app.press("g");
+    app.advance(Duration::from_millis(249));
+    assert_eq!(pending(&keymap).len(), 2);
+    app.advance(Duration::from_millis(1));
+    assert!(pending(&keymap).is_empty());
+    timed.set_timeout(Duration::from_millis(2000));
     // A layer that turns off mid-sequence changes the sequence without a key, and the timeout starts again.
     app.press("ctrl+x");
     app.advance(Duration::from_millis(500));
