@@ -260,7 +260,8 @@ fn one_session_behind_on_input_freezes_the_other_sessions_on_its_connection() {
             let _ = busy.data_bytes(vec![b'x'; 512 * 1024]).await;
             busy
         });
-        let paste = tokio::time::timeout(Duration::from_secs(10), paste).await.expect("the paste left within ten seconds");
+        let paste =
+            tokio::time::timeout(Duration::from_secs(10), paste).await.expect("the paste left within ten seconds");
         other.data_bytes(b"q".to_vec()).await.unwrap();
         let closed = tokio::time::timeout(Duration::from_secs(10), async {
             while let Some(message) = other.wait().await {
