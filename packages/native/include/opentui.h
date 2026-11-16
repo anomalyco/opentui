@@ -366,6 +366,7 @@ typedef struct ot_scene_text_options {
 #define OT_SCENE_TEXT_SELECTION_RESET UINT32_C(0)
 #define OT_SCENE_TEXT_SELECTION_SET UINT32_C(1)
 #define OT_SCENE_TEXT_SELECTION_UPDATE UINT32_C(2)
+#define OT_SCENE_TEXT_SELECTION_COLORS UINT32_C(3)
 #define OT_SCENE_TEXT_SELECTION_CELL UINT32_C(0)
 #define OT_SCENE_TEXT_SELECTION_WORD UINT32_C(1)
 #define OT_SCENE_TEXT_SELECTION_LINE UINT32_C(2)
@@ -1085,7 +1086,8 @@ ot_status ot_scene_set_text_options(ot_context *, const ot_handle *node, const o
  * existing document anchor across scrolling, or acts as SET without an anchor.
  * Exact size/version, zero reserved, and only BACKGROUND/FOREGROUND flags are
  * accepted. Present colors retain terminal color intent; absent color arrays must be zero.
- * out_changed is the view's 0/1 change result. Failure preserves selection and
+ * out_changed is the view's 0/1 change result. COLORS restyles the current selection
+ * and ignores the coordinates. Failure preserves selection and
  * out_changed. RESET needs no allocation and is allowed after Session cancellation.
  * Mutation is forbidden during measurement callbacks, including RESET. */
 ot_status ot_scene_set_text_selection(ot_context *, const ot_handle *node,
@@ -1505,13 +1507,21 @@ ot_status ot_embedded_terminal_drain_responses(ot_context *, const ot_handle *te
     uint8_t *bytes, uint32_t capacity, uint32_t *out_count);
 
 /* Context-owned editor resources use checked handles, never legacy pointers.
- * Options require exact size/version and zero reserved. width_method uses
- * OT_WIDTH_METHOD_*. Creation failures leave output handles unchanged. */
+ * Options require exact size/version and no unknown flags. width_method uses
+ * OT_WIDTH_METHOD_*. Creation failures leave output handles unchanged.
+ * OT_EDIT_BUFFER_FOLLOW_SESSION_WIDTH: whenever a scene node of a session shows the
+ * buffer, and whenever that session's width method changes, the buffer measures with
+ * the session's method; the cursor, selections, marks and undo points keep their text.
+ * Nodes of one session at a time show such a buffer's views: binding a view while a node
+ * of another session shows one returns OT_WRONG_SESSION and changes nothing; unbind
+ * first to move. The flag is rejected with OT_WIDTH_METHOD_NO_ZWJ. Without it the
+ * buffer keeps width_method. */
+#define OT_EDIT_BUFFER_FOLLOW_SESSION_WIDTH UINT32_C(1)
 typedef struct ot_edit_buffer_options {
     uint32_t struct_size;
     uint32_t abi_version;
     uint32_t width_method;
-    uint32_t reserved;
+    uint32_t flags;
 } ot_edit_buffer_options;
 
 /* Initialize size/version and zero remaining fields. Other fields are copied output.

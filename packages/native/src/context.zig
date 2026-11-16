@@ -214,6 +214,8 @@ pub const Edit = struct {
     views: ?*Editor = null,
     content_epoch: u64 = 0,
     input_mem_id: ?u8 = null,
+    /// Measures with the width method of the session whose scene shows it.
+    follow_width: bool = false,
 
     fn receive(data: *anyopaque, notification: edit_buffer.NativeEvent) void {
         const self: *Edit = @ptrCast(@alignCast(data));
@@ -302,6 +304,8 @@ pub const SharedText = struct {
     input_mem_id: u8,
     views: ?*TextView = null,
     pool_next: ?*SharedText = null,
+    /// Measures with the width method of the session whose scene shows it.
+    follow_width: bool = false,
 
     pub fn checkMutable(self: *SharedText) yoga.Error!void {
         var next = self.views;
@@ -312,6 +316,17 @@ pub const SharedText = struct {
     pub fn invalidate(self: *SharedText, measure: bool) void {
         var next = self.views;
         while (next) |view| : (next = view.next) if (measure) view.invalidate() else view.invalidatePreparation();
+    }
+
+    /// Measures with `method` from now on; each view keeps its selection on its text.
+    pub fn setWidthMethod(self: *SharedText, method: utf8.WidthMethod) yoga.Error!void {
+        const old = self.buffer.widthMethod();
+        if (old == method) return;
+        try self.checkMutable();
+        self.buffer.setWidthMethod(method);
+        var next = self.views;
+        while (next) |view| : (next = view.next) view.view.followWidthMethod(self.buffer, old);
+        self.invalidate(true);
     }
 
     fn reclaimAppendBuffers(self: *SharedText) void {
@@ -2633,6 +2648,7 @@ pub const Context = struct {
         if (node.kind != api.OT_SCENE_EDITOR) return error.WrongKind;
         const editor = if (view_handle) |id| try self.getEditorView(id) else null;
         if (editor) |view| {
+            if (view.edit.follow_width) try checkFollowOwner(Editor, view.edit.views, node.owner);
             if (view.node != null and view.node != value) return error.ContextBusy;
         }
         try value.setMeasureTargetPreservingProvider(if (editor) |view| .{ .editor_view = view.view } else .none, node.measure_overridden);
@@ -2640,6 +2656,7 @@ pub const Context = struct {
         node.editor = editor;
         if (editor) |view| view.node = value;
         node.owner.invalidateObservation(value);
+        self.followSessionWidth(value);
     }
 
     pub fn sceneSetEditorOptions(self: *Context, handle: Handle, options: scene.EditorOptions) !void {
@@ -2662,6 +2679,7 @@ pub const Context = struct {
         if (node.kind != api.OT_SCENE_TEXT_VIEW) return error.WrongKind;
         const text_view = if (view_handle) |id| try self.getTextBufferView(id) else null;
         if (text_view) |view| {
+            if (view.text.follow_width) try checkFollowOwner(TextView, view.text.views, node.owner);
             if (view.node != null and view.node != value) return error.ContextBusy;
         }
         try value.setMeasureTargetPreservingProvider(if (text_view) |view| .{ .text_buffer_view = view.view } else .none, node.measure_overridden);
@@ -2669,6 +2687,7 @@ pub const Context = struct {
         node.control.text_view.view = text_view;
         if (text_view) |view| view.node = value;
         node.owner.invalidateObservation(value);
+        self.followSessionWidth(value);
     }
 
     pub fn sceneSetTextViewPaint(self: *Context, handle: Handle, enabled: bool) !void {
@@ -3167,7 +3186,7 @@ pub const Context = struct {
     pub fn sceneSetTextSelection(self: *Context, handle: Handle, options: SceneTextSelectionOptions) !bool {
         try self.beginMutation();
         defer self.mutating = false;
-        if (options.operation > api.OT_SCENE_TEXT_SELECTION_UPDATE or options.behavior > api.OT_SCENE_TEXT_SELECTION_LINE) return error.InvalidOptions;
+        if (options.operation > api.OT_SCENE_TEXT_SELECTION_COLORS or options.behavior > api.OT_SCENE_TEXT_SELECTION_LINE) return error.InvalidOptions;
         for ([_]?buf.RGBA{ options.background, options.foreground }) |color| {
             if (color) |rgba| try buf.validateColor(rgba);
         }
@@ -3176,6 +3195,10 @@ pub const Context = struct {
         const node = if (options.operation == api.OT_SCENE_TEXT_SELECTION_RESET) try self.sceneNode(handle) else try self.sceneMutableNode(handle);
         node.scene_node.?.paint_epoch = nextPaintEpoch();
         const text = node.scene_node.?.text orelse return error.WrongKind;
+        if (options.operation == api.OT_SCENE_TEXT_SELECTION_COLORS) {
+            text.view.setSelectionColors(options.background, options.foreground);
+            return false;
+        }
         const changed = if (options.operation == api.OT_SCENE_TEXT_SELECTION_RESET) reset: {
             const had_selection = text.view.getSelection() != null;
             text.view.resetLocalSelection();
@@ -4544,6 +4567,55 @@ pub const Context = struct {
             scene.Scene.markObservationStale(dependent);
             next = dependent.measure_next;
         }
+    }
+
+    /// Brings what a session's scene shows to the session's new width method: its scene text and
+    /// the bound buffers created to follow their session. Other buffers keep their own method.
+    pub fn followWidthMethod(owned: *scene.Scene, method: utf8.WidthMethod) void {
+        var next = owned.head;
+        while (next) |node| : (next = node.scene_node.?.next) followNodeWidth(node, method);
+        owned.clearPreparation();
+    }
+
+    fn followNodeWidth(node: *native_renderable.NativeRenderable, method: utf8.WidthMethod) void {
+        const value = node.scene_node.?;
+        // Selections are cell offsets: each view moves its own back onto its text.
+        if (value.text) |text| {
+            const old = text.buffer.widthMethod();
+            if (old == method) return;
+            value.paint_epoch = nextPaintEpoch();
+            text.buffer.setWidthMethod(method);
+            text.view.followWidthMethod(text.buffer, old);
+            textResourceChanged(text);
+        } else if (value.kind == api.OT_SCENE_TEXT_VIEW) {
+            const text = (value.control.text_view.view orelse return).text;
+            if (text.follow_width) text.setWidthMethod(method) catch {};
+        } else if (value.kind == api.OT_SCENE_EDITOR) {
+            const edit = (value.editor orelse return).edit;
+            if (!edit.follow_width or edit.buffer.tb.widthMethod() == method) return;
+            edit.checkMutable() catch return;
+            // The cursor event invalidates the editors' measures (content epoch).
+            const old = edit.buffer.remeasure(method);
+            var next = edit.views;
+            while (next) |view| : (next = view.next) view.view.followWidthMethod(old.width_method);
+            edit.buffer.remapCursor(old);
+        }
+    }
+
+    /// A following buffer measures with one session's method, so only one session's scene may show its views,
+    /// the view being bound included.
+    fn checkFollowOwner(comptime View: type, first: ?*View, owner: *const scene.Scene) error{WrongSession}!void {
+        var next = first;
+        while (next) |view| : (next = view.next) {
+            const bound = view.node orelse continue;
+            if (bound.scene_node.?.owner != owner) return error.WrongSession;
+        }
+    }
+
+    /// A buffer made to follow its session takes the session's method when a scene node shows it.
+    fn followSessionWidth(self: *Context, node: *native_renderable.NativeRenderable) void {
+        const attached = (self.getSession(node.scene_node.?.owner.session) catch return).renderer orelse return;
+        followNodeWidth(node, attached.getNextBuffer().width_method);
     }
 
     /// Equal bytes still rebuild the rope, so the view prepares again; the size does not change.

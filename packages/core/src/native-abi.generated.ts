@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 786212e471cc111912efdbf28bc8c8b7a3060976b765a6874c3ad38ac808f8f6
+// ABI audit SHA-256: 189e872841301cac496e66d185674d0141e86d2eae96696e1c5632db70c3bcbe
 
 export const OT_CONTEXT_ABI_VERSION = 2
 export const OT_OK = 0
@@ -236,6 +236,7 @@ export const OT_ATTR_LINK_MASK = 16777215
 export const OT_SCENE_TEXT_SELECTION_RESET = 0
 export const OT_SCENE_TEXT_SELECTION_SET = 1
 export const OT_SCENE_TEXT_SELECTION_UPDATE = 2
+export const OT_SCENE_TEXT_SELECTION_COLORS = 3
 export const OT_SCENE_TEXT_SELECTION_CELL = 0
 export const OT_SCENE_TEXT_SELECTION_WORD = 1
 export const OT_SCENE_TEXT_SELECTION_LINE = 2
@@ -372,6 +373,7 @@ export const OT_EMBEDDED_TERMINAL_SCROLL = 1
 export const OT_EMBEDDED_TERMINAL_CLEAR_SELECTION = 2
 export const OT_EMBEDDED_TERMINAL_SET_TRANSPARENT_BACKGROUND = 3
 export const OT_EMBEDDED_TERMINAL_RESPONSE_BYTES_MAX = 1048576
+export const OT_EDIT_BUFFER_FOLLOW_SESSION_WIDTH = 1
 export const OT_EDIT_CURSOR_CHANGED = 1
 export const OT_EDIT_CONTENT_CHANGED = 2
 export const OT_EDIT_HISTORY_CURSOR_CHANGED = 4
@@ -1783,7 +1785,7 @@ export const nativeLayouts = {
       struct_size: { offset: 0, size: 4, alignment: 4, type: "u32" },
       abi_version: { offset: 4, size: 4, alignment: 4, type: "u32" },
       width_method: { offset: 8, size: 4, alignment: 4, type: "u32" },
-      reserved: { offset: 12, size: 4, alignment: 4, type: "u32" },
+      flags: { offset: 12, size: 4, alignment: 4, type: "u32" },
     },
   },
   ot_edit_buffer_info: {
@@ -2778,6 +2780,7 @@ export const nativeConstants = {
   OT_SCENE_TEXT_SELECTION_RESET: 0,
   OT_SCENE_TEXT_SELECTION_SET: 1,
   OT_SCENE_TEXT_SELECTION_UPDATE: 2,
+  OT_SCENE_TEXT_SELECTION_COLORS: 3,
   OT_SCENE_TEXT_SELECTION_CELL: 0,
   OT_SCENE_TEXT_SELECTION_WORD: 1,
   OT_SCENE_TEXT_SELECTION_LINE: 2,
@@ -2914,6 +2917,7 @@ export const nativeConstants = {
   OT_EMBEDDED_TERMINAL_CLEAR_SELECTION: 2,
   OT_EMBEDDED_TERMINAL_SET_TRANSPARENT_BACKGROUND: 3,
   OT_EMBEDDED_TERMINAL_RESPONSE_BYTES_MAX: 1048576,
+  OT_EDIT_BUFFER_FOLLOW_SESSION_WIDTH: 1,
   OT_EDIT_CURSOR_CHANGED: 1,
   OT_EDIT_CONTENT_CHANGED: 2,
   OT_EDIT_HISTORY_CURSOR_CHANGED: 4,

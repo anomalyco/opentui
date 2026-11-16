@@ -48,6 +48,12 @@ pub const Cursor = struct {
 
 const CursorCoords = struct { row: u32, col: u32 };
 
+/// What cursor columns are measured with: they move when either changes.
+pub const Measure = struct {
+    tab_width: u8,
+    width_method: utf8.WidthMethod,
+};
+
 const CursorMeta = struct {
     row: u32,
     col: u32,
@@ -103,6 +109,27 @@ const CursorMeta = struct {
         if (decoded.tab_width == null) return bytes;
         const last_separator = std.mem.lastIndexOfScalar(u8, bytes, ':') orelse return bytes;
         return bytes[0..last_separator];
+    }
+};
+
+/// An undo record written under another width method than the buffer started with: main's
+/// record and the method. Records of the starting method keep main's format, so stable editing
+/// parses nothing more.
+const MethodMeta = struct {
+    cursor: CursorMeta,
+    width_method: utf8.WidthMethod,
+
+    fn encode(self: MethodMeta, out_buffer: []u8) ![]const u8 {
+        const cursor = self.cursor;
+        return std.fmt.bufPrint(out_buffer, "cursor:{d}:{d}:{d}:{d}:{d}", .{ cursor.row, cursor.col, cursor.desired_col, cursor.tab_width.?, @backingInt(self.width_method) });
+    }
+
+    fn decode(bytes: []const u8) ?MethodMeta {
+        const end = std.mem.lastIndexOfScalar(u8, bytes, ':') orelse return null;
+        const cursor = CursorMeta.decode(bytes[0..end]) orelse return null;
+        if (cursor.tab_width == null) return null;
+        const value = std.fmt.parseInt(u8, bytes[end + 1 ..], 10) catch return null;
+        return .{ .cursor = cursor, .width_method = std.enums.fromInt(utf8.WidthMethod, value) orelse return null };
     }
 };
 
@@ -185,6 +212,10 @@ pub const EditBuffer = struct {
     notify: ?NativeEventNotify,
     /// The id of the next mark; ids are never reused, undo included.
     next_mark_id: u32 = 1,
+    /// The method undo records leave out; a record names any other method it was written under.
+    start_width_method: utf8.WidthMethod,
+    /// The method changed at least once, so history may hold records of another method than the current one.
+    width_method_changed: bool = false,
 
     pub fn init(
         allocator: Allocator,
@@ -223,6 +254,7 @@ pub const EditBuffer = struct {
             .events = event_emitter.EventEmitter(EditBufferEvent).init(allocator),
             .segment_splitter = .{ .ctx = self, .splitFn = splitSegmentCallback, .joinFn = joinSegmentCallback },
             .notify = notify,
+            .start_width_method = width_method,
         };
 
         return self;
@@ -276,7 +308,12 @@ pub const EditBuffer = struct {
         try self.setCursor(coords.row, coords.col);
     }
 
-    fn remapCol(self: *EditBuffer, row: u32, target_col: u32, old_tab_width: u8) ?u32 {
+    fn measure(self: *const EditBuffer) Measure {
+        return .{ .tab_width = self.tb.tabWidth(), .width_method = self.tb.widthMethod() };
+    }
+
+    /// The column under the current measure of the text at `target_col` under `old`.
+    fn remapCol(self: *EditBuffer, row: u32, target_col: u32, old: Measure) ?u32 {
         var seg_idx = (iter_mod.lineStart(self.tb.rope(), row) orelse return null).leaf_index + 1;
         var old_col: u32 = 0;
         var new_col: u32 = 0;
@@ -287,16 +324,16 @@ pub const EditBuffer = struct {
             const chunk = seg.asText() orelse continue;
             const bytes = chunk.getBytes(self.tb.memRegistry());
             // The restored root's cached widths use the current policy, not the checkpoint's.
-            const next_col = old_col +| utf8.calculateTextWidth(bytes, old_tab_width, self.tb.controlDisplay(), chunk.isAsciiOnly(), self.tb.widthMethod());
+            const next_col = old_col +| utf8.calculateTextWidth(bytes, old.tab_width, self.tb.controlDisplay(), chunk.isAsciiOnly(), old.width_method);
             if (target_col <= next_col) {
                 const pos = utf8.findPosByWidth(
                     bytes,
                     target_col -| old_col,
-                    old_tab_width,
+                    old.tab_width,
                     self.tb.controlDisplay(),
                     chunk.isAsciiOnly(),
                     false,
-                    self.tb.widthMethod(),
+                    old.width_method,
                 );
                 return new_col +| utf8.calculateTextWidth(
                     bytes[0..pos.byte_offset],
@@ -314,12 +351,28 @@ pub const EditBuffer = struct {
     }
 
     pub fn setTabWidth(self: *EditBuffer, width: u8) void {
-        const old_width = self.tb.tabWidth();
+        const old = self.measure();
         self.tb.setTabWidth(width);
-        if (old_width == self.tb.tabWidth()) return;
+        self.remapCursor(old);
+    }
 
+    /// Measures with another `method` from now on; the cursor stays on the same text.
+    pub fn setWidthMethod(self: *EditBuffer, method: utf8.WidthMethod) void {
+        self.remapCursor(self.remeasure(method));
+    }
+
+    /// The first half of `setWidthMethod`: views move what they keep in cells before `remapCursor` publishes.
+    pub fn remeasure(self: *EditBuffer, method: utf8.WidthMethod) Measure {
+        const old = self.measure();
+        self.tb.setWidthMethod(method);
+        self.width_method_changed = true;
+        return old;
+    }
+
+    pub fn remapCursor(self: *EditBuffer, old: Measure) void {
+        if (std.meta.eql(old, self.measure())) return;
         const cursor = &self.cursor;
-        const new_col = self.remapCol(cursor.row, cursor.col, old_width) orelse
+        const new_col = self.remapCol(cursor.row, cursor.col, old) orelse
             @min(cursor.col, iter_mod.lineWidthAt(self.tb.rope(), cursor.row));
         if (cursor.desired_col == cursor.col) cursor.desired_col = new_col;
         cursor.col = new_col;
@@ -883,8 +936,9 @@ pub const EditBuffer = struct {
     }
 
     fn encodeCurrentCursorMeta(self: *EditBuffer, out_buffer: []u8) ![]const u8 {
-        const cursor = self.getPrimaryCursor();
-        return CursorMeta.fromCursor(cursor, self.tb.tabWidth()).encode(out_buffer);
+        const cursor = CursorMeta.fromCursor(self.getPrimaryCursor(), self.tb.tabWidth());
+        if (self.width_method_changed) return (MethodMeta{ .cursor = cursor, .width_method = self.tb.widthMethod() }).encode(out_buffer);
+        return cursor.encode(out_buffer);
     }
 
     fn autoStoreUndo(self: *EditBuffer) !void {
@@ -905,15 +959,33 @@ pub const EditBuffer = struct {
 
     /// Moves the cursor to a restored step's metadata and returns its public part.
     fn restoreHistoryStep(self: *EditBuffer, meta: []const u8) ![]const u8 {
+        if (self.width_method_changed) return self.restoreRemeasuredStep(meta);
         const current = self.getPrimaryCursor();
         // Unknown metadata keeps the cursor, clamped to the restored text.
         const decoded = CursorMeta.decode(meta) orelse
             CursorMeta{ .row = current.row, .col = current.col, .desired_col = current.col };
         const width_changed = if (decoded.tab_width) |width| width != self.tb.tabWidth() else false;
         const col = if (width_changed)
-            self.remapCol(decoded.row, decoded.col, decoded.tab_width.?) orelse decoded.col
+            self.remapCol(decoded.row, decoded.col, .{ .tab_width = decoded.tab_width.?, .width_method = self.start_width_method }) orelse decoded.col
         else
             decoded.col;
+        return self.placeHistoryCursor(meta, decoded, col, width_changed);
+    }
+
+    /// Records of a buffer whose method changed name the method they were written under; a plain
+    /// record was written under the starting method.
+    noinline fn restoreRemeasuredStep(self: *EditBuffer, meta: []const u8) ![]const u8 {
+        const current = self.getPrimaryCursor();
+        const tagged = MethodMeta.decode(meta);
+        const decoded = (if (tagged) |value| value.cursor else CursorMeta.decode(meta)) orelse
+            CursorMeta{ .row = current.row, .col = current.col, .desired_col = current.col };
+        const old: ?Measure = if (decoded.tab_width) |width| .{ .tab_width = width, .width_method = if (tagged) |value| value.width_method else self.start_width_method } else null;
+        const width_changed = if (old) |measured| !std.meta.eql(measured, self.measure()) else false;
+        const col = if (width_changed) self.remapCol(decoded.row, decoded.col, old.?) orelse decoded.col else decoded.col;
+        return self.placeHistoryCursor(if (tagged == null) meta else meta[0..std.mem.lastIndexOfScalar(u8, meta, ':').?], decoded, col, width_changed);
+    }
+
+    inline fn placeHistoryCursor(self: *EditBuffer, meta: []const u8, decoded: CursorMeta, col: u32, width_changed: bool) ![]const u8 {
         try self.setCursor(decoded.row, col);
         self.cursor.desired_col = if (width_changed and decoded.desired_col == decoded.col)
             col

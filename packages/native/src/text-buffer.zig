@@ -161,6 +161,8 @@ pub const UnifiedTextBuffer = struct {
     span_generation: u64,
     span_scratch: SpanScratch,
     internal_highlight_count: usize,
+    /// Bytes walked while styled runs move to a new width method; tests check that a line is walked once per end.
+    run_bytes_measured: if (builtin.is_test) usize else void = if (builtin.is_test) 0 else {},
     /// Styles of styled text, replaced with it; the attached SyntaxStyle is never written.
     run_styles: RunStyles,
     /// clear() released the run styles' link refs while their highlights stay.
@@ -174,9 +176,11 @@ pub const UnifiedTextBuffer = struct {
     group_sets: ?*const hl.GroupSets,
 
     tab_width: u8,
-    // Persistent roots carry the tab-width generation used for their cached
-    // chunk and branch metrics, so only stale history roots are rescanned.
-    tab_metrics_generation: u64,
+    // Persistent roots carry the tab-width and width-method generation used for
+    // their cached chunk and branch metrics, so only stale history roots are rescanned.
+    metrics_generation: u64,
+    /// The generation of the last width-method change: older roots have stale non-ASCII widths.
+    width_method_generation: u64,
 
     /// The whole text after the last `replaceTail`, in one growable slot the buffer owns, valid
     /// while `content_epoch` is still `tail_epoch`: a tail write copies only its new bytes and
@@ -233,19 +237,19 @@ pub const UnifiedTextBuffer = struct {
         return &self._rope;
     }
 
-    /// Restore an undo root with metrics valid for the current tab width.
+    /// Restore an undo root with metrics valid for the current tab width and width method.
     pub fn undo(self: *Self, meta: []const u8) ![]const u8 {
         const previous_meta = try self._rope.undo(meta);
-        self.refreshTabWidthMetrics();
+        self.refreshMetrics();
         // History keeps roots, not byte splices, so layers cannot follow a restored root.
         self.resetLayers();
         return previous_meta;
     }
 
-    /// Restore a redo root with metrics valid for the current tab width.
+    /// Restore a redo root with metrics valid for the current tab width and width method.
     pub fn redo(self: *Self) ![]const u8 {
         const next_meta = try self._rope.redo();
-        self.refreshTabWidthMetrics();
+        self.refreshMetrics();
         self.resetLayers();
         return next_meta;
     }
@@ -412,7 +416,8 @@ pub const UnifiedTextBuffer = struct {
             .layers = .{},
             .group_sets = options.group_sets,
             .tab_width = 2,
-            .tab_metrics_generation = 1,
+            .metrics_generation = 1,
+            .width_method_generation = 1,
             .tail_slot = null,
             .tail_bytes = .empty,
             .tail_epoch = 0,
@@ -555,7 +560,7 @@ pub const UnifiedTextBuffer = struct {
     }
 
     fn markAllViewsDirty(self: *Self) void {
-        self._rope.setMetricsGeneration(self.tab_metrics_generation);
+        self._rope.setMetricsGeneration(self.metrics_generation);
         // Increment epoch first so views see the new value when checking caches.
         // Use wrapping add for safety, though u64 won't overflow in practice.
         self.content_epoch +%= 1;
@@ -2260,10 +2265,155 @@ pub const UnifiedTextBuffer = struct {
         const new_width = effectiveTabWidth(width);
         if (self.tab_width == new_width) return;
         self.tab_width = new_width;
-        self.tab_metrics_generation +%= 1;
+        self.metrics_generation +%= 1;
 
-        self.refreshTabWidthMetrics();
+        self.refreshMetrics();
         self.markAllViewsDirty();
+    }
+
+    /// Measure the text with another `method` from now on, like a tab-width change. Grapheme
+    /// breaks differ only under `no_zwj`, so the chunks' boundaries stay valid without it.
+    pub fn setWidthMethod(self: *Self, method: utf8.WidthMethod) void {
+        std.debug.assert(method != .no_zwj and self.width_method != method);
+        // NO_ZWJ breaks graphemes at every joiner, so its chunk boundaries may cut other methods' graphemes.
+        if (self.width_method == .no_zwj) return;
+        // Styled runs are columns: they pass through the bytes they cover, measured before and after.
+        self.moveStyledRuns(true);
+        self.width_method = method;
+        self.metrics_generation +%= 1;
+        self.width_method_generation = self.metrics_generation;
+
+        self.refreshMetrics();
+        self.moveStyledRuns(false);
+        self.markAllViewsDirty();
+    }
+
+    /// Turns the styled-text runs' line columns into line bytes, or back, as the line measures now. Legacy
+    /// highlight records stay in columns, as a tab-width change leaves them.
+    fn moveStyledRuns(self: *Self, comptime to_bytes: bool) void {
+        if (self.internal_highlight_count == 0) return;
+        for (self.line_highlights.items, 0..) |line, row| {
+            self.convertLineEnds(@intCast(row), line.items, .start, to_bytes);
+            self.convertLineEnds(@intCast(row), line.items, .end, to_bytes);
+        }
+    }
+
+    /// Converts one end of line `row`'s styled runs, in record order. Runs are made in order, so each walk measures
+    /// from the previous end and the line costs one pass; an end before the previous one starts a new walk.
+    fn convertLineEnds(self: *Self, row: u32, records: []Highlight, comptime end: enum { start, end }, comptime to_bytes: bool) void {
+        const start = iter_mod.lineStart(&self._rope, row) orelse return;
+        const Walk = struct {
+            buffer: *Self,
+            records: []Highlight,
+            next: usize,
+            last: u32 = 0,
+            // Where the line's measured prefix ends: chunk start, and the offset within the chunk.
+            byte: u32 = 0,
+            col: u32 = 0,
+            in_byte: u32 = 0,
+            in_col: u32 = 0,
+
+            fn field(record: *Highlight) *u32 {
+                return if (end == .start) &record.col_start else &record.col_end;
+            }
+
+            /// The next styled end to convert, or null once all are done. Stops at an end before the last.
+            fn pending(walk: *@This()) ?*u32 {
+                while (walk.next < walk.records.len and !walk.records[walk.next].internal) walk.next += 1;
+                if (walk.next == walk.records.len) return null;
+                const value = field(&walk.records[walk.next]);
+                return if (value.* < walk.last) null else value;
+            }
+
+            fn visit(ctx: *anyopaque, segment: *const Segment, _: u32) UnifiedRope.Node.WalkerResult {
+                const walk: *@This() = @ptrCast(@alignCast(ctx));
+                if (segment.isBreak()) return .{ .keep_walking = false };
+                const chunk = segment.asText() orelse return .{};
+                const text = walk.buffer;
+                const bytes = chunk.getBytes(&text.mem_registry);
+                const ascii = chunk.isAsciiOnly();
+                while (walk.pending()) |value| {
+                    walk.last = value.*;
+                    if (to_bytes) {
+                        if (value.* > walk.col + chunk.width_cols) break;
+                        const found = utf8.findPosByWidth(bytes[walk.in_byte..], value.* - walk.col - walk.in_col, text.tab_width, text.control_display, ascii, false, text.width_method);
+                        text.countRunBytes(found.byte_offset);
+                        walk.in_byte += found.byte_offset;
+                        walk.in_col += found.columns_used;
+                        value.* = walk.byte + walk.in_byte;
+                    } else {
+                        if (value.* > walk.byte + bytes.len) break;
+                        const part = bytes[walk.in_byte .. value.* - walk.byte];
+                        text.countRunBytes(part.len);
+                        walk.in_col += utf8.calculateTextWidth(part, text.tab_width, text.control_display, ascii, text.width_method);
+                        walk.in_byte = value.* - walk.byte;
+                        value.* = walk.col + walk.in_col;
+                    }
+                    walk.next += 1;
+                } else return .{ .keep_walking = false };
+                text.countRunBytes(bytes.len - walk.in_byte);
+                walk.byte += @intCast(bytes.len);
+                walk.col += chunk.width_cols;
+                walk.in_byte = 0;
+                walk.in_col = 0;
+                return .{};
+            }
+        };
+        var next: usize = 0;
+        while (true) {
+            var walk: Walk = .{ .buffer = self, .records = records, .next = next };
+            if (walk.pending() == null) break;
+            self._rope.walk_from(start.leaf_index + 1, &walk, Walk.visit) catch {};
+            // Ends past the line's last chunk name its end.
+            while (walk.pending()) |value| : (walk.next += 1) {
+                walk.last = value.*;
+                value.* = if (to_bytes) walk.byte else walk.col;
+            }
+            next = walk.next;
+        }
+    }
+
+    inline fn countRunBytes(self: *Self, count: usize) void {
+        if (builtin.is_test) self.run_bytes_measured += count;
+    }
+
+    /// The byte that cell `offset` named while the text measured with `method`, which it no longer does.
+    pub fn byteAtOffsetUnder(self: *const Self, offset: u32, method: utf8.WidthMethod) u32 {
+        const Find = struct {
+            buffer: *const Self,
+            method: utf8.WidthMethod,
+            offset: u32,
+            weight: u32 = 0,
+            byte: u32 = 0,
+            found: ?u32 = null,
+
+            fn visit(ctx_ptr: *anyopaque, segment: *const Segment, _: u32) UnifiedRope.Node.WalkerResult {
+                const ctx = @as(*@This(), @ptrCast(@alignCast(ctx_ptr)));
+                const text = ctx.buffer;
+                if (segment.asText()) |chunk| {
+                    const bytes = chunk.getBytes(&text.mem_registry);
+                    const width = utf8.calculateTextWidth(bytes, text.tab_width, text.control_display, chunk.isAsciiOnly(), ctx.method);
+                    if (ctx.offset <= ctx.weight + width) {
+                        ctx.found = ctx.byte + @as(u32, @intCast(utf8.findPosByWidth(bytes, ctx.offset - ctx.weight, text.tab_width, text.control_display, chunk.isAsciiOnly(), false, ctx.method).byte_offset));
+                        return .{ .keep_walking = false };
+                    }
+                    ctx.weight += width;
+                    ctx.byte += @intCast(bytes.len);
+                } else if (segment.isBreak()) {
+                    // A break weighs one cell and one byte, as in `weightAtByte`.
+                    if (ctx.offset == ctx.weight) {
+                        ctx.found = ctx.byte;
+                        return .{ .keep_walking = false };
+                    }
+                    ctx.weight += 1;
+                    ctx.byte += 1;
+                }
+                return .{};
+            }
+        };
+        var find: Find = .{ .buffer = self, .method = method, .offset = offset };
+        self._rope.walk(&find, Find.visit) catch {};
+        return find.found orelse find.byte;
     }
 
     pub fn effectiveTabWidth(width: u8) u8 {
@@ -2277,26 +2427,30 @@ pub const UnifiedTextBuffer = struct {
         if (self.getByteSize() > (std.math.maxInt(u32) - 1) / @as(u32, effectiveTabWidth(width))) return error.TextLimit;
     }
 
-    /// Bring the active persistent root to the current tab-width generation.
+    /// Bring the active persistent root to the current metrics generation.
     /// Widths and branch aggregates are derived state, so this deliberately
     /// updates shared const nodes; stale history roots are repaired when restored.
-    fn refreshTabWidthMetrics(self: *Self) void {
-        if (self._rope.metricsGeneration() == self.tab_metrics_generation) return;
+    fn refreshMetrics(self: *Self) void {
+        const generation = self._rope.metricsGeneration();
+        if (generation == self.metrics_generation) return;
+        // ASCII widths are the same under every method; other text changes with it.
+        const method_stale = generation < self.width_method_generation;
 
         // Tab presence is content-derived, so even a stale persistent root can
         // use this aggregate to prove that its widths remain valid.
-        if (!self._rope.root.metrics().custom.has_tabs) {
-            self._rope.setMetricsGeneration(self.tab_metrics_generation);
+        if (!method_stale and !self._rope.root.metrics().custom.has_tabs) {
+            self._rope.setMetricsGeneration(self.metrics_generation);
             return;
         }
 
         const RefreshContext = struct {
             buffer: *Self,
+            method_stale: bool,
 
             fn refresh(ctx_ptr: *anyopaque, segment: *const Segment, _: u32) UnifiedRope.Node.WalkerResult {
                 const ctx = @as(*@This(), @ptrCast(@alignCast(ctx_ptr)));
                 if (segment.asText()) |chunk| {
-                    if (!chunk.hasTab()) return .{};
+                    if (!chunk.hasTab() and !(ctx.method_stale and !chunk.isAsciiOnly())) return .{};
                     const mutable = @constCast(chunk);
                     const bytes = chunk.getBytes(&ctx.buffer.mem_registry);
                     mutable.width_cols = utf8.calculateTextWidth(
@@ -2310,10 +2464,10 @@ pub const UnifiedTextBuffer = struct {
                 return .{};
             }
         };
-        var refresh_ctx: RefreshContext = .{ .buffer = self };
+        var refresh_ctx: RefreshContext = .{ .buffer = self, .method_stale = method_stale };
         self._rope.walk(&refresh_ctx, RefreshContext.refresh) catch {};
         self._rope.remeasure();
-        self._rope.setMetricsGeneration(self.tab_metrics_generation);
+        self._rope.setMetricsGeneration(self.metrics_generation);
     }
 
     /// Debug log the rope structure using rope.toText

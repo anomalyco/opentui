@@ -244,6 +244,104 @@ test "EditBuffer - tab width remaps multi-chunk history under each checkpoint po
     try std.testing.expectEqualDeep(edit_buffer.Cursor{ .row = 1, .col = 1, .desired_col = 9, .offset = 18 }, eb.getPrimaryCursor());
 }
 
+test "EditBuffer - a width method change measures, wraps and undoes like a buffer made with it" {
+    const WidthMethod = @import("../utf8.zig").WidthMethod;
+    const View = @import("../text-buffer-view.zig").UnifiedTextBufferView;
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const Built = struct {
+        eb: *EditBuffer,
+        view: *View,
+
+        // Several chunks, ASCII and not, with the cursor after the wide cluster.
+        fn init(p: *TestPools, method: WidthMethod) !@This() {
+            const eb = try EditBuffer.init(std.testing.allocator, &p.graphemes, &p.links, method, null);
+            try eb.setText("head\n\u{754c}\tb");
+            try eb.setCursor(1, 0);
+            try eb.insertText("a");
+            try eb.insertText("\u{1f44d}\u{1f3fd}");
+            const view = try View.init(std.testing.allocator, eb.tb);
+            view.setWrapMode(.char);
+            view.setWrapWidth(3);
+            return .{ .eb = eb, .view = view };
+        }
+
+        fn deinit(self: @This()) void {
+            self.view.deinit();
+            self.eb.deinit();
+        }
+
+        fn expectSame(self: @This(), fresh: @This()) !void {
+            try std.testing.expectEqualDeep(fresh.eb.getPrimaryCursor(), self.eb.getPrimaryCursor());
+            for (0..2) |row| try std.testing.expectEqual(fresh.eb.tb.lineWidthAt(@intCast(row)), self.eb.tb.lineWidthAt(@intCast(row)));
+            try std.testing.expectEqualDeep(fresh.view.getCachedLineInfo(), self.view.getCachedLineInfo());
+        }
+    };
+    for ([_][2]WidthMethod{ .{ .unicode, .wcwidth }, .{ .wcwidth, .unicode }, .{ .unicode, .unicode_wide } }) |pair| {
+        errdefer std.debug.print("from={t} to={t}\n", .{ pair[0], pair[1] });
+        const changed = try Built.init(&pools, pair[0]);
+        defer changed.deinit();
+        const fresh = try Built.init(&pools, pair[1]);
+        defer fresh.deinit();
+        _ = changed.view.getCachedLineInfo();
+        // Until the method changes, undo records keep main's format.
+        try std.testing.expectEqualStrings("cursor:1:1:1:2", changed.eb.tb.rope().undo_history.?.meta);
+        // A backward selection from inside the emoji (between its code points, byte 10) back to its start keeps
+        // its text and direction: the anchor rounds toward the end, as a backward one must.
+        // Under wcwidth the cell between the two code points is a cursor stop.
+        const start = changed.eb.tb.weightAtByte(6, true);
+        const emoji = [2]u32{ start, if (pair[0] == .wcwidth) start + 2 else changed.eb.tb.weightAtByte(10, false) };
+        // Two more views: the same pair forward, and a press there (equal endpoints), which stays empty.
+        const views = [3]*View{ changed.view, try View.init(std.testing.allocator, changed.eb.tb), try View.init(std.testing.allocator, changed.eb.tb) };
+        defer for (views[1..]) |view| view.deinit();
+        for (views, [3][2]u32{ .{ emoji[1], emoji[0] }, emoji, .{ emoji[1], emoji[1] } }) |view, ends| {
+            view.selection = .{ .start = @min(ends[0], ends[1]), .end = @max(ends[0], ends[1]), .bgColor = null, .fgColor = null };
+            view.selection_endpoints = .{ .anchor = ends[0], .focus = ends[1] };
+        }
+        changed.eb.setWidthMethod(pair[1]);
+        for (views) |view| view.followWidthMethod(changed.eb.tb, pair[0]);
+        try changed.expectSame(fresh);
+        const moved = [2]u32{ fresh.eb.tb.weightAtByte(6, true), fresh.eb.tb.weightAtByte(10, false) };
+        for (views[0..2]) |view| try std.testing.expectEqual(moved, [2]u32{ view.selection.?.start, view.selection.?.end });
+        try std.testing.expectEqual(moved, [2]u32{ views[0].selection_endpoints.?.focus, views[0].selection_endpoints.?.anchor });
+        try std.testing.expectEqual(moved, [2]u32{ views[1].selection_endpoints.?.anchor, views[1].selection_endpoints.?.focus });
+        const press = views[2];
+        try std.testing.expectEqual(press.selection.?.start, press.selection.?.end);
+        try std.testing.expectEqual(press.selection_endpoints.?.anchor, press.selection_endpoints.?.focus);
+        changed.view.resetSelection();
+        // A redo point stored under the old method puts its cursor on the same text.
+        changed.eb.setWidthMethod(pair[0]);
+        for ([_]*EditBuffer{ changed.eb, fresh.eb }) |eb| try std.testing.expectEqualStrings("cursor:1:1:1", try eb.undo());
+        changed.eb.setWidthMethod(pair[1]);
+        try changed.expectSame(fresh);
+        for ([_]*EditBuffer{ changed.eb, fresh.eb }) |eb| _ = try eb.redo();
+        try changed.expectSame(fresh);
+        // Records written after the change name the method; undoing one lands like the fresh buffer's.
+        for ([_]*EditBuffer{ changed.eb, fresh.eb }) |eb| try eb.insertText("z");
+        const tag: [2]u8 = .{ ':', '0' + @as(u8, @backingInt(pair[1])) };
+        try std.testing.expect(std.mem.endsWith(u8, changed.eb.tb.rope().undo_history.?.meta, &tag));
+        try std.testing.expectEqualStrings(try fresh.eb.undo(), try changed.eb.undo());
+        try changed.expectSame(fresh);
+
+        // An edit after the emoji made before the first change: undone after it, the cursor lands after the emoji.
+        const early = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, pair[0], null);
+        defer early.deinit();
+        const late = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, pair[1], null);
+        defer late.deinit();
+        for ([_]*EditBuffer{ early, late }) |eb| {
+            try eb.setText("\u{1f44d}\u{1f3fd}abc");
+            try eb.setCursor(0, eb.tb.weightAtByte(8, true));
+            try eb.insertText("X");
+        }
+        const written = early.tb.weightAtByte(8, true);
+        early.setWidthMethod(pair[1]);
+        var record: [32]u8 = undefined;
+        try std.testing.expectEqualStrings(try std.fmt.bufPrint(&record, "cursor:0:{d}:{d}", .{ written, written }), try early.undo());
+        _ = try late.undo();
+        try std.testing.expectEqualDeep(late.getPrimaryCursor(), early.getPrimaryCursor());
+    }
+}
+
 test "EditBuffer - tab width changes preserve live and undo cursor text boundaries" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();

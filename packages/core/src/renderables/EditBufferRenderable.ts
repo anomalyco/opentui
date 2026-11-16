@@ -174,7 +174,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
         ? RGBA.clone(parseColor(options.tabIndicatorColor))
         : this._defaultOptions.tabIndicatorColor
 
-      editBuffer = EditBuffer.create(this._ctx.widthMethod, this._ctx.nativeScene)
+      editBuffer = EditBuffer.create(this._ctx.widthMethod, this._ctx.nativeScene, true)
       this.editBuffer = editBuffer
       editorView = EditorView.create(
         editBuffer,

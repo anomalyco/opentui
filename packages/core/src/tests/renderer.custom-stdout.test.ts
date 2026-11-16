@@ -9,10 +9,14 @@ import {
 } from "../renderer.js"
 import { NativeSession } from "../NativeSession.js"
 import { BoxRenderable } from "../renderables/Box.js"
+import { CodeRenderable } from "../renderables/Code.js"
 import { ImageRenderable } from "../renderables/Image.js"
 import { MarkdownRenderable } from "../renderables/Markdown.js"
 import { TextRenderable } from "../renderables/Text.js"
-import { link, t } from "../lib/styled-text.js"
+import { TextareaRenderable } from "../renderables/Textarea.js"
+import { fg, link, t } from "../lib/styled-text.js"
+import { RGBA } from "../lib/RGBA.js"
+import { Selection } from "../lib/selection.js"
 import { SyntaxStyle } from "../syntax-style.js"
 import { forceRenderStatus, holdOutputIdle, serviceReadyFrames, settleUntil } from "../testing/harness.js"
 import { ManualClock } from "../testing/manual-clock.js"
@@ -1516,6 +1520,138 @@ test("Ghostty width profile reaches renderer-owned buffers", async () => {
     else process.env.TERM_PROGRAM = previousTermProgram
     if (previousTermProgramVersion === undefined) delete process.env.TERM_PROGRAM_VERSION
     else process.env.TERM_PROGRAM_VERSION = previousTermProgramVersion
+  }
+})
+
+test("text made before a width-changing reply measures like text made after it", async () => {
+  const rows = [
+    {
+      environment: { TERM: "xterm-256color" },
+      reply: "\x1b[?2027;0$y",
+      from: "unicode",
+      to: "wcwidth",
+      before: 2,
+      cells: 4,
+    },
+    {
+      environment: { TERM: "screen-256color", SSH_CONNECTION: "1 2 3 4" },
+      reply: "\x1bP>|tmux 3.8\x1b\\",
+      from: "wcwidth",
+      to: "unicode",
+      before: 4,
+      cells: 2,
+    },
+  ] as const
+  for (const row of rows) {
+    const stdin = createTestStdin()
+    const renderer = await createCliRenderer({ stdin, stdout: createCollectingStdout(), environment: row.environment })
+    destroyFns.push(() => renderer.destroy())
+    const make = (content?: string) => {
+      const textarea = new TextareaRenderable(renderer, { width: 10, height: 2 })
+      renderer.root.add(textarea)
+      if (content) textarea.insertText(content)
+      return textarea
+    }
+    const typed = make("\u{1f44d}\u{1f3fd}")
+    const empty = make()
+    // A selection and a mark over "A" stay on it; the selection's line follows a wide one.
+    const selected = make("\u{1f44d}\u{1f3fd}\nABCD")
+    selected.setSelection(row.before + 1, row.before + 2)
+    const marked = make("\u{1f44d}\u{1f3fd}ABCD")
+    const mark = marked.extmarks.create({ start: row.before, end: row.before + 1 })
+    const placeholder = () => {
+      const textarea = new TextareaRenderable(renderer, {
+        width: 3,
+        height: 3,
+        wrapMode: "char",
+        placeholder: "\u{1f44d}\u{1f3fd}x",
+      })
+      renderer.root.add(textarea)
+      return textarea
+    }
+    const hint = placeholder()
+    // Text paints native scene text, Code a shared text buffer.
+    const shrink = new BoxRenderable(renderer, { alignItems: "flex-start" })
+    renderer.root.add(shrink)
+    const text = new TextRenderable(renderer, { content: "\u{1f44d}\u{1f3fd}x", width: "auto" })
+    const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: "#ffffff" } }, renderer.nativeScene)
+    const code = new CodeRenderable(renderer, { content: "\u{1f44d}\u{1f3fd}x", syntaxStyle, width: "auto" })
+    // Styled runs stay on their characters.
+    const styled = new TextRenderable(renderer, {
+      content: t`${fg("#ff0000")("\u{1f44d}\u{1f3fd}")}${fg("#00ff00")("AB")}${fg("#0000ff")("CD")}`,
+      width: "auto",
+    })
+    // Finished drags over "AB" in Text and Code: a colour change restyles them on screen, on the same text.
+    const recolored = [
+      new TextRenderable(renderer, { content: "\u{1f44d}\u{1f3fd}ABCD", width: "auto", selectionBg: "#0000ff" }),
+      new CodeRenderable(renderer, {
+        content: "\u{1f44d}\u{1f3fd}ABCD",
+        syntaxStyle,
+        width: "auto",
+        selectionBg: "#0000ff",
+      }),
+    ]
+    for (const widget of [text, code, styled, ...recolored]) shrink.add(widget)
+    // A press between the emoji's code points under wcwidth, without a drag, selects nothing.
+    const pressed = make("\u{1f44d}\u{1f3fd}ABCD")
+    await renderer.idle()
+    for (const widget of recolored) {
+      const selection = new Selection(
+        widget,
+        { x: widget.x + row.before, y: widget.y },
+        { x: widget.x + row.before, y: widget.y },
+      )
+      selection.isStart = true
+      widget.onSelectionChanged(selection)
+      selection.isStart = false
+      selection.focus = { x: widget.x + row.before + 1, y: widget.y }
+      selection.isDragging = false
+      widget.onSelectionChanged(selection)
+    }
+    renderer.startSelection(pressed, pressed.x + 2, pressed.y)
+    const selections = () => [
+      selected.getSelectedText(),
+      ...recolored.map((widget) => widget.getSelectedText()),
+      pressed.getSelectedText(),
+      renderer.getSelection()?.getSelectedText() ?? "",
+    ]
+    // The text of a widget's row painted with a colour, as a foreground or a background.
+    const painted = (widget: TextRenderable | CodeRenderable, color: string, layer: "fg" | "bg") =>
+      renderer.currentRenderBuffer
+        .getSpanLines()
+        [widget.y].spans.filter((span) => span[layer].equals(RGBA.fromHex(color)))
+        .map((span) => span.text)
+        .join("")
+    expect(renderer.widthMethod).toBe(row.from)
+    expect(selections()).toEqual(["A", "AB", "AB", "", ""])
+    stdin.emit("data", Buffer.from(row.reply))
+    await settleUntil(() => renderer.widthMethod === row.to)
+    empty.insertText("\u{1f44d}\u{1f3fd}")
+    const late = make("\u{1f44d}\u{1f3fd}")
+    const lateHint = placeholder()
+    await renderer.idle()
+    expect([typed.cursorOffset, empty.cursorOffset, late.cursorOffset]).toEqual([row.cells, row.cells, row.cells])
+    expect([text.lineInfo.lineWidthCols[0], code.lineInfo.lineWidthCols[0]]).toEqual([row.cells + 1, row.cells + 1])
+    expect([text.width, code.width]).toEqual([row.cells + 1, row.cells + 1])
+    expect(["#ff0000", "#00ff00", "#0000ff"].map((color) => painted(styled, color, "fg"))).toEqual([
+      "\u{1f44d}\u{1f3fd}",
+      "AB",
+      "CD",
+    ])
+    for (const widget of recolored) widget.selectionBg = "#00ff00"
+    await renderer.idle()
+    expect(recolored.map((widget) => painted(widget, "#00ff00", "bg"))).toEqual(["AB", "AB"])
+    for (const widget of recolored) widget.selectionFg = "#ff00ff"
+    await renderer.idle()
+    expect(recolored.map((widget) => painted(widget, "#ff00ff", "fg"))).toEqual(["AB", "AB"])
+    expect(selections()).toEqual(["A", "AB", "AB", "", ""])
+    pressed.insertText("X")
+    expect(pressed.plainText).toContain("\u{1f44d}\u{1f3fd}")
+    expect(hint.lineInfo.lineWidthCols).toEqual(lateHint.lineInfo.lineWidthCols)
+    expect(selected.getSelectedText()).toBe("A")
+    selected.editorView.deleteSelectedText()
+    expect(selected.plainText).toBe("\u{1f44d}\u{1f3fd}\nBCD")
+    expect(marked.extmarks.get(mark)).toMatchObject({ start: row.cells, end: row.cells + 1 })
   }
 })
 

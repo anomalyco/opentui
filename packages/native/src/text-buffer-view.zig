@@ -651,7 +651,7 @@ pub const UnifiedTextBufferView = struct {
         return .{
             .root = self.text_buffer.rope().root,
             .clears = self.text_buffer.layout_cache.clears,
-            .tab_generation = self.text_buffer.tab_metrics_generation,
+            .tab_generation = self.text_buffer.metrics_generation,
         };
     }
 
@@ -681,7 +681,7 @@ pub const UnifiedTextBufferView = struct {
         const rope = self.text_buffer.rope();
         // A buffer switch drops the baseline, so it is always this buffer's.
         if (baseline.clears != self.text_buffer.layout_cache.clears or
-            baseline.tab_generation != self.text_buffer.tab_metrics_generation) return null;
+            baseline.tab_generation != self.text_buffer.metrics_generation) return null;
         if (baseline.root == rope.root) return .{ .first = 0, .old_count = 0, .new_count = 0, .weight_delta = 0 };
 
         var old = rope.*;
@@ -1038,6 +1038,23 @@ pub const UnifiedTextBufferView = struct {
         self.selection = null;
         self.clearSelectionEndpoints();
         self.selection_behavior = .cell;
+    }
+
+    /// Keeps the selection on its text after `buffer`'s widths changed from `method`, its direction too.
+    pub fn followWidthMethod(self: *Self, buffer: *const UnifiedTextBuffer, method: utf8.WidthMethod) void {
+        if (self.text_buffer != buffer) return;
+        if (self.selection) |*selection| mapPair(buffer, method, &selection.start, &selection.end);
+        if (self.selection_endpoints) |*endpoints| {
+            if (endpoints.anchor <= endpoints.focus) mapPair(buffer, method, &endpoints.anchor, &endpoints.focus) else mapPair(buffer, method, &endpoints.focus, &endpoints.anchor);
+        }
+    }
+
+    /// Maps `low <= high` onto the new widths: low rounds down, high up. An empty pair, such as a press
+    /// without a drag, is mapped once and stays empty even inside a cluster that now joins.
+    fn mapPair(buffer: *const UnifiedTextBuffer, method: utf8.WidthMethod, low: *u32, high: *u32) void {
+        const empty = low.* == high.*;
+        low.* = buffer.weightAtByte(buffer.byteAtOffsetUnder(low.*, method), true);
+        high.* = if (empty) low.* else buffer.weightAtByte(buffer.byteAtOffsetUnder(high.*, method), false);
     }
 
     pub fn setSelectionOccupancy(self: *Self, occupancy: SelectionOccupancy) void {

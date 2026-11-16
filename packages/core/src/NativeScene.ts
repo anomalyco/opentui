@@ -589,7 +589,7 @@ export class NativeScene {
 
   setTextSelection(
     renderable: Renderable,
-    operation: "set" | "update" | "reset",
+    operation: "set" | "update" | "reset" | "colors",
     bounds: LocalSelectionBounds | null,
     bg?: RGBA,
     fg?: RGBA,

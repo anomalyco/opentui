@@ -746,6 +746,9 @@ impl Behavior for TextTableInner {
 ///
 /// This is not [`Table`](super::Table), which shows one-line rows with keyboard selection and scrolling.
 ///
+/// Its cells keep the width method of the moment the table was made: a terminal reply that changes the Session's
+/// method later does not re-measure them yet.
+///
 /// ```no_run
 /// # use opentui::prelude::*;
 /// # use opentui::widget::TextTable;

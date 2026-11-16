@@ -193,7 +193,7 @@ test "TextBuffer tab width changes preserve large tab-free Unicode and update on
         try std.testing.expectEqual(tab_free_width, tb.lineWidthAt(0));
         // A tab-free root keeps its widths: no chunk walk and no remeasure.
         try std.testing.expectEqual(0, text_work.take().remeasure_nodes);
-        try std.testing.expectEqual(tb.tab_metrics_generation, tb.rope().metricsGeneration());
+        try std.testing.expectEqual(tb.metrics_generation, tb.rope().metricsGeneration());
     }
 
     const one_tab = try std.testing.allocator.dupe(u8, tab_free);

@@ -93,6 +93,10 @@ export interface TextTableOptions extends RenderableOptions<TextTableRenderable>
   attributes?: number
 }
 
+/**
+ * Its cells keep the width method of the moment the table was made: a terminal reply that changes the renderer's
+ * method later does not re-measure them yet (Markdown tables too).
+ */
 export class TextTableRenderable extends Renderable {
   private _content: TextTableContent
   private _wrapMode: "none" | "char" | "word"

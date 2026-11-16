@@ -321,7 +321,7 @@ impl EditorCore {
     pub fn build(app: &App, single_line: bool) -> Rc<Self> {
         let theme = app.theme();
         let session = app.session();
-        let buffer = app.report(EditBuffer::new(session.context(), app.width_method()));
+        let buffer = app.report(EditBuffer::following(session.context(), app.width_method()));
         let buffer = match buffer {
             Some(buffer) => buffer,
             // A Context too full for a buffer has failed already; the report ends the app this turn.

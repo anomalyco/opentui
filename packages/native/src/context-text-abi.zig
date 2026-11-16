@@ -22,9 +22,12 @@ pub fn ot_text_buffer_create(context: ?*Owner, options: ?*const c.ot_edit_buffer
     if (status != c.OT_OK) return status;
     const owner = context.?;
     const value = record(c.ot_edit_buffer_options, options) catch |err| return fail(owner, err);
-    if (out == null or value.reserved != 0) return fail(owner, error.InvalidOptions);
+    if (out == null) return fail(owner, error.InvalidOptions);
     const width_method = abi.widthMethodFromC(value.width_method) catch |err| return fail(owner, err);
-    out.?.* = abi.handleToC(owner.core.createTextBuffer(width_method) catch |err| return fail(owner, err));
+    const follow = abi.followSessionWidth(value.*) catch |err| return fail(owner, err);
+    const handle = owner.core.createTextBuffer(width_method) catch |err| return fail(owner, err);
+    (owner.core.raw().getTextBuffer(handle) catch unreachable).follow_width = follow;
+    out.?.* = abi.handleToC(handle);
     return c.OT_OK;
 }
 

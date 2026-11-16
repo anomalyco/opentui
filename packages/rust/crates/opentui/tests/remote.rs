@@ -418,6 +418,10 @@ fn widgets_measure_text_with_the_width_method_a_reply_switches_to() {
         let mut client = Client::start(options, quiet(), move |app| {
             let editor = Textarea::new(app);
             editor.set_text("x");
+            // Its cursor, after the text, must move with the reply's method.
+            let early = Textarea::new(app);
+            early.set_text(text);
+            early.set_cursor_offset(u32::MAX);
             let gutter = LineNumbers::new(app, &editor).height(1).line_sign(0, LineSign::before(text, None));
             let table = Table::new(app)
                 .set_columns([Column::new("").width(ColumnWidth::Cells(6)).align(Alignment::Right)])
@@ -432,6 +436,8 @@ fn widgets_measure_text_with_the_width_method_a_reply_switches_to() {
             let surface = scrollback.surface(true).unwrap();
             surface.root().add(&Text::new(scrollback.app(), text));
             surface.render().unwrap();
+            // A Code made before the reply must snapshot like one made after it.
+            let early_code = Code::new(scrollback.app()).wrap(WrapMode::Char).set_code(format!("{text}abcd"));
             app.on_key(move |cx, key| {
                 if key.matches("l") {
                     // Updates a paragraph without making a node, so only `hyperlinks` reads the terminal state.
@@ -444,6 +450,7 @@ fn widgets_measure_text_with_the_width_method_a_reply_switches_to() {
                         Text::new(scrollback.app(), &line).wrap(WrapMode::Char).as_any(),
                         Markdown::new(scrollback.app()).set_markdown(&line).as_any(),
                         Code::new(scrollback.app()).wrap(WrapMode::Char).set_code(&line).as_any(),
+                        early_code.clone().as_any(),
                     ]
                     .map(|widget| {
                         let options = SnapshotOptions { width: Some(6), ..SnapshotOptions::default() };
@@ -456,7 +463,8 @@ fn widgets_measure_text_with_the_width_method_a_reply_switches_to() {
                     let stale = surface.commit_rows(0, 1, None, true).is_err();
                     surface.render().unwrap();
                     surface.commit_rows(0, 1, None, true).unwrap();
-                    let label = format!("m={:?} {stale} {} {error:?}", cx.app().width_method(), link.text().trim_end());
+                    let (method, link, cursor) = (cx.app().width_method(), link.text(), early.cursor_offset());
+                    let label = format!("m={method:?} {stale} {} {error:?} c={cursor}", link.trim_end());
                     let label = Text::new(cx.app(), label);
                     cx.app().root().add(&label).add(&Text::new(cx.app(), shots.join(" ")));
                 } else if key.matches("i") {
@@ -475,9 +483,10 @@ fn widgets_measure_text_with_the_width_method_a_reply_switches_to() {
         let screen = TerminalView::new(&host).size(48, 5).write(client.text()).screen();
         // A 6-cell snapshot wraps "cd" after a 4-cell text.
         let (pad, shot) = (" ".repeat(6 - cells as usize), if cells == 4 { "ab/cd" } else { "abcd" });
-        let shots = vec![format!("{text}{shot}"); 3].join(" ");
-        // The label ends with the Context's last error: the snapshots leave none.
-        let rows = [format!("{pad}{text}|"), format!("{text} 1 x"), format!("m={method} {changed} {link} None"), shots];
+        let shots = vec![format!("{text}{shot}"); 4].join(" ");
+        // The label ends with the Context's last error, which the snapshots leave none of, and the early cursor.
+        let label = format!("m={method} {changed} {link} None c={cells}");
+        let rows = [format!("{pad}{text}|"), format!("{text} 1 x"), label, shots];
         let rows = [&rows[..], &[format!("{text}yz")]].concat();
         let expected = (&rows[checked.clone()], Some((cells + 2, 4)));
         assert_eq!((&screen.lines[checked], screen.cursor.position), expected, "{variable:?}");

@@ -48,7 +48,13 @@ export class EditBuffer extends EventEmitter {
     })
   }
 
-  static create(widthMethod: WidthMethod, source: NativeResourceOwner): EditBuffer {
+  /**
+   * With `followSessionWidth`, the buffer measures with the width method of the renderer whose scene shows it,
+   * including when the terminal's replies change that method; the cursor, selections, marks and undo points keep
+   * their text. Otherwise it keeps `widthMethod`. One renderer at a time may show such a buffer: showing it in another
+   * one throws until the first stops showing it (`NativeError` with `status === NativeStatus.WrongSession`).
+   */
+  static create(widthMethod: WidthMethod, source: NativeResourceOwner, followSessionWidth = false): EditBuffer {
     const owner = source?.resourceContext
     if (!owner)
       throw new Error(
@@ -56,7 +62,7 @@ export class EditBuffer extends EventEmitter {
       )
     owner.assertAlive()
     const lib = owner.renderLib
-    const handle = lib.createContextEditBuffer(owner.context, { widthMethod })
+    const handle = lib.createContextEditBuffer(owner.context, { widthMethod, followSessionWidth })
     try {
       return new EditBuffer(lib, handle, owner)
     } catch (error) {

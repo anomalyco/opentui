@@ -492,7 +492,7 @@ impl Code {
     pub(crate) fn themed(app: &App, syntax: Arc<SyntaxTheme>, table: Option<&SyntaxStyle>) -> Self {
         let theme = app.theme();
         let context = app.session().context();
-        let buffer = app.report(TextBuffer::new(context, app.width_method()));
+        let buffer = app.report(TextBuffer::following(context, app.width_method()));
         let buffer = buffer.unwrap_or_else(|| panic!("opentui: failed to create a text buffer: {:?}", app.check()));
         let view = app.report(TextView::new(&buffer));
         let view = view.unwrap_or_else(|| panic!("opentui: failed to create a text view: {:?}", app.check()));
