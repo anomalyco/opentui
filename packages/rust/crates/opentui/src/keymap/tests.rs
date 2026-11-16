@@ -1075,7 +1075,22 @@ fn timed_leader_expires_on_the_apps_clock() {
     // sequence sets a timer on the app's clock for the leader's latest generation.
     let app = crate::testing::TestApp::new(10, 2);
     let (keymap, calls) = (Keymap::new(), calls());
-    let leader = Rc::new(addons::timed_leader(&keymap, "leader", "ctrl+x", Duration::from_millis(2000)).unwrap());
+    // The app's listener registers before the leader: what `armed()` says doesn't depend on listener order.
+    let leader = Rc::new(std::cell::OnceCell::new());
+    let listener = keymap.on_pending_sequence({
+        let (app, leader) = (app.app().clone(), leader.clone());
+        move |_| {
+            let Some(generation) = leader.get().and_then(addons::TimedLeader::armed) else { return };
+            let leader = leader.clone();
+            app.set_timeout(leader.get().unwrap().timeout(), move |_| {
+                leader.get().unwrap().expire(generation);
+            });
+        }
+    });
+    assert!(
+        leader.set(addons::timed_leader(&keymap, "leader", "ctrl+x", Duration::from_millis(2000)).unwrap()).is_ok()
+    );
+    let timed = leader.get().unwrap();
     keymap
         .register_layer(
             Layer::new()
@@ -1103,20 +1118,9 @@ fn timed_leader_expires_on_the_apps_clock() {
             }
         }
     });
-    let listener = keymap.on_pending_sequence({
-        let (app, leader) = (app.app().clone(), leader.clone());
-        move |_| {
-            if let Some(generation) = leader.armed() {
-                let leader = leader.clone();
-                app.set_timeout(leader.timeout(), move |_| {
-                    leader.expire(generation);
-                });
-            }
-        }
-    });
     // Only a sequence that starts with the leader arms it.
     app.press("d");
-    assert_eq!((pending(&keymap).len(), leader.armed()), (1, None));
+    assert_eq!((pending(&keymap).len(), timed.armed()), (1, None));
     app.press("d");
     assert_eq!(taken(&calls), ["new"]);
     app.press("ctrl+x");
@@ -1124,7 +1128,7 @@ fn timed_leader_expires_on_the_apps_clock() {
     assert_eq!(pending(&keymap).len(), 1);
     app.advance(Duration::from_millis(1));
     assert!(pending(&keymap).is_empty());
-    assert_eq!(leader.armed(), None);
+    assert_eq!(timed.armed(), None);
     // A layer that turns off mid-sequence changes the sequence without a key, and the timeout starts again.
     app.press("ctrl+x");
     app.advance(Duration::from_millis(500));
@@ -1137,21 +1141,21 @@ fn timed_leader_expires_on_the_apps_clock() {
     other.set(true);
     // A later stroke arms a new generation, which the old one's expiry leaves alone.
     app.press("ctrl+x");
-    let first = leader.armed().expect("armed");
+    let first = timed.armed().expect("armed");
     app.advance(Duration::from_millis(1000));
     app.press("g");
-    assert!(!leader.expire(first));
+    assert!(!timed.expire(first));
     app.advance(Duration::from_millis(1999));
     assert_eq!(pending(&keymap).len(), 2);
     // A completed sequence disarms the leader, and its last generation expires nothing.
-    let last = leader.armed().expect("armed");
+    let last = timed.armed().expect("armed");
     app.press("n");
     assert_eq!(taken(&calls), ["new"]);
-    assert_eq!(leader.armed(), None);
-    assert!(!leader.expire(last));
+    assert_eq!(timed.armed(), None);
+    assert!(!timed.expire(last));
     listener.dispose();
     drop(app);
-    Rc::into_inner(leader).expect("the app's handlers are gone").dispose();
+    Rc::into_inner(leader).expect("the app's handlers are gone").into_inner().unwrap().dispose();
     assert!(keymap.parse_key_sequence("<leader>").unwrap().is_empty());
 }
 

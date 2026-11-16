@@ -320,6 +320,8 @@ struct State<T> {
     data: HashMap<String, String>,
     focus: Vec<T>,
     pending: Option<Vec<Capture<T>>>,
+    /// How often `pending` has changed; it moves before any pending-sequence listener runs.
+    pending_changes: u64,
     expanders: Vec<(u64, Expander)>,
     resolvers: Vec<(u64, Resolver)>,
     intercepts: Vec<Intercept<T>>,
@@ -467,6 +469,7 @@ impl<T: Clone + PartialEq + 'static> Keymap<T> {
                 data: HashMap::new(),
                 focus: Vec::new(),
                 pending: None,
+                pending_changes: 0,
                 expanders: Vec::new(),
                 resolvers: Vec::new(),
                 intercepts: Vec::new(),
@@ -1214,6 +1217,7 @@ impl<T: Clone + PartialEq + 'static> Keymap<T> {
                 return;
             }
             state.pending = next;
+            state.pending_changes += 1;
             state.pending.as_deref().map(sequence_parts).unwrap_or_default()
         };
         let listeners: Vec<_> = self.state().pending_listeners.iter().map(|(_, listener)| listener.clone()).collect();
@@ -1224,6 +1228,13 @@ impl<T: Clone + PartialEq + 'static> Keymap<T> {
     /// The strokes of the sequence in progress, empty when none is.
     pub fn pending_sequence(&self) -> Vec<KeySequencePart> {
         self.batch(|| self.ensure_valid_pending().as_deref().map(sequence_parts).unwrap_or_default())
+    }
+
+    /// How often the pending sequence has changed, and its first stroke, as stored: no pruning, so no change either.
+    pub(crate) fn pending_change(&self) -> (u64, Option<Stroke>) {
+        let state = self.state();
+        let first = state.pending.as_deref().and_then(<[_]>::first).map(|capture| capture.parts()[0].stroke.clone());
+        (state.pending_changes, first)
     }
 
     pub fn has_pending_sequence(&self) -> bool {

@@ -5,7 +5,6 @@
 use super::{Binding, Command, Condition, Disposer, Expansion, Key, Keymap, Layer, Stroke, WeakKeymap};
 use crate::input::KeyCode;
 use crate::widget::EditorAction;
-use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -125,9 +124,10 @@ pub fn leader<T: Clone + PartialEq + 'static>(keymap: &Keymap<T>, name: &str, tr
 }
 
 /// A leader token whose pending sequence clears when no key follows in time. The keymap has no clock: in a
-/// [`Keymap::on_pending_sequence`] listener registered after the leader, while it is [`armed`](Self::armed), schedule
-/// [`timeout`](Self::timeout) on the app's timer and pass the generation to [`expire`](Self::expire) when it fires.
-/// A timer of an earlier generation does nothing. Dropping it removes the token, as [`dispose`](Self::dispose) does.
+/// [`Keymap::on_pending_sequence`] listener, registered before or after the leader, while it is
+/// [`armed`](Self::armed), schedule [`timeout`](Self::timeout) on the app's timer and pass the generation to
+/// [`expire`](Self::expire) when it fires. A timer of an earlier generation does nothing. Dropping it removes the
+/// token, as [`dispose`](Self::dispose) does.
 ///
 /// ```
 /// use opentui::keymap::{Binding, Command, Keymap, Layer, addons};
@@ -158,9 +158,8 @@ pub fn leader<T: Clone + PartialEq + 'static>(keymap: &Keymap<T>, name: &str, tr
 #[must_use = "dropping a TimedLeader removes its token"]
 pub struct TimedLeader<T> {
     keymap: WeakKeymap<T>,
+    trigger: Stroke,
     timeout: Duration,
-    /// A count of pending-sequence changes, and whether the current sequence starts with the trigger.
-    armed: Rc<Cell<(u64, bool)>>,
     disposer: Disposer,
 }
 
@@ -174,32 +173,24 @@ pub fn timed_leader<T: Clone + PartialEq + 'static>(
     timeout: Duration,
 ) -> Result<TimedLeader<T>, String> {
     let trigger = trigger.into();
-    let trigger_stroke = keymap.parse_key(trigger.clone())?.stroke;
-    let armed = Rc::new(Cell::new((0, false)));
-    let sync = {
-        let armed = armed.clone();
-        move |sequence: &[super::KeySequencePart]| {
-            let leads = sequence.first().is_some_and(|part| part.stroke == trigger_stroke);
-            armed.set((armed.get().0 + 1, leads));
-        }
-    };
-    let token = leader(keymap, name, trigger);
-    sync(&keymap.pending_sequence());
-    let listener = keymap.on_pending_sequence(sync);
-    Ok(TimedLeader { keymap: keymap.downgrade(), timeout, armed, disposer: Disposer::all(vec![token, listener]) })
+    let stroke = keymap.parse_key(trigger.clone())?.stroke;
+    let disposer = leader(keymap, name, trigger);
+    Ok(TimedLeader { keymap: keymap.downgrade(), trigger: stroke, timeout, disposer })
 }
 
 impl<T: Clone + PartialEq + 'static> TimedLeader<T> {
-    /// The generation of the pending leader sequence, while one is pending.
+    /// The generation of the pending leader sequence, while one is pending: the keymap's count of pending-sequence
+    /// changes, which every listener sees already counted.
     pub fn armed(&self) -> Option<u64> {
-        let (generation, armed) = self.armed.get();
-        armed.then_some(generation)
+        let (generation, first) = self.keymap.upgrade()?.pending_change();
+        (first.as_ref() == Some(&self.trigger)).then_some(generation)
     }
 
     /// How long a pending leader sequence waits for the next stroke.
     pub fn timeout(&self) -> Duration {
         self.timeout
     }
+
 
     /// Clears the leader sequence if it is still at `generation`: no stroke came since. Returns whether it did.
     pub fn expire(&self, generation: u64) -> bool {
