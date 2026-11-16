@@ -690,10 +690,10 @@ jobs:
         run: sh test.sh shared
 
   # Not in the gate. With the default static feature, an MSVC executable carries opentui-static.lib, the MinGW archive
-  # with what of MinGW's runtime MSVC lacks. This links one for each Windows architecture with the C runtime linked in
-  # too, checks that neither imports OpenTUI's DLL, and runs the x64 tests with no opentui.dll anywhere; then again
-  # for x64 as Rust builds by default: optimized (/OPT:REF,ICF) with the C runtime DLL. The arm64 library has no
-  # FFmpeg, and nothing runs on arm64.
+  # with what of MinGW's runtime MSVC lacks. This links two for each Windows architecture with the C runtime linked in
+  # too, checks that none imports OpenTUI's DLL, and runs the x64 self-test and tests with no opentui.dll anywhere;
+  # then again for x64 as Rust builds by default: optimized (/OPT:REF,ICF) with the C runtime DLL. The arm64 library
+  # has no FFmpeg, and nothing runs on arm64.
   rust-windows-static:
     name: Rust (Windows, static MSVC)
     needs: changes
@@ -777,12 +777,18 @@ jobs:
           }
           for target in x86_64-pc-windows-msvc aarch64-pc-windows-msvc; do
             cargo build --locked -p opentui --example hello --target $target
-            imports target/$target/debug/examples/hello.exe 'opentui|vcruntime'
+            cargo build --locked -p opentui-sys --example selftest --target $target
+            for example in hello selftest; do
+              imports target/$target/debug/examples/$example.exe 'opentui|vcruntime'
+            done
           done
+          # C++ exceptions, thread-locals and unwinding in native code.
+          target/x86_64-pc-windows-msvc/debug/examples/selftest.exe
           cargo test --locked -p opentui --target x86_64-pc-windows-msvc --test headless --test widgets --test video
           # Rust's defaults: the C runtime DLL, where the archive's CRT imports go through ucrt.lib.
           RUSTFLAGS= cargo build --locked --release -p opentui --example hello --target x86_64-pc-windows-msvc
           imports target/x86_64-pc-windows-msvc/release/examples/hello.exe opentui
+          RUSTFLAGS= cargo run --locked --release -p opentui-sys --example selftest --target x86_64-pc-windows-msvc
           RUSTFLAGS= cargo test --locked --release -p opentui --target x86_64-pc-windows-msvc --test headless --test widgets
 
   # Not in the gate yet, like Rust (Windows), and push-only for the same reason.

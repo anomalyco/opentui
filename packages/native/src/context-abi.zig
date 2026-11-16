@@ -5219,6 +5219,7 @@ const abi_modules = .{
     audio_transport,
     clipboard_transport,
     markdown_transport,
+    @import("selftest.zig"),
 };
 
 // The library opts into exports. Each export must match its opentui.h prototype.

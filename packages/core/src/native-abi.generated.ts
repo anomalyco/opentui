@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 786212e471cc111912efdbf28bc8c8b7a3060976b765a6874c3ad38ac808f8f6
+// ABI audit SHA-256: d3b5ea4952dcbcd9b898668ac2ca99450c548f3b97c1548d3b1a9756e7a02761
 
 export const OT_CONTEXT_ABI_VERSION = 2
 export const OT_OK = 0
@@ -803,6 +803,10 @@ export const OT_INPUT_TIMEOUT_NS = 20000000
 export const OT_DIAGNOSTIC_MESSAGE_BYTES = 4096
 export const OT_DIAGNOSTIC_TRUNCATED = 1
 export const OT_DIAGNOSTIC_QUEUE_MAX = 64
+export const OT_SELFTEST_CXX_EXCEPTION = 1
+export const OT_SELFTEST_THREAD_LOCAL = 2
+export const OT_SELFTEST_UNWIND = 4
+export const OT_SELFTEST_ALL = 7
 export const OT_SCENE_RECORD_BYTES_MAX = 67108864
 export const OT_SCENE_RECORD_PHASE_BEFORE = 0
 export const OT_SCENE_RECORD_PHASE_SELF = 1
@@ -1091,6 +1095,7 @@ export const nativeSymbols = {
   ot_scene_frame_acquire_buffer_lease: { args: ["ptr", "buffer", "buffer", "u32", "buffer"], returns: "i32" },
   ot_scene_frame_commit: { args: ["ptr", "buffer", "buffer", "u32", "buffer"], returns: "i32" },
   ot_context_abi_version: { args: [], returns: "u32" },
+  ot_debug_selftest: { args: ["u32"], returns: "u32" },
   ot_context_create: { args: ["buffer", "buffer"], returns: "i32" },
   ot_context_destroy: { args: ["ptr"], returns: "i32" },
   ot_context_get_last_error: { args: ["ptr", "buffer"], returns: "i32" },
@@ -3345,6 +3350,10 @@ export const nativeConstants = {
   OT_DIAGNOSTIC_MESSAGE_BYTES: 4096,
   OT_DIAGNOSTIC_TRUNCATED: 1,
   OT_DIAGNOSTIC_QUEUE_MAX: 64,
+  OT_SELFTEST_CXX_EXCEPTION: 1,
+  OT_SELFTEST_THREAD_LOCAL: 2,
+  OT_SELFTEST_UNWIND: 4,
+  OT_SELFTEST_ALL: 7,
   OT_SCENE_RECORD_BYTES_MAX: 67108864,
   OT_SCENE_RECORD_PHASE_BEFORE: 0,
   OT_SCENE_RECORD_PHASE_SELF: 1,
