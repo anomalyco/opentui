@@ -195,6 +195,17 @@ export type SessionBuffer = "current" | "next"
 
 export interface NativeContextEditBufferOptions {
   widthMethod?: WidthMethod | "no-zwj"
+  /** Measure with the width method of the session whose scene shows the buffer. */
+  followSessionWidth?: boolean
+}
+
+function editBufferOptions(options: NativeContextEditBufferOptions, kind: "text" | "editor"): Uint32Array {
+  const layout = nativeLayouts.ot_edit_buffer_options
+  const record = createContextRecord(layout)
+  record[layout.fields.width_method.offset / 4] = widthMethodId(options.widthMethod ?? "unicode", kind)
+  if (options.followSessionWidth)
+    record[layout.fields.flags.offset / 4] = nativeConstants.OT_EDIT_BUFFER_FOLLOW_SESSION_WIDTH
+  return record
 }
 
 export interface NativeEditBufferInfo {
@@ -633,7 +644,7 @@ export interface NativeContextImageDraw {
 }
 
 export interface NativeSceneTextSelectionOptions {
-  operation: "reset" | "set" | "update"
+  operation: "reset" | "set" | "update" | "colors"
   anchorX: number
   anchorY: number
   focusX: number
@@ -3816,11 +3827,8 @@ export class FFIRenderLib {
     context: NativeContextHandle,
     options: NativeContextEditBufferOptions = {},
   ): ContextTextBufferHandle {
-    const layout = nativeLayouts.ot_edit_buffer_options
     this.getYogaHost().assertMutable()
-    const widthMethod = widthMethodId(options.widthMethod ?? "unicode", "text")
-    const record = createContextRecord(layout)
-    record[layout.fields.width_method.offset / 4] = widthMethod
+    const record = editBufferOptions(options, "text")
     const output = new Uint32Array(handleWords)
     const pointer = this.nativeContextPointer(context, "ot_text_buffer_create")
     nativeResult("ot_text_buffer_create", this.opentui.symbols.ot_text_buffer_create(pointer, record, output))
@@ -5126,11 +5134,8 @@ export class FFIRenderLib {
     context: NativeContextHandle,
     options: NativeContextEditBufferOptions = {},
   ): ContextEditBufferHandle {
-    const layout = nativeLayouts.ot_edit_buffer_options
     this.getYogaHost().assertMutable()
-    const widthMethod = widthMethodId(options.widthMethod ?? "unicode", "editor")
-    const record = createContextRecord(layout)
-    record[layout.fields.width_method.offset / 4] = widthMethod
+    const record = editBufferOptions(options, "editor")
     const output = new Uint32Array(handleWords)
     const pointer = this.nativeContextPointer(context, "ot_edit_buffer_create")
     nativeResult("ot_edit_buffer_create", this.opentui.symbols.ot_edit_buffer_create(pointer, record, output))
@@ -8433,7 +8438,7 @@ export class FFIRenderLib {
     this.getYogaHost().assertMutable()
     const handle = encodeContextHandle(context, node)
     const record = createContextRecord(layout)
-    const operation = ["reset", "set", "update"].indexOf(options.operation)
+    const operation = ["reset", "set", "update", "colors"].indexOf(options.operation)
     const behavior = ["cell", "word", "line"].indexOf(options.behavior)
     if (operation < 0 || behavior < 0) throw new TypeError("Unknown scene text selection operation or behavior")
     record[layout.fields.operation.offset / 4] = operation

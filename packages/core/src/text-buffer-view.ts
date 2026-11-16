@@ -154,6 +154,11 @@ export class TextBufferView {
     this.reset(true)
   }
 
+  /** Restyles the current selection without moving it. */
+  public setSelectionColors(bgColor?: RGBA, fgColor?: RGBA): void {
+    this.select({ operation: NativeEditorSelectionOperation.Colors, bg: bgColor, fg: fgColor })
+  }
+
   public setSelectionOccupancy(occupancy: SelectionOccupancy): void {
     this.guard()
     this.lib.contextTextBufferViewSelect(this.native.handle.context, this.native.handle, {

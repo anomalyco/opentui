@@ -94,7 +94,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
         return
       }
 
-      textBuffer = TextBuffer.create(this._ctx.widthMethod, ctx.nativeScene)
+      textBuffer = TextBuffer.create(this._ctx.widthMethod, ctx.nativeScene, true)
       this.textBuffer = textBuffer
       textBufferView = TextBufferView.create(textBuffer)
       this.textBufferView = textBufferView
@@ -294,9 +294,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     const newColor = value ? RGBA.clone(parseColor(value)) : undefined
     if (this._selectionBg !== newColor) {
       this.runMutation(() => {
-        if (this.nativeTextScene || this.lastLocalSelection) {
-          this.updateLocalSelection(this.lastLocalSelection, true, { bg: newColor, fg: this._selectionFg })
-        }
+        this.setSelectionColors(newColor, this._selectionFg)
         this._selectionBg = newColor
         this.requestRender()
       })
@@ -311,9 +309,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     const newColor = value ? RGBA.clone(parseColor(value)) : undefined
     if (this._selectionFg !== newColor) {
       this.runMutation(() => {
-        if (this.nativeTextScene || this.lastLocalSelection) {
-          this.updateLocalSelection(this.lastLocalSelection, true, { bg: this._selectionBg, fg: newColor })
-        }
+        this.setSelectionColors(this._selectionBg, newColor)
         this._selectionFg = newColor
         this.requestRender()
       })
@@ -450,6 +446,12 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
       return this.updateLocalSelection(this.lastLocalSelection)
     }
     return false
+  }
+
+  /** Restyles the accepted selection; replaying its cells would select other text after a width change. */
+  private setSelectionColors(bg?: RGBA, fg?: RGBA): void {
+    if (this.nativeTextScene) this.nativeTextScene.setTextSelection(this, "colors", null, bg, fg)
+    else this.textBufferView.setSelectionColors(bg, fg)
   }
 
   private updateLocalSelection(
