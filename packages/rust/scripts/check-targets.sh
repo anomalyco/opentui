@@ -21,14 +21,15 @@ zig=${ZIG:-zig}
 header=${OPENTUI_LIB_DIR:-$here/../native/include}/opentui.h
 
 # Each Rust target, the Zig target its C code compiles for, and its row in build.rs: artifact directory and shared
-# library. Zig has no MSVC headers, so both Windows targets use MinGW's; the objects are never linked.
-targets='aarch64-apple-darwin aarch64-macos.13.0 aarch64-macos libopentui.dylib
-x86_64-apple-darwin x86_64-macos.13.0 x86_64-macos libopentui.dylib
-aarch64-unknown-linux-gnu aarch64-linux-gnu.2.17 aarch64-linux libopentui.so
-x86_64-unknown-linux-musl x86_64-linux-musl x86_64-linux-musl libopentui.so
-aarch64-unknown-linux-musl aarch64-linux-musl aarch64-linux-musl libopentui.so
-aarch64-pc-windows-msvc aarch64-windows-gnu aarch64-windows opentui.dll
-aarch64-pc-windows-gnullvm aarch64-windows-gnu aarch64-windows opentui.dll'
+# library, and release archive platform. Zig has no MSVC headers, so both Windows targets use MinGW's; the objects are
+# never linked.
+targets='aarch64-apple-darwin aarch64-macos.13.0 aarch64-macos libopentui.dylib darwin-arm64
+x86_64-apple-darwin x86_64-macos.13.0 x86_64-macos libopentui.dylib darwin-x64
+aarch64-unknown-linux-gnu aarch64-linux-gnu.2.17 aarch64-linux libopentui.so linux-arm64
+x86_64-unknown-linux-musl x86_64-linux-musl x86_64-linux-musl libopentui.so linux-x64-musl
+aarch64-unknown-linux-musl aarch64-linux-musl aarch64-linux-musl libopentui.so linux-arm64-musl
+aarch64-pc-windows-msvc aarch64-windows-gnu aarch64-windows opentui.dll windows-arm64
+aarch64-pc-windows-gnullvm aarch64-windows-gnu aarch64-windows opentui.dll windows-arm64'
 if [ -z "${CARGO_UNSTABLE_BUILD_STD:-}" ] && command -v rustup > /dev/null; then
     rustup target add $(printf '%s\n' "$targets" | cut -d' ' -f1)
 fi
@@ -52,10 +53,10 @@ done
 
 export OPENTUI_LIB_DIR="$tools/lib"
 cargo=${CARGO:-cargo}
-while read -r target zig_target platform library; do
+while read -r target zig_target platform library release; do
     # The stubs share one OPENTUI_LIB_DIR, so check build.rs's row and the native build's directory by name.
-    grep -Fq "(\"$target\", \"$platform\", \"$library\")," crates/opentui-sys/build.rs ||
-        { echo "FAIL: build.rs does not map $target to $platform and $library" >&2; exit 1; }
+    grep -Fq "(\"$target\", \"$platform\", \"$library\", \"$release\")," crates/opentui-sys/build.rs ||
+        { echo "FAIL: build.rs does not map $target to $platform, $library and $release" >&2; exit 1; }
     grep -Fq ".output_name = \"$platform\"" ../native/build.zig ||
         { echo "FAIL: packages/native/build.zig builds no $platform" >&2; exit 1; }
     cat > "$tools/cc-$target" <<EOF
