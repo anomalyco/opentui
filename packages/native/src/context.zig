@@ -3865,6 +3865,15 @@ pub const Context = struct {
         text.invalidate(true);
     }
 
+    pub fn textBufferSetWidthMethod(self: *Context, handle: Handle, method: utf8.WidthMethod) !void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const text = try self.getTextBuffer(handle);
+        // NO_ZWJ breaks graphemes at joiners: chunks made under it or for it can't be re-measured in place.
+        if (text.follow_width or method == .no_zwj or text.buffer.widthMethod() == .no_zwj) return error.InvalidOptions;
+        try text.setWidthMethod(method);
+    }
+
     pub fn textBufferHighlight(self: *Context, handle: Handle, operation: TextHighlight) !void {
         try self.beginMutation();
         defer self.mutating = false;

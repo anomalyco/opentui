@@ -132,6 +132,7 @@ export const nativePointerPolicies = {
   ot_text_buffer_get_range: { 0: context, 1: buffer, 4: empty, 6: buffer },
   ot_text_buffer_set_defaults: { 0: context, 1: buffer, 3: buffer },
   ot_text_buffer_set_tab_width: { 0: context, 1: buffer },
+  ot_text_buffer_set_width_method: { 0: context, 1: buffer },
   ot_text_buffer_highlight: { 0: context, 1: buffer, 4: optional },
   ot_text_buffer_get_highlights: { 0: context, 1: buffer, 3: empty, 5: buffer },
   ot_text_buffer_set_layer: { 0: context, 1: buffer, 5: empty },

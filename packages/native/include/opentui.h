@@ -2498,6 +2498,12 @@ ot_status ot_text_buffer_get_range(ot_context *, const ot_handle *, uint32_t sta
     uint8_t *, uint32_t capacity, uint32_t *out_count);
 ot_status ot_text_buffer_set_defaults(ot_context *, const ot_handle *, uint32_t mask, const ot_editor_style *);
 ot_status ot_text_buffer_set_tab_width(ot_context *, const ot_handle *, uint32_t width);
+/* Measures the text with width_method (OT_WIDTH_METHOD_*) from now on; views keep their
+ * selections, and styled text its runs, on the same text. For buffers created without
+ * OT_EDIT_BUFFER_FOLLOW_SESSION_WIDTH, which drawing outside a scene keeps current. A
+ * following buffer, and NO_ZWJ on either side (it splits graphemes the others join), return
+ * OT_INVALID_ARGUMENT and change nothing. The same method changes nothing. */
+ot_status ot_text_buffer_set_width_method(ot_context *, const ot_handle *, uint32_t width_method);
 /* Same operations, units, and copy rules as ot_edit_buffer_highlight and
  * ot_edit_buffer_get_highlights. Styled text is stored as highlights with ref 0 and
  * priority 1: get_highlights returns them, and REMOVE_REF 0 and CLEAR_* remove them. */

@@ -2460,10 +2460,8 @@ test "owned styled text - a width method change keeps each run's color on its ch
     defer pools.deinit();
     const colors = [_]RGBA{ ansi.rgbaFromFloats(1, 0, 0, 1), ansi.rgbaFromFloats(0, 1, 0, 1), ansi.rgbaFromFloats(0, 0, 1, 1) };
     const Painted = struct {
-        fn fill(tb: *TextBuffer, method: utf8.WidthMethod, out: *[2][12]RGBA, row: usize) !void {
-            const view = try TextBufferView.init(std.testing.allocator, tb);
-            defer view.deinit();
-            const output = try OptimizedBuffer.init(std.testing.allocator, 12, 1, .{ .link_pool = tb.link_pool, .pool = tb.pool, .width_method = method });
+        fn fill(view: *TextBufferView, method: utf8.WidthMethod, out: *[2][12]RGBA, row: usize) !void {
+            const output = try OptimizedBuffer.init(std.testing.allocator, 12, 1, .{ .link_pool = view.text_buffer.link_pool, .pool = view.text_buffer.pool, .width_method = method });
             defer output.deinit();
             output.clear(ansi.rgbaFromFloats(0, 0, 0, 1), 32);
             output.drawTextBuffer(view, 0, 0);
@@ -2482,8 +2480,14 @@ test "owned styled text - a width method change keeps each run's color on its ch
                 .{ .text = "AB", .fg = colors[1] },
                 .{ .text = "CD", .fg = colors[2] },
             });
-            if (row == 0) tb.setWidthMethod(pair[1]);
-            try Painted.fill(tb, pair[1], &painted, row);
+            // The changed buffer's view paints before the change too, as a live widget's does.
+            const view = try TextBufferView.init(std.testing.allocator, tb);
+            defer view.deinit();
+            if (row == 0) {
+                try Painted.fill(view, pair[0], &painted, row);
+                tb.setWidthMethod(pair[1]);
+            }
+            try Painted.fill(view, pair[1], &painted, row);
         }
         try std.testing.expectEqualSlices(RGBA, &painted[1], &painted[0]);
     }
