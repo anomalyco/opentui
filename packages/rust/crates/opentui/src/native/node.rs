@@ -165,6 +165,42 @@ pub struct BoxDetails<'a> {
     pub border_chars: Option<[char; 11]>,
 }
 
+/// Per-side overrides of a box's [`Paint::border_style`] and [`Paint::border_color`]. A side without an override
+/// takes the paint's, so a paint change still shows there. `set_box_sides` replaces all of them; titles and
+/// [`Paint::border`] leave them alone.
+///
+/// Where sides of unlike styles meet, the corner takes Unicode's mixed single/double or light/heavy glyph
+/// (rounded lines are light), otherwise the top or bottom side's corner, and the top or bottom side's color.
+/// Custom border characters win over side styles, and the focused border color colors every side.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BoxSides {
+    /// Indexed by the bit of each side in [`Sides`]: left, bottom, right, top.
+    styles: [Option<BorderStyle>; 4],
+    colors: [Option<Color>; 4],
+}
+
+impl BoxSides {
+    /// Overrides the style of each side in `sides`, or with `None` lets them take the paint's again.
+    pub fn style(mut self, sides: Sides, style: Option<BorderStyle>) -> Self {
+        set_sides(&mut self.styles, sides, style);
+        self
+    }
+
+    /// Overrides the color of each side in `sides`, or with `None` lets them take the paint's again.
+    pub fn color(mut self, sides: Sides, color: Option<Color>) -> Self {
+        set_sides(&mut self.colors, sides, color);
+        self
+    }
+}
+
+fn set_sides<T: Copy>(slots: &mut [Option<T>; 4], sides: Sides, value: Option<T>) {
+    for (bit, slot) in slots.iter_mut().enumerate() {
+        if sides.bits() & (1 << bit) != 0 {
+            *slot = value;
+        }
+    }
+}
+
 /// Which geometry [`Node::layout`] reads.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Observation {
@@ -289,6 +325,23 @@ impl Node {
             ..Default::default()
         };
         check("ot_scene_set_paint", unsafe { sys::ot_scene_set_paint(self.context(), &self.handle, &raw) })
+    }
+
+    pub fn set_box_sides(&self, sides: &BoxSides) -> Result<()> {
+        let mut raw = sys::ot_scene_box_sides::default();
+        let mut colors = [[0; 4]; 4];
+        for (bit, (style, color)) in sides.styles.into_iter().zip(sides.colors).enumerate() {
+            if let Some(style) = style {
+                raw.style_sides |= 1 << bit;
+                raw.styles[bit] = style.raw();
+            }
+            if let Some(color) = color {
+                raw.color_sides |= 1 << bit;
+                colors[bit] = color.to_raw();
+            }
+        }
+        [raw.left_color, raw.bottom_color, raw.right_color, raw.top_color] = colors;
+        check("ot_scene_set_box_sides", unsafe { sys::ot_scene_set_box_sides(self.context(), &self.handle, &raw) })
     }
 
     pub fn set_box_details(&self, details: &BoxDetails<'_>) -> Result<()> {

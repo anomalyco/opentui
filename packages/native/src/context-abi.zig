@@ -1876,6 +1876,23 @@ pub fn ot_scene_set_box_details(context: ?*ContextHandle, node_ptr: ?*const c.ot
     return c.OT_OK;
 }
 
+pub fn ot_scene_set_box_sides(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, options_ptr: ?*const c.ot_scene_box_sides) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const id = node_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const options = options_ptr orelse return sessionError(owner, error.InvalidOptions);
+    if (options.struct_size != @sizeOf(c.ot_scene_box_sides)) return sessionError(owner, error.InvalidOptions);
+    if (options.abi_version != c.OT_CONTEXT_ABI_VERSION) return sessionError(owner, error.UnsupportedVersion);
+    owner.core.sceneSetBoxSides(handleFromC(id.*), .{
+        .style_sides = options.style_sides,
+        .color_sides = options.color_sides,
+        .styles = options.styles,
+        .colors = .{ options.left_color, options.bottom_color, options.right_color, options.top_color },
+    }) catch |err| return sessionError(owner, err);
+    return c.OT_OK;
+}
+
 test "Context Box details ABI validates records before publishing titles and styles" {
     var owner: ContextHandle = .{ .gpa = .init, .io_threaded = .init_single_threaded, .core = undefined, .owner_thread = std.Thread.getCurrentId() };
     defer owner.io_threaded.deinit();
@@ -1896,7 +1913,7 @@ test "Context Box details ABI validates records before publishing titles and sty
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_box_details(&owner, &id, &details, &title, title.len, null, 0));
     @memset(&title, 'x');
     const node = (try owner.core.raw().getRenderable(box)).scene_node.?;
-    try std.testing.expectEqualStrings("owned", node.control.box.?.title);
+    try std.testing.expectEqualStrings("owned", node.control.box.details.?.title);
     for (0..7) |field| {
         var invalid = details;
         switch (field) {
@@ -1911,15 +1928,32 @@ test "Context Box details ABI validates records before publishing titles and sty
             else => unreachable,
         }
         try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_box_details(&owner, &id, &invalid, "new", 3, null, 0));
-        try std.testing.expectEqualStrings("owned", node.control.box.?.title);
+        try std.testing.expectEqualStrings("owned", node.control.box.details.?.title);
     }
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_box_details(&owner, &id, &details, null, 1, null, 0));
     const reset = c.OT_SCENE_PROPERTY_BORDER | c.OT_SCENE_PROPERTY_BORDER_STYLE | c.OT_SCENE_PROPERTY_RESET_BORDER_CHARACTERS;
     try std.testing.expectError(error.InvalidOptions, owner.core.scenePatchPaint(box, reset, .{ .borderStyle = 4, .borderSides = 15 }));
-    try std.testing.expect(node.control.box.?.custom_border_chars != null);
+    try std.testing.expect(node.control.box.details.?.custom_border_chars != null);
     try owner.core.scenePatchPaint(box, reset, .{ .borderStyle = 2, .borderSides = 15 });
-    try std.testing.expect(node.control.box.?.custom_border_chars == null);
-    try std.testing.expectEqualStrings("owned", node.control.box.?.title);
+    try std.testing.expect(node.control.box.details.?.custom_border_chars == null);
+    try std.testing.expectEqualStrings("owned", node.control.box.details.?.title);
+    // Side records name their colors; the scene keeps them in OT_BORDER_* bit order.
+    var sides = std.mem.zeroes(c.ot_scene_box_sides);
+    sides.struct_size = @sizeOf(c.ot_scene_box_sides);
+    sides.abi_version = c.OT_CONTEXT_ABI_VERSION;
+    sides.style_sides = c.OT_BORDER_TOP | c.OT_BORDER_LEFT;
+    sides.color_sides = c.OT_BORDER_ALL;
+    sides.styles = .{ 3, 0, 0, 1 };
+    sides.left_color = .{ 1, 0, 0, 255 };
+    sides.bottom_color = .{ 2, 0, 0, 255 };
+    sides.right_color = .{ 3, 0, 0, 255 };
+    sides.top_color = .{ 4, 0, 0, 255 };
+    try std.testing.expectEqual(c.OT_OK, ot_scene_set_box_sides(&owner, &id, &sides));
+    const accepted = node.control.box.sides.?.*;
+    try std.testing.expectEqual([4]u32{ 3, 0, 0, 1 }, accepted.styles);
+    for (accepted.colors, 1..) |color, red| try std.testing.expectEqual(@as(u16, @intCast(red)), color[0]);
+    sides.styles[1] = 1;
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_box_sides(&owner, &id, &sides));
 }
 
 pub fn ot_scene_set_viewport(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, viewport_ptr: ?*const c.ot_handle) callconv(.c) c.ot_status {
@@ -3785,13 +3819,13 @@ test "Scene ABI wrappers share admission handle and record rules and keep output
     nodes[3].context_id += 1;
     sessions[3].context_id += 1;
     inline for (.{
-        ot_scene_destroy_node,       ot_scene_move_node,  ot_scene_set_measure,      ot_scene_mark_dirty,
-        ot_scene_set_style,          ot_scene_set_paint,  ot_scene_set_surface,      ot_scene_set_box_details,
-        ot_scene_set_viewport,       ot_scene_set_focus,  ot_scene_set_slider,       ot_scene_get_slider_thumb,
-        ot_scene_set_arrow,          ot_scene_set_text,   ot_scene_set_styled_text,  ot_scene_set_text_options,
-        ot_scene_set_text_selection, ot_scene_set_hooks,  ot_scene_set_editor_view,  ot_scene_set_editor_options,
-        ot_scene_set_image,          ot_scene_set_scroll, ot_scene_set_scroll_arrow, ot_scene_set_crop,
-        ot_scene_clear_children,
+        ot_scene_destroy_node,       ot_scene_move_node,     ot_scene_set_measure,      ot_scene_mark_dirty,
+        ot_scene_set_style,          ot_scene_set_paint,     ot_scene_set_surface,      ot_scene_set_box_details,
+        ot_scene_set_viewport,       ot_scene_set_focus,     ot_scene_set_slider,       ot_scene_get_slider_thumb,
+        ot_scene_set_arrow,          ot_scene_set_text,      ot_scene_set_styled_text,  ot_scene_set_text_options,
+        ot_scene_set_text_selection, ot_scene_set_hooks,     ot_scene_set_editor_view,  ot_scene_set_editor_options,
+        ot_scene_set_image,          ot_scene_set_scroll,    ot_scene_set_scroll_arrow, ot_scene_set_crop,
+        ot_scene_clear_children,     ot_scene_set_box_sides,
     }) |wrapper| {
         try expectSceneWrapperRules(wrapper, false, handle, &nodes, 0);
     }

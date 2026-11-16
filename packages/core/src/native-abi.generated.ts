@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 786212e471cc111912efdbf28bc8c8b7a3060976b765a6874c3ad38ac808f8f6
+// ABI audit SHA-256: 4d72124a8702ab30cf2dec68a1dfe5afdc9f86b3624db632622bde9b8d936dd6
 
 export const OT_CONTEXT_ABI_VERSION = 2
 export const OT_OK = 0
@@ -880,6 +880,7 @@ export const nativeSymbols = {
   ot_scene_flush: { args: ["ptr", "ptr", "u32", "buffer"], returns: "i32" },
   ot_scene_set_surface: { args: ["ptr", "buffer", "ptr"], returns: "i32" },
   ot_scene_set_box_details: { args: ["ptr", "buffer", "buffer", "ptr", "u32", "ptr", "u32"], returns: "i32" },
+  ot_scene_set_box_sides: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_scene_set_viewport: { args: ["ptr", "buffer", "ptr"], returns: "i32" },
   ot_scene_set_scroll: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_scene_set_scroll_arrow: { args: ["ptr", "buffer", "u32", "u32", "buffer", "ptr", "u32"], returns: "i32" },
@@ -1357,6 +1358,21 @@ export const nativeLayouts = {
       reserved: { offset: 20, size: 4, alignment: 4, type: "u32" },
       title_color: { offset: 24, size: 8, alignment: 2, type: "[4]u16" },
       border_characters: { offset: 32, size: 44, alignment: 4, type: "[11]u32" },
+    },
+  },
+  ot_scene_box_sides: {
+    size: 64,
+    alignment: 4,
+    fields: {
+      struct_size: { offset: 0, size: 4, alignment: 4, type: "u32" },
+      abi_version: { offset: 4, size: 4, alignment: 4, type: "u32" },
+      style_sides: { offset: 8, size: 4, alignment: 4, type: "u32" },
+      color_sides: { offset: 12, size: 4, alignment: 4, type: "u32" },
+      styles: { offset: 16, size: 16, alignment: 4, type: "[4]u32" },
+      left_color: { offset: 32, size: 8, alignment: 2, type: "[4]u16" },
+      bottom_color: { offset: 40, size: 8, alignment: 2, type: "[4]u16" },
+      right_color: { offset: 48, size: 8, alignment: 2, type: "[4]u16" },
+      top_color: { offset: 56, size: 8, alignment: 2, type: "[4]u16" },
     },
   },
   ot_scene_style_value: {
