@@ -1684,6 +1684,11 @@ test("text made before a width-changing reply measures like text made after it",
       if (renderer.widthMethod === row.to && firstSeen.length === 0) firstSeen.push(dragged.getSelection())
     }
     const restyled = table(cell(["\u{1f44d}\u{1f3fd}", "#ff0000"], ["AB", "#00ff00"], ["CD", "#0000ff"]))
+    // Restyled while the reply is handled, before the table follows the new method.
+    const restyledInReply = table(cell(["\u{1f44d}\u{1f3fd}", "#ff0000"], ["AB", "#00ff00"], ["CD", "#0000ff"]))
+    renderer.once(CliRenderEvents.CAPABILITIES, () => {
+      restyledInReply.content = cell(["\u{1f44d}\u{1f3fd}", "#0000ff"], ["AB", "#ff0000"], ["CD", "#00ff00"])
+    })
     const held = table([[cell(["q\u{1f44d}\u{1f3fd}A"])[0][0], cell(["BC"])[0][0]]])
     // Pressed on "A" on the second line of its cell.
     const tall = table(cell(["x\nq\u{1f44d}\u{1f3fd}A"]))
@@ -1714,7 +1719,7 @@ test("text made before a width-changing reply measures like text made after it",
     )
     press.isStart = true
     held.onSelectionChanged(press)
-    for (const target of [dragged, restyled]) {
+    for (const target of [dragged, restyled, restyledInReply]) {
       const drag = new Selection(
         target,
         { x: target.x + row.before, y: target.y },
@@ -1767,6 +1772,7 @@ test("text made before a width-changing reply measures like text made after it",
       painted(restyled, "#0000ff", "fg"),
       painted(restyled, "#00ff00", "fg"),
     ]).toEqual(["AB", "\u{1f44d}\u{1f3fd}", "CD"])
+    expect([restyledInReply.getSelectedText(), painted(restyledInReply, "#00ff00", "fg")]).toEqual(["AB", "CD"])
     // Replaced with other text, the cell drops the range rather than select what took its place.
     restyled.content = cell(["\u{1f44d}\u{1f3fd}", "#0000ff"], ["XY", "#ff0000"], ["CD", "#00ff00"])
     await renderer.idle()

@@ -572,6 +572,9 @@ export class TextTableRenderable extends Renderable {
       cells.push(previous[rowIdx]?.slice(0, newColumnCount) ?? [])
     }
     assertCurrent()
+    // A width change not yet followed moves the current cells first, so they hold their selections before replaced
+    // cells reset theirs; new cells measure with the renderer's method.
+    if (this._cellWidthMethod !== undefined && this._cellWidthMethod !== this._ctx.widthMethod) this.followWidthMethod()
     // After a width change the cells hold the selection, not the old screen coordinates: a cell restyled with the
     // same text keeps its range.
     const kept = this._selectionInCells
@@ -616,8 +619,6 @@ export class TextTableRenderable extends Renderable {
     this._prevCellContent = refs
     this._rowCount = newRowCount
     this._columnCount = newColumnCount
-    // Kept cells measure with the method they were made with; new ones with the renderer's.
-    if (this._cellWidthMethod !== undefined && this._cellWidthMethod !== this._ctx.widthMethod) this.followWidthMethod()
     this._cellWidthMethod = this._ctx.widthMethod
     for (const { row, col, range, text } of kept) {
       const cell = cells[row][col]
