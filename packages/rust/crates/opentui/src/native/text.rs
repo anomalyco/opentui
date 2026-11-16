@@ -46,7 +46,21 @@ impl TextBuffer {
     /// `width_method` is normally the Session's detected method, such as
     /// [`App::width_method`](crate::App::width_method).
     pub fn new(context: &Context, width_method: WidthMethod) -> Result<Self> {
-        let options = sys::ot_edit_buffer_options { width_method: width_method.raw(), ..Default::default() };
+        Self::create(context, width_method, 0)
+    }
+
+    /// Like [`new`](Self::new), but measures with the width method of the Session whose scene shows it,
+    /// including after the terminal's replies change that method; selections keep their text.
+    ///
+    /// One Session at a time may show it: binding a view of it to a node of another Session fails with
+    /// `OT_WRONG_SESSION` until the first Session's nodes no longer show it. `WidthMethod::NoZwj` is rejected, as no
+    /// Session measures with it.
+    pub fn following(context: &Context, width_method: WidthMethod) -> Result<Self> {
+        Self::create(context, width_method, sys::OT_EDIT_BUFFER_FOLLOW_SESSION_WIDTH)
+    }
+
+    fn create(context: &Context, width_method: WidthMethod, flags: u32) -> Result<Self> {
+        let options = sys::ot_edit_buffer_options { width_method: width_method.raw(), flags, ..Default::default() };
         let resource = Resource::create(
             context,
             "ot_text_buffer_create",
