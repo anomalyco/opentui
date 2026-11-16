@@ -5,7 +5,7 @@ use core::ffi::c_void;
 
 /// FNV-1a 64-bit hash of the `opentui.h` these declarations were generated from.
 /// The build script rejects native artifacts whose header has a different hash.
-pub const OPENTUI_HEADER_FNV1A64: u64 = 0x61c369e169b8f8c2;
+pub const OPENTUI_HEADER_FNV1A64: u64 = 0x99dd2d0018a6caa3;
 
 pub type ot_status = i32;
 
@@ -4748,6 +4748,7 @@ unsafe extern "C" {
     pub fn ot_text_buffer_get_range(context: *mut ot_context, handle: *const ot_handle, start: u32, end: u32, out_bytes: *mut u8, capacity: u32, out_count: *mut u32) -> ot_status;
     pub fn ot_text_buffer_set_defaults(context: *mut ot_context, handle: *const ot_handle, mask: u32, editor_style: *const ot_editor_style) -> ot_status;
     pub fn ot_text_buffer_set_tab_width(context: *mut ot_context, handle: *const ot_handle, width: u32) -> ot_status;
+    pub fn ot_text_buffer_set_width_method(context: *mut ot_context, handle: *const ot_handle, width_method: u32) -> ot_status;
     pub fn ot_text_buffer_highlight(context: *mut ot_context, handle: *const ot_handle, operation: u32, argument: u32, edit_highlight: *const ot_edit_highlight) -> ot_status;
     pub fn ot_text_buffer_get_highlights(context: *mut ot_context, handle: *const ot_handle, line: u32, out_edit_highlight: *mut ot_edit_highlight, capacity: u32, out_count: *mut u32) -> ot_status;
     pub fn ot_text_buffer_set_layer(context: *mut ot_context, handle: *const ot_handle, layer_id: u32, start_byte: u32, end_byte: u32, runs: *const ot_highlight_run, run_count: u32) -> ot_status;

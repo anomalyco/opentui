@@ -90,6 +90,11 @@ export class TextBufferView {
     this.select({ operation: NativeEditorSelectionOperation.Set, start, end, bg: bgColor, fg: fgColor })
   }
 
+  /** @internal Selects the whole character that starts at `offset`. */
+  public _selectCharacter(offset: number): void {
+    this.select({ operation: NativeEditorSelectionOperation.Inclusive, start: offset, end: offset })
+  }
+
   public updateSelection(end: number, bgColor?: RGBA, fgColor?: RGBA): void {
     this.select({ operation: NativeEditorSelectionOperation.Update, end, bg: bgColor, fg: fgColor })
   }

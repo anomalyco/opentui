@@ -14,6 +14,7 @@ import { ImageRenderable } from "../renderables/Image.js"
 import { MarkdownRenderable } from "../renderables/Markdown.js"
 import { TextRenderable } from "../renderables/Text.js"
 import { TextareaRenderable } from "../renderables/Textarea.js"
+import { TextTableRenderable } from "../renderables/TextTable.js"
 import { fg, link, t } from "../lib/styled-text.js"
 import { RGBA } from "../lib/RGBA.js"
 import { Selection } from "../lib/selection.js"
@@ -1544,7 +1545,11 @@ test("text made before a width-changing reply measures like text made after it",
   ] as const
   for (const row of rows) {
     const stdin = createTestStdin()
-    const renderer = await createCliRenderer({ stdin, stdout: createCollectingStdout(), environment: row.environment })
+    const renderer = await createCliRenderer({
+      stdin,
+      stdout: createCollectingStdout(80, 60),
+      environment: row.environment,
+    })
     destroyFns.push(() => renderer.destroy())
     const make = (content?: string) => {
       const textarea = new TextareaRenderable(renderer, { width: 10, height: 2 })
@@ -1616,12 +1621,123 @@ test("text made before a width-changing reply measures like text made after it",
       renderer.getSelection()?.getSelectedText() ?? "",
     ]
     // The text of a widget's row painted with a colour, as a foreground or a background.
-    const painted = (widget: TextRenderable | CodeRenderable, color: string, layer: "fg" | "bg") =>
+    const painted = (widget: { y: number }, color: string, layer: "fg" | "bg") =>
       renderer.currentRenderBuffer
         .getSpanLines()
         [widget.y].spans.filter((span) => span[layer].equals(RGBA.fromHex(color)))
         .map((span) => span.text)
         .join("")
+    // Tables draw their cells outside the scene: they re-measure them in place, styled runs and selections included.
+    const tables = new BoxRenderable(renderer, { alignItems: "flex-start" })
+    renderer.root.add(tables)
+    const cell = (...chunks: [string, string?][]) => [
+      [
+        chunks.map(([text, color]) => ({
+          __isChunk: true as const,
+          text,
+          fg: color ? RGBA.fromHex(color) : undefined,
+        })),
+      ],
+    ]
+    const table = (content = cell(["\u{1f44d}\u{1f3fd}x"])) => {
+      const value = new TextTableRenderable(renderer, {
+        content,
+        border: false,
+        outerBorder: false,
+        columnWidthMode: "content",
+      })
+      tables.add(value)
+      return value
+    }
+    const early = table()
+    // Updated while the reply is handled; its lifecycle pass saved and decorated; one adopted with defineProperty.
+    const [updated, saved, adopted, cleared] = [table(), table(), table(), table()]
+    renderer.once(CliRenderEvents.CAPABILITIES, () => {
+      updated.content = cell(["\u{1f44d}\u{1f3fd}y"])
+    })
+    const calls = { saved: 0, adopted: 0 }
+    const previous = saved.onLifecyclePass
+    saved.onLifecyclePass = function () {
+      calls.saved++
+      previous?.call(this)
+    }
+    // Defined on the mounted table, it runs only once refreshHooks() adopts it.
+    await renderer.idle()
+    Object.defineProperty(adopted, "onLifecyclePass", {
+      value: () => calls.adopted++,
+      writable: true,
+      configurable: true,
+    })
+    adopted.requestRender()
+    await renderer.idle()
+    expect(calls.adopted).toBe(0)
+    adopted.refreshHooks()
+    // A caller's hook set and cleared again leaves the table's own pass in place.
+    cleared.onLifecyclePass = () => {}
+    cleared.onLifecyclePass = null
+    const colored = table(cell(["\u{1f44d}\u{1f3fd}", "#ff0000"], ["AB", "#00ff00"], ["CD", "#0000ff"]))
+    // A finished drag over "AB", and a press on "A" held across the reply.
+    // The held table's second cell starts where its first ends: narrowing moves the press's old column into it.
+    const dragged = table(cell(["\u{1f44d}\u{1f3fd}ABCD"]))
+    const firstSeen: unknown[] = []
+    dragged.onLifecyclePass = () => {
+      if (renderer.widthMethod === row.to && firstSeen.length === 0) firstSeen.push(dragged.getSelection())
+    }
+    const restyled = table(cell(["\u{1f44d}\u{1f3fd}", "#ff0000"], ["AB", "#00ff00"], ["CD", "#0000ff"]))
+    // Restyled while the reply is handled, before the table follows the new method.
+    const restyledInReply = table(cell(["\u{1f44d}\u{1f3fd}", "#ff0000"], ["AB", "#00ff00"], ["CD", "#0000ff"]))
+    renderer.once(CliRenderEvents.CAPABILITIES, () => {
+      restyledInReply.content = cell(["\u{1f44d}\u{1f3fd}", "#0000ff"], ["AB", "#ff0000"], ["CD", "#00ff00"])
+    })
+    const held = table([[cell(["q\u{1f44d}\u{1f3fd}A"])[0][0], cell(["BC"])[0][0]]])
+    // Pressed on "A" on the second line of its cell.
+    const tall = table(cell(["x\nq\u{1f44d}\u{1f3fd}A"]))
+    // Pressed on "A" and dragged into its second cell before the reply.
+    const leaving = table([[cell(["q\u{1f44d}\u{1f3fd}A"])[0][0], cell(["BC"])[0][0]]])
+    await renderer.idle()
+    const left = new Selection(
+      leaving,
+      { x: leaving.x + 1 + row.before, y: leaving.y },
+      { x: leaving.x + 1 + row.before, y: leaving.y },
+    )
+    left.isStart = true
+    leaving.onSelectionChanged(left)
+    const tallPress = new Selection(
+      tall,
+      { x: tall.x + 1 + row.before, y: tall.y + 1 },
+      { x: tall.x + 1 + row.before, y: tall.y + 1 },
+    )
+    tallPress.isStart = true
+    tall.onSelectionChanged(tallPress)
+    left.isStart = false
+    left.focus = { x: leaving.x + 2 + row.before, y: leaving.y }
+    leaving.onSelectionChanged(left)
+    const press = new Selection(
+      held,
+      { x: held.x + 1 + row.before, y: held.y },
+      { x: held.x + 1 + row.before, y: held.y },
+    )
+    press.isStart = true
+    held.onSelectionChanged(press)
+    for (const target of [dragged, restyled, restyledInReply]) {
+      const drag = new Selection(
+        target,
+        { x: target.x + row.before, y: target.y },
+        { x: target.x + row.before, y: target.y },
+      )
+      drag.isStart = true
+      target.onSelectionChanged(drag)
+      drag.isStart = false
+      drag.focus = { x: target.x + row.before + 1, y: target.y }
+      drag.isDragging = false
+      target.onSelectionChanged(drag)
+    }
+    expect([previous, dragged.getSelectedText(), restyled.getSelectedText(), held.getSelectedText()]).toEqual([
+      null,
+      "AB",
+      "AB",
+      "",
+    ])
     expect(renderer.widthMethod).toBe(row.from)
     expect(selections()).toEqual(["A", "AB", "AB", "", ""])
     stdin.emit("data", Buffer.from(row.reply))
@@ -1633,6 +1749,82 @@ test("text made before a width-changing reply measures like text made after it",
     expect([typed.cursorOffset, empty.cursorOffset, late.cursorOffset]).toEqual([row.cells, row.cells, row.cells])
     expect([text.lineInfo.lineWidthCols[0], code.lineInfo.lineWidthCols[0]]).toEqual([row.cells + 1, row.cells + 1])
     expect([text.width, code.width]).toEqual([row.cells + 1, row.cells + 1])
+    const lateTable = table()
+    const lateColored = table(cell(["\u{1f44d}\u{1f3fd}", "#ff0000"], ["AB", "#00ff00"], ["CD", "#0000ff"]))
+    await renderer.idle()
+    expect([early, updated, saved, adopted, cleared, lateTable].map((value) => value.width)).toEqual(
+      Array(6).fill(row.cells + 1),
+    )
+    const colors = ["#ff0000", "#00ff00", "#0000ff"]
+    expect(colors.map((color) => painted(colored, color, "fg"))).toEqual(
+      colors.map((color) => painted(lateColored, color, "fg")),
+    )
+    expect(colors.map((color) => painted(colored, color, "fg")).slice(1)).toEqual(["AB", "CD"])
+    expect([calls.saved > 0, calls.adopted > 0]).toEqual([true, true])
+    // The table's own pass ran before the caller's: the first call with the new method saw the moved selection.
+    expect(firstSeen).toEqual([dragged.getSelection()])
+    expect(firstSeen[0]).not.toBeNull()
+    // Restyled with the same text after the reply: the finished selection stays, and the rest shows the new colours.
+    restyled.content = cell(["\u{1f44d}\u{1f3fd}", "#0000ff"], ["AB", "#ff0000"], ["CD", "#00ff00"])
+    await renderer.idle()
+    expect([
+      restyled.getSelectedText(),
+      painted(restyled, "#0000ff", "fg"),
+      painted(restyled, "#00ff00", "fg"),
+    ]).toEqual(["AB", "\u{1f44d}\u{1f3fd}", "CD"])
+    expect([restyledInReply.getSelectedText(), painted(restyledInReply, "#00ff00", "fg")]).toEqual(["AB", "CD"])
+    // Replaced with other text, the cell drops the range rather than select what took its place.
+    restyled.content = cell(["\u{1f44d}\u{1f3fd}", "#0000ff"], ["XY", "#ff0000"], ["CD", "#00ff00"])
+    await renderer.idle()
+    expect(restyled.getSelectedText()).toBe("")
+    adopted.onLifecyclePass = null
+    const adoptedCalls = calls.adopted
+    adopted.requestRender()
+    await renderer.idle()
+    expect(calls.adopted).toBe(adoptedCalls)
+    // The held press drags to "q", back over its old column, to "q", into the second cell and to "q" again: at each
+    // step it selects what a press on the same "A" made after the reply does.
+    const lateHeld = table([[cell(["q\u{1f44d}\u{1f3fd}A"])[0][0], cell(["BC"])[0][0]]])
+    await renderer.idle()
+    expect(lateHeld.width).toBe(held.width)
+    const latePress = new Selection(
+      lateHeld,
+      { x: lateHeld.x + 1 + row.cells, y: lateHeld.y },
+      { x: lateHeld.x + 1 + row.cells, y: lateHeld.y },
+    )
+    latePress.isStart = true
+    lateHeld.onSelectionChanged(latePress)
+    const steps = [0, 1 + row.before, 0, 2 + row.cells, 0]
+    const drags = (target: TextTableRenderable, selection: Selection) =>
+      steps.map((dx) => {
+        selection.isStart = false
+        selection.focus = { x: target.x + dx, y: target.y }
+        target.onSelectionChanged(selection)
+        return target.getSelectedText()
+      })
+    const heldSteps = drags(held, press)
+    expect(heldSteps).toEqual(drags(lateHeld, latePress))
+    // The press that left its cell before the reply comes back to it, as a later press that left it does.
+    latePress.isStart = true
+    latePress.focus = latePress.anchor
+    lateHeld.onSelectionChanged(latePress)
+    latePress.isStart = false
+    latePress.focus = { x: lateHeld.x + 2 + row.cells, y: lateHeld.y }
+    lateHeld.onSelectionChanged(latePress)
+    expect(drags(leaving, left)).toEqual(drags(lateHeld, latePress))
+    tallPress.isStart = false
+    tallPress.focus = { x: tall.x, y: tall.y + 1 }
+    tall.onSelectionChanged(tallPress)
+    expect(tall.getSelectedText()).toBe("q\u{1f44d}\u{1f3fd}A")
+    // A new press after the gesture starts from its own cell: from "q" to "A".
+    const again = new Selection(held, { x: held.x, y: held.y }, { x: held.x, y: held.y })
+    again.isStart = true
+    held.onSelectionChanged(again)
+    again.isStart = false
+    again.focus = { x: held.x + 1 + row.cells, y: held.y }
+    held.onSelectionChanged(again)
+    expect(held.getSelectedText()).toBe("q\u{1f44d}\u{1f3fd}A")
+    expect([dragged.getSelectedText(), heldSteps[0]]).toEqual(["AB", "q\u{1f44d}\u{1f3fd}A"])
     expect(["#ff0000", "#00ff00", "#0000ff"].map((color) => painted(styled, color, "fg"))).toEqual([
       "\u{1f44d}\u{1f3fd}",
       "AB",

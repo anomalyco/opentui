@@ -191,6 +191,16 @@ impl TextBuffer {
         let (context, handle) = self.raw();
         check("ot_text_buffer_set_tab_width", unsafe { sys::ot_text_buffer_set_tab_width(context, handle, width) })
     }
+
+    /// Measures the text with `width_method` from now on; views keep their selections on the same text. For buffers
+    /// made with [`new`](Self::new) that are drawn outside the scene; `WidthMethod::NoZwj` and buffers made with
+    /// [`following`](Self::following) are rejected.
+    pub fn set_width_method(&self, width_method: WidthMethod) -> Result<()> {
+        let (context, handle) = self.raw();
+        check("ot_text_buffer_set_width_method", unsafe {
+            sys::ot_text_buffer_set_width_method(context, handle, width_method.raw())
+        })
+    }
 }
 
 /// A wrapped, scrollable view of a [`TextBuffer`]. It keeps its buffer alive.
@@ -349,6 +359,12 @@ impl TextView {
             focus_y: focus.1,
             ..colors.editor_selection(operation)
         })
+    }
+
+    /// Selects the whole character that starts at document offset `offset`.
+    pub fn select_character(&self, offset: u32) -> Result<()> {
+        let raw = sys::ot_editor_selection { operation: sys::OT_EDITOR_SELECT_INCLUSIVE, ..Default::default() };
+        self.select(sys::ot_editor_selection { start: offset, end: offset, ..raw }).map(drop)
     }
 
     pub fn clear_selection(&self) -> Result<()> {

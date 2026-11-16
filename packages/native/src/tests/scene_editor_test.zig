@@ -171,6 +171,8 @@ test "Scene a following buffer is shown by one session at a time" {
     try owner.sceneSetTextView(text_nodes[1], shown);
     try testing.expectError(error.WrongSession, owner.sceneSetTextView(text_nodes[0], try owner.createTextBufferView(shared)));
     try testing.expectError(error.WrongSession, owner.sceneSetTextView(text_nodes[0], shown));
+    // A following buffer's width method belongs to its session.
+    try testing.expectError(error.InvalidOptions, owner.textBufferSetWidthMethod(shared, .wcwidth));
 }
 
 test "Scene editor sets the mouse pointer only when its options select one" {

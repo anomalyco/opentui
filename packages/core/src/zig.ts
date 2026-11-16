@@ -4760,6 +4760,22 @@ export class FFIRenderLib {
     })
   }
 
+  public contextTextBufferSetWidthMethod(
+    context: NativeContextHandle,
+    text: ContextTextBufferHandle,
+    widthMethod: WidthMethod,
+  ): void {
+    const handle = encodeContextHandle(context, text)
+    const method = widthMethodId(widthMethod, "text")
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_text_buffer_set_width_method")
+      nativeResult(
+        "ot_text_buffer_set_width_method",
+        this.opentui.symbols.ot_text_buffer_set_width_method(pointer, handle, method),
+      )
+    })
+  }
+
   public contextTextBufferHighlight(
     context: NativeContextHandle,
     text: ContextTextBufferHandle,
