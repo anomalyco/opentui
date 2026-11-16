@@ -1641,6 +1641,9 @@ test("text made before a width-changing reply measures like text made after it",
     for (const widget of recolored) widget.selectionBg = "#00ff00"
     await renderer.idle()
     expect(recolored.map((widget) => painted(widget, "#00ff00", "bg"))).toEqual(["AB", "AB"])
+    for (const widget of recolored) widget.selectionFg = "#ff00ff"
+    await renderer.idle()
+    expect(recolored.map((widget) => painted(widget, "#ff00ff", "fg"))).toEqual(["AB", "AB"])
     expect(selections()).toEqual(["A", "AB", "AB", "", ""])
     pressed.insertText("X")
     expect(pressed.plainText).toContain("\u{1f44d}\u{1f3fd}")
