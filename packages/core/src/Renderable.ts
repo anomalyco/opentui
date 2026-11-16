@@ -773,10 +773,11 @@ export abstract class Renderable extends BaseRenderable {
     this.syncLifecyclePass()
   }
 
-  /** @internal Runs the widget's own lifecycle pass, then the caller's. */
+  /** @internal Runs the widget's own lifecycle pass, then the caller's published one: a hook defined on the
+   * instance runs only once `refreshHooks()` adopts it. */
   _runLifecyclePass(): void {
     this._builtinLifecyclePass?.call(this)
-    if (!this._isDestroyed) this.onLifecyclePass?.call(this)
+    if (!this._isDestroyed) this._hooks.onLifecyclePass?.call(this)
   }
 
   public get translateX(): number {
