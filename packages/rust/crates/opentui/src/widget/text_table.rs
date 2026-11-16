@@ -1,9 +1,9 @@
 use super::{Behavior, Content, Element, LocalSelection, Painter, SelectionUpdate, build, handle};
-use crate::app::App;
+use crate::app::{App, Cx};
 use crate::layout::LayoutProperty;
 use crate::native::{
     Constraint, GridSpec, Hooks, Measure, NodeKind, SelectionColors, SelectionUnit, TextBuffer, TextMeasure, TextView,
-    Viewport, WrapMode,
+    Viewport, WidthMethod, WrapMode,
 };
 use crate::style::{Alignment, Attributes, BorderStyle, Color, Style};
 use std::cell::{Cell, RefCell};
@@ -425,6 +425,13 @@ pub(crate) struct TextTableInner {
     layout: RefCell<Option<(Option<u32>, Layout)>>,
     selection: Cell<Option<LocalSelection>>,
     mode: Cell<Option<SelectionMode>>,
+    /// The width method the cells measure with; a terminal reply can change the app's.
+    method: Cell<Option<WidthMethod>>,
+    /// The cells hold the accepted selection in document offsets; its cells no longer name its text.
+    selection_in_cells: Cell<bool>,
+    /// The cell a press without a drag pinned, and whether its view still holds the press as its anchor.
+    pressed: Cell<Option<(usize, usize)>>,
+    press_pinned: Cell<bool>,
 }
 
 impl Measure for TextTableInner {
@@ -497,7 +504,7 @@ impl TextTableInner {
             }
         }
         *self.layout.borrow_mut() = Some((constraint, layout));
-        if let Some(selection) = self.selection.get() {
+        if let Some(selection) = self.selection.get().filter(|_| !self.selection_in_cells.get()) {
             self.apply_selection(selection, true);
         }
     }
@@ -516,13 +523,28 @@ impl TextTableInner {
         let Some((_, layout)) = layout.as_ref() else { return };
         let (cells, options) = (self.cells.borrow(), self.options.borrow());
         let (anchor, focus) = (selection.anchor, selection.focus);
-        let anchor_cell = layout.cell_at(anchor.0, anchor.1);
         // A click selects nothing; a double or triple click selects a word or line of the cell under it.
-        if anchor == focus && (selection.unit == SelectionUnit::Cell || anchor_cell.is_none()) {
+        if anchor == focus && (selection.unit == SelectionUnit::Cell || layout.cell_at(anchor.0, anchor.1).is_none()) {
             self.clear_cell_selections();
             self.mode.set(None);
+            // The press's cell pins it without extent: a width change moves the pin with its text.
+            let pressed = layout.cell_at(anchor.0, anchor.1);
+            self.pressed.set(pressed);
+            self.press_pinned.set(pressed.is_some());
+            if let Some((row, column)) = pressed
+                && let Some(cell) = cells.rows.get(row).and_then(|cells| cells.get(column)).and_then(Option::as_ref)
+            {
+                let (left, top) = (
+                    layout.cell_left(column) + options.padding_x as i32,
+                    layout.cell_top(row) + options.padding_y as i32,
+                );
+                let at = (anchor.0 - left, anchor.1 - top);
+                self.report(cell.view.select_local(at, at, false, selection.unit, options.selection_colors));
+            }
             return;
         }
+        // The pressed cell stays the anchor's, wherever the press's old cell lies now.
+        let anchor_cell = self.pressed.get().or_else(|| layout.cell_at(anchor.0, anchor.1));
         let anchor_column = anchor_cell.map(|(_, column)| column).or_else(|| layout.column_at(anchor.0));
         let mode = if anchor_cell.is_some() && anchor_cell == layout.cell_at(focus.0, focus.1) {
             SelectionMode::SingleCell
@@ -554,7 +576,12 @@ impl TextTableInner {
                 } else {
                     ((anchor.0 - left, anchor.1 - top), (focus.0 - left, focus.1 - top))
                 };
-                let extend = !(start || mode_changed || whole);
+                // Within the pressed cell the pinned press stays the anchor.
+                let pinned = is_anchor && self.press_pinned.get() && !whole;
+                if is_anchor && whole {
+                    self.press_pinned.set(false);
+                }
+                let extend = pinned || !(start || mode_changed || whole);
                 let colors = options.selection_colors;
                 self.report(cell.view.select_local(from, to, extend, selection.unit, colors));
             }
@@ -622,7 +649,22 @@ impl TextTableInner {
             }
         }
         *self.cells.borrow_mut() = Cells { rows: next, columns };
+        // Kept cells measure with the method they were made with; new ones with the app's.
+        self.follow_width_method(app.width_method());
         self.relayout();
+    }
+
+    /// Cells re-measure in place: their views keep their selections on the same text.
+    fn follow_width_method(&self, method: WidthMethod) {
+        if self.method.replace(Some(method)).is_none_or(|old| old == method) {
+            return;
+        }
+        for cell in self.cells.borrow().rows.iter().flatten().flatten() {
+            self.report(cell.buffer.set_width_method(method));
+        }
+        if self.selection.get().is_some() {
+            self.selection_in_cells.set(true);
+        }
     }
 
     fn update(&self, change: impl FnOnce(&mut Options)) {
@@ -660,6 +702,15 @@ fn fill(buffer: &TextBuffer, content: &Content) -> crate::Result<()> {
 impl Behavior for TextTableInner {
     fn element(&self) -> &Element {
         &self.element
+    }
+
+    /// The cells draw outside the scene, so a changed width method makes them again.
+    fn update(&self, _cx: &mut Cx<'_>) {
+        let Some(method) = self.element.app().map(|app| app.width_method()) else { return };
+        if self.method.get() != Some(method) {
+            self.follow_width_method(method);
+            self.relayout();
+        }
     }
 
     fn paint(&self, painter: &mut Painter<'_>) {
@@ -714,6 +765,8 @@ impl Behavior for TextTableInner {
     fn select(&self, selection: Option<&SelectionUpdate>) -> bool {
         let Some(update) = selection else {
             self.selection.set(None);
+            self.selection_in_cells.set(false);
+            self.pressed.set(None);
             self.mode.set(None);
             self.clear_cell_selections();
             self.redraw();
@@ -722,6 +775,7 @@ impl Behavior for TextTableInner {
         self.ensure_layout(self.element.rect().width);
         let selection = update.local_selection(&self.element);
         self.selection.set(Some(selection));
+        self.selection_in_cells.set(false);
         self.apply_selection(selection, update.start);
         self.redraw();
         self.has_selection()
@@ -745,9 +799,6 @@ impl Behavior for TextTableInner {
 /// row are joined with tabs.
 ///
 /// This is not [`Table`](super::Table), which shows one-line rows with keyboard selection and scrolling.
-///
-/// Its cells keep the width method of the moment the table was made: a terminal reply that changes the Session's
-/// method later does not re-measure them yet.
 ///
 /// ```no_run
 /// # use opentui::prelude::*;
@@ -794,13 +845,17 @@ impl TextTable {
             layout: RefCell::new(None),
             selection: Cell::new(None),
             mode: Cell::new(None),
+            method: Cell::new(None),
+            selection_in_cells: Cell::new(false),
+            pressed: Cell::new(None),
+            press_pinned: Cell::new(false),
         }));
         let weak = Rc::downgrade(&table.0);
         let measurer: Weak<dyn Measure> = weak;
         table.0.element.apply(|node| node.set_measure(Some(measurer)));
         // Like Core's table, it keeps its height in a column instead of shrinking and cutting off rows.
         table.0.element.set_layout(LayoutProperty::FlexShrink(0.0));
-        table.0.element.add_hooks(Hooks::RENDER_AFTER);
+        table.0.element.add_hooks(Hooks::UPDATE.union(Hooks::RENDER_AFTER));
         table
     }
 

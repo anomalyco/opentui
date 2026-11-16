@@ -412,9 +412,9 @@ fn widgets_measure_text_with_the_width_method_a_reply_switches_to() {
         (("TERM", "xterm-256color"), ghostty, "বাংলা", "UnicodeWide", true, 4, "go!", 0..5),
         (("OPENTUI_FORCE_NOZWJ", "1"), b"w", zwj, "Unicode", false, 2, "go (https://a.b)", 2..3),
     ];
-    for (variable, input, text, method, changed, cells, link, checked) in cases {
+    for (index, (variable, input, text, method, changed, cells, link, checked)) in cases.into_iter().enumerate() {
         let environment = vec![("TERM".into(), "xterm-256color".into()), (variable.0.into(), variable.1.into())];
-        let options = RemoteOptions { width: 48, height: 5, environment };
+        let options = RemoteOptions { width: 48, height: 6, environment };
         let mut client = Client::start(options, quiet(), move |app| {
             let editor = Textarea::new(app);
             editor.set_text("x");
@@ -429,15 +429,22 @@ fn widgets_measure_text_with_the_width_method_a_reply_switches_to() {
                 .set_rows([[text]])
                 .size(6, 1);
             let row = View::new(app).row().height(1).child(&table).child(&Text::new(app, "|"));
-            app.root().add(&row).add(&gutter);
+            // Dragged over "AB" after the text in the first case; the reply must not move the selection.
+            // Dragged over "AB" after the text in the first case; the reply must not move the selection.
+            let dragged = TextTable::new(app).grid_lines(false).set_content([[format!("{text}AB")]]);
+            app.root().add(&row).add(&gutter).add(&dragged);
             // Made before the reply, as apps make their scrollback writer.
             let scrollback = Scrollback::new(app).unwrap();
             let link = Markdown::new(scrollback.app()).set_markdown("[go](https://a.b)");
             let surface = scrollback.surface(true).unwrap();
             surface.root().add(&Text::new(scrollback.app(), text));
             surface.render().unwrap();
-            // A Code made before the reply must snapshot like one made after it.
+            // A Code and a TextTable made before the reply must snapshot like ones made after it, colours included.
             let early_code = Code::new(scrollback.app()).wrap(WrapMode::Char).set_code(format!("{text}abcd"));
+            let styled =
+                move || [[["q".fg(Color::RED), text.fg(Color::RED), "AB".fg(Color::GREEN), "CD".fg(Color::BLUE)]]];
+            let table = move |app: &App| TextTable::new(app).set_content(styled());
+            let early_table = table(scrollback.app());
             app.on_key(move |cx, key| {
                 if key.matches("l") {
                     // Updates a paragraph without making a node, so only `hyperlinks` reads the terminal state.
@@ -457,6 +464,12 @@ fn widgets_measure_text_with_the_width_method_a_reply_switches_to() {
                         let shot = scrollback.snapshot(&widget, options).unwrap().buffer.capture().unwrap().text();
                         shot.replace('\n', "/")
                     });
+                    // Content set again after the reply, before anything else lays the table out.
+                    early_table.set_content(styled());
+                    let tables = [early_table.clone(), table(scrollback.app())].map(|widget| {
+                        let options = SnapshotOptions { width: Some(6), ..SnapshotOptions::default() };
+                        scrollback.snapshot(&widget, options).unwrap().buffer.capture().unwrap()
+                    });
                     let link =
                         scrollback.snapshot(&link, SnapshotOptions::default()).unwrap().buffer.capture().unwrap();
                     let error = scrollback.app().session().context().last_error().unwrap();
@@ -464,32 +477,86 @@ fn widgets_measure_text_with_the_width_method_a_reply_switches_to() {
                     surface.render().unwrap();
                     surface.commit_rows(0, 1, None, true).unwrap();
                     let (method, link, cursor) = (cx.app().width_method(), link.text(), early.cursor_offset());
-                    let label = format!("m={method:?} {stale} {} {error:?} c={cursor}", link.trim_end());
+                    let same = tables[0] == tables[1];
+                    let label = format!("m={method:?} {stale} {} {error:?} c={cursor} t={same}", link.trim_end());
                     let label = Text::new(cx.app(), label);
                     cx.app().root().add(&label).add(&Text::new(cx.app(), shots.join(" ")));
                 } else if key.matches("i") {
-                    let input = Input::new(cx.app()).set_value(format!("{text}yz"));
+                    // After frames laid the table out again: the drag still selects "AB".
+                    // After frames laid the table out again: the drag still selects "AB".
+                    let input = Input::new(cx.app()).set_value(format!("{text}yz{}", dragged.selected_text()));
                     cx.app().root().add(&input);
                     input.focus();
                 }
             });
         });
         client.wait_for("|");
+        // The first case starts with Unicode, so "A" is in column 3 and "B" in 4 (one-based) of row 3.
+        if index == 0 {
+            client.send(b"\x1b[<0;3;3M\x1b[<32;4;3M\x1b[<0;4;3m");
+        }
         client.send(input);
         client.wait_for("m=");
         client.send(b"i");
         client.wait_for("yz");
-        let host = opentui::testing::TestApp::new(48, 5);
-        let screen = TerminalView::new(&host).size(48, 5).write(client.text()).screen();
+        let host = opentui::testing::TestApp::new(48, 6);
+        let screen = TerminalView::new(&host).size(48, 6).write(client.text()).screen();
         // A 6-cell snapshot wraps "cd" after a 4-cell text.
         let (pad, shot) = (" ".repeat(6 - cells as usize), if cells == 4 { "ab/cd" } else { "abcd" });
         let shots = vec![format!("{text}{shot}"); 4].join(" ");
-        // The label ends with the Context's last error, which the snapshots leave none of, and the early cursor.
-        let label = format!("m={method} {changed} {link} None c={cells}");
-        let rows = [format!("{pad}{text}|"), format!("{text} 1 x"), label, shots];
-        let rows = [&rows[..], &[format!("{text}yz")]].concat();
-        let expected = (&rows[checked.clone()], Some((cells + 2, 4)));
+        // The label ends with the Context's last error, which the snapshots leave none of, the early cursor, and
+        // whether the early table snapshots like the late one.
+        let label = format!("m={method} {changed} {link} None c={cells} t=true");
+        let selected = if index == 0 { "AB" } else { "" };
+        let rows = [format!("{pad}{text}|"), format!("{text} 1 x"), format!("{text}AB"), label, shots];
+        let rows = [&rows[..], &[format!("{text}yz{selected}")]].concat();
+        // Rows from the dragged table on are one lower than the cases name.
+        let checked = checked.start + usize::from(checked.start >= 2)..checked.end + 1;
+        let expected = (&rows[checked.clone()], Some((cells + 2 + if index == 0 { 2 } else { 0 }, 5)));
         assert_eq!((&screen.lines[checked], screen.cursor.position), expected, "{variable:?}");
+        client.link.terminate();
+        client.finish().expect("the app thread").expect("the app");
+    }
+}
+
+// Expected: a table press held while a reply changes the width method keeps the text it was made on: dragged back to
+// the start, it selects up to and including that character, as a press made after the reply would.
+// Actual: the first drag after the reply anchored at the press's old screen column, which then lay elsewhere.
+#[test]
+fn a_table_press_held_across_a_width_reply_keeps_its_text() {
+    let zwj = "👩\u{200d}💻";
+    // The press is on "A" (one-based column), the reply follows with the button still down, then the drag goes back
+    // to "q". VS Code starts with wcwidth and its reply narrows the emoji, so the press's old column lies in "BC"; a
+    // plain xterm starts with Unicode and its reply widens it, so the old column lies inside the emoji.
+    let cases = [
+        (("TERM_PROGRAM", "vscode"), &b"\x1b[<0;6;1M\x1b[?2027;2$yw"[..], "m=Unicode"),
+        (("TERM", "xterm-256color"), b"\x1b[<0;4;1M\x1b[?2027;0$yw", "m=Wcwidth"),
+    ];
+    for (variable, press, method) in cases {
+        let environment = vec![("TERM".into(), "xterm-256color".into()), (variable.0.into(), variable.1.into())];
+        let options = RemoteOptions { width: 24, height: 3, environment };
+        let mut client = Client::start(options, quiet(), move |app| {
+            let held = TextTable::new(app)
+                .grid_lines(false)
+                .column_width_mode(opentui::widget::ColumnWidthMode::Content)
+                .set_content([[format!("q{zwj}A"), "BC".to_owned()]]);
+            app.root().add(&held);
+            app.on_key(move |cx, key| {
+                if key.matches("w") {
+                    cx.app().root().add(&Text::new(cx.app(), format!("m={:?}", cx.app().width_method())));
+                } else if key.matches("i") {
+                    cx.app().root().add(&Text::new(cx.app(), format!("s={}", held.selected_text())));
+                }
+            });
+        });
+        client.wait_for("BC");
+        client.send(press);
+        client.wait_for(method);
+        client.send(b"\x1b[<32;1;1M\x1b[<0;1;1mi");
+        client.wait_for("s=");
+        let host = opentui::testing::TestApp::new(24, 3);
+        let screen = TerminalView::new(&host).size(24, 3).write(client.text()).screen();
+        assert_eq!(screen.lines.get(2).map(String::as_str), Some(format!("s=q{zwj}A").as_str()), "{variable:?}");
         client.link.terminate();
         client.finish().expect("the app thread").expect("the app");
     }
