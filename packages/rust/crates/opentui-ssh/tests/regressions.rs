@@ -121,9 +121,11 @@ fn a_connection_refuses_new_channels_after_sixteen_finished_sessions() {
 // never returns, and `Server::sessions` stays at 1 (with `max_sessions` reached, every later client is refused).
 #[test]
 fn a_client_that_leaves_while_its_session_starts_keeps_the_session_running_forever() {
-    let (server, _) = start(ServerConfig::default(), |session| {
-        // Setup that takes a moment, such as a lookup; the client leaves meanwhile.
-        std::thread::sleep(Duration::from_millis(500));
+    let (left, leaving) = std::sync::mpsc::channel::<()>();
+    let leaving = Mutex::new(leaving);
+    let (server, _) = start(ServerConfig::default(), move |session| {
+        // Setup that takes a moment, such as a lookup, lasts until the client has left.
+        leaving.lock().unwrap().recv().expect_err("nothing is sent: the test drops its sender once the client left");
         session.app(AppOptions::default())?.run()
     });
     runtime().block_on(async {
@@ -139,6 +141,7 @@ fn a_client_that_leaves_while_its_session_starts_keeps_the_session_running_forev
         started.await.expect("the session starts within ten seconds");
         handle.disconnect(russh::Disconnect::ByApplication, "", "").await.unwrap();
     });
+    drop(left);
     let deadline = Instant::now() + Duration::from_secs(8);
     while server.sessions() != 0 {
         assert!(Instant::now() < deadline, "the session of a client that left still runs after eight seconds");
@@ -217,13 +220,19 @@ async fn wait_for(channel: &mut russh::Channel<client::Msg>, needle: &str) {
 #[test]
 fn one_session_behind_on_input_freezes_the_other_sessions_on_its_connection() {
     let config = ServerConfig::new().sessions_per_connection(2);
-    let (server, _) = start(config, |session| {
+    // The busy app reports when its work starts, and the work lasts until the test ends.
+    let (started, mut working) = tokio::sync::mpsc::unbounded_channel();
+    let (finish, finished) = std::sync::mpsc::channel::<()>();
+    let finished = Arc::new(Mutex::new(finished));
+    let (server, _) = start(config, move |session| {
         let app = session.app(AppOptions::default().with_theme(Theme::dark()))?;
         app.root().add(&Text::new(&app, format!("term {}", session.term())));
-        app.on_key(|cx, key| {
+        let (started, finished) = (started.clone(), Arc::clone(&finished));
+        app.on_key(move |cx, key| {
             if key.matches("w") {
                 // Slow work on the UI thread, such as a long synchronous computation.
-                std::thread::sleep(Duration::from_secs(20));
+                started.send(()).expect("the test waits for the work to start");
+                finished.lock().unwrap().recv().expect_err("nothing is sent: the test drops its sender at its end");
             } else if key.matches("q") {
                 cx.quit();
             }
@@ -242,16 +251,19 @@ fn one_session_behind_on_input_freezes_the_other_sessions_on_its_connection() {
         wait_for(&mut other, "term other").await;
 
         busy.data_bytes(b"w".to_vec()).await.unwrap();
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        let work = tokio::time::timeout(Duration::from_secs(10), working.recv()).await;
+        assert!(work.is_ok_and(|work| work.is_some()), "the busy app's work did not start within ten seconds");
         // A paste the busy app cannot take yet: more than its 256 KiB of input room. Sent from a task of its own, so
-        // a server that holds back only this channel cannot stall the test.
+        // a server that holds back only this channel cannot stall the test. Once it has left, the `q` follows it on
+        // the connection.
         let paste = tokio::spawn(async move {
             let _ = busy.data_bytes(vec![b'x'; 512 * 1024]).await;
             busy
         });
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        let paste =
+            tokio::time::timeout(Duration::from_secs(10), paste).await.expect("the paste left within ten seconds");
         other.data_bytes(b"q".to_vec()).await.unwrap();
-        let closed = tokio::time::timeout(Duration::from_secs(5), async {
+        let closed = tokio::time::timeout(Duration::from_secs(10), async {
             while let Some(message) = other.wait().await {
                 if matches!(message, ChannelMsg::Close) {
                     return;
@@ -261,9 +273,10 @@ fn one_session_behind_on_input_freezes_the_other_sessions_on_its_connection() {
         .await;
         (closed.is_ok(), handle, paste)
     });
+    drop(finish);
     if !responsive.0 {
         std::mem::forget(server);
-        panic!("the other session did not quit within five seconds of its `q`");
+        panic!("the other session did not quit within ten seconds of its `q`");
     }
 }
 

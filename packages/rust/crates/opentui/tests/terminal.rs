@@ -657,13 +657,21 @@ mod windows_programs {
         // session starts with it ignored. Restore the normal handling the program should inherit.
         unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 0) };
         let app = TestApp::new(20, 4);
-        let exited = Rc::new(Cell::new(false));
-        let pty = Pty::spawn(&app, long_running(), 80, 24).unwrap().on_exit({
-            let exited = Rc::clone(&exited);
-            move |_cx, _status| exited.set(true)
-        });
-        // Give ping time to start before Ctrl+C reaches it.
-        std::thread::sleep(Duration::from_millis(500));
+        let (output, exited) = (Rc::new(RefCell::new(Vec::new())), Rc::new(Cell::new(false)));
+        let pty = Pty::spawn(&app, long_running(), 80, 24)
+            .unwrap()
+            .on_output({
+                let output = Rc::clone(&output);
+                move |_cx, bytes| output.borrow_mut().extend_from_slice(bytes)
+            })
+            .on_exit({
+                let exited = Rc::clone(&exited);
+                move |_cx, _status| exited.set(true)
+            });
+        // Ctrl+C reaches ping only once it runs, which its first line, naming the address, shows.
+        let started =
+            app.wait_until(Duration::from_secs(10), || String::from_utf8_lossy(&output.borrow()).contains("127.0.0.1"));
+        assert!(started, "ping printed nothing: {:?}", String::from_utf8_lossy(&output.borrow()));
         pty.signal(2).unwrap();
         assert!(app.wait_until(Duration::from_secs(10), || exited.get()), "Ctrl+C did not stop the program");
     }
