@@ -546,3 +546,52 @@ fn the_openssh_client_runs_an_app() {
     assert!(text.find(ENTER_ALT) < text.rfind(LEAVE_ALT), "the terminal was not restored: {text:?}");
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+/// `Probe::<T>::SEND` is the inherent const when `T: Send` and the trait's `false` otherwise; likewise `SYNC`.
+struct Probe<T>(std::marker::PhantomData<T>);
+trait Neither {
+    const SEND: bool = false;
+    const SYNC: bool = false;
+}
+impl<T> Neither for Probe<T> {}
+impl<T: Send> Probe<T> {
+    const SEND: bool = true;
+}
+impl<T: Sync> Probe<T> {
+    const SYNC: bool = true;
+}
+
+#[test]
+fn only_queues_and_plain_values_cross_threads() {
+    // (Send, Sync). Only a native context's creating thread may call it, so every owner of native state stays there.
+    // A session moves to its own thread, and its handler builds the app's context there. The rows are the native
+    // wrappers, the app, host and split types that hold them, and the types that cross threads; widgets, which hold a
+    // Node, have none.
+    use opentui::native::{self, Buffer, Capture, ClipboardOperation, ClipboardService, Context, Draft, EditBuffer};
+    use opentui::native::{EditorView, EmbeddedTerminal, Image, Node, OutputTicket, Recorder, SyntaxStyle, TextBuffer};
+    use opentui::split::{Scrollback, ScrollbackSurface, SplitFooter, SplitSnapshot};
+    use opentui::{audio::Audio, console::Console, host::Host, input::Parser, native::TextView, pty::Pty};
+    use opentui::{remote::*, testing::TestApp};
+    macro_rules! threads {
+        ($($ty:ty => $want:expr,)*) => {
+            [$((stringify!($ty), (Probe::<$ty>::SEND, Probe::<$ty>::SYNC), $want)),*]
+        };
+    }
+    let rows = threads! {
+        Context => (false, false), native::Session => (false, false), Buffer => (false, false), Node => (false, false),
+        ClipboardService => (false, false), EditBuffer => (false, false), EditorView => (false, false),
+        SyntaxStyle => (false, false), TextBuffer => (false, false), TextView => (false, false),
+        Image => (false, false), EmbeddedTerminal => (false, false), Draft => (false, false),
+        App => (false, false), TestApp => (false, false), Pty => (false, false), Audio => (false, false),
+        Parser => (false, false), Host => (false, false), Console => (false, false), SplitFooter => (false, false),
+        Scrollback => (false, false), ScrollbackSurface => (false, false), SplitSnapshot => (false, false),
+        AppProxy => (true, true), RemoteTerminal => (true, true), RemoteLink => (true, true),
+        Recorder => (true, true), ClipboardOperation => (true, true), OutputTicket => (true, true),
+        Capture => (true, true), opentui::Error => (true, true),
+        opentui_ssh::Session => (true, false), Server => (true, true), ServerConfig => (true, true),
+        Auth => (true, true), Identity => (true, true), opentui_ssh::HostKey => (true, true),
+        opentui_ssh::Error => (true, true),
+    };
+    let wrong: Vec<_> = rows.iter().filter(|(_, got, want)| got != want).collect();
+    assert!(wrong.is_empty(), "(type, (Send, Sync), expected): {wrong:?}");
+}
