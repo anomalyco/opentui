@@ -3,7 +3,7 @@ members = ["crates/opentui-sys", "crates/opentui", "crates/opentui-ssh"]
 resolver = "3"
 
 [workspace.package]
-version = "0.9.0"
+version = "0.9.1"
 edition = "2024"
 license = "MIT"
 

@@ -1,0 +1,17 @@
+base 0.9.0
+- @opentui/core: static method EditBuffer.create(widthMethod: WidthMethod, source: NativeResourceOwner): EditBuffer
++ @opentui/core: static method EditBuffer.create(widthMethod: WidthMethod, source: NativeResourceOwner, followSessionWidth?: boolean): EditBuffer
++ @opentui/core: method FFIRenderLib.contextTextBufferSetWidthMethod(context: NativeContextHandle, text: ContextTextBufferHandle, widthMethod: WidthMethod): void
++ @opentui/core: protected method Renderable.setBuiltinLifecyclePass(pass: (() => void) | null): void
+- @opentui/core: static method TextBuffer.create(widthMethod: WidthMethod, source: NativeResourceOwner): TextBuffer
++ @opentui/core: static method TextBuffer.create(widthMethod: WidthMethod, source: NativeResourceOwner, followSessionWidth?: boolean): TextBuffer
++ @opentui/core: method TextBuffer.setWidthMethod(widthMethod: WidthMethod): void
++ @opentui/core: method TextBufferView.setSelectionColors(bgColor?: RGBA, fgColor?: RGBA): void
++ @opentui/core: property NativeContextEditBufferOptions.followSessionWidth?: boolean
+- @opentui/core: property NativeSceneTextSelectionOptions.operation: "reset" | "set" | "update"
++ @opentui/core: property NativeSceneTextSelectionOptions.operation: "reset" | "set" | "update" | "colors"
++ opentui.h: const OT_EDIT_BUFFER_FOLLOW_SESSION_WIDTH = 1
++ opentui.h: const OT_SCENE_TEXT_SELECTION_COLORS = 3
++ opentui.h: field ot_edit_buffer_options.flags: uint32_t, offset 12
+- opentui.h: field ot_edit_buffer_options.reserved: uint32_t, offset 12
++ opentui.h: function ot_text_buffer_set_width_method(ot_context *, const ot_handle *, uint32_t width_method): ot_status
