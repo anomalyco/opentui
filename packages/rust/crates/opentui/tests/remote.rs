@@ -430,7 +430,6 @@ fn widgets_measure_text_with_the_width_method_a_reply_switches_to() {
                 .size(6, 1);
             let row = View::new(app).row().height(1).child(&table).child(&Text::new(app, "|"));
             // Dragged over "AB" after the text in the first case; the reply must not move the selection.
-            // Dragged over "AB" after the text in the first case; the reply must not move the selection.
             let dragged = TextTable::new(app).grid_lines(false).set_content([[format!("{text}AB")]]);
             app.root().add(&row).add(&gutter).add(&dragged);
             // Made before the reply, as apps make their scrollback writer.
@@ -483,7 +482,6 @@ fn widgets_measure_text_with_the_width_method_a_reply_switches_to() {
                     cx.app().root().add(&label).add(&Text::new(cx.app(), shots.join(" ")));
                 } else if key.matches("i") {
                     // After frames laid the table out again: the drag still selects "AB".
-                    // After frames laid the table out again: the drag still selects "AB".
                     let input = Input::new(cx.app()).set_value(format!("{text}yz{}", dragged.selected_text()));
                     cx.app().root().add(&input);
                     input.focus();
@@ -525,38 +523,80 @@ fn widgets_measure_text_with_the_width_method_a_reply_switches_to() {
 #[test]
 fn a_table_press_held_across_a_width_reply_keeps_its_text() {
     let zwj = "👩\u{200d}💻";
-    // The press is on "A" (one-based column), the reply follows with the button still down, then the drag goes back
-    // to "q". VS Code starts with wcwidth and its reply narrows the emoji, so the press's old column lies in "BC"; a
-    // plain xterm starts with Unicode and its reply widens it, so the old column lies inside the emoji.
+    // A press on "A" (one-based column) is held while the reply arrives; then the pointer goes to "q", back over the
+    // press's old column, to "q", into the second cell and to "q" again. A table made after the reply, pressed on its
+    // "A", takes the same path. VS Code starts with wcwidth and its reply narrows the emoji, so the old column lies in
+    // "BC"; a plain xterm starts with Unicode and its reply widens it, so the old column lies inside the emoji.
     let cases = [
-        (("TERM_PROGRAM", "vscode"), &b"\x1b[<0;6;1M\x1b[?2027;2$yw"[..], "m=Unicode"),
-        (("TERM", "xterm-256color"), b"\x1b[<0;4;1M\x1b[?2027;0$yw", "m=Wcwidth"),
+        (("TERM_PROGRAM", "vscode"), "m=Unicode", 6, 4, [1, 6, 1, 5, 1]),
+        (("TERM", "xterm-256color"), "m=Wcwidth", 4, 6, [1, 4, 1, 7, 1]),
     ];
-    for (variable, press, method) in cases {
+    // With `leave`, each press goes into its second cell first: the early one before the reply. With `tall`, "A" is
+    // on the second line of its cell.
+    let variants = [(false, false), (true, false), (false, true)];
+    for ((variable, method, early_press, late_press, path), (leave, tall)) in
+        cases.into_iter().flat_map(|case| variants.map(|variant| (case, variant)))
+    {
         let environment = vec![("TERM".into(), "xterm-256color".into()), (variable.0.into(), variable.1.into())];
-        let options = RemoteOptions { width: 24, height: 3, environment };
+        let options = RemoteOptions { width: 24, height: 8, environment };
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let record = seen.clone();
         let mut client = Client::start(options, quiet(), move |app| {
-            let held = TextTable::new(app)
-                .grid_lines(false)
-                .column_width_mode(opentui::widget::ColumnWidthMode::Content)
-                .set_content([[format!("q{zwj}A"), "BC".to_owned()]]);
+            let first = if tall { format!("x\nq{zwj}A") } else { format!("q{zwj}A") };
+            let table = move |app: &App| {
+                TextTable::new(app)
+                    .grid_lines(false)
+                    .column_width_mode(opentui::widget::ColumnWidthMode::Content)
+                    .set_content([[first.clone(), "BC".to_owned()]])
+            };
+            let held = table(app);
             app.root().add(&held);
+            let late = std::cell::RefCell::new(None::<TextTable>);
             app.on_key(move |cx, key| {
                 if key.matches("w") {
                     cx.app().root().add(&Text::new(cx.app(), format!("m={:?}", cx.app().width_method())));
+                    let made = table(cx.app());
+                    cx.app().root().add(&made);
+                    late.replace(Some(made));
                 } else if key.matches("i") {
-                    cx.app().root().add(&Text::new(cx.app(), format!("s={}", held.selected_text())));
+                    record.lock().unwrap().push(held.selected_text());
+                } else if key.matches("l") {
+                    let text = late.borrow().as_ref().map(TextTable::selected_text).unwrap_or_default();
+                    record.lock().unwrap().push(text);
+                } else if key.matches("d") {
+                    cx.app().root().add(&Text::new(cx.app(), "done"));
                 }
             });
         });
+        // The rows of "A": the held table first, then the "m=" line and the late table.
+        let (early_row, late_row) = if tall { (2, 5) } else { (1, 3) };
+        let excursion =
+            |press: i32, row: i32| if leave { format!("\x1b[<32;{};{row}M", press + 1) } else { String::new() };
         client.wait_for("BC");
-        client.send(press);
+        let reply = if method == "m=Unicode" { 2 } else { 0 };
+        let press = format!("\x1b[<0;{early_press};{early_row}M{}", excursion(early_press, early_row));
+        client.send(format!("{press}\x1b[?2027;{reply}$yw").as_bytes());
         client.wait_for(method);
-        client.send(b"\x1b[<32;1;1M\x1b[<0;1;1mi");
-        client.wait_for("s=");
-        let host = opentui::testing::TestApp::new(24, 3);
-        let screen = TerminalView::new(&host).size(24, 3).write(client.text()).screen();
-        assert_eq!(screen.lines.get(2).map(String::as_str), Some(format!("s=q{zwj}A").as_str()), "{variable:?}");
+        let mut input = String::new();
+        for x in path {
+            input.push_str(&format!("\x1b[<32;{x};{early_row}Mi"));
+        }
+        // A new press after the gesture starts from its own cell: from the emoji to "A".
+        input.push_str(&format!("\x1b[<0;1;{early_row}m\x1b[<0;2;{early_row}M\x1b[<32;{late_press};{early_row}Mi"));
+        input.push_str(&format!("\x1b[<0;{late_press};{early_row}m"));
+        input.push_str(&format!("\x1b[<0;{late_press};{late_row}M{}", excursion(late_press, late_row)));
+        for x in path {
+            input.push_str(&format!("\x1b[<32;{x};{late_row}Ml"));
+        }
+        input.push_str(&format!("\x1b[<0;1;{late_row}md"));
+        client.send(input.as_bytes());
+        client.wait_for("done");
+        let seen = seen.lock().unwrap().clone();
+        let label = format!("{variable:?} leave={leave} tall={tall}");
+        let (early, rest) = seen.split_at(path.len());
+        assert_eq!(early, &rest[1..], "{label}");
+        assert_eq!(early[0], format!("q{zwj}A"), "{label}");
+        assert_eq!(rest[0], format!("{zwj}A"), "{label}");
         client.link.terminate();
         client.finish().expect("the app thread").expect("the app");
     }

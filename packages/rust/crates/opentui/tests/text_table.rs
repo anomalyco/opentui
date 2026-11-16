@@ -563,6 +563,26 @@ fn a_drag_within_one_cell_selects_part_of_it() {
     assert_eq!(table.selected_text(), "alphabet\tsta");
 }
 
+#[test]
+fn a_selection_from_outside_anchors_by_position_after_one_in_the_table_ends() {
+    let app = TestApp::new(30, 6);
+    app.root().add(&Text::new(&app, "text"));
+    let table = table(&app, &[&["aaaa", "bbbb"], &["cccc", "dddd"]])
+        .grid_lines(false)
+        .column_width_mode(ColumnWidthMode::Content);
+    app.root().add(&table);
+    // A drag inside "dddd", then a click elsewhere: its pressed cell must not anchor the next gesture.
+    let (x, y) = find(&app, "dddd");
+    app.drag((x + 1, y), (x + 2, y));
+    assert_eq!(table.selected_text(), "dd");
+    app.advance(LATER);
+    app.click(20, 5);
+    assert_eq!(table.selected_text(), "");
+    app.advance(LATER);
+    app.drag((1, 0), (x + 2, y));
+    assert_eq!(table.selected_text(), "aaaa\tbbbb\ncccc\tddd");
+}
+
 fn grid(app: &TestApp) -> TextTable {
     let table = table(app, &[&["colA", "colB", "colC"], &["a1", "b1", "c1"], &["a2", "b2", "c2"], &["a3", "b3", "c3"]]);
     app.root().add(&table);

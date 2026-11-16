@@ -429,9 +429,13 @@ pub(crate) struct TextTableInner {
     method: Cell<Option<WidthMethod>>,
     /// The cells hold the accepted selection in document offsets; its cells no longer name its text.
     selection_in_cells: Cell<bool>,
-    /// The cell a press without a drag pinned, and whether its view still holds the press as its anchor.
+    /// The cell a press without a drag pinned, and whether a press of this gesture is pinned there.
     pressed: Cell<Option<(usize, usize)>>,
     press_pinned: Cell<bool>,
+    /// The pinned press's character offset once its cell shows another selection.
+    press_anchor: Cell<Option<u32>>,
+    /// A width change moved the pinned press: its old screen cell no longer names its character, the anchor does.
+    press_moved: Cell<bool>,
 }
 
 impl Measure for TextTableInner {
@@ -522,7 +526,13 @@ impl TextTableInner {
         let layout = self.layout.borrow();
         let Some((_, layout)) = layout.as_ref() else { return };
         let (cells, options) = (self.cells.borrow(), self.options.borrow());
-        let (anchor, focus) = (selection.anchor, selection.focus);
+        // A press that a width change moved anchors the rest of its gesture where its character lies now, as a press
+        // made there would; only a new press starts again.
+        let anchor = match self.pressed.get() {
+            Some(pressed) if self.press_moved.get() && !start => self.moved_anchor(layout, &cells, &options, pressed),
+            _ => selection.anchor,
+        };
+        let focus = selection.focus;
         // A click selects nothing; a double or triple click selects a word or line of the cell under it.
         if anchor == focus && (selection.unit == SelectionUnit::Cell || layout.cell_at(anchor.0, anchor.1).is_none()) {
             self.clear_cell_selections();
@@ -543,8 +553,7 @@ impl TextTableInner {
             }
             return;
         }
-        // The pressed cell stays the anchor's, wherever the press's old cell lies now.
-        let anchor_cell = self.pressed.get().or_else(|| layout.cell_at(anchor.0, anchor.1));
+        let anchor_cell = layout.cell_at(anchor.0, anchor.1);
         let anchor_column = anchor_cell.map(|(_, column)| column).or_else(|| layout.column_at(anchor.0));
         let mode = if anchor_cell.is_some() && anchor_cell == layout.cell_at(focus.0, focus.1) {
             SelectionMode::SingleCell
@@ -576,16 +585,64 @@ impl TextTableInner {
                 } else {
                     ((anchor.0 - left, anchor.1 - top), (focus.0 - left, focus.1 - top))
                 };
-                // Within the pressed cell the pinned press stays the anchor.
-                let pinned = is_anchor && self.press_pinned.get() && !whole;
-                if is_anchor && whole {
-                    self.press_pinned.set(false);
+                // Leaving the pressed cell replaces its pin: keep the press's character for a later width change.
+                if is_anchor && whole && self.press_pinned.get() && self.press_anchor.get().is_none() {
+                    self.press_anchor.set(self.press_offset(&cell.view, options.selection_colors));
                 }
-                let extend = pinned || !(start || mode_changed || whole);
+                let extend = !(start || mode_changed || whole);
                 let colors = options.selection_colors;
                 self.report(cell.view.select_local(from, to, extend, selection.unit, colors));
             }
         }
+    }
+
+    /// The table-local cell where the moved press's character lies now.
+    fn moved_anchor(&self, layout: &Layout, cells: &Cells, options: &Options, pressed: (usize, usize)) -> (i32, i32) {
+        let (row, column) = pressed;
+        let (left, top) =
+            (layout.cell_left(column) + options.padding_x as i32, layout.cell_top(row) + options.padding_y as i32);
+        let Some(cell) = cells.rows.get(row).and_then(|cells| cells.get(column)).and_then(Option::as_ref) else {
+            return (left, top);
+        };
+        let colors = options.selection_colors;
+        let offset = self.press_anchor.get().or_else(|| self.press_offset(&cell.view, colors)).unwrap_or(0);
+        self.press_anchor.set(Some(offset));
+        let probe = |from: (i32, i32), to: (i32, i32)| {
+            self.report(cell.view.select_local(from, to, false, SelectionUnit::Cell, colors));
+            self.report(cell.view.selection()).flatten()
+        };
+        // The last row that starts at or before the character, then the first cell whose character ends after it.
+        let rows = self.report(cell.view.info()).map_or(1, |info| info.virtual_line_count as i32);
+        let mut y = 0;
+        for candidate in 1..rows {
+            match probe((0, candidate), (0, 1 << 20)) {
+                Some((start, _)) if start <= offset => y = candidate,
+                _ => break,
+            }
+        }
+        let (mut low, mut high) = (0, layout.columns[column].saturating_sub(options.padding_x * 2) as i32);
+        while low < high {
+            let middle = (low + high) / 2;
+            if probe((0, y), (middle, y)).is_some_and(|(_, end)| end > offset) {
+                high = middle;
+            } else {
+                low = middle + 1;
+            }
+        }
+        // The probes replaced the cell's selection: this update sets every cell again.
+        self.mode.set(None);
+        (left + low, top + y)
+    }
+
+    /// The character offset of the press `view` pins: a drag from it to below the text starts there.
+    fn press_offset(&self, view: &TextView, colors: SelectionColors) -> Option<u32> {
+        self.report(view.select_local((0, 0), (0, 1 << 20), true, SelectionUnit::Cell, colors));
+        if let Some((start, _)) = self.report(view.selection()).flatten() {
+            return Some(start);
+        }
+        // A press after the text: up to it is the whole text.
+        self.report(view.select_local((0, 0), (0, -1), true, SelectionUnit::Cell, colors));
+        Some(self.report(view.selection()).flatten().map_or(0, |(_, end)| end))
     }
 
     fn has_selection(&self) -> bool {
@@ -659,8 +716,26 @@ impl TextTableInner {
         if self.method.replace(Some(method)).is_none_or(|old| old == method) {
             return;
         }
-        for cell in self.cells.borrow().rows.iter().flatten().flatten() {
+        let cells = self.cells.borrow();
+        if self.press_pinned.get() {
+            self.press_moved.set(true);
+        }
+        // A press held outside its cell moves with its character, through a view of its own.
+        let pressed = self.pressed.get().and_then(|(row, column)| cells.rows.get(row)?.get(column)?.as_ref());
+        let anchor = match (self.press_anchor.get(), pressed) {
+            (Some(offset), Some(cell)) => self.report(TextView::new(&cell.buffer)).map(|view| (offset, view)),
+            _ => None,
+        };
+        if let Some((offset, view)) = &anchor {
+            self.report(view.select_character(*offset));
+        }
+        for cell in cells.rows.iter().flatten().flatten() {
             self.report(cell.buffer.set_width_method(method));
+        }
+        if let Some((_, view)) = &anchor
+            && let Some((start, _)) = self.report(view.selection()).flatten()
+        {
+            self.press_anchor.set(Some(start));
         }
         if self.selection.get().is_some() {
             self.selection_in_cells.set(true);
@@ -767,6 +842,9 @@ impl Behavior for TextTableInner {
             self.selection.set(None);
             self.selection_in_cells.set(false);
             self.pressed.set(None);
+            self.press_pinned.set(false);
+            self.press_anchor.set(None);
+            self.press_moved.set(false);
             self.mode.set(None);
             self.clear_cell_selections();
             self.redraw();
@@ -849,6 +927,8 @@ impl TextTable {
             selection_in_cells: Cell::new(false),
             pressed: Cell::new(None),
             press_pinned: Cell::new(false),
+            press_anchor: Cell::new(None),
+            press_moved: Cell::new(false),
         }));
         let weak = Rc::downgrade(&table.0);
         let measurer: Weak<dyn Measure> = weak;

@@ -361,6 +361,12 @@ impl TextView {
         })
     }
 
+    /// Selects the whole character that starts at document offset `offset`.
+    pub fn select_character(&self, offset: u32) -> Result<()> {
+        let raw = sys::ot_editor_selection { operation: sys::OT_EDITOR_SELECT_INCLUSIVE, ..Default::default() };
+        self.select(sys::ot_editor_selection { start: offset, end: offset, ..raw }).map(drop)
+    }
+
     pub fn clear_selection(&self) -> Result<()> {
         self.select(sys::ot_editor_selection { operation: sys::OT_EDITOR_SELECT_RESET, ..Default::default() })?;
         self.select(sys::ot_editor_selection { operation: sys::OT_EDITOR_SELECT_LOCAL_RESET, ..Default::default() })
