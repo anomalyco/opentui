@@ -161,6 +161,13 @@ overrides. On the process host, they can describe the wrong terminal endpoint. T
 OpenTUI applies them whenever they are in the forwarded environment. GNU Screen is the other exception. It answers no
 query, so OpenTUI detects it from `STY`, or from a `TERM` that starts with `screen` without `TMUX`. This covers ssh
 started inside Screen, which forwards Screen's `TERM`, and Screen started on the server. A tmux XTVERSION reply still selects tmux.
+A `TMUX` that is not empty, or a `TERM` that starts with `tmux`, is only a hint: OpenTUI leaves out the startup
+graphics query, which tmux would show as the pane title before its XTVERSION reply arrives. This covers a tmux server
+started from an ssh login, whose panes inherit `SSH_CONNECTION`, and ssh started inside tmux, which forwards tmux's
+`TERM`. The hint does not detect tmux: until the XTVERSION reply names it, clipboard framing and the width method
+stay as for an unidentified terminal. OpenTUI never sends the query later, so a terminal behind a stale `TMUX` gets
+Kitty graphics only when its XTVERSION reply names kitty or Ghostty. Others, such as WezTerm, keep Sixel but not Kitty
+graphics.
 
 When `COLORTERM` does not enable `rgb`, OpenTUI asks the terminal. The startup queries include XTGETTCAP `RGB` and
 `Tc`, and a positive reply to either enables `rgb`. An XTVERSION reply from kitty, Ghostty, WezTerm, foot, XTerm,
@@ -199,8 +206,8 @@ const renderer = await createCliRenderer({
 `forwardEnvKeys` reads the process environment, so it describes the remote endpoint only when the process runs
 inside that endpoint's session. A server with many clients passes each client's values in `environment` instead,
 for example `environment: { TERM: pty.term, COLORTERM: "truecolor" }`. These values replace forwarded values with
-the same name. When auto-detection finds an SSH login, OpenTUI applies only their color depth keys and GNU Screen
-detection, as it does for forwarded values. Set `remote: true` for the other values to take effect, as `@opentui/ssh` does.
+the same name. When auto-detection finds an SSH login, OpenTUI applies only their color depth keys, the width
+overrides, GNU Screen detection, and the tmux hint, as it does for forwarded values. Set `remote: true` for the other values to take effect, as `@opentui/ssh` does.
 
 Custom streams do not receive `SIGWINCH`. Call `renderer.resize(width, height)` when the remote transport reports a
 window change. Read [SSH](/docs/reference/ssh) for the full session setup.

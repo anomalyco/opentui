@@ -1807,12 +1807,14 @@ test "writeClipboard - Screen framing crosses the 252-byte boundary" {
 
 // The environment is adopted as an app forwards it, so SSH_CONNECTION makes it a remote client's. GNU screen
 // answers no query, so its TERM (forwarded by ssh) or STY names it there too; a tmux XTVERSION reply wins.
+// A nonempty TMUX or a tmux TERM there only holds back the graphics query, which tmux would show as the pane
+// title before its XTVERSION reply: a stale TMUX in front of another terminal keeps its framing and Sixel.
 // With STY and TMUX both set, a local session checks TMUX first; a remote one counts it as screen (D71a).
 test "multiplexer sets clipboard framing, OSC 52, widths and the graphics query, also behind ssh" {
     const screen = "\x1bP\x1b]52;c;dGVzdA==\x07\x1b\\";
     const tmux = "\x1bPtmux;\x1b\x1b]52;c;dGVzdA==\x1b\x1b\\\x1b\\";
     const plain = "\x1b]52;c;dGVzdA==\x1b\\";
-    const Row = struct { env: []const u8, reply: []const u8 = "", mux: Terminal.Multiplexer, osc52: bool, width: utf8.WidthMethod, graphics: bool, clipboard: []const u8 };
+    const Row = struct { env: []const u8, reply: []const u8 = "", mux: Terminal.Multiplexer, osc52: bool, width: utf8.WidthMethod, graphics: bool, sixel: bool = false, clipboard: []const u8 };
     const rows = [_]Row{
         .{ .env = "STY=1.pts-0.box", .mux = .screen, .osc52 = true, .width = .wcwidth, .graphics = false, .clipboard = screen },
         .{ .env = "TERM=screen", .mux = .screen, .osc52 = true, .width = .wcwidth, .graphics = false, .clipboard = screen },
@@ -1820,10 +1822,15 @@ test "multiplexer sets clipboard framing, OSC 52, widths and the graphics query,
         .{ .env = "TERM=screen.xterm-256color SSH_CONNECTION=1", .mux = .screen, .osc52 = true, .width = .wcwidth, .graphics = false, .clipboard = screen },
         .{ .env = "STY=1.pts-0.box TMUX=/tmp/tmux-1000/default,1,0", .mux = .tmux, .osc52 = true, .width = .wcwidth, .graphics = false, .clipboard = tmux },
         .{ .env = "STY=1.pts-0.box TMUX=/tmp/tmux-1000/default,1,0 SSH_CONNECTION=1", .mux = .screen, .osc52 = true, .width = .wcwidth, .graphics = false, .clipboard = screen },
-        .{ .env = "TERM=screen-256color TMUX=/tmp/tmux-1000/default,1,0 SSH_CONNECTION=1", .mux = .none, .osc52 = false, .width = .unicode, .graphics = true, .clipboard = plain },
+        .{ .env = "TERM=screen-256color TMUX=/tmp/tmux-1000/default,1,0 SSH_CONNECTION=1", .mux = .none, .osc52 = false, .width = .unicode, .graphics = false, .clipboard = plain },
         .{ .env = "TERM=screen-256color SSH_CONNECTION=1", .reply = "\x1bP>|tmux 3.8\x1b\\", .mux = .tmux, .osc52 = true, .width = .unicode, .graphics = false, .clipboard = tmux },
+        .{ .env = "ZELLIJ=0 TERM=tmux-256color", .mux = .zellij, .osc52 = true, .width = .wcwidth, .graphics = true, .clipboard = plain },
         .{ .env = "ZELLIJ=0 SSH_CONNECTION=1", .mux = .none, .osc52 = false, .width = .unicode, .graphics = true, .clipboard = plain },
-        .{ .env = "TERM=tmux-256color SSH_CONNECTION=1", .mux = .none, .osc52 = false, .width = .unicode, .graphics = true, .clipboard = plain },
+        .{ .env = "TMUX=/tmp/tmux-1000/default,1,0 SSH_CONNECTION=1", .mux = .none, .osc52 = false, .width = .unicode, .graphics = false, .clipboard = plain },
+        .{ .env = "TERM=tmux-256color SSH_CONNECTION=1", .mux = .none, .osc52 = false, .width = .unicode, .graphics = false, .clipboard = plain },
+        .{ .env = "TMUX=/tmp/tmux-1000/default,1,0 SSH_CONNECTION=1", .reply = "\x1bP>|tmux 3.8\x1b\\", .mux = .tmux, .osc52 = true, .width = .unicode, .graphics = false, .clipboard = tmux },
+        .{ .env = "TMUX= SSH_CONNECTION=1", .mux = .none, .osc52 = false, .width = .unicode, .graphics = true, .clipboard = plain },
+        .{ .env = "TERM=xterm-256color TMUX=/gone SSH_CONNECTION=1", .reply = "\x1b[?62;4c", .mux = .none, .osc52 = false, .width = .unicode, .graphics = false, .sixel = true, .clipboard = plain },
     };
     for (rows, 0..) |row, index| {
         errdefer std.debug.print("multiplexer row {d}\n", .{index});
@@ -1839,8 +1846,9 @@ test "multiplexer sets clipboard framing, OSC 52, widths and the graphics query,
         if (row.reply.len > 0) term.processCapabilityResponse(row.reply);
         try testing.expectEqual(row.mux, term.multiplexer);
         try testing.expectEqual(row.osc52, term.caps.osc52);
-        try testing.expectEqual(row.mux != .none, term.caps.explicit_cursor_positioning);
+        try testing.expectEqual(row.mux == .tmux or row.mux == .screen, term.caps.explicit_cursor_positioning);
         try testing.expectEqual(row.width, term.caps.unicode);
+        try testing.expectEqual(row.sixel, term.caps.sixel);
         writer.reset();
         try term.writeClipboard(&writer, .clipboard, "test");
         try testing.expectEqualStrings(row.clipboard, writer.getWritten());
