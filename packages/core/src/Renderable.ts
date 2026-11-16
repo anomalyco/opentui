@@ -762,7 +762,21 @@ export abstract class Renderable extends BaseRenderable {
 
   /** @internal Native built-ins may suspend lifecycle work without losing their registration position. */
   _needsLifecyclePass(): boolean {
-    return this.onLifecyclePass !== null
+    return this.onLifecyclePass !== null || this._builtinLifecyclePass !== null
+  }
+
+  private _builtinLifecyclePass: (() => void) | null = null
+
+  /** A widget's own lifecycle pass: it runs before `onLifecyclePass`, which callers may read, wrap or replace. */
+  protected setBuiltinLifecyclePass(pass: (() => void) | null): void {
+    this._builtinLifecyclePass = pass
+    this.syncLifecyclePass()
+  }
+
+  /** @internal Runs the widget's own lifecycle pass, then the caller's. */
+  _runLifecyclePass(): void {
+    this._builtinLifecyclePass?.call(this)
+    if (!this._isDestroyed) this.onLifecyclePass?.call(this)
   }
 
   public get translateX(): number {
@@ -1669,7 +1683,7 @@ export abstract class Renderable extends BaseRenderable {
           const passes = previous._ctx.getLifecyclePasses()
           lifecycle = new Map([[passes, false]])
         }
-        if (typeof child.onLifecyclePass === "function") {
+        if (typeof child.onLifecyclePass === "function" || child._builtinLifecyclePass) {
           const passes = target._ctx.getLifecyclePasses()
           lifecycle ??= new Map()
           lifecycle.set(passes, true)
@@ -1906,7 +1920,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   private syncLifecyclePass(): void {
-    if (!this.onLifecyclePass) this._ctx.unregisterLifecyclePass(this)
+    if (!this.onLifecyclePass && !this._builtinLifecyclePass) this._ctx.unregisterLifecyclePass(this)
     else if (this.parent) this._ctx.registerLifecyclePass(this)
     else this._ctx.nativeScene.lifecyclePasses.refresh(this)
   }

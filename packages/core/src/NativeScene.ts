@@ -683,7 +683,7 @@ export class NativeScene {
         if (this.stopped || this.renderer.controlState === RendererControlState.EXPLICIT_SUSPENDED) return
         if (++visits > maxHostRequests) throw new Error("Native scene lifecycle work limit exceeded")
         if (!renderable.isDestroyed) {
-          renderable.onLifecyclePass?.call(renderable)
+          renderable._runLifecyclePass()
         }
       }
     }

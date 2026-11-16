@@ -311,6 +311,15 @@ export class TextBuffer {
     })
   }
 
+  /**
+   * Measures with `widthMethod` from now on; views keep their selections on the same text. For buffers created without
+   * `followSessionWidth` and drawn outside a scene; a following buffer throws.
+   */
+  public setWidthMethod(widthMethod: WidthMethod): void {
+    this.guard()
+    this.lib.contextTextBufferSetWidthMethod(this.native.handle.context, this.native.handle, widthMethod)
+  }
+
   public getTabWidth(): number {
     this.guard()
     return this.lib.contextTextBufferGetInfo(this.native.handle.context, this.native.handle).tabWidth

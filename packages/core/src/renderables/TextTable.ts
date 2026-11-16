@@ -7,7 +7,7 @@ import { StyledText, stringToStyledText } from "../lib/styled-text.js"
 import { RGBA, parseColor, type ColorInput } from "../lib/RGBA.js"
 import { type TextChunk, TextBuffer } from "../text-buffer.js"
 import { TextBufferView } from "../text-buffer-view.js"
-import type { RenderContext } from "../types.js"
+import type { RenderContext, WidthMethod } from "../types.js"
 import type { MeasureResult, NativeEncodedStyledText } from "../zig.js"
 import { allocateProportionalColumnWidths } from "./text-table-width.js"
 
@@ -93,12 +93,16 @@ export interface TextTableOptions extends RenderableOptions<TextTableRenderable>
   attributes?: number
 }
 
-/**
- * Its cells keep the width method of the moment the table was made: a terminal reply that changes the renderer's
- * method later does not re-measure them yet (Markdown tables too).
- */
 export class TextTableRenderable extends Renderable {
   private _content: TextTableContent
+  /** The width method the cells measure with; a terminal reply can change the renderer's. */
+  private _cellWidthMethod?: WidthMethod
+  /** The cells hold the accepted selection in document offsets; its cells no longer name its text. */
+  private _selectionInCells = false
+  /** The cell a press without a drag pinned, which the gesture's first drag keeps as its anchor. */
+  private _pressedCell: CellPosition | null = null
+  /** The pressed cell's view still holds the press as its anchor. */
+  private _pressPinned = false
   private _wrapMode: "none" | "char" | "word"
   private _columnWidthMode: TextTableColumnWidthMode
   private _columnFitter: TextTableColumnFitter
@@ -188,9 +192,21 @@ export class TextTableRenderable extends Renderable {
 
       this.setupMeasureFunc()
       this.runMutation(() => this.rebuildCells(this._content))
+      this.setBuiltinLifecyclePass(() => {
+        if (this._ctx.widthMethod !== this._cellWidthMethod) this.runMutation(() => this.followWidthMethod())
+      })
     } catch (error) {
       this.abortConstruction(error, () => this.destroyCells())
     }
+  }
+
+  /** Cells re-measure in place: their views keep their selections on the same text. */
+  private followWidthMethod(): void {
+    const method = this._ctx.widthMethod
+    for (const row of this._cells) for (const cell of row) cell.textBuffer.setWidthMethod(method)
+    this._cellWidthMethod = method
+    if (this._lastLocalSelection?.isActive) this._selectionInCells = true
+    this.invalidateLayout()
   }
 
   public get content(): TextTableContent {
@@ -384,10 +400,12 @@ export class TextTableRenderable extends Renderable {
 
     const localSelection = convertGlobalToLocalSelection(selection, Math.trunc(this.x), Math.trunc(this.y))
     this._lastLocalSelection = localSelection
+    this._selectionInCells = false
 
     if (!localSelection?.isActive) {
       this.resetCellSelections()
       this._lastSelectionMode = null
+      this._pressedCell = null
     } else {
       this.applySelectionToCells(localSelection, selection?.isStart ?? false)
     }
@@ -572,6 +590,9 @@ export class TextTableRenderable extends Renderable {
     this._prevCellContent = refs
     this._rowCount = newRowCount
     this._columnCount = newColumnCount
+    // Kept cells measure with the method they were made with; new ones with the renderer's.
+    if (this._cellWidthMethod !== undefined && this._cellWidthMethod !== this._ctx.widthMethod) this.followWidthMethod()
+    this._cellWidthMethod = this._ctx.widthMethod
     this.runCleanup((run) => {
       run(() => this.invalidateLayout())
       for (let rowIdx = 0; rowIdx < previous.length; rowIdx++) {
@@ -654,7 +675,7 @@ export class TextTableRenderable extends Renderable {
     this.applyLayoutToViews(layout)
     this._layoutDirty = false
 
-    if (this._lastLocalSelection?.isActive) {
+    if (this._lastLocalSelection?.isActive && !this._selectionInCells) {
       this.applySelectionToCells(this._lastLocalSelection, true)
     }
   }
@@ -1067,6 +1088,15 @@ export class TextTableRenderable extends Renderable {
     if (localSelection.anchorX === localSelection.focusX && localSelection.anchorY === localSelection.focusY) {
       this.resetCellSelections()
       this._lastSelectionMode = null
+      // The press selects nothing, but its cell pins it: a width change moves the pin with its text.
+      this._pressedCell = this.getCellAtLocalPosition(localSelection.anchorX, localSelection.anchorY)
+      this._pressPinned = this._pressedCell !== null
+      if (this._pressedCell) {
+        const { rowIdx, colIdx } = this._pressedCell
+        const x = localSelection.anchorX - ((this._layout.columnOffsets[colIdx] ?? 0) + 1 + this._cellPaddingX)
+        const y = localSelection.anchorY - ((this._layout.rowOffsets[rowIdx] ?? 0) + 1 + this._cellPaddingY)
+        this._cells[rowIdx][colIdx].textBufferView.setLocalSelection(x, y, x, y, this._selectionBg, this._selectionFg)
+      }
       return
     }
 
@@ -1121,7 +1151,10 @@ export class TextTableRenderable extends Renderable {
           coords = this.getFullCellSelectionCoords(rowIdx, colIdx)
         }
 
-        const shouldUseSet = isStart || modeChanged || forceSet
+        // Within the pressed cell the pinned press stays the anchor, wherever its old cell lies now.
+        const pinned = isAnchorCell && this._pressPinned && !forceSet
+        if (isAnchorCell && forceSet) this._pressPinned = false
+        const shouldUseSet = !pinned && (isStart || modeChanged || forceSet)
 
         if (shouldUseSet) {
           cell.textBufferView.setLocalSelection(
@@ -1147,7 +1180,7 @@ export class TextTableRenderable extends Renderable {
   }
 
   private resolveSelectionResolution(localSelection: LocalSelectionBounds): SelectionResolution {
-    const anchorCell = this.getCellAtLocalPosition(localSelection.anchorX, localSelection.anchorY)
+    const anchorCell = this._pressedCell ?? this.getCellAtLocalPosition(localSelection.anchorX, localSelection.anchorY)
     const focusCell = this.getCellAtLocalPosition(localSelection.focusX, localSelection.focusY)
     const anchorColumn = anchorCell?.colIdx ?? this.getColumnAtLocalX(localSelection.anchorX)
 
