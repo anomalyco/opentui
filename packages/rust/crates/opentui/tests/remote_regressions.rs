@@ -19,6 +19,7 @@ fn a_client_that_leaves_during_the_color_query_never_ends_the_app() {
     let (done, finished) = mpsc::channel();
     std::thread::spawn(move || {
         let result = App::remote(terminal, AppOptions::default()).and_then(App::run);
+        #[expect(clippy::let_underscore_must_use, reason = "the test may stop listening first")]
         let _ = done.send(result.is_ok());
     });
     assert!(

@@ -148,6 +148,7 @@ fn a_copy_reaches_the_terminal_after_the_host_clipboard() {
     const NEWEST: &str = "bGlmZWN5Y2xlIGNvcHkgMTY="; // "lifecycle copy 16"
     // A compositor that accepts connections and never answers holds host operations until they time out.
     let socket = std::env::temp_dir().join(format!("opentui-lifecycle-{}.wayland", std::process::id()));
+    #[expect(clippy::let_underscore_must_use, reason = "an earlier run may have left no socket")]
     let _ = std::fs::remove_file(&socket);
     let _compositor = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     let wayland = ["/usr/lib", "/usr/lib64", "/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu"]
@@ -209,6 +210,7 @@ fn a_copy_reaches_the_terminal_after_the_host_clipboard() {
         }
         assert!(text.contains(line), "{keys}: {line:?} missing: {text:?}");
     }
+    #[expect(clippy::let_underscore_must_use, reason = "teardown goes on whatever this returns")]
     let _ = std::fs::remove_file(&socket);
 }
 
@@ -244,7 +246,9 @@ impl XServer {
 #[cfg(target_os = "linux")]
 impl Drop for XServer {
     fn drop(&mut self) {
+        #[expect(clippy::let_underscore_must_use, reason = "the server may already have exited")]
         let _ = self.child.kill();
+        #[expect(clippy::let_underscore_must_use, reason = "the server may already have exited")]
         let _ = self.child.wait();
     }
 }

@@ -1489,11 +1489,11 @@ mod tests {
                     16 => {
                         let (column, deleted, piece) = (next(12) as u32, next(3) as u32, pieces[next(pieces.len())]);
                         let undoable = next(2) == 0;
+                        #[expect(clippy::let_underscore_must_use, reason = "both buffers fail alike out of range")]
                         for area in &areas {
                             if undoable {
                                 area.buffer().set_text(piece, true).unwrap();
                             } else {
-                                // Out-of-range places fail alike in both buffers.
                                 let _ = area.buffer().delete_range((0, column), (0, column + deleted));
                                 let _ = area.buffer().insert(piece);
                             }

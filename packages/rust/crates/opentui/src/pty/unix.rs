@@ -53,6 +53,7 @@ impl Process {
 
     /// Hangs up, and continues stopped jobs so they see it. Closing the master, when its last owner drops it, hangs
     /// up the terminal too.
+    #[expect(clippy::let_underscore_must_use, reason = "a program that already exited has nothing to signal")]
     pub(super) fn close(&self, shared: &Shared) {
         let _ = self.signal(shared, libc::SIGHUP);
         let _ = self.signal(shared, libc::SIGCONT);

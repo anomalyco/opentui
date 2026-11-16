@@ -1280,9 +1280,9 @@ impl Markdown {
             if ordered {
                 let number = u64::from(block.number) + n as u64;
                 text.extend(std::iter::repeat_n(' ', width - digits(number) - 1));
-                let _ = write!(text, "{number}.{task} ");
+                write!(text, "{number}.{task} ").expect("writing to a String never fails");
             } else {
-                let _ = write!(text, "-{task} ");
+                write!(text, "-{task} ").expect("writing to a String never fails");
             }
             if *label.borrow() != text {
                 widget.set_text(vec![Span::styled(text.clone(), marker)]);

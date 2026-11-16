@@ -40,6 +40,7 @@ impl Drop for Release {
     fn drop(&mut self) {
         if self.armed {
             let id = self.id;
+            #[expect(clippy::let_underscore_must_use, reason = "an app that already ended has no tasks to release")]
             let _ = self.proxy.post(move |cx| drop(cx.app().0.tasks.borrow_mut().remove(&id)));
         }
     }

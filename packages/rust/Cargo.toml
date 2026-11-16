@@ -6,3 +6,11 @@ resolver = "3"
 version = "0.9.0"
 edition = "2024"
 license = "MIT"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+let_underscore_must_use = "deny"
+missing_safety_doc = "deny"

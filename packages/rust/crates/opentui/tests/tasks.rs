@@ -74,6 +74,7 @@ fn abort_between_posting_a_result_and_the_ui_turn_drops_only_that_task() {
                     // This task returns in the same poll. On this single worker the marker cannot run
                     // until spawn's wrapper has posted the output; the UI hasn't had a turn yet.
                     tokio::spawn(async move {
+                        #[expect(clippy::let_underscore_must_use, reason = "the test may stop listening first")]
                         let _ = tx.send(());
                     });
                     id + 10

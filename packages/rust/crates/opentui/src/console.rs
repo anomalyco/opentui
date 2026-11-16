@@ -234,6 +234,7 @@ impl ConsoleSender {
 /// Returns the id to unregister with.
 pub(crate) fn register(proxy: AppProxy, fallback: bool) -> u64 {
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    #[expect(clippy::let_underscore_must_use, reason = "the thread-local is gone only at thread exit")]
     let _ = LOCAL.try_with(|local| local.borrow_mut().push(id));
     if let Ok(mut sink) = SINK.lock() {
         let queue = if fallback { std::mem::take(&mut sink.orphans) } else { VecDeque::new() };
@@ -248,6 +249,7 @@ pub(crate) fn unregister(id: u64) {
     if let Ok(mut sink) = SINK.lock() {
         sink.targets.retain(|target| target.id != id);
     }
+    #[expect(clippy::let_underscore_must_use, reason = "the thread-local is gone only at thread exit")]
     let _ = LOCAL.try_with(|local| local.borrow_mut().retain(|&local| local != id));
 }
 

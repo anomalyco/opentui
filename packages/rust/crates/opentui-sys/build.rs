@@ -110,6 +110,7 @@ fn main() {
     if static_link {
         // Apple's linker takes libopentui.dylib over libopentui.a from one directory, so search one without the dylib.
         // The copy keeps the source's mode, so a read-only source leaves a copy that a rerun cannot overwrite.
+        #[expect(clippy::let_underscore_must_use, reason = "a first build has no copy; the copy below fails loudly")]
         let _ = fs::remove_file(out.join(archive));
         fs::copy(library.join(archive), out.join(archive)).expect("copy the static archive into OUT_DIR");
         println!("cargo:rustc-link-search=native={}", out.display());

@@ -72,6 +72,7 @@ unsafe extern "C" fn trampoline(
     let size = measurer.map_or((0.0, 0.0), |measurer| {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| measurer.measure(width, height))).unwrap_or_else(
             |payload| {
+                #[expect(clippy::let_underscore_must_use, reason = "the thread-local is gone only at thread exit")]
                 let _ = PANIC.try_with(|panic| {
                     panic.borrow_mut().get_or_insert(payload);
                 });
@@ -94,6 +95,7 @@ pub(crate) fn resume_measure_panic() {
 }
 
 pub(crate) fn forget(handle: &sys::ot_handle) {
+    #[expect(clippy::let_underscore_must_use, reason = "the thread-local is gone only at thread exit")]
     let _ = MEASURERS.try_with(|measurers| {
         if let Ok(mut measurers) = measurers.try_borrow_mut() {
             measurers.remove(&key(handle));

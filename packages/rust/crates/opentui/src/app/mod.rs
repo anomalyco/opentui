@@ -492,6 +492,7 @@ impl App {
     pub fn headless(options: HeadlessOptions) -> Result<Self> {
         let session = Self::headless_session(options.width, options.height, &options.app)?;
         let app = Self::with_session(session, options.app, Clock::Real(Instant::now()), None)?;
+        #[expect(clippy::let_underscore_must_use, reason = "a new app's cell is empty")]
         let _ = app.0.headless.set(headless::HeadlessState::default());
         Ok(app)
     }
@@ -516,6 +517,7 @@ impl App {
     pub(crate) fn detached(session: Session, parent: Session, options: AppOptions) -> Result<Self> {
         let start = Instant::now();
         let app = Self::with_session(session, options, Clock::Manual { start, now: Cell::new(start) }, None)?;
+        #[expect(clippy::let_underscore_must_use, reason = "a new app's cell is empty")]
         let _ = app.0.parent.set(parent);
         Ok(app)
     }
@@ -653,7 +655,7 @@ impl App {
         if !self.0.in_frame.get()
             && let Some(parent) = self.0.parent.get()
         {
-            let _ = self.0.session.sync_detached(parent);
+            self.report(self.0.session.sync_detached(parent));
         }
         &self.0.session
     }
@@ -1630,6 +1632,7 @@ impl App {
         });
         if !captured.is_empty() {
             use std::io::Write;
+            #[expect(clippy::let_underscore_must_use, reason = "stderr is the last place to report to")]
             let _ = std::io::stderr().write_all(&captured);
         }
         self.teardown();

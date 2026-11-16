@@ -219,6 +219,7 @@ impl Restore {
     fn finish(&self) {
         self.done.set(true);
         if let Ok(mut terminal) = self.terminal.try_borrow_mut() {
+            #[expect(clippy::let_underscore_must_use, reason = "teardown goes on whatever the restore returns")]
             let _ = terminal.leave_raw();
         }
         // Drop queued mouse reports so the shell does not receive them.
@@ -756,6 +757,7 @@ impl Host {
     fn route_reply(&mut self, reply: &[u8], events: &mut Vec<Event>) {
         // Native setup asks for the theme colors once; a color scheme change asks again.
         if is_color_scheme_notice(reply) {
+            #[expect(clippy::let_underscore_must_use, reason = "without an answer the app keeps its theme colors")]
             let _ = self.session.control(Control::QueryThemeColors);
             events.push(Event::ColorScheme);
             return;
@@ -803,6 +805,10 @@ impl Host {
                 if is_cursor_report(reply)
                     && let Some(split) = &self.split
                 {
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "no failure found that a cursor report reaches: the session is open and between frames"
+                    )]
                     let _ = split.cursor_reported();
                 }
             }
@@ -902,7 +908,10 @@ impl Host {
         }
         self.session.suspend()?;
         self.drive_until(TerminalState::Suspended)?;
-        // As Core, restore errors don't stop the hand-over: conhost can apply a saved mode and still fail the call.
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "as Core, restore errors don't stop the hand-over: conhost can apply a saved mode and still fail"
+        )]
         let _ = restore.terminal.borrow_mut().leave_raw();
         // As Core does once a suspension settles: drop the input the terminal sent meanwhile, such as mouse reports from
         // before restoration turned them off, so the program that takes over does not read it.
@@ -1010,6 +1019,7 @@ impl Drop for Host {
         match &self.connection {
             Connection::Local { restore, .. } => {
                 restore.emergency();
+                #[expect(clippy::let_underscore_must_use, reason = "the thread-local is gone only at thread exit")]
                 let _ = ACTIVE.try_with(|active| active.borrow_mut().take());
             }
             Connection::Remote(terminal) => restore_remote(&self.session, terminal),
@@ -1281,10 +1291,11 @@ mod tests {
         install_panic_hook();
         let (line_tx, line_rx) = mpsc::channel();
         let capture = StderrCapture::start(move |line| {
+            #[expect(clippy::let_underscore_must_use, reason = "lines after the test ends have no receiver")]
             let _ = line_tx.send(line);
         })
         .expect("start capturing stderr");
-        let _ = std::thread::spawn(|| panic!("a worker thread failed")).join();
+        std::thread::spawn(|| panic!("a worker thread failed")).join().expect_err("the worker panics");
         write_stderr(b"after-the-worker-panic\n");
         let deadline = std::time::Instant::now() + Duration::from_secs(1);
         let mut captured = false;

@@ -91,6 +91,7 @@ impl Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
+        #[expect(clippy::let_underscore_must_use, reason = "a drop has no caller to report to")]
         let _ = self.leave_raw();
     }
 }
@@ -398,6 +399,7 @@ impl Drop for Signals {
         for (signal, previous) in self.previous.drain(..).rev() {
             unsafe { libc::sigaction(signal, &previous, std::ptr::null_mut()) };
         }
+        #[expect(clippy::let_underscore_must_use, reason = "a newer handler's pipe stays installed")]
         let _ = SIGNAL_PIPE.compare_exchange(self.write.as_raw_fd(), -1, Ordering::AcqRel, Ordering::Acquire);
     }
 }
