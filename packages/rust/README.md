@@ -54,7 +54,14 @@ To link other artifacts, such as an npm platform package or a native archive
 of a release, set `OPENTUI_LIB_DIR` to their directory. It wins over the
 checkout's build. Give an absolute path: Cargo reads a relative one from
 `crates/opentui-sys`. A Cargo `git` dependency on this repository has no native
-build, so it needs `OPENTUI_LIB_DIR`. An npm platform package ships only the
+build, so it needs `OPENTUI_LIB_DIR`: extract
+`opentui-native-v<version>-<platform>.zip` from the matching release (for
+example `opentui-native-v0.9.1-linux-x64.zip`) and point it at that directory.
+The release archive fits only a dependency pinned to that release's tag; any
+other commit needs a native build of that commit.
+When a file is missing, the build fails with this advice, or with the text of
+`OPENTUI_LIB_HINT` if it is set, so a project can name its own setup step in
+`.cargo/config.toml`. An npm platform package ships only the
 shared library, so it needs the default features off (see below), except with
 the Windows GNU targets.
 

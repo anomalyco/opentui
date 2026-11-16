@@ -1,17 +1,18 @@
 use std::{env, fs, path::PathBuf};
 
-/// Each Rust target, its artifact directory under `packages/native/lib`, and its shared library.
-const TARGETS: &[(&str, &str, &str)] = &[
-    ("x86_64-unknown-linux-gnu", "x86_64-linux", "libopentui.so"),
-    ("aarch64-unknown-linux-gnu", "aarch64-linux", "libopentui.so"),
-    ("x86_64-unknown-linux-musl", "x86_64-linux-musl", "libopentui.so"),
-    ("aarch64-unknown-linux-musl", "aarch64-linux-musl", "libopentui.so"),
-    ("aarch64-apple-darwin", "aarch64-macos", "libopentui.dylib"),
-    ("x86_64-apple-darwin", "x86_64-macos", "libopentui.dylib"),
-    ("x86_64-pc-windows-msvc", "x86_64-windows", "opentui.dll"),
-    ("x86_64-pc-windows-gnu", "x86_64-windows", "opentui.dll"),
-    ("aarch64-pc-windows-msvc", "aarch64-windows", "opentui.dll"),
-    ("aarch64-pc-windows-gnullvm", "aarch64-windows", "opentui.dll"),
+/// Each Rust target, its artifact directory under `packages/native/lib`, its shared library, and its release archive's
+/// platform name.
+const TARGETS: &[(&str, &str, &str, &str)] = &[
+    ("x86_64-unknown-linux-gnu", "x86_64-linux", "libopentui.so", "linux-x64"),
+    ("aarch64-unknown-linux-gnu", "aarch64-linux", "libopentui.so", "linux-arm64"),
+    ("x86_64-unknown-linux-musl", "x86_64-linux-musl", "libopentui.so", "linux-x64-musl"),
+    ("aarch64-unknown-linux-musl", "aarch64-linux-musl", "libopentui.so", "linux-arm64-musl"),
+    ("aarch64-apple-darwin", "aarch64-macos", "libopentui.dylib", "darwin-arm64"),
+    ("x86_64-apple-darwin", "x86_64-macos", "libopentui.dylib", "darwin-x64"),
+    ("x86_64-pc-windows-msvc", "x86_64-windows", "opentui.dll", "windows-x64"),
+    ("x86_64-pc-windows-gnu", "x86_64-windows", "opentui.dll", "windows-x64"),
+    ("aarch64-pc-windows-msvc", "aarch64-windows", "opentui.dll", "windows-arm64"),
+    ("aarch64-pc-windows-gnullvm", "aarch64-windows", "opentui.dll", "windows-arm64"),
 ];
 
 /// `OPENTUI_LIB_DIR`, else the native build of this checkout, `packages/native/lib/<platform>`.
@@ -36,12 +37,13 @@ fn generated_header_hash() -> u64 {
 
 fn main() {
     let target = env::var("TARGET").unwrap();
-    let Some(&(_, platform, shared_library)) = TARGETS.iter().find(|(name, ..)| *name == target) else {
+    let Some(&(_, platform, shared_library, release)) = TARGETS.iter().find(|(name, ..)| *name == target) else {
         let names: Vec<_> = TARGETS.iter().map(|(name, ..)| *name).collect();
         panic!("opentui-sys supports {}, not {target}", names.join(", "));
     };
     let windows = target.contains("-windows-");
     println!("cargo:rerun-if-env-changed=OPENTUI_LIB_DIR");
+    println!("cargo:rerun-if-env-changed=OPENTUI_LIB_HINT");
     // Cargo keeps a build script's output when only RUSTFLAGS change, which would leave the crt-static check stale.
     println!("cargo:rerun-if-env-changed=RUSTFLAGS");
     println!("cargo:rerun-if-changed=build.rs");
@@ -71,6 +73,26 @@ fn main() {
     } else {
         &["opentui.h", shared_library]
     };
+    // Only a checkout of OpenTUI can build the library; Cargo marks its own git checkouts with .cargo-ok. A consumer's
+    // .cargo/config.toml can name its own setup step in OPENTUI_LIB_HINT.
+    let version = env!("CARGO_PKG_VERSION");
+    let from_release = format!(
+        "extract opentui-native-v{version}-{release}.zip from OpenTUI's v{version} release and set OPENTUI_LIB_DIR to \
+         that directory"
+    );
+    let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("../../../..");
+    let checkout = root.join("packages/native/build.zig").is_file() && !root.join(".cargo-ok").exists();
+    let advice = match env::var("OPENTUI_LIB_HINT") {
+        Ok(hint) if !hint.is_empty() => hint,
+        _ if env::var_os("OPENTUI_LIB_DIR").is_some() => {
+            format!("OPENTUI_LIB_DIR names a directory without it: {from_release}")
+        }
+        _ if checkout => format!(
+            "run `bun run build` at the repository root or `bun run build:native` in packages/core, or set \
+             OPENTUI_LIB_DIR to OpenTUI's packages/native/lib/{platform}"
+        ),
+        _ => from_release,
+    };
     for file in files {
         let path = dir.join(file);
         // Watch the path as given: a canonical path follows a symlink and would keep watching its old target.
@@ -84,12 +106,7 @@ fn main() {
         } else {
             String::new()
         };
-        assert!(
-            path.is_file(),
-            "missing native artifact {}: run `bun run build` at the repository root or `bun run build:native` in \
-             packages/core, or set OPENTUI_LIB_DIR to OpenTUI's packages/native/lib/{platform}{shared}",
-            path.display()
-        );
+        assert!(path.is_file(), "missing native artifact {}: {advice}{shared}", path.display());
     }
     let library = dir.canonicalize().expect("canonicalize the native artifact directory");
 
