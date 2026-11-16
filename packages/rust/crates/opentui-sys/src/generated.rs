@@ -5,7 +5,7 @@ use core::ffi::c_void;
 
 /// FNV-1a 64-bit hash of the `opentui.h` these declarations were generated from.
 /// The build script rejects native artifacts whose header has a different hash.
-pub const OPENTUI_HEADER_FNV1A64: u64 = 0xfcf352f7f1c874b8;
+pub const OPENTUI_HEADER_FNV1A64: u64 = 0x61c369e169b8f8c2;
 
 pub type ot_status = i32;
 
@@ -249,6 +249,7 @@ pub const OT_ATTR_LINK_MASK: u32 = 16777215;
 pub const OT_SCENE_TEXT_SELECTION_RESET: u32 = 0;
 pub const OT_SCENE_TEXT_SELECTION_SET: u32 = 1;
 pub const OT_SCENE_TEXT_SELECTION_UPDATE: u32 = 2;
+pub const OT_SCENE_TEXT_SELECTION_COLORS: u32 = 3;
 pub const OT_SCENE_TEXT_SELECTION_CELL: u32 = 0;
 pub const OT_SCENE_TEXT_SELECTION_WORD: u32 = 1;
 pub const OT_SCENE_TEXT_SELECTION_LINE: u32 = 2;
@@ -385,6 +386,7 @@ pub const OT_EMBEDDED_TERMINAL_SCROLL: u32 = 1;
 pub const OT_EMBEDDED_TERMINAL_CLEAR_SELECTION: u32 = 2;
 pub const OT_EMBEDDED_TERMINAL_SET_TRANSPARENT_BACKGROUND: u32 = 3;
 pub const OT_EMBEDDED_TERMINAL_RESPONSE_BYTES_MAX: u32 = 1048576;
+pub const OT_EDIT_BUFFER_FOLLOW_SESSION_WIDTH: u32 = 1;
 pub const OT_EDIT_CURSOR_CHANGED: u32 = 1;
 pub const OT_EDIT_CONTENT_CHANGED: u32 = 2;
 pub const OT_EDIT_HISTORY_CURSOR_CHANGED: u32 = 4;
@@ -2436,7 +2438,7 @@ pub struct ot_edit_buffer_options {
     pub struct_size: u32,
     pub abi_version: u32,
     pub width_method: u32,
-    pub reserved: u32,
+    pub flags: u32,
 }
 
 // SAFETY: the record has no padding and only integer or float fields.
@@ -2458,7 +2460,7 @@ const _: () = {
     assert!(core::mem::offset_of!(ot_edit_buffer_options, struct_size) == 0);
     assert!(core::mem::offset_of!(ot_edit_buffer_options, abi_version) == 4);
     assert!(core::mem::offset_of!(ot_edit_buffer_options, width_method) == 8);
-    assert!(core::mem::offset_of!(ot_edit_buffer_options, reserved) == 12);
+    assert!(core::mem::offset_of!(ot_edit_buffer_options, flags) == 12);
 };
 
 #[repr(C)]

@@ -65,6 +65,114 @@ test "Scene editor custom self destruction never retains cursor resources" {
     }
 }
 
+test "Scene text and following editors take their session's new width method" {
+    const WidthMethod = @import("../utf8.zig").WidthMethod;
+    const cells = struct {
+        fn of(method: WidthMethod) u32 {
+            return if (method == .wcwidth) 4 else 2;
+        }
+    }.of;
+    for ([_][2]WidthMethod{ .{ .unicode, .wcwidth }, .{ .wcwidth, .unicode }, .{ .unicode, .unicode_wide } }) |pair| {
+        errdefer std.debug.print("from={t} to={t}\n", .{ pair[0], pair[1] });
+        const owner = try context.Context.init(testing.allocator, testing.io, .{});
+        defer owner.deinit() catch unreachable;
+        const parent = try owner.createSession(.{ .chunk_size = 4096 });
+        try owner.attachSessionRenderer(parent, 12, 6, .{ .remote_mode = .remote });
+        const source = (try owner.raw().getSession(parent)).renderer.?;
+        source.terminal.caps.unicode = pair[0];
+        source.syncWidthMethod();
+        const fixture = try setup(owner, 8, 2);
+        const child = try owner.raw().getSession(fixture.session);
+        try child.syncDetached(try owner.raw().getSession(parent));
+        // The editor of `setup` was created before the sync with the startup method.
+        (try owner.raw().getEditBuffer(fixture.edit)).follow_width = true;
+        try owner.sceneSetEditorView(fixture.node, fixture.view);
+        const explicit = try owner.createEditBuffer(pair[0]);
+        try owner.sceneSetEditorView(try owner.sceneCreateNode(fixture.session, 5, 5), try owner.createEditorView(explicit, 1, 1));
+        const text = try owner.sceneCreateNode(fixture.session, 2, 3);
+        try owner.sceneSetText(text, "\u{1f44d}\u{1f3fd}x");
+        const shared = try owner.createTextBuffer(pair[0]);
+        (try owner.raw().getTextBuffer(shared)).follow_width = true;
+        try owner.textBufferSetText(shared, "\u{1f44d}\u{1f3fd}x");
+        const text_view = try owner.sceneCreateNode(fixture.session, 7, 6);
+        try owner.sceneSetTextView(text_view, try owner.createTextBufferView(shared));
+        // Laid out at their text's width, before and after the change.
+        const c = @import("context_abi_c");
+        try owner.sceneSetStyle(fixture.root, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_ALIGN_ITEMS, 0, 0, c.OT_ALIGN_FLEX_START, 0);
+        for ([_]context.Handle{ text, text_view }, 1..) |node, index| try owner.sceneMoveNode(node, fixture.root, @intCast(index));
+        const laid = struct {
+            fn out(o: *context.Context, session: context.Handle, nodes: [2]context.Handle) ![2]f32 {
+                try repaint(o, session, background, true, 0);
+                try o.sceneFrameCancel(session, (try o.raw().getSession(session)).scene.?.last_frame_id);
+                return .{ (try o.sceneGetPaintLayout(nodes[0], false)).width, (try o.sceneGetPaintLayout(nodes[1], false)).width };
+            }
+        }.out;
+        try testing.expectEqual(@as(f32, @floatFromInt(cells(pair[0]) + 1)), (try laid(owner, fixture.session, .{ text, text_view }))[0]);
+        for ([_]context.Handle{ fixture.edit, explicit }) |edit| try owner.editInsertText(edit, "\u{1f44d}\u{1f3fd}");
+        source.terminal.caps.unicode = pair[1];
+        source.syncWidthMethod();
+        try child.syncDetached(try owner.raw().getSession(parent));
+        const late = try owner.createEditBuffer(pair[0]);
+        (try owner.raw().getEditBuffer(late)).follow_width = true;
+        try owner.editInsertText(late, "\u{1f44d}\u{1f3fd}");
+        const late_node = try owner.sceneCreateNode(fixture.session, 5, 4);
+        try owner.sceneSetEditorView(late_node, try owner.createEditorView(late, 1, 1));
+        for ([_]context.Handle{ fixture.edit, late, explicit }, [_]WidthMethod{ pair[1], pair[1], pair[0] }) |edit, method| {
+            try testing.expectEqual(cells(method), (try owner.raw().getEditBuffer(edit)).buffer.getPrimaryCursor().offset);
+        }
+        try testing.expectEqual(@as([2]f32, @splat(@floatFromInt(cells(pair[1]) + 1))), try laid(owner, fixture.session, .{ text, text_view }));
+        for ([_]*@import("../text-buffer.zig").UnifiedTextBuffer{ (try owner.raw().getRenderable(text)).scene_node.?.text.?.buffer, (try owner.raw().getTextBuffer(shared)).buffer }) |shown| {
+            try testing.expectEqual(cells(pair[1]) + 1, shown.lineWidthAt(0));
+        }
+    }
+}
+
+test "Scene a following buffer is shown by one session at a time" {
+    const owner = try context.Context.init(testing.allocator, testing.io, .{});
+    defer owner.deinit() catch unreachable;
+    // Session A measures with unicode, B with wcwidth.
+    var nodes: [2]context.Handle = undefined;
+    for (&nodes, [_]@import("../utf8.zig").WidthMethod{ .unicode, .wcwidth }) |*node, method| {
+        const id = try owner.createSession(.{ .chunk_size = 4096 });
+        try owner.attachSessionRenderer(id, 12, 6, .{ .remote_mode = .remote });
+        const value = (try owner.raw().getSession(id)).renderer.?;
+        value.terminal.caps.unicode = method;
+        value.syncWidthMethod();
+        _ = try owner.sceneCreateNode(id, 0, 1);
+        node.* = try owner.sceneCreateNode(id, 5, 2);
+    }
+    const edit = try owner.createEditBuffer(.unicode);
+    (try owner.raw().getEditBuffer(edit)).follow_width = true;
+    const views = [2]context.Handle{ try owner.createEditorView(edit, 1, 1), try owner.createEditorView(edit, 1, 1) };
+    try owner.sceneSetEditorView(nodes[0], views[0]);
+    try owner.editInsertText(edit, "\u{1f44d}\u{1f3fd}");
+    const cursor = &(try owner.raw().getEditBuffer(edit)).buffer.cursor;
+    // A second view in B is rejected; A keeps its binding and its cursor.
+    try testing.expectError(error.WrongSession, owner.sceneSetEditorView(nodes[1], views[1]));
+    try testing.expectEqual(@as(u32, 2), cursor.offset);
+    try testing.expectEqual(try owner.raw().getEditorView(views[0]), (try owner.raw().getRenderable(nodes[0])).scene_node.?.editor.?);
+    try testing.expect((try owner.raw().getRenderable(nodes[1])).scene_node.?.editor == null);
+    // Unbound from A, it moves to B and measures with B's method.
+    try owner.sceneSetEditorView(nodes[0], null);
+    try owner.sceneSetEditorView(nodes[1], views[1]);
+    try testing.expectEqual(@as(u32, 4), cursor.offset);
+    // The same view, shown in B, is refused in A with the same status; an explicit buffer keeps the one-node status.
+    try testing.expectError(error.WrongSession, owner.sceneSetEditorView(nodes[0], views[1]));
+    const session_b = (try owner.raw().getRenderable(nodes[1])).scene_node.?.owner.session;
+    const explicit = try owner.createEditorView(try owner.createEditBuffer(.unicode), 1, 1);
+    try owner.sceneSetEditorView(try owner.sceneCreateNode(session_b, 5, 9), explicit);
+    try testing.expectError(error.ContextBusy, owner.sceneSetEditorView(nodes[0], explicit));
+    // Text views follow the same rule: B shows the shared text, so A cannot.
+    const shared = try owner.createTextBuffer(.unicode);
+    (try owner.raw().getTextBuffer(shared)).follow_width = true;
+    var text_nodes: [2]context.Handle = undefined;
+    for (&text_nodes, nodes) |*node, editor| node.* = try owner.sceneCreateNode((try owner.raw().getRenderable(editor)).scene_node.?.owner.session, 7, 3);
+    const shown = try owner.createTextBufferView(shared);
+    try owner.sceneSetTextView(text_nodes[1], shown);
+    try testing.expectError(error.WrongSession, owner.sceneSetTextView(text_nodes[0], try owner.createTextBufferView(shared)));
+    try testing.expectError(error.WrongSession, owner.sceneSetTextView(text_nodes[0], shown));
+}
+
 test "Scene editor sets the mouse pointer only when its options select one" {
     const owner = try context.Context.init(testing.allocator, testing.io, .{});
     defer owner.deinit() catch unreachable;

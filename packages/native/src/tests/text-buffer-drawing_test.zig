@@ -2455,6 +2455,48 @@ test "owned styled text - scalar-split grapheme keeps the following token color"
     }
 }
 
+test "owned styled text - a width method change keeps each run's color on its characters" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const colors = [_]RGBA{ ansi.rgbaFromFloats(1, 0, 0, 1), ansi.rgbaFromFloats(0, 1, 0, 1), ansi.rgbaFromFloats(0, 0, 1, 1) };
+    const Painted = struct {
+        fn fill(tb: *TextBuffer, method: utf8.WidthMethod, out: *[2][12]RGBA, row: usize) !void {
+            const view = try TextBufferView.init(std.testing.allocator, tb);
+            defer view.deinit();
+            const output = try OptimizedBuffer.init(std.testing.allocator, 12, 1, .{ .link_pool = tb.link_pool, .pool = tb.pool, .width_method = method });
+            defer output.deinit();
+            output.clear(ansi.rgbaFromFloats(0, 0, 0, 1), 32);
+            output.drawTextBuffer(view, 0, 0);
+            for (&out[row], 0..) |*cell, x| cell.* = output.get(@intCast(x), 0).?.fg;
+        }
+    };
+    for ([_][2]utf8.WidthMethod{ .{ .unicode, .wcwidth }, .{ .wcwidth, .unicode }, .{ .unicode, .unicode_wide } }) |pair| {
+        errdefer std.debug.print("from={t} to={t}\n", .{ pair[0], pair[1] });
+        // Changed from pair[0], and made with pair[1]: the same colors on the same cells.
+        var painted: [2][12]RGBA = undefined;
+        for (pair, 0..) |method, row| {
+            const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method);
+            defer tb.deinit();
+            _ = try owned_styled.replace(tb, null, &.{
+                .{ .text = "\u{1f44d}\u{1f3fd}", .fg = colors[0] },
+                .{ .text = "AB", .fg = colors[1] },
+                .{ .text = "CD", .fg = colors[2] },
+            });
+            if (row == 0) tb.setWidthMethod(pair[1]);
+            try Painted.fill(tb, pair[1], &painted, row);
+        }
+        try std.testing.expectEqualSlices(RGBA, &painted[1], &painted[0]);
+    }
+    // A NO_ZWJ buffer keeps its method and widths: its graphemes do not fit other methods' chunks.
+    const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .no_zwj);
+    defer tb.deinit();
+    _ = try owned_styled.replace(tb, null, &.{.{ .text = "\u{1f469}\u{200d}\u{1f4bb}", .fg = colors[0] }});
+    const width = tb.lineWidthAt(0);
+    tb.setWidthMethod(.unicode);
+    try std.testing.expectEqual(utf8.WidthMethod.no_zwj, tb.widthMethod());
+    try std.testing.expectEqual(width, tb.lineWidthAt(0));
+}
+
 test "owned styled text - highlight positioning with Unicode text" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();

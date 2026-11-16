@@ -237,11 +237,22 @@ pub fn ot_edit_buffer_create(context: ?*ContextHandle, options_ptr: ?*const c.ot
     const owner = context.?;
     const options = options_ptr orelse return sessionError(owner, error.InvalidOptions);
     const out = out_ptr orelse return sessionError(owner, error.InvalidOptions);
-    if (options.struct_size != @sizeOf(c.ot_edit_buffer_options) or options.reserved != 0) return sessionError(owner, error.InvalidOptions);
+    if (options.struct_size != @sizeOf(c.ot_edit_buffer_options)) return sessionError(owner, error.InvalidOptions);
     if (options.abi_version != c.OT_CONTEXT_ABI_VERSION) return sessionError(owner, error.UnsupportedVersion);
     const width_method = widthMethodFromC(options.width_method) catch |err| return sessionError(owner, err);
-    out.* = handleToC(owner.core.createEditBuffer(width_method) catch |err| return sessionError(owner, err));
+    const follow = followSessionWidth(options.*) catch |err| return sessionError(owner, err);
+    const handle = owner.core.createEditBuffer(width_method) catch |err| return sessionError(owner, err);
+    (owner.core.raw().getEditBuffer(handle) catch unreachable).follow_width = follow;
+    out.* = handleToC(handle);
     return c.OT_OK;
+}
+
+/// Whether creation options ask a buffer to follow its session's width method.
+pub fn followSessionWidth(options: c.ot_edit_buffer_options) error{InvalidOptions}!bool {
+    if (options.flags & ~c.OT_EDIT_BUFFER_FOLLOW_SESSION_WIDTH != 0) return error.InvalidOptions;
+    const follow = options.flags != 0;
+    if (follow and options.width_method == c.OT_WIDTH_METHOD_NO_ZWJ) return error.InvalidOptions;
+    return follow;
 }
 
 pub fn ot_edit_buffer_destroy(context: ?*ContextHandle, edit_ptr: ?*const c.ot_handle) callconv(.c) c.ot_status {
@@ -3038,6 +3049,14 @@ test "Context buffer ABI rejects invalid arguments without writing outputs" {
     var unicode = kept;
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, unicode_transport.ot_unicode_create(context, "a", 1, c.OT_WIDTH_METHOD_UNICODE_WIDE + 1, &unicode));
     try std.testing.expectEqual(kept, unicode);
+    // Unknown flags, and following a session with a method no session uses, are rejected.
+    for ([_][2]u32{ .{ c.OT_WIDTH_METHOD_UNICODE, 2 }, .{ c.OT_WIDTH_METHOD_NO_ZWJ, 1 }, .{ c.OT_WIDTH_METHOD_UNICODE, 0 }, .{ c.OT_WIDTH_METHOD_WCWIDTH, 1 } }) |row| {
+        const edit_options: c.ot_edit_buffer_options = .{ .struct_size = @sizeOf(c.ot_edit_buffer_options), .abi_version = c.OT_CONTEXT_ABI_VERSION, .width_method = row[0], .flags = row[1] };
+        const valid_flags = row[1] < 2 and row[0] != c.OT_WIDTH_METHOD_NO_ZWJ;
+        try std.testing.expectEqual(if (valid_flags) c.OT_OK else c.OT_INVALID_ARGUMENT, ot_edit_buffer_create(context, &edit_options, &out));
+        if (valid_flags) try std.testing.expectEqual(row[1] == 1, (try core.raw().getEditBuffer(handleFromC(out))).follow_width);
+        if (valid_flags) try std.testing.expectEqual(c.OT_OK, ot_edit_buffer_destroy(context, &out));
+    }
     for (std.enums.values(WidthMethod)) |method| {
         var width_options = valid;
         width_options.width_method = @backingInt(method);
@@ -4535,7 +4554,7 @@ test "Scene text selection ABI validates records pointers and readonly outputs" 
     for (0..6) |case| {
         var invalid = options;
         switch (case) {
-            0 => invalid.operation = 3,
+            0 => invalid.operation = c.OT_SCENE_TEXT_SELECTION_COLORS + 1,
             1 => invalid.behavior = 3,
             2 => invalid.flags = 4,
             3 => invalid.background[0] = 1,

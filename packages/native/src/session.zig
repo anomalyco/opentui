@@ -635,7 +635,15 @@ pub const Session = struct {
         value.terminal.caps = source.terminal.caps;
         value.terminal.image_protocol = source.terminal.image_protocol;
         value.image_resolution = source.image_resolution;
+        self.syncWidthMethod(value);
+    }
+
+    /// When the terminal's width method changes, the text the scene shows follows it.
+    fn syncWidthMethod(self: *Session, value: *renderer.CliRenderer) void {
+        const before = value.getNextBuffer().width_method;
         value.syncWidthMethod();
+        const after = value.getNextBuffer().width_method;
+        if (after != before) if (self.scene) |owned| Context.followWidthMethod(owned, after);
     }
 
     pub fn checkFrameIdle(self: *const Session) Error!void {
@@ -1148,7 +1156,7 @@ pub const Session = struct {
         // Releases are not reported while mouse reporting is off (issue 426).
         if (progress.mouse != self.lifecycle.mouse) self.input.buttons_held = 0;
         self.lifecycle = progress;
-        value.syncWidthMethod();
+        self.syncWidthMethod(value);
         if (command != null and command.? == .capability_response and repaint) value.invalidateTerminalState();
     }
 

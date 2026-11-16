@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const tb = @import("text-buffer.zig");
+const utf8 = @import("utf8.zig");
 const tbv = @import("text-buffer-view.zig");
 const eb = @import("edit-buffer.zig");
 const iter_mod = @import("text-buffer-iterators.zig");
@@ -941,6 +942,16 @@ pub const EditorView = struct {
         }
 
         self.updatePlaceholderVisibility();
+    }
+
+    /// After the edit buffer's widths changed from `method`: the selection keeps its text and the
+    /// placeholder, shown or not, measures with the buffer's new method.
+    pub fn followWidthMethod(self: *EditorView, method: utf8.WidthMethod) void {
+        self.text_buffer_view.followWidthMethod(self.edit_buffer.tb, method);
+        const placeholder = self.placeholder_buffer orelse return;
+        if (placeholder.widthMethod() == self.edit_buffer.tb.widthMethod()) return;
+        placeholder.setWidthMethod(self.edit_buffer.tb.widthMethod());
+        if (self.placeholder_active) self.text_buffer_view.virtual_lines_dirty = true;
     }
 
     fn shouldShowPlaceholder(self: *const EditorView) bool {
