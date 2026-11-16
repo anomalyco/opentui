@@ -161,6 +161,8 @@ pub const UnifiedTextBuffer = struct {
     span_generation: u64,
     span_scratch: SpanScratch,
     internal_highlight_count: usize,
+    /// Bytes walked while styled runs move to a new width method; tests check that a line is walked once per end.
+    run_bytes_measured: if (builtin.is_test) usize else void = if (builtin.is_test) 0 else {},
     /// Styles of styled text, replaced with it; the attached SyntaxStyle is never written.
     run_styles: RunStyles,
     /// clear() released the run styles' link refs while their highlights stay.
@@ -2291,23 +2293,37 @@ pub const UnifiedTextBuffer = struct {
     fn moveStyledRuns(self: *Self, comptime to_bytes: bool) void {
         if (self.internal_highlight_count == 0) return;
         for (self.line_highlights.items, 0..) |line, row| {
-            for (line.items) |*highlight| {
-                if (!highlight.internal) continue;
-                highlight.col_start = self.convertInLine(@intCast(row), highlight.col_start, to_bytes);
-                highlight.col_end = self.convertInLine(@intCast(row), highlight.col_end, to_bytes);
-            }
+            self.convertLineEnds(@intCast(row), line.items, .start, to_bytes);
+            self.convertLineEnds(@intCast(row), line.items, .end, to_bytes);
         }
     }
 
-    /// A column of line `row` as a byte of the line (`to_bytes`), or a byte as a column.
-    fn convertInLine(self: *const Self, row: u32, value: u32, comptime to_bytes: bool) u32 {
-        const start = iter_mod.lineStart(&self._rope, row) orelse return value;
+    /// Converts one end of line `row`'s styled runs, in record order. Runs are made in order, so each walk measures
+    /// from the previous end and the line costs one pass; an end before the previous one starts a new walk.
+    fn convertLineEnds(self: *Self, row: u32, records: []Highlight, comptime end: enum { start, end }, comptime to_bytes: bool) void {
+        const start = iter_mod.lineStart(&self._rope, row) orelse return;
         const Walk = struct {
-            buffer: *const Self,
-            value: u32,
+            buffer: *Self,
+            records: []Highlight,
+            next: usize,
+            last: u32 = 0,
+            // Where the line's measured prefix ends: chunk start, and the offset within the chunk.
             byte: u32 = 0,
             col: u32 = 0,
-            found: ?u32 = null,
+            in_byte: u32 = 0,
+            in_col: u32 = 0,
+
+            fn field(record: *Highlight) *u32 {
+                return if (end == .start) &record.col_start else &record.col_end;
+            }
+
+            /// The next styled end to convert, or null once all are done. Stops at an end before the last.
+            fn pending(walk: *@This()) ?*u32 {
+                while (walk.next < walk.records.len and !walk.records[walk.next].internal) walk.next += 1;
+                if (walk.next == walk.records.len) return null;
+                const value = field(&walk.records[walk.next]);
+                return if (value.* < walk.last) null else value;
+            }
 
             fn visit(ctx: *anyopaque, segment: *const Segment, _: u32) UnifiedRope.Node.WalkerResult {
                 const walk: *@This() = @ptrCast(@alignCast(ctx));
@@ -2316,21 +2332,49 @@ pub const UnifiedTextBuffer = struct {
                 const text = walk.buffer;
                 const bytes = chunk.getBytes(&text.mem_registry);
                 const ascii = chunk.isAsciiOnly();
-                if (to_bytes and walk.value <= walk.col + chunk.width_cols) {
-                    walk.found = walk.byte + @as(u32, @intCast(utf8.findPosByWidth(bytes, walk.value - walk.col, text.tab_width, text.control_display, ascii, false, text.width_method).byte_offset));
-                } else if (!to_bytes and walk.value <= walk.byte + bytes.len) {
-                    walk.found = walk.col + utf8.calculateTextWidth(bytes[0 .. walk.value - walk.byte], text.tab_width, text.control_display, ascii, text.width_method);
-                } else {
-                    walk.byte += @intCast(bytes.len);
-                    walk.col += chunk.width_cols;
-                    return .{};
-                }
-                return .{ .keep_walking = false };
+                while (walk.pending()) |value| {
+                    walk.last = value.*;
+                    if (to_bytes) {
+                        if (value.* > walk.col + chunk.width_cols) break;
+                        const found = utf8.findPosByWidth(bytes[walk.in_byte..], value.* - walk.col - walk.in_col, text.tab_width, text.control_display, ascii, false, text.width_method);
+                        text.countRunBytes(found.byte_offset);
+                        walk.in_byte += found.byte_offset;
+                        walk.in_col += found.columns_used;
+                        value.* = walk.byte + walk.in_byte;
+                    } else {
+                        if (value.* > walk.byte + bytes.len) break;
+                        const part = bytes[walk.in_byte .. value.* - walk.byte];
+                        text.countRunBytes(part.len);
+                        walk.in_col += utf8.calculateTextWidth(part, text.tab_width, text.control_display, ascii, text.width_method);
+                        walk.in_byte = value.* - walk.byte;
+                        value.* = walk.col + walk.in_col;
+                    }
+                    walk.next += 1;
+                } else return .{ .keep_walking = false };
+                text.countRunBytes(bytes.len - walk.in_byte);
+                walk.byte += @intCast(bytes.len);
+                walk.col += chunk.width_cols;
+                walk.in_byte = 0;
+                walk.in_col = 0;
+                return .{};
             }
         };
-        var walk: Walk = .{ .buffer = self, .value = value };
-        self._rope.walk_from(start.leaf_index + 1, &walk, Walk.visit) catch {};
-        return walk.found orelse if (to_bytes) walk.byte else walk.col;
+        var next: usize = 0;
+        while (true) {
+            var walk: Walk = .{ .buffer = self, .records = records, .next = next };
+            if (walk.pending() == null) break;
+            self._rope.walk_from(start.leaf_index + 1, &walk, Walk.visit) catch {};
+            // Ends past the line's last chunk name its end.
+            while (walk.pending()) |value| : (walk.next += 1) {
+                walk.last = value.*;
+                value.* = if (to_bytes) walk.byte else walk.col;
+            }
+            next = walk.next;
+        }
+    }
+
+    inline fn countRunBytes(self: *Self, count: usize) void {
+        if (builtin.is_test) self.run_bytes_measured += count;
     }
 
     /// The byte that cell `offset` named while the text measured with `method`, which it no longer does.
