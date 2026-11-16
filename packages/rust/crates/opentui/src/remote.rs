@@ -484,6 +484,7 @@ mod tests {
         let (terminal, link, _) = pair();
         assert_eq!(terminal.write_output(&vec![0; OUTPUT_BYTES_MAX]), OUTPUT_BYTES_MAX);
         let waiter = std::thread::spawn(move || (terminal.wait_room(Duration::from_secs(5)), terminal));
+        // Time for the waiter to block. If it has not yet, it finds the room at once, and the test still passes.
         std::thread::sleep(Duration::from_millis(20));
         link.take_output(1);
         let (room, _terminal) = waiter.join().expect("the waiting thread");

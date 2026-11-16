@@ -539,6 +539,7 @@ fn images_switch_to_kitty_graphics_when_the_terminal_reports_support_after_the_f
     client.wait_for("\x1b[14t");
     // A reply cut in two still answers it, not typed as keys.
     client.send(b"\x1b[4;900;14");
+    // The remote app runs the real loop, so the escape timeout has to pass on the wall clock.
     std::thread::sleep(opentui::input::ESCAPE_TIMEOUT * 3);
     client.send(b"00t");
     client.wait_for("s=160,v=240,");

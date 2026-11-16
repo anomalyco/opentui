@@ -128,6 +128,7 @@ fn playing_ticks_at_max_fps_until_paused() {
     let position = video.state().unwrap().current_time;
     assert_eq!(*events.borrow(), [VideoEvent::Pause, VideoEvent::Time(position)]);
     assert!(!video.is_playing());
+    // Real time for a decoder that kept running to show itself; a longer wait only makes the check stricter.
     std::thread::sleep(Duration::from_millis(40));
     app.advance(Duration::from_secs(1));
     assert_eq!(events.borrow().len(), 2, "no ticks while paused");
