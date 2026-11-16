@@ -2458,34 +2458,98 @@ test "owned styled text - scalar-split grapheme keeps the following token color"
 test "owned styled text - a width method change keeps each run's color on its characters" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
-    const colors = [_]RGBA{ ansi.rgbaFromFloats(1, 0, 0, 1), ansi.rgbaFromFloats(0, 1, 0, 1), ansi.rgbaFromFloats(0, 0, 1, 1) };
+    const colors = [_]RGBA{ ansi.rgbaFromFloats(1, 0, 0, 1), ansi.rgbaFromFloats(0, 1, 0, 1), ansi.rgbaFromFloats(0, 0, 1, 1), ansi.rgbaFromFloats(1, 1, 0, 1) };
+    const Runs = struct {
+        /// The column ranges of line `row`'s styled runs.
+        fn of(tb: *TextBuffer, row: usize) ![]const [2]u32 {
+            var out: std.ArrayListUnmanaged([2]u32) = .empty;
+            for (tb.line_highlights.items[row].items) |record| try out.append(std.testing.allocator, .{ record.col_start, record.col_end });
+            return out.toOwnedSlice(std.testing.allocator);
+        }
+        fn expectSame(changed: *TextBuffer, made: *TextBuffer, row: usize) !void {
+            const want = try of(made, row);
+            defer std.testing.allocator.free(want);
+            const got = try of(changed, row);
+            defer std.testing.allocator.free(got);
+            try std.testing.expectEqualSlices([2]u32, want, got);
+        }
+    };
     const Painted = struct {
-        fn fill(tb: *TextBuffer, method: utf8.WidthMethod, out: *[2][12]RGBA, row: usize) !void {
+        fn fill(tb: *TextBuffer, method: utf8.WidthMethod, out: *[2][24]RGBA, row: usize) !void {
             const view = try TextBufferView.init(std.testing.allocator, tb);
             defer view.deinit();
-            const output = try OptimizedBuffer.init(std.testing.allocator, 12, 1, .{ .link_pool = tb.link_pool, .pool = tb.pool, .width_method = method });
+            const output = try OptimizedBuffer.init(std.testing.allocator, 12, 2, .{ .link_pool = tb.link_pool, .pool = tb.pool, .width_method = method });
             defer output.deinit();
             output.clear(ansi.rgbaFromFloats(0, 0, 0, 1), 32);
             output.drawTextBuffer(view, 0, 0);
-            for (&out[row], 0..) |*cell, x| cell.* = output.get(@intCast(x), 0).?.fg;
+            for (&out[row], 0..) |*cell, i| cell.* = output.get(@intCast(i % 12), @intCast(i / 12)).?.fg;
         }
     };
     for ([_][2]utf8.WidthMethod{ .{ .unicode, .wcwidth }, .{ .wcwidth, .unicode }, .{ .unicode, .unicode_wide } }) |pair| {
         errdefer std.debug.print("from={t} to={t}\n", .{ pair[0], pair[1] });
         // Changed from pair[0], and made with pair[1]: the same colors on the same cells.
-        var painted: [2][12]RGBA = undefined;
+        var painted: [2][24]RGBA = undefined;
         for (pair, 0..) |method, row| {
             const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method);
             defer tb.deinit();
+            // The runs on the second line move through that line's bytes.
             _ = try owned_styled.replace(tb, null, &.{
+                .{ .text = "xy\n", .fg = colors[3] },
                 .{ .text = "\u{1f44d}\u{1f3fd}", .fg = colors[0] },
                 .{ .text = "AB", .fg = colors[1] },
                 .{ .text = "CD", .fg = colors[2] },
             });
-            if (row == 0) tb.setWidthMethod(pair[1]);
+            if (row == 0) {
+                // Records in another order than the text: each end before the last starts a new walk.
+                const records = tb.line_highlights.items[1].items;
+                std.mem.reverse(@TypeOf(records[0]), records);
+                tb.setWidthMethod(pair[1]);
+            }
             try Painted.fill(tb, pair[1], &painted, row);
         }
         try std.testing.expectEqualSlices(RGBA, &painted[1], &painted[0]);
+    }
+    // One line of alternately coloured words: each end of the runs walks the line once, not once per run, and the
+    // runs land where a buffer made with the new method has them.
+    for ([_]usize{ 256, 512 }) |runs| {
+        errdefer std.debug.print("runs={d}\n", .{runs});
+        var chunks: std.ArrayListUnmanaged(owned_styled.Part) = .empty;
+        defer chunks.deinit(std.testing.allocator);
+        try chunks.append(std.testing.allocator, .{ .text = "\u{1f44d}\u{1f3fd}", .fg = colors[0] });
+        for (0..runs) |i| try chunks.append(std.testing.allocator, .{ .text = if (i % 3 == 0) "w\u{1f44d}\u{1f3fd}d " else "word ", .fg = colors[1 + i % 2] });
+        const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+        defer tb.deinit();
+        _ = try owned_styled.replace(tb, null, chunks.items);
+        tb.setWidthMethod(.wcwidth);
+        // Two conversions (to bytes, back to columns), two ends each.
+        try std.testing.expect(tb.run_bytes_measured <= 4 * tb.getByteSize());
+        const made = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
+        defer made.deinit();
+        _ = try owned_styled.replace(made, null, chunks.items);
+        try Runs.expectSame(tb, made, 0);
+    }
+    // Text appended to the line moves its last grapheme, which the skin tone extends, into a chunk of its own: the
+    // green run's end lies in the second chunk.
+    {
+        const parts = [_]owned_styled.Part{ .{ .text = "ab", .fg = colors[0] }, .{ .text = "c\u{1f44d}", .fg = colors[1] } };
+        const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+        defer tb.deinit();
+        _ = try owned_styled.replace(tb, null, &parts);
+        try tb.append("\u{1f3fd}");
+        tb.setWidthMethod(.wcwidth);
+        const got = try Runs.of(tb, 0);
+        defer std.testing.allocator.free(got);
+        try std.testing.expectEqualSlices([2]u32, &.{ .{ 0, 2 }, .{ 2, 7 } }, got);
+    }
+    // An end past its line names the line's end.
+    {
+        const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+        defer tb.deinit();
+        _ = try owned_styled.replace(tb, null, &.{.{ .text = "\u{1f44d}\u{1f3fd}ab", .fg = colors[0] }});
+        const record = &tb.line_highlights.items[0].items[0];
+        record.col_end = 99;
+        tb.setWidthMethod(.wcwidth);
+        try std.testing.expectEqual(tb.lineWidthAt(0), record.col_end);
     }
     // A NO_ZWJ buffer keeps its method and widths: its graphemes do not fit other methods' chunks.
     const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .no_zwj);
