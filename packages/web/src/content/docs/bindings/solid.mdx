@@ -48,34 +48,21 @@ preload = ["@opentui/solid/preload"]
 
 ### 3. Configure Node compilation
 
-The Node path requires compiled Solid TSX. Use Solid's universal transform semantics. Point the generated runtime
-imports at the published `solid-js` JavaScript files:
+The Node path requires compiled Solid TSX. Use Solid's universal transform semantics:
 
 ```js
 import ts from "@babel/preset-typescript"
-import moduleResolver from "babel-plugin-module-resolver"
 import solid from "babel-preset-solid"
 
 export default {
-  plugins: [
-    [
-      moduleResolver,
-      {
-        resolvePath(specifier) {
-          if (specifier === "solid-js") return "solid-js/dist/solid.js"
-          if (specifier === "solid-js/store") return "solid-js/store/dist/store.js"
-          return specifier
-        },
-      },
-    ],
-  ],
   presets: [[solid, { moduleName: "@opentui/solid", generate: "universal" }], [ts]],
 }
 ```
 
-Use Node.js 26.4.0 or later with `--experimental-ffi`. If you enable the Node permission model, also pass `--permission`,
-`--allow-ffi`, and the filesystem permissions that the application needs. The Solid Node source lane in CI compiles
-TSX and runs on Linux x64.
+Run Node.js 26.4.0 or later with `--conditions=browser` so `solid-js` resolves to its client runtime, and
+`--experimental-ffi`. If you enable the Node permission model, also pass `--permission`, `--allow-ffi`, and the
+filesystem permissions that the application needs. The Solid Node source lane in CI compiles TSX and runs on Linux
+x64.
 
 ### 4. Create the app
 

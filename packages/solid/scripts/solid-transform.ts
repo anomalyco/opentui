@@ -15,6 +15,9 @@ export interface TransformSolidSourceOptions {
 const nodeModulesPattern = /[/\\]node_modules[/\\]/
 const tsPattern = /\.[cm]?tsx?$/
 const jsxPattern = /\.[cm]?[jt]sx$/
+// These are the literal module-call forms the previous resolver rewrote for the
+// Solid build and runtime-plugin transform. They are a compatibility surface,
+// not an inference about what current OpenTUI internals happen to call.
 const moduleCallPatterns = [
   "require.resolve",
   "System.import",

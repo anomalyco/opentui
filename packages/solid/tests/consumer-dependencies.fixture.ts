@@ -1,19 +1,17 @@
 import assert from "node:assert/strict"
-import { spawnSync } from "node:child_process"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 
 // Run against a fresh installed consumer, not the repository's workspace graph.
 // Solid's callback-based transform does not need a glob-backed resolver.
-const result = spawnSync("npm", ["query", "#babel-plugin-module-resolver", "--omit=dev", "--json"], {
-  cwd: process.argv[2] ?? process.cwd(),
-  encoding: "utf8",
-  timeout: 60_000,
-})
+const consumerDir = process.argv[2] ?? process.cwd()
+const manifestPath = join(consumerDir, "node_modules", "@opentui", "solid", "package.json")
+const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, Record<string, string> | undefined>
 
-if (result.error) throw result.error
-assert.equal(result.status, 0, `Could not inspect consumer dependencies: ${result.stderr}`)
-const dependencies = JSON.parse(result.stdout) as { name: string; version: string }[]
-assert.deepEqual(
-  dependencies.map(({ name, version }) => `${name}@${version}`).sort(),
-  [],
-  "The installed Solid consumer must not require the unused module resolver",
-)
+for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]) {
+  assert.equal(
+    manifest[field]?.["babel-plugin-module-resolver"],
+    undefined,
+    `The installed Solid package must not declare the unused module resolver in ${field}`,
+  )
+}

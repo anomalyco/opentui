@@ -12,10 +12,10 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os"
 import { dirname, join, relative, resolve } from "node:path"
 import process from "node:process"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
 import { requireNode26 } from "../../../scripts/node26.mjs"
-import { resolveNodeSolidRuntimeImport, transformSolidSource } from "./solid-transform.js"
+import type * as SolidTransform from "./solid-transform.js"
 
 interface PackageJson {
   name: string
@@ -207,10 +207,8 @@ export function render() {
 }
 
 async function writeNodeTest(nodeDir: string): Promise<void> {
-  writeFileSync(
-    join(nodeDir, "native-scene.fixture.tsx"),
-    readFileSync(join(__dirname, "native-scene.fixture.tsx"), "utf8"),
-  )
+  const nativeFixtureSource = readFileSync(join(__dirname, "native-scene.fixture.tsx"), "utf8")
+  writeFileSync(join(nodeDir, "native-scene.fixture.tsx"), nativeFixtureSource)
   const fixtureSource = [
     'import { createSignal, For, Match, Show, Switch } from "solid-js"',
     `import { testRender } from ${JSON.stringify(packageJson.name)}`,
@@ -244,9 +242,14 @@ async function writeNodeTest(nodeDir: string): Promise<void> {
   ].join("\n")
   const runtimeDir = join(nodeDir, ".dist-node-runtime")
   mkdirSync(runtimeDir, { recursive: true })
+  // Compile with the packaged transform, not the repository source, so this
+  // check covers the artifact consumers actually receive.
+  const { resolveNodeSolidRuntimeImport, transformSolidSource } = (await import(
+    pathToFileURL(join(distDir, "scripts", "solid-transform.js")).href
+  )) as typeof SolidTransform
   const fixtures: [string, string][] = [
     ["fixture", fixtureSource],
-    ["native-scene", readFileSync(join(__dirname, "native-scene.fixture.tsx"), "utf8")],
+    ["native-scene", nativeFixtureSource],
   ]
   for (const [name, source] of fixtures) {
     const transformed = await transformSolidSource(source, {
