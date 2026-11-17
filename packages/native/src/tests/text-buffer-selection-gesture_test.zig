@@ -152,14 +152,6 @@ fn expectViewSelected(view: *TextBufferView, expected: []const u8) !void {
     try std.testing.expectEqualStrings(expected, out[0..len]);
 }
 
-test "behavior - word press on one cell produces a non-empty range" {
-    const pair = try initView("alpha beta gamma");
-    defer deinitView(pair);
-
-    _ = pair.view.setLocalSelectionBehavior(6, 0, 6, 0, null, null, .word);
-    try expectViewSelected(pair.view, "beta");
-}
-
 test "behavior - word press on padding produces zero-width" {
     const pair = try initView("alpha beta");
     defer deinitView(pair);

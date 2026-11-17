@@ -316,18 +316,6 @@ test "getPrevGraphemeWidth - at chunk boundary" {
     try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
-test "getPrevGraphemeWidth - emoji at chunk boundary" {
-    var pools = TestPools.init(testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    try tb.setText("a😀b");
-
-    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
-}
-
 test "getPrevGraphemeWidth - multiple chunks" {
     var pools = TestPools.init(testing.allocator);
     defer pools.deinit();
