@@ -65,7 +65,6 @@
     "@babel/core": "7.29.7",
     "@babel/preset-typescript": "7.27.1",
     "@opentui/core": "workspace:*",
-    "babel-plugin-module-resolver": "5.0.2",
     "babel-preset-solid": "1.9.16",
     "entities": "7.0.1",
     "s-js": "^0.4.9"

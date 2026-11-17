@@ -15,6 +15,7 @@ import process from "node:process"
 import { fileURLToPath } from "node:url"
 
 import { requireNode26 } from "../../../scripts/node26.mjs"
+import { resolveNodeSolidRuntimeImport, transformSolidSource } from "./solid-transform.js"
 
 interface PackageJson {
   name: string
@@ -205,23 +206,63 @@ export function render() {
   )
 }
 
-function writeNodeTest(nodeDir: string): void {
+async function writeNodeTest(nodeDir: string): Promise<void> {
   writeFileSync(
     join(nodeDir, "native-scene.fixture.tsx"),
     readFileSync(join(__dirname, "native-scene.fixture.tsx"), "utf8"),
   )
+  const fixtureSource = [
+    'import { createSignal, For, Match, Show, Switch } from "solid-js"',
+    `import { testRender } from ${JSON.stringify(packageJson.name)}`,
+    "",
+    "export async function run() {",
+    '  const [items, setItems] = createSignal(["Hello"])',
+    "  const [showTail, setShowTail] = createSignal(false)",
+    "  const [mode, setMode] = createSignal(1)",
+    "  const setup = await testRender(() => (",
+    "    <box>",
+    "      <For each={items()}>{(item) => <text>{item}</text>}</For>",
+    "      <Show when={showTail()}>",
+    "        <text>World</text>",
+    "      </Show>",
+    "      <Switch fallback={<text>Fallback</text>}>",
+    "        <Match when={mode() === 1}><text>ModeOne</text></Match>",
+    "        <Match when={mode() === 2}><text>ModeTwo</text></Match>",
+    "      </Switch>",
+    "    </box>",
+    "  ), { width: 24, height: 8 })",
+    "  await setup.renderOnce()",
+    "  const first = setup.captureCharFrame()",
+    '  setItems(["Hello", "Node"])',
+    "  setShowTail(true)",
+    "  setMode(2)",
+    "  await setup.renderOnce()",
+    "  const second = setup.captureCharFrame()",
+    "  setup.renderer.destroy()",
+    "  return { first, second }",
+    "}",
+  ].join("\n")
+  const runtimeDir = join(nodeDir, ".dist-node-runtime")
+  mkdirSync(runtimeDir, { recursive: true })
+  const fixtures: [string, string][] = [
+    ["fixture", fixtureSource],
+    ["native-scene", readFileSync(join(__dirname, "native-scene.fixture.tsx"), "utf8")],
+  ]
+  for (const [name, source] of fixtures) {
+    const transformed = await transformSolidSource(source, {
+      filename: join(nodeDir, `${name}.tsx`),
+      moduleName: packageJson.name,
+      resolvePath: resolveNodeSolidRuntimeImport,
+    })
+    writeFileSync(join(runtimeDir, `${name}.mjs`), transformed)
+  }
+
   writeFileSync(
     join(nodeDir, "index.mjs"),
     `import assert from "node:assert/strict"
-import { readFileSync, rmSync, writeFileSync } from "node:fs"
-import { mkdirSync } from "node:fs"
+import { rmSync } from "node:fs"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
-
-import { transformAsync } from "@babel/core"
-import ts from "@babel/preset-typescript"
-import moduleResolver from "babel-plugin-module-resolver"
-import solid from "babel-preset-solid"
 
 const solidRuntime = await import(${JSON.stringify(packageJson.name)})
 const componentsRuntime = await import(${JSON.stringify(`${packageJson.name}/components`)})
@@ -235,70 +276,8 @@ assert.equal(typeof jsxRuntime.jsxs, "function")
 assert.equal(typeof jsxRuntime.Fragment, "function")
 assert.equal(typeof jsxDevRuntime.jsxDEV, "function")
 
-const fixtureSource = [
-  'import { createSignal, For, Match, Show, Switch } from "solid-js"',
-  'import { testRender } from ${JSON.stringify(packageJson.name)}',
-  '',
-  'export async function run() {',
-  '  const [items, setItems] = createSignal(["Hello"])',
-  '  const [showTail, setShowTail] = createSignal(false)',
-  '  const [mode, setMode] = createSignal(1)',
-  '  const setup = await testRender(() => (',
-  '    <box>',
-  '      <For each={items()}>{(item) => <text>{item}</text>}</For>',
-  '      <Show when={showTail()}>',
-  '        <text>World</text>',
-  '      </Show>',
-  '      <Switch fallback={<text>Fallback</text>}>',
-  '        <Match when={mode() === 1}><text>ModeOne</text></Match>',
-  '        <Match when={mode() === 2}><text>ModeTwo</text></Match>',
-  '      </Switch>',
-  '    </box>',
-  '  ), { width: 24, height: 8 })',
-  '  await setup.renderOnce()',
-  '  const first = setup.captureCharFrame()',
-  '  setItems(["Hello", "Node"])',
-  '  setShowTail(true)',
-  '  setMode(2)',
-  '  await setup.renderOnce()',
-  '  const second = setup.captureCharFrame()',
-  '  setup.renderer.destroy()',
-  '  return { first, second }',
-  '}',
-].join("\\n")
-
-const transformOptions = {
-  filename: join(process.cwd(), "fixture.tsx"),
-  configFile: false,
-  babelrc: false,
-  plugins: [
-    [
-      moduleResolver,
-      {
-        resolvePath(specifier) {
-          if (specifier === "solid-js") return "solid-js/dist/solid.js"
-          if (specifier === "solid-js/store") return "solid-js/store/dist/store.js"
-          return specifier
-        },
-      },
-    ],
-  ],
-  presets: [
-    [solid, { moduleName: ${JSON.stringify(packageJson.name)}, generate: "universal" }],
-    [ts],
-  ],
-}
-
-const transformed = await transformAsync(fixtureSource, transformOptions)
-
-if (!transformed?.code) {
-  throw new Error("Failed to transform Solid fixture")
-}
-
 const runtimeDir = join(process.cwd(), ".dist-node-runtime")
 const runtimePath = join(runtimeDir, "fixture.mjs")
-mkdirSync(runtimeDir, { recursive: true })
-writeFileSync(runtimePath, transformed.code)
 
 try {
   const { run } = await import(pathToFileURL(runtimePath).href)
@@ -311,14 +290,7 @@ try {
   assert.match(result.second, /World/)
   assert.match(result.second, /ModeTwo/)
 
-  const nativeFixturePath = join(process.cwd(), "native-scene.fixture.tsx")
-  const nativeTransformed = await transformAsync(readFileSync(nativeFixturePath, "utf8"), {
-    ...transformOptions,
-    filename: nativeFixturePath,
-  })
-  if (!nativeTransformed?.code) throw new Error("Failed to transform native Solid fixture")
   const nativeRuntimePath = join(runtimeDir, "native-scene.mjs")
-  writeFileSync(nativeRuntimePath, nativeTransformed.code)
   await import(pathToFileURL(nativeRuntimePath).href).then((fixture) => fixture.run())
 } finally {
   rmSync(runtimeDir, { recursive: true, force: true })
@@ -406,6 +378,12 @@ function assertNodeStaticImportFailure(
 
 function installAndTest(nodeDir: string): void {
   runCommand("npm", ["install", "--ignore-scripts", "--no-package-lock"], nodeDir, "Node dist test install failed")
+  runCommand(
+    "bun",
+    [join(rootDir, "tests", "consumer-dependencies.fixture.ts")],
+    nodeDir,
+    "Solid consumer dependency check failed",
+  )
   runCommand("npm", ["exec", "--", "tsc", "--noEmit"], nodeDir, "Node dist consumer typecheck failed")
   // Install the client-runtime rewrite before static imports cache Solid's server runtime.
   runCommand(
@@ -472,7 +450,7 @@ try {
 
   writeConsumerPackage(nodeDir, solidTarball, coreTarball, nativeTarball)
   writeTypecheckFixture(nodeDir)
-  writeNodeTest(nodeDir)
+  await writeNodeTest(nodeDir)
   writeBunTest(nodeDir)
 
   installAndTest(nodeDir)
