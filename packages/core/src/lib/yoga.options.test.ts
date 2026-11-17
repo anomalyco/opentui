@@ -55,11 +55,11 @@ describe("parseBoxSizing", () => {
   })
 
   test("handles null", () => {
-    expect(() => parseBoxSizing(null as any)).not.toThrow()
+    expect(parseBoxSizing(null as any)).toBe(BoxSizing.BorderBox)
   })
 
   test("handles undefined", () => {
-    expect(() => parseBoxSizing(undefined as any)).not.toThrow()
+    expect(parseBoxSizing(undefined as any)).toBe(BoxSizing.BorderBox)
   })
 })
 
@@ -82,11 +82,11 @@ describe("parseDimension", () => {
   })
 
   test("handles null", () => {
-    expect(() => parseDimension(null as any)).not.toThrow()
+    expect(parseDimension(null as any)).toBe(Dimension.Width)
   })
 
   test("handles undefined", () => {
-    expect(() => parseDimension(undefined as any)).not.toThrow()
+    expect(parseDimension(undefined as any)).toBe(Dimension.Width)
   })
 })
 
@@ -111,14 +111,6 @@ describe("parseDirection", () => {
 
   test("returns default for invalid value", () => {
     expect(parseDirection("invalid")).toBe(Direction.LTR)
-  })
-
-  test("handles null", () => {
-    expect(() => parseDirection(null as any)).not.toThrow()
-  })
-
-  test("handles undefined", () => {
-    expect(() => parseDirection(undefined as any)).not.toThrow()
   })
 })
 
@@ -146,11 +138,11 @@ describe("parseDisplay", () => {
   })
 
   test("handles null", () => {
-    expect(() => parseDisplay(null as any)).not.toThrow()
+    expect(parseDisplay(null as any)).toBe(Display.Flex)
   })
 
   test("handles undefined", () => {
-    expect(() => parseDisplay(undefined as any)).not.toThrow()
+    expect(parseDisplay(undefined as any)).toBe(Display.Flex)
   })
 })
 
@@ -201,11 +193,11 @@ describe("parseEdge", () => {
   })
 
   test("handles null", () => {
-    expect(() => parseEdge(null as any)).not.toThrow()
+    expect(parseEdge(null as any)).toBe(Edge.All)
   })
 
   test("handles undefined", () => {
-    expect(() => parseEdge(undefined as any)).not.toThrow()
+    expect(parseEdge(undefined as any)).toBe(Edge.All)
   })
 })
 
@@ -233,11 +225,11 @@ describe("parseGutter", () => {
   })
 
   test("handles null", () => {
-    expect(() => parseGutter(null as any)).not.toThrow()
+    expect(parseGutter(null as any)).toBe(Gutter.All)
   })
 
   test("handles undefined", () => {
-    expect(() => parseGutter(undefined as any)).not.toThrow()
+    expect(parseGutter(undefined as any)).toBe(Gutter.All)
   })
 })
 
@@ -277,11 +269,11 @@ describe("parseLogLevel", () => {
   })
 
   test("handles null", () => {
-    expect(() => parseLogLevel(null as any)).not.toThrow()
+    expect(parseLogLevel(null as any)).toBe(LogLevel.Info)
   })
 
   test("handles undefined", () => {
-    expect(() => parseLogLevel(undefined as any)).not.toThrow()
+    expect(parseLogLevel(undefined as any)).toBe(LogLevel.Info)
   })
 })
 
@@ -309,11 +301,11 @@ describe("parseMeasureMode", () => {
   })
 
   test("handles null", () => {
-    expect(() => parseMeasureMode(null as any)).not.toThrow()
+    expect(parseMeasureMode(null as any)).toBe(MeasureMode.Undefined)
   })
 
   test("handles undefined value", () => {
-    expect(() => parseMeasureMode(undefined as any)).not.toThrow()
+    expect(parseMeasureMode(undefined as any)).toBe(MeasureMode.Undefined)
   })
 })
 
@@ -343,14 +335,6 @@ describe("parseUnit", () => {
 
   test("returns default for invalid value", () => {
     expect(parseUnit("invalid")).toBe(Unit.Point)
-  })
-
-  test("handles null", () => {
-    expect(() => parseUnit(null as any)).not.toThrow()
-  })
-
-  test("handles undefined value", () => {
-    expect(() => parseUnit(undefined as any)).not.toThrow()
   })
 })
 

@@ -65,8 +65,6 @@ describe("InputRenderable", () => {
     it("should initialize properly with default options", () => {
       const { input, root } = createInputRenderable({ width: 20 })
 
-      expect(input.x).toBeDefined()
-      expect(input.y).toBeDefined()
       expect(input.width).toBeGreaterThan(0)
       expect(input.height).toBeGreaterThan(0)
       expect(input.value).toBe("")

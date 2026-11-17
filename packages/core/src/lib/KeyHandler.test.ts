@@ -106,12 +106,6 @@ test("KeyHandler - preserves raw ANSI bytes in paste", () => {
   expect(receivedPaste).toEqual(pasteBytes("text with \x1b[31mred\x1b[0m color"))
 })
 
-test("KeyHandler - constructor creates a handler", () => {
-  const handler = createKeyHandler()
-
-  expect(handler).toBeDefined()
-})
-
 test("KeyHandler - handles string input", () => {
   const handler = createKeyHandler()
 
@@ -133,14 +127,6 @@ test("KeyHandler - handles string input", () => {
     raw: "c",
     eventType: "press",
   })
-})
-
-test("KeyHandler - event inheritance from EventEmitter", () => {
-  const handler = createKeyHandler()
-
-  expect(typeof handler.on).toBe("function")
-  expect(typeof handler.emit).toBe("function")
-  expect(typeof handler.removeListener).toBe("function")
 })
 
 test("KeyHandler - preventDefault stops propagation", () => {

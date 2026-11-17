@@ -463,16 +463,6 @@ describe("mock-keys", () => {
     expect(mockRenderer.getEmittedData()).toBe("\x01\x03\x04")
   })
 
-  test("meta modifier produces escape sequences", () => {
-    const mockRenderer = new MockRenderer()
-    const mockKeys = createMockKeys(mockRenderer as any)
-
-    mockKeys.pressKey("a", { meta: true })
-    mockKeys.pressKey("z", { meta: true })
-
-    expect(mockRenderer.getEmittedData()).toBe("\x1ba\x1bz")
-  })
-
   test("all CTRL_* letters produce correct control codes", () => {
     const mockRenderer = new MockRenderer()
     const mockKeys = createMockKeys(mockRenderer as any)

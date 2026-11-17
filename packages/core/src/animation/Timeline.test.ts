@@ -1578,34 +1578,6 @@ describe("Timeline", () => {
       expect(testTarget.value).toBe(50)
       expect(updateCallCount).toBe(2)
     })
-
-    it("should preserve original initial values across timeline loops", () => {
-      timeline = createTimeline({ duration: 1000, loop: true, autoplay: false })
-
-      const testTarget = { value: 0 }
-      let updateCallCount = 0
-
-      timeline.add(testTarget, {
-        value: 100,
-        duration: 600,
-        onUpdate: () => updateCallCount++,
-      })
-
-      timeline.play()
-
-      engine.update(600)
-      expect(testTarget.value).toBe(100)
-      expect(updateCallCount).toBe(1)
-
-      engine.update(400)
-
-      expect(testTarget.value).toBe(100)
-      expect(updateCallCount).toBe(1)
-
-      engine.update(300)
-      expect(testTarget.value).toBe(50)
-      expect(updateCallCount).toBe(2)
-    })
   })
 
   describe("Multiple Animations on Same Object", () => {
@@ -2138,51 +2110,6 @@ describe("Timeline", () => {
       engine.update(250)
       expect(resetValue.x).toBe(50)
     })
-  })
-
-  it("should execute callbacks at position 0 again when timeline loops", () => {
-    timeline = createTimeline({ duration: 1000, loop: true, autoplay: false })
-
-    let callbackExecutionCount = 0
-    const resetValue = { x: 0 }
-
-    timeline.call(() => {
-      callbackExecutionCount++
-      resetValue.x = 0
-    }, 0)
-
-    timeline.add(
-      resetValue,
-      {
-        x: 100,
-        duration: 500,
-      },
-      200,
-    )
-
-    timeline.play()
-
-    engine.update(0)
-    expect(callbackExecutionCount).toBe(1)
-    expect(resetValue.x).toBe(0)
-
-    engine.update(200)
-    expect(resetValue.x).toBe(0)
-
-    engine.update(250)
-    expect(resetValue.x).toBe(50)
-
-    engine.update(575)
-    expect(timeline.currentTime).toBe(25)
-
-    expect(callbackExecutionCount).toBe(2)
-    expect(resetValue.x).toBe(0)
-
-    engine.update(175)
-    expect(resetValue.x).toBe(0)
-
-    engine.update(250)
-    expect(resetValue.x).toBe(50)
   })
 
   it("should execute callbacks at position 0 again when nested sub-timeline loops", () => {

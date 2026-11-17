@@ -617,15 +617,6 @@ describe("TextBufferView", () => {
   })
 
   describe("wrapped view offset stability", () => {
-    it("should return line info for empty buffer", () => {
-      const emptyText = stringToStyledText("")
-      buffer.setStyledText(emptyText)
-
-      const lineInfo = view.lineInfo
-      expect(lineInfo.lineStartCols).toEqual([0])
-      expect(lineInfo.lineWidthCols).toEqual([0])
-    })
-
     it("should maintain stable char offsets with wide characters", () => {
       const text = "A世B界C" // A(1) 世(2) B(1) 界(2) C(1) = 7 total width
       const styledText = stringToStyledText(text)

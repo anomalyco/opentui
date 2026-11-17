@@ -30,8 +30,6 @@ describe("Textarea - Editing Tests", () => {
         height: 10,
       })
 
-      expect(editor.x).toBeDefined()
-      expect(editor.y).toBeDefined()
       expect(editor.width).toBeGreaterThan(0)
       expect(editor.height).toBeGreaterThan(0)
       expect(editor.focusable).toBe(true)
