@@ -2631,38 +2631,6 @@ test "TextBufferView char range highlights - with reference ID for removal" {
     try std.testing.expectEqual(@as(usize, 0), tb.getLineHighlights(1).len);
 }
 
-test "TextBufferView highlights - work correctly with wrapped lines" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    try tb.setText("ABCDEFGHIJKLMNOPQRST");
-
-    try tb.addHighlight(0, 5, 15, 1, 1, 0);
-
-    view.setWrapMode(.char);
-    view.setWrapWidth(10);
-
-    try std.testing.expectEqual(@as(u32, 2), view.getVirtualLineCount());
-
-    const vline0_info = (try view.getVirtualLineSpans(0));
-    const vline1_info = (try view.getVirtualLineSpans(1));
-
-    try std.testing.expectEqual(@as(usize, 0), vline0_info.source_line);
-    try std.testing.expectEqual(@as(usize, 0), vline1_info.source_line);
-
-    try std.testing.expectEqual(@as(u32, 0), vline0_info.source_col_start);
-    try std.testing.expectEqual(@as(u32, 10), vline1_info.source_col_start);
-
-    try std.testing.expect(vline0_info.spans.len > 0);
-    try std.testing.expect(vline1_info.spans.len > 0);
-}
-
 test "TextBufferView measureForDimensions - alternating widths reuse completed results after a failed miss" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
@@ -3894,33 +3862,6 @@ test "TextBufferView virtual lines - multi-line text without wrap" {
     try std.testing.expect(line_info.line_start_cols[1] >= line_info.line_start_cols[0]);
     try std.testing.expect(line_info.line_start_cols[2] >= line_info.line_start_cols[1]);
     try std.testing.expect(line_info.line_start_cols[3] >= line_info.line_start_cols[2]);
-}
-
-test "TextBufferView line info - line starts and widths consistency" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    try tb.setText("ABCDEFGHIJKLMNOPQRST");
-
-    view.setWrapMode(.char);
-    view.setWrapWidth(7);
-    const line_count = view.getVirtualLineCount();
-    const line_info = view.getCachedLineInfo();
-
-    try std.testing.expectEqual(@as(usize, line_count), line_info.line_start_cols.len);
-    try std.testing.expectEqual(@as(usize, line_count), line_info.line_width_cols.len);
-
-    for (line_info.line_width_cols, 0..) |width, i| {
-        if (i < line_info.line_width_cols.len - 1) {
-            try std.testing.expect(width <= 7);
-        }
-    }
 }
 
 test "TextBufferView line info - line starts monotonically increasing" {

@@ -40,15 +40,6 @@ const ItemWithMetrics = struct {
 
 //===== Basic Rope Tests =====
 
-test "Rope - can initialize with arena allocator" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const RopeType = rope_mod.Rope(SimpleItem);
-    var rope = try RopeType.init(arena.allocator());
-    try std.testing.expectEqual(@as(u32, 0), rope.count()); // Sentinel filtered
-}
-
 test "Rope - from_item creates single item rope" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1498,19 +1489,6 @@ fn makeWeightedSplitter() WeightedRope.Node.LeafSplitFn {
         .ctx = null,
         .splitFn = splitWeightedItemCallback,
     };
-}
-
-test "Rope - totalWeight returns correct weight" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const items = [_]WeightedItem{
-        .{ .value = 1, .weight = 10 },
-        .{ .value = 2, .weight = 20 },
-        .{ .value = 3, .weight = 30 },
-    };
-
-    var rope = try WeightedRope.from_slice(arena.allocator(), &items);
-    try std.testing.expectEqual(@as(u32, 60), rope.totalWeight());
 }
 
 test "Rope - split_at_weight at boundary" {

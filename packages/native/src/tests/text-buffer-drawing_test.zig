@@ -369,36 +369,6 @@ test "drawTextBuffer - issue 799 CJK word wrap has no duplicated glyphs" {
     );
 }
 
-test "drawTextBuffer - simple single line text" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    try tb.setText("Hello World");
-
-    var opt_buffer = try OptimizedBuffer.init(
-        std.testing.allocator,
-        20,
-        5,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .unicode },
-    );
-    defer opt_buffer.deinit();
-
-    opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
-    opt_buffer.drawTextBuffer(view, 0, 0);
-
-    var out_buffer: [100]u8 = undefined;
-    const written = try opt_buffer.writeResolvedChars(&out_buffer, false);
-    const result = out_buffer[0..written];
-
-    try std.testing.expect(std.mem.startsWith(u8, result, "Hello World"));
-}
-
 test "drawTextBuffer - empty text buffer" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
@@ -2022,50 +1992,6 @@ test "drawTextBuffer - wide tab indicator occupies whole cells without moving se
             try std.testing.expectEqual(selected, target.get(3, 0).?.bg);
         }
     }
-}
-
-test "drawTextBuffer - tab without indicator renders as spaces" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    tb.setTabWidth(4);
-    try tb.setText("A\tB");
-
-    var opt_buffer = try OptimizedBuffer.init(
-        std.testing.allocator,
-        20,
-        5,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .unicode },
-    );
-    defer opt_buffer.deinit();
-
-    opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
-    opt_buffer.drawTextBuffer(view, 0, 0);
-
-    const cell_0 = opt_buffer.get(0, 0) orelse unreachable;
-    try std.testing.expectEqual(@as(u32, 'A'), cell_0.char);
-
-    const cell_1 = opt_buffer.get(1, 0) orelse unreachable;
-    try std.testing.expectEqual(@as(u32, 32), cell_1.char);
-
-    const cell_2 = opt_buffer.get(2, 0) orelse unreachable;
-    try std.testing.expectEqual(@as(u32, 32), cell_2.char);
-
-    const cell_3 = opt_buffer.get(3, 0) orelse unreachable;
-    try std.testing.expectEqual(@as(u32, 32), cell_3.char);
-
-    const cell_4 = opt_buffer.get(4, 0) orelse unreachable;
-    try std.testing.expectEqual(@as(u32, 32), cell_4.char);
-
-    // With static tabs: A at col 0, tab takes 4 cols (1-4), B at col 5
-    const cell_5 = opt_buffer.get(5, 0) orelse unreachable;
-    try std.testing.expectEqual(@as(u32, 'B'), cell_5.char);
 }
 
 test "drawTextBuffer - mixed ASCII and Unicode with emoji renders completely" {

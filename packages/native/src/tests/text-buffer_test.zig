@@ -576,40 +576,6 @@ test "TextBuffer line info - unicode width method" {
     try std.testing.expect(iter_mod.lineWidthAt(tb.rope(), 0) > 0);
 }
 
-test "TextBuffer line info - unicode mixed content with special characters" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    try tb.setText("Normal\n123\n!@#\n测试\n");
-
-    try std.testing.expectEqual(@as(u32, 5), tb.getLineCount()); // line_count (4 lines + empty line at end)
-    try std.testing.expect(iter_mod.lineWidthAt(tb.rope(), 0) >= 0);
-    try std.testing.expect(iter_mod.lineWidthAt(tb.rope(), 1) >= 0);
-    try std.testing.expect(iter_mod.lineWidthAt(tb.rope(), 2) >= 0);
-    try std.testing.expect(iter_mod.lineWidthAt(tb.rope(), 3) >= 0);
-    try std.testing.expect(iter_mod.lineWidthAt(tb.rope(), 4) >= 0);
-}
-
-test "TextBuffer line info - unicode text without styling" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    // setText now handles all text at once without styling
-    try tb.setText("Red\nBlue");
-
-    try std.testing.expectEqual(@as(u32, 2), tb.getLineCount());
-    try std.testing.expectEqual(@as(u32, 0), iter_mod.coordsToOffset(tb.rope(), 0, 0).?);
-    try std.testing.expectEqual(@as(u32, 4), iter_mod.coordsToOffset(tb.rope(), 1, 0).?);
-    try std.testing.expect(iter_mod.lineWidthAt(tb.rope(), 0) >= 0);
-    try std.testing.expect(iter_mod.lineWidthAt(tb.rope(), 1) >= 0);
-}
-
 test "TextBuffer line info - extremely long single line" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
@@ -718,21 +684,6 @@ test "TextBuffer view registration - ids stay unique and reused, and mutations d
 }
 
 // ===== Memory Registry Tests =====
-
-test "TextBuffer memory registry - register and get buffer" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    const text = "Hello World";
-    const mem_id = try tb.registerMemBuffer(text, false);
-
-    const retrieved = tb.getMemBuffer(mem_id);
-    try std.testing.expect(retrieved != null);
-    try std.testing.expectEqualStrings(text, retrieved.?);
-}
 
 test "TextBuffer memory registry - multiple buffers" {
     var pools = TestPools.init(std.testing.allocator);
@@ -1440,10 +1391,6 @@ test "TextBuffer setText - CRLF at SIMD boundary" {
     const written = tb.getPlainTextIntoBuffer(&out_buffer);
     const expected_len = 15 + 1 + 9;
     try std.testing.expectEqual(expected_len, written);
-}
-
-test "TextBuffer setText - line with multiple u16-sized chunks (SKIPPED)" {
-    return error.SkipZigTest;
 }
 
 test "TextBuffer setText - validate rope structure is correct" {

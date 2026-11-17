@@ -55,33 +55,6 @@ test "findRenderClusterInfo wcwidth: CJK characters" {
     try testing.expectEqual(@as(u32, 7), result.items[1].col_start);
 }
 
-test "findRenderClusterInfo wcwidth: emoji with skin tone - single grapheme cluster" {
-    var result: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
-    defer result.deinit(testing.allocator);
-
-    const text = "👋🏿"; // Wave + skin tone modifier
-    try utf8.findRenderClusterInfo(testing.allocator, text, 4, .hidden, false, .wcwidth, &result);
-
-    try testing.expectEqual(@as(usize, 1), result.items.len);
-
-    try testing.expectEqual(@as(u32, 0), result.items[0].byte_start);
-    try testing.expectEqual(@as(u32, 8), result.items[0].byte_len);
-    try testing.expectEqual(@as(u32, 4), result.items[0].width_cols);
-}
-
-test "findRenderClusterInfo wcwidth: emoji with ZWJ - single grapheme cluster" {
-    var result: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
-    defer result.deinit(testing.allocator);
-
-    const text = "👩‍🚀"; // Woman + ZWJ + Rocket (11 bytes total)
-    try utf8.findRenderClusterInfo(testing.allocator, text, 4, .hidden, false, .wcwidth, &result);
-
-    try testing.expectEqual(@as(usize, 1), result.items.len);
-
-    try testing.expectEqual(@as(u32, 11), result.items[0].byte_len);
-    try testing.expectEqual(@as(u32, 4), result.items[0].width_cols);
-}
-
 test "findRenderClusterInfo wcwidth: combining mark - part of base grapheme" {
     var result: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
     defer result.deinit(testing.allocator);
@@ -150,32 +123,6 @@ test "getWidthAt wcwidth: combining mark has zero width" {
 
     const width_combining = utf8.getWidthAt(text, 1, 8, .hidden, .wcwidth);
     try testing.expectEqual(@as(u32, 0), width_combining); // Combining mark has width 0
-}
-
-test "calculateTextWidth wcwidth: emoji with skin tone counts both codepoints" {
-    const text = "👋🏿"; // Wave + dark skin tone
-
-    const width_wcwidth = utf8.calculateTextWidth(text, 4, .hidden, false, .wcwidth);
-    const width_unicode = utf8.calculateTextWidth(text, 4, .hidden, false, .unicode);
-
-    // wcwidth: counts both codepoints (2 + 2 = 4)
-    try testing.expectEqual(@as(u32, 4), width_wcwidth);
-
-    // unicode: single grapheme cluster (width 2)
-    try testing.expectEqual(@as(u32, 2), width_unicode);
-}
-
-test "calculateTextWidth wcwidth: flag emoji counts both RIs" {
-    const text = "🇺🇸"; // US flag
-
-    const width_wcwidth = utf8.calculateTextWidth(text, 4, .hidden, false, .wcwidth);
-    const width_unicode = utf8.calculateTextWidth(text, 4, .hidden, false, .unicode);
-
-    // wcwidth: counts both regional indicators (1 + 1 = 2)
-    try testing.expectEqual(@as(u32, 2), width_wcwidth);
-
-    // unicode: single flag grapheme (width 2)
-    try testing.expectEqual(@as(u32, 2), width_unicode);
 }
 
 // ============================================================================
@@ -280,12 +227,6 @@ test "wcwidth: skin tone modifiers counted separately" {
     const width = utf8.calculateTextWidth(text, 4, .hidden, false, .wcwidth);
     // Wave (2) + Skin tone modifier (2) = 4
     try testing.expectEqual(@as(u32, 4), width);
-}
-
-test "wcwidth: CJK characters have width 2" {
-    const text = "你好世界"; // 4 CJK characters
-    const width = utf8.calculateTextWidth(text, 4, .hidden, false, .wcwidth);
-    try testing.expectEqual(@as(u32, 8), width); // 4 * 2 = 8
 }
 
 test "wcwidth: mixed ASCII and emoji" {

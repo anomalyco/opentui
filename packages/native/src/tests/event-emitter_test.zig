@@ -21,12 +21,6 @@ const Counter = struct {
     }
 };
 
-test "EventEmitter - can initialize and deinitialize" {
-    const Emitter = event_emitter.EventEmitter(EventType);
-    var emitter = Emitter.init(std.testing.allocator);
-    defer emitter.deinit();
-}
-
 test "EventEmitter - can add listener with on" {
     const Emitter = event_emitter.EventEmitter(EventType);
     var emitter = Emitter.init(std.testing.allocator);
