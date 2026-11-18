@@ -124,6 +124,8 @@ const table = new TextTableRenderable(renderer, {
 
 Selection starts only within cell content, not on border glyphs. Selection within one cell can be partial. A vertical drag in the anchor column selects that column. Moving into another column changes to grid selection.
 
+Double-click selects a word within the clicked cell. Triple-click selects a line within that cell. Dragging after a double or triple click extends the selection by words or lines respectively.
+
 `getSelectedText()` joins nonempty selected cells in a row with tabs. It joins selected rows with newlines and excludes
 table borders. A selected blank cell does not add an empty tab field.
 

@@ -1121,7 +1121,11 @@ export class TextTableRenderable extends Renderable {
     // A press that a width change moved anchors the rest of its gesture where its character lies now, as a press
     // made there would; only a new press starts again.
     if (this._pressMoved && !isStart && this._pressedCell) localSelection = { ...localSelection, ...this.movedAnchor() }
-    if (localSelection.anchorX === localSelection.focusX && localSelection.anchorY === localSelection.focusY) {
+    if (
+      localSelection.behavior === "cell" &&
+      localSelection.anchorX === localSelection.focusX &&
+      localSelection.anchorY === localSelection.focusY
+    ) {
       this.resetCellSelections()
       this._lastSelectionMode = null
       if (isStart) {
@@ -1205,6 +1209,7 @@ export class TextTableRenderable extends Renderable {
             coords.focusY,
             this._selectionBg,
             this._selectionFg,
+            localSelection.behavior,
           )
         } else {
           cell.textBufferView.updateLocalSelection(
@@ -1214,6 +1219,7 @@ export class TextTableRenderable extends Renderable {
             coords.focusY,
             this._selectionBg,
             this._selectionFg,
+            localSelection.behavior,
           )
         }
       }
