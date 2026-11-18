@@ -210,20 +210,6 @@ exports[`Textarea - Rendering Tests Textarea Content Snapshots should resize cor
 "
 `;
 
-exports[`Textarea - Rendering Tests Width/Height Setter Layout Tests should not shrink box when width is set via setter 1`] = `
-"┌────────────────────────────┐          
-│>    Content that takes up  │          
-│     space                  │          
-└────────────────────────────┘          
-                                        
-                                        
-                                        
-                                        
-                                        
-                                        
-"
-`;
-
 exports[`Textarea - Rendering Tests Width/Height Setter Layout Tests should not shrink box when height is set via setter in column layout with textarea 1`] = `
 "┌───────────────────────┐     
 │Header                 │     
@@ -243,20 +229,6 @@ exports[`Textarea - Rendering Tests Width/Height Setter Layout Tests should not 
 "
 `;
 
-exports[`Textarea - Rendering Tests Width/Height Setter Layout Tests should not shrink box when minWidth is set via setter 1`] = `
-"┌────────────────────────────┐          
-│>    Content that takes up  │          
-│     space                  │          
-└────────────────────────────┘          
-                                        
-                                        
-                                        
-                                        
-                                        
-                                        
-"
-`;
-
 exports[`Textarea - Rendering Tests Width/Height Setter Layout Tests should not shrink box when minHeight is set via setter in column layout with textarea 1`] = `
 "┌───────────────────────┐     
 │Header                 │     
@@ -273,20 +245,6 @@ exports[`Textarea - Rendering Tests Width/Height Setter Layout Tests should not 
                               
                               
                               
-"
-`;
-
-exports[`Textarea - Rendering Tests Width/Height Setter Layout Tests should not shrink box when width is set from undefined via setter 1`] = `
-"┌────────────────────────────┐          
-│>    Content that takes up  │          
-│     space                  │          
-└────────────────────────────┘          
-                                        
-                                        
-                                        
-                                        
-                                        
-                                        
 "
 `;
 

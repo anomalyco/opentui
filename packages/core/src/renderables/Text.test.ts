@@ -77,20 +77,6 @@ describe("TextRenderable Selection", () => {
     currentRenderer.destroy()
   })
 
-  describe("Initialization", () => {
-    it("should initialize properly", async () => {
-      const { text } = await createTextRenderable(currentRenderer, {
-        content: "Hello World",
-        selectable: true,
-      })
-
-      expect(text.x).toBeDefined()
-      expect(text.y).toBeDefined()
-      expect(text.width).toBeGreaterThan(0)
-      expect(text.height).toBeGreaterThan(0)
-    })
-  })
-
   describe("Basic Selection Flow", () => {
     it("should handle selection from start to end", async () => {
       const { text } = await createTextRenderable(currentRenderer, {

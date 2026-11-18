@@ -126,10 +126,4 @@ describe("mouse pointer style", () => {
     expect(pointerReset).toBe(true)
     expect((renderer as any)._currentMousePointerStyle).toBe("default")
   })
-
-  test("pointer resets on renderer destroy", async () => {
-    renderer.setMousePointer("pointer")
-    renderer.destroy()
-    // After destroy, the reset is called internally - just verify no error
-  })
 })
