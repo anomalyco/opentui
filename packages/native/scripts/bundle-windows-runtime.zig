@@ -7,7 +7,7 @@
 //! cannot give an MSVC program. A MinGW link takes the same members from here
 //! instead of from its own copy of Zig's runtime.
 //!
-//! Usage: bundle-windows-runtime <zig> <target> <optimize> <probe.cpp> <shim.c> <in.lib> <out.lib>
+//! Usage: bundle-windows-runtime <zig> <target> <optimize> <probe.cpp> <shim.c> <mingw lib-common> <in.lib> <out.lib>
 //!
 //! As in bundle-libcxx.zig, the runtime archives come from the linker line of a
 //! C++ probe for the same target and mode. Its import libraries say what the
@@ -25,6 +25,8 @@ const Member = struct { name: []const u8, data: []u8 };
 const Names = std.StringHashMapUnmanaged(void);
 const Object = struct {
     defined: []const []const u8,
+    /// Defined in a section, so not weak, which gives way to another definition.
+    strong: []const []const u8,
     undefined: []const []const u8,
     constructors: bool,
 };
@@ -42,9 +44,9 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const io = init.io;
     const args = try init.minimal.args.toSlice(arena);
-    if (args.len != 8) return error.Usage;
-    const zig, const target, const optimize, const probe, const shim, const input, const output =
-        .{ args[1], args[2], args[3], args[4], args[5], args[6], args[7] };
+    if (args.len != 9) return error.Usage;
+    const zig, const target, const optimize, const probe, const shim, const lib_common, const input, const output =
+        .{ args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8] };
     const cwd = std.Io.Dir.cwd();
     const work = try std.fmt.allocPrint(arena, "{s}.d", .{output});
     try cwd.deleteTree(io, work);
@@ -134,6 +136,25 @@ pub fn main(init: std.process.Init) !void {
         while (it.next()) |name| try names.print(arena, " {s}", .{name.*});
         return fail("neither the MinGW runtime nor MSVC defines:{s}", .{names.items});
     }
+
+    // A member brings everything it defines, not only the name it was added for. Where that includes a name MSVC
+    // provides, such as MinGW's 80-bit strtold beside the __mingw_strtold its scanf calls, a program that links that
+    // part of the static C runtime gets it twice. So such a member's names are renamed, in it and in the runtime
+    // members that call them: neither MSVC's runtime nor a MinGW program's own copy of the member meets them, and
+    // nothing here calls MSVC's version, whose long double has 64 bits.
+    const long_double = try longDoubleFunctions(arena, io, lib_common);
+    var private: Names = .empty;
+    for (added.items) |i| {
+        const names = runtime_objects[i].strong;
+        for (names) |name| if (provided.contains(name) or long_double.contains(name)) {
+            for (names) |each| try private.put(arena, each, {});
+            break;
+        };
+    }
+    for (own.items) |member| for ((try parse(arena, member)).undefined) |name| {
+        if (private.contains(name)) return fail("{s} calls {s}, which a member that clashes with MSVC's runtime defines", .{ member.name, name });
+    };
+    for (added.items) |i| try rename(arena, &runtime.items[i], private);
 
     // The shim again, now with a pointer for each of those functions. An /alternatename directive makes the pointer
     // stand for __imp_name only when nothing else defines it, as with libucrt.lib; an import library's own pointer,
@@ -354,6 +375,49 @@ const Coff = struct {
     }
 };
 
+/// The UCRT's long double functions. MinGW's import libraries leave them out
+/// on x86, where MinGW's long double has 80 bits and its runtime defines its
+/// own; libucrt.lib defines them all (F_LD64 in the .def files in `common`).
+fn longDoubleFunctions(arena: std.mem.Allocator, io: std.Io, common: []const u8) !Names {
+    var dir = try std.Io.Dir.cwd().openDir(io, common, .{ .iterate = true });
+    defer dir.close(io);
+    var names: Names = .empty;
+    var files = dir.iterate();
+    while (try files.next(io)) |file| {
+        if (!std.mem.startsWith(u8, file.name, "api-ms-win-crt-") or !std.mem.endsWith(u8, file.name, ".def.in")) continue;
+        const text = try dir.readFileAlloc(io, file.name, arena, .unlimited);
+        var at: usize = 0;
+        while (std.mem.indexOfPos(u8, text, at, "F_LD64(")) |found| {
+            at = found + "F_LD64(".len;
+            try names.put(arena, text[at .. std.mem.indexOfAnyPos(u8, text, at, " )") orelse text.len], {});
+        }
+    }
+    if (names.count() == 0) return fail("no F_LD64 functions in {s}", .{common});
+    return names;
+}
+
+/// Renames the external symbols of `member` named in `names` to __ot_<name>,
+/// appending the new names to its string table, which ends the object.
+fn rename(arena: std.mem.Allocator, member: *Member, names: Names) !void {
+    const coff = try Coff.init(member.*);
+    if (coff.strings + 4 > coff.data.len or coff.strings + read(u32, coff.data, coff.strings) != coff.data.len) {
+        return fail("{s}: the string table does not end the object", .{member.name});
+    }
+    var data: std.ArrayList(u8) = .empty;
+    try data.appendSlice(arena, coff.data);
+    var i: usize = 0;
+    while (i < coff.count) : (i += 1 + coff.data[coff.symtab + i * 18 + 17]) {
+        const at = coff.symtab + i * 18;
+        const name = coff.symbolName(at);
+        if (coff.data[at + 16] != 2 or !names.contains(name)) continue;
+        std.mem.writeInt(u32, data.items[at..][0..4], 0, .little);
+        std.mem.writeInt(u32, data.items[at + 4 ..][0..4], @intCast(data.items.len - coff.strings), .little);
+        try data.print(arena, "__ot_{s}\x00", .{name});
+    }
+    std.mem.writeInt(u32, data.items[coff.strings..][0..4], @intCast(data.items.len - coff.strings), .little);
+    member.data = data.items;
+}
+
 /// MinGW objects carry -exclude-symbols directives, which keep their names out
 /// of a DLL that MinGW's linker builds by exporting everything. link.exe knows
 /// no such option and warns about every one (LNK4229), thousands of lines per
@@ -458,20 +522,23 @@ fn parse(arena: std.mem.Allocator, member: Member) !Object {
         constructors = constructors or std.mem.startsWith(u8, name, ".ctors") or std.mem.startsWith(u8, name, ".dtors");
     }
     var defined: std.ArrayList([]const u8) = .empty;
+    var strong: std.ArrayList([]const u8) = .empty;
     var undefined_names: std.ArrayList([]const u8) = .empty;
     var i: usize = 0;
     while (i < coff.count) : (i += 1 + data[coff.symtab + i * 18 + 17]) {
         const at = coff.symtab + i * 18;
         const name = coff.symbolName(at);
+        const section = read(i16, data, at + 12);
         switch (data[at + 16]) {
             // External: undefined with no section and no size, else defined, or common.
-            2 => try (if (read(i16, data, at + 12) == 0 and read(u32, data, at + 8) == 0) &undefined_names else &defined).append(arena, name),
+            2 => try (if (section == 0 and read(u32, data, at + 8) == 0) &undefined_names else &defined).append(arena, name),
             // A weak external has a default, so it defines its name.
             105 => try defined.append(arena, name),
             else => {},
         }
+        if (data[at + 16] == 2 and section > 0) try strong.append(arena, name);
     }
-    return .{ .defined = defined.items, .undefined = undefined_names.items, .constructors = constructors };
+    return .{ .defined = defined.items, .strong = strong.items, .undefined = undefined_names.items, .constructors = constructors };
 }
 
 fn read(comptime T: type, data: []const u8, at: usize) T {

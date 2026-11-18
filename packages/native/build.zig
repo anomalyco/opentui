@@ -947,6 +947,7 @@ fn buildTarget(
             run.addArgs(&.{ b.graph.zig_exe, zig_target, @tagName(optimize) });
             run.addFileArg(b.addWriteFiles().add("probe.cpp", "int opentui_probe;\n"));
             if (windows) run.addFileArg(b.path("src/windows-msvc-shim.c"));
+            if (windows) run.addDirectoryArg(std.Build.LazyPath.zig_lib.path(b, "libc/mingw/lib-common"));
             run.addArtifactArg(lib);
             const name = if (windows) "opentui-static.lib" else "libopentui.a";
             const archive = run.addOutputFileArg(name);
