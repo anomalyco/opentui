@@ -266,3 +266,14 @@ fn failed_opens_return_the_detail_and_play_waits_for_the_next_file() {
     assert!(video.is_playing());
     assert!(video.state().unwrap().current_time < Duration::from_secs(1));
 }
+
+/// FFmpeg's number scanning brings MinGW's into the Windows static library. A program whose C code calls the C
+/// runtime's `strtod` must still link with it: on x64 MSVC with the static C runtime, `strtold` was defined twice.
+#[test]
+fn links_beside_the_c_runtime_strtod() {
+    unsafe extern "C" {
+        fn strtod(text: *const std::ffi::c_char, end: *mut *mut std::ffi::c_char) -> f64;
+    }
+    // SAFETY: a NUL-terminated string and no end pointer.
+    assert_eq!(unsafe { strtod(c"2.5".as_ptr(), std::ptr::null_mut()) }, 2.5);
+}
