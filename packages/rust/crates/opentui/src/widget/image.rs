@@ -74,6 +74,32 @@ impl ImageView {
         self.clone()
     }
 
+    /// The terminal's cell aspect, which native paint fits the image with: the app Session's
+    /// [`Session::cell_aspect`](crate::native::Session::cell_aspect), or 2 outside an app. Core's `cellAspectRatio`.
+    pub fn cell_aspect(&self) -> f64 {
+        self.0.element.app().map_or(2.0, |app| app.session().cell_aspect())
+    }
+
+    /// The size in cells the image takes in a `width` x `height` area whose cells are `cell_aspect` times as tall as
+    /// they are wide ([`Self::cell_aspect`] for the terminal's), as Core's `ImageRenderable.getFittedSize` computes
+    /// it: [`ImageFit::Contain`] keeps the aspect ratio inside the area, [`ImageFit::Cover`] keeps it while covering
+    /// the area, so one side may be larger, and [`ImageFit::Fill`] takes the area. Each side is at least 1, and the
+    /// size is not limited to the image's pixels. `(0, 0)` without an image or for an empty area.
+    pub fn fitted_size(&self, width: u32, height: u32, cell_aspect: f64) -> (u32, u32) {
+        let info = self.0.image.borrow().as_ref().and_then(|image| image.info().ok());
+        let Some(info) = info.filter(|info| info.width > 0 && info.height > 0 && width > 0 && height > 0) else {
+            return (0, 0);
+        };
+        let (width, height) = (f64::from(width), f64::from(height));
+        let aspect = f64::from(info.width) / f64::from(info.height) * cell_aspect;
+        let scale = match self.0.fit.get() {
+            ImageFit::Fill => return (width as u32, height as u32),
+            ImageFit::Contain => (width / aspect).min(height),
+            ImageFit::Cover => (width / aspect).max(height),
+        };
+        ((aspect * scale).round().max(1.0) as u32, scale.round().max(1.0) as u32)
+    }
+
     /// Forces a protocol, for example [`ImageProtocol::Blocks`] for terminals that misreport graphics support.
     pub fn protocol(&self, protocol: ImageProtocol) -> Self {
         self.0.protocol.set(protocol);

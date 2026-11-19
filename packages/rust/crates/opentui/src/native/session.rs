@@ -2,7 +2,7 @@ use super::{ClipboardSelection, Context, ImageProtocol};
 use crate::error::{Error, Result, Status, check, cleanup, count};
 use crate::style::Color;
 use crate::sys;
-use std::{any::Any, ffi::c_void, io, panic, rc::Rc};
+use std::{any::Any, cell::Cell, ffi::c_void, io, panic, rc::Rc};
 
 /// Output queue limits for a [`Session`].
 ///
@@ -562,6 +562,8 @@ pub struct Session(Rc<SessionInner>);
 struct SessionInner {
     context: Context,
     handle: sys::ot_handle,
+    /// The last [`Session::set_image_resolution`]: columns, rows, pixel width, pixel height.
+    resolution: Cell<[u32; 4]>,
 }
 
 impl Drop for SessionInner {
@@ -614,7 +616,7 @@ impl Session {
         };
         let mut handle = sys::ot_handle::default();
         check("ot_session_create", unsafe { sys::ot_session_create(context.as_raw(), &raw, &mut handle) })?;
-        Ok(Self(Rc::new(SessionInner { context: context.clone(), handle })))
+        Ok(Self(Rc::new(SessionInner { context: context.clone(), handle, resolution: Cell::default() })))
     }
 
     pub fn context(&self) -> &Context {
@@ -1025,7 +1027,16 @@ impl Session {
         let (context, session) = self.raw();
         check("ot_session_set_image_resolution", unsafe {
             sys::ot_session_set_image_resolution(context, session, columns, rows, pixel_width, pixel_height)
-        })
+        })?;
+        self.0.resolution.set([columns, rows, pixel_width, pixel_height]);
+        Ok(())
+    }
+
+    /// How many times taller than wide a cell is, from the size [`Self::set_image_resolution`] set, as native image
+    /// fitting and Core's `ImageRenderable.cellAspectRatio` compute it: 2 without a size.
+    pub fn cell_aspect(&self) -> f64 {
+        let [columns, rows, width, height] = self.0.resolution.get().map(f64::from);
+        if columns * rows * width * height == 0.0 { 2.0 } else { (height / rows) / (width / columns) }
     }
 
     pub fn renderer_state(&self) -> Result<RendererState> {

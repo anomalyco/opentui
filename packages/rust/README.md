@@ -285,7 +285,7 @@ program status reports.
 | `Diff`         | A unified diff in one column or side by side, with line numbers, signs, and colored lines.                                      |
 | `Markdown`     | Rendered or source Markdown with nested lists, tables, code, code-block renderers, and inline hooks; streamed text stays cheap. |
 | `TerminalView` | A shell or any program on a pseudo-terminal, emulated natively, with scrollback and selection.                                  |
-| `ImageView`    | A picture, drawn with the Kitty protocol, Sixel, or half blocks.                                                                |
+| `ImageView`    | A picture, drawn with the Kitty protocol, Sixel, or half blocks; `fitted_size` gives its size in cells.                         |
 | `VideoView`    | An MP4 file played natively, with audio, looping, and seeking; events report the position, the end, and failures.               |
 | `FrameBuffer`  | A grid of cells you draw into yourself, which native code shows every frame.                                                    |
 | `Custom<T>`    | A widget you paint yourself by implementing `Component`.                                                                        |
