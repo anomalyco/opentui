@@ -1627,17 +1627,38 @@ fn p7Exempt(doc: *const Doc) P7Exempt {
 
 /// Whether every non-white-space byte `previous` drew is in `next`, in order (P7). B's
 /// exceptions are left out of both: link brackets and an image's `!` (concealed when the link
-/// resolves) and math delimiters (`$`, and with math on `\(` and `\)`, concealed when math
-/// closes).
+/// resolves), an autolink's drawn target (a link that resolves around it takes it: links do not
+/// nest; its text stays drawn), and math delimiters (`$`, and with math on `\(` and `\)`,
+/// concealed when math closes).
 fn framesGrow(previous: []const u8, next: []const u8, math: bool) bool {
     var at: usize = 0;
-    for (previous, 0..) |c, i| {
+    var i: usize = 0;
+    while (i < previous.len) : (i += 1) {
+        i += autolinkTarget(previous, i);
+        if (i == previous.len) break;
         if (frameIgnored(previous, i, math)) continue;
-        while (at < next.len and next[at] != c) at += 1;
+        while (at < next.len and next[at] != previous[i]) at += 1;
         if (at == next.len) return false;
         at += 1;
     }
     return true;
+}
+
+/// The length of the target frameLeaf draws at `i` after an autolink's text `w`: ` (w)`,
+/// ` (http://w)` or ` (mailto:w)`; 0 at any other byte.
+fn autolinkTarget(s: []const u8, i: usize) usize {
+    if (!std.mem.startsWith(u8, s[i..], " (")) return 0;
+    var start = i;
+    // An extended autolink starts after white space, `[`, or `*`, `_`, `~` and `(` (GFM 6.9).
+    while (start > 0 and std.mem.indexOfScalar(u8, " \n[(*_~", s[start - 1]) == null) start -= 1;
+    const word = s[start..i];
+    const rest = s[i + 2 ..];
+    if (word.len == 0) return 0;
+    for ([_][]const u8{ "", "http://", "mailto:" }) |prefix| {
+        const n = prefix.len + word.len;
+        if (rest.len > n and rest[n] == ')' and std.mem.startsWith(u8, rest, prefix) and std.mem.eql(u8, rest[prefix.len..n], word)) return n + 3;
+    }
+    return 0;
 }
 
 fn frameIgnored(s: []const u8, i: usize, math: bool) bool {
