@@ -4,7 +4,7 @@ import { ManualClock } from "../testing/manual-clock.js"
 import { CliRenderEvents, RendererControlState } from "../renderer.js"
 import { Renderable } from "../Renderable.js"
 import { TextRenderable } from "../renderables/Text.js"
-import { RecordingWriteStream } from "../testing/test-streams.js"
+import { RecordingWriteStream, TestWriteStream } from "../testing/test-streams.js"
 
 class TestRenderable extends Renderable {
   constructor(renderer: TestRenderer, options: any) {
@@ -125,6 +125,77 @@ for (const screenMode of ["main-screen", "alternate-screen"] as const) {
     stdout.clear()
     await renderOnce()
     expect(stdout.text()).not.toContain("resume repaint")
+  })
+}
+
+// A stop hands the terminal to the shell, so a resize then reaches the renderer as no SIGWINCH at all, and `fg`
+// sends none afterwards. Resume reads the size it is resuming into: growing and shrinking both repaint at once.
+for (const [width, height] of [
+  [100, 30],
+  [60, 18],
+]) {
+  test(`resume() adopts a ${width}x${height} terminal after a resize while suspended`, async () => {
+    renderer.destroy()
+    await renderer.closed
+    const stdout = new TestWriteStream(80, 24)
+    ;({ renderer } = await createTestRenderer({ stdout: stdout as unknown as NodeJS.WriteStream }))
+    // The test stream stands in for process.stdout, the only stream whose size the renderer owns.
+    Object.defineProperty(renderer, "_usesProcessStdout", { value: true })
+    await renderer.setupTerminal()
+    const resizes: number[][] = []
+    renderer.on(CliRenderEvents.RESIZE, (width: number, height: number) => resizes.push([width, height]))
+
+    renderer.start()
+    await renderer.suspend()
+    stdout.setTerminalSize(width, height)
+    await renderer.resume()
+    renderer.pause()
+    await renderer.idle()
+
+    expect({ size: [renderer.terminalWidth, renderer.terminalHeight], resizes }).toEqual({
+      size: [width, height],
+      resizes: [[width, height]],
+    })
+  })
+}
+
+// A resize queued just before the stop is older than the size the terminal reports on resume, so resume replaces
+// it: the queued size applies only if the terminal is still that size when the renderer comes back.
+for (const [terminal, expected] of [
+  [
+    [80, 24],
+    [[80, 24], []],
+  ],
+  [
+    [100, 30],
+    [[100, 30], [[100, 30]]],
+  ],
+] as Array<[[number, number], [number[], number[][]]]>) {
+  test(`resume() replaces a queued 90x28 with the terminal's ${terminal.join("x")}`, async () => {
+    renderer.destroy()
+    await renderer.closed
+    const stdout = new TestWriteStream(80, 24)
+    const clock = new ManualClock()
+    ;({ renderer } = await createTestRenderer({ stdout: stdout as unknown as NodeJS.WriteStream, clock }))
+    // The test stream stands in for process.stdout, the only stream whose size the renderer owns.
+    Object.defineProperty(renderer, "_usesProcessStdout", { value: true })
+    await renderer.setupTerminal()
+    const resizes: number[][] = []
+    renderer.on(CliRenderEvents.RESIZE, (width: number, height: number) => resizes.push([width, height]))
+
+    renderer.requestResize(90, 28)
+    await renderer.suspend()
+    stdout.setTerminalSize(terminal[0], terminal[1])
+    await renderer.resume()
+    // The stale debounce would apply its size here if the adoption left it armed.
+    clock.advance(200)
+    renderer.pause()
+    await renderer.idle()
+
+    expect({ size: [renderer.terminalWidth, renderer.terminalHeight], resizes }).toEqual({
+      size: expected[0],
+      resizes: expected[1],
+    })
   })
 }
 

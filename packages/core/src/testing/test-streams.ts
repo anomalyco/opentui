@@ -2,11 +2,17 @@ import { Readable, Writable, type WritableOptions } from "stream"
 
 export class TestWriteStream extends Writable {
   public readonly isTTY = true
-  public readonly columns: number
-  public readonly rows: number
+  public columns: number
+  public rows: number
 
   constructor(columns = 80, rows = 24, options?: WritableOptions) {
     super(options)
+    this.columns = columns
+    this.rows = rows
+  }
+
+  /** Models the terminal itself changing size: nothing informs the renderer until it reads the stream again. */
+  setTerminalSize(columns: number, rows: number): void {
     this.columns = columns
     this.rows = rows
   }

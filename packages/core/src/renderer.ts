@@ -1270,9 +1270,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private _useConsole: boolean = true
   private sigwinchHandler: () => void = (() => {
-    const width = this.stdout.columns
-    const height = this.stdout.rows
-    if (width > 0 && height > 0) this.requestResize(width, height)
+    const size = this.readTerminalSize()
+    if (size) this.requestResize(size.width, size.height)
   }).bind(this)
   private _capabilities: TerminalCapabilities | null = null
   private _latestPointer: { x: number; y: number } = { x: 0, y: 0 }
@@ -4250,6 +4249,32 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
   }
 
+  /** The size the stream reports now, or null when it reports none. */
+  private readTerminalSize(): { width: number; height: number } | null {
+    const width = this.stdout.columns
+    const height = this.stdout.rows
+    return width > 0 && height > 0 ? { width, height } : null
+  }
+
+  /**
+   * Take the stream's current size as the next resize, without waiting on a signal.
+   *
+   * SIGTSTP hands the terminal to the shell, so a resize while the renderer is stopped arrives as no SIGWINCH at
+   * all, and `fg` does not send one to make up for it. Resume reads the size it is resuming into instead, and that
+   * read replaces any resize queued before the suspension: the queued intent is older than the terminal itself.
+   */
+  private adoptTerminalSize(): void {
+    const size = this.readTerminalSize()
+    if (!size) return
+    // Apply on resume rather than when the old debounce expires, which may be later or never if it was cleared.
+    if (this.resizeTimeoutId !== null) {
+      this.clock.clearTimeout(this.resizeTimeoutId)
+      this.resizeTimeoutId = null
+    }
+    this.pendingResizeSawDifferentSize = size.width !== this._terminalWidth || size.height !== this._terminalHeight
+    this.pendingNativeResize = size
+  }
+
   /** Queue a debounced resize intent. RESIZE is emitted only after the latest size is accepted. */
   public requestResize(width: number, height: number): void {
     if (this._isDestroyed) return
@@ -4959,6 +4984,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     for (const batch of this.replyBatches) this.armReplyBackstop(batch)
     this.syncReplyContext(false)
     if (this.pixelResolutionRequeryPending) this.queryPixelResolution()
+    // Only process.stdout owns the size that way. A custom stream's consumer announces its own sizes through
+    // resize(), so resume leaves those alone.
+    if (this._usesProcessStdout) this.adoptTerminalSize()
     this.applyPendingNativeResize()
 
     if (
