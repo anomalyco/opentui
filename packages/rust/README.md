@@ -659,6 +659,8 @@ The framework sits on layers you can use directly:
   input; a split UTF-8 character and a bare `ESC [`, which may start a mouse
   report, wait for the next read instead. Core's 1,100 parser test vectors
   check the events made from the native parser's results.
+  `decode_paste_bytes` and `strip_ansi_sequences` read pasted text as Core's
+  helpers of the same names do.
 - `term`: raw mode, terminal size, signals, and wakeups, on top of `libc`.
 - `style` and `layout`: colors that keep their terminal intent (RGB, palette,
   or default), attributes, styled spans, and typed flexbox properties.

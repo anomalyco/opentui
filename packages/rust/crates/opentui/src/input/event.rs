@@ -8,7 +8,9 @@ use std::ops::{BitAnd, BitOr, BitOrAssign, Not};
 pub enum Event {
     Key(KeyEvent),
     Mouse(MouseEvent),
-    /// Bracketed paste. The terminal delivers it as one unit, never as keys.
+    /// Bracketed paste. The terminal delivers it as one unit, never as keys. The text is decoded with
+    /// [`decode_paste_bytes`](super::decode_paste_bytes) and keeps escape sequences; see
+    /// [`strip_ansi_sequences`](super::strip_ansi_sequences).
     Paste(String),
     /// The terminal window gained (`true`) or lost focus.
     Focus(bool),

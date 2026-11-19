@@ -9,11 +9,13 @@ mod core_tests;
 mod event;
 mod keymap;
 mod parser;
+mod paste;
 mod reply;
 
 pub use event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind};
 pub use keymap::{IntoShortcut, Keymap, ParseShortcutError, Shortcut};
 pub use parser::{ESCAPE_TIMEOUT, Expectations, Input, Parser};
+pub use paste::{decode_paste_bytes, strip_ansi_sequences};
 pub use reply::{
     OscColor, ThemeColor, is_capability_response, is_color_scheme_notice, is_cursor_report, is_device_attributes,
     osc_color, pixel_resolution, theme_color,

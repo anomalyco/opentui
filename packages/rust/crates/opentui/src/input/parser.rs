@@ -203,7 +203,7 @@ fn translate(record: &sys::ot_input_event, payload: &[u8], paste: &mut Option<Ve
             bytes.extend_from_slice(&text[..text.len().min(room)]);
             if flags & sys::OT_INPUT_PASTE_END != 0 {
                 let bytes = paste.take().unwrap_or_default();
-                out.push(Input::Event(Event::Paste(String::from_utf8_lossy(&bytes).into_owned())));
+                out.push(Input::Event(Event::Paste(super::decode_paste_bytes(&bytes))));
             }
         }
         sys::OT_INPUT_FOCUS => out.push(Input::Event(Event::Focus(u32::from(record.action) == sys::OT_INPUT_FOCUS_IN))),
