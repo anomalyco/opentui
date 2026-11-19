@@ -58,6 +58,7 @@ compile error. A key that does not continue a pending sequence clears it and is 
 | `getPendingSequence`, `hasPendingSequence`, `clearPendingSequence`, `popPendingSequence` | same names in snake case                                                                                    |
 | `getActiveKeys({ includeBindings, includeMetadata })`                                    | `active_keys(options)`                                                                                      |
 | `createKeyMatcher`, `parseKeySequence`, `formatKey`                                      | `parse_key` (compare its `stroke`), `parse_key_sequence`, `format_key`                                      |
+| a binding key as `registerLayer` expands it (no TypeScript call)                         | `parse_binding`: binding expanders, then one sequence per expanded key                                      |
 | `on("state")`, `on("pendingSequence")`, `on("warning" / "error")`                        | `on_state`, `on_pending_sequence`, `on_diagnostic`; `revision()` counts state changes                       |
 | `stringifyKeyStroke`                                                                     | `Stroke`'s `Display`                                                                                        |
 | extras `createBindingLookup`                                                             | `extras::BindingLookup`                                                                                     |
