@@ -548,7 +548,10 @@ const Engine = struct {
         var at: usize = 0;
         for (0..steps) |_| {
             const roll = random.uintLessThan(u32, 100);
-            if (roll < 70 and at < base.items.len) {
+            if (roll < 70 and at >= base.items.len) {
+                // The base document is used up: appends go on with soup (else finish took their share).
+                try commands.append(arena, .{ .append = soup[random.uintLessThan(usize, soup.len)] });
+            } else if (roll < 70) {
                 // 1 byte or a few code points; "\r\n" may split.
                 var end = at + 1 + random.uintLessThan(usize, if (random.boolean()) 1 else 12);
                 end = @min(end, base.items.len);
