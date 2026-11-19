@@ -3,7 +3,7 @@ members = ["crates/opentui-sys", "crates/opentui", "crates/opentui-ssh"]
 resolver = "3"
 
 [workspace.package]
-version = "0.9.4"
+version = "0.9.5"
 edition = "2024"
 # Let chains.
 rust-version = "1.88"
@@ -16,8 +16,8 @@ exclude = ["tests/"]
 # Interim crates.io names until `opentui` and `opentui-sys` are free; the library names stay `opentui` and
 # `opentui_sys`. The exact versions keep the crates and their generated declarations from one release.
 [workspace.dependencies]
-opentui = { package = "anomalyco-opentui", path = "crates/opentui", version = "=0.9.4", default-features = false }
-opentui-sys = { package = "anomalyco-opentui-sys", path = "crates/opentui-sys", version = "=0.9.4", default-features = false }
+opentui = { package = "anomalyco-opentui", path = "crates/opentui", version = "=0.9.5", default-features = false }
+opentui-sys = { package = "anomalyco-opentui-sys", path = "crates/opentui-sys", version = "=0.9.5", default-features = false }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

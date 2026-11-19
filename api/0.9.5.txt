@@ -1,0 +1,8 @@
+base 0.9.4
++ @opentui/core: interface MarkdownTaskMarkers
++ @opentui/core: property MarkdownOptions.taskMarkers?: MarkdownTaskMarkers
+- @opentui/core: protected property MarkdownRenderable._contentDefaultOptions: { content: string; conceal: true; concealCode: false; streaming: false; }
++ @opentui/core: protected property MarkdownRenderable._contentDefaultOptions: { content: string; conceal: true; concealCode: false; taskMarkers: { unchecked: string; checked: string; }; streaming: false; }
++ @opentui/core: property MarkdownRenderable.taskMarkers: MarkdownTaskMarkers
++ @opentui/core: property MarkdownTaskMarkers.checked: string
++ @opentui/core: property MarkdownTaskMarkers.unchecked: string
