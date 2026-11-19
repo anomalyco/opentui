@@ -110,7 +110,8 @@ impl MarkdownStyles {
         let fg = |name: &str| syntax.get(name).and_then(|style| style.fg);
         let level = |level: usize| scope(&format!("markup.heading.{}", level + 1), fallback.headings[level]);
         Self {
-            text: fallback.text.patch(scope("default", Style::new())),
+            // Core's `baseStyle`: the text color wins over the `default` scope's, which gives the rest.
+            text: scope("default", Style::new()).patch(fallback.text),
             headings: std::array::from_fn(level),
             table_header: scope("markup.heading", fallback.table_header),
             strong: scope("markup.strong", fallback.strong),
@@ -999,7 +1000,7 @@ impl Markdown {
         let rendered = match block.kind {
             PARAGRAPH | HEADING | sys::OT_MD_HTML => {
                 let text = Text::new(app, "").fg(base.fg.unwrap_or(self.0.colors.borrow().text));
-                text.attributes(base.attributes);
+                text.bg(base.bg.unwrap_or(Color::TRANSPARENT)).attributes(base.attributes);
                 if is_prose(block) {
                     // The node draws with the doc's style; the doc writes it unless the widget does.
                     if let Some(node) = text.element().node() {
@@ -1416,7 +1417,8 @@ impl Markdown {
             let new = match (&block.kind, old.as_ref()) {
                 (&PARAGRAPH | &HEADING, Some(Rendered::Text(text))) => {
                     let base = self.base(block.parent);
-                    text.fg(base.fg.unwrap_or(self.0.colors.borrow().text)).attributes(base.attributes);
+                    let bg = base.bg.unwrap_or(Color::TRANSPARENT);
+                    text.fg(base.fg.unwrap_or(self.0.colors.borrow().text)).bg(bg).attributes(base.attributes);
                     Some(Rendered::Text(text.clone()))
                 }
                 // A registered renderer chooses again; a built-in view it declines restyles as it is.
@@ -1546,6 +1548,32 @@ fn merge(first: MarkdownResult, second: MarkdownResult) -> MarkdownResult {
 mod tests {
     use super::*;
     use crate::testing::TestApp;
+
+    // Core's `baseStyle`: prose takes the text color before the `default` scope's, and the scope's background and
+    // attributes, under a quote too, where the border reads the scope.
+    #[test]
+    fn prose_takes_the_text_color_over_the_default_scope() {
+        let colors = MarkdownColors { text: Color::RED, ..MarkdownColors::from_theme(&Theme::default()) };
+        let default = Style::new().fg(Color::GREEN).bg(Color::BLUE).italic();
+        for restyle in [false, true] {
+            let app = TestApp::new(20, 4);
+            let markdown =
+                Markdown::new(&app).colors(colors).syntax_theme(SyntaxTheme::new().style("default", default));
+            app.root().add(&markdown.scope_styles(!restyle).set_markdown("hello\n\n> quoted"));
+            if restyle {
+                app.render();
+                markdown.scope_styles(true);
+            }
+            let capture = app.render();
+            let [prose, border, quoted] = [(0, 0), (0, 2), (2, 2)].map(|(x, y)| capture.cell(x, y).unwrap());
+            assert_eq!(
+                (prose.fg, prose.bg, prose.attributes),
+                (Color::RED, Color::BLUE, Attributes::ITALIC),
+                "{restyle}"
+            );
+            assert_eq!((border.fg, quoted.bg), (Color::GREEN, Color::BLUE), "{restyle}\n{capture}");
+        }
+    }
 
     /// The Rust widget's block widgets follow the engine's blocks: every listed block of a corpus row, streamed in
     /// its chunks, has the widget its kind takes.

@@ -1549,10 +1549,12 @@ fn markdown_styles_text_by_syntax_scope() {
     use opentui::syntax::SyntaxTheme;
     use opentui::widget::{Markdown, MarkdownColors};
     let app = TestApp::new(30, 8);
-    let [text, heading, italic, label, link, url, escape, conceal] =
+    let [default, heading, italic, label, link, url, escape, conceal] =
         [0x101010, 0x202020, 0x303030, 0x404040, 0x505050, 0x606060, 0x707070, 0x808080].map(Color::hex);
+    // As in Core, prose takes the text color over the `default` scope's.
+    let text = MarkdownColors::from_theme(&app.theme()).text;
     let syntax = SyntaxTheme::new()
-        .style("default", Style::new().fg(text))
+        .style("default", Style::new().fg(default))
         .style("markup.heading", Style::new().fg(heading).bold())
         .style("markup.italic", Style::new().fg(italic).italic())
         .style("markup.link.label", Style::new().fg(label))
