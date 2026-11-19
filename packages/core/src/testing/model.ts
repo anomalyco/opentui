@@ -54,12 +54,15 @@ export async function removeChunks<C>(commands: C[], same: (candidate: C[]) => P
 }
 
 // The Failure a run throws (a crash in the system is one too, the property "throws"), and the kind of the command the
-// run read last: two bugs that break one property at different kinds of command stay two while shrinking.
+// run read last ("end" once a loop has gone past the last one): two bugs that break one property at different kinds of
+// command stay two while shrinking.
 async function failureOf<C>(run: (commands: C[]) => Promise<void>, commands: C[], kind: (command: C) => unknown) {
   let read = -1
   const tracked = new Proxy(commands, {
     get(target, key, receiver) {
       if (typeof key === "string" && /^\d+$/.test(key)) read = Number(key)
+      // An iterator reads the length after the last command once more, to end: what fails then follows the loop.
+      else if (key === "length" && read === target.length - 1) read = target.length
       return Reflect.get(target, key, receiver)
     },
   })
@@ -67,7 +70,7 @@ async function failureOf<C>(run: (commands: C[]) => Promise<void>, commands: C[]
     await run(tracked)
   } catch (error) {
     const failure = error instanceof Failure ? error : new Failure("throws", String((error as Error)?.stack ?? error))
-    return { failure, kind: read < 0 ? undefined : kind(commands[read]!) }
+    return { failure, kind: read < 0 ? undefined : read === commands.length ? "end" : kind(commands[read]!) }
   }
 }
 
