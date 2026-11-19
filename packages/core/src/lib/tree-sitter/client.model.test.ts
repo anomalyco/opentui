@@ -17,7 +17,11 @@ const dataPath = join(tmpdir(), "tree-sitter-styled-text-test")
 type Command = { op: string; id: number; n: number }
 type State = { parser: string; tree: string; version: number; content: string; broken: boolean }
 
-class Failure extends Error {}
+// The command the run is at: a shrunk trace must fail the same property at the same kind of command.
+let doing = ""
+class Failure extends Error {
+  readonly doing = doing
+}
 const check = (ok: unknown, message: string) => {
   if (!ok) throw new Failure(message)
 }
@@ -266,8 +270,10 @@ async function run(commands: Command[]) {
   }
 
   try {
+    doing = "initialize"
     await client.initialize()
     for (const [at, { op, id, n }] of commands.entries()) {
+      doing = op
       const doc = docs.get(id)
       const piece = ["a", "\n", "bc", ""][n % 4]!
       if (op === "create" && (!doc || doc.live)) {
@@ -342,6 +348,7 @@ async function run(commands: Command[]) {
       if (n % 3) await flush()
       for (const w of workers) for (const state of w.buffers.values()) check(!state.broken, `trap: step ${at} ${op}`)
     }
+    doing = "end"
     await settle()
     consistent()
     // Every buffer removed and the cache cleared: nothing is left in the ledger.
@@ -362,19 +369,19 @@ async function failure(commands: Command[]) {
   try {
     await run(commands)
   } catch (error) {
-    if (error instanceof Failure) return error.message
     // A crash in the client is a failure too.
-    return `throws: ${(error as Error)?.stack ?? error}`
+    const found = error instanceof Failure ? error : new Failure(`throws: ${(error as Error)?.stack ?? error}`)
+    return { message: found.message, identity: `${found.message.split(":")[0]} at ${found.doing}` }
   }
 }
 
-// Removes chunks of commands, from half the list down to one command, while the same property still fails.
-async function shrink(commands: Command[], message: string) {
-  const property = message.split(":")[0]
+// Removes chunks of commands, from half the list down to one command, while the same property still fails at the same
+// kind of command.
+async function shrink(commands: Command[], identity: string) {
   for (let size = commands.length >> 1; size >= 1; size >>= 1) {
     for (let at = 0; at + size <= commands.length; ) {
       const candidate = [...commands.slice(0, at), ...commands.slice(at + size)]
-      if ((await failure(candidate))?.startsWith(`${property}:`)) commands = candidate
+      if ((await failure(candidate))?.identity === identity) commands = candidate
       else at += size
     }
   }
@@ -393,11 +400,13 @@ test(`tree-sitter client buffers follow the worker's ledger (${SEEDS} seeds x ${
   globalThis.clearTimeout = ((id: number) => void clock.timers.delete(id)) as typeof clearTimeout
   try {
     for (let seed = 0; seed < SEEDS; seed++) {
-      const message = await failure(generate(seed))
-      if (!message) continue
-      const shrunk = await shrink(generate(seed), message)
+      const found = await failure(generate(seed))
+      if (!found) continue
+      const shrunk = await shrink(generate(seed), found.identity)
       const steps = shrunk.map(({ op, id, n }) => `${op} ${id} ${n}`).join(", ")
-      expect(`seed ${seed}: ${message}`).toBe(`no failure; shrunk: ${steps} -> ${await failure(shrunk)}`)
+      expect(`seed ${seed}: ${found.message}`).toBe(
+        `no failure; shrunk: ${steps} -> ${(await failure(shrunk))?.message}`,
+      )
     }
   } finally {
     Object.assign(globalThis, { setTimeout, clearTimeout })

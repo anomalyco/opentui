@@ -1,6 +1,6 @@
 // Seeded model tests: a generator of commands per seed, a run that throws a Failure naming the property it breaks (any
 // other throw is the property "throws"), and a shrinker that keeps a shorter command list only while it fails the same
-// property. MODEL_SEED=<s> replays one seed,
+// property at the same kind of command. MODEL_SEED=<s> replays one seed,
 // MODEL_SEEDS=<n> runs more, MODEL_SKIP=a,b turns properties off to look for failures behind a known one.
 
 export function rng(seed: number): () => number {
@@ -47,31 +47,44 @@ export async function removeChunks<C>(commands: C[], same: (candidate: C[]) => P
   return best
 }
 
-// The Failure a run throws; a crash in the system is one too, the property "throws".
-async function failureOf<C>(run: (commands: C[]) => Promise<void>, commands: C[]): Promise<Failure | undefined> {
+// The Failure a run throws (a crash in the system is one too, the property "throws"), and the kind of the command the
+// run read last: two bugs that break one property at different kinds of command stay two while shrinking.
+async function failureOf<C>(run: (commands: C[]) => Promise<void>, commands: C[], kind: (command: C) => unknown) {
+  let read = -1
+  const tracked = new Proxy(commands, {
+    get(target, key, receiver) {
+      if (typeof key === "string" && /^\d+$/.test(key)) read = Number(key)
+      return Reflect.get(target, key, receiver)
+    },
+  })
   try {
-    await run(commands)
+    await run(tracked)
   } catch (error) {
-    return error instanceof Failure ? error : new Failure("throws", String((error as Error)?.stack ?? error))
+    const failure = error instanceof Failure ? error : new Failure("throws", String((error as Error)?.stack ?? error))
+    return { failure, kind: read < 0 ? undefined : kind(commands[read]!) }
   }
 }
 
 /**
  * Runs `run` on each seed's commands; on a failure, shrinks the commands to the shortest list that fails the same
- * property and throws with that trace.
+ * property at the same `kind` of command and throws with that trace.
  */
 export async function check<C>(
   count: number,
   generate: (seed: number) => C[],
   run: (commands: C[]) => Promise<void>,
+  kind: (command: C) => unknown = (command: any) => command?.k ?? command?.op ?? command,
 ): Promise<void> {
   for (const seed of seeds(count)) {
     const commands = generate(seed)
-    const failure = await failureOf(run, commands)
-    if (!failure || SKIP.has(failure.property)) continue
-    const same = async (candidate: C[]) => (await failureOf(run, candidate))?.property === failure.property
+    const first = await failureOf(run, commands, kind)
+    if (!first || SKIP.has(first.failure.property)) continue
+    const same = async (candidate: C[]) => {
+      const found = await failureOf(run, candidate, kind)
+      return found?.failure.property === first.failure.property && found.kind === first.kind
+    }
     const shrunk = await removeChunks(commands, same)
-    const message = (await failureOf(run, shrunk))?.message ?? failure.message
+    const message = (await failureOf(run, shrunk, kind))?.failure.message ?? first.failure.message
     throw new Error(`seed ${seed}: ${message}\n${shrunk.map((command) => JSON.stringify(command)).join("\n")}`)
   }
 }

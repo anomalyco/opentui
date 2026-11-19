@@ -1,6 +1,7 @@
 //! Shared harness for seeded model tests (markdown-highlight-ssot-models.md, 3.1), as `packages/native/src/tests/
 //! model.zig` is for Zig: generate a command list from a seed, run it against the system and its oracle, and on a
-//! failure shrink the list (drop chunks of n/2 down to 1, then simplify each command) and print the trace. A panic in
+//! failure shrink the list (drop chunks of n/2 down to 1, then simplify each command) while it fails the same property
+//! at a step of the same kind, and print the trace. A panic in
 //! `run` is a failure too: the property `throws`, at no step.
 //!
 //! Environment: `MODEL_SEED=<n>` runs one seed, `MODEL_SEEDS=<n>` sets how many seeds run, `MODEL_SKIP=<property,...>`
@@ -87,7 +88,8 @@ pub fn check<M: Model>(model: &M, seeds: u64, steps: usize) {
             unchecked += 1;
             continue;
         }
-        let shrunk = shrink(model, commands, failure.property);
+        let wanted = identity(&commands, &failure);
+        let shrunk = shrink(model, commands, &wanted);
         let trace: Vec<String> = shrunk.iter().map(|command| format!("  {command:?}")).collect();
         panic!(
             "model failure: seed {seed}, property {}, shrunk to {} commands:\n{}",
@@ -120,10 +122,16 @@ pub fn check_exhaustive<M: Model>(model: &M, alphabet: &[M::Command], depth: u32
     }
 }
 
-/// The shrinker keeps a candidate only when it fails the same property: a model names each check site with its own
-/// property, so a candidate that fails another check (another bug) is not taken for this one.
-fn fails_with<M: Model>(model: &M, commands: &[M::Command], property: &str) -> bool {
-    outcome(model, commands).is_some_and(|failure| failure.property == property)
+/// What a shrunk trace must still fail: the same property, at a step of the same kind of command (a property alone could
+/// drift to another bug that breaks it at another kind of step). A panic has no step, so no kind.
+type Identity<C> = (&'static str, Option<std::mem::Discriminant<C>>);
+
+fn identity<C>(commands: &[C], failure: &Failure) -> Identity<C> {
+    (failure.property, commands.get(failure.step).map(std::mem::discriminant))
+}
+
+fn fails_with<M: Model>(model: &M, commands: &[M::Command], wanted: &Identity<M::Command>) -> bool {
+    outcome(model, commands).is_some_and(|failure| identity(commands, &failure) == *wanted)
 }
 
 /// The run's failure; a panic in it is the property `throws`, at no step (the command count).
@@ -132,7 +140,7 @@ fn outcome<M: Model>(model: &M, commands: &[M::Command]) -> Option<Failure> {
         .unwrap_or(Some(Failure { property: "throws", step: commands.len() }))
 }
 
-fn shrink<M: Model>(model: &M, initial: Vec<M::Command>, property: &str) -> Vec<M::Command> {
+fn shrink<M: Model>(model: &M, initial: Vec<M::Command>, wanted: &Identity<M::Command>) -> Vec<M::Command> {
     let mut current = initial;
     let mut chunk = (current.len() / 2).max(1);
     loop {
@@ -141,7 +149,7 @@ fn shrink<M: Model>(model: &M, initial: Vec<M::Command>, property: &str) -> Vec<
         while start < current.len() {
             let end = current.len().min(start + chunk);
             let candidate: Vec<M::Command> = current[..start].iter().chain(&current[end..]).cloned().collect();
-            if fails_with(model, &candidate, property) {
+            if fails_with(model, &candidate, wanted) {
                 current = candidate;
                 removed_any = true;
             } else {
@@ -160,7 +168,7 @@ fn shrink<M: Model>(model: &M, initial: Vec<M::Command>, property: &str) -> Vec<
         'simpler: loop {
             for candidate in model.simplify(&current[index]) {
                 let saved = std::mem::replace(&mut current[index], candidate);
-                if fails_with(model, &current, property) {
+                if fails_with(model, &current, wanted) {
                     continue 'simpler;
                 }
                 current[index] = saved;
