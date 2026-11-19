@@ -1,6 +1,6 @@
 .{
     .name = .opentui,
-    .version = "0.9.3",
+    .version = "0.9.4",
     .fingerprint = 0x5445027d063f5083,
     .minimum_zig_version = "0.17.1",
     .dependencies = .{
