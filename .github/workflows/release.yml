@@ -353,6 +353,84 @@ jobs:
       smokeTest: false
       distTag: ${{ needs.prepare.outputs.distTag }}
 
+  # Publishes the Rust crates with crates.io trusted publishing: crates.io trades this job's OIDC token for a
+  # 30-minute publish token, so no secret is stored. Each crate's trusted publisher names this file and no
+  # environment. A prerelease publishes too: Cargo never picks one unless a dependency asks for it.
+  crates-publish:
+    name: Crates Publish
+    if: ${{ needs.prepare.outputs.release == 'true' }}
+    needs: [prepare, ci-gate, sign-windows-artifacts, smoke-test]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      CARGO_INCREMENTAL: 0
+      DRY_RUN: ${{ needs.prepare.outputs.isDryRun }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # rustup reads rust-toolchain.toml from the working directory.
+      - name: Install the pinned toolchain
+        working-directory: packages/rust
+        run: rustup toolchain install
+
+      # The -sys build script links the library of this release, which the crates' header check matches.
+      - name: Download native binaries artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: native-binaries-${{ needs.prepare.outputs.fullTag }}
+          path: artifacts/native
+
+      - name: Extract the Linux x64 library
+        run: |
+          unzip -q artifacts/native/native-linux-x64.zip -d "$RUNNER_TEMP"
+          echo "OPENTUI_LIB_DIR=$RUNNER_TEMP/native-linux-x64" >> "$GITHUB_ENV"
+
+      # Packages and builds each crate from its .crate before the token exists, so the publish below starts warm.
+      - name: Verify the crates
+        working-directory: packages/rust
+        run: cargo publish --dry-run --locked --workspace
+
+      - name: Authenticate with crates.io
+        id: auth
+        if: env.DRY_RUN != 'true'
+        uses: rust-lang/crates-io-auth-action@v1
+
+      # A rerun after a partial publish skips the versions crates.io already has: cargo fails on them. The crates
+      # require each other at the exact version, and cargo uploads them in dependency order.
+      - name: Publish the crates
+        if: env.DRY_RUN != 'true'
+        working-directory: packages/rust
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          set -euo pipefail
+          exclude=()
+          for crate in anomalyco-opentui-sys anomalyco-opentui opentui-ssh; do
+            status=$(curl -sS -o /dev/null -w '%{http_code}' -A 'opentui-release (github.com/anomalyco/opentui)' \
+              "https://crates.io/api/v1/crates/$crate/$VERSION")
+            case "$status" in
+              200)
+                echo "$crate@$VERSION is already on crates.io; skipping"
+                exclude+=(--exclude "$crate")
+                ;;
+              404) ;;
+              *)
+                echo "::error::crates.io returned $status for $crate@$VERSION"
+                exit 1
+                ;;
+            esac
+          done
+          if [ "${#exclude[@]}" -eq 6 ]; then
+            echo "Every crate is already on crates.io"
+            exit 0
+          fi
+          cargo publish --locked --workspace "${exclude[@]}"
+
   # Signing waits for ci-gate, and so does every job after it. npm-publish and github-release name it too.
   sign-windows-artifacts:
     name: Sign Windows DLL Artifacts
