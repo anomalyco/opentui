@@ -73,24 +73,4 @@ mod tests {
         assert_eq!(decode_paste_bytes(b"\xef\xbb\xbfa\xffb\xe6\x97\xef\xbb\xbf"), "a\u{fffd}b\u{fffd}\u{feff}");
         assert_eq!(decode_paste_bytes(b""), "");
     }
-
-    /// Core's paste rows in `Textarea.paste.test.ts`: escape sequences go, other control characters stay.
-    #[test]
-    fn strip_matches_cores_paste_rows() {
-        for (pasted, kept) in [
-            (" 🌟世界👍", " 🌟世界👍"),
-            ("a \x1b[31mred\x1b[0m\x1b[2 q\x1b[31", "a red"),
-            ("a\x0cb\0c", "a\x0cb\0c"),
-            ("\x1b]0;title\x07y\u{9d}0;t\u{9c}z\u{90}q\u{9c}\u{98}s\u{9c}\u{9e}p\u{9c}\u{9f}a\x07w", "yzw"),
-            ("\x1b", ""),
-            // Escapes whose final byte is a digit or `=`, such as DECSC and DECKPAM.
-            ("a\x1b7b\x1b=c", "abc"),
-            ("a\x1bP1$r\x1b\\b\x1bXs\x1b\\c\x1b(Bd\u{9b}1me\x1b^p\x1b\\\x1b_a\x1b\\\x1b\x07", "abcde\x07"),
-            ("\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\\x1b]0;cut", "link"),
-            ("p\u{85}q\x7f", "p\u{85}q\x7f"),
-            ("\ty\r\nz", "\ty\r\nz"),
-        ] {
-            assert_eq!(strip_ansi_sequences(pasted), kept, "{}", pasted.escape_debug());
-        }
-    }
 }

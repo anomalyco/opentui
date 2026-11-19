@@ -1,0 +1,47 @@
+{
+  "format": [
+    "Paste conformance vectors. Core (Textarea.paste.test.ts) and Rust (tests/widgets.rs) run this file. A row is [name, pasted, textarea, input].",
+    "A Textarea and an Input hold \"x\" with the cursor at the end; pasted arrives as one bracketed paste. textarea and input are the texts they hold after it.",
+    "A paste drops terminal escape sequences in ESC and C1 form (a lone ESC and a cut-off sequence too), then every control character (Unicode Cc) but tab, LF and CR. Input also drops LF and CR."
+  ],
+  "rows": [
+    ["nothing", "", "x", "x"],
+    ["plain text", " World", "x World", "x World"],
+    ["lines", "\nLine 2\nLine 3", "x\nLine 2\nLine 3", "xLine 2Line 3"],
+    ["wide characters", " 🌟世界👍", "x 🌟世界👍", "x 🌟世界👍"],
+    ["control sequences, one cut off", "a \u001b[31mred\u001b[0m\u001b[2 q\u001b[31", "xa red", "xa red"],
+    ["form feed and NUL", "a\fb\u0000c", "xabc", "xabc"],
+    [
+      "C1 control strings",
+      "\u001b]0;title\u0007y\u009d0;t\u009cz\u0090q\u009c\u0098s\u009c\u009ep\u009c\u009fa\u0007w",
+      "xyzw",
+      "xyzw"
+    ],
+    ["a lone ESC", "\u001b", "x", "x"],
+    ["escapes with a digit or = final byte (DECSC, DECKPAM)", "a\u001b7b\u001b=c", "xabc", "xabc"],
+    [
+      "ESC-form strings, CSI in C1 form, and a BEL after ESC",
+      "a\u001bP1$r\u001b\\b\u001bXs\u001b\\c\u001b(Bd\u009b1me\u001b^p\u001b\\\u001b_a\u001b\\\u001b\u0007",
+      "xabcde",
+      "xabcde"
+    ],
+    ["hyperlinks and a cut-off OSC", "\u001b]8;;http://x\u001b\\link\u001b]8;;\u001b\\\u001b]0;cut", "xlink", "xlink"],
+    ["NEL and DEL", "p\u0085q\u007f", "xpq", "xpq"],
+    ["tab and CR LF", "\ty\r\nz", "x\ty\nz", "x\tyz"],
+    [
+      "every other C0 control",
+      "a\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\b\u000b\f\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001c\u001d\u001e\u001fb",
+      "xab",
+      "xab"
+    ],
+    [
+      "C1 controls that open no sequence",
+      "a\u0080\u0081\u0082\u0083\u0084\u0085\u0086\u0087\u0088\u0089\u008a\u008b\u008c\u008d\u008e\u008f\u0091\u0092\u0093\u0094\u0095\u0096\u0097\u0099\u009a\u009cb",
+      "xab",
+      "xab"
+    ],
+    ["a control character ends an escape before it goes", "\u001b\u0000[31m", "x[31m", "x[31m"],
+    ["U+200B, U+FEFF and U+00AD (format characters) stay", "a​b﻿c­d", "xa​b﻿c­d", "xa​b﻿c­d"],
+    ["lone CRs end lines, U+2028 and U+2029 stay", "a\rb c d\re\r\r\nf", "xa\nb c d\ne\n\nf", "xab c def"]
+  ]
+}

@@ -14,8 +14,10 @@ import {
 import { StyledText, fg } from "../lib/styled-text.js"
 import type { ExtmarksController } from "../lib/extmarks.js"
 
-// A key sequence with a control character is a key that has no binding, not text. Paste keeps controls.
+// A key sequence with a control character is a key that has no binding, not text.
 const unsupportedKeyCharacters = /[\x00-\x1f\x7f-\x9f]/
+// A paste drops control characters (Unicode Cc) but tab, LF and CR once escape sequences are gone, as Rust's editors.
+const pastedControlCharacters = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g
 
 function clonePlaceholder(value: StyledText | string | null): StyledText | string | null {
   if (value === null || typeof value === "string") return value
@@ -283,7 +285,7 @@ export class TextareaRenderable extends EditBufferRenderable {
   }
 
   public handlePaste(event: PasteEvent): void {
-    this.insertText(stripAnsiSequences(decodePasteBytes(event.bytes)))
+    this.insertText(stripAnsiSequences(decodePasteBytes(event.bytes)).replace(pastedControlCharacters, ""))
   }
 
   public handleKeyPress(key: KeyEvent): boolean {
