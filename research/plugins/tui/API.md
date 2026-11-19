@@ -18,9 +18,10 @@ The choices below rest on two sources:
    prototype's runs are transactional, a throw or timeout committing nothing [P]; effects extend that to side effects.
 2. **No run waits on slow work.** A plugin's events run one at a time, so a run awaiting a 2 s `git push` stalls all
    of that plugin's later events, and psychoscript's timeout counts the wait: a cold `git status` timed out the
-   prototype's git plugin [P]. Slow work (processes, network, sidecars) is an effect whose result comes back as an
-   event.
-3. **The host owns every lifetime.** Timers, watches, processes, streams and sidecars end when the plugin unloads. A
+   prototype's git plugin [P]. Slow work (processes, network, streams) is an effect whose result comes back as an
+   event. The one exception is a call to the plugin's own helper (§6): it has a per-call timeout, and its wait counts as
+   wall time, not compute time.
+3. **The host owns every lifetime.** Timers, watches, processes, streams and helpers end when the plugin unloads. A
    reducer can't hold a loop, and host-owned lifetimes absorb the TUI's "background" blocker [R]. Long-lived plugins
    were measured and rejected [P]: the timeout fires while idle, the heap only grows, and snapshots don't survive a
    source change.
@@ -41,14 +42,8 @@ their own code into that file.
   "entry": "main.js",
   "title": "Git status",
   "events": ["session.switched", "file.changed"],
-  "capabilities": {
-    "fs.read": ["workspace:**"],
-    "exec": ["git"],
-    "net": ["api.github.com"],
-    "secrets": ["github"]
-  },
-  "packs": { "fuzzy": "^1" },
-  "sidecars": {},
+  "uses": ["git", "fuzzy"],
+  "helpers": {},
   "settings": {
     "showAhead": { "type": "boolean", "default": true, "title": "Show commits ahead" },
     "refreshSec": { "type": "integer", "default": 10, "minimum": 2 }
@@ -59,15 +54,14 @@ their own code into that file.
 
 - **`id`** (`[a-z0-9-]+(\.[a-z0-9-]+)+`) namespaces commands (`acme.git-status/refresh`), store, state and config.
   **`api`** is this API's major version; the host refuses majors it doesn't implement.
-- **`events`** are subscriptions (§3); **`limits`** are requests the host caps (§2).
+- **`events`** are subscriptions (§3); **`limits`** are requests the host caps (§2); **`helpers`** are
+  native processes with declared interfaces (§6).
 - **`settings`** is a JSON Schema subset (`type`, `default`, `enum`, `minimum`/`maximum`, `title`, `description`).
   The host renders the form, validates it, and passes the values to every run as the `settings` binding.
 
-**Grants.** Capabilities use the research's classes: `read`, `write`, `exec`, `network`, `secret` [R]. `ui`,
-`store`, `timer`, `clipboard.write` and reads under `plugin:` need no grant. On enable, and when an update asks for
-more, the host shows the requests; the user grants all, some, or none. A denial doesn't fail the load: the function
-throws `Failure` of kind `CapabilityDenied` and the effect completes with `ok: false`, so plugins degrade instead of
-crashing.
+An installed plugin is trusted, as it is today; there is no permission model. `uses` (§6) only decides which
+namespaces are injected into the plugin's runtime and which packs and helpers it may start, so unused ones cost
+nothing.
 
 **Per-user config** lives in `~/.config/opencode/tui.json`:
 
@@ -76,7 +70,6 @@ crashing.
   "plugins": {
     "acme.git-status": {
       "enabled": true,
-      "grants": { "exec": ["git"] },
       "settings": { "refreshSec": 30 },
       "keys": { "refresh": "ctrl+g" }
     }
@@ -84,40 +77,38 @@ crashing.
 }
 ```
 
-Project config (`.opencode/tui.json`) may enable already-trusted plugins and change settings, but never grant: a
-cloned repository must not give itself `exec`. Project plugins (`.opencode/plugins/`) load only in a trusted
-workspace. Installing is a user action (`opencode plugin add <spec>`): download, check the registry's `sha256`, unpack
-into `<data>/plugins/<id>/<version>/`. Hence no `install.plugin` (§5).
+Installing is a user action (`opencode plugin add <spec>`): download, check the registry's `sha256`, unpack into
+`<data>/plugins/<id>/<version>/`. Hence no `install.plugin` (§5).
 
 ## 2. Lifecycle
 
 | Step     | What happens                                                                                                                                                                                                                  |
 | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Discover | Validate `plugin.json` (`id`, `api`, `entry`, schema, capabilities). An invalid plugin is listed as broken with its diagnostic, never half-loaded.                                                                            |
+| Discover | Validate `plugin.json` (`id`, `api`, `entry`, `uses`, schemas). An invalid plugin is listed as broken with its diagnostic, never half-loaded.                                                                                 |
 | Compile  | `Runtime::compile` once per load or reload, about 12 µs per KB: a 100 KB plugin's event takes 94 µs instead of 1.3 ms compiling per event [P]. A `ParseError` disables a new plugin; on reload the old program keeps running. |
 | Init     | `{ type: "init", reason: "load" \| "reload" \| "upgrade", from? }` with the persisted state or `null`; `from` lets an upgrade migrate state.                                                                                  |
-| Run      | Events FIFO, one at a time per plugin (§3, §8).                                                                                                                                                                               |
+| Run      | Events FIFO, one at a time per plugin (§3, §7).                                                                                                                                                                               |
 | Reload   | Compile, then `init` with `reload` or `upgrade`. State is kept; commands, slots and subscriptions are replaced by what `init` returns.                                                                                        |
-| Unload   | Drop the plugin's slots, keymap layer, timers, watches, processes and sidecars. No unload event: state is already persisted and nothing is left to clean up.                                                                  |
+| Unload   | Drop the plugin's slots, keymap layer, timers, watches, processes and helpers. No unload event: state is already persisted and nothing is left to clean up.                                                                   |
 
 **State.** State is plain JSON, replaced whole by `state` and kept when it is left out. The host writes it, debounced,
 to `<data>/plugin-state/<id>.json`. The cap is 1 MiB. Bigger data goes to `store` (§5) or a pack. This answers the
 research's "large-state" blocker [R].
 
 **Errors.** A run that throws, hits a limit or returns a malformed value commits nothing [P]; the error shows in the
-plugin manager and a rate-limited toast. After 5 failures in a row, or 3 limit hits in 60 s, the plugin is suspended
+plugin manager and a toast. After 5 failures in a row, or 3 limit hits in 60 s, the plugin is suspended
 until re-enabled or reloaded.
 
 **Limits per event.** Defaults are given first, then the host maximum:
 
-| Limit       | Default / max    | Notes                                                                                |
-| ----------- | ---------------- | ------------------------------------------------------------------------------------ |
-| `computeMs` | 20 / 100 ms      | VM time only: excludes awaits on host functions. Runaway loops stop here.            |
-| `wallMs`    | 1,000 / 5,000 ms | The whole run, including awaits. Calls are fast reads (§5), so this is a safety net. |
-| `memoryMb`  | 16 / 64 MiB      | Live heap of the run.                                                                |
-| Result      | 256 KiB          | JSON size of the return value.                                                       |
-| Effects     | 64 per run       |                                                                                      |
-| Queue       | 256 events       | Overflow policy in §3.                                                               |
+| Limit       | Default / max     | Notes                                                                                                            |
+| ----------- | ----------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `computeMs` | 20 / 100 ms       | VM time only: excludes awaits on host functions. Runaway loops stop here.                                        |
+| `wallMs`    | 1,000 / 30,000 ms | The whole run, including awaits: built-in reads (capped at 250 ms each) and helper calls (per-call timeout, §6). |
+| `memoryMb`  | 16 / 64 MiB       | Live heap of the run.                                                                                            |
+| Result      | 256 KiB           | JSON size of the return value.                                                                                   |
+| Effects     | 64 per run        |                                                                                                                  |
+| Queue       | 256 events        | Overflow policy in §3.                                                                                           |
 
 **Compute and wall time must be separate.** psychoscript has one wall-clock `timeout_ms` and a fixed 2 M-object cap
 [P]. v0 needs, in both language implementations, a compute budget (fuel-based: the VM already meters fuel) and a
@@ -150,9 +141,9 @@ was dispatched (§5).
 | `file.changed`      | `watchId, paths[], kinds[]`                                                         | a watch fires                                    | merge paths                  | ~6                     |
 | `effect`            | `id, ok, value?, error?`                                                            | an effect with an `id` completes                 | no                           | host completions       |
 | `stream`            | `id, chunks[], done, code?`                                                         | output from a streaming effect                   | merge chunks                 | opencode-pty #54, ~6   |
-| `sidecar`           | `sidecar, method, params`                                                           | a sidecar sends a notification                   | no                           | §6                     |
+| `helper`            | `helper, name, data`                                                                | a helper sends `$/event`                         | no                           | §6                     |
 
-`init`, `command`, `ui`, `effect`, `stream`, `timer` and `sidecar` always arrive: they answer something the plugin
+`init`, `command`, `ui`, `effect`, `stream`, `timer` and `helper` always arrive: they answer something the plugin
 started. The rest need a subscription, so 50 plugins don't all run on every key. Left out: raw mouse (only element
 `click`), and editor-buffer events, since the TUI has a prompt and a transcript but no code buffer (#16, #24, #26 wait
 for one).
@@ -253,25 +244,26 @@ Spinner  = { type: "spinner", label? }
 
 ### `effects`: run in order after the run commits
 
-| Effect                                         | Fields                                                                             | Class       | Completion                                                 |
-| ---------------------------------------------- | ---------------------------------------------------------------------------------- | ----------- | ---------------------------------------------------------- |
-| `toast`                                        | `message, kind?: "info"\|"success"\|"warning"\|"error"`                            | ui          | —                                                          |
-| `notify`                                       | `title, body, sound?`                                                              | ui          | — (desktop notification, rate-limited)                     |
-| `clipboard.copy`                               | `text`                                                                             | ui          | —                                                          |
-| `open.url`                                     | `url`                                                                              | ui          | — (needs confirmation for non-https or unknown hosts)      |
-| `open.file`                                    | `path, line?`                                                                      | read        | —                                                          |
-| `command.run`                                  | `name, args?`                                                                      | ui          | built-in or another plugin's command                       |
-| `prompt.edit`                                  | `op: "insert"\|"replace", text, range?`                                            | write       | `editor.edit` for the prompt (snippets #70)                |
-| `session.switch`                               | `id`                                                                               | ui          | —                                                          |
-| `store.set` / `store.delete`                   | `key, value?`                                                                      | —           | —                                                          |
-| `timer.every` / `timer.after` / `timer.cancel` | `id, ms`                                                                           | —           | `timer` events (minimum 250 ms)                            |
-| `fs.watch` / `fs.unwatch`                      | `id, paths: glob[]`                                                                | read        | `file.changed` events                                      |
-| `fs.write` / `fs.remove`                       | `id?, path, data?`                                                                 | write       | `effect`                                                   |
-| `shell.run`                                    | `id, argv[], cwd?, env?, input?, stream?, timeoutMs?`                              | exec        | `effect {code, stdout, stderr}`, or `stream` then `effect` |
-| `process.kill`                                 | `id`                                                                               | exec        | —                                                          |
-| `net.request`                                  | `id, url, method?, headers?, body?, timeoutMs?`                                    | network     | `effect {status, headers, body}`                           |
-| `git`                                          | `id, op: "stage"\|"unstage"\|"commit"\|"checkout"\|"branch"\|"push"\|"pull", args` | write+exec  | `effect`                                                   |
-| `sidecar.call`                                 | `id, sidecar, method, params`                                                      | per sidecar | `effect`                                                   |
+| Effect                                         | Fields                                                                                 | Completion                                                 |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `toast`                                        | `message, kind?: "info"\|"success"\|"warning"\|"error"`                                | —                                                          |
+| `notify`                                       | `title, body, sound?`                                                                  | — (desktop notification)                                   |
+| `clipboard.copy`                               | `text`                                                                                 | —                                                          |
+| `open.url`                                     | `url`                                                                                  | —                                                          |
+| `open.file`                                    | `path, line?`                                                                          | —                                                          |
+| `command.run`                                  | `name, args?`                                                                          | built-in or another plugin's command                       |
+| `prompt.edit`                                  | `op: "insert"\|"replace", text, range?`                                                | `editor.edit` for the prompt (snippets #70)                |
+| `session.switch`                               | `id`                                                                                   | —                                                          |
+| `store.set` / `store.delete`                   | `key, value?`                                                                          | —                                                          |
+| `timer.every` / `timer.after` / `timer.cancel` | `id, ms`                                                                               | `timer` events (minimum 250 ms)                            |
+| `fs.watch` / `fs.unwatch`                      | `id, paths: glob[]`                                                                    | `file.changed` events                                      |
+| `fs.write` / `fs.remove`                       | `id?, path, data?`                                                                     | `effect`                                                   |
+| `shell.run`                                    | `id, argv[], cwd?, env?, input?, stream?, timeoutMs?`                                  | `effect {code, stdout, stderr}`, or `stream` then `effect` |
+| `process.kill`                                 | `id`                                                                                   | —                                                          |
+| `net.request`                                  | `id, url, method?, headers?, body?, timeoutMs?`                                        | `effect {status, headers, body}`                           |
+| `git`                                          | `id, op: "stage"\|"unstage"\|"commit"\|"checkout"\|"branch"\|"push"\|"pull", args`     | `effect`                                                   |
+| `stream`                                       | `id, fn, params, timeoutMs?` (`fn` names a streaming method, such as `embedder.index`) | `stream` chunks, then `effect`                             |
+| `stream.cancel`                                | `id`                                                                                   | —                                                          |
 
 An example that brings these together (`main.js`):
 
@@ -302,30 +294,33 @@ The bindings in every run: `event`, `state`, `settings`, and `ctx`.
 ```
 ctx = { now, size: {width, height}, theme: {mode, name}, focus, mode, busy,
         session: {id, title, agent, model} | null, workspace: {root, name},
-        plugin: {id, version, dataDir: "plugin:"} }
+        plugin: {id, version, dataDir} }
 ```
 
 `ctx` replaces `state.read` and the `status` broadcast [R]. It is small, about 1 KB, and costs about 1 µs as a
 binding [P].
 
-The globals are namespaces. A call to an ungranted function throws `CapabilityDenied`. `async` functions are awaited
-inside the run, are capped by the host at 250 ms, and count toward `wallMs` but not `computeMs`.
+The globals are interface namespaces (§6). Every function takes one params object and an optional `{ timeoutMs }`.
+Its input is validated against its schema (`InvalidInput`).
+`async` functions are awaited inside the run and count toward `wallMs` but not `computeMs`. The built-in ones are
+capped at 250 ms each; helper methods have their own timeouts.
 
-| Function                   | Signature                                                                     | Kind       | Class          | From HOST-API               |
-| -------------------------- | ----------------------------------------------------------------------------- | ---------- | -------------- | --------------------------- |
-| `fs.read`                  | `(path, {maxBytes?=1MiB, encoding?: "utf8"\|"bytes"}) → string \| Uint8Array` | async      | read           | `fs.read`                   |
-| `fs.list`                  | `(dir, {glob?, depth?=1, limit?=10k}) → {name, path, isDir, size, mtime}[]`   | async      | read           | `fs.list`, `fs.stat` merged |
-| `fs.stat`                  | `(path) → {size, mtime, isDir} \| null`                                       | sync       | read           | `fs.stat`                   |
-| `fs.preview`               | `(path, {range?, width?}) → Node` (`code` or `image`)                         | async      | read           | `fs.preview`                |
-| `git.status`               | `() → {branch, dirty, ahead, behind, files: [{path, status}]}`                | async      | read           | `git.status`                |
-| `git.diff`                 | `({path?, base?, ref?, staged?}) → {files: [{path, hunks}]}`                  | async      | read           | `git.diff`                  |
-| `git.log`                  | `({path?, line?, limit?=50}) → commits[] \| blame`                            | async      | read           | `git.history`               |
-| `session.list`             | `({limit?}) → {id, title, updated, cost}[]`                                   | async      | read           | `session.list`              |
-| `session.messages`         | `(id, {limit?, before?}) → {id, role, text}[]`                                | async      | read           | new (mem0-style status)     |
-| `lsp.query`                | `(kind: "diagnostics"\|"definition"\|"references"\|"symbols", args) → result` | async      | read           | `lsp.query`                 |
-| `clipboard.read`           | `() → string \| null`                                                         | async      | read (granted) | `clipboard.get`             |
-| `store.get` / `store.list` | `(key) → Json \| null` · `(prefix) → string[]`                                | sync       | —              | `store.get`                 |
-| `pack.<name>.<fn>`         | per pack (§6)                                                                 | sync/async | per pack       | `install.tool`              |
+| Function                      | Params → result                                                               | Kind  | From HOST-API               |
+| ----------------------------- | ----------------------------------------------------------------------------- | ----- | --------------------------- |
+| `fs.read`                     | `{path, maxBytes?=1MiB, encoding?: "utf8"\|"bytes"}` → `string \| Uint8Array` | async | `fs.read`                   |
+| `fs.list`                     | `{dir, glob?, depth?=1, limit?=10k}` → `{name, path, isDir, size, mtime}[]`   | async | `fs.list`, `fs.stat` merged |
+| `fs.stat`                     | `{path}` → `{size, mtime, isDir} \| null`                                     | sync  | `fs.stat`                   |
+| `fs.preview`                  | `{path, range?, width?}` → `Node` (`code` or `image`)                         | async | `fs.preview`                |
+| `git.status`                  | `{}` → `{branch, dirty, ahead, behind, files: [{path, status}]}`              | async | `git.status`                |
+| `git.diff`                    | `{path?, base?, ref?, staged?}` → `{files: [{path, hunks}]}`                  | async | `git.diff`                  |
+| `git.log`                     | `{path?, line?, limit?=50}` → `commits[] \| blame`                            | async | `git.history`               |
+| `syntax.highlight`            | `{text, lang}` → `Span[][]`                                                   | sync  | `fs.preview` (part)         |
+| `fuzzy.index` / `fuzzy.match` | `{id, items}` → `{count}` · `{id, query, limit}` → `{index, score}[]`         | sync  | picker indexes (#12)        |
+| `session.list`                | `{limit?}` → `{id, title, updated, cost}[]`                                   | async | `session.list`              |
+| `session.messages`            | `{id, limit?, before?}` → `{id, role, text}[]`                                | async | new (mem0-style status)     |
+| `clipboard.read`              | `{}` → `string \| null`                                                       | async | `clipboard.get`             |
+| `store.get` / `store.list`    | `{key}` → `Json \| null` · `{prefix}` → `string[]`                            | sync  | `store.get`                 |
+| `<helper>.<method>`           | as the helper's interface declares                                            | async | new: arbitrary native code  |
 
 **Kinds:** `sync`, `async`, and `durable`, the last being an effect that completes as events (`shell.run`,
 `net.request`, `fs.watch`, timers): host-level tasks, not psychoscript's `DurableFunction`, since a reducer never
@@ -347,98 +342,271 @@ How the 38 research functions map onto this API:
 | `store.memory`                                                                 | `state`, which survives reloads                                   |
 
 Dropped: `install.plugin` (a user action; lazy.nvim and tpm, #11 and #14, become host features), `install.tool`
-(packs and sidecars install with the plugin), `net.listen`, `net.subscribe`, `ui.annotate` and `dap.*` (long-lived
-servers are sidecars, §6), `lsp.start` (host configuration), `editor.snippet` (plugin data).
+(packs are built in; helpers install with the plugin), `net.listen`, `net.subscribe` and `ui.annotate`
+(long-lived servers become helpers, §6), `lsp.start`, `lsp.query`, `dap.*` (language and debug servers are the
+server's concern), `editor.snippet` (plugin data).
 
-What is left is 13 read functions and 22 effect types.
+What is left is 15 built-in functions in 7 namespaces, the helpers' interfaces, and 23 effect types.
 
-## 6. Native dependencies
+## 6. Native code
 
-The research's native blockers are:
+Today's Node and Bun plugins can do anything. The TUI plugins in the research need native work [R]:
 
-- tree-sitter (#15, #34, basemind);
-- fuzzy matching (the fzf family, #12);
-- LSP and DAP servers (#16, #28);
-- embeddings and LanceDB (opencode-mem, OpenCodeRAG);
-- a Go binary (deja-vu);
-- CLIs (lazygit- and k9s-style commands).
+- syntax highlighting (#15, #34);
+- fuzzy indexing for pickers (the fzf family, #12);
+- image decoding for previews (yazi #5, tfm-tui #57);
+- embeddings for local search (opencode-mem #43);
+- git porcelain binaries (lazygit #2, fugitive #10);
+- a PTY or terminal backend (opencode-pty #54).
 
-| Option                                                            | Fits                                                                                                                                                       | Against                                                                                                                                                                                                 | Verdict                                       |
-| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| (a) Capability packs: Rust, in the host, declared in the manifest | tree-sitter (OpenTUI Rust already bundles grammars and `syntax::register`); fuzzy matching over host-held lists (the large-state blocker); LSP client; git | Only what we ship, and it grows the binary                                                                                                                                                              | **Yes, a few**                                |
-| (b) Sidecars: processes over stdio JSON-RPC, like LSP and MCP     | Go binaries, Python/Node services (embeddings, LanceDB), DAP, local HTTP UIs (plannotator #18, llm-proxy #71), anything long-lived                         | Per-platform artifacts; startup measured in ms; process sandboxing differs per OS                                                                                                                       | **Yes**                                       |
-| (c) Sandboxed WebAssembly                                         | Portable, sandboxed compute                                                                                                                                | Needs a large runtime dependency (wasmtime) or a slow interpreter. WASI has no GPU, no threads, no LanceDB. PsychoScript already handles the compute we measured: a 1,000-item filter in 113–166 µs [P] | **Not in v0**; revisit for heavy pure compute |
-| (d) Native dynamic libraries                                      | Speed                                                                                                                                                      | No sandbox, ABI churn, a crash kills the TUI, supply-chain risk                                                                                                                                         | **Rejected**                                  |
+v0 allows arbitrary native code, on the condition that it can never take the TUI down. There are two paths:
 
-**Packs in v0:**
+| Path                   | What                                                                               | Crash-safe because                                           |
+| ---------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| **Capability packs**   | Rust built into the host: `git`, `fs`, `shell`, `syntax`, then `fuzzy`             | It is host code we write and test                            |
+| **Supervised helpers** | Any executable a plugin ships: Bun or Node with npm dependencies, Python, Go, Rust | It is a separate process: a crash becomes a rejected promise |
 
-- `syntax`: `parse`, `query` and `highlight`, wrapping `opentui::syntax`;
-- `fuzzy`: `index(id, items)` once, then `match(id, query, limit)` per keystroke, so 100k file names never cross the
-  boundary per event;
-- `lsp`, which backs `lsp.query`;
-- `git`, which backs the `git.*` reads.
+**In-process native libraries are rejected because they can't be made crash-safe.** A segfault, an `abort()`, a stack
+overflow or a foreign panic takes the whole host down, and no Rust code can catch it. Memory corruption can damage the
+host silently first. A library can spin a thread that can't be stopped. A process boundary is the only isolation that
+holds against arbitrary code.
 
-A plugin declares packs as `"packs": { "fuzzy": "^1" }`. A missing or incompatible pack disables the plugin with a
-diagnostic. Calls look like `pack.fuzzy.match("files", event.value, 50)`.
+### One shape for packs and helpers: interfaces
 
-Embeddings and vector search are not a TUI pack. The research puts them on the server half of "Both" plugins, and
-the TUI half only shows status and commands [R].
+Packs and helpers both register an **interface**: a namespace name and its methods. Each method has an `input`
+schema, an `output` schema, optionally a `chunk` schema, and a kind:
 
-**Sidecars** are declared in the manifest:
+- `sync` (packs only, for microsecond work such as `fuzzy.match`);
+- `async`;
+- `stream`.
+
+Every interface becomes a **top-level global namespace**, whether it is a built-in pack or a helper process:
+`git.diff()`, `syntax.highlight()`, `embedder.embed()`. The plugin sees one shape: functions taking one params object
+and an optional `{ timeoutMs }`, returning a value or a promise, with the same error kinds. Streaming methods start
+only through the `stream` effect (rule 2). The reads in §5 are exactly the packs' interfaces.
+
+```js
+const hl = syntax.highlight({ text: event.text, lang: "rust" }) // pack, sync
+const v = await embedder.embed({ text: event.query }) // helper, async
+return { effects: [{ type: "stream", id: "reindex", fn: "embedder.index", params: { root: ctx.workspace.root } }] }
+```
+
+**Names and collisions.** Each interface is registered under a host-unique id, and injected under a short name:
+
+| Interface      | Registry id                                                                                 | Global name                                  |
+| -------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| Built-in packs | the reserved names `fs`, `git`, `shell`, `syntax`, `fuzzy`, `session`, `clipboard`, `store` | the same name                                |
+| Helpers        | `<package id>/<helper name>`, unique because package ids are                                | the helper name, or an alias the plugin sets |
+
+- A helper may not take a reserved name, a built-in global of the language (`global_names()`: `JSON`, `Math`,
+  `console`, …), or a binding name (`event`, `state`, `settings`, `ctx`). The manifest fails validation otherwise.
+- Names only have to be unique within one plugin's runtime, because each runtime gets only what its plugin declares.
+  When two packages both export a public `embedder`, a plugin using both aliases one of them:
+  `"uses": { "vec": "acme.search/embedder" }`.
+
+**Opt-in per plugin.** The manifest's `uses` lists the namespaces the plugin uses:
 
 ```json
-"sidecars": {
-  "dejavu": {
-    "protocol": "jsonrpc-stdio",
-    "command": ["${bin}/deja-vu", "serve", "--stdio"],
+"uses": ["git", "syntax", "embedder", { "vec": "acme.search/embedder" }]
+```
+
+A bare name is a pack or one of the plugin's own helpers; a `<package>/<helper>` id is another package's public
+helper. The plugin's `Runtime` injects exactly these through `globals(run)`; anything undeclared doesn't exist for
+that plugin. This is not a permission system: it decides what is injected and what may be started, so a plugin pays
+nothing for packs and helpers it doesn't use.
+
+**Lazy and shared.** The namespace object costs nothing until it is touched:
+
+- `keys` lists methods from the registry, so `Object.keys(embedder)` starts nothing.
+- `resolve` maps each method to a `HostFunction`: sync or `new_async` for a Rust pack handler, `new_async` doing the
+  JSON-RPC call for a helper. An unknown method gives `Failure::missing` with suggestions.
+
+Injecting it into a run is an `Arc` clone. Measured: 30 unused namespaces move the event floor from 17.6 µs to
+18.1–19.5 µs, 15–65 ns each.
+
+Packs and helpers start on the **first call**, not when a plugin declaring them loads:
+
+- a Bun helper's cold start costs 7.8 ms (Rust: 1.0 ms), and each Bun process holds 16 MB RSS (Rust: 1.8 MB) and
+  uses about 1 ms/s of CPU even when idle;
+- many plugins declare a helper only for rare commands (image decoding on preview, re-indexing);
+- the first caller pays the cold start once, and concurrent first calls wait on the same start.
+
+**One instance per host.** Every plugin that uses an interface shares one instance: one helper process and one pack
+state, however many plugins call it.
+
+- Each call carries the caller: the request's `caller: { plugin }` (see Wire protocol), and the plugin id captured in
+  that plugin's `globals`.
+- The host uses the caller for per-plugin accounting (calls and time in the plugin manager), per-call timeouts,
+  and fairness: at most 16 calls in flight per plugin per helper, and a round-robin queue across plugins
+  when the helper is saturated.
+- A crash rejects the pending calls of every caller and restarts the one process.
+- The helper stops when the last plugin using it unloads, or when it has been idle for `idleStopSec`.
+- **A shared helper must serve overlapping requests concurrently** (worker threads or async inside the helper).
+  Measured: 50 plugins sharing one helper answer a fan-out of echo calls in 0.47–0.52 ms, as fast as 50 separate
+  helpers, in 2.2 MB (Rust) or 38 MB (Bun) instead of 88 or 816 MB. But a helper that answers one request at a
+  time turns 50 CPU-bound calls of 0.25 ms into 12.2 ms, against 1.3 ms with one helper per plugin.
+
+**Helper visibility** is a namespacing rule. A helper is private to the package that ships it by default
+(`"visibility": "private"`): only that package's plugin can list it in `uses`. With `"visibility": "public"`, any
+plugin may list it as `<package>/<helper>`. If the providing package is removed, a plugin that uses it fails to load
+with a diagnostic naming the missing helper.
+
+**Where a helper's interface is declared:** in the manifest, not discovered at runtime.
+
+- Lazy start needs the namespace to exist before the process runs.
+- The interface is pinned by hash in `helpers.lock` together with the helper's files.
+- Calls can be validated without the process.
+
+At `initialize`, the helper answers with its method names, and the host checks that it serves every declared method.
+A mismatch fails the start with `HelperMismatch`. For authors, `opencode plugin dev` can call a helper's optional
+`describe` method to generate the manifest entry; the runtime never trusts `describe`.
+
+```json
+"helpers": {
+  "embedder": {
+    "runtime": "bun@1.4",
+    "visibility": "public",
+    "command": ["src/embedder.ts"],
+    "install": { "deps": "bun.lock" },
+    "limits": { "memoryMb": 1024, "cpuPercent": 100 },
+    "methods": {
+      "embed": {
+        "input": { "type": "object", "properties": { "text": { "type": "string", "maxLength": 8192 } }, "required": ["text"] },
+        "output": { "type": "array", "items": { "type": "number" }, "maxItems": 1024 }
+      },
+      "index": { "kind": "stream", "timeoutMs": 600000,
+                 "input": { "type": "object", "properties": { "root": { "type": "string" } }, "required": ["root"] },
+                 "chunk": { "type": "object", "properties": { "done": { "type": "integer" } } },
+                 "output": { "type": "object" } }
+    }
+  },
+  "pty": {
+    "runtime": "exec",
+    "command": ["${bin}/pty-backend", "--stdio"],
     "artifacts": {
-      "darwin-arm64": { "url": "https://…/deja-vu-darwin-arm64", "sha256": "…" },
-      "linux-x64":    { "url": "…", "sha256": "…" }
+      "darwin-arm64": { "url": "https://…/pty-backend-darwin-arm64", "sha256": "…" },
+      "linux-x64": { "url": "https://…/pty-backend-linux-x64", "sha256": "…" }
     },
-    "idleStopSec": 300
+    "methods": { "spawn": { … }, "write": { … }, "resize": { … }, "output": { "kind": "stream", … } }
   }
 }
 ```
 
-The host downloads the platform's artifact at install, refuses one without a matching `sha256`, and stores it in
-`<data>/plugins/<id>/<version>/bin/` (`${bin}`). A sidecar starts on first call, stops after `idleStopSec`, dies on
-unload, and counts as an `exec` grant ("runs deja-vu"). Calls go only through the `sidecar.call` effect; its
-notifications arrive as `sidecar` events. Plain CLIs need no sidecar: `shell.run` with `exec: ["lazygit"]`.
+**Validation.** Schemas use the settings dialect (§1) plus `properties`, `required`, `items`, `maxLength`, `maxItems`
+and `additionalProperties`. They are compiled once at load.
 
-## 7. Security model
+- **Input** is validated before anything is sent. A bad call rejects with `InvalidInput` and the failing path, at a
+  cost of microseconds, without touching the process.
+- **Results and chunks** are validated on arrival. A mismatch rejects with `HelperError` (`InvalidOutput`), so
+  plugins never see data their interface doesn't promise.
+- **Pack interfaces** use the same validator, so built-ins and helpers fail the same way.
 
-- **Gating.** Every host function and effect has a class (§5) and is checked against the user's grants on each call,
-  not at load. Projects can't grant (§1).
-- **Paths.** Grants are globs over virtual roots: `workspace:` (the session's workspace), `plugin:` (the plugin's data
-  directory, always granted), `home:` (explicit globs only). The host checks the canonical path, so symlinks can't
-  escape, and refuses writes to `.git/` (git goes through the `git` effect).
-- **Exec.** `argv` only, no shell string. The basename must be in `exec`, resolved through `PATH` at grant time; the
-  environment is scrubbed to `PATH`, `HOME`, `LANG` and the declared `env`; the working directory stays under
-  `workspace:` or `plugin:`.
-- **Network.** A host allowlist (optional port and path prefix), https unless granted otherwise, loopback and private
-  ranges refused unless granted (no SSRF into local services), 10 MiB responses, timeouts.
-- **Secrets** live in the OS keychain by name. A plugin never reads one; it references it in a `net.request` header,
-  `{ "secret": "github", "format": "Bearer {}" }`, or a sidecar's `env`. The host substitutes it and redacts it from
-  logs and results.
-- **UI integrity.** Dialogs carry the plugin's name; permission prompts are host-only and drawn above plugin layers;
-  `notify`, `toast` and `open.url` are rate-limited. Limits (§2) and queue caps (§3) bound CPU, memory and backlog.
-- **Not covered:** sidecars run with the user's rights; OS sandboxing (Seatbelt, Landlock) is open.
+**Helper runtimes:**
 
-## 8. Performance budget
+- `exec`, a binary: shipped in the package, or one artifact per platform;
+- `bun@<range>` and `node@<range>`, a script plus a lockfile;
+- `python@<range>`, a script plus `uv.lock`.
+
+The host installs the script runtimes as pinned, sha256-checked artifacts shared across plugins, and never uses
+whatever is on `PATH`.
+
+### Supervision
+
+| Concern          | Behaviour                                                                                                                                                                                                                                                                  |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Start            | On the first call from any plugin. One process per host, shared. `initialize` must answer within 10 s.                                                                                                                                                                     |
+| Crash            | Every pending call rejects with `HelperCrashed` (exit code or signal, last stderr lines), and the TUI carries on. The next call restarts the helper with backoff 0, 100, 200, … ms, capped at 5 s. After 5 crashes in 60 s it is disabled until reload (`HelperDisabled`). |
+| Per-call timeout | The method's `timeoutMs`, else the helper's `callTimeoutMs` (default 2 s, max 30 s; streams up to 1 h), or `{ timeoutMs }` per call. On expiry the call rejects with `HelperTimeout` and the host sends `$/cancel`. A helper that ignores 3 cancels in a row is restarted. |
+| Memory and CPU   | Linux: a cgroup v2 per helper (`memory.max`, `cpu.max`). Windows: a job object. macOS: `RLIMIT_CPU`, plus host-side RSS polling that kills the helper over its limit.                                                                                                      |
+| Output           | stdout carries only the protocol. stderr goes to the plugin's log, capped. A malformed line, or one over 16 MiB, restarts the helper.                                                                                                                                      |
+| Stop             | When the last plugin using it unloads, after `idleStopSec` idle (default 300), and on quit. The whole process group (job object on Windows) is killed, so grandchildren die too.                                                                                           |
+
+The wait for a helper counts toward `wallMs`, not `computeMs`. That makes a helper method the one awaited call that
+may take seconds: the plugin's own queue waits, the TUI doesn't. A helper can do anything, so rule 1's transactional
+guarantee doesn't cover what it did during a call that later failed.
+
+### Wire protocol
+
+JSON-RPC 2.0 over stdin and stdout, one message per line. JSON escapes newlines, so no other framing is needed.
+Messages are UTF-8, bytes travel as base64 strings, and a line is at most 16 MiB.
+
+```
+host → {"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocol":0,"package":"acme.search","helper":"embedder","dataDir":"…"}}
+     ← {"jsonrpc":"2.0","id":0,"result":{"protocol":0,"methods":["embed","index"]}}
+host → {"jsonrpc":"2.0","id":7,"method":"embed","params":{"text":"…"},"caller":{"plugin":"acme.notes","dataDir":"…"}}
+     ← {"jsonrpc":"2.0","id":7,"result":[0.12, …]}         or   "error":{"code":…,"message":…,"data":…}
+host → {"jsonrpc":"2.0","id":8,"method":"index","params":{"root":"…"}}
+     ← {"jsonrpc":"2.0","method":"$/chunk","params":{"id":8,"chunk":{"done":120}}}   (zero or more, before the response)
+host → {"jsonrpc":"2.0","method":"$/cancel","params":{"id":8}}                       (the helper answers error -32800)
+     ← {"jsonrpc":"2.0","method":"$/event","params":{"name":"changed","data":{…}}}   (unsolicited)
+```
+
+- Requests may overlap, and responses come back in any order. Each request carries `caller`, an extension member
+  naming the calling plugin and its data directory, so one shared process can keep each caller's data apart.
+- `$/chunk`s of a `stream` effect arrive as `stream` events, merged at most every 16 ms (§3). The final result arrives
+  as an `effect` event.
+- `$/event` notifications arrive as `helper` events.
+- A helper is a small loop in any language: the bench's Rust and Bun helpers are about 60 lines each.
+
+### Install, verify, pin
+
+`opencode plugin add` resolves everything up front and writes `helpers.lock` next to the package:
+
+- each artifact's URL and sha256;
+- each runtime's version and sha256;
+- the hash of each script, of its dependency lockfile, and of each helper's interface.
+
+Dependencies install with the runtime's frozen-lockfile mode (`bun install --frozen-lockfile`). The host refuses an artifact without a hash and a lockfile that doesn't match,
+and it checks the files against `helpers.lock` on every start.
+
+### Cost
+
+Measured on this machine (`sidecar/RESULTS.md` on `psychoscript-plugins`):
+
+| Measurement                                                                                        |       Rust helper |       Bun helper |
+| -------------------------------------------------------------------------------------------------- | ----------------: | ---------------: |
+| Cold start: spawn → `initialize` answered                                                          |            1.0 ms |           7.8 ms |
+| Warm round trip, ~100 B / ~10 KB, raw client                                                       |        12 / 16 µs |       26 / 31 µs |
+| Plugin event awaiting `bench.echo` (event without the call: 18 µs; in-process pack: 19 µs)         |    37 µs (p99 50) |   50 µs (p99 65) |
+| `embed` (5 KB result), in process 224 µs                                                           |            249 µs |           259 µs |
+| Bad params rejected before sending (helper never started)                                          |   19 µs per event |  19 µs per event |
+| 50 plugins, one event each awaiting their helper: 50 helpers / 1 shared (in-process pack: 0.25 ms) |    0.50 / 0.50 ms |   0.62 / 0.47 ms |
+| 50 CPU-bound `embed` calls: 50 helpers / 1 sequential shared helper                                |     1.3 / 12.4 ms |    1.4 / 12.2 ms |
+| Starting 50 helpers in parallel / 50 first calls to 1 shared helper (one start)                    |       14 / 2.2 ms |      46 / 9.4 ms |
+| RSS: 1 helper / 50 helpers / 1 shared after 50k calls                                              | 1.8 / 88 / 2.2 MB | 16 / 816 / 38 MB |
+| Idle CPU, 50 helpers                                                                               |                 0 | 5–7% of one core |
+| Crash during a call → the plugin's promise rejects                                                 |      0.14–0.28 ms |     0.22–0.57 ms |
+| Next call after a crash (restart + call)                                                           |        1.2–1.3 ms |       8.6–8.7 ms |
+| Per-call timeout 100 ms → rejection; the helper stays usable after `$/cancel`                      |        100–110 ms |           100 ms |
+| `stream` of 1,000 chunks                                                                           |            1.0 ms |          0.56 ms |
+
+Takeaways:
+
+- A warm helper call costs 20–30 µs on top of the event, about 0.2% of a frame.
+- Fan-out to 50 plugins stays under 1 ms at p99, off the UI thread. A crash costs the caller a rejected promise
+  within a millisecond, and the TUI carries on.
+- Cold start and memory are the real costs of a script runtime: Bun takes 8 ms to start and 16 MB per process, Rust
+  1 ms and 1.8 MB. That is why helpers start lazily, on the first call, and why one shared instance serves every
+  plugin.
+- Sharing only works if the helper serves requests concurrently.
+
+## 7. Performance budget
 
 Measured [P], with plugins compiled once:
 
-| Measurement                                                          |             Median |        p99 |
-| -------------------------------------------------------------------- | -----------------: | ---------: |
-| Event floor                                                          |              15 µs |            |
-| git-status event                                                     |           19–22 µs |   24–31 µs |
-| 1,000-item filter                                                    |         113–166 µs | 139–188 µs |
-| 200-command palette                                                  |             236 µs |     276 µs |
-| 50 plugins, one event each, sequential on one thread                 |            5.69 ms |            |
-| 50 plugins, one event each, one thread per plugin                    |            0.69 ms |    0.75 ms |
-| UI-thread cost per frame with 50 plugins (dispatch + apply + render) |            0.32 ms |    0.39 ms |
-| Memory between events                                                |       1 KB + state |            |
-| Peak heap during one event                                           | 150–420 KiB, freed |            |
+| Measurement                                                          |             Median |            p99 |
+| -------------------------------------------------------------------- | -----------------: | -------------: |
+| Event floor                                                          |              15 µs |                |
+| git-status event                                                     |           19–22 µs |       24–31 µs |
+| 1,000-item filter                                                    |         113–166 µs |     139–188 µs |
+| 200-command palette                                                  |             236 µs |         276 µs |
+| 50 plugins, one event each, sequential on one thread                 |            5.69 ms |                |
+| 50 plugins, one event each, one thread per plugin                    |            0.69 ms |        0.75 ms |
+| UI-thread cost per frame with 50 plugins (dispatch + apply + render) |            0.32 ms |        0.39 ms |
+| Event awaiting a warm helper call, Rust / Bun helper (§6)            |         37 / 50 µs |     50 / 65 µs |
+| 50 plugins, one event each awaiting a shared helper, Rust / Bun      |     0.50 / 0.47 ms | 0.61 / 0.59 ms |
+| Memory between events                                                |       1 KB + state |                |
+| Peak heap during one event                                           | 150–420 KiB, freed |                |
 
 The budget per 16.6 ms frame:
 
@@ -450,24 +618,24 @@ The budget per 16.6 ms frame:
   50 × ~100 µs / 8 ≈ 0.6 ms, the same latency without 50 threads. To be measured (open question 2).
 - **Memory:** about 50 × (1 KB + state) at rest; pool size × ~0.5 MiB at peak.
 
-## 9. What OpenTUI Rust must add
+## 8. What OpenTUI Rust must add
 
-OpenTUI owns the generic parts: slots, views, keymap conditions, the plugin runtime with its events, effects and
-grants, and the packs. The OpenCode TUI registers the domain parts through the host crate's registries: `session.*`,
-`message.*` and `prompt.*` events, `session.*` and `lsp.query` reads, `prompt.edit` and `session.switch` effects.
+OpenTUI owns the generic parts: slots, views, keymap conditions, the plugin runtime with its events and effects, and
+the packs. The OpenCode TUI registers the domain parts through the host crate's registries: `session.*`,
+`message.*` and `prompt.*` events, `session.*` reads, `prompt.edit` and `session.switch` effects.
 `opentui` itself takes no dependency on psychoscript or serde.
 
-| #   | Piece                                                                                                                                               | Where                                                            | Size          |
-| --- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------- |
-| 1   | Slot registry: ordering, modes, contributions, error buffer, with TypeScript `createSlotRegistry` semantics                                         | `opentui::slot`                                                  | S, ~400 lines |
-| 2   | View nodes (a Rust enum) and a keyed reconciler onto widgets; host-owned element state                                                              | `opentui::view`                                                  | L, ~1,200     |
-| 3   | Element actions (`select`, `submit`, `change`, `click`, `close`) as callbacks keyed by element                                                      | `opentui::view`                                                  | S, ~200       |
-| 4   | Keymap: data conditions from `when`, layer priority, user overrides, pending-sequence feed                                                          | `opentui::keymap` (mostly exists)                                | S, ~150       |
-| 5   | Plugin host crate: manifest, config and grants; compile and reload; worker pool; queue with subscriptions and coalescing; limits; state persistence | `crates/opentui-plugin` (new; depends on psychoscript and serde) | L, ~2,000     |
-| 6   | Effect executor and host-function registry, with capability checks and `effect`/`stream` completions                                                | `opentui-plugin`                                                 | M, ~800       |
-| 7   | Packs `syntax` and `fuzzy`                                                                                                                          | `opentui-plugin::packs`                                          | S–M, ~500     |
-| 8   | Sidecar manager: download and verify, spawn, JSON-RPC over stdio, idle stop                                                                         | `opentui-plugin::sidecar`                                        | M, ~700       |
-| 9   | Test harness: run a plugin against `TestApp` with fake reads and recorded effects                                                                   | `opentui-plugin::testing`                                        | S, ~300       |
+| #   | Piece                                                                                                                                                                  | Where                                                            | Size          |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------- |
+| 1   | Slot registry: ordering, modes, contributions, error buffer, with TypeScript `createSlotRegistry` semantics                                                            | `opentui::slot`                                                  | S, ~400 lines |
+| 2   | View nodes (a Rust enum) and a keyed reconciler onto widgets; host-owned element state                                                                                 | `opentui::view`                                                  | L, ~1,200     |
+| 3   | Element actions (`select`, `submit`, `change`, `click`, `close`) as callbacks keyed by element                                                                         | `opentui::view`                                                  | S, ~200       |
+| 4   | Keymap: data conditions from `when`, layer priority, user overrides, pending-sequence feed                                                                             | `opentui::keymap` (mostly exists)                                | S, ~150       |
+| 5   | Plugin host crate: manifest and config; compile and reload; worker pool; queue with subscriptions and coalescing; limits; state persistence                            | `crates/opentui-plugin` (new; depends on psychoscript and serde) | L, ~2,000     |
+| 6   | Effect executor, and the interface registry: namespaces built from declared interfaces, schema validation; shared by packs and helpers                                 | `opentui-plugin`                                                 | M, ~900       |
+| 7   | Packs `syntax` and `fuzzy`                                                                                                                                             | `opentui-plugin::packs`                                          | S–M, ~500     |
+| 8   | Helper supervisor: install, verify against `helpers.lock`, spawn lazily, NDJSON JSON-RPC, timeouts and `$/cancel`, restart with backoff, OS limits, process-group kill | `opentui-plugin::helper`                                         | M, ~900       |
+| 9   | Test harness: run a plugin against `TestApp` with fake reads and recorded effects                                                                                      | `opentui-plugin::testing`                                        | S, ~300       |
 
 **Implementation plan**, one green, tested PR per step:
 
@@ -476,14 +644,15 @@ grants, and the packs. The OpenCode TUI registers the domain parts through the h
 3. `rust: reconcile list, table, input, progress, spinner, code and markdown`, with host-owned element state.
 4. `rust: route view element actions to handlers`.
 5. `rust: keymap conditions from data and user key overrides`.
-6. `rust: add opentui-plugin with manifests, config and grants` (no runtime). First settle how it consumes psychoscript
+6. `rust: add opentui-plugin with manifests and config` (no runtime). First settle how it consumes psychoscript
    (git dependency or vendoring) and the toolchain (psychoscript needs 1.100; the workspace pins 1.99.1).
 7. `rust: run plugins from compiled programs on a worker pool`: init, reload, transactional state, persistence.
 8. `rust: plugin event queue with subscriptions, coalescing and overflow`.
 9. `rust: plugin effects and completion events`: toast, clipboard, timers, store, `fs.watch`.
-10. `rust: gated plugin reads (fs, git, store, clipboard)`, plus the exec and network effects and their sandboxes.
+10. `rust: plugin reads (fs, git, store, clipboard)`, plus the `shell.run` and `net.request` effects.
 11. `rust: syntax and fuzzy packs`.
-12. `rust: plugin sidecars over stdio JSON-RPC`.
+12. `rust: supervised plugin helpers over stdio JSON-RPC`: top-level interface namespaces from `uses`, sharing, visibility, the `stream` effect and
+    `helpers.lock`.
 13. `rust: plugin test harness, example plugins and a docs page`.
 14. In parallel, upstream in psychoscript: a compute budget and a configurable memory limit (step 7 uses
     `timeout_ms` until then, §2).
@@ -494,9 +663,18 @@ grants, and the packs. The OpenCode TUI registers the domain parts through the h
    implementations; when the GC lands; whether a shared built-ins realm removes the 15 µs floor.
 2. **Worker pool vs thread per plugin:** measure the pool with the prototype's fan-out bench before step 7.
 3. **Distribution:** registry format, signing on top of sha256 (minisign, sigstore), update policy.
-4. **Sidecar sandboxing** per OS, or sidecars as fully trusted `exec`.
+4. **Security (not part of v0).** Today's plugins have no permission model, and v0 adds none. Ideas for later:
+   capability classes with user grants; path roots for `fs`; network allowlists; secrets the host injects into
+   requests without the plugin reading them; OS sandboxing for helpers (Seatbelt, Landlock, AppContainer).
 5. **"Both" plugins:** one package for the TUI and server halves, and whether their stores are shared via the server.
 6. **Streaming at LLM rates:** is a 16 ms `stream` flush right, and do transcript decorations need back-pressure?
 7. **Images:** which producers make image refs, and the fallback without kitty graphics.
 8. **Modal plugins:** full-screen surfaces and raw mouse (termdraw #58) are not in v0; is a `screen` slot worth it?
 9. **Editor buffers:** a code view would bring back buffer events and `signs`/`diff` slots (#16, #24, #26).
+10. **Helper runtimes:** does the host ship pinned Bun, Node and Python itself, and does it support `npm` packages with
+    native addons, which make the lockfile platform-specific?
+11. **Interface schemas:** is the JSON Schema subset enough, or do helpers want generated TypeScript typings for
+    interfaces to author against?
+12. **CPU-bound shared helpers:** v0 requires a shared helper to serve requests concurrently itself. Should the host
+    instead be able to run several instances of one helper when a sequential helper becomes the bottleneck (12.2 ms
+    against 1.3 ms for 50 `embed` calls, §6)?
