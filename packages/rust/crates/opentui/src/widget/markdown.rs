@@ -271,6 +271,8 @@ pub struct MarkdownTableOptions {
 #[derive(Clone, Default)]
 struct Options {
     conceal: bool,
+    /// The unchecked and checked task boxes with conceal on.
+    task_markers: [String; 2],
     streaming: bool,
     /// Styles text through the syntax theme's scopes.
     scopes: bool,
@@ -454,7 +456,11 @@ impl Markdown {
             guard: RefCell::new(()),
             colors: RefCell::new(colors),
             syntax: RefCell::new(Arc::new(SyntaxTheme::from_theme(&app.theme()))),
-            options: RefCell::new(Rc::new(Options { conceal: true, ..Options::default() })),
+            options: RefCell::new(Rc::new(Options {
+                conceal: true,
+                task_markers: ["☐".to_owned(), "☑".to_owned()],
+                ..Options::default()
+            })),
             styles: Cell::new(styles),
             blocks: RefCell::new(Vec::new()),
             committed: Cell::new(0),
@@ -547,6 +553,31 @@ impl Markdown {
             Rc::make_mut(&mut self.0.options.borrow_mut()).conceal = conceal;
             self.change_options();
             self.rebuild_where(|block| block.parent.is_none());
+        }
+        self.clone()
+    }
+
+    /// The box a task item shows with [`Self::conceal`] on, as Core's `taskMarkers` option: `☐` and `☑` by default,
+    /// `task_markers("[ ]", "[x]")` for ASCII boxes. Without conceal, items show the source's `[ ]` or `[x]`. The box
+    /// is part of the marker, so wrapped item text lines up after it.
+    pub fn task_markers(&self, unchecked: impl Into<String>, checked: impl Into<String>) -> Self {
+        let markers = [unchecked.into(), checked.into()];
+        if self.0.options.borrow().task_markers != markers {
+            Rc::make_mut(&mut self.0.options.borrow_mut()).task_markers = markers;
+            if let (Some(app), Some(doc)) = (self.app(), &self.0.doc) {
+                let lists: Vec<u32> = self
+                    .0
+                    .blocks
+                    .borrow()
+                    .iter()
+                    .map(|shown| &shown.block)
+                    .filter(|block| block.kind == sys::OT_MD_LIST)
+                    .map(|block| block.index)
+                    .collect();
+                for list in lists {
+                    self.update_list(&app, doc, list);
+                }
+            }
         }
         self.clone()
     }
@@ -1295,26 +1326,25 @@ impl Markdown {
         let digits = |number: u64| number.checked_ilog10().unwrap_or(0) as usize + 1;
         let width = if ordered { digits(last) + 1 } else { 1 };
         let marker = self.base(Some(list)).patch(self.0.styles.get().list);
-        let conceal = self.0.options.borrow().conceal;
+        let options = Rc::clone(&self.0.options.borrow());
+        let [unchecked, checked]: [&str; 2] =
+            if options.conceal { [&options.task_markers[0], &options.task_markers[1]] } else { ["[ ]", "[x]"] };
         let mut text = String::new();
         for (n, item) in items.iter().enumerate() {
             let Some(Rendered::Item { marker: widget, body, label, .. }) = &item.rendered else { continue };
-            let task = match (item.block.has(sys::OT_MD_BLOCK_TASK), item.block.has(sys::OT_MD_BLOCK_CHECKED), conceal)
-            {
-                (false, ..) => "",
-                (true, true, true) => " ☑",
-                (true, false, true) => " ☐",
-                (true, true, false) => " [x]",
-                (true, false, false) => " [ ]",
-            };
             text.clear();
             if ordered {
                 let number = u64::from(block.number) + n as u64;
                 text.extend(std::iter::repeat_n(' ', width - digits(number) - 1));
-                write!(text, "{number}.{task} ").expect("writing to a String never fails");
+                write!(text, "{number}.").expect("writing to a String never fails");
             } else {
-                write!(text, "-{task} ").expect("writing to a String never fails");
+                text.push('-');
             }
+            if item.block.has(sys::OT_MD_BLOCK_TASK) {
+                text.push(' ');
+                text.push_str(if item.block.has(sys::OT_MD_BLOCK_CHECKED) { checked } else { unchecked });
+            }
+            text.push(' ');
             if *label.borrow() != text {
                 widget.set_text(vec![Span::styled(text.clone(), marker)]);
                 label.replace(text.clone());

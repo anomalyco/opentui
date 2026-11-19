@@ -79,6 +79,12 @@ export interface MarkdownTableOptions {
   selectable?: boolean
 }
 
+/** The text of a task item's box with conceal on. */
+export interface MarkdownTaskMarkers {
+  unchecked: string
+  checked: string
+}
+
 export interface MarkdownOptions extends RenderableOptions<MarkdownRenderable> {
   content?: string
   syntaxStyle: SyntaxStyle
@@ -88,6 +94,11 @@ export interface MarkdownOptions extends RenderableOptions<MarkdownRenderable> {
   conceal?: boolean
   /** Controls concealment inside fenced code blocks rendered by CodeRenderable. */
   concealCode?: boolean
+  /**
+   * The box a task item shows with `conceal` on: `☐` and `☑` by default. `{ unchecked: "[ ]", checked: "[x]" }`
+   * shows ASCII boxes. Without conceal, items show the source's `[ ]` or `[x]`.
+   */
+  taskMarkers?: MarkdownTaskMarkers
   /** Highlights fenced code blocks. Paragraphs, headings and tables never reach it. */
   treeSitterClient?: TreeSitterClient
   /**
@@ -367,6 +378,7 @@ export class MarkdownRenderable extends Renderable {
   private _bg?: RGBA
   private _conceal: boolean
   private _concealCode: boolean
+  private _taskMarkers: MarkdownTaskMarkers
   private _treeSitterClient?: TreeSitterClient
   private _tableOptions?: MarkdownTableOptions
   private _renderBlock?: MarkdownOptions["renderBlock"]
@@ -390,6 +402,7 @@ export class MarkdownRenderable extends Renderable {
     content: "",
     conceal: true,
     concealCode: false,
+    taskMarkers: { unchecked: "☐", checked: "☑" },
     streaming: false,
   } satisfies Partial<MarkdownOptions>
 
@@ -406,6 +419,7 @@ export class MarkdownRenderable extends Renderable {
       this._bg = options.bg ? RGBA.clone(parseColor(options.bg)) : undefined
       this._conceal = options.conceal ?? this._contentDefaultOptions.conceal
       this._concealCode = options.concealCode ?? this._contentDefaultOptions.concealCode
+      this._taskMarkers = { ...(options.taskMarkers ?? this._contentDefaultOptions.taskMarkers) }
       this._treeSitterClient = options.treeSitterClient
       this._tableOptions = cloneTableOptions(options.tableOptions)
       this._renderBlock = options.renderBlock
@@ -527,6 +541,19 @@ export class MarkdownRenderable extends Renderable {
       this._concealCode = value
       this.markStyleDirty()
     }
+  }
+
+  get taskMarkers(): MarkdownTaskMarkers {
+    return { ...this._taskMarkers }
+  }
+
+  set taskMarkers(value: MarkdownTaskMarkers | undefined) {
+    this._taskMarkers = { ...(value ?? this._contentDefaultOptions.taskMarkers) }
+    if (this.isDestroyed) return
+    this._shown.forEach((_, index) => {
+      if (this._doc.blocks[index]!.kind === md.OT_MD_LIST) this.updateList(index)
+    })
+    this.requestRender()
   }
 
   get streaming(): boolean {
@@ -1244,13 +1271,13 @@ export class MarkdownRenderable extends Renderable {
     }
     const base = this.baseStyle(index)
     const style = this.getStyle("markup.list")
+    const box = this._conceal ? this._taskMarkers : { unchecked: "[ ]", checked: "[x]" }
     for (const item of items) {
       const shown = this._shown[item]!
       if (!shown.marker || !(shown.container instanceof BoxRenderable)) continue
       const flags = this._doc.blocks[item]!.flags
       const checked = (flags & md.OT_MD_BLOCK_CHECKED) !== 0
-      const task =
-        (flags & md.OT_MD_BLOCK_TASK) === 0 ? "" : this._conceal ? (checked ? " ☑" : " ☐") : checked ? " [x]" : " [ ]"
+      const task = (flags & md.OT_MD_BLOCK_TASK) === 0 ? "" : ` ${checked ? box.checked : box.unchecked}`
       const label = (ordered ? `${block.number + shown.ordinal!}.`.padStart(width) : "-") + task + " "
       const chunk = {
         __isChunk: true as const,

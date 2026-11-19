@@ -1,0 +1,52 @@
+{
+  "format": [
+    "Markdown task box conformance vectors. Core (__tests__/Markdown.test.ts) and Rust (tests/markdown.rs) run this file. A row is [name, width, conceal, markers, source, frame, then?].",
+    "markers is the task box text option (Core's taskMarkers, Rust's task_markers) as { unchecked, checked }, or null to leave it unset. frame is the document drawn width columns wide, each line trimmed at its end.",
+    "then, when present, is [markers, frame]: the document streams its source, and after the first frame the option changes while it still streams; frame is the next frame."
+  ],
+  "rows": [
+    ["conceal shows the default boxes", 30, true, null, "- [ ] todo\n- [x] done\n", "- ☐ todo\n- ☑ done"],
+    [
+      "conceal shows the boxes the option sets",
+      30,
+      true,
+      { "unchecked": "[ ]", "checked": "[x]" },
+      "- [ ] todo\n- [x] done\n",
+      "- [ ] todo\n- [x] done"
+    ],
+    ["without conceal the source boxes show", 30, false, null, "- [ ] todo\n- [X] done\n", "- [ ] todo\n- [x] done"],
+    [
+      "without conceal the option changes nothing",
+      30,
+      false,
+      { "unchecked": "( )", "checked": "(*)" },
+      "- [ ] todo\n- [x] done\n",
+      "- [ ] todo\n- [x] done"
+    ],
+    [
+      "ordered and nested task items",
+      30,
+      true,
+      { "unchecked": "[ ]", "checked": "[x]" },
+      "9. [x] nine\n10. [ ] ten\n    - [ ] inner\n    - plain\n",
+      " 9. [x] nine\n10. [ ] ten\n        - [ ] inner\n        - plain"
+    ],
+    [
+      "a long item wraps under its text",
+      20,
+      true,
+      { "unchecked": "[ ]", "checked": "[x]" },
+      "- [ ] alpha beta gamma delta epsilon\n",
+      "- [ ] alpha beta\n      gamma delta\n      epsilon"
+    ],
+    [
+      "a change while streaming marks and wraps the items again",
+      20,
+      true,
+      null,
+      "- [ ] alpha beta gamma delta epsilon\n- [x] b\n",
+      "- ☐ alpha beta gamma\n    delta epsilon\n- ☑ b",
+      [{ "unchecked": "[ ]", "checked": "[x]" }, "- [ ] alpha beta\n      gamma delta\n      epsilon\n- [x] b"]
+    ]
+  ]
+}

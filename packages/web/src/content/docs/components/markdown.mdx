@@ -78,6 +78,18 @@ const markdown = new MarkdownRenderable(renderer, {
 
 `concealCode` controls concealment inside fenced code blocks separately. Its default is `false`.
 
+With `conceal` on, a task item shows `☐` or `☑`. Set `taskMarkers` to show other boxes, such as ASCII ones:
+
+```typescript
+const markdown = new MarkdownRenderable(renderer, {
+  content: "- [ ] write tests\n- [x] fix the bug",
+  syntaxStyle,
+  taskMarkers: { unchecked: "[ ]", checked: "[x]" },
+})
+```
+
+The box is part of the item's marker, so wrapped item text lines up after it. Without conceal, items show the source's `[ ]` or `[x]`.
+
 ## Streaming updates
 
 Use streaming mode when content arrives in chunks. Keep `streaming: true` while you append chunks. When the content is complete, set `markdown.streaming = false`; the document then shows as it would from one `content` without streaming.
@@ -266,6 +278,7 @@ A code-block renderer gets a `MarkdownCodeBlock`: `type: "code"`, `lang`, `info`
 | `bg`               | `ColorInput`                                                                            | -        | Base background color, also used by inner code blocks |
 | `conceal`          | `boolean`                                                                               | `true`   | Hide markdown markers in markdown text                |
 | `concealCode`      | `boolean`                                                                               | `false`  | Hide markers inside fenced code blocks                |
+| `taskMarkers`      | `MarkdownTaskMarkers`                                                                   | ☐ and ☑  | Task boxes with `conceal` on                          |
 | `streaming`        | `boolean`                                                                               | `false`  | More content is coming. Set `false` to finish         |
 | `tableOptions`     | `MarkdownTableOptions`                                                                  | -        | Options for markdown table rendering                  |
 | `treeSitterClient` | `TreeSitterClient`                                                                      | -        | Custom Tree-sitter client for code blocks             |
@@ -274,7 +287,7 @@ A code-block renderer gets a `MarkdownCodeBlock`: `type: "code"`, `lang`, `info`
 | `inlineHookFilter` | `readonly string[]`                                                                     | -        | Runs the hook only on blocks that hold a string       |
 | `extensions`       | `readonly "math"[]`                                                                     | `[]`     | Delimiter extensions to parse                         |
 
-Markdown applies `content`, `streaming`, `conceal`, `syntaxStyle` and the hook options at once. It restyles its renderables for `syntaxStyle`, `fg`, `bg`, `conceal` and `concealCode` changes in its lifecycle pass (`onLifecyclePass`), which Core runs before layout, so the new styles appear in that frame. A theme change repaints the natively written text and parses nothing again. If you assign `onLifecyclePass` on a Markdown renderable, call `refreshStyles()` after each change.
+Markdown applies `content`, `streaming`, `conceal`, `taskMarkers`, `syntaxStyle` and the hook options at once. It restyles its renderables for `syntaxStyle`, `fg`, `bg`, `conceal` and `concealCode` changes in its lifecycle pass (`onLifecyclePass`), which Core runs before layout, so the new styles appear in that frame. A theme change repaints the natively written text and parses nothing again. If you assign `onLifecyclePass` on a Markdown renderable, call `refreshStyles()` after each change.
 
 ## Migrating from 0.8
 
