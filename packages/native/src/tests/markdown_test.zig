@@ -619,6 +619,7 @@ const Engine = struct {
         var fed: Fed = .{};
         var math_once: MathOnce = .{};
         for (commands, 0..) |command, step| {
+            model.count(@tagName(command));
             const was_finished = f.doc.finished;
             switch (command) {
                 // An append after finish parses the whole document again (N2).

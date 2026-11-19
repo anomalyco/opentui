@@ -6,7 +6,7 @@
 //!
 //! Environment: `MODEL_SEED=<n>` runs one seed, `MODEL_SEEDS=<n>` sets how many seeds run, `MODEL_SKIP=<property,...>`
 //! ignores failures of the named properties: a check site returns `fail`'s failure only when there is one, so the seed
-//! goes on.
+//! goes on. `MODEL_STATS=1` prints the counts a test made.
 
 use std::fmt::Debug;
 
@@ -61,6 +61,18 @@ fn environment(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|value| !value.is_empty())
 }
 
+thread_local! {
+    /// How often a command took effect or a property compared, as a test counts them: a check that never runs passes
+    /// too.
+    static COUNTS: std::cell::RefCell<std::collections::BTreeMap<&'static str, u64>> = Default::default();
+}
+
+/// Counts `name` once.
+#[allow(dead_code)] // No Rust model counts anything yet.
+pub fn count(name: &'static str) {
+    COUNTS.with_borrow_mut(|counts| *counts.entry(name).or_default() += 1);
+}
+
 /// Whether failures of `property` count: `MODEL_SKIP` lists the ones that don't.
 pub fn enabled(property: &str) -> bool {
     !environment("MODEL_SKIP").unwrap_or_default().split(',').any(|name| name == property)
@@ -81,6 +93,7 @@ pub fn check<M: Model>(model: &M, seeds: u64, steps: usize) {
     };
     // Seeds a site stopped at a skipped failure (a panic, or a site that cannot go on).
     let mut unchecked = 0;
+    COUNTS.with_borrow_mut(|counts| counts.clear());
     for seed in range {
         let commands = model.generate(&mut Rng::new(seed), steps);
         let Some(failure) = outcome(model, &commands) else { continue };
@@ -100,6 +113,9 @@ pub fn check<M: Model>(model: &M, seeds: u64, steps: usize) {
     }
     if unchecked > 0 {
         eprintln!("model: {unchecked} seeds unchecked after a skipped failure");
+    }
+    if environment("MODEL_STATS").is_some() {
+        COUNTS.with_borrow(|counts| counts.iter().for_each(|(name, n)| eprintln!("{name}: {n}")));
     }
 }
 

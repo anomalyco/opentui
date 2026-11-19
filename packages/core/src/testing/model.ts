@@ -1,6 +1,6 @@
 // Seeded model tests: a generator of commands per seed, a run that throws a Failure naming the property it breaks (any
 // other throw is the property "throws"), and a shrinker that keeps a shorter command list only while it fails the same
-// property at the same kind of command. MODEL_SEED=<s> replays one seed,
+// property at the same kind of command. MODEL_STATS=1 prints the counts a test made. MODEL_SEED=<s> replays one seed,
 // MODEL_SEEDS=<n> runs more, MODEL_SKIP=a,b turns properties off to look for failures behind a known one.
 
 export function rng(seed: number): () => number {
@@ -26,6 +26,12 @@ export const SKIP = new Set((process.env.MODEL_SKIP ?? "").split(",").filter(Boo
 
 export function fail(property: string, message: string): void {
   if (!SKIP.has(property)) throw new Failure(property, message)
+}
+
+// How often a command took effect or a property compared, as a test counts them: a check that never runs passes too.
+const counts = new Map<string, number>()
+export function count(name: string): void {
+  counts.set(name, (counts.get(name) ?? 0) + 1)
 }
 
 /** The seeds to run: MODEL_SEED alone, else 1..MODEL_SEEDS, else 1..count. */
@@ -75,6 +81,7 @@ export async function check<C>(
   run: (commands: C[]) => Promise<void>,
   kind: (command: C) => unknown = (command: any) => command?.k ?? command?.op ?? command,
 ): Promise<void> {
+  counts.clear()
   for (const seed of seeds(count)) {
     const commands = generate(seed)
     const first = await failureOf(run, commands, kind)
@@ -87,4 +94,11 @@ export async function check<C>(
     const message = (await failureOf(run, shrunk, kind))?.failure.message ?? first.failure.message
     throw new Error(`seed ${seed}: ${message}\n${shrunk.map((command) => JSON.stringify(command)).join("\n")}`)
   }
+  if (process.env.MODEL_STATS)
+    console.log(
+      [...counts]
+        .sort()
+        .map(([name, n]) => `${name}: ${n}`)
+        .join("\n"),
+    )
 }

@@ -8,7 +8,8 @@
 //! Environment: MODEL_SEED=<n> runs one seed, MODEL_SEEDS=<n> sets how many seeds run,
 //! MODEL_SKIP=<property,...> ignores failures of the named properties (a check site returns
 //! `fail`'s failure only when it is not null, so the seed goes on), MODEL_TRACE=1 prints
-//! each seed before it runs (a panic aborts the process before any report).
+//! each seed before it runs (a panic aborts the process before any report), MODEL_STATS=1
+//! prints the counts a test made after a passing check.
 const std = @import("std");
 
 pub const Failure = struct {
@@ -22,6 +23,23 @@ var skip: []const u8 = "";
 /// A failure of `property` at `step`, or null when MODEL_SKIP lists the property.
 pub fn fail(property: []const u8, step: usize) ?Failure {
     return if (listed(skip, property)) null else .{ .property = property, .step = step };
+}
+
+/// How often a command took effect or a property compared, as a test counts them: a check that
+/// never runs passes too.
+var counts: [32]struct { name: []const u8, n: u64 } = undefined;
+var count_names: usize = 0;
+
+pub fn count(name: []const u8) void {
+    for (counts[0..count_names]) |*entry| {
+        if (std.mem.eql(u8, entry.name, name)) {
+            entry.n += 1;
+            return;
+        }
+    }
+    std.debug.assert(count_names < counts.len);
+    counts[count_names] = .{ .name = name, .n = 1 };
+    count_names += 1;
 }
 
 pub const Options = struct {
@@ -47,6 +65,7 @@ pub fn check(comptime Context: type, context: *Context, default: Options) !void 
     var unchecked: u64 = 0;
     defer if (unchecked > 0) std.debug.print("model: {d} seeds unchecked after a skipped failure\n", .{unchecked});
     const trace = environment(arena, "MODEL_TRACE") != null;
+    count_names = 0;
     var seed: u64 = if (seed_value) |text| try std.fmt.parseInt(u64, text, 10) else 0;
     const last = if (seed_value != null) seed + 1 else seeds;
     while (seed < last) : (seed += 1) {
@@ -71,6 +90,9 @@ pub fn check(comptime Context: type, context: *Context, default: Options) !void 
             std.debug.print("  {s}\n", .{writer.buffered()});
         }
         return error.ModelFailure;
+    }
+    if (environment(arena, "MODEL_STATS") != null) {
+        for (counts[0..count_names]) |entry| std.debug.print("{s}: {d}\n", .{ entry.name, entry.n });
     }
 }
 
