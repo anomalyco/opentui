@@ -1,6 +1,6 @@
 # Can psychoscript host plugins for OpenTUI Rust?
 
-Pinned versions: psychoscript at 12c095410f (`codemode-rust` staging branch) and OpenTUI at 1cd69ea3a. The prototype
+Pinned versions: psychoscript at 121bf797c3 (`codemode-rust` staging branch) and OpenTUI at 1cd69ea3a. The prototype
 is this crate (`README.md`). The numbers are in `bench/RESULTS.md` and `examples/frame.rs`.
 
 ## Verdict
@@ -23,9 +23,8 @@ What is missing does not block a prototype, but it matters for a product. On the
 - a slot registry;
 - a data-driven view with a reconciler.
 
-On the psychoscript side, three changes would each need a parity decision:
+On the psychoscript side, two changes would each need a parity decision:
 
-- compile once, run many times;
 - a compute budget separate from wall time;
 - a configurable memory limit.
 
@@ -36,11 +35,11 @@ survive a change to the source.
 
 ### Missing in psychoscript (each needs the same change in the TypeScript layer)
 
-1. **No compile-once, run-many API.** `Runtime::program` parses, compiles and builds a fresh VM. `Program::run`
-   consumes it. A run therefore costs a fixed ~17 µs, about ⅔ of it `Vm::setup` rebuilding the standard library.
-   That is 82–85% of a small plugin's event. Compile then adds about 12 µs per KB of source, on every event: a 100 KB
-   plugin costs 1.25 ms per event. Wanted: a compiled script that runs many times with new bindings, and ideally a
-   built-ins realm shared across runs. Not blocking: a typical plugin event costs 20–300 µs.
+1. **Compile once, run many: now in psychoscript** (`Runtime::compile`, and `runtime.compile` in the TypeScript
+   layer). The prototype compiles each plugin when it loads or reloads, so compile (about 12 µs per KB) is no longer
+   paid per event: a 100 KB plugin's event went from 1.30 ms to 94 µs, a git-status event from 28 µs to 19 µs. A run
+   still costs a fixed ~15 µs, mostly `Vm::setup` rebuilding the standard library; a built-ins realm shared across
+   runs would remove most of it. Not blocking: a typical plugin event costs 17–240 µs.
 2. **`Limits::timeout_ms` counts wall time from the start of the run.** That includes time spent awaiting async host
    calls, and time a long-lived run sits parked. `Vm::check_time` uses `start.elapsed()`. The README's "active time
    only" holds only across suspend and resume. In the prototype, a cold `git status` that took more than 100 ms timed
@@ -116,7 +115,7 @@ Glue not done yet:
 | Failure | Transactional. A bad event changes nothing | A throw or timeout kills the plugin and loses its state |
 | Hot reload | Swap the source, keep the state | Lost: snapshots resume only with the source that saved them |
 | Limits | The timeout and object cap apply per event | The timeout fires while idle (measured), and the heap only grows |
-| Latency per event | 19–290 µs (compile included) | 7–106 µs |
+| Latency per event | 17–236 µs (compiled once per load) | 7–106 µs |
 | Memory between events | About 1 KB plus the state | About 152 KB of heap per parked plugin, growing |
 | Writing it | A switch on `event.type`. Explicit and testable as a pure function | Natural for sequential flows, but needs `setSlot`-style effects |
 
@@ -146,19 +145,20 @@ return {}
 | What | Median | p99 | Share of 16.6 ms (median) |
 |---|---:|---:|---:|
 | Floor: `return 1`, compile included | 16.7 µs | | 0.1% |
-| git-status event, tick or async command | 28–29 µs | 37–41 µs | 0.2% |
-| Command palette provider, 200 commands, top 10 per key | 288 µs | 365 µs | 1.7% |
-| List filter over 1,000 items: from a capability / in state / as a binding | 182 / 175 / 127 µs | 220 / 196 / 162 µs | 0.8–1.1% |
-| 10 plugins per event, sequential / thread per plugin | 1.36 / 0.44 ms | 1.62 / 0.49 ms | 8% / 2.6% |
-| 50 plugins per event, sequential / thread per plugin | 6.48 / 0.81 ms | 6.75 / 0.88 ms | 39% / 4.9% (off the UI thread) |
-| Compile per plugin: 1 / 10 / 30 / 100 KB source, paid on every event | 34 / 142 / 386 / 1,250 µs | | up to 7.5% |
-| First event in a process (cold) | 0.24–7.5 ms | | once |
+| git-status event, tick or async command | 19–22 µs | 24–31 µs | 0.1% |
+| Command palette provider, 200 commands, top 10 per key | 236 µs | 276 µs | 1.4% |
+| List filter over 1,000 items: from a capability / in state / as a binding | 166 / 165 / 113 µs | 188 / 188 / 139 µs | 0.7–1.0% |
+| 10 plugins per event, sequential / thread per plugin | 1.17 / 0.31 ms | 1.24 / 0.38 ms | 7% / 1.9% |
+| 50 plugins per event, sequential / thread per plugin | 5.69 / 0.69 ms | 5.89 / 0.75 ms | 34% / 4.2% (off the UI thread) |
+| Compile per plugin: 1 / 10 / 30 / 100 KB source, once per load or reload | 18 / 127 / 375 / 1,241 µs | | once |
+| An event of a 1 / 10 / 30 / 100 KB plugin, compiled once / from source | 19 / 25 / 41 / 94 µs vs 37 / 150 / 405 / 1,297 µs | | up to 0.6% |
+| First event in a process (cold) | 0.21–7.8 ms | | once |
 | `Runtime` construction | 0.04 µs | | |
 | Memory per reducer plugin between events | 1 KB plus state (97 KB with 1,000 items in state) | | 50 plugins: 120 KiB total |
 | Peak heap during one event | 150–420 KiB, all freed | | |
-| UI-thread cost per frame (dispatch + apply + render), 0 / 3 / 10 / 50 plugins | 0.09 / 0.11 / 0.15 / 0.32 ms | 0.12 / 0.13 / 0.18 / 0.42 ms | 0.6% / 0.7% / 0.9% / 2.0% |
-| Of which plugin dispatch + apply, 3 / 50 plugins | 6 / 110 µs | 11 / 218 µs | 0.04% / 0.7% |
-| End to end, key until every reply is ready, 3 / 50 plugins | 60 / 295 µs | 70 / 362 µs | under one frame |
+| UI-thread cost per frame (dispatch + apply + render), 0 / 3 / 10 / 50 plugins | 0.10 / 0.11 / 0.15 / 0.32 ms | 0.12 / 0.13 / 0.18 / 0.39 ms | 0.6% / 0.7% / 0.9% / 1.9% |
+| Of which plugin dispatch + apply, 3 / 50 plugins | 5 / 110 µs | 11 / 188 µs | 0.03% / 0.7% |
+| End to end, key until every reply is ready, 3 / 50 plugins | 47 / 244 µs | 54 / 296 µs | under one frame |
 | Runaway `while (true) {}` | stopped at the timeout (100 ms in the bench, 250 ms in the app) | | stalls only that plugin's thread; UI unaffected (test: keys handled in under 20 ms meanwhile) |
 
 How these were measured:
@@ -168,7 +168,7 @@ How these were measured:
 - `cargo run --release --example frame -- 2000`: a 120x40 `TestApp` with the real glue and plugins. Each frame sends
   a key event to every plugin and waits, untimed, until all have replied. Then it times applying the replies and
   `render()`, which paints and presents.
-- The frame numbers include the native renderer: 94 µs for this scene with no plugins.
+- The frame numbers include the native renderer: 102 µs for this scene with no plugins.
 
 ## What to build next
 
@@ -184,7 +184,7 @@ How these were measured:
    - text-input capture for one plugin;
    - surfacing the keymap's `on_diagnostic`;
    - disabling a plugin after repeated failures.
-4. **Propose to psychoscript, for both implementations:** compile once and run many times, ideally with a shared
-   built-ins realm (removes most of the 17 µs floor and the per-KB compile cost); a compute budget separate from the
+4. **Propose to psychoscript, for both implementations:** a built-ins realm shared across runs (removes most of the
+   15 µs that remain per event once a plugin is compiled once); a compute budget separate from the
    wall-clock timeout; and a configurable memory limit. Long-lived plugins would additionally need GC and per-slice
    budgets. Revisit only if a plugin needs a sequential flow the reducer makes awkward.

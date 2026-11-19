@@ -11,7 +11,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use psychoscript::{
-    Data, HostFunction, HostValue, Interrupted, Json, Limits, ProgramOptions, RunOutcome, Runtime, Suspender,
+    Compiled, Data, HostFunction, HostValue, Interrupted, Json, Limits, ProgramOptions, RunOutcome, Runtime, Suspender,
 };
 use serde_json::json;
 
@@ -209,6 +209,9 @@ fn items_json(n: usize) -> Json {
 struct Plugin {
     name: &'static str,
     code: String,
+    /// The code compiled once, as the host does when it loads a plugin; every event runs it. `None` when it doesn't
+    /// compile (section F runs those from source).
+    compiled: Option<Compiled>,
     state: Data,
     /// The `items` binding: `null` unless the host keeps the items (list-filter c).
     items: Data,
@@ -249,7 +252,8 @@ fn keep(p: &mut Plugin, outcome: psychoscript::Outcome) -> Data {
 }
 
 fn step(rt: &Runtime, p: &mut Plugin, event: &Data) -> Data {
-    let outcome = rt.execute_with(&p.code, &options(p, event));
+    let compiled = p.compiled.as_ref().unwrap_or_else(|| panic!("{} compiles", p.name));
+    let outcome = rt.execute_with(compiled, &options(p, event));
     keep(p, outcome)
 }
 
@@ -262,7 +266,8 @@ fn init(rt: &Runtime, mut p: Plugin) -> Plugin {
 }
 
 fn plugin(name: &'static str, code: &str) -> Plugin {
-    Plugin { name, code: code.into(), state: Data::Null, items: Data::Null }
+    let compiled = Runtime::make().compile(code).ok();
+    Plugin { name, code: code.into(), compiled, state: Data::Null, items: Data::Null }
 }
 
 fn cases() -> Vec<Case> {
@@ -312,6 +317,15 @@ fn section_a(warm: usize, runs: usize) {
             last = step(&rt, &mut p, &case.events[i % n]);
             i += 1;
         });
+        // The same events from the source, compiled again for each, as before `Runtime::compile`.
+        let mut q = Plugin { state: p.state.clone(), ..plugin(p.name, &p.code) };
+        q.items = p.items.clone();
+        let mut j = 0;
+        let from_source = bench(warm, runs, || {
+            let outcome = rt.execute_with(&q.code, &options(&q, &case.events[j % n]));
+            keep(&mut q, outcome);
+            j += 1;
+        });
         rows.push(vec![
             p.name.into(),
             p.code.len().to_string(),
@@ -319,6 +333,7 @@ fn section_a(warm: usize, runs: usize) {
             f1(s.median),
             f1(s.mean),
             f1(s.p99),
+            f1(from_source.median),
             format!("`{}`", status(&last)),
         ]);
         // The same events, timing `program()` (compile + globals) and `run()` apart.
@@ -326,7 +341,7 @@ fn section_a(warm: usize, runs: usize) {
         for j in 0..warm + runs {
             let opts = options(&p, &case.events[j % n]);
             let t = Instant::now();
-            let program = rt.program(&p.code, &opts);
+            let program = rt.program(p.compiled.as_ref().expect("compiles"), &opts);
             let c = us(t);
             let t = Instant::now();
             let outcome = program.run().expect("not interrupted");
@@ -349,12 +364,12 @@ fn section_a(warm: usize, runs: usize) {
     }
     table(
         &format!("A. Per-event latency, reducer model (µs; {warm} warm-up, {runs} timed events, one thread)"),
-        &["plugin / path", "source bytes", "min", "median", "mean", "p99", "last status slot"],
+        &["plugin / path", "source bytes", "min", "median", "mean", "p99", "median from source", "last status slot"],
         rows,
     );
     table(
-        "A2. Compile + setup (`Runtime::program`) vs run (`Program::run`), µs",
-        &["plugin / path", "program() median", "program() p99", "run() median", "run() p99", "compile share"],
+        "A2. Setup (`Runtime::program` from the compiled program) vs run (`Program::run`), µs",
+        &["plugin / path", "program() median", "program() p99", "run() median", "run() p99", "setup share"],
         split,
     );
 }
@@ -455,6 +470,8 @@ fn section_c(cold_runtime: f64, cold_first: f64, runs: usize) {
         "".into(),
         "".into(),
         "".into(),
+        "".into(),
+        "".into(),
     ]];
     let sources: Vec<(String, String)> =
         [("git-status", GIT), ("palette", PALETTE), ("list-filter", LIST), ("noop", NOOP)]
@@ -471,6 +488,9 @@ fn section_c(cold_runtime: f64, cold_first: f64, runs: usize) {
         let first = (us(t), first.result.is_ok());
         assert!(first.1, "{name} runs");
         let compile = bench(20, runs, || drop(rt.program(code, &opts)));
+        let compiled = rt.compile(code).expect("compiles");
+        let compiling = bench(20, runs, || drop(rt.compile(code)));
+        let from_compiled = bench(20, runs, || drop(rt.execute_with(&compiled, &opts)));
         let (mut run, mut total) = (Vec::new(), Vec::new());
         for _ in 0..runs {
             let t = Instant::now();
@@ -488,6 +508,8 @@ fn section_c(cold_runtime: f64, cold_first: f64, runs: usize) {
             f1(compile.median),
             f1(run.median),
             f1(total.median),
+            f1(compiling.median),
+            f1(from_compiled.median),
         ]);
     }
     println!(
@@ -511,7 +533,16 @@ fn section_c(cold_runtime: f64, cold_first: f64, runs: usize) {
     );
     table(
         &format!("C. Startup and compile scaling (µs; medians of {runs})"),
-        &["source", "bytes", "first run (fresh Runtime)", "program() median", "run() median", "warm event median"],
+        &[
+            "source",
+            "bytes",
+            "first run (fresh Runtime)",
+            "program() median",
+            "run() median",
+            "warm event median",
+            "compile() median",
+            "warm event from compiled",
+        ],
         rows,
     );
 }
