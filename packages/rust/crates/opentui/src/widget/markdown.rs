@@ -295,6 +295,8 @@ pub(crate) struct MarkdownInner {
     styles: Cell<MarkdownStyles>,
     /// Every block of the document by index, as last read, with its widget.
     blocks: RefCell<Vec<Shown>>,
+    /// The engine's count of final top-level blocks after the last change.
+    committed: Cell<u32>,
     /// Whether the terminal showed hyperlinks at the last change (the engine's `OT_MD_HYPERLINKS`, N5).
     hyperlinks: Cell<bool>,
     /// The code blocks whose renderer ran for a finished document in the last change: ending the stream asks each
@@ -455,6 +457,7 @@ impl Markdown {
             options: RefCell::new(Rc::new(Options { conceal: true, ..Options::default() })),
             styles: Cell::new(styles),
             blocks: RefCell::new(Vec::new()),
+            committed: Cell::new(0),
             hyperlinks: Cell::new(app.hyperlinks()),
             rendered_code: RefCell::default(),
         }));
@@ -702,6 +705,14 @@ impl Markdown {
         Some(target.clone())
     }
 
+    /// How many top-level blocks are final, counted from the first: their rows equal those of the finished
+    /// document, except that a link definition arriving after a committed block used its label makes that label a
+    /// link. It never goes down while the content only grows, and counts every block once the document does not
+    /// stream. A writer to the scrollback can commit these blocks' rows. Core's `committedBlockCount`.
+    pub fn committed_block_count(&self) -> u32 {
+        self.0.committed.get()
+    }
+
     fn app(&self) -> Option<App> {
         self.0.element.app()
     }
@@ -773,6 +784,7 @@ impl Markdown {
 
     /// Shows a call's changes: drops the widgets of removed blocks, then builds or updates each listed block.
     fn apply(&self, app: &App, doc: &MarkdownDoc, result: MarkdownResult) {
+        self.0.committed.set(result.committed);
         let mut refresh = Refresh::default();
         let mut removed = Removed::default();
         if let Some(from) = result.removed_from {
@@ -1503,6 +1515,19 @@ mod tests {
         assert!(blocks.iter().all(|shown| matches!(shown.rendered, Some(Rendered::Text(_)))));
         drop(blocks);
         assert_eq!(app.text().trim_end(), "para\n===\n\nother");
+    }
+
+    /// Core's "non-streaming content commits every top-level block" and "streamed content commits the closed
+    /// top-level blocks".
+    #[test]
+    fn committed_block_count_counts_closed_blocks_as_core_does() {
+        let app = TestApp::new(40, 12);
+        assert_eq!(Markdown::new(&app).set_markdown("# Hello\n\nPara 1\n\nPara 2").committed_block_count(), 3);
+        let markdown = Markdown::new(&app).streaming(true).set_markdown("# Title\n\nPara 1\n\n");
+        markdown.set_markdown("# Title\n\nPara 1\n\nPara 2");
+        assert_eq!(markdown.committed_block_count(), 2);
+        markdown.streaming(false);
+        assert_eq!(markdown.committed_block_count(), 3);
     }
 
     // C4 invariant 3 (P11): live options keep built-in code and its highlight, including one still running.

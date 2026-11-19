@@ -149,6 +149,10 @@ once, so the final document equals a one-shot parse.
 `append` works in both modes. Without streaming it reparses the document and
 keeps the widgets of unchanged blocks, as today.
 
+`Markdown::committed_block_count()` is Core's `committedBlockCount`: how many
+top-level blocks, from the first, are final. Their rows no longer change while
+the content only grows, so a scrollback writer can commit them.
+
 ## Table options
 
 `Markdown::table_options(MarkdownTableOptions)` mirrors Core's
