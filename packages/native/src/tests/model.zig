@@ -20,8 +20,10 @@ pub const Failure = struct {
 /// MODEL_SKIP's list while `check` runs.
 var skip: []const u8 = "";
 
-/// A failure of `property` at `step`, or null when MODEL_SKIP lists the property.
+/// A failure of `property` at `step`, or null when MODEL_SKIP lists the property. A name holds
+/// no comma: MODEL_SKIP could not name it.
 pub fn fail(property: []const u8, step: usize) ?Failure {
+    std.debug.assert(std.mem.indexOfScalar(u8, property, ',') == null);
     return if (listed(skip, property)) null else .{ .property = property, .step = step };
 }
 

@@ -78,8 +78,10 @@ pub fn enabled(property: &str) -> bool {
     !environment("MODEL_SKIP").unwrap_or_default().split(',').any(|name| name == property)
 }
 
-/// A failure of `property` at `step`, or `None` when `MODEL_SKIP` lists the property.
+/// A failure of `property` at `step`, or `None` when `MODEL_SKIP` lists the property. A name holds no comma:
+/// `MODEL_SKIP` could not name it.
 pub fn fail(property: &'static str, step: usize) -> Option<Failure> {
+    assert!(!property.contains(','), "a model property name holds no comma: {property}");
     enabled(property).then_some(Failure { property, step })
 }
 

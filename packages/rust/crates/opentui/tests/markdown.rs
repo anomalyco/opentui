@@ -1049,7 +1049,7 @@ impl model::Model for MarkdownModel {
             twin.set_markdown(subject.markdown());
             let fresh = twin_app.render();
             if shown != fresh
-                && let Some(failure) = fail("frame equals a fresh document's, spans included (P1, P6)")
+                && let Some(failure) = fail("frame equals a fresh document's, spans included (P1/P6)")
             {
                 eprintln!("subject:\n{}\nfresh:\n{}", shown.text(), fresh.text());
                 return Some(failure);

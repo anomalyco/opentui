@@ -771,7 +771,7 @@ const Engine = struct {
             if (sink.mismatch_count > 0) if (model.fail("live tail writes equal the leaf's display", step)) |failure| return failure;
             // Every node at finish; after another call, the ones it wrote or listed.
             const nodes_ok = if (command == .finish) try liveShowsReadLeaf(arena, &f.doc, &sink) else try writtenShowReadLeaf(arena, &f.doc, &sink, true);
-            if (!nodes_ok) if (model.fail("every node shows read_leaf (P5, B)", step)) |failure| return failure;
+            if (!nodes_ok) if (model.fail("every node shows read_leaf (P5/B)", step)) |failure| return failure;
             if (f.doc.counters.live_mismatch_count > 0) if (model.fail("live pending line guessed its leaf", step)) |failure| return failure;
             // (c) after appends: other commands lay the pending line out as an append would.
             if (try genericProperties(arena, &f.doc, fed, options, command == .append)) |property| if (model.fail(property, step)) |failure| return failure;
@@ -779,7 +779,7 @@ const Engine = struct {
             if (!math_once.check(&f.doc)) if (model.fail("(c) a math block never reverts to text", step)) |failure| return failure;
         }
         // Every node once more at the end (a call checks only the nodes it wrote or listed).
-        if (!try liveShowsReadLeaf(arena, &f.doc, &sink)) if (model.fail("every node shows read_leaf (P5, B)", commands.len -| 1)) |failure| return failure;
+        if (!try liveShowsReadLeaf(arena, &f.doc, &sink)) if (model.fail("every node shows read_leaf (P5/B)", commands.len -| 1)) |failure| return failure;
         return null;
     }
 };
@@ -829,10 +829,10 @@ fn genericProperties(arena: std.mem.Allocator, doc: *const Doc, fed: Fed, option
         // match kind, once for each further kind (k kinds the doc's closers made, at most 3),
         // and once for each run that waited before it and is revealed (D), plus the last one
         // per call.
-        .{ "(a) work: run token visits <= (1 + max(1, k) + D)n + calls", c.run_token_visits, (1 + @max(1, @popCount(c.restyled_kinds)) + c.waiting_runs_max) * n + calls + 64 },
+        .{ "(a) work: run token visits <= (1 + (k or 1) + D)n + calls", c.run_token_visits, (1 + @max(1, @popCount(c.restyled_kinds)) + c.waiting_runs_max) * n + calls + 64 },
         // The walk reads a token's match records as it passes it: each match has two, and
         // matches are at most n / 2.
-        .{ "(a) work: match reads <= (1 + max(1, k) + D)n + calls", c.match_reads, (1 + @max(1, @popCount(c.restyled_kinds)) + c.waiting_runs_max) * n + calls + 64 },
+        .{ "(a) work: match reads <= (1 + (k or 1) + D)n + calls", c.match_reads, (1 + @max(1, @popCount(c.restyled_kinds)) + c.waiting_runs_max) * n + calls + 64 },
     };
     for (bounds) |bound| {
         if (bound[1] > bound[2]) {
