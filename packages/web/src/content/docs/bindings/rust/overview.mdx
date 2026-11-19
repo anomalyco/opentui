@@ -46,8 +46,8 @@ The crates live in [packages/rust](https://github.com/anomalyco/opentui/tree/mai
 - `opentui-ssh` serves an app over SSH, one app per session.
 - `opentui-sys` is the raw C API of the native library. `opentui` wraps it safely, so you rarely use it directly.
 
-The crates are not on crates.io.
-You depend on them through Git, pinned to a release tag, and link the native library from that same release.
+The crates are on crates.io, where `opentui` and `opentui-sys` are published as `anomalyco-opentui` and `anomalyco-opentui-sys` for now.
+You add `anomalyco-opentui` under the name `opentui` and link the native library from the release with the same version.
 [Install, link, and ship](/docs/bindings/rust/install) shows how.
 
 ## Run the examples
@@ -72,7 +72,7 @@ sh run.sh tasks static
 
 ## Read on
 
-- [Install, link, and ship](/docs/bindings/rust/install): the Git dependency, the native library, platforms, features, and what to ship.
+- [Install, link, and ship](/docs/bindings/rust/install): the crates.io dependency, the native library, platforms, features, and what to ship.
 - [Widgets and layout](/docs/bindings/rust/widgets): how widgets work, flexbox layout, the widget list, and themes.
 - [Events, focus, and input](/docs/bindings/rust/input): keys, mouse, text selection, extmarks, and the clipboard.
 - [Rust keymap](/docs/bindings/rust/keymap): layered key bindings and named commands.

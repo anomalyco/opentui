@@ -15,10 +15,10 @@ This workspace has three crates:
 
 ## Use the crates in an app
 
-The crates are not on crates.io. Add them as a Cargo `git` dependency pinned
-to a release tag, extract that release's
-`opentui-native-v<version>-<platform>.zip`, and set `OPENTUI_LIB_DIR` to the
-extracted directory.
+Add the crate from crates.io with
+`cargo add anomalyco-opentui --rename opentui`, extract the
+`opentui-native-v<version>-<platform>.zip` of the release with the same
+version, and set `OPENTUI_LIB_DIR` to the extracted directory.
 [Install, link, and ship](https://opentui.com/docs/bindings/rust/install)
 covers the steps, platforms, features, static and shared linking, and the
 license notices to ship.

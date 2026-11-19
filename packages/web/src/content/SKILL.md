@@ -41,8 +41,8 @@ companion packages when their features fit the task. Do not install every packag
 - [`@opentui/react`](docs/bindings/react.mdx): use React components, JSX, and hooks with `createRoot()`.
 - [`@opentui/solid`](docs/bindings/solid.mdx): use Solid components, JSX, and signals with `render()`.
 - [Rust](docs/bindings/rust/overview.mdx): use the `opentui` crate's widgets and event loop with `App::new()`, without
-  JavaScript. The crates are not on crates.io: depend on them through Git, pinned to a release tag, and link that
-  release's native archive.
+  JavaScript. Add it from crates.io with `cargo add anomalyco-opentui --rename opentui` (an interim package name),
+  and link the native archive of the release with the same version.
 - [`@opentui/keymap`](docs/keymap/overview.mdx): centralize keyboard bindings and named commands across views.
   The package supports focus-scoped layers, configurable shortcuts, and multi-key sequences.
   Start with `createDefaultOpenTuiKeymap()` from `@opentui/keymap/opentui`.
