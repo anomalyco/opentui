@@ -34,12 +34,15 @@ notes of the newer releases before you use an API, and prefer what the project's
 
 ## Choose packages
 
-Use Core directly or choose a React or Solid binding for the UI. Recommend companion packages when their features fit
-the task. Do not install every package by default.
+Use Core directly or choose a React or Solid binding for the UI. For a Rust app, use the Rust crates. Recommend
+companion packages when their features fit the task. Do not install every package by default.
 
 - [`@opentui/core`](docs/core-concepts/renderer.mdx): use imperative renderables and events with `createCliRenderer()`.
 - [`@opentui/react`](docs/bindings/react.mdx): use React components, JSX, and hooks with `createRoot()`.
 - [`@opentui/solid`](docs/bindings/solid.mdx): use Solid components, JSX, and signals with `render()`.
+- [Rust](docs/bindings/rust/overview.mdx): use the `opentui` crate's widgets and event loop with `App::new()`, without
+  JavaScript. The crates are not on crates.io: depend on them through Git, pinned to a release tag, and link that
+  release's native archive.
 - [`@opentui/keymap`](docs/keymap/overview.mdx): centralize keyboard bindings and named commands across views.
   The package supports focus-scoped layers, configurable shortcuts, and multi-key sequences.
   Start with `createDefaultOpenTuiKeymap()` from `@opentui/keymap/opentui`.
@@ -62,7 +65,7 @@ Use public package entry points instead of source-file deep imports.
 ## Reading order by area
 
 - Start: `/docs`, `/docs/getting-started/quickstart`, `/docs/getting-started/runtime-support`
-- Frameworks: `/docs/bindings/react`, `/docs/bindings/solid`
+- Bindings: `/docs/bindings/react`, `/docs/bindings/solid`, `/docs/bindings/rust`
 - Core: `/docs/core-concepts/renderer`, `/docs/core-concepts/layout`, `/docs/core-concepts/keyboard`
 - Components: `/docs/components`, `/docs/components/text`, `/docs/components/input`, `/docs/components/image`, `/docs/components/embedded-terminal`
 - Application APIs: `/docs/core-concepts/clipboard`, `/docs/core-concepts/audio`, `/docs/application-apis/audio-streaming`, `/docs/application-apis/audio-capture`, `/docs/application-apis/animation`
@@ -83,6 +86,7 @@ Use public package entry points instead of source-file deep imports.
 | `runtime-support`, `bun`, `nodejs`, `native-artifacts`, `ffi`, `permissions`, `libc`, `runtime-assets`               | `docs/getting-started/runtime-support.mdx`  |
 | `react`, `jsx`, `hooks`, `keyboard`, `paste`, `focus`, `blur`, `selection`, `animation`, `testing`                   | `docs/bindings/react.mdx`                   |
 | `solid`, `jsx`, `signals`, `hooks`, `keyboard`, `animation`, `testing`                                               | `docs/bindings/solid.mdx`                   |
+| `rust`, `cargo`, `rust-crates`, `opentui-sys`                                                                        | `docs/bindings/rust/overview.mdx`           |
 | `core`, `renderer`, `terminal`, `scrollback`, `lifecycle`                                                            | `docs/core-concepts/renderer.mdx`           |
 | `layout`, `flexbox`, `yoga`, `positioning`                                                                           | `docs/core-concepts/layout.mdx`             |
 | `keyboard`, `input`, `keybindings`, `paste`, `focus`                                                                 | `docs/core-concepts/keyboard.mdx`           |
@@ -127,6 +131,7 @@ Then choose `docs/native/c.mdx` or `docs/native/zig.mdx` for a native program.
 - `docs/getting-started/runtime-support.mdx`
 - `docs/bindings/react.mdx`
 - `docs/bindings/solid.mdx`
+- `docs/bindings/rust/overview.mdx`
 - `docs/core-concepts/renderer.mdx`
 - `docs/core-concepts/layout.mdx`
 - `docs/core-concepts/keyboard.mdx`

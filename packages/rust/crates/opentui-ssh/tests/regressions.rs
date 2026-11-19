@@ -114,8 +114,8 @@ fn a_connection_refuses_new_channels_after_sixteen_finished_sessions() {
     });
 }
 
-// Expected: `App::run` returns when the client disconnects (README, lib.rs docs), so a session whose client leaves
-// ends and frees its place in the session limits.
+// Expected: `App::run` returns when the client disconnects (the Rust guide's "Serve over SSH", lib.rs docs), so a
+// session whose client leaves ends and frees its place in the session limits.
 // Actual: when the client leaves before or during the color query that `Session::app` makes with the default
 // options, the query swallows the end of input. The app then runs forever for a client that is gone, its thread
 // never returns, and `Server::sessions` stays at 1 (with `max_sessions` reached, every later client is refused).

@@ -564,8 +564,8 @@ fn drag_over_targets_never_hear_the_end_when_the_source_is_destroyed() {
     assert_eq!(*log.borrow(), [true, false]);
 }
 
-// Expected: "A detached widget is destroyed when its last handle drops" (README), so a Diff that is removed and
-// dropped releases its code views, their text buffers, and their native nodes.
+// Expected: "A detached widget is destroyed when its last handle drops" (the Rust guide's "Widgets and layout"), so a
+// Diff that is removed and dropped releases its code views, their text buffers, and their native nodes.
 // Actual: `Diff::new` gives each code view an `on_scroll` handler holding a strong handle to the other view; the two
 // views keep each other alive until the app ends, so every replaced Diff leaks while the app runs.
 #[test]

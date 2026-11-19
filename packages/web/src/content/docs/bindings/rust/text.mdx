@@ -1,0 +1,63 @@
+---
+title: Code, Markdown, and highlighting
+description: Highlight code with tree-sitter in Rust, add grammars, and keep large or growing text cheap
+---
+
+# Code, Markdown, and highlighting
+
+With the `tree-sitter` feature, `Code` highlights its text as the filetype you give it, as Core's `CodeRenderable` does.
+`Diff` and `Textarea` take a filetype too, and `Markdown` uses each fence's tag:
+
+```rust
+let source = Code::new(&app).filetype("rust").line_numbers(true).grow(1.0);
+source.set_code(std::fs::read_to_string("src/main.rs")?);
+// Extensions, file names, and fence tags resolve too.
+source.filetype(opentui::syntax::filetype_for_path("app.tsx"));
+```
+
+Without the feature, or without a grammar for the filetype, the text is plain.
+
+## Syntax themes
+
+Highlight queries name each piece of the text (`keyword`, `string`, `function.method`).
+A `SyntaxTheme` maps names to styles in Rust.
+Core's TypeScript calls it a `SyntaxStyle`; `SyntaxTheme::to_syntax_style` builds the native table of that name.
+A name without a style takes the style of its longest dotted prefix that has one.
+Widgets start with `SyntaxTheme::from_theme`, which matches the app's dark or light theme.
+
+## Grammars
+
+The feature bundles Core's grammars (JavaScript, TypeScript and TSX, Markdown, Zig) and Rust.
+`syntax::register` adds a grammar, such as any `tree-sitter-*` crate:
+
+```rust
+use opentui::syntax::{Grammar, register};
+register(
+    "python",
+    Grammar::new(tree_sitter_python::LANGUAGE, tree_sitter_python::HIGHLIGHTS_QUERY),
+)?;
+```
+
+Injections highlight embedded languages: code in Markdown fences, inline Markdown, Rust in macro calls.
+
+## Cost
+
+Changes between frames cost one highlight of the whole text, at the next frame.
+Cursor moves, scrolling, and idle frames cost none.
+A highlight costs time in proportion to the text, so highlighting large `Textarea`s makes typing slow (about 9 ms per keystroke for 17 KiB of Rust).
+
+A grammar compiles the first time a widget shows its filetype, on the UI thread, which delays that frame (about 15 ms for Rust or TypeScript).
+`syntax::prewarm("rust")` compiles it ahead, from any thread, such as a worker started when the app learns which languages it will show.
+A highlight that needs the grammar meanwhile waits for that compile instead of starting another, so frames do not change.
+`prewarm` returns `false` for a filetype without a grammar.
+
+A highlighted `Code` keeps its parse tree, so an append parses only the new text.
+The tree takes about 40 bytes per byte of Rust.
+`Code::finish` frees it when the text stops growing, such as a finished tool output.
+The view paints as before, and a later change parses the whole text once.
+
+## Markdown
+
+`Markdown` shows rendered or source Markdown with nested lists, tables, code, code-block renderers, and inline hooks.
+It runs on the same native Markdown engine as Core's `MarkdownRenderable`, and streamed text stays cheap.
+[Markdown parity with Core](https://github.com/anomalyco/opentui/blob/main/packages/rust/crates/opentui/docs/markdown.md) lists how the widget matches Core and where it differs on purpose.

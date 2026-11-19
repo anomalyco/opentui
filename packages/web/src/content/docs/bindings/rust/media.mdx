@@ -1,0 +1,93 @@
+---
+title: Images, video, sound, and terminals
+description: Show images, play video and sound, embed terminals, and draw into offscreen buffers from Rust
+---
+
+# Images, video, sound, and terminals
+
+## Images
+
+`ImageView` shows a picture, drawn with the Kitty graphics protocol, Sixel, or half blocks, whichever the terminal supports best.
+Give it a size; the image scales into it as `ImageView::fit` says.
+`fitted_size` gives its size in cells.
+
+```rust
+let logo = ImageView::new(&app).size(20, 10);
+logo.load(&std::fs::read("logo.png")?)?;
+```
+
+## Video
+
+`VideoView` plays an MP4 (H.264 and AAC) file, with audio, looping, and seeking.
+Decoding, the media clock, and drawing are native, with the same protocols as `ImageView`.
+Audio plays on the default device of the machine the app runs on, even when it serves a remote (SSH) client, as in Core.
+Its events report the position, the end, and failures:
+
+```rust
+let video = VideoView::new(&app).size(40, 12).looping(true).autoplay(true);
+video.on_event(|_cx, event| {
+    if let VideoEvent::Error(detail) = event {
+        eprintln!("video failed: {detail}");
+    }
+});
+let info = video.open("clip.mp4")?;
+app.root().add(&video);
+```
+
+`VideoView` needs a native library built with FFmpeg. The release archives include it.
+[Video and licences](/docs/bindings/rust/install#video-and-licences) covers a checkout's build and the licence notices.
+
+## Sounds
+
+`audio::Audio` is Core's audio engine. It decodes WAV, MP3, and FLAC bytes into sounds and mixes up to 32 voices at 48 kHz.
+Creating one opens no device; `start` opens the default playback device, whose own thread mixes from then on:
+
+```rust
+use opentui::audio::Audio;
+
+let audio = Audio::new(app.session().context())?;
+let bell = audio.load(&std::fs::read("bell.mp3")?)?;
+audio.start()?;
+audio.play(bell, 0.4)?;
+```
+
+`start_without_device` mixes only when `mix` asks, so tests can check what would play without a sound.
+
+## Embedded terminals
+
+`TerminalView` shows a program running on a pseudo-terminal, as Core's `EmbeddedTerminalRenderable` does.
+Native code (Ghostty's emulator) parses the program's output and keeps its screen and scrollback.
+The widget draws it, follows its own size, and encodes keys, mouse events, pastes, and focus changes in whatever protocol the program asked for:
+
+```rust
+let terminal = TerminalView::new(&app).grow(1.0).spawn(opentui::pty::shell())?;
+terminal.on_exit(|cx, _status| cx.quit());
+app.on_key_capture(|cx, key| {
+    if key.matches("ctrl+q") {
+        cx.quit();
+        cx.stop_propagation();
+    }
+});
+terminal.focus();
+```
+
+A focused terminal takes every key that sends something, Tab, Ctrl+C, and Ctrl+Z included, so app-wide shortcuts belong in `App::on_key_capture`.
+While the program tracks the mouse, mouse events go to it.
+Otherwise dragging selects text, double and triple clicks select words and lines, and the wheel scrolls back through the output.
+A wheel step the view cannot take, down at the live screen or up at the top of the history, goes on to a surrounding `ScrollBox`.
+`TerminalView::viewport` says where the view sits.
+
+`spawn` runs the command with `opentui::pty::Pty`: a new session on a new pseudo-terminal, whose bytes move on a background thread, so the event loop never blocks.
+Output and the exit status arrive through the app's proxy; dropping the widget hangs up the program.
+To run a program some other way, such as over SSH, feed its output to `TerminalView::write` and send what `on_data` hands you to its input.
+
+On Windows, `TerminalView` runs programs on a pseudoconsole (ConPTY), and `pty::shell()` is `%COMSPEC%`.
+
+## Offscreen buffers
+
+The terminal draws into an offscreen `native::Buffer`, a grid of cells that keeps its content between frames.
+Apps can use them too:
+
+- Draw with `clear`, `fill`, `text`, `cell`, `draw_box`, and `compose`.
+- Show the result from a paint hook with `Painter::draw_buffer`, or use a `FrameBuffer` widget, whose buffer native code shows where the widget is laid out.
+- Create one with `Buffer::new(app.session().context(), width, height, app.width_method())`, so it measures text as the terminal does.

@@ -1,0 +1,66 @@
+---
+title: Your own widgets
+description: Paint your own Rust widgets with Component, compose existing ones, and post-process frames
+---
+
+# Your own widgets
+
+## Paint a widget
+
+Implement `Component` and wrap it in `Custom`.
+Painting uses local coordinates and is clipped to the widget:
+
+```rust
+struct Meter {
+    level: f32,
+}
+
+impl Component for Meter {
+    fn paint(&self, painter: &mut Painter<'_>) {
+        let filled = (painter.width() as f32 * self.level) as u32;
+        painter.fill(0, 0, filled, 1, Color::GREEN);
+    }
+
+    fn key(&mut self, _cx: &mut Cx<'_>, key: &KeyEvent) -> bool {
+        let step = if key.matches("right") { 0.1 } else if key.matches("left") { -0.1 } else { return false };
+        self.level = (self.level + step).clamp(0.0, 1.0);
+        true
+    }
+}
+
+let meter = Custom::new(&app, Meter { level: 0.5 }).height(1).focusable(true);
+meter.update(|meter| meter.level = 0.8);
+```
+
+`Custom::measured` sizes the widget with `Component::measure` during native layout, when its width or height is not set.
+
+## Compose widgets
+
+To compose existing widgets instead, implement `Widget` for your own type by returning the root widget's `element()`.
+
+## Post-processing
+
+The `post` module ports Core's post-processing:
+
+- color matrices: sepia, grayscale, color-blindness simulation and compensation, technicolor, and more
+- filters: scanlines, noise, chromatic aberration, ASCII art, bloom
+- animated effects: vignette, distortion, clouds, flames, a CRT rolling bar, rainbow text
+
+A filter changes a widget's area after each frame is painted, or the whole screen on `app.root()`:
+
+```rust
+use opentui::post::{CrtRollingBar, Scanlines, Vignette};
+
+let monitor = View::new(&app).border(BorderStyle::Rounded).grow(1.0);
+monitor.filter(ColorMatrix::GREENSCALE).filter(Scanlines::default()).filter(Vignette::new(0.6));
+let bar = app.root().add_filter(CrtRollingBar::default()); // animated: frames run until it is removed
+app.root().remove_filter(bar);
+```
+
+Color matrices run in native code, as do scanlines, noise, the vignette, clouds, and the rolling bar.
+The other filters work on the painted cells.
+Implement `Filter`, or use `post::from_fn`, for your own.
+
+Because filters run on the finished frame, they also change anything drawn over the widget, such as a dialog.
+To change colors at a point in paint order instead, call `Painter::color_matrix` from a `Component`.
+The `effects` example dims the page behind a dialog that way.

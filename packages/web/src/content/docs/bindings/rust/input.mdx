@@ -1,0 +1,80 @@
+---
+title: Events, focus, and input
+description: Handle keys, key bindings, mouse events, text selection, extmarks, and the clipboard in a Rust app
+---
+
+# Events, focus, and input
+
+## Keys and focus
+
+Keys go to the focused widget first, then to each ancestor, then to `App::on_key`.
+A widget's own handlers run before its built-in behavior:
+
+- `cx.prevent_default()` skips built-in behavior, such as an input inserting the typed character. The key still bubbles.
+- `cx.stop_propagation()` stops the key from reaching ancestors and the app.
+- `App::on_key_capture` handlers run before any widget, for shortcuts that must win over text input.
+
+Unless a handler claims them, Tab and Shift+Tab move focus in tree order, Ctrl+C quits, and Ctrl+Z suspends to the shell.
+
+App-level handlers (`App::on_key`, `on_mouse`, `on_message`, and the rest) return a `HandlerId`.
+`App::remove_handler` removes one, for screens that come and go.
+
+## Widget key bindings
+
+Widgets with built-in keys take Core's default bindings, which you can change per widget.
+Each widget names what its keys can do in an action enum (`EditorAction`, `SelectAction`, `TabSelectAction`, `SliderAction`, `ScrollAction`, `TableAction`):
+
+```rust
+let input = Input::new(&app)
+    .bind("ctrl+s", EditorAction::Submit) // add or replace a binding
+    .unbind("ctrl+w");                    // the key now bubbles to the app
+let list = Select::new(&app).set_keymap(Keymap::new().bind("n", SelectAction::MoveDown));
+list.perform(SelectAction::Last);         // run an action without a key
+```
+
+An unbound key, or an action that does not apply (Up on a horizontal slider), bubbles on like any other key.
+`Shortcut` parses and prints names such as `ctrl+shift+a`, for help screens and configuration files.
+
+For app-wide layered bindings and named commands, see [Keymap](/docs/bindings/rust/keymap).
+
+## Mouse
+
+Mouse events go to the widget under the pointer and bubble the same way.
+A press captures the pointer, so drags keep reaching the widget they started on.
+A left click focuses the nearest focusable widget.
+
+- `on_hover` reports enter and leave for a widget and its descendants.
+- `on_click` reports a press and release.
+- For drag and drop, `on_drag_over` reports a drag from another widget entering and leaving, and `on_drop` reports where it ends.
+
+## Text selection
+
+Dragging selects text across `Text`, `Code`, `Input`, `Textarea`, `TextTable`, and `TerminalView` widgets, as in Core.
+The selection covers every selectable widget between the press and the pointer.
+It starts within the pressed widget's parent and widens as the pointer leaves it, so a drag inside a dialog does not select the text beneath it.
+In a `TextTable`, a drag selects within one cell, then down one column, then across whole rows, and never the grid lines.
+
+Double-click selects a word, triple-click a line, and Ctrl+click extends the selection.
+On release, `App::on_selection` handlers get the text.
+With `AppOptions::copy_on_select`, it is copied to the clipboard through OSC 52.
+`App::selected_text` joins the pieces in reading order.
+
+## Extmarks
+
+Extmarks mark ranges of an `Input` or `Textarea` that move with edits, as in Core.
+An extmark is a styled decoration, or an atomic token such as a mention that the cursor jumps over and Backspace removes whole:
+
+```rust
+let start = input.cursor_offset();
+input.insert("@main.rs");
+input.add_extmark(start..input.cursor_offset(), ExtmarkOptions::default().atomic().style(Style::new().fg(Color::CYAN)));
+```
+
+## Clipboard and program status
+
+`App::copy_to_clipboard` copies through the terminal (OSC 52) and, when the session is local, through the system clipboard too.
+`App::read_clipboard` and `App::paste_from_clipboard` read text from the system clipboard of the machine the app runs on.
+`App::read_clipboard_as` reads the first of several MIME types, such as `image/png` before `text/plain`.
+Bind `EditorAction::Paste` to a key to paste into an input.
+
+`App::set_program_status` sends OSC 7501 program status reports.

@@ -93,7 +93,10 @@ const npm = (name: string) => name.replace(/^windows-/, "win32-")
 expectTargets("packages/native/build.zig", /\.output_name = "([^"]+)"/g, zigNames, true)
 expectTargets("packages/native/scripts/build-ffmpeg.ts", /\{ name: "([^"]+)"/g, zigNames, true)
 expectTargets("packages/rust/crates/opentui-sys/build.rs", /\("[^"]+", "([^"]+)",/g, zigNames, true)
-expectTargets("packages/rust/README.md", /\| `([^`]+)` +\|$/gm, zigNames, true)
+// The Rust install guide's platform table: its last column names the artifact directory, its third the release archive.
+const rustInstall = "packages/web/src/content/docs/bindings/rust/install.mdx"
+expectTargets(rustInstall, /\| `([^`]+)` +\|$/gm, zigNames, true)
+expectTargets(rustInstall, /^\|[^|\n]+\|[^|\n]+\| `([^`]+)` +\|/gm, npmNames, true, npm)
 for (const file of ["packages/rust/scripts/check-targets.sh", "packages/rust/run.sh", "packages/rust/test.sh"]) {
   expectTargets(file, zigPattern, zigNames, false)
 }

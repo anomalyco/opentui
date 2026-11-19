@@ -1,0 +1,119 @@
+---
+title: Test and debug
+description: Test Rust apps without a terminal, run headless apps in real time, and debug with the console
+---
+
+# Test and debug
+
+## TestApp
+
+`opentui::testing::TestApp` runs an app without a terminal, with a manual clock:
+
+```rust
+let app = TestApp::new(20, 3);
+let name = Input::new(&app);
+app.root().add(&name);
+name.focus();
+app.type_text("Ada");
+app.press("ctrl+a");
+assert_eq!(name.value(), "Ada");
+assert_eq!(app.render().row(0).trim_end(), "Ada");
+```
+
+`render()` paints and presents a frame and returns its cells, with their colors and attributes.
+Input methods (`press`, `type_text`, `paste`, `feed` for raw bytes, `click`, `drag`, `scroll`, `hover`) dispatch at once.
+`advance` moves the clock and runs due timers.
+
+## Headless apps
+
+`App::headless(HeadlessOptions)` creates an app without a terminal that runs in real time.
+`App::run` runs its event loop: timers fire on the real clock, `AppProxy` tasks and `App::spawn` completions run, and frames are painted at up to `AppOptions::max_fps` whenever a widget changed.
+Nothing is written to a terminal. Instead:
+
+- each presented frame's cells go to `App::on_headless_frame` handlers, and `App::last_frame` returns the latest;
+- clipboard copies, notifications, and title changes go to `App::on_headless_write` handlers as `HeadlessWrite::{Clipboard, Notification, Title}`.
+
+A headless app suits harnesses that drive a real app from another thread, such as a test server or an automation endpoint.
+
+### How it differs from TestApp
+
+`TestApp` is for tests. Its clock is manual, and nothing runs until the test calls `advance`, `wait_until`, or `render`.
+A headless app needs no driver to keep it alive.
+It is the same `App` with a real clock and its own loop, so animations, key timeouts, and network tasks behave as on a terminal.
+
+|                           | `TestApp`                    | `App::headless`                                     |
+| ------------------------- | ---------------------------- | --------------------------------------------------- |
+| Clock                     | Manual (`advance`)           | Real                                                |
+| Loop                      | The test drives each step    | `App::run`, woken by timers, frames, and the proxy  |
+| Frames                    | `render()` paints on demand  | Painted when dirty; also `App::capture()` on demand |
+| Native frame verification | On (`OT_SCENE_DEBUG_VERIFY`) | Off                                                 |
+| Clipboard, notify, title  | Return `false`, dropped      | To `on_headless_write` while running                |
+| Input                     | Methods on `TestApp`         | `App::dispatch`, `App::resize` from proxy tasks     |
+
+Both attach a renderer to a remote `xterm-256color` truecolor terminal and present frames the same way.
+
+### Terminal writes
+
+The handlers get only what a running app sends, as on a terminal:
+
+- before `run` and after it returns, `copy_to_clipboard` and `notify` return `false` and nothing is handed over;
+- when the loop starts, `AppOptions::title` (or the last `set_title` before the start) goes out as `Title`; each later `set_title` goes out at once;
+- `copy_to_clipboard` with empty text returns `false`, as on a terminal;
+- clipboard reads (`read_clipboard*`, `paste_from_clipboard`) report `ClipboardOutcome::Unsupported`, as in tests: there is no host clipboard and no terminal to paste from.
+
+Program status reports and the mouse pointer shape are not handed over.
+
+### Drive it from another thread
+
+`App` is not `Send`.
+A driver on another thread posts closures with `AppProxy::post` and sends the answer back on a channel.
+Each request is one closure, so a request sees a consistent UI.
+
+```rust
+let app = App::headless(HeadlessOptions { width: cols, height: rows, app: options })?;
+build_ui(&app);
+let server = start_driver(app.proxy())?; // for example, a server on a Tokio thread
+let result = app.run();
+```
+
+```rust
+// On the driver's thread, for one request:
+let (sender, receiver) = tokio::sync::oneshot::channel();
+proxy.post(move |cx| {
+    let response = answer(cx.app(), request);
+    let _ = sender.send(response);
+})?;
+receiver.await
+```
+
+Call `App::capture()` after an action to read its result.
+It runs due timers, then paints and presents a frame.
+
+| To                 | Do                                                                                                                                                  |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Type text          | Feed the text's bytes to an `input::Parser` built on `app.session()`, as `TestApp::feed` does, and `dispatch` each event                            |
+| Press a key        | Map the key name and modifiers to bytes, or to a `KeyEvent` with `KeyEvent::new`, then `dispatch`                                                   |
+| Use the mouse      | Reject positions outside `app.size()`; then `dispatch(Event::Mouse(MouseEvent { kind, x, y, modifiers }))` with `Moved`, `Down`, `Up`, or `Scroll*` |
+| Resize             | `app.resize(cols, rows)`                                                                                                                            |
+| Find text          | Search the text of `app.last_frame()`, without rendering                                                                                            |
+| Capture the screen | `app.capture()`, then group each row's cells into spans of equal `fg`, `bg`, and `attributes`                                                       |
+
+The driver ends the app with `AppProxy::quit`.
+`App::run` returns after the current turn, tears down handlers and widgets, and closes the proxy, so later posts fail with `ProxyError::Closed`.
+
+A headless app does not cover these:
+
+- **Images.** A capture has no image pixels.
+- **Recordings.** A headless app writes no bytes; a recording would need the session's output stream.
+- **Signals.** The headless loop does not install signal handlers. A killed process ends without teardown, as Core's test renderer does.
+
+## Debugging
+
+`app.console()` is Core's debug console: an overlay, hidden until shown, that lists messages logged with `opentui::console::{info, warn, error, ...}` from any thread.
+The `log` feature adds `console::init_logger` for the `log` crate's macros.
+`AppOptions::capture_stderr` sends `eprintln!` output to the console while the app runs, then writes it to the real stderr afterwards.
+
+`app.set_debug_overlay(Some(Corner::TopRight))` shows native frame statistics.
+
+A frame too large for the Session's output queue is not drawn.
+`App::on_frame_dropped` reports it once, with its size and the limit, as Core's `frame:dropped` event does.

@@ -1,0 +1,78 @@
+---
+title: Widgets and layout
+description: Build and change Rust widgets, lay them out with flexbox, and pick their colors from a theme
+---
+
+# Widgets and layout
+
+## Widgets are handles
+
+Every widget is a cheap `Clone` handle over a native node.
+Property methods take `&self` and return a new handle, so one method both builds a widget and changes it later:
+
+```rust
+let status = Text::new(&app, "Ready").fg(Color::GREEN).bold();
+// Later, from an event handler:
+status.set_text("Saved").fg(Color::CYAN);
+```
+
+Changes go to native code at once and schedule a frame.
+Frames are painted at most `AppOptions::max_fps` times per second, and only when something changed.
+
+A parent keeps its children alive. A detached widget is destroyed when its last handle drops.
+Handlers may capture widget handles, including their own widget's; the app breaks those reference cycles when it ends.
+
+Setters do not return `Result`.
+If native code rejects a change, for example an infinite width, the app records the error.
+`App::run` returns it at the end of that turn, after restoring the terminal.
+
+## Layout
+
+Layout is flexbox, computed natively by Yoga.
+Lengths are cells; integers convert, and `Length::percent(50.0)` gives percentages.
+The `Widget` trait has the layout methods: `width`, `height`, `min_*`/`max_*`, `grow`, `row`, `column`, `gap`, `padding*`, `margin*`, `justify`, `align_items`, `absolute` with `position`, and `visible`.
+
+`grow(n)` works like CSS `flex: n`: the widget fills free space, shared with growing siblings by factor, whatever its content.
+A widget whose content outgrows its space scrolls or clips instead of pushing its siblings away.
+Widgets without `grow` size to their content.
+Scrolling widgets (`ScrollBox`, `Select`, `Table`, `Code`) need a height or a grow factor.
+
+## Widgets
+
+| Widget         | What it is                                                                                                                      |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `View`         | A flexbox container with optional border, titles, and background. `app.root()` is one.                                          |
+| `Text`         | Styled text that wraps. Spans carry colors, attributes, and hyperlinks.                                                         |
+| `Input`        | A single-line field with Core's editing keys, undo, selection, and paste.                                                       |
+| `Textarea`     | Multi-line editing with wrapping and optional syntax highlighting.                                                              |
+| `Select`       | A vertical list with descriptions.                                                                                              |
+| `TabSelect`    | A row of tabs.                                                                                                                  |
+| `Slider`       | A value between a minimum and a maximum, with half-cell precision.                                                              |
+| `ScrollBox`    | A clipped, scrollable area: scrollbars with optional arrows, sticky edges, wheel acceleration.                                  |
+| `Table`        | Aligned columns with a header, selection, and scrolling.                                                                        |
+| `TextTable`    | A bordered grid of styled cells that wrap, with columns fitted to the width, for reports.                                       |
+| `Code`         | Read-only text with line numbers, tree-sitter highlighting, and tail-following.                                                 |
+| `LineNumbers`  | A gutter beside a `Code` view or `Textarea`, with per-line signs, colors, and custom numbers.                                   |
+| `Diff`         | A unified diff in one column or side by side, with line numbers, signs, and colored lines.                                      |
+| `Markdown`     | Rendered or source Markdown with nested lists, tables, code, code-block renderers, and inline hooks; streamed text stays cheap. |
+| `TerminalView` | A shell or any program on a pseudo-terminal, emulated natively, with scrollback and selection.                                  |
+| `ImageView`    | A picture, drawn with the Kitty protocol, Sixel, or half blocks; `fitted_size` gives its size in cells.                         |
+| `VideoView`    | An MP4 file played natively, with audio, looping, and seeking; events report the position, the end, and failures.               |
+| `FrameBuffer`  | A grid of cells you draw into yourself, which native code shows every frame.                                                    |
+| `Custom<T>`    | A widget you paint yourself by implementing `Component`.                                                                        |
+
+[Code, Markdown, and highlighting](/docs/bindings/rust/text) covers `Code`, `Diff`, and `Markdown`.
+[Images, video, sound, and terminals](/docs/bindings/rust/media) covers `ImageView`, `VideoView`, `TerminalView`, and `FrameBuffer`.
+[Your own widgets](/docs/bindings/rust/custom-widgets) covers `Custom<T>`.
+
+## Themes
+
+Widgets read their default colors from the app's `Theme` when created.
+`App::new` asks the terminal for its background color and picks `Theme::dark()` or `Theme::light()` to match.
+`AppOptions::with_theme` sets one theme for every terminal, and `Theme::terminal()` uses the terminal's own colors.
+
+When the system later switches between dark and light mode, `App::on_theme_mode` handlers hear about it.
+`App::set_theme` changes the background and the colors new widgets start with, and the handler recolors or rebuilds the existing ones.
+
+Set `AppOptions::palette_size` to also read the terminal's palette (`App::palette`).
+Native code uses it to pick palette colors on terminals without true color.
