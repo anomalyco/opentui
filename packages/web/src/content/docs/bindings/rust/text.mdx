@@ -1,0 +1,66 @@
+---
+title: Code, Markdown, and highlighting
+description: Highlight code with tree-sitter in Rust, add grammars, and keep large or growing text responsive
+---
+
+# Code, Markdown, and highlighting
+
+`Code`, `Diff`, `Textarea`, and `Markdown` can highlight source code with tree-sitter.
+This page shows how to turn highlighting on, change its colors, add languages, and keep large or growing text responsive.
+
+Highlighting needs the crate's `tree-sitter` feature.
+Give a widget a filetype and it highlights its text as that language:
+
+```rust
+let source = Code::new(&app).filetype("rust").line_numbers(true).grow(1.0);
+source.set_code(std::fs::read_to_string("src/main.rs")?);
+// Extensions, file names, and fence tags resolve too.
+source.filetype(opentui::syntax::filetype_for_path("app.tsx"));
+```
+
+`Diff` and `Textarea` take a filetype the same way.
+`Markdown` highlights each code block by the language tag on its fence.
+Without the feature, or without a grammar for the filetype, the text stays plain.
+
+## Syntax themes
+
+A `SyntaxTheme` maps highlight names, such as `keyword`, `string`, and `function.method`, to styles.
+Widgets start with `SyntaxTheme::from_theme`, which matches the app's dark or light theme.
+
+A name without its own style takes the style of its longest dotted prefix that has one.
+For example, `function.method` falls back to `function`.
+
+To add highlights to a native buffer yourself, `SyntaxTheme::to_syntax_style` builds the native style table from a theme.
+
+## Grammars
+
+The feature bundles grammars for JavaScript, TypeScript and TSX, Markdown, Zig, and Rust.
+To add another language, register its grammar with `syntax::register`.
+Any `tree-sitter-*` crate provides what it needs:
+
+```rust
+use opentui::syntax::{Grammar, register};
+register(
+    "python",
+    Grammar::new(tree_sitter_python::LANGUAGE, tree_sitter_python::HIGHLIGHTS_QUERY),
+)?;
+```
+
+Embedded languages are highlighted too: code in Markdown fences, inline Markdown, and Rust in macro calls.
+
+## Keep highlighting responsive
+
+Highlighting runs on the UI thread, at the next frame after the text changes.
+Each change re-highlights the whole text, so its cost grows with the length of the text.
+Moving the cursor, scrolling, and idle frames cost nothing.
+
+That has three consequences:
+
+- **Large editors type slowly.** A highlighted `Textarea` re-highlights its whole text on every keystroke, so typing in a large file feels slow. For large files, leave the filetype off (`filetype(None)`) so typing stays fast.
+- **The first use of a language delays a frame.** A grammar compiles the first time a widget shows its filetype. Call `syntax::prewarm("rust")` ahead of time, from any thread, to compile it before it is needed. For example, start a worker thread as soon as the app knows which languages it will show. If a frame needs the grammar while it compiles, it waits for that compile instead of starting another. `prewarm` returns `false` for a filetype without a grammar.
+- **Growing text holds memory.** A highlighted `Code` keeps its parse tree, so appending text parses only the new part. The tree is about 40 times larger than the text. When the text stops growing, such as a finished log or command output, call `Code::finish` to free it. The view looks the same, and a later change parses the whole text once.
+
+## Markdown
+
+`Markdown` shows rendered or source Markdown, with nested lists, tables, code blocks, custom code-block renderers, and inline hooks.
+You can append to it as a response streams in.

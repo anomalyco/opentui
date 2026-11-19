@@ -10,7 +10,7 @@ describe("documentation index", () => {
   })
 
   test("uses authored navigation placement instead of source directories", () => {
-    expect(index.pagesBySlug["bindings/react"].section).toBe("frameworks")
+    expect(index.pagesBySlug["bindings/react"].section).toBe("bindings")
     expect(index.pagesBySlug["reference/ssh"].section).toBe("integrations")
     expect(index.pagesBySlug["core-concepts/testing"].section).toBe("test-debug")
 
@@ -38,7 +38,7 @@ describe("documentation index", () => {
 
   test("teaches native concepts before separate language guides", () => {
     const concepts = ["native/overview", "native/resources", "native/frames", "native/host-io-time", "native/core"]
-    const languages = ["native/c", "native/zig", "bindings/rust"]
+    const languages = ["native/c", "native/zig"]
     const native = index.sections.find((section) => section.id === "native")
 
     expect(native?.pages.map((page) => page.slug)).toEqual([...concepts, ...languages])
@@ -66,6 +66,40 @@ describe("documentation index", () => {
     const [{ prev, next }] = getPrevNextDocSequences(index, "native/frames")
     expect(prev?.slug).toBe("native/resources")
     expect(next?.slug).toBe("native/host-io-time")
+  })
+
+  test("groups the Rust guide under React and Solid in Bindings", () => {
+    const rust = [
+      "bindings/rust",
+      "bindings/rust/install",
+      "bindings/rust/widgets",
+      "bindings/rust/input",
+      "bindings/rust/keymap",
+      "bindings/rust/text",
+      "bindings/rust/media",
+      "bindings/rust/custom-widgets",
+      "bindings/rust/time",
+      "bindings/rust/ssh",
+      "bindings/rust/testing",
+      "bindings/rust/layers",
+    ]
+    const bindings = index.sections.find((section) => section.id === "bindings")
+
+    expect(bindings?.title).toBe("Bindings")
+    expect(bindings?.pages.map((page) => page.slug)).toEqual(["bindings/react", "bindings/solid", ...rust])
+    expect(bindings?.pages.filter((page) => page.group === "Rust").map((page) => page.slug)).toEqual(rust)
+    expect(index.pagesBySourceId["bindings/rust/overview"].url).toBe("/docs/bindings/rust")
+    expect(index.pagesBySlug["bindings/rust"].title).toBe("Rust")
+    expect(
+      index.sections
+        .find((section) => section.id === "native")
+        ?.pages.some((page) => page.slug.startsWith("bindings/")),
+    ).toBe(false)
+
+    expect(index.learningSequences.find((sequence) => sequence.id === "rust")?.pages).toEqual(rust)
+    const [{ prev, next }] = getPrevNextDocSequences(index, "bindings/rust/install")
+    expect(prev?.slug).toBe("bindings/rust")
+    expect(next?.slug).toBe("bindings/rust/widgets")
   })
 
   test("uses named learning sequences instead of the global sidebar order", () => {

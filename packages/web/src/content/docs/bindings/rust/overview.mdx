@@ -1,0 +1,85 @@
+---
+title: Rust
+description: Build terminal UIs in Rust with OpenTUI's native renderer, without JavaScript
+skill:
+  entry: true
+  intents: [rust, cargo, rust-crates, opentui-sys]
+---
+
+# Rust
+
+The Rust crates let you build OpenTUI apps in Rust, with no JavaScript runtime.
+They drive the same native renderer that Core uses: it keeps a tree of nodes, lays them out with flexbox, and draws them to the terminal.
+
+This app shows a list of tasks and reports the one you pick. Press `q` to quit:
+
+```rust
+use opentui::prelude::*;
+
+fn main() -> opentui::Result<()> {
+    let app = App::new(AppOptions::default())?;
+    let status = Text::new(&app, "Pick a task").fg(app.theme().muted);
+    let list = Select::new(&app).options(["Build", "Test", "Ship"]).grow(1.0);
+    app.root()
+        .add(&View::new(&app).border(BorderStyle::Rounded).title(" Tasks ").padding(1).grow(1.0).child(&list))
+        .add(&status);
+    list.on_select(move |_cx, _index, option| {
+        status.set_text(format!("Selected {}", option.name));
+    });
+    app.on_key(|cx, key| {
+        if key.matches("q") {
+            cx.quit();
+        }
+    });
+    list.focus();
+    app.run()
+}
+```
+
+The other samples in this guide leave out `use opentui::prelude::*` and assume an `app` made with `App::new(AppOptions::default())?`.
+
+## The crates
+
+The crates live in [packages/rust](https://github.com/anomalyco/opentui/tree/main/packages/rust):
+
+- `opentui` is the framework: widgets, an event loop, focus, keyboard and mouse input, timers, and a test harness that needs no terminal. Most apps depend only on this crate.
+- `opentui-ssh` serves an app over SSH, one app per session.
+- `opentui-sys` is the raw C API of the native library. `opentui` wraps it safely, so you rarely use it directly.
+
+The crates are not on crates.io.
+You depend on them through Git, pinned to a release tag, and link the native library from that same release.
+[Install, link, and ship](/docs/bindings/rust/install) shows how.
+
+## Run the examples
+
+The examples run from the Rust workspace in a checkout of the repository.
+Build the native library first, as [Build from a checkout](/docs/bindings/rust/install#build-from-a-checkout) describes.
+Then `sh run.sh <name>` builds an example with syntax highlighting turned on and runs it:
+
+```sh
+sh run.sh hello       # a centered card with a button and live event reports
+sh run.sh showcase    # every widget: a form, a list, a live log, a file table with source, and styled text
+sh run.sh effects     # color matrices, filters, and animated effects on a panel or the whole screen
+sh run.sh tasks       # a task list you move through and toggle
+sh run.sh native      # the native layer and host, without the framework
+sh run.sh workbench   # a native-layer build queue with live progress and a debug pane
+sh run.sh terminal    # your shell in a terminal widget, beside a notes field
+sh run.sh split       # a prompt in a footer that writes its lines to the scrollback above
+sh run.sh video       # a video player; `cargo run --example video -- file.mp4` plays your own file
+sh run.sh chat        # an SSH chat server on 127.0.0.1:2222: run `ssh -p 2222 localhost` per participant
+sh run.sh tasks static
+```
+
+## Read on
+
+- [Install, link, and ship](/docs/bindings/rust/install): the Git dependency, the native library, platforms, features, and what to ship.
+- [Widgets and layout](/docs/bindings/rust/widgets): how widgets work, flexbox layout, the widget list, and themes.
+- [Events, focus, and input](/docs/bindings/rust/input): keys, mouse, text selection, extmarks, and the clipboard.
+- [Rust keymap](/docs/bindings/rust/keymap): layered key bindings and named commands.
+- [Code, Markdown, and highlighting](/docs/bindings/rust/text): syntax highlighting and grammars.
+- [Images, video, sound, and terminals](/docs/bindings/rust/media): media widgets, audio, and embedded terminals.
+- [Your own widgets](/docs/bindings/rust/custom-widgets): `Component`, `Custom`, and post-processing filters.
+- [Time, animation, and the split footer](/docs/bindings/rust/time): timers, threads, async work, animation, and footer mode.
+- [Serve over SSH](/docs/bindings/rust/ssh): one app per SSH session.
+- [Test and debug](/docs/bindings/rust/testing): `TestApp`, headless apps, and the debug console.
+- [Native layers](/docs/bindings/rust/layers): the modules under the framework.

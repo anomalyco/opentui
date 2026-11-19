@@ -1,0 +1,166 @@
+---
+title: Rust keymap
+description: Layered key bindings, named commands, and key sequences in Rust with opentui::keymap
+---
+
+# Rust keymap
+
+`opentui::keymap` gives an app layered key bindings and named commands.
+Use it when per-widget bindings are not enough: for multi-key sequences such as `gg`, a leader key, modes such as Vim's normal and insert modes, or a command palette that lists every command with its keys.
+
+It is the Rust version of [`@opentui/keymap`](/docs/keymap/overview), and binding strings mean the same thing in both.
+It is plain Rust and owns no event loop.
+Your app passes it key events and focus changes, and it tells you whether it consumed each key.
+
+This keymap is not the `Keymap` in the prelude.
+That one maps keys to a single widget's actions; see [Widget key bindings](/docs/bindings/rust/input#widget-key-bindings).
+
+## A first binding
+
+This example registers a layer with a `file.save` command bound to Ctrl+S, presses Ctrl+S, and then removes the layer:
+
+```rust
+use opentui::input::{KeyCode, KeyEvent, Modifiers};
+use opentui::keymap::{Binding, Command, Keymap, Layer};
+use std::cell::Cell;
+use std::rc::Rc;
+
+let keymap = Keymap::<u32>::new();
+let saved = Rc::new(Cell::new(0));
+let counter = saved.clone();
+let layer = keymap.register_layer(
+    Layer::new()
+        .command(Command::new("file.save", move |_| counter.set(counter.get() + 1)))
+        .binding(Binding::new("ctrl+s").cmd("file.save")),
+);
+let result = keymap.handle_key(&KeyEvent::new(KeyCode::Char('s'), Modifiers::CTRL));
+assert!(result.handled);
+assert_eq!(saved.get(), 1);
+drop(layer);
+assert!(!keymap.handle_key(&KeyEvent::new(KeyCode::Char('s'), Modifiers::CTRL)).handled);
+```
+
+`register_layer` returns a `Disposer`.
+Dropping it removes the layer, as `drop(layer)` does above.
+To keep the layer for as long as the keymap lives, call `Disposer::forget`.
+Every other registration returns a `Disposer` too.
+
+## Keymaps, layers, bindings, and commands
+
+A `Keymap<T>` is a cheap-to-clone handle to shared state.
+`T` is the type that identifies focus targets, such as a widget ID.
+Commands, conditions, and intercepts are closures.
+They may call back into the keymap while it handles a key, for example to set data, register a layer, or dispatch a command.
+
+A `Layer<T>` groups bindings and commands. It has these options:
+
+- `target` and `target_mode`: the layer is active only while focus is on its target. With `TargetMode::FocusWithin` (the default), focus on a descendant also counts. With `TargetMode::Focus`, only the target itself counts.
+- `priority`: higher-priority layers are checked first. Among equal priorities, the newest layer comes first.
+- `enabled`: a condition that turns the layer on or off.
+- `require("mode", "normal")`: the layer is active only while the keymap's `mode` data is `normal`. Set data with `keymap.set_data("mode", "normal")`.
+- `binding`, `bindings`, `command`, and `commands`: what the layer contains.
+
+A `Binding<T>` maps a key to a command:
+
+- The key is a string such as `"ctrl+x"`, `"<leader>n"`, or `"gg"`, or a `Stroke`.
+- The command is a command name (`cmd`) or an inline handler (`run`).
+- `release` makes it fire on key release instead of press.
+- `prevent_default` (default `true`) and `fallthrough` (default `false`) control what happens to the key after the command runs.
+- `desc` and `group` are metadata for help screens.
+
+A `Command<T>` has a name and a handler that returns whether it handled the key or rejected it.
+It can also have an `enabled` condition, the metadata `title`, `desc`, `category`, and `namespace`, and a `data` value for your app.
+
+A binding to a command name works only while a command of that name is reachable, that is, registered in an active, enabled layer.
+If several commands share a name, the first reachable one runs.
+If it rejects, the next one of the same name runs.
+
+## Connect it to the app
+
+The keymap knows nothing about your widgets. The app tells it two things:
+
+- **Keys:** call `keymap.handle_key(&key)` from a key handler. The returned `KeyResult` says whether the keymap consumed the key.
+- **Focus:** call `keymap.set_focus(path)` when focus moves. The path is the focused target followed by its ancestors. A focus change clears any half-typed key sequence.
+
+`Stroke::from_event` converts an `opentui::input::KeyEvent` to the keymap's key names.
+For example, Enter is `return`, Shift with a letter is `shift` plus the lower-case letter, and Alt or Meta is `meta`.
+
+## How a key is resolved
+
+1. Key intercepts run first, by priority.
+2. If a sequence is pending, the key either continues it or clears it. A key that does not continue the sequence clears it and is not consumed.
+3. Otherwise, each active layer in order either runs an exact binding or starts a sequence.
+
+When one layer binds a key exactly and another uses it as the start of a longer sequence, the sequence wins.
+Defining both in the same layer is an error.
+A sequence prefix also collects the matching continuations from every lower layer.
+
+## API
+
+Registration:
+
+- `register_layer(layer) -> Disposer`
+- `set_data(name, value)` for the data that `Layer::require` checks
+- `register_token(name, key)` for tokens such as `<leader>`; `addons::leader` registers a leader key
+- `append_binding_expander(f)` to turn a binding's key text into one or more keys; it applies to layers registered after it
+- `append_event_match_resolver(f)` to add strokes that a key event also matches
+- `intercept_key(priority, release, f)` to see keys before any layer
+
+Input:
+
+- `handle_key(&KeyEvent) -> KeyResult`
+- `set_focus(path)`
+
+Commands:
+
+- `dispatch_command(name)` runs the first reachable command of that name that does not reject, as a command palette would.
+- `run_command(name)` runs a registered command of that name, even if its layer is inactive or disabled.
+- `commands(query)`, `command_entries(query)`, and `command_bindings(visibility, names)` list commands and their keys.
+- `active_keys(options)` lists the keys that work right now.
+
+Pending sequences:
+
+- `pending_sequence`, `has_pending_sequence`, `clear_pending_sequence`, and `pop_pending_sequence`
+
+Keys:
+
+- `parse_key` (compare its `stroke`), `parse_key_sequence`, and `format_key`
+- `parse_binding` applies the binding expanders and returns one sequence per expanded key
+- `Stroke` implements `Display`
+
+Changes:
+
+- `on_state`, `on_pending_sequence`, and `on_diagnostic` subscribe to state changes, sequence changes, and warnings and errors
+- `revision()` counts state changes
+
+Help text:
+
+- `extras::BindingLookup` looks up the keys bound to commands.
+- `extras::format_key_sequence` and `extras::format_command_bindings` format them for display.
+
+## Addons
+
+The `addons` module has ready-made behavior:
+
+- `comma_bindings`: splits a binding such as `"ctrl+c,ctrl+d"` into one binding per key.
+- `key_aliases`: replaces the key name aliases you give it in binding strings, such as `enter` with `return`.
+- `base_layout_fallback`: on a non-Latin layout, also matches a key by the key in the same position on a US layout, when the terminal reports it (`KeyEvent::base_layout`). Korean Ctrl+ㅊ then matches `ctrl+c`.
+- `escape_clears_pending_sequence`: Escape cancels a half-typed sequence.
+- `backspace_pops_pending_sequence`: Backspace removes the last key of a half-typed sequence.
+- `managed_textarea_layer`: the `input.*` commands with the default textarea bindings, with your overrides first. The commands call back with an `EditorAction`.
+- `timed_leader`: a leader key whose sequence clears when no key follows in time. The keymap has no clock, so your app runs the timer: in an `on_pending_sequence` listener, while `armed()` returns a generation, start a timer for `timeout()` and pass the generation to `expire` when it fires. `set_timeout` changes the timeout.
+
+## Differences from `@opentui/keymap`
+
+If you know the TypeScript package, these parts have no Rust version:
+
+- sequence patterns such as `{count}`; a binding that uses one is skipped with an unknown-token warning
+- disambiguation resolvers and command resolvers
+- binding, layer-bindings, and command transformers
+- custom binding parsers and custom field compilers; typed fields replace the compilers
+- `key:after` and raw intercepts
+- layer analyzers
+- the graph and HTML extras
+- the Solid and React adapters
+
+Commands are synchronous, so there are no async command results.

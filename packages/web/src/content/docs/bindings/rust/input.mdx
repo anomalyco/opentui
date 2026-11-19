@@ -1,0 +1,111 @@
+---
+title: Events, focus, and input
+description: Handle keys, key bindings, mouse events, text selection, extmarks, and the clipboard in a Rust app
+---
+
+# Events, focus, and input
+
+This page covers how keys and mouse events reach your handlers, how to change a widget's built-in keys, and how text selection, extmarks, and the clipboard work.
+
+## Keys and focus
+
+A key goes to the focused widget first, then to each of its ancestors, then to the app's `App::on_key` handlers.
+Most apps handle keys in `App::on_key`:
+
+```rust
+app.on_key(|cx, key| {
+    if key.matches("q") {
+        cx.quit();
+    }
+});
+```
+
+On a widget, your handlers run before the widget's built-in behavior, such as an input inserting the typed character.
+A handler can change what happens next:
+
+- `cx.prevent_default()` skips the built-in behavior. The key still goes on to the ancestors.
+- `cx.stop_propagation()` stops the key from reaching the ancestors and the app.
+
+`App::on_key_capture` handlers run before any widget sees the key.
+Use them for shortcuts that must work even while a text input has focus.
+
+Unless a handler takes them, a few keys have default actions:
+
+- Tab and Shift+Tab move focus in tree order.
+- Ctrl+C quits.
+- Ctrl+Z suspends the app to the shell.
+
+App-level handlers (`App::on_key`, `on_mouse`, `on_message`, and the others) return a `HandlerId`.
+Pass it to `App::remove_handler` to remove the handler, for example when a screen closes.
+
+## Widget key bindings
+
+Widgets with built-in keys, such as `Input` and `Select`, come with default bindings that you can change per widget.
+Each widget lists what its keys can do as an action enum: `EditorAction`, `SelectAction`, `TabSelectAction`, `SliderAction`, `ScrollAction`, or `TableAction`.
+
+```rust
+let input = Input::new(&app)
+    .bind("ctrl+s", EditorAction::Submit) // add or replace a binding
+    .unbind("ctrl+w");                    // the key now bubbles to the app
+let list = Select::new(&app).set_keymap(Keymap::new().bind("n", SelectAction::MoveDown));
+list.perform(SelectAction::Last);         // run an action without a key
+```
+
+Some keys reach no action: a key with no binding, or an action that does not apply, such as Up on a horizontal slider.
+Those keys go on to the ancestors like any other key.
+
+`Shortcut` parses and prints key names such as `ctrl+shift+a`.
+Use it for help screens and configuration files.
+
+For app-wide bindings in layers and named commands, see [Rust keymap](/docs/bindings/rust/keymap).
+
+## Mouse
+
+A mouse event goes to the widget under the pointer, then to its ancestors, the same way keys do.
+A left click focuses the nearest focusable widget.
+A press captures the pointer, so a drag keeps reaching the widget it started on.
+
+- `on_click` reports a press and release.
+- `on_hover` reports the pointer entering and leaving a widget and its descendants.
+- For drag and drop, `on_drag_over` reports a drag from another widget entering and leaving, and `on_drop` reports where it ends.
+
+## Text selection
+
+Dragging selects text in `Text`, `Code`, `Input`, `Textarea`, `TextTable`, and `TerminalView` widgets.
+Double-click selects a word, triple-click selects a line, and Ctrl+click extends the selection.
+
+When the drag ends, the app calls your `App::on_selection` handlers with the selected text.
+With `AppOptions::copy_on_select`, the app also copies it to the clipboard.
+`App::selected_text` returns the current selection, with its pieces joined in reading order.
+
+A selection can span several widgets.
+It covers every selectable widget between the press and the pointer.
+It starts inside the pressed widget's parent and widens only as the pointer leaves it, so a drag inside a dialog does not select the text beneath it.
+In a `TextTable`, a drag selects within one cell, then down one column, then across whole rows, and never selects the grid lines.
+
+## Extmarks
+
+An extmark marks a range of text in an `Input` or `Textarea` and moves with it as the text is edited.
+Use one to style a range, or to make an atomic token, such as a mention, that the cursor jumps over and Backspace deletes whole:
+
+```rust
+let start = input.cursor_offset();
+input.insert("@main.rs");
+input.add_extmark(start..input.cursor_offset(), ExtmarkOptions::default().atomic().style(Style::new().fg(Color::CYAN)));
+```
+
+## Clipboard
+
+`App::copy_to_clipboard` copies text through the terminal (OSC 52).
+When the app runs locally, it also copies to the system clipboard.
+
+To read the clipboard:
+
+- `App::read_clipboard` and `App::paste_from_clipboard` read text from the system clipboard of the machine the app runs on.
+- `App::read_clipboard_as` reads the first available of several MIME types, such as `image/png` before `text/plain`.
+
+To paste into an input with a key, bind that key to `EditorAction::Paste`.
+
+## Program status
+
+`App::set_program_status` reports the app's status to the terminal with OSC 7501.

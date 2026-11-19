@@ -31,13 +31,15 @@ OpenCode uses OpenTUI in production for millions of users.
 - [`@opentui/qrcode`](packages/qrcode) - QR code encoder and renderable with React and Solid surfaces.
 - [`@opentui/three`](packages/three) - Three.js WebGPU renderer for OpenTUI.
 - [`@opentui/ssh`](packages/ssh) - SSH server integration for OpenTUI applications.
+- [`packages/rust`](packages/rust) - Rust crates: a terminal UI framework on the native renderer, its C ABI bindings,
+  and SSH serving. Depend on them through Git at a release tag and link that release's native archive; see the
+  [Rust guide](https://opentui.com/docs/bindings/rust).
 
 **Private packages**
 
 - [`@opentui/native`](packages/native) - Private workspace with the Zig implementation, native tests, and benchmarks.
 - [`@opentui/examples`](packages/examples) - Private workspace with example applications and a standalone examples executable.
 - [`@opentui/web`](packages/web) - Private workspace with the documentation website and the AI agent skill.
-- [`packages/rust`](packages/rust) - Unpublished Rust bindings for the native C ABI and a framework built on them.
 
 ## AI agent skill
 

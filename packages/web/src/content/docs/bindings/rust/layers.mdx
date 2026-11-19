@@ -1,0 +1,19 @@
+---
+title: Native layers
+description: Use the modules under the Rust framework directly, without widgets or the event loop
+---
+
+# Native layers
+
+Most apps use widgets and `App`.
+If you need more control, such as your own event loop or your own scene, you can use the modules that `App` is built on.
+The `native` example runs a scene with only these modules, without the framework. Run it with `sh run.sh native`.
+
+- `native` wraps the native library safely: `Context`, `Session`, `Node`, frames, paint recordings, offscreen buffers, edit and text buffers, images, and embedded terminals. Each value keeps what it depends on alive, so you can drop values in any order. None of the types are `Send`: use each one on the thread that created it.
+- `host` runs one `Session` on the local terminal. It sets up the terminal, reads input, handles resizes and Ctrl+Z, writes output, and restores the terminal when it is done. If the program returns an error, panics, or receives SIGTERM, SIGHUP, or SIGINT, the host restores the terminal before the process exits.
+- `input` turns terminal bytes into key, mouse, paste, and focus events. It understands UTF-8, legacy and Kitty keyboard sequences, SGR and X10 mouse reports, bracketed paste, and focus reports. Replies from the terminal come out separately.
+  A partial escape sequence ends if its next byte takes more than 20 ms, so a key that starts like a sequence cannot hold up later input. A split UTF-8 character, or a bare `ESC [` that may start a mouse report, waits for the next read instead. For pasted text, `decode_paste_bytes` decodes bytes as UTF-8, and `strip_ansi_sequences` removes escape sequences.
+- `term` handles raw mode, the terminal size, signals, and wakeups.
+- `style` and `layout` provide colors, attributes, styled spans, and typed flexbox properties. A color remembers whether it is RGB, a palette index, or the terminal's default.
+
+[Native rendering](/docs/native/overview) explains the scene, frames, and resources these modules wrap.

@@ -197,7 +197,7 @@ fn log_page(app: &App) -> View {
 const FILES: [(&str, &str); 4] = [
     ("showcase.rs", include_str!("showcase.rs")),
     ("tasks.rs", include_str!("tasks.rs")),
-    ("README.md", include_str!("../../../README.md")),
+    ("markdown.md", include_str!("../docs/markdown.md")),
     ("Cargo.toml", include_str!("../Cargo.toml")),
 ];
 

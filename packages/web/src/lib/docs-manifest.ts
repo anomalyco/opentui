@@ -1,6 +1,6 @@
 export const DOC_SECTIONS = [
   { id: "start", title: "Start", order: 1 },
-  { id: "frameworks", title: "Frameworks", order: 2 },
+  { id: "bindings", title: "Bindings", order: 2 },
   { id: "core", title: "Core", order: 3 },
   { id: "components", title: "Components", order: 4 },
   { id: "application-apis", title: "Application APIs", order: 5 },
@@ -112,7 +112,7 @@ const CORE_ONLY: DocAvailability = {
 
 const CANONICAL_SECTION: Record<DocSectionId, string> = {
   start: "Start",
-  frameworks: "Frameworks",
+  bindings: "Bindings",
   core: "Build / Core model",
   components: "Build / Components",
   "application-apis": "Build / Application capabilities",
@@ -153,6 +153,23 @@ function page(
   }
 }
 
+/* The Rust guide sits under React and Solid in the Bindings section, behind
+ * its own group label. */
+function rust(
+  navOrder: number,
+  navTitle: string,
+  pageType: DocPageType,
+  options: DocManifestOptions = {},
+): DocManifestEntry {
+  return page("bindings", navOrder + 2, navTitle, pageType, {
+    group: "Rust",
+    packages: ["opentui"],
+    availability: NOT_APPLICABLE,
+    runtimes: ["Native"],
+    ...options,
+  })
+}
+
 export const DOC_MANIFEST = {
   "getting-started": page("start", 1, "Introduction", "orientation", {
     packages: ["@opentui/core", "@opentui/react", "@opentui/solid"],
@@ -180,17 +197,67 @@ export const DOC_MANIFEST = {
     related: ["getting-started/quickstart", "reference/package-entrypoints", "ship/deploy"],
   }),
 
-  "bindings/react": page("frameworks", 1, "React", "framework-guide", {
+  "bindings/react": page("bindings", 1, "React", "framework-guide", {
     packages: ["@opentui/react"],
     availability: { core: "Use the Core API", react: "Built in", solid: "Use the Solid bindings" },
     searchSymbols: ["createRoot", "useRenderer", "useKeyboard", "usePaste", "useTimeline"],
     related: ["bindings/solid", "components/text", "keymap/react", "plugins/react"],
   }),
-  "bindings/solid": page("frameworks", 2, "Solid", "framework-guide", {
+  "bindings/solid": page("bindings", 2, "Solid", "framework-guide", {
     packages: ["@opentui/solid"],
     availability: { core: "Use the Core API", react: "Use the React bindings", solid: "Built in" },
     searchSymbols: ["render", "useRenderer", "useKeyboard", "useTimeline"],
     related: ["bindings/react", "components/text", "keymap/solid", "plugins/solid"],
+  }),
+
+  "bindings/rust/overview": rust(1, "Overview", "framework-guide", {
+    slug: "bindings/rust",
+    searchSymbols: ["Rust", "Cargo", "opentui-sys", "opentui-ssh", "App", "AppOptions"],
+    related: ["bindings/rust/install", "bindings/rust/widgets", "native/overview"],
+  }),
+  "bindings/rust/install": rust(2, "Install and ship", "task-guide", {
+    searchSymbols: ["OPENTUI_LIB_DIR", "OPENTUI_LIB_HINT", "opentui-native", "static", "tokio", "tree-sitter"],
+    related: ["bindings/rust/overview", "native/c", "ship/deploy"],
+  }),
+  "bindings/rust/widgets": rust(3, "Widgets", "framework-guide", {
+    searchSymbols: ["Widget", "View", "Text", "Length", "Theme", "grow"],
+    related: ["bindings/rust/input", "bindings/rust/custom-widgets", "components/overview"],
+  }),
+  "bindings/rust/input": rust(4, "Input", "framework-guide", {
+    searchSymbols: ["on_key", "on_key_capture", "EditorAction", "Shortcut", "on_selection", "ExtmarkOptions"],
+    related: ["bindings/rust/keymap", "bindings/rust/widgets", "core-concepts/interaction"],
+  }),
+  "bindings/rust/keymap": rust(5, "Keymap", "framework-guide", {
+    searchSymbols: ["opentui::keymap", "Layer", "Binding", "Command", "Disposer"],
+    related: ["keymap/overview", "bindings/rust/input"],
+  }),
+  "bindings/rust/text": rust(6, "Code and Markdown", "framework-guide", {
+    searchSymbols: ["Code", "Diff", "Markdown", "SyntaxTheme", "syntax::register", "prewarm"],
+    related: ["components/code", "components/markdown", "bindings/rust/widgets"],
+  }),
+  "bindings/rust/media": rust(7, "Media and terminals", "framework-guide", {
+    searchSymbols: ["ImageView", "VideoView", "TerminalView", "audio::Audio", "FrameBuffer", "pty"],
+    related: ["components/image", "components/video", "components/embedded-terminal"],
+  }),
+  "bindings/rust/custom-widgets": rust(8, "Custom widgets", "framework-guide", {
+    searchSymbols: ["Component", "Custom", "Painter", "Filter", "post"],
+    related: ["bindings/rust/widgets", "extend/post-processing"],
+  }),
+  "bindings/rust/time": rust(9, "Time and split footer", "framework-guide", {
+    searchSymbols: ["set_timeout", "AppProxy", "spawn", "Timeline", "Tween", "on_animation_tick", "SplitFooter"],
+    related: ["application-apis/animation", "core-concepts/renderer", "bindings/rust/testing"],
+  }),
+  "bindings/rust/ssh": rust(10, "SSH", "framework-guide", {
+    searchSymbols: ["opentui_ssh", "ServerConfig", "Auth", "HostKey", "RemoteTerminal"],
+    related: ["reference/ssh", "bindings/rust/time"],
+  }),
+  "bindings/rust/testing": rust(11, "Test and debug", "framework-guide", {
+    searchSymbols: ["TestApp", "App::headless", "HeadlessOptions", "console", "capture_stderr"],
+    related: ["core-concepts/testing", "core-concepts/console"],
+  }),
+  "bindings/rust/layers": rust(12, "Native layers", "low-level-api", {
+    searchSymbols: ["native", "host", "Session", "Context"],
+    related: ["native/overview", "native/c", "bindings/rust/overview"],
   }),
 
   "core-concepts/renderer": page("core", 1, "Renderer", "concept", {
@@ -790,7 +857,7 @@ export const DOC_MANIFEST = {
     availability: NOT_APPLICABLE,
     runtimes: ["Native"],
     searchSymbols: ["ot_context_create", "ot_scene_create_node", "opentui.h", "C ABI"],
-    related: ["native/resources", "native/frames", "native/host-io-time", "native/zig"],
+    related: ["native/resources", "native/frames", "native/host-io-time", "native/zig", "bindings/rust/install"],
   }),
   "native/zig": page("native", 7, "Zig", "integration", {
     status: "Experimental native module",
@@ -799,14 +866,6 @@ export const DOC_MANIFEST = {
     runtimes: ["Native"],
     searchSymbols: ["Zig", "Context.init", "Context.raw", "sceneCreateNode", "scenePaint", "commitSceneFrame"],
     related: ["native/resources", "native/frames", "native/host-io-time", "native/c"],
-  }),
-  "bindings/rust": page("native", 8, "Rust", "integration", {
-    status: "Experimental, build from source",
-    packages: ["@opentui/native"],
-    availability: NOT_APPLICABLE,
-    runtimes: ["Native"],
-    searchSymbols: ["Rust", "Cargo", "opentui-sys", "OPENTUI_LIB_DIR"],
-    related: ["native/c", "native/overview"],
   }),
 
   "reference/standalone-executables": page("ship", 2, "Standalone executables", "task-guide", {
@@ -981,6 +1040,24 @@ export const DOC_LEARNING_SEQUENCES: DocLearningSequence[] = [
       "keymap/solid",
       "plugins/solid",
       "core-concepts/testing",
+    ],
+  },
+  {
+    id: "rust",
+    title: "Rust learning path",
+    pages: [
+      "bindings/rust",
+      "bindings/rust/install",
+      "bindings/rust/widgets",
+      "bindings/rust/input",
+      "bindings/rust/keymap",
+      "bindings/rust/text",
+      "bindings/rust/media",
+      "bindings/rust/custom-widgets",
+      "bindings/rust/time",
+      "bindings/rust/ssh",
+      "bindings/rust/testing",
+      "bindings/rust/layers",
     ],
   },
   {

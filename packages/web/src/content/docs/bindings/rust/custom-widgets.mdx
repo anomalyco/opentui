@@ -1,0 +1,76 @@
+---
+title: Your own widgets
+description: Paint your own Rust widgets with Component, compose existing ones, and post-process frames
+---
+
+# Your own widgets
+
+When no built-in widget does what you need, you have two options.
+You can paint a widget yourself with `Component`, or build one out of existing widgets.
+This page shows both, and then shows how to apply visual effects to any widget with filters.
+
+## Paint a widget
+
+Implement `Component` for your type and wrap it in `Custom`.
+This meter draws a bar and moves it with the arrow keys:
+
+```rust
+struct Meter {
+    level: f32,
+}
+
+impl Component for Meter {
+    fn paint(&self, painter: &mut Painter<'_>) {
+        let filled = (painter.width() as f32 * self.level) as u32;
+        painter.fill(0, 0, filled, 1, Color::GREEN);
+    }
+
+    fn key(&mut self, _cx: &mut Cx<'_>, key: &KeyEvent) -> bool {
+        let step = if key.matches("right") { 0.1 } else if key.matches("left") { -0.1 } else { return false };
+        self.level = (self.level + step).clamp(0.0, 1.0);
+        true
+    }
+}
+
+let meter = Custom::new(&app, Meter { level: 0.5 }).height(1).focusable(true);
+meter.update(|meter| meter.level = 0.8);
+```
+
+`paint` draws in the widget's own coordinates, and anything outside the widget is clipped.
+`key` returns `true` when it handled the key.
+`Custom::update` changes the component's state from outside and redraws it.
+
+To let the widget size itself, create it with `Custom::measured`.
+Layout then calls `Component::measure` for any width or height you did not set.
+A measured widget cannot have children.
+
+## Compose widgets
+
+To build a widget out of existing ones, implement `Widget` for your own type.
+Its `element()` method returns the root widget of what you built.
+
+## Filters
+
+A filter changes how a widget looks after each frame is painted.
+Apply one to a widget, or to `app.root()` for the whole screen:
+
+```rust
+use opentui::post::{CrtRollingBar, Scanlines, Vignette};
+
+let monitor = View::new(&app).border(BorderStyle::Rounded).grow(1.0);
+monitor.filter(ColorMatrix::GREENSCALE).filter(Scanlines::default()).filter(Vignette::new(0.6));
+let bar = app.root().add_filter(CrtRollingBar::default()); // animated: frames run until it is removed
+app.root().remove_filter(bar);
+```
+
+The `post` module has three kinds:
+
+- color matrices: sepia, grayscale, color-blindness simulation and compensation, technicolor, and more
+- filters: scanlines, noise, chromatic aberration, ASCII art, and bloom
+- animated effects: vignette, distortion, clouds, flames, a CRT rolling bar, and rainbow text
+
+To write your own, implement `Filter` or use `post::from_fn`.
+
+A filter works on the finished frame, so it also changes anything drawn on top of the widget, such as a dialog.
+To change colors at one point in the paint order instead, call `Painter::color_matrix` from a `Component`.
+The `effects` example dims the page behind a dialog that way.

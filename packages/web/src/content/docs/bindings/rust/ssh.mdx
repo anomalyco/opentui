@@ -1,0 +1,59 @@
+---
+title: Serve over SSH
+description: Serve a Rust OpenTUI app to SSH clients with opentui-ssh, one app per session
+---
+
+# Serve over SSH
+
+`opentui-ssh` serves your app to SSH clients.
+Each client that connects gets its own copy of the app, running on its own thread.
+You write a handler that builds the app for one session, the same way `main` builds it for a local terminal:
+
+```rust
+use opentui::prelude::*;
+use opentui_ssh::{Auth, HostKey, ServerConfig};
+
+fn main() -> Result<(), opentui_ssh::Error> {
+    let config = ServerConfig::new()
+        .auth(Auth::empty().authorized_keys_file("authorized_keys")?)
+        .host_key(HostKey::File("host_key".into()));
+    let server = opentui_ssh::serve("0.0.0.0:2222", config, |session| {
+        if session.user() == "root" {
+            return session.deny("Log in as yourself.");
+        }
+        let app = session.app(AppOptions::default())?;
+        app.root().add(&Text::new(&app, format!("Hello, {}!", session.user())));
+        app.run()
+    })?;
+    server.close_on_ctrl_c()
+}
+```
+
+The app reads input and the window size from the SSH channel and writes its output back to it.
+It picks its light or dark theme from the client's terminal.
+
+`App::run` returns when the app quits, the client disconnects, a timeout passes, or the server closes.
+In every case except a disconnect, the app restores the client's terminal first.
+
+If a handler returns an error or panics, only its own session ends.
+The error goes to `ServerConfig::on_error`, with the client's address and user name.
+
+To try it, run `sh run.sh chat` from the Rust workspace in a checkout of the repository.
+It starts a chat room on port 2222, and every `ssh -p 2222 localhost` joins with its own app.
+
+## Server options
+
+- **Authentication:** `ServerConfig` lets anyone in by default (`Auth::open()`), and warns through `on_error` when it listens beyond the loopback interface. Start from `Auth::empty()` to accept only what you add: `any_public_key`, `authorized_keys`, `allow_public_key`, or `password`. `Session::identity` says who logged in and how. For a key, the fingerprint is what the client proved.
+- **Host keys:** `HostKey::Ephemeral` (the default) makes a new key on every start. `HostKey::File` loads a key, or generates one and saves it readable only by its owner. `HostKey::Keys` uses keys you supply.
+- **Limits:** by default, one session per connection and 100 sessions in all. You can add idle and maximum session timeouts. Keepalives detect clients that vanished.
+- **Shutdown:** `Server::close` waits until every app has restored its client's terminal and the client has received that output. Each app's close timeout bounds the wait. Set `ServerConfig::close_timeout` for a faster shutdown.
+
+## Other transports
+
+`opentui-ssh` is built on `opentui::remote`, which works with any transport.
+A `RemoteTerminal` stands in for the client's terminal.
+Its `RemoteLink` takes in the client's input and size and hands out the app's output.
+Its buffers are bounded: a slow client holds the app back instead of losing bytes.
+`App::remote(terminal, options)` runs an app on a remote terminal without touching the local terminal, signals, or stderr.
+
+TypeScript apps serve SSH with [`@opentui/ssh`](/docs/reference/ssh).
