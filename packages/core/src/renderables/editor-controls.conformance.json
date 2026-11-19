@@ -1,0 +1,19 @@
+{
+  "format": [
+    "Control character conformance vectors for text an app sets or inserts. Core (EditBufferRenderable.test.ts) and Rust (tests/widgets.rs) run this file. A row is [name, widget, path, text, expected].",
+    "widget is \"input\" (maxLength 6) or \"textarea\". path gives the editor text through the constructor, the value setter (setText for a Textarea), or an insert into an empty editor; then \"!\" is inserted at the end of the text. expected is the text it holds.",
+    "Control characters and escape sequences stay (the buffer shows them as notation such as ^G and <85>) and count toward maxLength. Input drops LF and CR. Pastes strip them instead (paste.conformance.json)."
+  ],
+  "rows": [
+    ["form feed and NEL", "input", "constructor", "a\fb\u0085c", "a\fb\u0085c!"],
+    ["form feed and NEL", "input", "value", "a\fb\u0085c", "a\fb\u0085c!"],
+    ["wide characters", "input", "constructor", "日本", "日本!"],
+    ["NUL before wide characters", "input", "value", "\u0000日本", "\u0000日本!"],
+    ["controls fill maxLength", "input", "value", "a\fb\u0085c\u007f", "a\fb\u0085c\u007f"],
+    ["an escape sequence counts each character", "input", "value", "\u001b[31mred", "\u001b[31mr"],
+    ["an insert drops line breaks and keeps BEL", "input", "insert", "a\r\nb\u0007", "ab\u0007!"],
+    ["BEL, ESC, form feed and NEL", "textarea", "value", "A\u0007B\u001bC\fD\u0085E", "A\u0007B\u001bC\fD\u0085E!"],
+    ["BEL, ESC, form feed and NEL", "textarea", "insert", "A\u0007B\u001bC\fD\u0085E", "A\u0007B\u001bC\fD\u0085E!"],
+    ["an OSC sequence and a tab", "textarea", "insert", "\u001b]0;t\u0007\tx", "\u001b]0;t\u0007\tx!"]
+  ]
+}

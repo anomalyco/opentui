@@ -9,9 +9,9 @@ use std::rc::Rc;
 
 /// A single-line text field with Core's editing keys, undo, mouse selection, and paste.
 ///
-/// Enter calls [`Self::on_submit`]. Line breaks in typed or pasted text are dropped, and a paste loses its escape
-/// sequences as with [`strip_ansi_sequences`](crate::input::strip_ansi_sequences), as in Core. Change the keys with
-/// [`Self::bind`] and [`Self::unbind`]; [`EditorAction`] lists what they can do.
+/// Enter calls [`Self::on_submit`]. Line breaks are dropped, and a paste loses its escape sequences as with
+/// [`strip_ansi_sequences`](crate::input::strip_ansi_sequences) and its control characters but tab, as in Core. Change
+/// the keys with [`Self::bind`] and [`Self::unbind`]; [`EditorAction`] lists what they can do.
 ///
 /// ```no_run
 /// # use opentui::prelude::*;
@@ -62,14 +62,16 @@ impl Input {
         self.0.text()
     }
 
-    /// Replaces the text, clears undo history, and moves the cursor to the end. Does not call change handlers.
+    /// Replaces the text, clears undo history, and moves the cursor to the end. Does not call change handlers. Line
+    /// breaks are dropped; control characters and escape sequences stay, shown as notation such as `^G`, while a
+    /// paste strips them.
     pub fn set_value(&self, value: impl AsRef<str>) -> Self {
         self.0.set_text(value.as_ref());
         self.clone()
     }
 
     /// Inserts text at the cursor as an undoable edit, replacing any selection, and calls change handlers. Line
-    /// breaks are dropped.
+    /// breaks are dropped; control characters stay, as with [`Self::set_value`].
     pub fn insert(&self, text: impl AsRef<str>) -> Self {
         self.0.insert_notifying(text.as_ref());
         self.clone()
