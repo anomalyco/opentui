@@ -63,7 +63,7 @@ From `packages/rust`:
 ```sh
 sh test.sh           # format, clippy, tests, and lifecycle checks, with shared and static linking
 sh test.sh shared
-cargo test --locked --workspace --features opentui/tokio,opentui/tree-sitter
+cargo test --locked --workspace --features anomalyco-opentui/tokio,anomalyco-opentui/tree-sitter
 sh scripts/check-targets.sh   # clippy for the macOS, arm64 and musl Linux, and Arm Windows targets
 ```
 
@@ -78,3 +78,24 @@ without rustup). It does not link or run anything.
 
 After a change to `opentui.h`, run `bun run generate:abi` in `packages/core`,
 then `sh test.sh shared`, and fix the crates in the same change.
+
+## Publish
+
+On crates.io the packages are `anomalyco-opentui-sys`, `anomalyco-opentui`,
+and `opentui-ssh`. Until the names `opentui` and `opentui-sys` are free, the
+first two use interim package names but keep the library names `opentui` and
+`opentui_sys`; `cargo -p` takes the package names. A release publishes them by hand after its GitHub
+release exists, at the release's version, which `prepare-release` sets. From
+`packages/rust`, with the release's native archive for the host extracted:
+
+```sh
+export OPENTUI_LIB_DIR=/absolute/path/to/opentui-native-v<version>-<platform>
+cargo publish --dry-run --locked --workspace
+cargo publish --locked --workspace
+```
+
+`--workspace` packages all three, builds each from its `.crate` against the
+archive, and uploads them in dependency order: `-sys`, then `opentui`, then
+`opentui-ssh`. Outside a checkout the build needs `OPENTUI_LIB_DIR`, and the
+header check proves the archive matches. A crate that is already published
+fails the upload; publish the rest with `-p`.

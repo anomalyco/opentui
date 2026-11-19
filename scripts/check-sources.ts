@@ -151,6 +151,12 @@ for (const [name, owner] of Object.entries({
     problems.add(`${copy}: differs from ${owner}`)
   }
 }
+// Each published crate carries OpenTUI's MIT text.
+for (const crate of ["opentui", "opentui-sys", "opentui-ssh"]) {
+  const copy = `packages/rust/crates/${crate}/LICENSE`
+  if (!readFileSync(join(root, copy)).equals(readFileSync(join(root, "LICENSE"))))
+    problems.add(`${copy}: differs from LICENSE`)
+}
 
 // Yoga's licence travels inside the vendored Zig dependency archive, a gzipped tar of 512-byte headers and blocks.
 const yogaNotice = "packages/native/THIRD_PARTY_LICENSES/YOGA"

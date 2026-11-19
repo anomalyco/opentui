@@ -2,9 +2,20 @@
 name = "opentui-ssh"
 version.workspace = true
 edition.workspace = true
+# russh.
+rust-version = "1.89"
 license.workspace = true
-publish = false
+repository.workspace = true
+homepage.workspace = true
+exclude.workspace = true
+documentation = "https://docs.rs/opentui-ssh"
+readme = "README.md"
+keywords = ["tui", "terminal", "ssh", "opentui"]
+categories = ["command-line-interface", "network-programming"]
 description = "Serve OpenTUI apps over SSH, one app per session"
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
 
 [lints]
 workspace = true
@@ -16,9 +27,9 @@ static = ["opentui/static"]
 
 [dependencies]
 bytes = "1.7"
-opentui = { path = "../opentui", default-features = false }
+opentui.workspace = true
 # Only for its link metadata, which build.rs needs to find the native library for tests and examples.
-opentui-sys = { path = "../opentui-sys", default-features = false }
+opentui-sys.workspace = true
 rand = "0.10"
 # ring instead of the default aws-lc-rs, which needs CMake and NASM on Windows.
 russh = { version = "0.64", default-features = false, features = ["flate2", "ring", "rsa"] }

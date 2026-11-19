@@ -28,12 +28,15 @@ if [ -n "${OPENTUI_LIB_DIR:-}" ]; then
 fi
 cargo=${CARGO:-cargo}
 manifest=$here/Cargo.toml
+# The crates.io names of the opentui and opentui-sys packages.
+opentui=anomalyco-opentui
+sys=anomalyco-opentui-sys
 
 "$cargo" fmt --all --check --manifest-path "$manifest"
 # Each crate turns on the static feature by default, and --no-default-features turns it off through every edge.
-for package in opentui-sys opentui opentui-ssh; do
+for package in "$sys" "$opentui" opentui-ssh; do
     for defaults in '' --no-default-features; do
-        tree=$("$cargo" tree --locked --manifest-path "$manifest" -p "$package" $defaults -e features -i opentui-sys)
+        tree=$("$cargo" tree --locked --manifest-path "$manifest" -p "$package" $defaults -e features -i "$sys")
         case $tree in *'opentui-sys feature "static"'*) resolved=static ;; *) resolved=shared ;; esac
         case $defaults in '') expected=static ;; *) expected=shared ;; esac
         [ "$resolved" = "$expected" ] ||
@@ -41,27 +44,27 @@ for package in opentui-sys opentui opentui-ssh; do
     done
 done
 for linkage in $modes; do
-    features=opentui/tokio,opentui/log,opentui/tree-sitter
+    features=$opentui/tokio,$opentui/log,$opentui/tree-sitter
     # The static feature is a default one.
     defaults=
     [ "$linkage" = static ] || defaults=--no-default-features
     export CARGO_TARGET_DIR="$here/target/test-$linkage"
     # Without optional features, highlighting falls back to plain text. CI only lints that; the run below repeats the rest.
     if [ "$linkage" = shared ]; then
-        "$cargo" clippy --locked --manifest-path "$manifest" -p opentui --all-targets $defaults -- -D warnings
-        [ "${CI:-}" = true ] || "$cargo" test --locked --manifest-path "$manifest" -p opentui $defaults
+        "$cargo" clippy --locked --manifest-path "$manifest" -p "$opentui" --all-targets $defaults -- -D warnings
+        [ "${CI:-}" = true ] || "$cargo" test --locked --manifest-path "$manifest" -p "$opentui" $defaults
     fi
     "$cargo" clippy --locked --manifest-path "$manifest" --workspace --all-targets $defaults --features "$features" \
         -- -D warnings
     "$cargo" test --locked --manifest-path "$manifest" --workspace $defaults --features "$features"
-    "$cargo" build --locked --manifest-path "$manifest" -p opentui -p opentui-ssh --examples $defaults \
+    "$cargo" build --locked --manifest-path "$manifest" -p "$opentui" -p opentui-ssh --examples $defaults \
         --features "$features"
-    RUSTDOCFLAGS='-D warnings' "$cargo" doc --locked --manifest-path "$manifest" -p opentui -p opentui-ssh --no-deps \
+    RUSTDOCFLAGS='-D warnings' "$cargo" doc --locked --manifest-path "$manifest" -p "$opentui" -p opentui-ssh --no-deps \
         $defaults --features "$features"
     # An app on opentui's features of this pass links as the pass says. Built alone, since opentui-ssh's defaults would
     # turn on the static feature too.
     if [ "$platform" = x86_64-linux ]; then
-        "$cargo" build --locked --manifest-path "$manifest" -p opentui --example hello $defaults
+        "$cargo" build --locked --manifest-path "$manifest" -p "$opentui" --example hello $defaults
         dynamic=$(readelf -d "$CARGO_TARGET_DIR/debug/examples/hello")
         case $dynamic in *libopentui.so*) linked=shared ;; *) linked=static ;; esac
         [ "$linked" = "$linkage" ] || { printf 'FAIL: the %s pass links %s\n' "$linkage" "$linked" >&2; exit 1; }
