@@ -13,11 +13,11 @@
 
 OpenTUI is a library to build terminal user interfaces.
 
-- It is written in Zig.
-- You write TypeScript directly or through React and Solid.
+- It is written in Zig, with a C API.
+- You write Rust, TypeScript, React, or Solid.
 - You arrange boxes and text with flexbox.
 - You add selects, inputs, and scroll boxes with keyboard and mouse controls.
-- You can play sounds, show images, and render 3D graphics.
+- You can play videos and sounds, show images, and render 3D graphics.
 
 OpenCode uses OpenTUI in production for millions of users.
 
