@@ -1,6 +1,7 @@
 //! Shared harness for seeded model tests (markdown-highlight-ssot-models.md, 3.1), as `packages/native/src/tests/
 //! model.zig` is for Zig: generate a command list from a seed, run it against the system and its oracle, and on a
-//! failure shrink the list (drop chunks of n/2 down to 1, then simplify each command) and print the trace.
+//! failure shrink the list (drop chunks of n/2 down to 1, then simplify each command) and print the trace. A panic in
+//! `run` is a failure too: the property `throws`, at no step.
 //!
 //! Environment: `MODEL_SEED=<n>` runs one seed, `MODEL_SEEDS=<n>` sets how many seeds run, `MODEL_SKIP=<property,...>`
 //! ignores failures of the named properties.
@@ -69,7 +70,7 @@ pub fn check<M: Model>(model: &M, seeds: u64, steps: usize) {
     };
     for seed in range {
         let commands = model.generate(&mut Rng::new(seed), steps);
-        let Some(failure) = model.run(&commands) else { continue };
+        let Some(failure) = outcome(model, &commands) else { continue };
         if skip.split(',').any(|name| name == failure.property) {
             continue;
         }
@@ -106,7 +107,13 @@ pub fn check_exhaustive<M: Model>(model: &M, alphabet: &[M::Command], depth: u32
 /// The shrinker keeps a candidate only when it fails the same property: a model names each check site with its own
 /// property, so a candidate that fails another check (another bug) is not taken for this one.
 fn fails_with<M: Model>(model: &M, commands: &[M::Command], property: &str) -> bool {
-    model.run(commands).is_some_and(|failure| failure.property == property)
+    outcome(model, commands).is_some_and(|failure| failure.property == property)
+}
+
+/// The run's failure; a panic in it is the property `throws`, at no step (the command count).
+fn outcome<M: Model>(model: &M, commands: &[M::Command]) -> Option<Failure> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| model.run(commands)))
+        .unwrap_or(Some(Failure { property: "throws", step: commands.len() }))
 }
 
 fn shrink<M: Model>(model: &M, initial: Vec<M::Command>, property: &str) -> Vec<M::Command> {

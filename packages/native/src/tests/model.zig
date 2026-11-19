@@ -3,8 +3,11 @@
 //! the list (drop chunks of n/2 down to 1, then simplify each command) while it fails the same
 //! property at a step of the same kind, and print the trace.
 //!
+//! An error `run` returns is a failure too, named after the error, at no step.
+//!
 //! Environment: MODEL_SEED=<n> runs one seed, MODEL_SEEDS=<n> sets how many seeds run,
-//! MODEL_SKIP=<property,...> ignores failures of the named properties.
+//! MODEL_SKIP=<property,...> ignores failures of the named properties, MODEL_TRACE=1 prints
+//! each seed before it runs (a panic aborts the process before any report).
 const std = @import("std");
 
 pub const Failure = struct {
@@ -30,6 +33,7 @@ pub fn check(comptime Context: type, context: *Context, default: Options) !void 
     const seed_value = environment(arena, "MODEL_SEED");
     const seeds = if (environment(arena, "MODEL_SEEDS")) |text| try std.fmt.parseInt(u64, text, 10) else default.seeds;
     const skip = environment(arena, "MODEL_SKIP") orelse "";
+    const trace = environment(arena, "MODEL_TRACE") != null;
     var seed: u64 = if (seed_value) |text| try std.fmt.parseInt(u64, text, 10) else 0;
     const last = if (seed_value != null) seed + 1 else seeds;
     while (seed < last) : (seed += 1) {
@@ -38,9 +42,10 @@ pub fn check(comptime Context: type, context: *Context, default: Options) !void 
         const ra = run_arena.allocator();
         var prng = std.Random.DefaultPrng.init(seed);
         const commands = try context.generate(ra, prng.random(), default.steps);
-        const failure = (try context.run(ra, commands)) orelse continue;
+        if (trace) std.debug.print("model: seed {d}\n", .{seed});
+        const failure = outcome(Context, context, ra, commands) orelse continue;
         if (listed(skip, failure.property)) continue;
-        const identity: Identity(Context) = .{ .property = failure.property, .kind = std.meta.activeTag(commands[failure.step]) };
+        const identity: Identity(Context) = .{ .property = failure.property, .kind = kindAt(Context, commands, failure.step) };
         const shrunk = try shrink(Context, context, ra, commands, identity);
         std.debug.print("model failure: seed {d}, property {s}, shrunk to {d} commands:\n", .{ seed, failure.property, shrunk.len });
         for (shrunk) |command| {
@@ -54,9 +59,19 @@ pub fn check(comptime Context: type, context: *Context, default: Options) !void 
 }
 
 /// What a shrunk trace must still fail: the same property, at a step of the same kind (a
-/// property alone could drift to another bug that breaks it at another kind of step).
+/// property alone could drift to another bug that breaks it at another kind of step). An error
+/// has no step, so no kind.
 fn Identity(comptime Context: type) type {
-    return struct { property: []const u8, kind: std.meta.Tag(Context.Command) };
+    return struct { property: []const u8, kind: ?std.meta.Tag(Context.Command) };
+}
+
+/// The run's failure; an error the system returns is one named after it, at no step.
+fn outcome(comptime Context: type, context: *Context, arena: std.mem.Allocator, commands: []const Context.Command) ?Failure {
+    return context.run(arena, commands) catch |err| .{ .property = @errorName(err), .step = commands.len };
+}
+
+fn kindAt(comptime Context: type, commands: []const Context.Command, step: usize) ?std.meta.Tag(Context.Command) {
+    return if (step < commands.len) std.meta.activeTag(commands[step]) else null;
 }
 
 fn shrink(comptime Context: type, context: *Context, arena: std.mem.Allocator, initial: []const Context.Command, identity: Identity(Context)) ![]const Context.Command {
@@ -95,9 +110,8 @@ fn shrink(comptime Context: type, context: *Context, arena: std.mem.Allocator, i
 }
 
 fn failsWith(comptime Context: type, context: *Context, arena: std.mem.Allocator, commands: []const Context.Command, identity: Identity(Context)) !bool {
-    const failure = (try context.run(arena, commands)) orelse return false;
-    if (failure.step >= commands.len) return false;
-    return std.mem.eql(u8, failure.property, identity.property) and std.meta.activeTag(commands[failure.step]) == identity.kind;
+    const failure = outcome(Context, context, arena, commands) orelse return false;
+    return std.mem.eql(u8, failure.property, identity.property) and kindAt(Context, commands, failure.step) == identity.kind;
 }
 
 fn listed(list: []const u8, name: []const u8) bool {

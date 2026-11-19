@@ -363,7 +363,8 @@ async function failure(commands: Command[]) {
     await run(commands)
   } catch (error) {
     if (error instanceof Failure) return error.message
-    throw error
+    // A crash in the client is a failure too.
+    return `throws: ${(error as Error)?.stack ?? error}`
   }
 }
 
