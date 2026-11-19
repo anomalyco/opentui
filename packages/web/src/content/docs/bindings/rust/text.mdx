@@ -64,3 +64,5 @@ That has three consequences:
 
 `Markdown` shows rendered or source Markdown, with nested lists, tables, code blocks, custom code-block renderers, and inline hooks.
 You can append to it as a response streams in.
+
+With `conceal` on, a task item shows `☐` or `☑`. `task_markers("[ ]", "[x]")` sets other boxes, as Core's `taskMarkers` does. Wrapped item text lines up after the box. Without conceal, items show the source's `[ ]` or `[x]`.

@@ -37,6 +37,7 @@ import { TextBuffer } from "../../text-buffer.js"
 import { stringWidth } from "../../platform/runtime.js"
 import { resolveRenderLib } from "../../zig.js"
 import corpus from "../markdown.conformance.json" with { type: "json" }
+import taskMarkerCorpus from "../markdown-task-markers.conformance.json" with { type: "json" }
 
 let renderer: TestRenderer
 let mockMouse: MockMouse
@@ -1401,6 +1402,35 @@ test("task lists render checkbox and text on the same line", async () => {
     - ☐ Todo"
   `)
 })
+
+// The Rust crate's tests/markdown.rs runs the same rows.
+type TaskMarkers = MarkdownOptions["taskMarkers"]
+type TaskMarkerRow = [string, number, boolean, TaskMarkers | null, string, string, [TaskMarkers, string]?]
+for (const [name, width, conceal, markers, source, frame, then] of taskMarkerCorpus.rows as TaskMarkerRow[]) {
+  test(`task markers: ${name}`, async () => {
+    resizeRenderer(width, 10)
+    const md = createMarkdownRenderable({
+      content: source,
+      syntaxStyle,
+      conceal,
+      streaming: then !== undefined,
+      ...(markers ? { taskMarkers: markers } : {}),
+    })
+    renderer.root.add(md)
+    const shown = async () => {
+      await renderOnce()
+      return captureFrame()
+        .split("\n")
+        .map((line) => line.trimEnd())
+        .join("\n")
+        .trimEnd()
+    }
+    expect(await shown()).toBe(frame)
+    if (!then) return
+    md.taskMarkers = then[0]
+    expect(await shown()).toBe(then[1])
+  })
+}
 
 test("selection across top-level unordered list copies marker and text on same line", async () => {
   const md = createMarkdownRenderable({

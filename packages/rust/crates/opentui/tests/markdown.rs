@@ -128,6 +128,33 @@ fn corpus_text_matches_unless_listed() {
 }
 
 #[test]
+fn task_markers_follow_cores_vectors() {
+    // Core's Markdown test runs the same rows.
+    let corpus: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../core/src/renderables/markdown-task-markers.conformance.json"))
+            .unwrap();
+    let set = |markdown: &Markdown, markers: &serde_json::Value| {
+        let [unchecked, checked] = ["unchecked", "checked"].map(|key| markers[key].as_str().unwrap());
+        markdown.task_markers(unchecked, checked);
+    };
+    for row in corpus["rows"].as_array().unwrap() {
+        let name = row[0].as_str().unwrap();
+        let app = TestApp::new(row[1].as_u64().unwrap() as u16, 10);
+        let then = row.get(6);
+        let markdown = Markdown::new(&app).conceal(row[2].as_bool().unwrap()).streaming(then.is_some());
+        if !row[3].is_null() {
+            set(&markdown, &row[3]);
+        }
+        app.root().add(&markdown.set_markdown(row[4].as_str().unwrap()));
+        assert_eq!(frame(&app), format!("{}\n", row[5].as_str().unwrap()), "{name}");
+        if let Some(then) = then {
+            set(&markdown, &then[0]);
+            assert_eq!(frame(&app), format!("{}\n", then[1].as_str().unwrap()), "{name}, changed");
+        }
+    }
+}
+
+#[test]
 fn code_block_renderers_replace_and_keep_their_widgets() {
     let app = TestApp::new(30, 8);
     let calls = Rc::new(Cell::new(0));
