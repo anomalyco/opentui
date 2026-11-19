@@ -10,7 +10,8 @@ use std::rc::Rc;
 
 /// Multi-line text editing with Core's key bindings, undo, wrapping, mouse selection, and paste.
 ///
-/// The area grows with its content unless its height is set. Alt+Enter calls [`Self::on_submit`]. Change the keys
+/// The area grows with its content unless its height is set. Alt+Enter calls [`Self::on_submit`]. A paste loses its
+/// escape sequences as with [`strip_ansi_sequences`](crate::input::strip_ansi_sequences), as in Core. Change the keys
 /// with [`Self::bind`] and [`Self::unbind`]; [`EditorAction`] lists what they can do.
 ///
 /// With the `tree-sitter` feature, [`Self::filetype`] highlights the text as it is edited; see

@@ -394,6 +394,10 @@ fn textareas_insert_lines_wrap_and_submit() {
     // A legacy line feed (Ctrl+J) inserts a line too.
     app.feed(b"\n");
     assert!(area.text().starts_with("x\ty\n\n"), "{:?}", area.text());
+    // Core's paste row with C1 control strings: a paste drops whole sequences, as Core's handlePaste does.
+    area.set_text("");
+    app.paste("\x1b]0;title\x07y\u{9d}0;t\u{9c}z\u{90}q\u{9c}\u{98}s\u{9c}\u{9e}p\u{9c}\u{9f}a\x07w");
+    assert_eq!(area.text(), "yzw");
 }
 
 #[test]

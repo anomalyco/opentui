@@ -744,7 +744,7 @@ impl EditorCore {
         self.notifying(|cx| self.run(cx, action));
     }
 
-    /// Inserts text as a paste does, then tells change handlers about it.
+    /// Inserts text at the cursor, then tells change handlers about it.
     pub fn insert_notifying(&self, text: &str) {
         self.notifying(|_| self.insert(text));
     }
@@ -969,7 +969,9 @@ impl Behavior for EditorCore {
     fn paste(&self, cx: &mut Cx<'_>, text: &str) -> bool {
         let before = self.epoch();
         let (row, col, _) = self.cursor();
-        self.tracked(|| self.insert(text));
+        // As Core's handlePaste: whole escape sequences go before the text is inserted, C1 forms included.
+        let text = crate::input::strip_ansi_sequences(text);
+        self.tracked(|| self.insert(&text));
         self.changed_since(cx, before);
         self.cursor_moved_since(cx, (row, col));
         true

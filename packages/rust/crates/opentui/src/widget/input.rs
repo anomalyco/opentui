@@ -9,7 +9,8 @@ use std::rc::Rc;
 
 /// A single-line text field with Core's editing keys, undo, mouse selection, and paste.
 ///
-/// Enter calls [`Self::on_submit`]. Line breaks in typed or pasted text are dropped. Change the keys with
+/// Enter calls [`Self::on_submit`]. Line breaks in typed or pasted text are dropped, and a paste loses its escape
+/// sequences as with [`strip_ansi_sequences`](crate::input::strip_ansi_sequences), as in Core. Change the keys with
 /// [`Self::bind`] and [`Self::unbind`]; [`EditorAction`] lists what they can do.
 ///
 /// ```no_run
