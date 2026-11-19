@@ -234,7 +234,8 @@ jobs:
 
   # The heavy CI runs after merge. A release waits for the run of its commit instead of repeating it: a release from
   # main shares its push with Build Core and Build Packages, and a vX.Y.Z tag points at a commit on main that already
-  # passed. Nothing builds or publishes until both runs passed, so a broken commit never reaches npm.
+  # passed. Build Native runs beside it, but nothing is signed or published until both runs passed, so a broken
+  # commit never reaches npm or a GitHub release.
   ci-gate:
     name: Verify CI on the release commit
     if: ${{ needs.prepare.outputs.release == 'true' }}
@@ -289,11 +290,11 @@ jobs:
             done
           done
 
-  # Build native libraries and packages
+  # Build native libraries and packages. Their artifacts stay in this run, so the build does not wait for ci-gate.
   build-native:
     name: Build Native
     if: ${{ needs.prepare.outputs.release == 'true' }}
-    needs: [prepare, validate-version, ci-gate]
+    needs: [prepare, validate-version]
     uses: ./.github/workflows/build-native.yml
     with:
       version: ${{ needs.prepare.outputs.fullTag }}
@@ -340,7 +341,7 @@ jobs:
   npm-publish:
     name: NPM Publish
     if: ${{ needs.prepare.outputs.release == 'true' }}
-    needs: [prepare, sign-windows-artifacts, smoke-test]
+    needs: [prepare, ci-gate, sign-windows-artifacts, smoke-test]
     uses: ./.github/workflows/npm-latest-release.yml
     permissions:
       contents: read
@@ -352,10 +353,11 @@ jobs:
       smokeTest: false
       distTag: ${{ needs.prepare.outputs.distTag }}
 
+  # Signing waits for ci-gate, and so does every job after it. npm-publish and github-release name it too.
   sign-windows-artifacts:
     name: Sign Windows DLL Artifacts
     if: ${{ needs.prepare.outputs.release == 'true' }}
-    needs: [prepare, build-native]
+    needs: [prepare, ci-gate, build-native]
     runs-on: blacksmith-8vcpu-windows-2025
     permissions:
       id-token: write
@@ -644,7 +646,7 @@ jobs:
   github-release:
     name: Create GitHub Release
     if: ${{ needs.prepare.outputs.release == 'true' }}
-    needs: [prepare, build-examples, npm-publish]
+    needs: [prepare, ci-gate, build-examples, npm-publish]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       # Creates the release and uploads its assets.
