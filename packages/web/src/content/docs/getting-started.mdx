@@ -1,6 +1,6 @@
 ---
 title: Getting started
-description: Start with one OpenTUI quickstart, then choose a framework
+description: Start with one OpenTUI quickstart, then choose a binding
 skill:
   entry: true
   intents: [getting-started, intro, examples, agent-skill]
@@ -24,12 +24,13 @@ do not need to choose a framework before you complete it.
 Check [Runtime and platform support](/docs/getting-started/runtime-support) before you use Node.js, cross-compile, or
 deploy to another target.
 
-## Choose a framework
+## Choose a binding
 
-- [`@opentui/core`](/docs/core-concepts/renderables) uses imperative renderables and events directly.
+- [`@opentui/core`](/docs/core-concepts/renderables) uses imperative renderables and events from TypeScript.
 - [`@opentui/react`](/docs/bindings/react) uses React components, hooks, and state.
 - [`@opentui/solid`](/docs/bindings/solid) uses Solid components, signals, and effects.
 - [Rust](/docs/bindings/rust) uses the `opentui` crate's widgets and event loop on the native renderer, without JavaScript.
+- [C and Zig](/docs/native/overview) call the native library through `opentui.h`.
 
 If you use Core, read [Renderables](/docs/core-concepts/renderables) after the quickstart.
 
@@ -42,8 +43,7 @@ If you use Core, read [Renderables](/docs/core-concepts/renderables) after the q
 - [Testing](/docs/core-concepts/testing) renders apps in memory for assertions and snapshots.
 - [Package entry points](/docs/reference/package-entrypoints) lists supported import paths.
 - [Lifecycle and cleanup](/docs/core-concepts/lifecycle) owns terminal restoration and resource release.
-- [Native rendering](/docs/native/overview) explains the scene model and native C and Zig interfaces.
-- [Rust](/docs/bindings/rust) covers the Rust crates, from installing them to serving apps over SSH.
+- [Native rendering](/docs/native/overview) explains the scene model.
 
 ## Explore the examples
 
