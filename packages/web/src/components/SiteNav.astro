@@ -102,7 +102,6 @@ const hasEnd = Astro.slots.has("end")
   }
 
   .bar {
-    position: relative;
     width: min(100%, var(--frame-width));
     margin-inline: auto;
     display: flex;
@@ -190,14 +189,15 @@ const hasEnd = Astro.slots.has("end")
     color: var(--link-color);
   }
 
-  /* The panel anchors below the bar with absolute positioning against the
-   * sticky header. The open panel fills the viewport: the toggle script
-   * docks the sticky header first and locks the page scroll. */
+  /* The panel anchors to the sticky header's bottom edge and takes the
+   * rest of the viewport: 100% is the header's own height, whatever its
+   * padding at this width. The toggle script docks the sticky header first
+   * and locks the page scroll. */
   .menu .pane {
     position: absolute;
     top: 100%;
     inset-inline: 0;
-    height: calc(100vh - var(--site-nav-height));
+    height: calc(100dvh - 100%);
     overflow-y: auto;
     overscroll-behavior: contain;
     background: var(--page-background);

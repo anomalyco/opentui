@@ -270,14 +270,15 @@ const releasePage = channelCounterpart(Astro.url.pathname.replace(/\/+$/, ""), c
     margin-inline-start: 0.75rem;
   }
 
-  /* The panel anchors below the chrome band with absolute positioning
-   * against the sticky header. The open panel fills the viewport: the
-   * toggle script docks the sticky chrome first and locks the page scroll. */
+  /* The panel anchors to the sticky header's bottom edge, below both chrome
+   * rows, and takes the rest of the viewport: 100% is the header's own
+   * height. The toggle script docks the sticky chrome first and locks the
+   * page scroll. */
   .subnav .pane {
     position: absolute;
     top: 100%;
     inset-inline: 0;
-    height: calc(100vh - var(--site-nav-height) - 2.75rem);
+    height: calc(100dvh - 100%);
     overflow-y: auto;
     overscroll-behavior: contain;
     background: var(--page-background);
