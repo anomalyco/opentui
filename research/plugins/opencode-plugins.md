@@ -9,9 +9,11 @@ and the OpenDock directory), the plugin API they use, and anomalyco/opencode's o
 weekly-download counts are for the week 2026-11-12 → 2026-11-18 read from `api.npmjs.org/downloads/point/last-week`.
 Where a number comes from another source it is cited inline.
 
-**Purpose:** identify the most popular and most complex plugins, record what host capabilities each needs, and
-assess whether each fits the PsychoScript **reducer model** (`{ event, state }` → `{ state, slots, commands }`, no
-global state between events, host functions only, no timers / no ambient I/O / no npm imports).
+**Purpose:** identify the most popular and most complex plugins, record what each needs **functionally**, and —
+because existing plugins do not have to run as they are — specify **how each would be rewritten as a PsychoScript
+reducer** (`{ event, state }` → `{ state, slots, commands }`, no global state between events, host functions only, no
+timers / no ambient I/O / no npm imports). Only blockers a rewrite *cannot avoid* are flagged: **long-running
+background work, streaming, native dependencies, or very large in-memory state.**
 
 ---
 
@@ -94,13 +96,14 @@ Source: repo clone `packages/plugins`, `packages/gui-plugins`, `packages/tui/src
 - **Figma** (`packages/plugins/figma`) — install from Git, not npm. `index.ts` calls exactly two transform hooks:
   `ctx.mcp.transform(...)` to register Figma's remote MCP server (OAuth/DCR, loopback callback, existing credential
   storage) and `ctx.skill.transform(...)` to register a vendored Figma skill bundle. No timers, no background work.
-  **Reducer fit:** yes — two replayable transforms + durable credential storage.
+  **Rewrite as reducer:** trivially — on `init` call host `mcp.register()` + `skill.register()` and return nothing;
+  the OAuth handshake is a host function, not plugin state. No blockers.
 
 **TUI feature-plugins** (`packages/tui/src/feature-plugins`, registered in `builtins.ts`): `HomeFooter`, `PromptFooter`,
 `PromptBtw`, `SidebarContext`, `SidebarLimit`, `SidebarMcp`, `SidebarTodo`, `SidebarFooter`, `Notifications`, `Plugins`
 (the plugin-manager UI), `Stats`, `Merman` (mermaid), `Latex`, `Storybook` (dev-only, `OPENCODE_STORY`), `DiffViewer`.
 These are slot + keymap + data-subscription renderers — the model the reducer's `{ slots, commands }` output maps onto
-directly.
+directly (each is archetype **K**, below).
 
 **Built-in GUI plugins** (`packages/gui-plugins`): per its README, "every feature of the desktop and web app that is
 not the core shell is a built-in GUI plugin: the terminal, review, files, the browser, SSH, WSL, the updater and more."
@@ -111,69 +114,70 @@ The checked-in representative is **WSL** (`src/wsl/*`), a multi-process plugin (
 ## 3. Community plugins, ranked (stars + weekly downloads)
 
 Ranked primarily by GitHub stars, then npm weekly downloads. Stars via GitHub API on 2026-11-19; downloads via
-`api.npmjs.org` week 2026-11-12→18. "dl/wk" blank = not published under that name or not measured. "Mentions" =
-official docs ecosystem page (**EC**), awesome-opencode (**AO**), OpenDock directory (**OD**), opencode.im (**IM**).
+`api.npmjs.org` week 2026-11-12→18. "dl/wk" blank = not published under that name or not measured. Mentions tagged in the
+"What it does" cell: **EC** official ecosystem page · **AO** awesome-opencode · **OD** OpenDock · **IM** opencode.im.
 
-Cx = complexity (S/M/L). "Reducer?" = fits the reducer model as-is (✓), mostly (◐), or not without additions (✗).
+The right column is the **reducer rewrite**: the archetype letter (defined in §5), the events → state → `{returns}`,
+and the host functions, with `⚠` only on the four irreducible blockers. Cx = complexity (S/M/L).
 
-| # | Plugin (author) | Stars | dl/wk | Mentions | What it does | API surface | Host capabilities | Cx |
-|---|---|---|---|---|---|---|---|---|
-| 1 | ponytail (dietrichgebert) | 194,586 | — | OD | "Lazy senior dev mode" multi-agent harness; opencode is one of several targets | CLI wrapper / harness, subagent orchestration | shell, subagents, streaming, timers | L |
-| 2 | mem0 / @mem0/opencode-plugin (Mem0 Inc) | 69,238 (mem0ai/mem0) | 164 (`@mem0/opencode-plugin`) | AO, OD | Persistent cross-session memory: 9 MCP memory tools, 16 slash commands, lifecycle hooks | tool.transform, command, mcp, hooks | network/embeddings, persistent storage, hooks | L |
-| 3 | context7 (Upstash) | 65,108 (upstash/context7) | — (`context7-opencode`) | OD, IM | Wires Context7 MCP + a documentation skill for library docs RAG | mcp, skill | network/fetch, MCP | M |
-| 4 | openviking / @openviking/opencode-plugin (ByteDance) | 42,466 (volcengine/openviking) | 1,562 | OD, IM, AO | OpenViking repo retrieval + long-term memory (Magpie recall/capture, model switching) | tool, model, memory hooks | network, LLM, persistent storage, background recall | L |
-| 5 | @plannotator/opencode (backnotprop) | 13,585 | 7,315 | EC, OD, AO, IM | Interactive plan review: browser annotation UI, strike/replace/comment on plans | session hooks, plan interception, tool | LLM/session access, local HTTP UI, filesystem | L |
-| 6 | opencode-antigravity-auth (NoeFabris) | 11,073 | 5,327 | EC, AO, IM | Use Google Antigravity's free Gemini/Claude/GPT via IDE auth | provider.transform, auth | OAuth, network, token refresh, secrets | S |
-| 7 | oh-my-opencode-slim (alvinunreal) | 10,292 | 8,737 | OD, IM | Slim fork of oh-my-opencode: subagents, LSP/AST tools, tmux, MCP | tool, agent, mcp | shell, subagents, LSP, tmux, background | L |
-| 8 | opencode-dynamic-context-pruning (Tarquinen) | 4,508 | — (dcp) | EC, OD, AO | Prunes obsolete tool outputs from context before compaction | chat/session hooks (transform) | LLM/session access, context editing | M |
-| 9 | opencode-openai-codex-auth (numman-ali) | 2,203 | 4,142 | EC | Use ChatGPT Plus/Pro subscription in opencode | provider.transform, auth | OAuth, network, token refresh | S |
-| 10 | opencode-mem (tickernelz) | 1,880 | — | AO | Local vector-DB memory, auto-capture, web UI | tool, mcp | vector DB, embeddings, persistent storage, subprocess | L |
-| 11 | opencode-gemini-auth (jenslys) | 1,776 | 5,681 | EC, AO | Google account auth for Gemini plan | provider.transform, auth | OAuth, network, token refresh | S |
-| 12 | opencode-supermemory (supermemoryai) | 1,670 | 2,428 | EC, IM | Persistent memory via Supermemory service | tool, hooks | network/fetch, LLM | M |
-| 13 | kimaki (remorses) | 1,452 | — | AO, OD | Discord bot to control opencode sessions (also a model-switch plugin) | SDK, server, webhook | network, LLM, background bot loop | L |
-| 14 | caspian (TryCaspian) | 971 (caspian-sdk) | 50 (`caspian-opencode-plugin`) | AO | Inbox for agents (email/Telegram/Discord), slash commands, notifications | command, hooks, notifications | network, polling/websocket, notifications | M |
-| 15 | opencode-notifier (mohak34) | 867 | — | EC | Desktop notifications + sound on permission/completion/error | event hooks | notifications, sound | S |
-| 16 | agent-notifications (777genius) | 835 | — | IM, AO | Desktop + webhook notifications for session events | event hooks | network (webhook), notifications | S |
-| 17 | opencode-pty (shekohex) | 613 | 4,002 | EC, IM | Background processes in a PTY with interactive input | tool | shell/PTY spawn, streaming | M |
-| 18 | opencode-swarm (zaxbysauce) | 537 | — | AO, IM | Verification-gated swarm: architect, review, test, security agents | agent, command | subagents, git, persistence | L |
-| 19 | opencode-scheduler (different-ai) | 520 | 3,385 | EC | Cron-syntax recurring jobs via launchd/systemd | tool, hooks | timers/background, system scheduler | M |
-| 20 | micode (vtemian) | 513 | — | EC, AO | Brainstorm → plan → implement workflow, worktree isolation | agent, command, hooks | subagents, git worktree, AST tools | L |
-| 21 | operator-memory (@aerovato) | — | — | AO, OD, IM | Durable Markdown memory (specs/decisions) across partitions | tool, hooks | filesystem, git, session access | M |
-| 22 | opencode-goal-plugin (willytop8) | 289 | — | EC | Session-scoped `/goal` workflow that auto-continues | command, session hook | LLM/session access, loop | M |
-| 23 | opencode-agent-memory (joshuadavidthomas) | 365 | — | AO | Letta-inspired persistent, self-editable memory blocks | tool, hook | persistent storage, session access | M |
-| 24 | opencode-agent-skills (joshuadavidthomas) | 292 | — | AO | Dynamic skill discovery across project/user/plugin dirs | skill | filesystem (read/discover) | S |
-| 25 | opencode-cursor (ephraimduncan) | 286 | 6 | AO | Cursor subscription models via OAuth + local proxy | provider.transform, auth | OAuth, network, local HTTP proxy | M |
-| 26 | subtask2 (@openspoon) | 257 | 61 | EC | Extends `/commands` into granular orchestration | command, agent | session access, subagents | M |
-| 27 | opencode-ensemble (hueyexe) | 264 | — | AO, IM | Parallel agent teams, peer messaging, worktrees, dashboard | agent, command, server | subagents, git worktree, live dashboard | L |
-| 28 | opencode-websearch-cited (ghoulr) | 248 | 295 | EC | Native websearch with grounded citations | tool, provider | network/fetch | S |
-| 29 | opencode-vibeguard (inkdust2021) | 220 | 1,554 | EC | Redact secrets/PII before LLM call, restore locally | chat/session hook (transform) | secrets, session/context editing | M |
-| 30 | opencode-wakatime (angristan) | 205 | 656 | EC, AO | WakaTime activity tracking | event hooks | network/fetch, timers (heartbeat) | S |
-| 31 | opencode-morph-fast-apply (JRedeker) | 170 | — | EC, AO | 10× code editing via Morph Fast Apply API, lazy markers | tool, hook | network/fetch, git/diff | M |
-| 32 | opencode-snip (VincentHardouin) | 163 | 958 | AO | Prefix shell commands with `snip` to cut LLM-token use 60–90% | tool/shell hook | shell, context editing | S |
-| 33 | opencode-plugin-otel (DEVtheOPS) | 156 | — | AO | OTLP/gRPC telemetry (metrics/logs/traces) to any backend | event hooks | network, streaming/export | M |
-| 34 | opencode-conductor (derekbar90) | 134 | 514 | EC | Context → Spec → Plan → Implement workflow automation | agent, command | subagents, git, persistence | L |
-| 35 | opencode-claude-code-plugin (khalilgharbaoui) | 134 | 20 | AO | Run Claude via the official `claude` CLI subprocess | provider, tool | process spawn, session/proxy | M |
-| 36 | basemind (Goldziher) | 124 | 395 (`basemind-opencode`) | AO | MCP context layer: tree-sitter code-map, RAG, git history | mcp, tool | filesystem, embeddings, git, subprocess | L |
-| 37 | opencode-firecrawl (firecrawl) | 103 | — (`opencode-firecrawl`) | EC | Web scraping/crawl/search via Firecrawl CLI | tool | subprocess, network | M |
-| 38 | opencode-snippets (JosXa) | 93 | 2,816 | AO | Inline `#snippet` text expansion in the prompt | command/prompt hook, UI | prompt/composer UI, storage | S |
-| 39 | opencode-morph-plugin (morphllm) | 91 | — | EC | Fast Apply editing, WarpGrep search, compaction | tool, hook | network/fetch, git | M |
-| 40 | opencode-llm-proxy (KochC) | 91 | — | AO, IM | Local API gateway exposing OpenAI/Anthropic/Gemini endpoints | provider, server, tool | local HTTP server, streaming, process spawn | L |
-| 41 | OpenCodeRAG (MrDoe) | 70 | — | AO | Local semantic code search: tree-sitter chunking + LanceDB | tool, chat.message | filesystem watch, embeddings, index, subprocess | L |
-| 42 | opencode-zellij-namer (24601) | 66 | 35 | EC | Auto Zellij session naming from opencode context | session hook | shell (zellij control), session access | S |
-| 43 | opencode-skills-tui (aihaipeng) | 54 | — | AO, IM | V2 sidebar browsing skills, SKILL.md previews | tui slots, data | UI slots, filesystem, reactive data | M |
-| 44 | opencode-failover (bulutmuf) | 52 | — | AO | API-key rotation/quarantine across multiple keys | provider, tool | secrets, network, state | M |
-| 45 | opencode-sentry-monitor (stolinski) | 51 | 352 | EC | Trace/debug agents with Sentry AI monitoring | event hooks | network/export, streaming | M |
-| 46 | opencode-supabase (supabase-community) | 44 | 159 | EC | Login, Management API tools, bundled skills, MCP setup | tool, mcp, skill | OAuth, network, secrets | M |
-| 47 | FlowDeck (DVNghiem) | 42 | — | AO | 25-agent workflow orchestration, SQLite memory, deep hooks | agent, command, hooks, mcp | subagents, SQLite, network, background | L |
-| 48 | @telemetry-dev/opencode | 38 (telemetry-dev/telemetry) | — | AO | OpenTelemetry traces of agent turns/model calls/tools | event hooks | network/export, streaming | M |
-| 49 | opencode-dir-tree-tui (aihaipeng) | 29 | 266 | AO, IM | V2 sidebar file tree with git status + actions | tui slots, data, keybinds | UI slots, filesystem, git | M |
-| 50 | opencode-mission-control (nigel-dev) | 29 | — | AO, OD | Parallel agents in tmux worktrees, DAG plans, merge train | agent, command, server | tmux, git worktree, subagents, timers | L |
-| 51 | opencode-agents-sidebar (Mark1708) | 23 | — | AO | Browse OhMyOpenAgent agents in the TUI sidebar | tui slots, data | UI slots, reactive data | S |
-| 52 | opencode-usage-monitor (Mark1708) | — | — | AO | OpenAI & Z.AI quota usage in the TUI sidebar | tui slots, data, network | UI slots, network/fetch | M |
-| 53 | opencode-helicone-session (H2Shami) | 15 | 92 | EC | Inject Helicone session headers for request grouping | provider/hook | network, config | S |
-| 54 | opencode-tavily (tavily-ai) | 10 | 96 | EC | Web search/extraction via Tavily CLI | tool | subprocess, network | S |
-| 55 | opencode-daytona (daytona) | 7 (daytona/integrations) | — | EC | Run opencode sessions in isolated Daytona sandboxes | tool, hooks | network, sandbox API, background sync | L |
-| 56 | opencode-jfrog-plugin (jfrog) | 1 | — (`@jfrog/opencode-plugin`) | EC | JFrog platform integration | tool, mcp, auth | network, secrets | M |
+| # | Plugin (author) | Stars · dl/wk | What it does — mentions | Needs functionally | Reducer rewrite (events · state · returns · host fns) | Cx |
+|---|---|---|---|---|---|---|
+| 1 | ponytail (dietrichgebert) | 194,586 · — | "Lazy senior dev mode" multi-agent harness; opencode one target [OD] | subagents, worktrees, model routing | `G` · `command`,`session.idle` → `subagent.spawn` · state `{plan}` · `slots.status`,`commands` · ⚠ background agent loop | L |
+| 2 | mem0 / @mem0/opencode-plugin (Mem0 Inc) | 69,238 (mem0ai/mem0) · 164 | Persistent cross-session memory: 9 tools, 16 slash cmds, hooks [AO,OD] | durable memory store, retrieval, capture-on-message | `C` · `chat.message`,`session.start` → `memory.store/search` · state `{cursor}` · `slots.status`,`commands` · no runtime blocker (embeddings live in the host/service, not the plugin) | L |
+| 3 | context7 (Upstash) | 65,108 (upstash/context7) · — | Wires Context7 MCP + a documentation skill [OD,IM] | MCP registration, doc retrieval | `B` · `init` → `mcp.register`,`skill.register` · state `{}` · returns — · no blocker | M |
+| 4 | openviking / @openviking/opencode-plugin (ByteDance) | 42,466 (volcengine/openviking) · 1,562 | Repo retrieval + long-term memory, model switching [OD,IM,AO] | memory recall/capture, model switching | `C`+`A` · `chat.message`,`usage` → `memory.*`,`model.switch` · state `{recall}` · `slots.status` · ⚠ background recall + process restart | L |
+| 5 | @plannotator/opencode (backnotprop) | 13,585 · 7,315 | Browser plan-annotation UI, strike/replace/comment [EC,OD,AO,IM] | plan interception, local review UI | `D` · `plan.created` → `ui.openAnnotator` · state `{}` · returns — · ⚠ long-lived HTTP UI + plan streaming (streaming) | L |
+| 6 | opencode-antigravity-auth (NoeFabris) | 11,073 · 5,327 | Use Antigravity's free models via IDE auth [EC,AO,IM] | OAuth, durable token store | `A` · `login`,`provider.updated` → `auth.authorize/refresh` · state `{tokens}` · `slots.status`,`commands=[login]` · no blocker | S |
+| 7 | oh-my-opencode-slim (alvinunreal) | 10,292 · 8,737 | Slim fork: subagents, LSP/AST tools, tmux, MCP [OD,IM] | subagents, LSP/AST, tmux | `G` · `session.idle`,`command` → `subagent.spawn`,`lsp` · state `{plan}` · `slots.status`,`commands` · ⚠ background agents + LSP processes | L |
+| 8 | opencode-dynamic-context-pruning (Tarquinen) | 4,508 · — | Prunes obsolete tool outputs from context [EC,OD,AO] | context read/edit pre-compaction | `D` · `chat.message` → `context.prune` · state `{rules}` · returns — · no blocker (pure text transform) | M |
+| 9 | opencode-openai-codex-auth (numman-ali) | 2,203 · 4,142 | Use ChatGPT Plus/Pro subscription [EC] | OAuth, durable token store | `A` · `login` → `auth.authorize` · state `{tokens}` · `slots.status` · no blocker | S |
+| 10 | opencode-mem (tickernelz) | 1,880 · — | Local vector-DB memory, auto-capture, web UI [AO] | embeddings, vector storage, capture | `C` · `chat.message` → `memory.*` · state `{index cursor}` · `slots.status`,`commands` · ⚠ native vector DB + background indexing | L |
+| 11 | opencode-gemini-auth (jenslys) | 1,776 · 5,681 | Google account auth for Gemini plan [EC,AO] | OAuth, durable token store | `A` · `login` → `auth.authorize` · state `{tokens}` · `slots.status` · no blocker | S |
+| 12 | opencode-supermemory (supermemoryai) | 1,670 · 2,428 | Persistent memory via Supermemory service [EC,IM] | hosted memory service | `C` · `chat.message`,`session.start` → `memory.*` · state `{cursor}` · `slots.status`,`commands` · no runtime blocker (hosted service) | M |
+| 13 | kimaki (remorses) | 1,452 · — | Discord bot to control opencode sessions [AO,OD] | webhook ingress, session start | `G`+`E` · webhook `message` → `session.start`,`notify` · state `{bot map}` · returns — · ⚠ long-running bot + inbox polling | L |
+| 14 | caspian (TryCaspian) | 971 (caspian-sdk) · 50 | Agent inbox (email/Telegram/Discord), slash cmds [AO] | inbox polling, notifications | `E`+`C` · `inbox.message` → `notify`,`inbox.fetch` · state `{threads}` · `commands` · ⚠ inbox polling + streaming | M |
+| 15 | opencode-notifier (mohak34) | 867 · — | Desktop notifications + sound [EC] | os notification, sound | `E` · `permission`,`complete`,`error` → `notify.desktop` · state `{}` · returns — · no blocker | S |
+| 16 | agent-notifications (777genius) | 835 · — | Desktop + webhook alerts [IM,AO] | os notification, webhook | `E` · `permission`,`complete`,`error` → `notify.webhook` · state `{}` · returns — · no blocker | S |
+| 17 | opencode-pty (shekohex) | 613 · 4,002 | Background processes in a PTY [EC,IM] | PTY spawn, interactive IO | `J` · `command` → `pty` · ⚠ PTY is streaming + process-lifetime (irreducible in-plugin) | M |
+| 18 | opencode-swarm (zaxbysauce) | 537 · — | Verification-gated swarm (architect/review/test/security) [AO,IM] | subagents, review loop | `G` · `command` → `subagent.spawn` · state `{plan}` · `commands` · ⚠ swarm loop + verification gating | L |
+| 19 | opencode-scheduler (different-ai) | 520 · 3,385 | Cron jobs via launchd/systemd [EC] | host-owned timer, session start | `L` · `job.due` (host-fired) → `session.start` · state `{jobs}` · `commands` · no blocker **iff** host owns the timer | M |
+| 20 | micode (vtemian) | 513 · — | Brainstorm → plan → implement, worktree isolation [EC,AO] | subagents, git worktree, AST | `G` · `command` → `subagent.*`,`git.worktree` · state `{plan}` · `commands` · ⚠ multi-phase subagent loop | L |
+| 21 | operator-memory (@aerovato) | — · — | Durable Markdown memory across partitions [AO,OD,IM] | durable markdown store, session inject | `C` · `chat.message`,`session.start` → `memory.get/set`,`git` · state `{}` · `slots.status`,`commands` · no blocker (plain storage) | M |
+| 22 | opencode-goal-plugin (willytop8) | 289 · — | Session `/goal` workflow that auto-continues [EC] | session admission, auto-continue | `D` · `session.idle` → `session.start` · state `{goal}` · `commands=[goal]` · ⚠ auto-continue loop unless host-driven | M |
+| 23 | opencode-agent-memory (joshuadavidthomas) | 365 · — | Letta-inspired self-editable memory blocks [AO] | persistent blocks, session access | `C` · `chat.message` → `memory.*` · state `{blocks}` · `commands` · no blocker | M |
+| 24 | opencode-agent-skills (joshuadavidthomas) | 292 · — | Dynamic skill discovery across dirs [AO] | filesystem read/discover | `B` · `location.sync` → `skill.discover` (fs) · state `{}` · returns — · no blocker | S |
+| 25 | opencode-cursor (ephraimduncan) | 286 · 6 | Cursor subscription via OAuth + local proxy [AO] | OAuth, local HTTP proxy | `A` · `login` → `auth.authorize` · state `{tokens}` · `slots.status` · ⚠ local proxy process | M |
+| 26 | subtask2 (@openspoon) | 257 · 61 | Extends `/commands` into orchestration [EC] | subagents, command tree | `G` · `command` → `subagent.*` · state `{plan}` · `commands` · ⚠ orchestration loop (mild) | M |
+| 27 | opencode-ensemble (hueyexe) | 264 · — | Parallel agent teams, worktrees, dashboard [AO,IM] | subagents, git worktree, live UI | `G` · `command` → `subagent.*`,`git.worktree` · state `{plan}` · `slots.status`,`commands` · ⚠ peer messaging + live dashboard (bg + streaming) | L |
+| 28 | opencode-websearch-cited (ghoulr) | 248 · 295 | Native websearch with citations [EC] | web search | `H` · `tool.websearch` → `websearch.query` · state `{}` · returns result · no blocker (network via host) | S |
+| 29 | opencode-vibeguard (inkdust2021) | 220 · 1,554 | Redact secrets/PII before LLM call [EC] | secret scan, context edit | `D` · `chat.message`,`tool` → `secrets.redact` · state `{map}` · returns — · no blocker (pure transform) | M |
+| 30 | opencode-wakatime (angristan) | 205 · 656 | WakaTime activity tracking [EC,AO] | time accounting, heartbeat upload | `E` · `usage`,`session.end` → `wakatime.heartbeat` · state `{elapsed}` · returns — · ⚠ heartbeats have no per-event trigger → needs a host timer | S |
+| 31 | opencode-morph-fast-apply (JRedeker) | 170 · — | 10× code edit via Morph Fast Apply [EC,AO] | remote code-edit API, diff | `H` · `tool.edit` → `fetch`,`git` · state `{}` · returns diff · no blocker (network) | M |
+| 32 | opencode-snip (VincentHardouin) | 163 · 958 | Prefix shell cmds with `snip` to cut tokens [AO] | shell filter subprocess | `D` · `shell.before` → `exec snip` · state `{}` · returns — · ⚠ subprocess (native) | S |
+| 33 | opencode-plugin-otel (DEVtheOPS) | 156 · — | OTLP/gRPC telemetry export [AO] | usage/tool events, export | `F` · `usage`,`tool` → `telemetry.export` (batched) · state `{counters}` · `slots.status` · no blocker | M |
+| 34 | opencode-conductor (derekbar90) | 134 · 514 | Context → Spec → Plan → Implement automation [EC] | subagents, git, persistence | `G` · `command` → `subagent.*`,`git` · state `{plan}` · `commands` · ⚠ workflow loop | L |
+| 35 | opencode-claude-code-plugin (khalilgharbaoui) | 134 · 20 | Run Claude via the official `claude` CLI [AO] | subprocess, session proxy | `A`+`H` · `provider.request` → `provider.proxy` · state `{accounts}` · `slots.status` · ⚠ spawns `claude` subprocess (native) | M |
+| 36 | basemind (Goldziher) | 124 · 395 | MCP context layer: code-map, RAG, git history [AO] | tree-sitter, embeddings, git | `C`+`H` · `location.sync` → `code.index`,`memory.*` · state `{cursor}` · `commands` · ⚠ tree-sitter + git history, background indexing | L |
+| 37 | opencode-firecrawl (firecrawl) | 103 · — | Web scrape/crawl/search via Firecrawl CLI [EC] | subprocess or API | `H` · `tool.crawl` → `exec` or `fetch` · state `{}` · returns result · ⚠ subprocess CLI (avoidable via their HTTP API) | M |
+| 38 | opencode-snippets (JosXa) | 93 · 2,816 | Inline `#snippet` expansion in the prompt [AO] | composer input hook, snippet store | `K` · `prompt.input` → `composer.expand` · state `{snippets}` · `commands` · no blocker | S |
+| 39 | opencode-morph-plugin (morphllm) | 91 · — | Fast Apply, WarpGrep search, compaction [EC] | remote API, git | `H` · `tool.edit`,`tool.search` → `fetch` · state `{}` · returns diff · no blocker (network) | M |
+| 40 | opencode-llm-proxy (KochC) | 91 · — | Local gateway serving OpenAI/Anthropic/Gemini [AO,IM] | local HTTP server, streaming | `I` · — · ⚠ persistent server + streaming (irreducible; becomes host infra) | L |
+| 41 | OpenCodeRAG (MrDoe) | 70 · — | Local semantic code search: tree-sitter + LanceDB [AO] | index, embeddings, watch | `C` · `chat.message` → `code.search` · state `{cursor}` · `commands` · ⚠ native LanceDB + tree-sitter + file-watch + embeddings | L |
+| 42 | opencode-zellij-namer (24601) | 66 · 35 | Auto Zellij session naming [EC] | session context, shell control | `K` · `session.ready` → `shell.zellij` · state `{}` · returns — · no blocker | S |
+| 43 | opencode-skills-tui (aihaipeng) | 54 · — | V2 sidebar browsing skills, previews [AO,IM] | fs read, slot render | `K` · `location.sync` → `fs.read` · state `{open}` · `slots.sidebar`,`commands` · no blocker | M |
+| 44 | opencode-failover (bulutmuf) | 52 · — | API-key rotation/quarantine [AO] | secrets, provider state | `A`+`F` · `provider.error` → `provider.switchKey` · state `{keys}` · `slots.status` · ⚠ quarantine re-enable timer (mild) | M |
+| 45 | opencode-sentry-monitor (stolinski) | 51 · 352 | Trace agents with Sentry AI Monitoring [EC] | usage/tool events, export | `F` · `usage`,`tool` → `telemetry.export` · state `{counters}` · `slots.status` · no blocker (batch) | M |
+| 46 | opencode-supabase (supabase-community) | 44 · 159 | Login, Management API tools, skills, MCP [EC] | OAuth, API tools, MCP | `B`+`H` · `login`,`tool.*` → `auth.authorize`,`fetch` · state `{tokens}` · `commands` · no blocker | M |
+| 47 | FlowDeck (DVNghiem) | 42 · — | 25-agent workflow, SQLite memory, deep hooks [AO] | subagents, SQLite, idle monitor | `G` · `command`,`idle` → `subagent.*`,`memory.*` · state `{plan}` · `slots.status`,`commands` · ⚠ 25 agents + SQLite + idle monitor (bg + large state) | L |
+| 48 | @telemetry-dev/opencode | 38 (telemetry-dev/telemetry) · — | OpenTelemetry traces of turns/tools [AO] | event streaming, OTel export | `F` · `usage`,`tool` → `telemetry.export` · state `{counters}` · returns — · no blocker (batch) | M |
+| 49 | opencode-dir-tree-tui (aihaipeng) | 29 · 266 | V2 sidebar file tree + git status [AO,IM] | fs read, git status, slot | `K` · `location.sync` → `fs.readDir`,`git.status` · state `{dirs}` · `slots.sidebar`,`commands` · no blocker | M |
+| 50 | opencode-mission-control (nigel-dev) | 29 · — | Parallel agents in tmux worktrees, DAG, merge train [AO,OD] | tmux, worktrees, subagents | `G` · `command` → `subagent.*`,`git.worktree` · state `{plan}` · `slots.status`,`commands` · ⚠ tmux worktrees + merge train (bg) | L |
+| 51 | opencode-agents-sidebar (Mark1708) | 23 · — | Browse OhMyOpenAgent agents in TUI [AO] | read data, slot | `K` · `location.sync` → data read · state `{}` · `slots.sidebar` · no blocker | S |
+| 52 | opencode-usage-monitor (Mark1708) | — · — | OpenAI & Z.AI quota in the sidebar [AO] | network quota fetch, slot | `K` · `usage` → `fetch` · state `{quota}` · `slots.sidebar` · no blocker | M |
+| 53 | opencode-helicone-session (H2Shami) | 15 · 92 | Inject Helicone headers for grouping [EC] | provider header injection | `A`+`F` · `provider.request` → `provider.header` · state `{}` · returns — · no blocker | S |
+| 54 | opencode-tavily (tavily-ai) | 10 · 96 | Web search/extraction via Tavily CLI [EC] | subprocess or API | `H` · `tool.search` → `exec` or `fetch` · state `{}` · returns result · ⚠ subprocess CLI (avoidable via HTTP API) | S |
+| 55 | opencode-daytona (daytona) | 7 (daytona/integrations) · — | Run sessions in isolated Daytona sandboxes [EC] | sandbox API, session sync | `H`+`G` · `command` → `sandbox.spawn` · state `{sandbox}` · `commands` · ⚠ sandbox session + git sync (bg) | L |
+| 56 | opencode-jfrog-plugin (jfrog) | 1 · — | JFrog platform integration [EC] | auth, API tools, MCP | `B`+`H` · `login`,`tool.*` → `auth.authorize`,`fetch` · state `{tokens}` · `commands` · no blocker | M |
 
 Not starred here (small/uncounted) but relevant and present in official docs or awesome lists: `opencode-shell-strategy`
 (JRedeker), `opencode-md-table-formatter` (franlol), `opencode-notifier`, `opencode-type-inject` (nick-vi),
@@ -189,77 +193,100 @@ V1 ecosystem page lists ~30 hand-curated plugins. So the tail is long; the table
 
 ---
 
-## 4. The 10 most complex plugins (and why they are complex)
+## 4. The 10 most complex plugins (rewritten as reducers)
 
-1. **oh-my-opencode / oh-my-opencode-slim** (70,997 ⭐ / 10,292 ⭐; 50,568 / 8,737 dl/wk). Background agents, pre-built
-   LSP/AST/MCP tools, curated subagents, a Claude-Code-compat layer, tmux integration. Needs process spawn, subagent
-   dispatch, long-running background agents, and streaming. **Reducer fit ✗** — this is exactly "long-lived, sequential,
-   background" work the reducer explicitly does not support.
+For each: the functional need, then the reducer rewrite (events → state → `{returns}` → host functions), flagging only
+irreducible blockers.
 
-2. **ponytail** (194,586 ⭐). A huge multi-agent "senior-dev mode" harness whose opencode support is one target among
-   several. Long-running orchestration loops, streaming, subagents. **✗** — background work + a live agent loop.
+1. **oh-my-opencode / oh-my-opencode-slim** (70,997 ⭐ / 10,292 ⭐; 50,568 / 8,737 dl/wk). Need: run background
+   subagents with LSP/AST tools, tmux visibility, Claude-Code-compat. Reducer: on `session.idle` and `command`, keep
+   `state:{plan, agents}`, return `slots.status` + `commands`, calling host `subagent.spawn`, `lsp.query`, `tmux`.
+   **⚠ Blockers: background agents + LSP processes are long-running work a reducer cannot own**; the subagents must be
+   host-executed and report back as events.
 
-3. **mem0 / @mem0/opencode-plugin** (69,238 ⭐ repo). Persistent memory with 9 MCP tools, 16 slash commands and
-   lifecycle hooks that auto-capture decisions, search prior context, pre-fetch error memories. **◐** — the hook
-   endpoints are event-driven (fit), but the memory backend needs network/embeddings and durable storage outside the
-   plugin state.
+2. **ponytail** (194,586 ⭐). Need: a multi-agent orchestration loop over several CLI agents. Reducer: on
+   `session.idle`/`command`, dispatch subagents and keep `state:{plan}` → `slots.status`. **⚠ Blocker: the live
+   agent-supervision loop.** Not reducible as a per-event pure run.
 
-4. **context7** (65,108 ⭐ repo). Wires the Context7 MCP server plus a docs skill. **◐** — mostly declarative `mcp` +
-   `skill` transforms (fit), but relies on a hosted MCP service over the network.
+3. **mem0 / @mem0/opencode-plugin** (69,238 ⭐ repo). Need: persistent memory with capture-on-message and search at
+   session start. Reducer: on `chat.message` call host `memory.capture`; on `session.start` call host `memory.search`
+   and return `slots.status` + `commands`. Storage and embeddings live in the host/service; **no blocker** in the
+   reducer itself (the memory backend is a host capability, not plugin state).
 
-5. **openviking / Magpie** (42,466 ⭐). Repository retrieval + long-term memory with recall/capture and model switching,
-   and automatic restart. **✗** — cross-session memory indexing, background recall, and process restart are not
-   per-event pure functions.
+4. **context7** (65,108 ⭐ repo). Need: register a docs MCP + a skill. Reducer: on `init` call host
+   `mcp.register(context7)` + `skill.register(docs)`; return nothing. **No blocker** (purely declarative; the retrieval
+   is a host-managed MCP server).
 
-6. **@plannotator/opencode** (13,585 ⭐; 7,315 dl/wk). Intercepts plan mode and opens a browser annotation UI; the user
-   edits the plan and it is applied. **✗** — needs a long-lived local HTTP UI, plan-streaming, and a
-   request/response round-trip that spans events (effectively a dialog outside the event loop).
+5. **openviking / Magpie** (42,466 ⭐). Need: memory recall/capture + model switching + automatic restart. Reducer: on
+   `chat.message`/`usage` call host `memory.*` and `model.switch`; return `slots.status`. **⚠ Blocker: background
+   recall and the automatic *restart*** (a long-running supervision action, not an event).
 
-7. **opencode-mission-control / opencode-ensemble** (29/264 ⭐). Orchestrate parallel agents in tmux-isolated git
-   worktrees with DAG plans, merge trains, peer messaging, and live dashboards. **✗** — timers, process/tmux control,
-   git-remote work, and long-running supervision.
+6. **@plannotator/opencode** (13,585 ⭐; 7,315 dl/wk). Need: intercept plan mode, show a browser annotation UI, apply
+   edits. Reducer: on `plan.created`, call host `ui.openAnnotator(plan)` and return nothing; apply arrives back as a
+   `plan.edited` event. **⚠ Blockers: a long-lived local HTTP UI and plan streaming** — the review surface must be
+   host-provided, not reducer-held.
 
-8. **OpenCodeRAG** (70 ⭐). Tree-sitter AST chunking, LanceDB index, file-watch live re-indexing, Ollama/OpenAI
-   embeddings, CLI + a chunk-retrieval tool. **✗** — filesystem watch, a native vector database, and background
-   indexing are all outside the reducer's reach (also implies a native dependency: LanceDB/embeddings binaries).
+7. **opencode-mission-control / opencode-ensemble** (29 / 264 ⭐). Need: parallel agents in tmux-isolated worktrees,
+   DAG plans, merge trains. Reducer: on `command`, keep `state:{plan,dag}`, return `slots.status` + `commands`, calling
+   host `subagent.*` / `git.worktree` / `tmux`. **⚠ Blocker: supervising long-running agents/merges and the live
+   dashboard (background + streaming).**
 
-9. **opencode-llm-proxy** (91 ⭐). Runs a local HTTP gateway serving OpenAI/Anthropic/Gemini-compatible endpoints over
-   any configured opencode model, with streaming and parallel tool calls. **✗** — a long-running local server with
-   streaming is the anti-reducer shape.
+8. **OpenCodeRAG** (70 ⭐). Need: tree-sitter chunking, LanceDB index, file-watch re-indexing, embedding search. Reducer:
+   on `chat.message`, call host `code.search(q)`; host owns the index. **⚠ Blockers: native LanceDB + tree-sitter, file
+   watching, and background embedding/indexing** — the index is host infrastructure; the reducer is only the query
+   front-end.
 
-10. **FlowDeck** (42 ⭐). 25 specialist agents over a four-phase cycle, 24 skills, SQLite persistent memory, deep
-    system hooks (context monitoring, idle summaries, shell-env injection), and ensemble `/fd-council`. **✗** —
-    persistent SQLite state + multi-agent orchestration + idle/context monitoring require background work and large
-    in-memory/serialized state.
+9. **opencode-llm-proxy** (91 ⭐). Need: a local HTTP gateway with streaming and parallel tool calls. **⚠ Blocker: a
+   persistent local server with streaming — irreducible in-plugin.** The reducer can only *configure* a host-provided
+   proxy; it cannot *be* the server.
 
-Close seconds: `opencode-scheduler` (launchd/systemd timers — **needs timers/background**, ✗), `basemind` (tree-sitter
-code-map + git history + embeddings, ✗), `deja-vu` (a local Go binary indexing other agents' transcripts, ✗ native
-subprocess).
+10. **FlowDeck** (42 ⭐). Need: 25 specialist agents, SQLite memory, idle/context monitoring. Reducer: on `command` and
+    `session.idle`, keep `state:{plan,phase}`, return `slots.status` + `commands` via host `subagent.*` / `memory.*`.
+    **⚠ Blockers: multi-agent orchestration + SQLite memory (background work + large state), plus idle monitoring.**
+
+Close seconds: `opencode-scheduler` (**needs a host-owned timer**; otherwise reducible), `basemind` (tree-sitter +
+git-history native + background indexing, ⚠), `deja-vu` (a local Go binary indexing transcripts — **native
+subprocess**, ⚠).
 
 ---
 
-## 5. Reducer-model fit, summarized
+## 5. Reducer rewrite archetypes
 
-Fits the reducer as-is (✓): declaritive transform providers — auth providers that only `provider.transform` + OAuth
-are borderline (async token refresh); `figma`-style `mcp.transform` + `skill.transform`; simple notifiers and
-web-search tools driven by a single event.
+Every plugin in §3 maps onto one of these. "Events" = what the reducer reacts to, "state" = the plain JSON it keeps,
+"returns" = `{ state, slots, commands }`, "host fns" = the host functions it calls.
 
-Mostly (◐): memory and telemetry plugins whose **hook endpoints** are event-driven but whose **backend** (embeddings,
-vector DB, SQLite, remote export) lives outside plugin state.
+| Archetype | Events | State | Returns | Host functions | Blockers |
+|---|---|---|---|---|---|
+| **A** auth / provider (OAuth) | `login`, `provider.updated` | `{tokens, recents}` | `slots.status`, `commands=[login]` | `auth.authorize`, `auth.refresh`, `storage`, `provider.register` | none, if refresh is lazy on call; only a background refresh loop would block |
+| **B** declarative registration | `init`, `location.sync` | `{}` | — | `mcp.register`, `skill.register`, `provider.register` | none — the MCP/skill is host-managed |
+| **C** cross-session memory/context | `chat.message`, `session.start`, `session.end` | `{cursor, keys}` | `slots.status`, `commands`, context injection | `memory.get/set/query`, `session.inject`, `git` | only when the plugin owns a vector index (native DB + background indexing); hosted/Markdown memory is clean |
+| **D** intercept / gate (transform) | `chat.message`, `tool.execute.before`, `shell.before` | `{rules}` | a permission decision | `permission.decide`, `context.prune`, `secrets.redact` | none for pure text transforms; ⚠ if the check shells out or calls an external analyzer |
+| **E** notification | `permission`, `session.complete`, `session.error` | `{}` | — | `notify.desktop`, `notify.webhook` | none (network via host); WakaTime additionally needs a host timer |
+| **F** telemetry / usage | `usage`, `tool`, `session.message` | `{counters}` | `slots.status`, `commands=[report]` | `telemetry.export` | none (batch export); only continuous streaming export blocks |
+| **G** multi-agent orchestration | `session.idle`, `command` | `{plan, phase}` | `slots.status`, `commands` | `subagent.spawn`, `git.worktree`, `session.start`, `lsp` | **⚠ long-running background supervision** — the reducer cannot own the subagent loop; host must drive it and feed events |
+| **H** external service / CLI bridge | `tool.<name>` | `{}` | tool result | `websearch.query`, `fetch`, `exec` | ⚠ only the subprocess-backed bridges (firecrawl/tavily CLI, `snip`); HTTP ones reduce cleanly |
+| **I** local server / proxy | — | — | — | (host-owned server) | **⚠ persistent server + streaming — irreducible in-plugin**; reducer only configures it |
+| **J** PTY / interactive shell | `command` | — | — | `pty` | **⚠ streaming + process-lifetime, irreducible in-plugin** |
+| **K** TUI sidebar / status / UI | `location.sync`, `session.ready`, `command` | `{openDirs,…}` | `slots.sidebar.content`, `commands`, keybinds | `fs.readDir`, `git.status`, `data` collections | none — this is the ideal reducer |
+| **L** scheduler / cron | `job.due` (host-fired) | `{jobs}` | `commands` | `scheduler.register`, `session.start` | none iff the host owns the timer; ⚠ if the plugin must run its own clock |
 
-Does not fit (✗), and what's missing:
+### The only four blockers (a rewrite cannot avoid them)
 
-- **Long-running background work / agents.** oh-my-opencode, swarm, ensemble, mission-control, FlowDeck, scheduler,
-  kimaki, ponytail.
-- **Streaming.** llm-proxy, otel/telemetry exporters, plannotator (plan stream), opencode-pty.
-- **Timers / scheduling.** scheduler (launchd/systemd), wakatime heartbeats, token-refresh jobs.
-- **Subscriptions / long-lived listeners.** `session.hook("experimental.idle")`, watch-based indexers.
-- **Large in-memory or native state.** vector DBs (opencode-mem, OpenCodeRAG, mem0), SQLite (FlowDeck, telemetry).
-- **Native / subprocess dependencies.** tree-sitter + LanceDB + embeddings, the `claude`/`firecrawl`/`tavily` CLIs,
-  local Go binaries (deja-vu), local proxies (cursor, llm-proxy, antigravity bridge).
+1. **Long-running background work** — multi-agent orchestration (archetype **G**: oh-my-opencode, ensemble, swarm,
+   mission-control, conductor, micode, FlowDeck, ponytail), bot/inbox loops (kimaki, caspian), sandbox sync (daytona),
+   background recall/restart (openviking).
+2. **Streaming** — llm-proxy (**I**), opencode-pty (**J**), plannotator's plan stream and agent dashboards.
+3. **Native dependencies** — vector DB/tree-sitter/embeddings (opencode-mem, OpenCodeRAG, basemind, deja-vu's Go
+   binary), subprocess CLIs (firecrawl, tavily, snip, claude-code-plugin, morph), local proxies (cursor, antigravity
+   bridge).
+4. **Very large in-memory state** — memory/telemetry indexes that must persist across events (opencode-mem,
+   OpenCodeRAG, FlowDeck's SQLite); these must live in a host-provided durable store, not the reducer's JSON state.
 
-These missing pieces map one-for-one onto the gaps the protoype REPORT.md flags (long-lived runs unviable today, no
-compute/memory budget, no GC, no interrupt handle).
+Everything else — auth, notification, intercept-transforms, declarative MCP/skill registration, TUI slots/commands,
+and single-shot network/tool calls — reduces onto `{ event, state } → { state, slots, commands }` with no blocker, once
+the host exposes the corresponding function (e.g. `auth.authorize`, `memory.get/set`, `notify.*`, `websearch.query`,
+`fs.readDir`, `git.status`). These same gaps map one-for-one onto the prototype `REPORT.md` limitations (long-lived runs
+unviable today, no compute/memory budget, no GC, no interrupt handle).
 
 ---
 
