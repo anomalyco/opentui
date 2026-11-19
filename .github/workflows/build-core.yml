@@ -265,13 +265,31 @@ jobs:
         with:
           save: true
 
-      # Hash native files before install and test steps write into packages/native.
+      # The committed native files, so install and test steps that write into packages/native don't change it. A
+      # release commit changes only the version lines of build.zig.zon and package.json here, and the library does
+      # not embed them, so the key leaves them out and the release reuses the result of the commit before it.
+      - name: Hash native test inputs
+        id: native-inputs
+        env:
+          OS: ${{ matrix.os }}
+        run: |
+          set -euo pipefail
+          hash=$(
+            {
+              git ls-files -s -- packages/native .github/workflows/build-core.yml \
+                ':(exclude)packages/native/build.zig.zon' ':(exclude)packages/native/package.json'
+              git show HEAD:packages/native/build.zig.zon | sed -E '/^    \.version = "[^"]*",$/d'
+              git show HEAD:packages/native/package.json | sed -E '/^  "version": "[^"]*",$/d'
+            } | sha256sum | cut -d ' ' -f 1
+          )
+          echo "key=native-tests-v2-$OS-$ZIG_VERSION-$hash" >> "$GITHUB_OUTPUT"
+
       - name: Restore native test result
         id: native-tested
         uses: actions/cache/restore@v5
         with:
           path: .native-tests-passed
-          key: native-tests-v1-${{ matrix.os }}-${{ env.ZIG_VERSION }}-${{ hashFiles('packages/native/**', '.github/workflows/build-core.yml') }}
+          key: ${{ steps.native-inputs.outputs.key }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -353,7 +371,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: .native-tests-passed
-          key: ${{ steps.native-tested.outputs.cache-primary-key }}
+          key: ${{ steps.native-inputs.outputs.key }}
 
       # This job does not need the build job. Without a cached library for this runner, it waits for
       # this run's cross-compile only now, so its setup and native tests overlap the build.
