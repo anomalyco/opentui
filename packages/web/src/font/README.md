@@ -1,45 +1,40 @@
-# OpenTUI Mono
+# OpenMono
 
-OpenTUI Mono is the typeface for the site. Iosevka compiles
-`private-build-plans.toml` into static WOFF2 files. Iosevka does not write
-an OpenType variable font.
+OpenMono is the typeface for the site. It is Anomaly's monospace family,
+built on [Iosevka](https://github.com/be5invis/Iosevka) by Belleve Invis,
+under the SIL Open Font License 1.1. The license text is in
+`public/fonts/LICENSE`.
 
-The live files are Regular, Bold, Italic, and Bold Italic in
-`public/fonts/`. `/lab/font` compares those files with the next compile in
-`public/fonts/candidate/`.
+The site does not compile the typeface. The files in `public/fonts/` are
+the WOFF2 files that the OpenCode website serves. That website makes them
+from the OpenMono 1.000 build with `services/site/script/openmono.py` in
+`anomalyco/opencode`. The files have no ligatures. Each character is one
+cell wide, and that includes arrows and geometric shapes.
 
-## Plan
+Each style is split by `unicode-range`, so a page loads only the files that
+its text needs:
 
-The plan sets glyphs, metrics, weights (100 to 900), and widths (Normal +
-SemiCondensed). Ligatures are off. The plan makes one web-subset family.
-`subset.include` sets the Unicode ranges in the files: Basic Latin, Latin-1,
-Latin Extended-A, combining marks, Cyrillic and Cyrillic Supplement
-(U+0400 to U+052F), punctuation, currency, arrows, math operators, box
-drawing, block elements, and geometric shapes. Iosevka drops a glyph that is
-not in these ranges, and the browser uses a fallback font for it.
-Change keys in the plan. Do not start from a blank UFO or FontForge file.
+- `latin`: Latin, punctuation, arrows, box drawing, block elements, and
+  geometric shapes. Pages preload the Regular file.
+- `cyrillic`: Cyrillic, for Regular and Bold. Italic text in Cyrillic uses a
+  fallback font.
+- `rest`: the other characters, such as math operators, combining marks, and
+  `✓`.
 
-Identity glyphs: `a g l I 1 0 8 6 9 @ { } ( ) _ *`.
+`layouts/Minimal.astro` declares the files as the `OpenMono` family. The
+`unicode-range` of each rule must be the range of that group in the
+website's `openmono.json`. The browser uses a fallback font for a character
+that is not in the files, such as Braille patterns and CJK.
 
-These keys change the look first: `sb`, width `shape`, `xHeight`,
-`archDepth`, and the identity keys in `variants.design`.
+## Update
 
-## Compile
-
-You need Node 26 and a clone of [Iosevka](https://github.com/be5invis/Iosevka)
-at `v34.4.0`. You do not need `ttfautohint` for `webfont-unhinted`.
-Node 23 and earlier compile some outlines differently (for example `a`,
-`3`, `¤`, `Ŋ`, and some arrows), so the next compile does not match the
-live files.
+Copy the files from a checkout of `anomalyco/opencode`:
 
 ```
-git clone --depth 1 --branch v34.4.0 https://github.com/be5invis/Iosevka.git
-cp packages/web/src/font/private-build-plans.toml Iosevka/
-cd Iosevka && npm install
-npm run build -- --jCmd=4 webfont-unhinted::OpenTUIMono
+cd packages/web
+bun run fonts:update <opencode checkout>/services/site/src/asset/fonts
 ```
 
-Copy the next compile into `packages/web/public/fonts/candidate/` as
-`OpenTUIMono-{Regular,Bold,Italic,BoldItalic}.woff2`. Compare it with
-the live files at `/lab/font`. When you accept the next compile, copy those
-four files to `packages/web/public/fonts/`.
+The script writes the ten font files and `public/fonts/LICENSE`. Then it
+compares the rules in `layouts/Minimal.astro` with `openmono.json`. If a
+range differs, it fails and prints the range that the rule needs.

@@ -18,7 +18,7 @@ Remove an element when spacing, order, plain text, or standard HTML can do the s
 
 - Use black text on a white background, or the dark-mode equivalent.
 - Use the standard browser link color, but do not use the visited color.
-- Use OpenTUI Mono as the primary typeface. Use the OpenTUI wordmark as the main brand element.
+- Use OpenMono as the primary typeface. Use the OpenTUI wordmark as the main brand element.
 - Use whitespace and standard HTML elements to separate ideas.
 - Do not add cards, panels, badges, decorative rules, gradients, shadows, rounded containers, or ornamental backgrounds.
 - Do not add an element only to fill empty space.

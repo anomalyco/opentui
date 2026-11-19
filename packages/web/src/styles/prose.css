@@ -172,8 +172,6 @@
   font-size: inherit;
   line-height: 1.2;
   font-variant-ligatures: none;
-  /* Keep diagram symbols in one cell, including arrows with wide font variants. */
-  font-feature-settings: "NWID";
 }
 
 .prose .terminal-frame {

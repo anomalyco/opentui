@@ -18,6 +18,7 @@
     "preview": "astro preview",
     "astro": "astro",
     "optimize:video": "bash scripts/optimize-landing-video.sh",
+    "fonts:update": "bun scripts/update-fonts.ts",
     "recordings:record": "bash scripts/recordings/bin/record",
     "recordings:build": "bun scripts/recordings/bin/build",
     "docs:visuals": "bun scripts/generate-doc-visuals.ts",

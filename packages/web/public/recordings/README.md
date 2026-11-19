@@ -159,7 +159,7 @@ Use this minimum ratio for a full-width composition:
 cols / rows >= (boxWidth / boxHeight) * (lineToEm / chToEm)
 ```
 
-For OpenTUI Mono, `chToEm` is approximately `0.6` and `lineToEm` is approximately `1.1`.
+For OpenMono, `chToEm` is approximately `0.6` and `lineToEm` is approximately `1.1`.
 
 A media-area ratio from `1.2` to `1.3` usually needs a recording ratio from approximately `2.2` to `2.4`.
 

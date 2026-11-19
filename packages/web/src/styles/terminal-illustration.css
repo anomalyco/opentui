@@ -34,7 +34,7 @@
 .terminal-illustration__screen {
   color: inherit;
   flex: none;
-  font-family: "OpenTUI Mono", ui-monospace, monospace;
+  font-family: "OpenMono", ui-monospace, monospace;
   font-variant-ligatures: none;
   white-space: pre;
 }
