@@ -1290,6 +1290,8 @@ fn stream_bracketed_paste() {
         assert_eq!(timed.feed(&end[index..]), [paste("hello")]);
     }
     assert_eq!(split(&[b"\x1b[200~abc\x1b", b"\x1b[201~"]), [paste("abc\x1b")]);
+    // Decoded as Core's `decodePasteBytes`: lossy UTF-8 without a leading byte order mark.
+    assert_eq!(parse(b"\x1b[200~\xef\xbb\xbfa\xff\x1b[201~"), [paste("a\u{fffd}")]);
     let payload = "x".repeat(100_000);
     assert_eq!(parse(format!("\x1b[200~{payload}\x1b[201~z").as_bytes()), [paste(&payload), ch('z')]);
     // Native code reports a paste in pieces of the payload buffer's size; joined, it keeps at most 4 MiB.

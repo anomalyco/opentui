@@ -996,10 +996,13 @@ fn key_aliases_replace_standalone_names() {
         press(&keymap, key);
     }
     assert_eq!(taken(&calls), ["submit", "submit", "close", "page"]);
-    // `escape` and `enterprise` keep their spelling.
-    let names: Vec<String> =
-        keymap.parse_key_sequence("escape").unwrap().into_iter().map(|part| part.stroke.name).collect();
-    assert_eq!(names, ["escape"]);
+    // A binding parses as the layer expanded it, one sequence per key; `escape` keeps its spelling.
+    let strokes = |parts: Vec<KeySequencePart>| -> Vec<Stroke> { parts.into_iter().map(|part| part.stroke).collect() };
+    let parse = |key| -> Vec<Vec<Stroke>> { keymap.parse_binding(key).unwrap().into_iter().map(strokes).collect() };
+    let plain = |key| strokes(keymap.parse_key_sequence(key).unwrap());
+    assert_eq!(parse("shift+enter,ESC"), [plain("shift+return"), plain("escape")]);
+    assert_eq!(plain("shift+return")[0].name, "return");
+    assert_eq!(parse("escape"), [plain("escape")]);
 }
 
 #[test]

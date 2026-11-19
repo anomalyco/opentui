@@ -394,6 +394,10 @@ fn textareas_insert_lines_wrap_and_submit() {
     // A legacy line feed (Ctrl+J) inserts a line too.
     app.feed(b"\n");
     assert!(area.text().starts_with("x\ty\n\n"), "{:?}", area.text());
+    // Core's paste row with C1 control strings: a paste drops whole sequences, as Core's handlePaste does.
+    area.set_text("");
+    app.paste("\x1b]0;title\x07y\u{9d}0;t\u{9c}z\u{90}q\u{9c}\u{98}s\u{9c}\u{9e}p\u{9c}\u{9f}a\x07w");
+    assert_eq!(area.text(), "yzw");
 }
 
 #[test]
@@ -1354,7 +1358,7 @@ fn tables_return_their_columns_and_rows() {
 
 #[test]
 fn image_views_decode_and_present_images() {
-    use opentui::native::{Image, ImageProtocol, SessionOptions};
+    use opentui::native::{Image, ImageFit, ImageProtocol, SessionOptions};
     use opentui::widget::ImageView;
     let app = TestApp::new(4, 2);
     let red = [255u8, 0, 0, 255];
@@ -1364,8 +1368,17 @@ fn image_views_decode_and_present_images() {
     app.root().add(&view);
     // Native code turns image placements into glyphs when it encodes output, so captures show blank cells.
     app.render();
+    // Core's `getFittedSize` rows for its 2x2 image.
+    assert_eq!(view.fitted_size(60, 40, 2.0), (60, 30));
+    assert_eq!(view.fit(ImageFit::Cover).fitted_size(60, 40, 2.0), (80, 40));
+    assert_eq!(view.fit(ImageFit::Fill).fitted_size(60, 40, 2.0), (60, 40));
+    // 100x40 cells at 900x800 pixels: 9x20-pixel cells, which native paint fits with.
+    assert_eq!(view.cell_aspect(), 2.0);
+    app.session().set_image_resolution(100, 40, 900, 800).unwrap();
+    assert_eq!(view.fit(ImageFit::Contain).fitted_size(60, 40, view.cell_aspect()), (60, 27));
     assert!(view.load(b"not an image").is_err());
     view.image(None);
+    assert_eq!(view.fitted_size(60, 40, 2.0), (0, 0));
     app.render();
 
     // Three Kitty uploads of noise, which compresses to nothing, are about 12 KB each and do not fit one frame of a

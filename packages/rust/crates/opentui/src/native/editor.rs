@@ -629,6 +629,19 @@ impl Context {
         })?;
         Ok(id)
     }
+
+    /// The document cell offset at the end of `text` as an [`EditBuffer`] with this width method and tab width lays
+    /// it out, without a buffer: its cells, control notation included, plus one per line break (LF, CR, or CRLF). A
+    /// `tab_width` of 0 gives a new buffer's tab width; other values round as in [`EditBuffer::set_tab_width`], and
+    /// one over 255 fails. Core's `measureEditText`.
+    pub fn measure_edit_text(&self, text: &str, width_method: WidthMethod, tab_width: u32) -> Result<u32> {
+        let length = count("ot_edit_measure_text", text.len())?;
+        let mut width = 0;
+        check("ot_edit_measure_text", unsafe {
+            sys::ot_edit_measure_text(self.as_raw(), text.as_ptr(), length, width_method.raw(), tab_width, &mut width)
+        })?;
+        Ok(width)
+    }
 }
 
 /// The visible region of an editor or text view, in display cells.

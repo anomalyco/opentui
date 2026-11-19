@@ -285,7 +285,7 @@ program status reports.
 | `Diff`         | A unified diff in one column or side by side, with line numbers, signs, and colored lines.                                      |
 | `Markdown`     | Rendered or source Markdown with nested lists, tables, code, code-block renderers, and inline hooks; streamed text stays cheap. |
 | `TerminalView` | A shell or any program on a pseudo-terminal, emulated natively, with scrollback and selection.                                  |
-| `ImageView`    | A picture, drawn with the Kitty protocol, Sixel, or half blocks.                                                                |
+| `ImageView`    | A picture, drawn with the Kitty protocol, Sixel, or half blocks; `fitted_size` gives its size in cells.                         |
 | `VideoView`    | An MP4 file played natively, with audio, looping, and seeking; events report the position, the end, and failures.               |
 | `FrameBuffer`  | A grid of cells you draw into yourself, which native code shows every frame.                                                    |
 | `Custom<T>`    | A widget you paint yourself by implementing `Component`.                                                                        |
@@ -659,6 +659,8 @@ The framework sits on layers you can use directly:
   input; a split UTF-8 character and a bare `ESC [`, which may start a mouse
   report, wait for the next read instead. Core's 1,100 parser test vectors
   check the events made from the native parser's results.
+  `decode_paste_bytes` and `strip_ansi_sequences` read pasted text as Core's
+  helpers of the same names do.
 - `term`: raw mode, terminal size, signals, and wakeups, on top of `libc`.
 - `style` and `layout`: colors that keep their terminal intent (RGB, palette,
   or default), attributes, styled spans, and typed flexbox properties.

@@ -609,35 +609,19 @@ impl<T: Clone + PartialEq + 'static> Keymap<T> {
     }
 
     fn compile_bindings(&self, bindings: &[Binding<T>]) -> (Vec<Rc<BindingState<T>>>, bool) {
-        let (tokens, expanders) = {
-            let state = self.state();
-            let tokens: HashMap<String, Stroke> =
-                state.tokens.iter().map(|(name, (_, stroke))| (name.clone(), stroke.clone())).collect();
-            (tokens, state.expanders.iter().map(|(_, expander)| expander.clone()).collect::<Vec<_>>())
-        };
+        let (tokens, expanders) = self.compile_inputs();
         let mut compiled: Vec<Rc<BindingState<T>>> = Vec::new();
         let mut has_token_bindings = false;
         for binding in bindings {
-            let expansions = match &binding.key {
-                Key::Stroke(stroke) => vec![(Key::Stroke(stroke.clone()), None)],
-                Key::Text(text) => match expand(text, &expanders) {
-                    Ok(expansions) => expansions,
-                    Err(message) => {
-                        self.error("binding-expand-error", message);
-                        continue;
-                    }
-                },
+            let keys = match expand_key(&binding.key, &tokens, &expanders) {
+                Ok(keys) => keys,
+                Err(message) => {
+                    self.error("binding-expand-error", message);
+                    continue;
+                }
             };
-            for (key, displays) in expansions {
-                let parsed = match &key {
-                    Key::Stroke(stroke) => stroke.normalized().map(|stroke| Parsed {
-                        parts: vec![KeySequencePart::from_stroke(stroke)],
-                        used_tokens: false,
-                        unknown_tokens: Vec::new(),
-                    }),
-                    Key::Text(text) => key::parse_sequence(text, &tokens),
-                };
-                let parsed = match parsed.and_then(|parsed| apply_displays(parsed, displays, &key)) {
+            for (key, parsed) in keys {
+                let parsed = match parsed {
                     Ok(parsed) => parsed,
                     Err(message) => {
                         self.error("binding-parse-error", message);
@@ -645,17 +629,7 @@ impl<T: Clone + PartialEq + 'static> Keymap<T> {
                     }
                 };
                 has_token_bindings |= parsed.used_tokens;
-                for token in &parsed.unknown_tokens {
-                    self.warn_once(
-                        format!("token:{token}"),
-                        "unknown-token",
-                        format!(
-                            "[Keymap] Unknown token \"{token}\" in key sequence \"{key}\"; binding was skipped until \
-                             the token is registered"
-                        ),
-                    );
-                }
-                if !parsed.unknown_tokens.is_empty() {
+                if !self.known_tokens(&parsed, &key) {
                     continue;
                 }
                 match compile_binding(binding, parsed.parts, &compiled) {
@@ -666,6 +640,26 @@ impl<T: Clone + PartialEq + 'static> Keymap<T> {
             }
         }
         (compiled, has_token_bindings)
+    }
+
+    /// The tokens and binding expanders, copied so that an expander may use the keymap.
+    fn compile_inputs(&self) -> (HashMap<String, Stroke>, Vec<Expander>) {
+        (self.tokens(), self.state().expanders.iter().map(|(_, expander)| expander.clone()).collect())
+    }
+
+    /// Whether `parsed` names only registered tokens. Warns once per unknown token otherwise.
+    fn known_tokens(&self, parsed: &Parsed, key: &dyn fmt::Display) -> bool {
+        for token in &parsed.unknown_tokens {
+            self.warn_once(
+                format!("token:{token}"),
+                "unknown-token",
+                format!(
+                    "[Keymap] Unknown token \"{token}\" in key sequence \"{key}\"; binding was skipped until the \
+                     token is registered"
+                ),
+            );
+        }
+        parsed.unknown_tokens.is_empty()
     }
 
     /// Registers a token that bindings name as `<name>`, such as `leader`. Layers that used the name before it was
@@ -1575,25 +1569,32 @@ impl<T: Clone + PartialEq + 'static> Keymap<T> {
         key::parse_single(&key.into(), &self.tokens())
     }
 
-    /// Parses a key sequence. A sequence with an unknown token is empty, with a warning.
+    /// Parses a key sequence. A sequence with an unknown token is empty, with a warning. Binding expanders do not
+    /// run; [`Self::parse_binding`] runs them.
     pub fn parse_key_sequence(&self, key: impl Into<Key>) -> Result<Vec<KeySequencePart>, String> {
         match key.into() {
             Key::Stroke(stroke) => Ok(vec![KeySequencePart::from_stroke(stroke.normalized()?)]),
             Key::Text(text) => {
                 let parsed = key::parse_sequence(&text, &self.tokens())?;
-                for token in &parsed.unknown_tokens {
-                    self.warn_once(
-                        format!("token:{token}"),
-                        "unknown-token",
-                        format!(
-                            "[Keymap] Unknown token \"{token}\" in key sequence \"{text}\"; binding was skipped until \
-                             the token is registered"
-                        ),
-                    );
-                }
-                Ok(if parsed.unknown_tokens.is_empty() { parsed.parts } else { Vec::new() })
+                Ok(if self.known_tokens(&parsed, &text) { parsed.parts } else { Vec::new() })
             }
         }
+    }
+
+    /// Parses a binding's key as layer registration does: the binding expanders run first, so with
+    /// [`comma_bindings`](super::addons::comma_bindings) and [`key_aliases`](super::addons::key_aliases) `"enter,esc"`
+    /// gives the sequences of `return` and `escape`. One sequence per expanded key, in order; a key with an unknown
+    /// token is left out, with a warning. Fails if any expanded key fails to parse, where a layer binds the others.
+    pub fn parse_binding(&self, key: impl Into<Key>) -> Result<Vec<Vec<KeySequencePart>>, String> {
+        let (tokens, expanders) = self.compile_inputs();
+        let mut sequences = Vec::new();
+        for (key, parsed) in expand_key(&key.into(), &tokens, &expanders)? {
+            let parsed = parsed?;
+            if self.known_tokens(&parsed, &key) {
+                sequences.push(parsed.parts);
+            }
+        }
+        Ok(sequences)
     }
 
     /// The canonical form of a key sequence, such as `ctrl+xn`.
@@ -1860,6 +1861,33 @@ fn compile_binding<T>(
 /// Whether `prefix` is a strict prefix of `sequence`.
 fn is_prefix(prefix: &[KeySequencePart], sequence: &[KeySequencePart]) -> bool {
     prefix.len() < sequence.len() && prefix.iter().zip(sequence).all(|(left, right)| left.stroke == right.stroke)
+}
+
+/// Each key the expanders give, with its parse or a parse error.
+type ParsedKeys = Vec<(Key, Result<Parsed, String>)>;
+
+/// A binding's key as layers compile it: each key the expanders give, parsed with its displays. The outer error is
+/// the expanders', an inner one a key's.
+fn expand_key(key: &Key, tokens: &HashMap<String, Stroke>, expanders: &[Expander]) -> Result<ParsedKeys, String> {
+    let expansions = match key {
+        Key::Stroke(stroke) => vec![(Key::Stroke(stroke.clone()), None)],
+        Key::Text(text) => expand(text, expanders)?,
+    };
+    Ok(expansions
+        .into_iter()
+        .map(|(key, displays)| {
+            let parsed = match &key {
+                Key::Stroke(stroke) => stroke.normalized().map(|stroke| Parsed {
+                    parts: vec![KeySequencePart::from_stroke(stroke)],
+                    used_tokens: false,
+                    unknown_tokens: Vec::new(),
+                }),
+                Key::Text(text) => key::parse_sequence(text, tokens),
+            };
+            let parsed = parsed.and_then(|parsed| apply_displays(parsed, displays, &key));
+            (key, parsed)
+        })
+        .collect())
 }
 
 type Expanded = Vec<(Key, Option<Vec<String>>)>;
