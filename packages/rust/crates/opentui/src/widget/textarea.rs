@@ -11,8 +11,9 @@ use std::rc::Rc;
 /// Multi-line text editing with Core's key bindings, undo, wrapping, mouse selection, and paste.
 ///
 /// The area grows with its content unless its height is set. Alt+Enter calls [`Self::on_submit`]. A paste loses its
-/// escape sequences as with [`strip_ansi_sequences`](crate::input::strip_ansi_sequences), as in Core. Change the keys
-/// with [`Self::bind`] and [`Self::unbind`]; [`EditorAction`] lists what they can do.
+/// escape sequences as with [`strip_ansi_sequences`](crate::input::strip_ansi_sequences) and its control characters
+/// but tab and line breaks, as in Core. Change the keys with [`Self::bind`] and [`Self::unbind`]; [`EditorAction`]
+/// lists what they can do.
 ///
 /// With the `tree-sitter` feature, [`Self::filetype`] highlights the text as it is edited; see
 /// [`syntax`](crate::syntax).
@@ -67,12 +68,14 @@ impl Textarea {
     }
 
     /// Replaces the text, clears undo history, and moves the cursor to the end. Does not call change handlers.
+    /// Control characters and escape sequences stay, shown as notation such as `^G`, while a paste strips them.
     pub fn set_text(&self, text: impl AsRef<str>) -> Self {
         self.0.set_text(text.as_ref());
         self.clone()
     }
 
-    /// Inserts text at the cursor as an undoable edit, replacing any selection, and calls change handlers.
+    /// Inserts text at the cursor as an undoable edit, replacing any selection, and calls change handlers. Control
+    /// characters stay, as with [`Self::set_text`].
     pub fn insert(&self, text: impl AsRef<str>) -> Self {
         self.0.insert_notifying(text.as_ref());
         self.clone()

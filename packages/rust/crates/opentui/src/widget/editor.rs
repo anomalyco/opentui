@@ -12,6 +12,7 @@ use crate::native::{
 };
 use crate::style::{Color, Span, Style};
 use crate::syntax::{Incremental, SyntaxTheme};
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::rc::Rc;
@@ -243,33 +244,6 @@ pub(crate) fn input_keymap() -> Keymap<EditorAction> {
     textarea_keymap().bind("enter", EditorAction::Submit).bind("linefeed", EditorAction::Submit)
 }
 
-/// Removes escape sequences and control characters, which the buffer would show as notation two or four cells wide.
-/// `keep_newlines` keeps tab, CR, and LF; otherwise line breaks become nothing and tabs stay.
-pub(crate) fn sanitize(text: &str, keep_newlines: bool) -> String {
-    let mut output = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(character) = chars.next() {
-        match character {
-            '\x1b' => match chars.next() {
-                Some('[') => while chars.next().is_some_and(|next| !('\x40'..='\x7e').contains(&next)) {},
-                Some(']' | 'P' | '_' | '^' | 'X') => {
-                    while let Some(next) = chars.next() {
-                        if next == '\x07' || (next == '\x1b' && chars.next_if_eq(&'\\').is_some()) {
-                            break;
-                        }
-                    }
-                }
-                _ => {}
-            },
-            '\t' => output.push('\t'),
-            '\n' | '\r' if keep_newlines => output.push(character),
-            _ if character.is_control() => {}
-            _ => output.push(character),
-        }
-    }
-    output
-}
-
 pub(crate) struct Colors {
     pub fg: Color,
     pub bg: Color,
@@ -434,10 +408,20 @@ impl EditorCore {
     /// Replaces the text without undo history, then moves the cursor to the end.
     pub fn set_text(&self, text: &str) {
         // The replacement removes all current text.
-        let text = self.limit(&sanitize(text, !self.single_line), usize::MAX);
+        let text = self.limit(&self.accepted(text), usize::MAX);
         self.clear_selection_state();
         self.report(self.buffer.set_text(&text, false));
         self.goto_buffer_end();
+    }
+
+    /// The text as the editor takes it: an `Input` drops line breaks, as Core's does. Control characters stay, and
+    /// the buffer shows them as notation.
+    fn accepted<'t>(&self, text: &'t str) -> Cow<'t, str> {
+        if self.single_line && text.contains(['\n', '\r']) {
+            text.replace(['\n', '\r'], "").into()
+        } else {
+            text.into()
+        }
     }
 
     /// The units `max_length` counts a character in: UTF-16 code units in an `Input`, one per character in a `Textarea`.
@@ -471,7 +455,7 @@ impl EditorCore {
 
     /// Inserts text at the cursor, replacing any selection.
     pub fn insert(&self, text: &str) {
-        let text = sanitize(text, !self.single_line);
+        let text = self.accepted(text);
         let removed =
             self.selection().map_or(0, |_| self.length(&self.report(self.view.selected_text()).unwrap_or_default()));
         let text = self.limit(&text, removed);
@@ -969,8 +953,12 @@ impl Behavior for EditorCore {
     fn paste(&self, cx: &mut Cx<'_>, text: &str) -> bool {
         let before = self.epoch();
         let (row, col, _) = self.cursor();
-        // As Core's handlePaste: whole escape sequences go before the text is inserted, C1 forms included.
-        let text = crate::input::strip_ansi_sequences(text);
+        // As Core's handlePaste: whole escape sequences go, C1 forms included, then control characters but tab, LF
+        // and CR.
+        let text: String = crate::input::strip_ansi_sequences(text)
+            .chars()
+            .filter(|character| !character.is_control() || matches!(character, '\t' | '\n' | '\r'))
+            .collect();
         self.tracked(|| self.insert(&text));
         self.changed_since(cx, before);
         self.cursor_moved_since(cx, (row, col));

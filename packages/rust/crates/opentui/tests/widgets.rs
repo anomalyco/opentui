@@ -1751,6 +1751,31 @@ fn pastes_follow_cores_vectors() {
 }
 
 #[test]
+fn editors_keep_control_characters_as_cores_vectors_do() {
+    // Core's EditBufferRenderable test runs the same rows. Rust's builders set the text, so "constructor" is "value".
+    let corpus: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../core/src/renderables/editor-controls.conformance.json"))
+            .unwrap();
+    let app = TestApp::new(20, 2);
+    for row in corpus["rows"].as_array().unwrap() {
+        let [name, widget, path, text, expected] = [0, 1, 2, 3, 4].map(|index| row[index].as_str().unwrap());
+        let value = match (widget, path) {
+            ("input", "insert") => Input::new(&app).max_length(6).insert(text).insert("!").value(),
+            ("input", _) => Input::new(&app).max_length(6).set_value(text).insert("!").value(),
+            (_, "insert") => Textarea::new(&app).insert(text).insert("!").text(),
+            _ => Textarea::new(&app).set_text(text).insert("!").text(),
+        };
+        assert_eq!(value, expected, "{name}: {widget} {path}");
+    }
+    // The buffer shows controls as notation cells, so no raw control reaches the terminal.
+    let area = Textarea::new(&app).set_text("A\x07B\x1bC\x0cD\u{85}E");
+    app.root().add(&area);
+    let frame = app.render().text();
+    assert!(frame.contains("A^GB^[C^LD<85>E"), "{frame:?}");
+    assert!(!frame.chars().any(|character| character.is_control() && character != '\n'), "{frame:?}");
+}
+
+#[test]
 fn replacing_an_input_value_respects_the_limit_of_the_new_text_only() {
     let app = TestApp::new(20, 1);
     let input = Input::new(&app).max_length(8).set_value("abc");
