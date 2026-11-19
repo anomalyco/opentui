@@ -10,6 +10,26 @@ const r = await bench.echo({ text: event.text })
 return { state, slots: { status: r.text } }
 ```
 
+## Summary (run 2; details in the tables below)
+
+| Measurement | Rust helper | Bun helper |
+|---|---:|---:|
+| Cold start: spawn → `initialize` answered | 1.0 ms | 7.8 ms |
+| Warm round trip, ~100 B / ~10 KB, raw client | 12 / 16 µs | 26 / 31 µs |
+| Plugin event awaiting `bench.echo` (without the call: 18 µs; in-process pack: 19 µs) | 37 µs (p99 50) | 50 µs (p99 65) |
+| `embed` (5 KB result); in process 224 µs | 249 µs | 259 µs |
+| Bad params rejected before sending (helper never started) | 19 µs per event | 19 µs per event |
+| 50 plugins, one event each awaiting their helper: 50 helpers / 1 shared (in-process pack: 0.25 ms) | 0.50 / 0.50 ms | 0.62 / 0.47 ms |
+| 50 CPU-bound `embed` calls: 50 helpers / 1 sequential shared helper | 1.3 / 12.4 ms | 1.4 / 12.2 ms |
+| Starting 50 helpers in parallel / 50 first calls to 1 shared helper (one start) | 14 / 2.2 ms | 46 / 9.4 ms |
+| RSS: 1 helper / 50 helpers / 1 shared after 50k calls | 1.8 / 88 / 2.2 MB | 16 / 816 / 38 MB |
+| Idle CPU, 50 helpers | 0 | 5–7% of one core |
+| Crash during a call → the plugin's promise rejects | 0.14–0.28 ms | 0.22–0.57 ms |
+| Next call after a crash (restart + call) | 1.2–1.3 ms | 8.6–8.7 ms |
+| Per-call timeout 100 ms → rejection; helper usable after `$/cancel` | 100–110 ms | 100 ms |
+| `stream` of 1,000 chunks | 1.0 ms | 0.56 ms |
+| Unused lazy namespaces injected into a run | 15–65 ns each | |
+
 ## Setup
 
 - Machine: Apple M5 Max (18 cores), 48 GB, macOS 26.7.1 (25G241).
