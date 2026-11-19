@@ -1015,7 +1015,7 @@ impl model::Model for MarkdownModel {
         let mut settings = Settings::default();
         configure(&subject, settings);
         for (step, command) in commands.iter().enumerate() {
-            let fail = |property| Some(model::Failure { property, step });
+            let fail = |property| model::fail(property, step);
             let before = app.render();
             match *command {
                 Command::Append(piece) => drop(subject.append(piece)),
@@ -1038,8 +1038,9 @@ impl model::Model for MarkdownModel {
             let shown = app.render();
             if matches!(command, Command::Scopes(_) | Command::Colors(_) | Command::Rerun)
                 && shown.text() != before.text()
+                && let Some(failure) = fail("theme or rerun changes no text (P11)")
             {
-                return fail("theme or rerun changes no text (P11)");
+                return Some(failure);
             }
             let twin_app = self.app();
             let twin = Markdown::new(&twin_app);
@@ -1047,14 +1048,18 @@ impl model::Model for MarkdownModel {
             configure(&twin, settings);
             twin.set_markdown(subject.markdown());
             let fresh = twin_app.render();
-            if shown != fresh {
+            if shown != fresh
+                && let Some(failure) = fail("frame equals a fresh document's, spans included (P1, P6)")
+            {
                 eprintln!("subject:\n{}\nfresh:\n{}", shown.text(), fresh.text());
-                return fail("frame equals a fresh document's, spans included (P1, P6)");
+                return Some(failure);
             }
             // With or without a hook: a removed hook's targets go too.
             for (x, y) in (0..24u16).flat_map(|y| (0..40u16).map(move |x| (x, y))) {
-                if subject.target_at(x, y) != twin.target_at(x, y) {
-                    return fail("click targets equal a fresh document's (P16)");
+                if subject.target_at(x, y) != twin.target_at(x, y)
+                    && let Some(failure) = fail("click targets equal a fresh document's (P16)")
+                {
+                    return Some(failure);
                 }
             }
         }
@@ -1128,20 +1133,29 @@ fn math_spans(source: &str, streaming: bool, conceal: bool) -> Vec<(usize, usize
 fn math_streams_like_fresh_documents(source: &str, ends: &[usize], agree: bool) -> Option<(&'static str, usize)> {
     let tex =
         |spans: Vec<(usize, usize, String)>| spans.into_iter().map(|(leaf, _, tex)| (leaf, tex)).collect::<Vec<_>>();
+    // A failure, unless MODEL_SKIP leaves its property out: then the stream goes on.
+    let fails = |property, end| model::enabled(property).then_some((property, end));
     let mut shown = Vec::new();
     for end in (1..=source.len()).filter(|&end| source.is_char_boundary(end)) {
         let now = math_spans(&source[..end], true, false);
-        if !shown.iter().all(|span| now.contains(span)) {
-            return Some(("math never reverts (P17)", end));
+        if !shown.iter().all(|span| now.contains(span))
+            && let found @ Some(_) = fails("math never reverts (P17)", end)
+        {
+            return found;
         }
-        if agree && tex(now.clone()) != tex(math_spans(&source[..end], true, true)) {
-            return Some(("conceal on and off show the same math", end));
+        if agree
+            && tex(now.clone()) != tex(math_spans(&source[..end], true, true))
+            && let found @ Some(_) = fails("conceal on and off show the same math", end)
+        {
+            return found;
         }
         shown = now;
     }
     let ended = math_spans(source, false, false);
-    if !shown.iter().all(|span| ended.contains(span)) {
-        return Some(("math never reverts (P17)", source.len()));
+    if !shown.iter().all(|span| ended.contains(span))
+        && let found @ Some(_) = fails("math never reverts (P17)", source.len())
+    {
+        return found;
     }
     let document = |app: &TestApp| {
         let markdown = Markdown::new(app).extensions(&[MarkdownExtension::Math]);
@@ -1156,14 +1170,16 @@ fn math_streams_like_fresh_documents(source: &str, ends: &[usize], agree: bool) 
         start = end;
         let twin = TestApp::with_hyperlinks(40, 24);
         document(&twin).streaming(true).set_markdown(&source[..end]);
-        if app.render() != twin.render() {
-            return Some(("streamed frame equals a fresh streaming one (invariant 4)", end));
+        if app.render() != twin.render()
+            && let found @ Some(_) = fails("streamed frame equals a fresh streaming one (invariant 4)", end)
+        {
+            return found;
         }
     }
     streamed.streaming(false);
     let oneshot = TestApp::with_hyperlinks(40, 24);
     document(&oneshot).set_markdown(source);
-    (app.render() != oneshot.render()).then_some(("ended stream equals one shot", source.len()))
+    if app.render() == oneshot.render() { None } else { fails("ended stream equals one shot", source.len()) }
 }
 
 fn chunk_ends(chunks: &[&str]) -> Vec<usize> {

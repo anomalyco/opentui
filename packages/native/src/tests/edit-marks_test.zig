@@ -247,9 +247,10 @@ const Harness = struct {
         for (commands, 0..) |command, step| {
             const plain = eb.tb.marks().len == 0;
             _ = work.take();
+            // A failed command leaves the model behind the buffer: the seed stops there, skipped or not.
             if (try apply(eb, &m, arena, command)) |property| return .{ .property = property, .step = step };
-            if (plain and work.take().mark_preparations != 0) return .{ .property = "empty mark work", .step = step };
-            if (try check(eb, &m, arena)) |property| return .{ .property = property, .step = step };
+            if (plain and work.take().mark_preparations != 0) if (model.fail("empty mark work", step)) |failure| return failure;
+            if (try check(eb, &m, arena)) |property| if (model.fail(property, step)) |failure| return failure;
         }
         return null;
     }

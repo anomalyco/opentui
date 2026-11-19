@@ -6,7 +6,8 @@
 //! An error `run` returns is a failure too, named after the error, at no step.
 //!
 //! Environment: MODEL_SEED=<n> runs one seed, MODEL_SEEDS=<n> sets how many seeds run,
-//! MODEL_SKIP=<property,...> ignores failures of the named properties, MODEL_TRACE=1 prints
+//! MODEL_SKIP=<property,...> ignores failures of the named properties (a check site returns
+//! `fail`'s failure only when it is not null, so the seed goes on), MODEL_TRACE=1 prints
 //! each seed before it runs (a panic aborts the process before any report).
 const std = @import("std");
 
@@ -14,6 +15,14 @@ pub const Failure = struct {
     property: []const u8,
     step: usize,
 };
+
+/// MODEL_SKIP's list while `check` runs.
+var skip: []const u8 = "";
+
+/// A failure of `property` at `step`, or null when MODEL_SKIP lists the property.
+pub fn fail(property: []const u8, step: usize) ?Failure {
+    return if (listed(skip, property)) null else .{ .property = property, .step = step };
+}
 
 pub const Options = struct {
     seeds: u64,
@@ -32,7 +41,11 @@ pub fn check(comptime Context: type, context: *Context, default: Options) !void 
     const arena = arena_state.allocator();
     const seed_value = environment(arena, "MODEL_SEED");
     const seeds = if (environment(arena, "MODEL_SEEDS")) |text| try std.fmt.parseInt(u64, text, 10) else default.seeds;
-    const skip = environment(arena, "MODEL_SKIP") orelse "";
+    skip = environment(arena, "MODEL_SKIP") orelse "";
+    defer skip = "";
+    // Seeds a site stopped at a skipped failure (an error, or a site that cannot go on).
+    var unchecked: u64 = 0;
+    defer if (unchecked > 0) std.debug.print("model: {d} seeds unchecked after a skipped failure\n", .{unchecked});
     const trace = environment(arena, "MODEL_TRACE") != null;
     var seed: u64 = if (seed_value) |text| try std.fmt.parseInt(u64, text, 10) else 0;
     const last = if (seed_value != null) seed + 1 else seeds;
@@ -44,7 +57,10 @@ pub fn check(comptime Context: type, context: *Context, default: Options) !void 
         const commands = try context.generate(ra, prng.random(), default.steps);
         if (trace) std.debug.print("model: seed {d}\n", .{seed});
         const failure = outcome(Context, context, ra, commands) orelse continue;
-        if (listed(skip, failure.property)) continue;
+        if (listed(skip, failure.property)) {
+            unchecked += 1;
+            continue;
+        }
         const identity: Identity(Context) = .{ .property = failure.property, .kind = kindAt(Context, commands, failure.step) };
         const shrunk = try shrink(Context, context, ra, commands, identity);
         std.debug.print("model failure: seed {d}, property {s}, shrunk to {d} commands:\n", .{ seed, failure.property, shrunk.len });

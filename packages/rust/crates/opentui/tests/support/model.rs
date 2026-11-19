@@ -4,7 +4,8 @@
 //! `run` is a failure too: the property `throws`, at no step.
 //!
 //! Environment: `MODEL_SEED=<n>` runs one seed, `MODEL_SEEDS=<n>` sets how many seeds run, `MODEL_SKIP=<property,...>`
-//! ignores failures of the named properties.
+//! ignores failures of the named properties: a check site returns `fail`'s failure only when there is one, so the seed
+//! goes on.
 
 use std::fmt::Debug;
 
@@ -59,19 +60,31 @@ fn environment(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|value| !value.is_empty())
 }
 
+/// Whether failures of `property` count: `MODEL_SKIP` lists the ones that don't.
+pub fn enabled(property: &str) -> bool {
+    !environment("MODEL_SKIP").unwrap_or_default().split(',').any(|name| name == property)
+}
+
+/// A failure of `property` at `step`, or `None` when `MODEL_SKIP` lists the property.
+pub fn fail(property: &'static str, step: usize) -> Option<Failure> {
+    enabled(property).then_some(Failure { property, step })
+}
+
 /// Runs `seeds` seeds of `steps` commands (or the environment's), and panics with the shrunk trace of a failure.
 pub fn check<M: Model>(model: &M, seeds: u64, steps: usize) {
     let seed_value = environment("MODEL_SEED").map(|text| text.parse::<u64>().expect("MODEL_SEED is a number"));
     let seeds = environment("MODEL_SEEDS").map_or(seeds, |text| text.parse().expect("MODEL_SEEDS is a number"));
-    let skip = environment("MODEL_SKIP").unwrap_or_default();
     let range = match seed_value {
         Some(seed) => seed..seed + 1,
         None => 0..seeds,
     };
+    // Seeds a site stopped at a skipped failure (a panic, or a site that cannot go on).
+    let mut unchecked = 0;
     for seed in range {
         let commands = model.generate(&mut Rng::new(seed), steps);
         let Some(failure) = outcome(model, &commands) else { continue };
-        if skip.split(',').any(|name| name == failure.property) {
+        if !enabled(failure.property) {
+            unchecked += 1;
             continue;
         }
         let shrunk = shrink(model, commands, failure.property);
@@ -82,6 +95,9 @@ pub fn check<M: Model>(model: &M, seeds: u64, steps: usize) {
             shrunk.len(),
             trace.join("\n")
         );
+    }
+    if unchecked > 0 {
+        eprintln!("model: {unchecked} seeds unchecked after a skipped failure");
     }
 }
 
