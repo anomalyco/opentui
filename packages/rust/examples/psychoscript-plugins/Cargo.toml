@@ -1,0 +1,31 @@
+# A prototype: OpenTUI Rust apps hosting PsychoScript plugins. Its own workspace, so the main Rust workspace does not
+# depend on the psychoscript checkout. psychoscript is expected next to this repository's checkout:
+# ../psychoscript-rs-pin/packages/codemode-rust (override with a [patch] or by editing the path).
+[workspace]
+members = ["."]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+opentui = { path = "../../crates/opentui" }
+psychoscript = { path = "../../../../../psychoscript-rs-pin/packages/codemode-rust/crates/psychoscript" }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[package]
+name = "psychoscript-plugins"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Prototype: PsychoScript plugins in an OpenTUI Rust app"
+
+[dependencies]
+opentui.workspace = true
+psychoscript.workspace = true
+serde_json.workspace = true
+
+[profile.release]
+debug = 1
