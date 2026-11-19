@@ -13,6 +13,7 @@ import { SyntaxStyle } from "../syntax-style.js"
 import { createTestRenderer, MockTreeSitterClient, setRendererCapabilities, type TestRenderer } from "../testing.js"
 import type { RenderContext } from "../types.js"
 import { getLinkId } from "../utils.js"
+import blockRows from "./markdown-block-rows.conformance.json" with { type: "json" }
 
 type ClaimedCommit = {
   snapshot: Pick<OptimizedBuffer, "width" | "height" | "widthMethod" | "withBuffers" | "getRealCharBytes" | "destroy">
@@ -297,6 +298,29 @@ test("ScrollbackSurface works with MarkdownRenderable top-level blocks", async (
     destroyClaimedCommits(commits)
   }
 })
+
+test.each(blockRows.rows as [string, string[], number, number, number[][]][])(
+  "Markdown blocks' rows in a ScrollbackSurface: %s",
+  async (_, chunks, width, committed, rows) => {
+    const { renderer } = await createSplitFooterRenderer({ width, height: 24, footerHeight: 3 })
+    const surface = renderer.createScrollbackSurface({ startOnNewLine: true })
+    const mockTreeSitterClient = createMockTreeSitterClient({ autoResolveTimeout: 0 })
+    mockTreeSitterClient.setMockResult({ highlights: [] })
+    const md = new MarkdownRenderable(surface.renderContext, {
+      content: "",
+      syntaxStyle,
+      width: "100%",
+      streaming: true,
+      treeSitterClient: mockTreeSitterClient,
+    })
+    surface.root.add(md)
+    for (const chunk of chunks) md.content += chunk
+    await surface.settle()
+
+    expect(md.committedBlockCount).toBe(committed)
+    expect(md.getChildren().map((block) => [block.y, block.y + block.height])).toEqual(rows)
+  },
+)
 
 test("ScrollbackSurface forwards hyperlink capability changes to existing Markdown tables", async () => {
   const { renderer } = await createSplitFooterRenderer()

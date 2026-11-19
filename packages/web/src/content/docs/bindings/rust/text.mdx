@@ -64,3 +64,9 @@ That has three consequences:
 
 `Markdown` shows rendered or source Markdown, with nested lists, tables, code blocks, custom code-block renderers, and inline hooks.
 You can append to it as a response streams in.
+
+While it streams, `committed_block_count()` says how many top-level blocks, counted from the first, are final.
+`block_rows()` gives the rows each top-level block took in the latest frame, one range per block in order.
+Blocks stand one row apart, and a list's or quote's blocks are inside its range.
+A writer to the split-mode scrollback commits the final blocks' rows with a [surface](/docs/bindings/rust/time#write-to-the-scrollback): blocks `from..to` are `commit_rows(rows[from - 1].end, rows[to - 1].end, ..)`, or `rows[0].start` for the first.
+These match Core's `committedBlockCount` and the `y` and `height` of `getChildren()`.
