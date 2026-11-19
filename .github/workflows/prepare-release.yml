@@ -53,9 +53,20 @@ jobs:
         with:
           bun-version-file: package.json
 
-      # Drafts the release notes in the pull request (packages/web/scripts/release-notes.ts).
+      # Drafts the release notes in the pull request (packages/web/scripts/release-notes.ts), which needs
+      # opencode 2: https://opencode.ai/install installs opencode 1, which has no `run --standalone`. Pinned so
+      # a new release cannot break the release button; to bump, set the version and draft notes locally with it.
+      # The installer adds ~/.opencode/bin to GITHUB_PATH.
       - name: Install opencode
-        run: curl -fsSL https://opencode.ai/install | bash
+        env:
+          OPENCODE_VERSION: 2.3.2
+        run: |
+          curl -fsSL https://opencode.ai/v2/install | bash -s -- --version "$OPENCODE_VERSION" --no-modify-path
+          installed=$("$HOME/.opencode/bin/opencode" --version)
+          if [ "$installed" != "opencode v$OPENCODE_VERSION" ]; then
+            echo "::error::Installed $installed, not opencode v$OPENCODE_VERSION"
+            exit 1
+          fi
 
       - name: Open release pull request
         env:
