@@ -834,7 +834,8 @@ fn editor_converts_byte_indices_and_cells() -> Result<()> {
         };
         let units =
             [("a", 1), ("\t", 4), ("界", 2), emoji[0], emoji[1], ("e\u{301}", 1), ("\n", 1), ("\n", 1), ("\x0c", 2)];
-        buffer.set_text("a\t界👩‍💻e\u{301}\r\n\r\n\x0c", false)?;
+        let text = "a\t界👩‍💻e\u{301}\r\n\r\n\x0c";
+        buffer.set_text(text, false)?;
         let (mut index, mut offset) = (0, 0);
         for (unit, width) in units {
             for i in 0..unit.len() {
@@ -849,6 +850,8 @@ fn editor_converts_byte_indices_and_cells() -> Result<()> {
         }
         assert_eq!(buffer.byte_index_to_cell_offset(index + 1)?, offset);
         assert_eq!(buffer.cell_offset_to_byte_index(offset + 1)?, index);
+        // Without a buffer, the same text measures to the offset at its end, as Core's `measureEditText`.
+        assert_eq!(context.measure_edit_text(text, method, 4)?, offset);
         buffer.set_text("\u{301}界", false)?;
         assert_eq!(buffer.cell_offset_to_byte_index(0)?, "\u{301}".len());
         let text = "ab\tcd";
