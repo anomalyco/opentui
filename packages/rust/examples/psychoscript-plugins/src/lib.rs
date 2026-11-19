@@ -1,7 +1,7 @@
 //! Glue between an OpenTUI Rust app and PsychoScript plugins, in the reducer model.
 //!
-//! A plugin is one `.js` program. Each event runs it once with two read-only bindings, `event` and `state`, and it
-//! returns plain data: `{ state, slots, commands }`. The host keeps `state` between events, diffs `slots` against what
+//! A plugin is one `.js` program, compiled once when it loads or reloads. Each event runs it once with two read-only
+//! bindings, `event` and `state`, and it returns plain data: `{ state, slots, commands }`. The host keeps `state` between events, diffs `slots` against what
 //! it last drew, and registers `commands` with the app's keymap. A failed run (a throw, a timeout) changes nothing:
 //! the state stays as it was and the plugin's status slot shows the error.
 //!
@@ -11,7 +11,7 @@
 
 use opentui::keymap::{Binding, Command, Disposer, Keymap, Layer, Stroke};
 use opentui::prelude::*;
-use psychoscript::{HostFunction, HostValue, Json, Limits, ProgramOptions, Runtime};
+use psychoscript::{Compiled, Diagnostic, HostFunction, HostValue, Json, Limits, ProgramOptions, Runtime};
 use serde_json::json;
 use std::cell::RefCell;
 use std::path::Path;
@@ -60,18 +60,32 @@ pub struct Step {
     pub logs: Vec<String>,
 }
 
-/// Runs a plugin for one event. Pure apart from the capabilities the runtime's globals give.
-pub fn step(runtime: &Runtime, source: &str, state: &Json, event: &Json) -> Step {
+/// Compiles a plugin's source once, for every event until the next reload; or the error each event then reports.
+pub fn compile(runtime: &Runtime, source: &str) -> Result<Compiled, String> {
+    runtime.compile(source).map_err(|d| describe(&d))
+}
+
+/// Runs a plugin for one event. Pure apart from the capabilities the runtime's globals give. A plugin that didn't
+/// compile reports why, and keeps its state.
+pub fn step(runtime: &Runtime, program: &Result<Compiled, String>, state: &Json, event: &Json) -> Step {
+    let program = match program {
+        Ok(program) => program,
+        Err(error) => return Step { state: state.clone(), result: Err(error.clone()), logs: Vec::new() },
+    };
     let bindings = [("event".to_string(), event.clone()), ("state".to_string(), state.clone())];
-    let outcome = runtime.execute_with(source, &ProgramOptions::new().bindings(bindings));
+    let outcome = runtime.execute_with(program, &ProgramOptions::new().bindings(bindings));
     let logs = outcome.log_lines();
-    let result = outcome.json().map_err(|d| match d.location {
-        Some((line, column)) => format!("{} ({} at {line}:{column})", d.message_lossy(), d.kind),
-        None => format!("{} ({})", d.message_lossy(), d.kind),
-    });
+    let result = outcome.json().map_err(|d| describe(&d));
     match result.and_then(|value| parse(value, state)) {
         Ok((state, update)) => Step { state, result: Ok(update), logs },
         Err(error) => Step { state: state.clone(), result: Err(error), logs },
+    }
+}
+
+fn describe(d: &Diagnostic) -> String {
+    match d.location {
+        Some((line, column)) => format!("{} ({} at {line}:{column})", d.message_lossy(), d.kind),
+        None => format!("{} ({})", d.message_lossy(), d.kind),
     }
 }
 
@@ -208,18 +222,18 @@ impl Worker {
         let count = pending.clone();
         let thread = std::thread::spawn(move || {
             let runtime = runtime();
-            let (mut source, mut state) = (source, Json::Null);
+            let (mut program, mut state) = (compile(&runtime, &source), Json::Null);
             let init = std::iter::once(Msg::Event(json!({ "type": "init" })));
             for msg in init.chain(inbox) {
                 let event = match msg {
                     Msg::Event(event) => event,
                     Msg::Reload(next) => {
-                        source = next;
+                        program = compile(&runtime, &next);
                         json!({ "type": "init", "reload": true })
                     }
                 };
                 let started = Instant::now();
-                let step = step(&runtime, &source, &state, &event);
+                let step = step(&runtime, &program, &state, &event);
                 state = step.state;
                 deliver(Reply { plugin, result: step.result, logs: step.logs, elapsed: started.elapsed() });
                 count.fetch_sub(1, Ordering::Relaxed);
@@ -488,17 +502,18 @@ mod tests {
             if (event.type === "bad") return 42
             return { state: { n: (state?.n ?? 0) + 1 }, commands: [{ name: "x.y", key: "x" }] }
         "#;
-        let s = step(&rt, source, &Json::Null, &json!({ "type": "init" }));
+        let source = compile(&rt, source);
+        let s = step(&rt, &source, &Json::Null, &json!({ "type": "init" }));
         assert_eq!(s.state, json!({ "n": 1 }));
         let spec = CommandSpec { name: "x.y".into(), title: "x.y".into(), key: Some("x".into()) };
         assert_eq!(s.result, Ok(Update { slots: None, commands: Some(vec![spec]) }));
-        let kept = step(&rt, source, &s.state, &json!({ "type": "keep" }));
+        let kept = step(&rt, &source, &s.state, &json!({ "type": "keep" }));
         assert_eq!(
             (kept.state, kept.result.unwrap().slots.unwrap()["status"].clone()),
             (json!({ "n": 1 }), json!("kept"))
         );
         for event in ["boom", "bad"] {
-            let failed = step(&rt, source, &s.state, &json!({ "type": event }));
+            let failed = step(&rt, &source, &s.state, &json!({ "type": event }));
             assert_eq!(failed.state, json!({ "n": 1 }));
             assert!(failed.result.is_err(), "{event}");
         }
@@ -507,10 +522,21 @@ mod tests {
     #[test]
     fn a_loop_ends_at_the_event_timeout() {
         let started = Instant::now();
-        let s = step(&runtime(), "while (true) {}", &json!({ "n": 1 }), &json!({ "type": "tick" }));
+        let rt = runtime();
+        let s = step(&rt, &compile(&rt, "while (true) {}"), &json!({ "n": 1 }), &json!({ "type": "tick" }));
         assert!(s.result.unwrap_err().contains("TimeoutExceeded"));
         assert_eq!(s.state, json!({ "n": 1 }));
         assert!(started.elapsed() < Duration::from_millis(EVENT_TIMEOUT_MS * 3));
+    }
+
+    #[test]
+    fn a_plugin_that_doesnt_compile_reports_why_at_each_event_and_keeps_its_state() {
+        let rt = runtime();
+        let broken = compile(&rt, "return {");
+        let error = broken.clone().unwrap_err();
+        assert!(error.contains("ParseError at 1:"), "{error}");
+        let s = step(&rt, &broken, &json!({ "n": 1 }), &json!({ "type": "tick" }));
+        assert_eq!((s.state, s.result), (json!({ "n": 1 }), Err(error)));
     }
 
     #[test]

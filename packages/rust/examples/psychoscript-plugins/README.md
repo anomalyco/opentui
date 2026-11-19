@@ -23,8 +23,8 @@ errors), and `ctrl+q` quits.
 
 ## The plugin model (reducer)
 
-Each event runs the plugin's program once. The program gets two read-only bindings, `event` and `state`, and the
-`app` global. It returns plain data:
+A plugin's program is compiled once when it loads or reloads (`Runtime::compile`), and each event runs it once. The
+program gets two read-only bindings, `event` and `state`, and the `app` global. It returns plain data:
 
 ```js
 // plugins/git.js
