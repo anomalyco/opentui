@@ -394,10 +394,6 @@ fn textareas_insert_lines_wrap_and_submit() {
     // A legacy line feed (Ctrl+J) inserts a line too.
     app.feed(b"\n");
     assert!(area.text().starts_with("x\ty\n\n"), "{:?}", area.text());
-    // Core's paste row with C1 control strings: a paste drops whole sequences, as Core's handlePaste does.
-    area.set_text("");
-    app.paste("\x1b]0;title\x07y\u{9d}0;t\u{9c}z\u{90}q\u{9c}\u{98}s\u{9c}\u{9e}p\u{9c}\u{9f}a\x07w");
-    assert_eq!(area.text(), "yzw");
 }
 
 #[test]
@@ -1734,6 +1730,24 @@ fn input_max_length_follows_cores_vectors() {
     }
     // Not shared: Core's Textarea has no maxLength, and Rust's counts characters.
     assert_eq!(Textarea::new(&app).max_length(2).set_text("😀\n😀").text(), "😀\n");
+}
+
+#[test]
+fn pastes_follow_cores_vectors() {
+    // Core's Textarea paste test runs the same rows.
+    let corpus: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../core/src/renderables/paste.conformance.json")).unwrap();
+    for row in corpus["rows"].as_array().unwrap() {
+        let app = TestApp::new(40, 4);
+        let area = Textarea::new(&app).set_text("x");
+        let input = Input::new(&app).set_value("x");
+        app.root().add(&area).add(&input);
+        area.focus();
+        app.paste(row[1].as_str().unwrap());
+        input.focus();
+        app.paste(row[1].as_str().unwrap());
+        assert_eq!([area.text(), input.value()], [row[2].clone(), row[3].clone()], "{}", row[0]);
+    }
 }
 
 #[test]

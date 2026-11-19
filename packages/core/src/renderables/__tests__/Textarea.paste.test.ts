@@ -5,6 +5,7 @@ import { decodePasteBytes, PasteEvent } from "../../lib/index.js"
 import { pasteBytes } from "../../testing/mock-keys.js"
 import { InputRenderable } from "../Input.js"
 import { TextareaRenderable } from "../Textarea.js"
+import pasteConformance from "../paste.conformance.json" with { type: "json" }
 
 let currentRenderer: TestRenderer
 let renderOnce: () => Promise<void>
@@ -26,22 +27,8 @@ describe("Textarea - Paste Tests", () => {
     currentRenderer.destroy()
   })
 
-  // A paste keeps control characters, as in Vim, but drops terminal escape sequences, a lone ESC, and a sequence that
-  // the paste cuts off, on Bun and Node alike. Input also drops CR and LF.
-  it.each([
-    ["", "x", "x"],
-    [" World", "x World", "x World"],
-    ["\nLine 2\nLine 3", "x\nLine 2\nLine 3", "xLine 2Line 3"],
-    [" 🌟世界👍", "x 🌟世界👍", "x 🌟世界👍"],
-    ["a \x1b[31mred\x1b[0m\x1b[2 q\x1b[31", "xa red", "xa red"],
-    ["a\fb\u0000c", "xa\fb\u0000c", "xa\fb\u0000c"],
-    ["\x1b]0;title\x07y\u009d0;t\u009cz\u0090q\u009c\u0098s\u009c\u009ep\u009c\u009fa\x07w", "xyzw", "xyzw"],
-    ["\x1b", "x", "x"],
-    ["a\x1bP1$r\x1b\\b\x1bXs\x1b\\c\x1b(Bd\x9b1me\x1b^p\x1b\\\x1b_a\x1b\\\x1b\x07", "xabcde\x07", "xabcde\x07"],
-    ["\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\\x1b]0;cut", "xlink", "xlink"],
-    ["p\u0085q\u007f", "xp\u0085q\u007f", "xp\u0085q\u007f"],
-    ["\ty\r\nz", "x\ty\nz", "x\tyz"],
-  ])("pastes %j into Textarea and Input", async (pasted, textareaText, inputText) => {
+  // Rust's Textarea and Input run the same rows, on Bun and Node alike. The NEL key after the paste types nothing.
+  it.each(pasteConformance.rows)("%s", async (_name, pasted, textareaText, inputText) => {
     const errors = spyOn(console, "error")
     const editors = [
       [new TextareaRenderable(currentRenderer, { initialValue: "x", width: 40, height: 3 }), textareaText],
