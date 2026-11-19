@@ -10,7 +10,7 @@ The crates link the native library, but they do not build it.
 You get the library from a GitHub release, or by building it in a checkout of the repository.
 
 The crates are not on crates.io.
-They need Rust 1.85 or later (the 2024 edition).
+They need Rust 1.88 or later. `opentui-ssh` needs 1.89, and the `tree-sitter` feature needs 1.90.
 Each OpenTUI release tags them with the version of `@opentui/core`.
 
 ## Depend on a release
@@ -23,6 +23,8 @@ Each OpenTUI release tags them with the version of `@opentui/core`.
    tag = "v0.9.3"
    ```
 
+   Releases after v0.9.3 name the package `anomalyco-opentui`; its library is still `opentui`, so your code keeps `use opentui::...`.
+   A dependency on a later tag adds `package = "anomalyco-opentui"`. `opentui-ssh` keeps its name.
    To serve apps over SSH, add `opentui-ssh` the same way.
 
 2. Download the native archive for your platform from the same release on [GitHub Releases](https://github.com/anomalyco/opentui/releases), for example `opentui-native-v0.9.3-linux-x64.zip`.

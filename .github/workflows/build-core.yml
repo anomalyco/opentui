@@ -684,7 +684,7 @@ jobs:
         working-directory: packages/rust
         run: |
           rustup target add x86_64-unknown-linux-musl
-          OPENTUI_LIB_DIR="$PWD/../native/lib/x86_64-linux-musl" cargo test --locked -p opentui \
+          OPENTUI_LIB_DIR="$PWD/../native/lib/x86_64-linux-musl" cargo test --locked -p anomalyco-opentui \
             --target x86_64-unknown-linux-musl --test headless --test widgets
 
       - name: Check the other targets
@@ -799,14 +799,14 @@ jobs:
             fi
           }
           for target in x86_64-pc-windows-msvc aarch64-pc-windows-msvc; do
-            cargo build --locked -p opentui --example hello --target $target
+            cargo build --locked -p anomalyco-opentui --example hello --target $target
             imports target/$target/debug/examples/hello.exe 'opentui|vcruntime'
           done
-          cargo test --locked -p opentui --target x86_64-pc-windows-msvc --test headless --test widgets --test video
+          cargo test --locked -p anomalyco-opentui --target x86_64-pc-windows-msvc --test headless --test widgets --test video
           # Rust's defaults: the C runtime DLL, where the archive's CRT imports go through ucrt.lib.
-          RUSTFLAGS= cargo build --locked --release -p opentui --example hello --target x86_64-pc-windows-msvc
+          RUSTFLAGS= cargo build --locked --release -p anomalyco-opentui --example hello --target x86_64-pc-windows-msvc
           imports target/x86_64-pc-windows-msvc/release/examples/hello.exe opentui
-          RUSTFLAGS= cargo test --locked --release -p opentui --target x86_64-pc-windows-msvc --test headless --test widgets
+          RUSTFLAGS= cargo test --locked --release -p anomalyco-opentui --target x86_64-pc-windows-msvc --test headless --test widgets
 
   # Not in the gate yet, like Rust (Windows), and push-only for the same reason.
   rust-macos:

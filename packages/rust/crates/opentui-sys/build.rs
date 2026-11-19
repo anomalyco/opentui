@@ -15,14 +15,6 @@ const TARGETS: &[(&str, &str, &str, &str)] = &[
     ("aarch64-pc-windows-gnullvm", "aarch64-windows", "opentui.dll", "windows-arm64"),
 ];
 
-/// `OPENTUI_LIB_DIR`, else the native build of this checkout, `packages/native/lib/<platform>`.
-fn native_lib_dir(platform: &str) -> PathBuf {
-    if let Some(dir) = env::var_os("OPENTUI_LIB_DIR") {
-        return PathBuf::from(dir);
-    }
-    PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("../../../native/lib").join(platform)
-}
-
 // Must match fnv1a64 in packages/core/scripts/native-abi-rust.ts.
 fn fnv1a64(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3))
@@ -36,6 +28,11 @@ fn generated_header_hash() -> u64 {
 }
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=DOCS_RS");
+    // docs.rs builds documentation, which links nothing, without the native library.
+    if env::var_os("DOCS_RS").is_some() {
+        return;
+    }
     let target = env::var("TARGET").unwrap();
     let Some(&(_, platform, shared_library, release)) = TARGETS.iter().find(|(name, ..)| *name == target) else {
         let names: Vec<_> = TARGETS.iter().map(|(name, ..)| *name).collect();
@@ -48,7 +45,6 @@ fn main() {
     println!("cargo:rerun-if-env-changed=RUSTFLAGS");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/generated.rs");
-    let dir = native_lib_dir(platform);
     // OpenTUI's Windows archive is built for MinGW against the UCRT and carries the parts of MinGW's runtime that MSVC
     // lacks. Rust's GNU targets bring MinGW runtimes of their own, so they link opentui.dll with or without the static
     // feature.
@@ -92,6 +88,12 @@ fn main() {
              OPENTUI_LIB_DIR to OpenTUI's packages/native/lib/{platform}"
         ),
         _ => from_release,
+    };
+    // `OPENTUI_LIB_DIR`, else the native build of this checkout. A package from a registry has no checkout around it.
+    let dir = match env::var_os("OPENTUI_LIB_DIR") {
+        Some(dir) => PathBuf::from(dir),
+        None if checkout => root.join("packages/native/lib").join(platform),
+        None => panic!("OPENTUI_LIB_DIR is not set: {advice}"),
     };
     for file in files {
         let path = dir.join(file);

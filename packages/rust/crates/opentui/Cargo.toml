@@ -1,11 +1,25 @@
 [package]
-name = "opentui"
+name = "anomalyco-opentui"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
-publish = false
-description = "A terminal UI framework for Rust built on OpenTUI's native renderer"
+repository.workspace = true
+homepage.workspace = true
+exclude.workspace = true
+documentation = "https://docs.rs/anomalyco-opentui"
+readme = "README.md"
+keywords = ["tui", "terminal", "ui", "widgets", "opentui"]
+categories = ["command-line-interface"]
+description = "OpenTUI's terminal UI framework for Rust, built on its native renderer (interim name of the opentui crate)"
 autoexamples = false
+
+[lib]
+name = "opentui"
+
+[package.metadata.docs.rs]
+features = ["tokio", "log", "tree-sitter"]
+targets = ["x86_64-unknown-linux-gnu"]
 
 [lints]
 workspace = true
@@ -31,7 +45,7 @@ tree-sitter = [
 ]
 
 [dependencies]
-opentui-sys = { path = "../opentui-sys", default-features = false }
+opentui-sys.workspace = true
 libc = "0.2"
 log = { version = "0.4", optional = true, default-features = false, features = ["std"] }
 tokio = { version = "1.53", optional = true, default-features = false, features = ["rt-multi-thread", "time"] }

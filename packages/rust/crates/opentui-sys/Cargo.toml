@@ -1,11 +1,24 @@
 [package]
-name = "opentui-sys"
+name = "anomalyco-opentui-sys"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+# The crate's code is MIT; the native library it links includes FFmpeg (README.md).
 license = "MIT AND LGPL-2.1-or-later"
-publish = false
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/anomalyco-opentui-sys"
+readme = "README.md"
+keywords = ["tui", "terminal", "ffi", "opentui"]
+categories = ["external-ffi-bindings"]
 links = "opentui"
-description = "Raw FFI declarations for OpenTUI's checked C ABI"
+description = "Raw FFI declarations for OpenTUI's checked C ABI (interim name of the opentui-sys crate)"
+
+[lib]
+name = "opentui_sys"
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
 
 [lints]
 workspace = true
