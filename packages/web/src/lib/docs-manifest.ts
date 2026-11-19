@@ -256,7 +256,7 @@ export const DOC_MANIFEST = {
     related: ["core-concepts/testing", "core-concepts/console"],
   }),
   "bindings/rust/layers": rust(12, "Native layers", "low-level-api", {
-    searchSymbols: ["native", "host", "Session", "Context", "bench"],
+    searchSymbols: ["native", "host", "Session", "Context"],
     related: ["native/overview", "native/c", "bindings/rust/overview"],
   }),
 

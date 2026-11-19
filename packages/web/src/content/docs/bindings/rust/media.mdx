@@ -5,23 +5,26 @@ description: Show images, play video and sound, embed terminals, and draw into o
 
 # Images, video, sound, and terminals
 
+This page covers the widgets and modules that show more than text: `ImageView`, `VideoView`, the `audio` module, `TerminalView`, and offscreen buffers.
+
 ## Images
 
-`ImageView` shows a picture, drawn with the Kitty graphics protocol, Sixel, or half blocks, whichever the terminal supports best.
-Give it a size; the image scales into it as `ImageView::fit` says.
-`fitted_size` gives its size in cells.
+`ImageView` shows a picture.
+It draws with the Kitty graphics protocol, Sixel, or half blocks, whichever the terminal supports best.
 
 ```rust
 let logo = ImageView::new(&app).size(20, 10);
 logo.load(&std::fs::read("logo.png")?)?;
 ```
 
+Give the view a size, and the image scales into it as `ImageView::fit` says.
+`fitted_size` returns the image's size in cells.
+
 ## Video
 
-`VideoView` plays an MP4 (H.264 and AAC) file, with audio, looping, and seeking.
-Decoding, the media clock, and drawing are native, with the same protocols as `ImageView`.
-Audio plays on the default device of the machine the app runs on, even when it serves a remote (SSH) client, as in Core.
-Its events report the position, the end, and failures:
+`VideoView` plays an MP4 file (H.264 video and AAC audio), with sound, looping, and seeking.
+It draws frames with the same protocols as `ImageView`.
+Its events report the playback position, the end of the video, and failures:
 
 ```rust
 let video = VideoView::new(&app).size(40, 12).looping(true).autoplay(true);
@@ -34,13 +37,16 @@ let info = video.open("clip.mp4")?;
 app.root().add(&video);
 ```
 
+Sound plays on the default audio device of the machine the app runs on.
+That stays true when the app serves a remote client over SSH.
+
 `VideoView` needs a native library built with FFmpeg. The release archives include it.
-[Video and licences](/docs/bindings/rust/install#video-and-licences) covers a checkout's build and the licence notices.
+[Video and licenses](/docs/bindings/rust/install#video-and-licenses) covers building it in a checkout and the license notices you need to ship.
 
 ## Sounds
 
-`audio::Audio` is Core's audio engine. It decodes WAV, MP3, and FLAC bytes into sounds and mixes up to 32 voices at 48 kHz.
-Creating one opens no device; `start` opens the default playback device, whose own thread mixes from then on:
+`audio::Audio` plays short sounds, such as a bell or a click.
+It decodes WAV, MP3, and FLAC files and mixes up to 32 sounds at once at 48 kHz:
 
 ```rust
 use opentui::audio::Audio;
@@ -51,13 +57,15 @@ audio.start()?;
 audio.play(bell, 0.4)?;
 ```
 
-`start_without_device` mixes only when `mix` asks, so tests can check what would play without a sound.
+Creating an `Audio` opens no device.
+`start` opens the default playback device, and mixing then runs on the device's own thread.
+
+In tests, use `start_without_device` instead of `start`.
+Nothing plays, and the test calls `mix` to check what would have played.
 
 ## Embedded terminals
 
-`TerminalView` shows a program running on a pseudo-terminal, as Core's `EmbeddedTerminalRenderable` does.
-Native code (Ghostty's emulator) parses the program's output and keeps its screen and scrollback.
-The widget draws it, follows its own size, and encodes keys, mouse events, pastes, and focus changes in whatever protocol the program asked for:
+`TerminalView` runs a program, such as a shell, on a pseudo-terminal and shows its screen inside your app:
 
 ```rust
 let terminal = TerminalView::new(&app).grow(1.0).spawn(opentui::pty::shell())?;
@@ -71,23 +79,35 @@ app.on_key_capture(|cx, key| {
 terminal.focus();
 ```
 
-A focused terminal takes every key that sends something, Tab, Ctrl+C, and Ctrl+Z included, so app-wide shortcuts belong in `App::on_key_capture`.
-While the program tracks the mouse, mouse events go to it.
-Otherwise dragging selects text, double and triple clicks select words and lines, and the wheel scrolls back through the output.
-A wheel step the view cannot take, down at the live screen or up at the top of the history, goes on to a surrounding `ScrollBox`.
-`TerminalView::viewport` says where the view sits.
+The widget emulates the terminal, keeps the program's screen and scrollback, and resizes it to fit the view.
+It passes keys, mouse events, pastes, and focus changes to the program in whatever form the program asked for.
 
-`spawn` runs the command with `opentui::pty::Pty`: a new session on a new pseudo-terminal, whose bytes move on a background thread, so the event loop never blocks.
-Output and the exit status arrive through the app's proxy; dropping the widget hangs up the program.
-To run a program some other way, such as over SSH, feed its output to `TerminalView::write` and send what `on_data` hands you to its input.
+A focused terminal takes every key that sends something, including Tab, Ctrl+C, and Ctrl+Z.
+That is why the example puts its quit key in `App::on_key_capture`, which runs before the terminal sees the key.
 
-On Windows, `TerminalView` runs programs on a pseudoconsole (ConPTY), and `pty::shell()` is `%COMSPEC%`.
+The mouse goes to the program while the program tracks it.
+Otherwise the mouse works on the view:
+
+- Dragging selects text, and double and triple clicks select words and lines.
+- The wheel scrolls back through the output. At the live screen or the top of the history, the wheel scrolls the surrounding `ScrollBox` instead.
+- `TerminalView::viewport` returns where the view is in the scrollback.
+
+`spawn` starts the command with `opentui::pty::Pty`, in a new session on a new pseudo-terminal.
+Its input and output move on a background thread, so the program never blocks the event loop.
+Dropping the widget hangs up the program.
+
+To connect a program some other way, such as over SSH, skip `spawn`.
+Pass the program's output to `TerminalView::write`, and send what `on_data` gives you to the program's input.
+
+On Windows, `TerminalView` runs programs on a pseudoconsole (ConPTY), and `pty::shell()` returns `%COMSPEC%`.
 
 ## Offscreen buffers
 
-The terminal draws into an offscreen `native::Buffer`, a grid of cells that keeps its content between frames.
-Apps can use them too:
+A `native::Buffer` is a grid of cells that you draw into and that keeps its content between frames.
+Use one to draw something once and show it many times.
 
+- Create it with `Buffer::new(app.session().context(), width, height, app.width_method())`. Passing `app.width_method()` makes it measure text as the terminal does.
 - Draw with `clear`, `fill`, `text`, `cell`, `draw_box`, and `compose`.
-- Show the result from a paint hook with `Painter::draw_buffer`, or use a `FrameBuffer` widget, whose buffer native code shows where the widget is laid out.
-- Create one with `Buffer::new(app.session().context(), width, height, app.width_method())`, so it measures text as the terminal does.
+- Show it from a paint hook with `Painter::draw_buffer`.
+
+A `FrameBuffer` widget wraps a buffer for you: draw into it, and the app shows it wherever the widget is laid out.

@@ -5,10 +5,14 @@ description: Paint your own Rust widgets with Component, compose existing ones, 
 
 # Your own widgets
 
+When no built-in widget does what you need, you have two options.
+You can paint a widget yourself with `Component`, or build one out of existing widgets.
+This page shows both, and then shows how to apply visual effects to any widget with filters.
+
 ## Paint a widget
 
-Implement `Component` and wrap it in `Custom`.
-Painting uses local coordinates and is clipped to the widget:
+Implement `Component` for your type and wrap it in `Custom`.
+This meter draws a bar and moves it with the arrow keys:
 
 ```rust
 struct Meter {
@@ -32,21 +36,23 @@ let meter = Custom::new(&app, Meter { level: 0.5 }).height(1).focusable(true);
 meter.update(|meter| meter.level = 0.8);
 ```
 
-`Custom::measured` sizes the widget with `Component::measure` during native layout, when its width or height is not set.
+`paint` draws in the widget's own coordinates, and anything outside the widget is clipped.
+`key` returns `true` when it handled the key.
+`Custom::update` changes the component's state from outside and redraws it.
+
+To let the widget size itself, create it with `Custom::measured`.
+Layout then calls `Component::measure` for any width or height you did not set.
+A measured widget cannot have children.
 
 ## Compose widgets
 
-To compose existing widgets instead, implement `Widget` for your own type by returning the root widget's `element()`.
+To build a widget out of existing ones, implement `Widget` for your own type.
+Its `element()` method returns the root widget of what you built.
 
-## Post-processing
+## Filters
 
-The `post` module ports Core's post-processing:
-
-- color matrices: sepia, grayscale, color-blindness simulation and compensation, technicolor, and more
-- filters: scanlines, noise, chromatic aberration, ASCII art, bloom
-- animated effects: vignette, distortion, clouds, flames, a CRT rolling bar, rainbow text
-
-A filter changes a widget's area after each frame is painted, or the whole screen on `app.root()`:
+A filter changes how a widget looks after each frame is painted.
+Apply one to a widget, or to `app.root()` for the whole screen:
 
 ```rust
 use opentui::post::{CrtRollingBar, Scanlines, Vignette};
@@ -57,10 +63,14 @@ let bar = app.root().add_filter(CrtRollingBar::default()); // animated: frames r
 app.root().remove_filter(bar);
 ```
 
-Color matrices run in native code, as do scanlines, noise, the vignette, clouds, and the rolling bar.
-The other filters work on the painted cells.
-Implement `Filter`, or use `post::from_fn`, for your own.
+The `post` module has three kinds:
 
-Because filters run on the finished frame, they also change anything drawn over the widget, such as a dialog.
-To change colors at a point in paint order instead, call `Painter::color_matrix` from a `Component`.
+- color matrices: sepia, grayscale, color-blindness simulation and compensation, technicolor, and more
+- filters: scanlines, noise, chromatic aberration, ASCII art, and bloom
+- animated effects: vignette, distortion, clouds, flames, a CRT rolling bar, and rainbow text
+
+To write your own, implement `Filter` or use `post::from_fn`.
+
+A filter works on the finished frame, so it also changes anything drawn on top of the widget, such as a dialog.
+To change colors at one point in the paint order instead, call `Painter::color_matrix` from a `Component`.
 The `effects` example dims the page behind a dialog that way.

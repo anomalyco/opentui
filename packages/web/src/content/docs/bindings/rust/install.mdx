@@ -5,12 +5,13 @@ description: Depend on the Rust crates through Git, link OpenTUI's native librar
 
 # Install, link, and ship
 
-The crates link OpenTUI's native library. They do not build it.
-An app gets the library from a GitHub release, or from a native build of a checkout of the repository.
+A Rust app needs two things: the crates, and OpenTUI's native library for its platform.
+The crates link the native library, but they do not build it.
+You get the library from a GitHub release, or by building it in a checkout of the repository.
 
 The crates are not on crates.io.
-They use Rust's 2024 edition (Rust 1.85 or later) and declare no other minimum Rust version; CI builds them with Rust 1.99.1.
-They carry the version of `@opentui/core`, and each release of OpenTUI tags them with it.
+They need Rust 1.85 or later (the 2024 edition).
+Each OpenTUI release tags them with the version of `@opentui/core`.
 
 ## Depend on a release
 
@@ -22,16 +23,15 @@ They carry the version of `@opentui/core`, and each release of OpenTUI tags them
    tag = "v0.9.3"
    ```
 
-   Add `opentui-ssh` the same way to serve apps over SSH.
+   To serve apps over SSH, add `opentui-ssh` the same way.
 
-2. Download the native archive for the target from that release's assets on [GitHub Releases](https://github.com/anomalyco/opentui/releases), for example `opentui-native-v0.9.3-linux-x64.zip`.
-   The archive has no top-level folder: extract it into its own directory, such as `vendor/opentui-native`.
-   It holds `opentui.h`, the shared and static libraries, and the licence notices.
+2. Download the native archive for your platform from the same release on [GitHub Releases](https://github.com/anomalyco/opentui/releases), for example `opentui-native-v0.9.3-linux-x64.zip`.
+   The archive has no top-level folder, so extract it into a directory of its own, such as `vendor/opentui-native`.
+   It holds `opentui.h`, the shared and static libraries, and the license notices.
 
 3. Set `OPENTUI_LIB_DIR` to that directory when you run Cargo.
-   Give an absolute path: Cargo reads a relative one from the `opentui-sys` crate's directory.
-   A project can set it in `.cargo/config.toml`, where `relative = true` makes the path absolute.
-   `OPENTUI_LIB_HINT` names the project's own setup step; `scripts/fetch-opentui.sh` here is an example:
+   Use an absolute path, because Cargo resolves a relative one from the `opentui-sys` crate's directory.
+   In `.cargo/config.toml`, `relative = true` resolves the path from your project directory, so Cargo gets an absolute path:
 
    ```toml
    [env]
@@ -39,15 +39,17 @@ They carry the version of `@opentui/core`, and each release of OpenTUI tags them
    OPENTUI_LIB_HINT = "run scripts/fetch-opentui.sh"
    ```
 
-A release archive fits only a dependency pinned to that release's tag.
-Any other commit needs a native build of that commit.
+The archive must come from the same release as the tag.
+The build checks that the archive's `opentui.h` matches the crates and fails if it does not.
+To use any other commit of the crates, build the native library from that commit.
 
-When a file is missing, the build fails and says which release archive to extract.
-With `OPENTUI_LIB_HINT` set, it prints that text instead, so a project can name its own setup step.
+If a file is missing, the build fails and names the release archive to extract.
+`OPENTUI_LIB_HINT` replaces that message with your own, so it can point to your project's setup step.
+In the example above, `scripts/fetch-opentui.sh` stands for such a step.
 
 ## Build from a checkout
 
-In a checkout, the crates link `lib/<artifact directory>` in the native workspace of that checkout.
+In a checkout, the crates link the library that the checkout's native build writes to `lib/<artifact directory>` in the native workspace.
 Build the native library first, then run Cargo from the repository root:
 
 ```sh
@@ -56,14 +58,16 @@ bun run build   # or `bun run build:native` in packages/core
 cargo test --manifest-path packages/rust/Cargo.toml
 ```
 
-`OPENTUI_LIB_DIR` wins over the checkout's build.
-It can name a release archive's directory, or the directory of an npm platform package such as `node_modules/@opentui/core-linux-x64`.
-An npm platform package ships only the shared library, so it needs the [default features off](#static-and-shared-linking), except with the Windows GNU targets.
+`OPENTUI_LIB_DIR` takes precedence over the checkout's build.
+It can point to an extracted release archive, or to an npm platform package such as `node_modules/@opentui/core-linux-x64`.
+An npm platform package ships only the shared library, so you need to turn the [default features off](#static-and-shared-linking).
+The Windows GNU targets are the exception: they always link the shared library.
 
-The macOS build needs the macOS SDK, which comes with the Xcode Command Line Tools (`xcode-select --install`).
-On a Mac, `bun run build` in the native workspace builds the Mac's own architecture.
-Add the other one with `zig build -Doptimize=ReleaseFast -Dlibrary-target=x86_64-macos.13.0` (or `aarch64-macos.13.0`).
-The Windows build needs no SDK, so Zig makes it on any system: `zig build -Doptimize=ReleaseFast -Dlibrary-target=x86_64-windows-gnu`.
+On macOS, the native build needs the macOS SDK, which comes with the Xcode Command Line Tools (`xcode-select --install`).
+`bun run build` builds for the Mac's own architecture.
+To build the other one, run `zig build -Doptimize=ReleaseFast -Dlibrary-target=x86_64-macos.13.0` (or `aarch64-macos.13.0`) in the native workspace.
+
+The Windows build needs no SDK, so you can build it on any system with Zig: `zig build -Doptimize=ReleaseFast -Dlibrary-target=x86_64-windows-gnu`.
 
 ## Platforms
 
@@ -78,54 +82,48 @@ The Windows build needs no SDK, so Zig makes it on any system: `zig build -Dopti
 | Windows 10 1809 or later       | `x86_64-pc-windows-msvc`, `x86_64-pc-windows-gnu`       | `windows-x64`      | `x86_64-windows`     |
 | Windows 10 1809 or later, Arm  | `aarch64-pc-windows-msvc`, `aarch64-pc-windows-gnullvm` | `windows-arm64`    | `aarch64-windows`    |
 
-The release archive is `opentui-native-v<version>-<release archive>.zip`.
-A checkout builds into `lib/<artifact directory>` in the native workspace.
-The build picks the directory for the target it builds.
+The release archive is named `opentui-native-v<version>-<release archive>.zip`.
+A checkout builds into `lib/<artifact directory>` in the native workspace, and Cargo picks the directory for the target it builds.
 
-Rust's musl targets build static executables (`crt-static`), which cannot load `libopentui.so`.
-The build refuses the shared library there: keep the default `static` feature, or turn the default features off and build with `RUSTFLAGS='-C target-feature=-crt-static'`.
-
-## Generated bindings
-
-`src/generated.rs` in `opentui-sys` is generated from the native workspace's `include/opentui.h`.
-`bun run generate:abi` in the core package writes it, and `bun run check:abi` fails when it is stale. Do not edit it.
-The bindings are valid only for the exact header they were generated from.
-The build fails if the artifacts' header differs.
+Rust's musl targets build static executables, which cannot load `libopentui.so`.
+On those targets, keep the default `static` feature.
+With the shared library and a static executable, the build fails.
+If you need the shared library there, turn the default features off and build with `RUSTFLAGS='-C target-feature=-crt-static'`.
 
 ## Features
 
 - `static` (default): link the static library. See [Static and shared linking](#static-and-shared-linking).
-- `tokio`: `App::spawn` runs futures on a Tokio runtime and finishes them on the UI thread.
-- `log`: `console::init_logger` shows the `log` crate's records in the debug console.
-- `tree-sitter`: `Code`, `Diff`, `Textarea`, and Markdown code blocks highlight with tree-sitter. It bundles Core's grammars (JavaScript, TypeScript and TSX, Markdown, Zig) and Rust. The checkout's `run.sh` turns it on.
+- `tokio`: `App::spawn` runs futures on a Tokio runtime and delivers their results on the UI thread.
+- `log`: `console::init_logger` shows records from the `log` crate in the debug console.
+- `tree-sitter`: `Code`, `Diff`, `Textarea`, and Markdown code blocks get syntax highlighting. It bundles grammars for JavaScript, TypeScript and TSX, Markdown, Zig, and Rust.
 
 ## Static and shared linking
 
-By default the crate links `libopentui.a` on Linux and macOS, and `opentui-static.lib` on the Windows MSVC targets.
-An executable then needs no OpenTUI file at run time, and on Linux no libc++ either.
+By default the crates link OpenTUI statically: `libopentui.a` on Linux and macOS, and `opentui-static.lib` on the Windows MSVC targets.
+The executable then needs no OpenTUI file at run time.
 
-- On Linux the archive carries its own libc++, so the program needs only libc. That libc++ is private to OpenTUI, so C++ code elsewhere in the program keeps its own runtime, libstdc++ or libc++, shared or static.
-- On macOS the feature also links the system frameworks OpenTUI uses for the clipboard, audio, and video.
-- On the Windows MSVC targets, `opentui-static.lib` is built for MinGW and carries the parts of MinGW's runtime that MSVC lacks, among them libc++, so C++ code elsewhere in the program keeps MSVC's runtime. Built with `RUSTFLAGS='-C target-feature=+crt-static'`, the `.exe` needs no Visual C++ runtime DLL either, so it is the only file to ship.
-- The Windows GNU targets link `opentui.dll` with or without the feature: their own MinGW runtimes are not the one the archive was built for.
+- **Linux:** the static library carries its own private libc++, so the program needs only libc. Other C++ code in the program keeps its own C++ runtime.
+- **macOS:** the crates also link the system frameworks OpenTUI uses for the clipboard, audio, and video.
+- **Windows MSVC:** the static library is built with MinGW and carries the parts of MinGW's runtime it needs, libc++ among them, so other C++ code keeps MSVC's runtime. Build with `RUSTFLAGS='-C target-feature=+crt-static'` and the `.exe` needs no Visual C++ runtime DLL either. It is then the only file you ship.
+- **Windows GNU:** these targets always link `opentui.dll`, with or without the `static` feature, because their MinGW runtime is not the one the library was built with.
 
-The Windows GNU targets, and the MSVC targets without the `static` feature, link `opentui.dll` through its import library `opentui.lib`.
-Ship `opentui.dll` beside the `.exe`. The build copies it where `cargo run` and `cargo test` find it.
+To link the shared library (`libopentui.so`, `libopentui.dylib`, or `opentui.dll`), turn the default features off with `default-features = false` or `--no-default-features`.
+Cargo merges features across the whole dependency graph, so every crate in your app that depends on `opentui` must turn them off.
 
-To link `libopentui.so`, `libopentui.dylib`, or `opentui.dll` instead, turn the default features off (`default-features = false`, or `--no-default-features`).
-Cargo merges features across the app's graph, so every crate in it that depends on `opentui` must turn them off.
-The workspace's tests and examples find the library through an rpath.
-Other executables need their own rpath, `LD_LIBRARY_PATH` on Linux, or `DYLD_LIBRARY_PATH` on macOS.
+A shared library must be found at run time:
 
-## Video and licences
+- On Windows, the crates link `opentui.dll` through its import library, `opentui.lib`, so the library directory needs both. Ship `opentui.dll` beside the `.exe`. The build copies it to where `cargo run` and `cargo test` find it.
+- On Linux and macOS, give your executable an rpath, or set `LD_LIBRARY_PATH` (Linux) or `DYLD_LIBRARY_PATH` (macOS). The crates' own tests and examples already have an rpath.
 
-`VideoView` needs a library built with FFmpeg.
-The native build links it from `.cache/ffmpeg/prefix/<target>` in the native workspace, which `bun run build` makes for the host.
-Without it, the build warns and leaves video out.
+## Video and licenses
 
-The default native library includes FFmpeg under LGPL-2.1-or-later, even if your app never uses `VideoView`.
-`opentui-sys` ships `LICENSE-FFMPEG` and `FFMPEG-SOURCE.md`; the Rust code is MIT-licensed.
-The library also carries code under its own notices:
+The native library includes FFmpeg, which `VideoView` uses to play video.
+The release archives include it.
+In a checkout, `bun run build` prepares FFmpeg for the host platform. Without it, the native build warns and leaves video out.
+
+FFmpeg is licensed under LGPL-2.1-or-later. The default native library includes it even if your app never uses `VideoView`.
+The Rust code is MIT-licensed.
+`opentui-sys` ships `LICENSE-FFMPEG` and `FFMPEG-SOURCE.md`, and the library carries code under these other notices:
 
 - Yoga (`LICENSE-YOGA`)
 - Zig's runtime (`LICENSE-ZIG`)
@@ -134,16 +132,23 @@ The library also carries code under its own notices:
 - FFmpeg's zlib code (`LICENSE-ZLIB`)
 
 Ship these notices with an app that links OpenTUI statically, or with `opentui.dll`.
-Each release archive carries them too, with the notices of the library's other vendored code.
+Each release archive also includes them, along with the notices for the library's other bundled code.
 
-To link OpenTUI without FFmpeg, run `sh scripts/prepare-zig-deps.sh` and `zig build -Dvideo=false -Doptimize=ReleaseFast` in the native workspace.
-Set `OPENTUI_LIB_DIR` to the absolute path of the resulting `lib/<artifact directory>` when you run Cargo.
+To build the native library without FFmpeg, run these in the native workspace of a checkout:
+
+```sh
+sh scripts/prepare-zig-deps.sh
+zig build -Dvideo=false -Doptimize=ReleaseFast
+```
+
+Then set `OPENTUI_LIB_DIR` to the absolute path of the resulting `lib/<artifact directory>` when you run Cargo.
 
 ## Windows consoles
 
-On Windows, the app turns on the console's virtual terminal input and output, so the input parser reads the same sequences as on Unix.
-Windows has no job control, so Ctrl+Z reaches key handlers instead of suspending the app.
-Ctrl+Break, closing the console, logoff, and shutdown end `App::run` as signals do on Unix.
-`TerminalView` runs programs on a pseudoconsole (ConPTY), and `pty::shell()` is `%COMSPEC%`.
+On Windows, the app turns on the console's virtual terminal mode, so it reads the same input sequences as on Unix.
+Some keys and events behave differently:
+
+- Windows has no job control, so Ctrl+Z reaches your key handlers instead of suspending the app.
+- Ctrl+Break, closing the console, logging off, and shutting down end `App::run`, as signals do on Unix.
 
 See [C](/docs/native/c) for the native artifacts and how other languages link them.

@@ -5,17 +5,46 @@ description: Run timers, threads, and async work in a Rust app, animate with tim
 
 # Time, animation, and the split footer
 
-## Time, threads, and async
+An app runs on one UI thread, and its widgets can be used only from that thread.
+This page shows how to schedule work on that thread, bring results back from other threads, animate widgets, and run an app in a footer below its own output.
 
-- `app.set_timeout` and `app.set_interval` run callbacks on the UI thread; `cancel_timer` stops them.
+## Timers, threads, and async work
+
+Work that takes a while belongs on another thread.
+`app.proxy()` returns an `AppProxy`, a handle you can send to other threads.
+Use it to hand the result back to the UI thread:
+
+```rust
+let status = Text::new(&app, "Working");
+app.root().add(&status);
+app.on_message(move |_cx, done: &String| {
+    status.set_text(done.clone());
+});
+let proxy = app.proxy();
+std::thread::spawn(move || {
+    let result = expensive_work();
+    let _ = proxy.send(format!("Done: {result}"));
+});
+```
+
+The proxy has two ways to reach the UI thread:
+
+- `proxy.post(|cx| ...)` runs a closure on the UI thread.
+- `proxy.send(message)` passes a value, by reference, to every `app.on_message` handler for its type.
+
+The proxy's queue is bounded: `post` and `send` return `ProxyError::Full` when it is full, and `ProxyError::Closed` after the app ends.
+
+The app also has these timing tools, which all run on the UI thread:
+
+- `app.set_timeout` runs a callback once after a delay, and `app.set_interval` runs one repeatedly. `cancel_timer` stops either one.
 - `app.animate(|cx, elapsed| ...)` runs before every frame until it returns `false`.
-- `app.proxy()` returns a `Send` handle. `proxy.post(|cx| ...)` runs a closure on the UI thread, and `proxy.send(message)` hands a value, by reference, to every `app.on_message` handler for its type. Its queue is bounded.
-- With the `tokio` feature, `app.spawn(future, |cx, output| ...)` runs a future on a runtime and calls back on the UI thread.
+- With the `tokio` feature, `app.spawn(future, |cx, output| ...)` runs a future on a Tokio runtime and calls back on the UI thread with its output.
 
 ## Timelines
 
-A `Timeline` plays tweens, callbacks, and other timelines at positions along it.
-A `Tween` moves a value between two ends with one of Core's easings and hands each new value to a handler:
+A `Timeline` animates values over time.
+It plays tweens, callbacks, and other timelines at positions along it.
+A `Tween` moves a value between two ends with an easing curve and passes each new value to a handler:
 
 ```rust
 use std::time::Duration;
@@ -29,26 +58,28 @@ let fade = Timeline::new(&app).add(
 // Later: fade.pause(), play(), restart(), or seek(Duration::from_millis(150)).
 ```
 
-Tweens move `f64`, `f32`, and `Color` values, or your own types through the `Interpolate` trait.
-They can repeat (`loops(3)`, `forever()`) with a `loop_delay`, and run back and forth with `alternate(true)`.
-Timelines loop with `looping(true)`, nest with `sync`, run `call` callbacks, and report `on_complete`.
-Without a `duration`, a timeline ends with its last item, and an empty one waits: `once` plays one-off tweens on it as they come.
+Tweens move `f64`, `f32`, and `Color` values.
+Implement the `Interpolate` trait to tween your own types.
+A tween can repeat with `loops(3)` or `forever()`, wait between repeats with `loop_delay`, and run back and forth with `alternate(true)`.
 
-Timelines advance through `app.animate`, so they follow the test clock and request frames only while they play.
+A timeline can:
+
+- loop with `looping(true)`
+- nest another timeline with `sync`
+- run a callback at a position with `call`
+- report when it ends with `on_complete`
+
+Without a `duration`, a timeline ends with its last item.
+An empty timeline waits instead, and `once` plays one-off tweens on it as they come.
+
+Timelines run on `app.animate`, so they follow the test clock in tests and request frames only while they play.
 A playing timeline keeps itself alive until it finishes.
-Handlers may capture timelines and widgets, and the app breaks those cycles when it ends.
+Handlers can capture timelines and widgets; the app breaks those reference cycles when it ends.
 
-## The animation clock
+## Spinners and other steady animations
 
-Animations that step at a rate, such as spinners and pulses, tick on Core's shared animation clock instead.
-`on_animation_tick` calls back `fps` times a second until its handle drops.
-
-All subscribers share frames: equal rates tick together, and slower ones tick in the fastest one's frames.
-A 25 fps pulse and two 12.5 fps spinners cost 25 frames a second, not 50.
-A tick that comes late counts the steps it covers in `tick.ticks`.
-
-The widget form ticks only while the widget is drawn.
-Hidden or detached, it wakes the app at most twice more and then costs nothing until it is drawn again, and it ends with the widget.
+Animations that step at a fixed rate, such as spinners and pulses, use the animation clock instead of a timeline.
+`on_animation_tick(fps, ...)` calls back `fps` times a second until you drop the handle it returns:
 
 ```rust
 let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -64,43 +95,100 @@ let ticking = spinner.on_animation_tick(12.5, {
 // Keep `ticking` while the spinner should spin; dropping it stops the spinner.
 ```
 
+If a tick comes late, `tick.ticks` says how many steps it covers, so the animation keeps pace.
+
+The widget version, as above, ticks only while the widget is drawn, and it ends with the widget.
 `app.on_animation_tick(fps, ...)` is the same clock without a widget.
-Use `app.animate` for work on every frame, including rates at or above `AppOptions::max_fps`: a tick timer would wake the app about twice for each frame it gets.
-With nothing subscribed, the app sets no timer, so an idle app with nothing animating never wakes.
-In tests, `TestApp::idle(duration)` runs the loop on the manual clock and returns the frames and wakeups that cost.
+
+All subscribers share one clock.
+Subscribers at the same rate tick together, and slower ones tick on the fastest one's frames, so a spinner at the same or a slower rate adds no frames.
+With nothing subscribed and nothing else to do, the app stays asleep.
+
+For work on every frame, or at a rate at or above `AppOptions::max_fps`, use `app.animate` instead.
+
+To see what an animation costs an idle app, call `TestApp::idle(duration)` in a test.
+It runs the event loop on the test clock and returns how many frames it painted and how often it woke.
 
 ## Split footer
 
-`opentui::split` keeps an app in a footer at the bottom of the main screen and writes scrollback above it.
-Core's `CliRenderer` does the same with `screenMode: "split-footer"` and `externalOutputMode: "capture-stdout"`.
-Native code (`ot_session_render_split`, `ot_session_split_control`, `ot_session_set_screen`) does the terminal work; the Rust side ports Core's host-side state machine.
+Some command-line apps keep a small interactive area at the bottom of the terminal and print their output above it, into the normal scrollback.
+`opentui::split` runs an app that way: the app lives in a footer on the main screen, and you write rows into the scrollback above it.
 
-The `split` example is a small app in this mode: a prompt in a four-row footer, Enter writes the line above, Ctrl+G changes the footer height, and Ctrl+L replays the transcript.
+This app is a prompt in a three-row footer.
+Enter writes the typed line above the footer, and Escape quits:
+
+```rust
+use opentui::native::MouseTracking;
+use opentui::prelude::*;
+use opentui::split::{Scrollback, SnapshotOptions, SplitFooter};
+
+fn main() -> opentui::Result<()> {
+    let mut options = AppOptions::default();
+    options.host.split_footer = Some(3);
+    options.host.terminal.mouse = MouseTracking::Off;
+    let app = App::new(options)?;
+    let footer = SplitFooter::of(app.session()).expect("a split footer");
+    let scrollback = Scrollback::new(&app)?;
+    app.root().add(&Text::new(&app, "Type a line; Enter writes it above. Esc quits."));
+    let input = Input::new(&app);
+    app.root().add(&input);
+    input.focus();
+    input.on_submit({
+        let (input, footer) = (input.clone(), footer.clone());
+        move |_cx, line| {
+            let row = Text::new(scrollback.app(), line);
+            if let Ok(snapshot) = scrollback.snapshot(&row, SnapshotOptions::default()) {
+                let _ = footer.write(snapshot);
+            }
+            input.set_value("");
+        }
+    });
+    app.on_key(move |cx, key| {
+        if key.matches("escape") {
+            let _ = footer.leave();
+            cx.quit();
+        }
+    });
+    app.run()
+}
+```
+
+The `split` example in the repository does more: Ctrl+G changes the footer height, and Ctrl+L replays the transcript.
 Run it with `sh run.sh split`.
 
-### Parts
+### Set up the footer
 
-- `HostOptions::split_footer = Some(rows)` runs the app in a footer of that many rows. The host never uses the alternate screen and reports footer height changes as `Event::Resize` with the footer's size. Frames wait up to 120 ms for the terminal's cursor report at startup, as in Core. Queued scrollback is written before the app suspends or closes.
-- `SplitFooter` writes snapshots above the footer, up to 8 per frame, bounded by the write limit. It changes the footer height, resets for a replay, and leaves for the main screen.
-- `Scrollback` paints widgets into snapshots in a detached app. `snapshot` is Core's `writeToScrollback`; `surface` is `createScrollbackSurface`, with `root`, `render`, `height`, and `commit_rows`. Unpainted cells stay empty, so rows end where the content does.
+Set `HostOptions::split_footer` to the footer's height in rows, as `options.host.split_footer = Some(3)` does above.
+The app then never switches to the alternate screen, and its root lays out in the footer's rows.
+Turn the mouse off in split mode, as the sample does with `MouseTracking::Off`, because mouse positions are not adjusted for the footer.
 
-### From Core
+After `App::new`, get the two helpers:
 
-| Core (TypeScript)                                                                                                                                                       | Rust                                                                                                                                                                                                                                       |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `createCliRenderer({ screenMode: "split-footer", footerHeight: 4, externalOutputMode: "capture-stdout", useMouse: false, exitOnCtrlC: false, clearOnShutdown: false })` | `options.host.split_footer = Some(4)`, `options.host.terminal.mouse = MouseTracking::Off`, `exit_on_ctrl_c: false`; `clear_on_close` is already off. `SplitFooter::of(app.session())` and `Scrollback::new(&app)` after `App::new`.        |
-| `renderer.writeToScrollback(write)` with a writer returning `{ root, width, height, rowColumns, startOnNewLine, trailingNewline }`                                      | Build the widgets with `scrollback.app()`, then `footer.write(scrollback.snapshot(&root, SnapshotOptions { .. })?)`. The writer's `tailColumn` is `footer.tail_column()`. No `requestRender` is needed.                                    |
-| `renderer.createScrollbackSurface({ startOnNewLine })`, `surface.render()`, `surface.commitRows(start, end, { trailingNewline })`, `surface.settle()`                   | `scrollback.surface(start_on_new_line)?`, add content to `surface.root()`, `surface.render()?`, then `footer.write` each `surface.commit_rows(start, end, None, trailing)?`. Highlighting is synchronous in Rust, so `settle` is `render`. |
-| `renderer.footerHeight = h`                                                                                                                                             | `footer.set_footer_height(h)`. It waits for queued snapshots, as Core's pending mode does; the app then gets `Event::Resize` with the footer's size.                                                                                       |
-| `onResize` comparing `terminalWidth`/`terminalHeight`                                                                                                                   | `app.on_resize`, comparing `footer.terminal_size()`.                                                                                                                                                                                       |
-| `renderer.resetSplitFooterForReplay({ clearSavedLines })`                                                                                                               | `footer.reset_for_replay(clear_saved_lines)`. Snapshots queued before it go first; later writes follow the reset.                                                                                                                          |
-| Shutdown: `externalOutputMode = "passthrough"`, `screenMode = "main-screen"`, `destroy()`, then `"\n"`                                                                  | `footer.leave()`, then `cx.quit()`. Close writes the queued snapshots, then leaves. Print the newline after `app.run()` returns.                                                                                                           |
-| An editor or suspension through the renderer                                                                                                                            | `app.release_terminal` or `app.suspend`: the host writes queued snapshots, suspends, and syncs the footer on resume.                                                                                                                       |
+- `SplitFooter::of(app.session())` controls the footer and writes to the scrollback.
+- `Scrollback::new(&app)` paints widgets into snapshots for the scrollback. It has its own detached app, `scrollback.app()`, for building those widgets.
 
-### Not ported
+### Write to the scrollback
 
-- **Captured stdout.** Core diverts `process.stdout.write` into the scrollback, with `\r` handling, tab stops, and a byte bound. A Rust app writes scrollback through `SplitFooter::write`; nothing captures stdout.
-- **`EXTERNAL_OUTPUT` events.** Paint monochrome snapshots yourself instead.
-- **`claimFirstLineOffset`** for surface content that continues a row at the tail column. Use `SnapshotOptions { start_on_new_line: false, .. }` and `tail_column()` for one-row continuations.
-- **Mouse rows.** Core shifts mouse events by the footer's offset and drops those above it. The Rust host does not translate them; turn the mouse off in split mode.
-- **Entering split mode later.** A host starts in split mode and can leave it once; Core can also switch into it at run time.
+Build widgets with `scrollback.app()`, then write them above the footer:
+
+- `footer.write(scrollback.snapshot(&root, options)?)` writes one snapshot. `SnapshotOptions` sets the width, the height, how many columns of each row to write, and whether the snapshot starts on a new line and ends with a newline.
+- For output that grows, such as a streamed response, use a surface. Call `scrollback.surface(start_on_new_line)?`, add content to `surface.root()`, call `surface.render()?`, and write each snapshot that `commit_rows` returns as rows are ready.
+
+Snapshots are written at the next frame, at most 8 per frame, so you do not need to request a redraw.
+`write` fails, and queues nothing, for a snapshot from another Context, one wider than its `row_columns` allow, or one larger than one frame of output.
+Cells you do not paint stay empty, so each row ends where its content does.
+To continue the current row, use `SnapshotOptions { start_on_new_line: false, .. }` and `footer.tail_column()`, which says where the row ends.
+
+Only what you write with `SplitFooter::write` reaches the scrollback.
+Text the process prints to stdout is not captured.
+
+### Resize, replay, and leave
+
+- `footer.set_footer_height(rows)` changes the footer's height. It waits for queued snapshots, and the app then gets `Event::Resize` with the footer's new size.
+- `app.on_resize` reports resizes. Compare `footer.terminal_size()` to tell a terminal resize from a footer height change.
+- `footer.reset_for_replay(clear_saved_lines)` clears the screen and starts the scrollback again at the top, so you can write it again, for example to redraw a transcript. With `clear_saved_lines`, it also clears the terminal's own scrollback. Snapshots queued before it are written first.
+- `app.release_terminal` and `app.suspend` work as usual. The app writes queued snapshots before it lets go of the terminal and restores the footer when it comes back.
+- To quit, call `footer.leave()` and then `cx.quit()`. `leave` waits for queued snapshots, clears the footer's rows, and leaves the cursor below the scrollback. An app that closes without `leave` still writes its queued snapshots first. Print a final newline after `app.run()` returns.
+
+An app starts in split mode and can leave it once.
+It cannot switch into split mode after it starts.

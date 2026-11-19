@@ -1,37 +1,19 @@
 ---
 title: Native layers
-description: Use the layers under the Rust framework directly, and compare frame costs with Core
+description: Use the modules under the Rust framework directly, without widgets or the event loop
 ---
 
 # Native layers
 
-The framework sits on layers you can use directly:
+Most apps use widgets and `App`.
+If you need more control, such as your own event loop or your own scene, you can use the modules that `App` is built on.
+The `native` example runs a scene with only these modules, without the framework. Run it with `sh run.sh native`.
 
-- `native`: safe owners for the C ABI: `Context`, `Session`, `Node`, frames, paint recordings, offscreen buffers, edit and text buffers, images, and embedded terminals. Every owner keeps its dependencies alive, so drop order never matters. None of the types are `Send`, because native code checks the owning thread.
-- `host`: runs one Session on the local terminal: setup, input, resizes, Ctrl-Z, output delivery, and restoration, from one `poll()` loop. If the program returns an error, panics, or receives SIGTERM, SIGHUP, or SIGINT, the terminal is restored before the process exits.
-- `input`: turns terminal bytes into key, mouse, paste, and focus events with the Session's native input parser: UTF-8, legacy and Kitty keys, SGR and X10 mouse, bracketed paste, and focus reports. Terminal replies come out separately.
-- `term`: raw mode, terminal size, signals, and wakeups, on top of `libc`.
-- `style` and `layout`: colors that keep their terminal intent (RGB, palette, or default), attributes, styled spans, and typed flexbox properties.
+- `native` wraps the native library safely: `Context`, `Session`, `Node`, frames, paint recordings, offscreen buffers, edit and text buffers, images, and embedded terminals. Each value keeps what it depends on alive, so you can drop values in any order. None of the types are `Send`: use each one on the thread that created it.
+- `host` runs one `Session` on the local terminal. It sets up the terminal, reads input, handles resizes and Ctrl+Z, writes output, and restores the terminal when it is done. If the program returns an error, panics, or receives SIGTERM, SIGHUP, or SIGINT, the host restores the terminal before the process exits.
+- `input` turns terminal bytes into key, mouse, paste, and focus events. It understands UTF-8, legacy and Kitty keyboard sequences, SGR and X10 mouse reports, bracketed paste, and focus reports. Replies from the terminal come out separately.
+  A partial escape sequence ends if its next byte takes more than 20 ms, so a key that starts like a sequence cannot hold up later input. A split UTF-8 character, or a bare `ESC [` that may start a mouse report, waits for the next read instead. For pasted text, `decode_paste_bytes` decodes bytes as UTF-8, and `strip_ansi_sequences` removes escape sequences.
+- `term` handles raw mode, the terminal size, signals, and wakeups.
+- `style` and `layout` provide colors, attributes, styled spans, and typed flexbox properties. A color remembers whether it is RGB, a palette index, or the terminal's default.
 
-As in Core, `input` ends a partial sequence whose next byte takes more than 20 ms, so a key that starts like a sequence cannot hold up later input.
-A split UTF-8 character and a bare `ESC [`, which may start a mouse report, wait for the next read instead.
-Core's 1,100 parser test vectors check the events made from the native parser's results.
-`decode_paste_bytes` and `strip_ansi_sequences` read pasted text as Core's helpers of the same names do.
-
-The `native` example shows a scene driven by the host alone.
-[Native rendering](/docs/native/overview) explains the scene, frames, and resources these layers wrap.
-
-## Performance
-
-`cargo run --release --example bench` times whole frames (event handling, layout, painting, encoding, and output) without a terminal.
-`scripts/core-bench.ts` runs the same scenes on Core's test renderer under Bun (`bun scripts/core-bench.ts`).
-Both load the library built in the checkout, so most scenes cost about the same; widgets the host paints itself are faster from Rust.
-On one Linux x86_64 machine:
-
-| Scene                                      | Rust   | Core       |
-| ------------------------------------------ | ------ | ---------- |
-| 200x60, 60 text rows, all change           | 418 µs | 472-502 µs |
-| 200x60, 60 text rows, one changes          | 59 µs  | 57 µs      |
-| ScrollBox with 5000 rows, scroll           | 437 µs | 450-456 µs |
-| Select with 10000 options, move selection  | 30 µs  | 87 µs      |
-| Textarea with 2000 lines, type a character | 36 µs  | 47 µs      |
+[Native rendering](/docs/native/overview) explains the scene, frames, and resources these modules wrap.
