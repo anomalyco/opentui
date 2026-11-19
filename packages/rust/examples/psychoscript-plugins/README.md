@@ -60,3 +60,6 @@ return {}
 - `src/main.rs`: the app, plus a `TestApp` test of slots, commands, throw, loop, and reload.
 - `plugins/`: `git`, `filter` (a filter over up to 1,000 repository files), `keys` (clock, size, last key), and `bad`.
 - `examples/frame.rs`: frame-time impact. `bench/`: the engine benchmarks.
+- `sidecar/`: helper processes over stdio JSON-RPC (Rust and Bun helpers, a supervising client, the bridge to a
+  top-level namespace) and their round-trip, cold-start, fan-out, sharing and failure measurements in
+  `sidecar/RESULTS.md`.

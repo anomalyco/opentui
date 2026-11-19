@@ -2,7 +2,7 @@
 # depend on the psychoscript checkout. psychoscript is expected next to this repository's checkout:
 # ../psychoscript-rs-pin/packages/codemode-rust (override with a [patch] or by editing the path).
 [workspace]
-members = [".", "bench"]
+members = [".", "bench", "sidecar"]
 resolver = "3"
 
 [workspace.package]
