@@ -1,8 +1,13 @@
-These files are OpenTUI Mono. Iosevka v34.4.0 compiled them with the plan
-in packages/web/src/font/private-build-plans.toml.
+These files are copies from anomalyco/opencode, services/site/src/asset/fonts.
+
+The openmono-*.woff2 files in this folder are subsets of OpenMono 1.000, made by
+services/site/script/openmono.py from the app build (no ligatures, every
+character one cell wide). OpenMono is Anomaly's typeface, built on Iosevka by
+Belleve Invis. The font declares no Reserved Font Name.
 
 Copyright (c) 2015-2026, Belleve Invis (belleve@typeof.net).
 Copyright (c) 2025, Ahmed Hatem (https://github.com/ahatem).
+Copyright (c) 2026, Anomaly.
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:
