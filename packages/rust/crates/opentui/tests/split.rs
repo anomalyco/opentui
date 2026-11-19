@@ -299,6 +299,42 @@ fn a_surface_commits_rows_as_they_settle_as_core() {
     );
 }
 
+// A writer streaming Markdown commits the rows of its committed blocks, as Core's children's `y` and `height` place
+// them; Core's scrollback surface test runs the same rows.
+#[test]
+fn markdown_blocks_report_their_surface_rows_as_core() {
+    let corpus: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../core/src/tests/markdown-block-rows.conformance.json")).unwrap();
+    for row in corpus["rows"].as_array().unwrap() {
+        let width = row[2].as_u64().unwrap() as u16;
+        let harness = Harness::start_with(width, 24, 3, 1, None);
+        let surface = harness.scrollback.surface(true).expect("create a surface");
+        let markdown = Markdown::new(harness.scrollback.app()).streaming(true);
+        surface.root().add(&markdown);
+        for chunk in row[1].as_array().unwrap() {
+            markdown.append(chunk.as_str().unwrap());
+        }
+        surface.render().expect("render the surface");
+        let rows: Vec<[u32; 2]> = markdown.block_rows().iter().map(|rows| [rows.start, rows.end]).collect();
+        let expected: Vec<[u32; 2]> = serde_json::from_value(row[4].clone()).unwrap();
+        assert_eq!(markdown.committed_block_count() as u64, row[3], "{}", row[0]);
+        assert_eq!(rows, expected, "{}", row[0]);
+    }
+    // The committed blocks but the last block go out, from the first block's top to the last one's bottom.
+    let harness = Harness::start_with(24, 24, 3, 1, None);
+    let surface = harness.scrollback.surface(true).expect("create a surface");
+    let markdown = Markdown::new(harness.scrollback.app()).streaming(true);
+    surface.root().add(&markdown);
+    markdown.append("# Title\n\nA paragraph long enough to wrap at this width.\n\n```\none\n```\n\ntail");
+    surface.render().expect("render the surface");
+    let blocks = markdown.block_rows();
+    let committed = (markdown.committed_block_count() as usize).min(blocks.len() - 1);
+    let rows = surface.commit_rows(blocks[0].start, blocks[committed - 1].end, None, true).expect("commit").unwrap();
+    let text = rows.buffer.capture().expect("capture").text();
+    let lines: Vec<&str> = text.lines().map(str::trim_end).collect();
+    assert_eq!(lines, ["Title", "", "A paragraph long enough", "to wrap at this width.", "", "one"]);
+}
+
 // Expected: a footer height set before the terminal is set up sizes the renderer, as Core's `footerHeight` setter
 // does before `setupTerminal`. Actual: only the requested height changed; the renderer kept the startup height.
 #[test]

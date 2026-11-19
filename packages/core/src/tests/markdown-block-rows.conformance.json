@@ -1,0 +1,25 @@
+{
+  "format": [
+    "Rows of streamed Markdown's top-level blocks in a scrollback surface. Core (renderer.scrollback-surface.test.ts) and Rust (tests/split.rs) run this file. A row is [name, chunks, width, committed, rows].",
+    "The document streams in its chunks into a Markdown that fills a surface `width` columns wide, and the surface renders after the last chunk. committed is the committed block count. rows holds [start, end) for each top-level block in order: Core's children's y and y + height, Rust's Markdown::block_rows, in the rows ScrollbackSurface commits."
+  ],
+  "rows": [
+    [
+      "a wrapped paragraph, a heading, code and a list before a streamed tail",
+      [
+        "# Title\n\nA paragraph long enough to wrap",
+        " at this width.\n\n## Code\n\n```\none\ntwo\n```\n\n- first\n- second\n  item\n\nstreamed"
+      ],
+      24,
+      4,
+      [
+        [0, 1],
+        [2, 4],
+        [5, 6],
+        [7, 9],
+        [10, 13],
+        [14, 15]
+      ]
+    ]
+  ]
+}
