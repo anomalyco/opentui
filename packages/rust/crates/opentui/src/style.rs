@@ -118,18 +118,18 @@ impl Color {
         Self { r, g, b, a: 255, intent: Intent::Default }
     }
 
-    /// Parses `#rgb`, `#rrggbb`, or `#rrggbbaa`. The `#` is optional. [`str::parse`] does the same with an error.
+    /// Parses `#rgb`, `#rgba`, `#rrggbb`, or `#rrggbbaa`, as Core's `RGBA.fromHex` does for valid input. The `#` is
+    /// optional. [`str::parse`] does the same with an error.
     pub fn parse(text: &str) -> Option<Self> {
         let digits = text.strip_prefix('#').unwrap_or(text);
         if !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return None;
         }
         let value = u32::from_str_radix(digits, 16).ok()?;
+        let expand = |shift: u32| ((value >> shift) & 0xf) as u8 * 17;
         match digits.len() {
-            3 => {
-                let expand = |shift: u32| ((value >> shift) & 0xf) as u8 * 17;
-                Some(Self::rgb(expand(8), expand(4), expand(0)))
-            }
+            3 => Some(Self::rgb(expand(8), expand(4), expand(0))),
+            4 => Some(Self::rgba(expand(12), expand(8), expand(4), expand(0))),
             6 => Some(Self::hex(value)),
             8 => Some(Self::rgba((value >> 24) as u8, (value >> 16) as u8, (value >> 8) as u8, value as u8)),
             _ => None,
@@ -176,19 +176,19 @@ impl Color {
 impl std::str::FromStr for Color {
     type Err = ParseColorError;
 
-    /// Parses `#rgb`, `#rrggbb`, or `#rrggbbaa`, as [`Color::parse`] does.
+    /// Parses `#rgb`, `#rgba`, `#rrggbb`, or `#rrggbbaa`, as [`Color::parse`] does.
     fn from_str(text: &str) -> Result<Self, ParseColorError> {
         Self::parse(text).ok_or(ParseColorError)
     }
 }
 
-/// The error from parsing a [`Color`] that is not `#rgb`, `#rrggbb`, or `#rrggbbaa`.
+/// The error from parsing a [`Color`] that is not `#rgb`, `#rgba`, `#rrggbb`, or `#rrggbbaa`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ParseColorError;
 
 impl std::fmt::Display for ParseColorError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("expected a color as #rgb, #rrggbb, or #rrggbbaa")
+        formatter.write_str("expected a color as #rgb, #rgba, #rrggbb, or #rrggbbaa")
     }
 }
 
@@ -608,6 +608,8 @@ mod tests {
     #[test]
     fn parse_accepts_short_long_and_alpha_hex() {
         assert_eq!(Color::parse("#fa0"), Some(Color::rgb(0xff, 0xaa, 0x00)));
+        // Core's `hexToRgb("#F808")`.
+        assert_eq!(Color::parse("#F808"), Some(Color::rgba(255, 136, 0, 136)));
         assert_eq!(Color::parse("12ab34"), Some(Color::rgb(0x12, 0xab, 0x34)));
         assert_eq!(Color::parse("#12ab3480"), Some(Color::rgba(0x12, 0xab, 0x34, 0x80)));
         for invalid in ["", "#", "#12", "#12345", "#gggggg", "+12345", "#1234567"] {
