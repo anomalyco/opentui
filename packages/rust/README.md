@@ -84,18 +84,24 @@ then `sh test.sh shared`, and fix the crates in the same change.
 On crates.io the packages are `anomalyco-opentui-sys`, `anomalyco-opentui`,
 and `opentui-ssh`. Until the names `opentui` and `opentui-sys` are free, the
 first two use interim package names but keep the library names `opentui` and
-`opentui_sys`; `cargo -p` takes the package names. A release publishes them by hand after its GitHub
-release exists, at the release's version, which `prepare-release` sets. From
-`packages/rust`, with the release's native archive for the host extracted:
+`opentui_sys`; `cargo -p` takes the package names. Every release publishes
+them at the release's version, which `prepare-release` sets: the `Crates
+Publish` job in `.github/workflows/release.yml` runs `cargo publish --locked
+--workspace` against the release's Linux x64 library. It authenticates with
+crates.io trusted publishing, so no token is stored; each crate's trusted
+publisher names `anomalyco/opentui`, `release.yml`, and no environment. A rerun
+skips the crates that crates.io already has at that version.
+
+To check the crates locally, from `packages/rust` with a native library for the
+host (`../native/lib/<target>` after `bun run build`, or an extracted release
+archive):
 
 ```sh
-export OPENTUI_LIB_DIR=/absolute/path/to/opentui-native-v<version>-<platform>
+export OPENTUI_LIB_DIR=/absolute/path/to/native/library
 cargo publish --dry-run --locked --workspace
-cargo publish --locked --workspace
 ```
 
 `--workspace` packages all three, builds each from its `.crate` against the
-archive, and uploads them in dependency order: `-sys`, then `opentui`, then
-`opentui-ssh`. Outside a checkout the build needs `OPENTUI_LIB_DIR`, and the
-header check proves the archive matches. A crate that is already published
-fails the upload; publish the rest with `-p`.
+library, and uploads them in dependency order: `-sys`, then `opentui`, then
+`opentui-ssh`. The `.crate` build is outside the checkout, so it needs
+`OPENTUI_LIB_DIR`, and the header check proves the library matches.
