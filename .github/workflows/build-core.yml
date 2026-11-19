@@ -267,7 +267,8 @@ jobs:
 
       # The committed native files, so install and test steps that write into packages/native don't change it. A
       # release commit changes only the version lines of build.zig.zon and package.json here, and the library does
-      # not embed them, so the key leaves them out and the release reuses the result of the commit before it.
+      # not embed them, so the key leaves them out and the release reuses the result of the commit before it. The
+      # native tests also read Core's conformance corpora and media fixtures; scripts/ci-changes.sh lists them too.
       - name: Hash native test inputs
         id: native-inputs
         env:
@@ -277,6 +278,10 @@ jobs:
           hash=$(
             {
               git ls-files -s -- packages/native .github/workflows/build-core.yml \
+                packages/core/src/lib/stdin-parser.conformance.json \
+                packages/core/src/renderables/markdown.conformance.json \
+                packages/core/src/tests/fixtures/audio packages/core/src/tests/fixtures/images \
+                packages/core/src/tests/fixtures/video \
                 ':(exclude)packages/native/build.zig.zon' ':(exclude)packages/native/package.json'
               git show HEAD:packages/native/build.zig.zon | sed -E '/^    \.version = "[^"]*",$/d'
               git show HEAD:packages/native/package.json | sed -E '/^  "version": "[^"]*",$/d'

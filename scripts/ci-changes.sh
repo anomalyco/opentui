@@ -33,10 +33,11 @@ rust_only=false
 if ! printf '%s\n' "$files" | grep -qv '^packages/rust/'; then
     rust_only=true
 fi
-# The native inputs. Only a host build tests them, so a pull request that changes them runs the cross-OS matrix.
+# The native inputs. Only a host build tests them, so a pull request that changes them runs the cross-OS matrix. The
+# Core files here are what the native tests read; the native test result's key in build-core.yml lists them too.
 native=false
 if printf '%s\n' "$files" | grep -Eq \
-    '^(packages/native/|packages/core/scripts/native-abi|packages/core/src/tests/fixtures/video/|scripts/native-bottle\.ts$|\.github/workflows/(build-core|changes)\.yml$)'; then
+    '^(packages/native/|packages/core/scripts/native-abi|packages/core/src/(lib/stdin-parser|renderables/markdown)\.conformance\.json$|packages/core/src/tests/fixtures/(audio|images|video)/|scripts/native-bottle\.ts$|\.github/workflows/(build-core|changes)\.yml$)'; then
     native=true
 fi
 # Every check builds and imports core, so a change to it, to the shared toolchain or to the repository configuration
