@@ -5,7 +5,7 @@ import landingVideos from "../data/landing-videos.json"
 import Minimal from "../layouts/Minimal.astro"
 
 const description =
-  "OpenTUI is a library to build terminal user interfaces in TypeScript, React, or Solid, on a native Zig renderer."
+  "OpenTUI is a library to build terminal user interfaces in Rust, TypeScript, React, or Solid, on a native Zig core with a C API."
 const title = "OpenTUI"
 const videos = Object.fromEntries(landingVideos.map((video) => [video.slug, video]))
 ---
@@ -41,7 +41,7 @@ const videos = Object.fromEntries(landingVideos.map((video) => [video.slug, vide
               data-source={videos.video.source}
               data-credit={videos.video.credit}
               data-has-audio={videos.video.hasAudio}
-              data-author={`@${videos.video.handle}`}>It is written in Zig.</button
+              data-author={`@${videos.video.handle}`}>It is written in Zig, with a C API.</button
             >
           </li>
           <li>
@@ -53,7 +53,7 @@ const videos = Object.fromEntries(landingVideos.map((video) => [video.slug, vide
               data-has-audio={videos.components.hasAudio}
               data-author={`@${videos.components.handle}`}
             >
-              You write TypeScript directly or through React and Solid.
+              You write Rust, TypeScript, React, or Solid.
             </button>
           </li>
           <li>
@@ -87,7 +87,7 @@ const videos = Object.fromEntries(landingVideos.map((video) => [video.slug, vide
               data-has-audio={videos["3d"].hasAudio}
               data-author={`@${videos["3d"].handle}`}
             >
-              You can play sounds, show images, and render 3D graphics.
+              You can play videos and sounds, show images, and render 3D graphics.
             </button>
           </li>
         </ul>
