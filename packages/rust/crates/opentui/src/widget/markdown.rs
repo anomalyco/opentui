@@ -713,6 +713,25 @@ impl Markdown {
         self.0.committed.get()
     }
 
+    /// The rows each top-level block took in the latest frame, in order: from its top row to the row below its
+    /// bottom, in screen rows, which in a [`ScrollbackSurface`](crate::split::ScrollbackSurface) are the rows its
+    /// `commit_rows` takes. A list's or quote's blocks are inside its rows. Core's `getChildren()` with each child's
+    /// `y` and `y + height`.
+    ///
+    /// Blocks stand one row apart. A scrollback writer commits blocks `from..to` of the
+    /// [`committed_block_count`](Self::committed_block_count) with
+    /// `commit_rows(rows[from - 1].end, rows[to - 1].end, ..)`, or `rows[0].start` for the first: each block goes out
+    /// with the gap above it.
+    pub fn block_rows(&self) -> Vec<Range<u32>> {
+        let children = self.0.element.child_behaviors();
+        let rows = |child: &Rc<dyn Behavior>| {
+            let rect = child.element().rect();
+            let top = rect.screen_y.max(0.0) as u32;
+            top..top + rect.height.max(0.0) as u32
+        };
+        children.iter().map(rows).collect()
+    }
+
     fn app(&self) -> Option<App> {
         self.0.element.app()
     }

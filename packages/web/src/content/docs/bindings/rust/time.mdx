@@ -172,7 +172,7 @@ After `App::new`, get the two helpers:
 Build widgets with `scrollback.app()`, then write them above the footer:
 
 - `footer.write(scrollback.snapshot(&root, options)?)` writes one snapshot. `SnapshotOptions` sets the width, the height, how many columns of each row to write, and whether the snapshot starts on a new line and ends with a newline.
-- For output that grows, such as a streamed response, use a surface. Call `scrollback.surface(start_on_new_line)?`, add content to `surface.root()`, call `surface.render()?`, and write each snapshot that `commit_rows` returns as rows are ready.
+- For output that grows, such as a streamed response, use a surface. Call `scrollback.surface(start_on_new_line)?`, add content to `surface.root()`, call `surface.render()?`, and write each snapshot that `commit_rows` returns as rows are ready. For streamed [Markdown](/docs/bindings/rust/text#markdown), `committed_block_count` and `block_rows` say which rows are ready.
 
 Snapshots are written at the next frame, at most 8 per frame, so you do not need to request a redraw.
 `write` fails, and queues nothing, for a snapshot from another Context, one wider than its `row_columns` allow, or one larger than one frame of output.
