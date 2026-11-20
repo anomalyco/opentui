@@ -4959,7 +4959,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     for (const batch of this.replyBatches) this.armReplyBackstop(batch)
     this.syncReplyContext(false)
     if (this.pixelResolutionRequeryPending) this.queryPixelResolution()
-    this.applyPendingNativeResize()
+    // A stopped process gets no SIGWINCH (its shell owns the terminal, and `fg` sends only SIGCONT), and the runtime's
+    // stdout size stays stale until refreshed, so take the terminal's size before the first frame.
+    if (this._usesProcessStdout) (this.stdout as { _refreshSize?: () => void })._refreshSize?.()
+    const { columns, rows } = this.stdout
+    if (this._usesProcessStdout && columns > 0 && rows > 0) this.resize(columns, rows)
+    else this.applyPendingNativeResize()
 
     if (
       this._previousControlState === RendererControlState.AUTO_STARTED ||

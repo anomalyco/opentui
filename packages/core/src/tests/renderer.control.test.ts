@@ -128,6 +128,42 @@ for (const screenMode of ["main-screen", "alternate-screen"] as const) {
   })
 }
 
+// A stopped job gets no SIGWINCH: its shell owns the terminal meanwhile, and `fg` sends only SIGCONT. The runtime's
+// cached stdout size is stale until `_refreshSize()` reads the terminal again.
+for (const [width, height] of [
+  [100, 30],
+  [40, 10],
+] as const) {
+  test(`resume() renders at the ${width}x${height} size the terminal took while stopped`, async () => {
+    renderer.destroy()
+    await renderer.closed
+    const stdout = process.stdout
+    const keys = ["columns", "rows", "_refreshSize"]
+    const saved = keys.map((key) => Object.getOwnPropertyDescriptor(stdout, key))
+    const terminal = { columns: 80, rows: 24 }
+    Object.defineProperties(stdout, {
+      columns: { configurable: true, writable: true, value: 80 },
+      rows: { configurable: true, writable: true, value: 24 },
+      _refreshSize: { configurable: true, value: () => Object.assign(stdout, terminal) },
+    })
+    try {
+      let captureSpans: () => { cols: number; rows: number }
+      ;({ renderer, renderOnce, captureSpans } = await createTestRenderer({ stdout, width: 80, height: 24 }))
+      await renderer.setupTerminal()
+      await renderer.suspend()
+      Object.assign(terminal, { columns: width, rows: height })
+      await renderer.resume()
+      await renderOnce()
+      const { cols, rows } = captureSpans()
+      expect([renderer.width, renderer.height, cols, rows]).toEqual([width, height, width, height])
+    } finally {
+      renderer.destroy()
+      await renderer.closed
+      keys.forEach((key, i) => (saved[i] ? Object.defineProperty(stdout, key, saved[i]!) : delete (stdout as any)[key]))
+    }
+  })
+}
+
 test("requestRender() does not trigger when renderer is suspended", async () => {
   renderer.start()
   await renderer.suspend()
