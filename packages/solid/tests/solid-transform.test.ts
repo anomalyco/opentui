@@ -20,8 +20,8 @@ const cases: [file: string, source: string, expected: string][] = [
   ],
   [
     "a.ts",
-    'import("m" as const); require("m" satisfies string); require.resolve("m"!); require(<string>"m"); require(("m"))',
-    'import("m"); require("m"); require.resolve("m"); require("m"); require("m!")',
+    'import("m" as const); require("m" satisfies string); require.resolve("m"!); require(<string>"m"); require(("m")); require!("m"!)',
+    'import("m"); require("m"); require.resolve("m"); require("m"); require("m!"); require("m!")',
   ],
   ["a.tsx", 'export const A = () => <box>{require("m" as string)}</box>', 'require("m!")'],
   [

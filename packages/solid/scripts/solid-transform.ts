@@ -45,6 +45,13 @@ const moduleCalls = ["require.resolve", "System.import", "require.requireActual"
   ),
 )
 
+function isModuleCall(path: NodePath<types.CallExpression>): boolean {
+  const callee = path.get("callee")
+  return (
+    callee.isImport() || callee.isIdentifier({ name: "require" }) || moduleCalls.some((p) => callee.matchesPattern(p))
+  )
+}
+
 // Rewrites module specifiers once, after the Solid preset has added its runtime imports.
 function importResolver(options: TransformSolidSourceOptions): PluginObj {
   // Like the resolver, leave a call alone whose argument was not a plain string before TypeScript erased its cast.
@@ -56,7 +63,7 @@ function importResolver(options: TransformSolidSourceOptions): PluginObj {
   }
   const findCasts = {
     CallExpression(path: NodePath<types.CallExpression>) {
-      if (!path.get("arguments")[0]?.isStringLiteral()) castCalls.add(path)
+      if (isModuleCall(path) && !path.get("arguments")[0]?.isStringLiteral()) castCalls.add(path)
     },
   }
   const visitor = {
@@ -64,14 +71,7 @@ function importResolver(options: TransformSolidSourceOptions): PluginObj {
       rewrite(path.get("source"))
     },
     CallExpression(path: NodePath<types.CallExpression>) {
-      const callee = path.get("callee")
-      if (
-        !castCalls.has(path) &&
-        (callee.isImport() ||
-          callee.isIdentifier({ name: "require" }) ||
-          moduleCalls.some((p) => callee.matchesPattern(p)))
-      )
-        rewrite(path.get("arguments")[0])
+      if (!castCalls.has(path) && isModuleCall(path)) rewrite(path.get("arguments")[0])
     },
   }
   return {
