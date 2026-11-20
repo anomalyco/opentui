@@ -1232,6 +1232,44 @@ test "TextBufferView word wrapping - punctuation boundaries" {
     try std.testing.expect(wrapped_count >= 2);
 }
 
+test "TextBufferView word wrapping - closing punctuation stays with the preceding word across chunks" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    const Case = struct { tail: []const u8, width: u32 };
+    for ([_]Case{
+        .{ .tail = ", ww", .width = 7 },
+        .{ .tail = ". ww", .width = 7 },
+        .{ .tail = "\u{ff0c} ww", .width = 8 },
+    }) |case| {
+        for ([_]bool{ false, true }) |fragmented| {
+            const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
+            defer tb.deinit();
+            const view = try TextBufferView.init(std.testing.allocator, tb);
+            defer view.deinit();
+            var text: [64]u8 = undefined;
+            if (fragmented) {
+                try tb.setText("xxxxxx (yy zz)");
+                try tb.append(case.tail);
+            } else {
+                try tb.setText(try std.fmt.bufPrint(&text, "xxxxxx (yy zz){s}", .{case.tail}));
+            }
+            view.setWrapMode(.word);
+            const measured = try view.measureForDimensions(14, 4);
+            try std.testing.expectEqual(@as(u32, 2), measured.line_count);
+            try std.testing.expectEqual(@as(u32, 11), measured.width_cols_max);
+            for ([_]u32{ 14, 13, 14 }) |width| {
+                view.setWrapWidth(width);
+                const lines = view.getVirtualLines();
+                try std.testing.expectEqual(@as(usize, 2), lines.len);
+                try std.testing.expectEqual(@as(u32, 11), lines[0].width_cols);
+                try std.testing.expectEqual(case.width, lines[1].width_cols);
+                try std.testing.expectEqual(@as(u32, 11), lines[1].source_col_start);
+            }
+        }
+    }
+}
+
 test "TextBufferView word wrapping - tab boundary width" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
