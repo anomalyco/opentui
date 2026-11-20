@@ -62,7 +62,11 @@ describe("Utility Functions", () => {
     expect(isFlexBasisType("auto")).toBe(true)
     expect(isFlexBasisType(undefined)).toBe(true)
     expect(isFlexBasisType("50%")).toBe(true)
+    expect(isFlexBasisType("-12.5%")).toBe(true)
     expect(isFlexBasisType("50")).toBe(false)
+    expect(isFlexBasisType("50px%")).toBe(false)
+    expect(isFlexBasisType("Infinity%")).toBe(false)
+    expect(isFlexBasisType(`1${"0".repeat(39)}%`)).toBe(false)
     expect(isFlexBasisType(NaN)).toBe(false)
   })
 
