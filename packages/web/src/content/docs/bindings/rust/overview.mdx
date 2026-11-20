@@ -46,8 +46,8 @@ The crates live in [packages/rust](https://github.com/anomalyco/opentui/tree/mai
 - `opentui-ssh` serves an app over SSH, one app per session.
 - `opentui-sys` is the raw C API of the native library. `opentui` wraps it safely, so you rarely use it directly.
 
-The crates are on crates.io, where `opentui` and `opentui-sys` are published as `anomalyco-opentui` and `anomalyco-opentui-sys` for now.
-You add `anomalyco-opentui` under the name `opentui` and link the native library from the release with the same version.
+The crates are on crates.io under these names from the first release after 0.9.5; versions 0.9.4 and 0.9.5 are `anomalyco-opentui` and `anomalyco-opentui-sys`.
+You add `opentui` and link the native library from the release with the same version.
 [Install, link, and ship](/docs/bindings/rust/install) shows how.
 
 ## Run the examples

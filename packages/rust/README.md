@@ -15,8 +15,8 @@ This workspace has three crates:
 
 ## Use the crates in an app
 
-Add the crate from crates.io with
-`cargo add anomalyco-opentui --rename opentui`, extract the
+Add the crate from crates.io with `cargo add opentui` (published under that name
+from the first release after 0.9.5), extract the
 `opentui-native-v<version>-<platform>.zip` of the release with the same
 version, and set `OPENTUI_LIB_DIR` to the extracted directory.
 [Install, link, and ship](https://opentui.com/docs/bindings/rust/install)
@@ -63,7 +63,7 @@ From `packages/rust`:
 ```sh
 sh test.sh           # format, clippy, tests, and lifecycle checks, with shared and static linking
 sh test.sh shared
-cargo test --locked --workspace --features anomalyco-opentui/tokio,anomalyco-opentui/tree-sitter
+cargo test --locked --workspace --features opentui/tokio,opentui/tree-sitter
 sh scripts/check-targets.sh   # clippy for the macOS, arm64 and musl Linux, and Arm Windows targets
 ```
 
@@ -81,12 +81,9 @@ then `sh test.sh shared`, and fix the crates in the same change.
 
 ## Publish
 
-On crates.io the packages are `anomalyco-opentui-sys`, `anomalyco-opentui`,
-and `opentui-ssh`. Until the names `opentui` and `opentui-sys` are free, the
-first two use interim package names but keep the library names `opentui` and
-`opentui_sys`; `cargo -p` takes the package names. Every release publishes
-them at the release's version, which `prepare-release` sets: the `Crates
-Publish` job in `.github/workflows/release.yml` runs `cargo publish --locked
+Every release publishes the crates `opentui-sys`, `opentui`, and
+`opentui-ssh` to crates.io at the release's version, which `prepare-release`
+sets: the `Crates Publish` job in `.github/workflows/release.yml` runs `cargo publish --locked
 --workspace` against the release's Linux x64 library. It authenticates with
 crates.io trusted publishing, so no token is stored; each crate's trusted
 publisher names `anomalyco/opentui`, `release.yml`, and no environment. A rerun

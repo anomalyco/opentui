@@ -1,12 +1,9 @@
-# anomalyco-opentui-sys
+# opentui-sys
 
 Raw FFI declarations for [OpenTUI](https://opentui.com)'s checked C ABI
 (`opentui.h`), generated from the header. The safe API is
-[`anomalyco-opentui`](https://crates.io/crates/anomalyco-opentui); most apps
-never use this crate directly.
-
-This is OpenTUI's official crate, published as `anomalyco-opentui-sys` until it
-can take the name `opentui-sys`. Its library is named `opentui_sys`.
+[`opentui`](https://crates.io/crates/opentui); most apps never use this crate
+directly. Versions 0.9.4 and 0.9.5 were published as `anomalyco-opentui-sys`.
 
 ## The native library
 

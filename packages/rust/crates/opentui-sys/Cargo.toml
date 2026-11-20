@@ -1,5 +1,5 @@
 [package]
-name = "anomalyco-opentui-sys"
+name = "opentui-sys"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,15 +7,12 @@ rust-version.workspace = true
 license = "MIT AND LGPL-2.1-or-later"
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://docs.rs/anomalyco-opentui-sys"
+documentation = "https://docs.rs/opentui-sys"
 readme = "README.md"
 keywords = ["tui", "terminal", "ffi", "opentui"]
 categories = ["external-ffi-bindings"]
 links = "opentui"
-description = "Raw FFI declarations for OpenTUI's checked C ABI (interim name of the opentui-sys crate)"
-
-[lib]
-name = "opentui_sys"
+description = "Raw FFI declarations for OpenTUI's checked C ABI"
 
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu"]

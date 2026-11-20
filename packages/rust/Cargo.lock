@@ -64,28 +64,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anomalyco-opentui"
-version = "0.9.5"
-dependencies = [
- "anomalyco-opentui-sys",
- "libc",
- "log",
- "serde_json",
- "tokio",
- "tree-sitter",
- "tree-sitter-javascript",
- "tree-sitter-md",
- "tree-sitter-rust",
- "tree-sitter-typescript",
- "tree-sitter-zig",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "anomalyco-opentui-sys"
-version = "0.9.5"
-
-[[package]]
 name = "argon2"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -959,16 +937,38 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
+name = "opentui"
+version = "0.9.5"
+dependencies = [
+ "libc",
+ "log",
+ "opentui-sys",
+ "serde_json",
+ "tokio",
+ "tree-sitter",
+ "tree-sitter-javascript",
+ "tree-sitter-md",
+ "tree-sitter-rust",
+ "tree-sitter-typescript",
+ "tree-sitter-zig",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "opentui-ssh"
 version = "0.9.5"
 dependencies = [
- "anomalyco-opentui",
- "anomalyco-opentui-sys",
  "bytes",
+ "opentui",
+ "opentui-sys",
  "rand",
  "russh",
  "tokio",
 ]
+
+[[package]]
+name = "opentui-sys"
+version = "0.9.5"
 
 [[package]]
 name = "p256"

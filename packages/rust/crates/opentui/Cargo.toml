@@ -1,5 +1,5 @@
 [package]
-name = "anomalyco-opentui"
+name = "opentui"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,15 +7,12 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 exclude.workspace = true
-documentation = "https://docs.rs/anomalyco-opentui"
+documentation = "https://docs.rs/opentui"
 readme = "README.md"
 keywords = ["tui", "terminal", "ui", "widgets", "opentui"]
 categories = ["command-line-interface"]
-description = "OpenTUI's terminal UI framework for Rust, built on its native renderer (interim name of the opentui crate)"
+description = "OpenTUI's terminal UI framework for Rust, built on its native renderer"
 autoexamples = false
-
-[lib]
-name = "opentui"
 
 [package.metadata.docs.rs]
 features = ["tokio", "log", "tree-sitter"]
