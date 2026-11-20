@@ -129,12 +129,17 @@ for (const screenMode of ["main-screen", "alternate-screen"] as const) {
 }
 
 // A stopped job gets no SIGWINCH: its shell owns the terminal meanwhile, and `fg` sends only SIGCONT. The runtime's
-// cached stdout size is stale until `_refreshSize()` reads the terminal again.
-for (const [width, height] of [
-  [100, 30],
-  [40, 10],
-] as const) {
-  test(`resume() renders at the ${width}x${height} size the terminal took while stopped`, async () => {
+// cached stdout size is stale until `_refreshSize()` reads the terminal again. Each row: the terminal's size at resume,
+// a size the app asked for while suspended, and the size the resumed frame has.
+const stoppedResizes: Array<[columns: number, rows: number, requested: [number, number] | null, w: number, h: number]> =
+  [
+    [100, 24, null, 100, 24],
+    [80, 10, null, 80, 10],
+    [0, 0, null, 80, 24],
+    [80, 24, [71, 19], 71, 19],
+  ]
+for (const [columns, rows, requested, width, height] of stoppedResizes) {
+  test(`resume() with the terminal at ${columns}x${rows} after ${requested ?? "no"} request renders at ${width}x${height}`, async () => {
     renderer.destroy()
     await renderer.closed
     const stdout = process.stdout
@@ -151,11 +156,12 @@ for (const [width, height] of [
       ;({ renderer, renderOnce, captureSpans } = await createTestRenderer({ stdout, width: 80, height: 24 }))
       await renderer.setupTerminal()
       await renderer.suspend()
-      Object.assign(terminal, { columns: width, rows: height })
+      Object.assign(terminal, { columns, rows })
+      if (requested) renderer.requestResize(...requested)
       await renderer.resume()
       await renderOnce()
-      const { cols, rows } = captureSpans()
-      expect([renderer.width, renderer.height, cols, rows]).toEqual([width, height, width, height])
+      const frame = captureSpans()
+      expect([renderer.width, renderer.height, frame.cols, frame.rows]).toEqual([width, height, width, height])
     } finally {
       renderer.destroy()
       await renderer.closed
