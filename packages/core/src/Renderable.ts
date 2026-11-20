@@ -2,6 +2,7 @@ import { EventEmitter } from "events"
 import util from "node:util"
 import {
   Align,
+  BoxSizing,
   Dimension,
   Display,
   Edge,
@@ -37,6 +38,7 @@ import {
   parseAlign,
   parseAlignContent,
   parseAlignItems,
+  parseBoxSizing,
   parseFlexDirection,
   parseJustify,
   parseLayoutMode,
@@ -44,6 +46,7 @@ import {
   parsePositionType,
   parseWrap,
   type AlignString,
+  type BoxSizingString,
   type FlexDirectionString,
   type JustifyString,
   type LayoutModeString,
@@ -140,9 +143,11 @@ export interface LayoutOptions extends BaseRenderableOptions {
   alignItems?: AlignString
   alignContent?: AlignString
   aspectRatio?: number
+  /** `"content-box"` adds padding and border to the width and height; `"border-box"`, the default, includes them. */
+  boxSizing?: BoxSizingString
   justifyContent?: JustifyString
   alignSelf?: AlignString
-  flexBasis?: number | "auto" | undefined
+  flexBasis?: number | "auto" | `${number}%` | undefined
   position?: PositionTypeString
   overflow?: OverflowString
   top?: number | "auto" | `${number}%`
@@ -1172,6 +1177,10 @@ export abstract class Renderable extends BaseRenderable {
     return this.yogaGetFloat(YogaFloatKind.AspectRatio)
   }
 
+  getBoxSizing(): BoxSizing {
+    return this.yogaGetEnum(YogaEnumKind.BoxSizing, BoxSizing.BorderBox) as BoxSizing
+  }
+
   getJustifyContent(): Justify {
     return this.yogaGetEnum(YogaEnumKind.JustifyContent, Justify.FlexStart) as Justify
   }
@@ -1275,6 +1284,7 @@ export abstract class Renderable extends BaseRenderable {
     if (options.layoutMode !== undefined) node.layoutMode = options.layoutMode
     if (options.alignContent !== undefined) node.alignContent = options.alignContent
     if (options.aspectRatio !== undefined) node.aspectRatio = options.aspectRatio
+    if (options.boxSizing !== undefined) node.boxSizing = options.boxSizing
     node.setAlignItems(parseAlignItems(options.alignItems))
     node.setJustifyContent(parseJustify(options.justifyContent))
     node.setAlignSelf(parseAlign(options.alignSelf))
@@ -1474,6 +1484,11 @@ export abstract class Renderable extends BaseRenderable {
     this.requestRender()
   }
 
+  public set boxSizing(boxSizing: BoxSizingString | null | undefined) {
+    this.yogaSetEnum(YogaEnumKind.BoxSizing, parseBoxSizing(boxSizing))
+    this.requestRender()
+  }
+
   public set justifyContent(justifyContent: JustifyString | null | undefined) {
     this.setJustifyContent(parseJustify(justifyContent))
     this.requestRender()
@@ -1484,7 +1499,7 @@ export abstract class Renderable extends BaseRenderable {
     this.requestRender()
   }
 
-  public set flexBasis(basis: number | "auto" | null | undefined) {
+  public set flexBasis(basis: number | "auto" | `${number}%` | null | undefined) {
     this.setStyleValue(YogaValueKind.FlexBasis, NATIVE_EDGE_NONE, basis, isFlexBasisType)
   }
 

@@ -61,6 +61,8 @@ describe("Utility Functions", () => {
     expect(isFlexBasisType(100)).toBe(true)
     expect(isFlexBasisType("auto")).toBe(true)
     expect(isFlexBasisType(undefined)).toBe(true)
+    expect(isFlexBasisType("50%")).toBe(true)
+    expect(isFlexBasisType("50")).toBe(false)
     expect(isFlexBasisType(NaN)).toBe(false)
   })
 

@@ -69,12 +69,13 @@ The same layout properties work across the built-in renderable classes.
 | Edges         | `top`, `right`, `bottom`, `left`                                                                | number, `"auto"`, or percentage                             | unset                                               |
 | Dimensions    | `width`, `height`                                                                               | number, `"auto"`, or percentage                             | `"auto"`                                            |
 | Dimensions    | `aspectRatio`                                                                                   | number (width in columns divided by height in rows)         | unset                                               |
+| Dimensions    | `boxSizing`                                                                                     | `"border-box"` or `"content-box"`                           | `"border-box"`                                      |
 | Limits        | `minWidth`, `minHeight`, `maxWidth`, `maxHeight`                                                | number or percentage                                        | unset                                               |
 | Margin        | `margin`, `marginX`, `marginY`, `marginTop`, `marginRight`, `marginBottom`, `marginLeft`        | number, `"auto"`, or percentage                             | `0`                                                 |
 | Padding       | `padding`, `paddingX`, `paddingY`, `paddingTop`, `paddingRight`, `paddingBottom`, `paddingLeft` | number or percentage                                        | `0`                                                 |
 | Flex size     | `flexGrow`                                                                                      | number                                                      | `0`                                                 |
 | Flex size     | `flexShrink`                                                                                    | number                                                      | `0` for an initial numeric dimension, otherwise `1` |
-| Flex size     | `flexBasis`                                                                                     | number or `"auto"`                                          | `"auto"`                                            |
+| Flex size     | `flexBasis`                                                                                     | number, `"auto"`, or percentage                             | `"auto"`                                            |
 | Flow          | `flexDirection`                                                                                 | `"column"`, `"column-reverse"`, `"row"`, or `"row-reverse"` | `"column"`                                          |
 | Flow          | `flexWrap`                                                                                      | `"no-wrap"`, `"wrap"`, or `"wrap-reverse"`                  | `"no-wrap"`                                         |
 | Flow          | `layoutMode`                                                                                    | `"flex"` or `"list"`, see [List layout](#list-layout)       | `"flex"`                                            |
@@ -162,6 +163,11 @@ A percentage dimension resolves against the parent's corresponding size. If that
 
 Min and max dimensions constrain the result. Padding and borders consume space inside the computed box.
 
+`boxSizing: "content-box"` adds padding and borders to the width, height, and their limits instead. A box with
+`width: 10`, `height: 3`, a border, and `padding: 1` is then 14 columns by 7 rows, and its content gets 10 by 3.
+The default is `"border-box"`, unlike CSS's initial value. On a `ScrollBox`, `"content-box"` also adds the scrollbar
+gutters, which are the box's own padding, to its size.
+
 ## Relative and absolute flow
 
 Relative children take part in flex layout. Their edge values offset the Yoga position.
@@ -244,6 +250,7 @@ box.width // the computed width from the last layout pass
 | `flexDirection`, `flexWrap`                      | `getFlexDirection()`, `getFlexWrap()`                                |
 | `alignItems`, `alignSelf`, `justifyContent`      | `getAlignItems()`, `getAlignSelf()`, `getJustifyContent()`           |
 | `alignContent`, `aspectRatio`                    | `getAlignContent()`, `getAspectRatio()`                              |
+| `boxSizing`                                      | `getBoxSizing()`                                                     |
 | `position`                                       | `getPositionType()`                                                  |
 
 An edge or gutter getter reads only the value set for that edge or gutter. `padding` sets `Edge.All`, `paddingX` sets

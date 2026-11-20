@@ -62,14 +62,8 @@ export function isDimensionType(value: any): value is number | "auto" | `${numbe
   return isPositionType(value)
 }
 
-export function isFlexBasisType(value: any): value is number | "auto" | undefined {
-  if (value === undefined || value === "auto") {
-    return true
-  }
-  if (typeof value === "number" && !Number.isNaN(value)) {
-    return true
-  }
-  return false
+export function isFlexBasisType(value: any): value is number | "auto" | `${number}%` | undefined {
+  return value === undefined || isPositionType(value)
 }
 
 export function isSizeType(value: any): value is number | `${number}%` | undefined {
