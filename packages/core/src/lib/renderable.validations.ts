@@ -62,10 +62,11 @@ export function isDimensionType(value: any): value is number | "auto" | `${numbe
   return isPositionType(value)
 }
 
-// A percentage is a whole decimal token: "50px%" and "Infinity%" are invalid, and so is one beyond the f32 range.
 export function isFlexBasisType(value: any): value is number | "auto" | `${number}%` | undefined {
-  if (typeof value === "string" && value !== "auto") {
-    return /^-?\d*\.?\d+%$/.test(value) && Number.isFinite(Math.fround(parseFloat(value)))
+  if (typeof value === "string" && value.endsWith("%")) {
+    // The whole number before "%" must parse, and to what the writer's parseFloat reads, within the f32 range it takes.
+    const percent = Number(value.slice(0, -1))
+    return percent === Number.parseFloat(value) && Math.abs(percent) <= 3.4028234663852886e38
   }
   return value === undefined || isPositionType(value)
 }
