@@ -10,28 +10,25 @@ The crates link the native library, but they do not build it.
 You get the library from a GitHub release, or by building it in a checkout of the repository.
 
 The crates are on crates.io.
-`opentui` and `opentui-sys` are published as `anomalyco-opentui` and `anomalyco-opentui-sys` for now, because their own names are taken.
-Their libraries are still named `opentui` and `opentui_sys`, so your code writes `use opentui::...`.
 They need Rust 1.88 or later. `opentui-ssh` needs 1.89, and the `tree-sitter` feature needs 1.90.
 Each crate has the version of the OpenTUI release it belongs to.
 
 ## Depend on a release
 
-1. Add the crate under the name `opentui`:
+1. Add the crate:
 
    ```sh
-   cargo add anomalyco-opentui --rename opentui
+   cargo add opentui
    ```
 
-   In `Cargo.toml`, that is `opentui = { package = "anomalyco-opentui", version = "0.9.4" }`.
    To serve apps over SSH, also run `cargo add opentui-ssh`.
 
-2. Download the native archive for your platform from the release with the crate's version on [GitHub Releases](https://github.com/anomalyco/opentui/releases), for example `opentui-native-v0.9.4-linux-x64.zip`.
+2. Download the native archive for your platform from the release with the crate's version on [GitHub Releases](https://github.com/anomalyco/opentui/releases), for example `opentui-native-v0.9.5-linux-x64.zip`.
    The archive has no top-level folder, so extract it into a directory of its own, such as `vendor/opentui-native`.
    It holds `opentui.h`, the shared and static libraries, and the license notices.
 
 3. Set `OPENTUI_LIB_DIR` to that directory when you run Cargo.
-   Use an absolute path, because Cargo resolves a relative one from the `anomalyco-opentui-sys` crate's directory.
+   Use an absolute path, because Cargo resolves a relative one from the `opentui-sys` crate's directory.
    In `.cargo/config.toml`, `relative = true` resolves the path from your project directory, so Cargo gets an absolute path:
 
    ```toml
@@ -47,12 +44,17 @@ To use the crates of a commit that is not released, depend on them through Git. 
 
 ```toml
 [dependencies]
-opentui = { package = "anomalyco-opentui", git = "https://github.com/anomalyco/opentui", rev = "<commit>" }
+opentui = { git = "https://github.com/anomalyco/opentui", rev = "<commit>" }
 ```
 
 If a file is missing, the build fails and names the release archive to extract.
 `OPENTUI_LIB_HINT` replaces that message with your own, so it can point to your project's setup step.
 In the example above, `scripts/fetch-opentui.sh` stands for such a step.
+
+The crates are published as `opentui` and `opentui-sys` from the first release after 0.9.5.
+Versions 0.9.4 and 0.9.5 were published as `anomalyco-opentui` and `anomalyco-opentui-sys`.
+To move to a later version, replace `opentui = { package = "anomalyco-opentui", ... }` with `opentui = "<version>"`, and use `opentui` and `opentui-sys` with `cargo -p` and `--features`.
+A Git dependency on a revision from v0.9.4 up to the change that restored the names, tags v0.9.4 and v0.9.5 included, still needs `package = "anomalyco-opentui"`.
 
 ## Build from a checkout
 
@@ -130,7 +132,7 @@ In a checkout, `bun run build` prepares FFmpeg for the host platform. Without it
 
 FFmpeg is licensed under LGPL-2.1-or-later. The default native library includes it even if your app never uses `VideoView`.
 The Rust code is MIT-licensed.
-`anomalyco-opentui-sys` ships `LICENSE-FFMPEG` and `FFMPEG-SOURCE.md`, and the library carries code under these other notices:
+`opentui-sys` ships `LICENSE-FFMPEG` and `FFMPEG-SOURCE.md`, and the library carries code under these other notices:
 
 - Yoga (`LICENSE-YOGA`)
 - Zig's runtime (`LICENSE-ZIG`)

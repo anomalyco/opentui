@@ -6,12 +6,10 @@ size from the SSH channel.
 
 ```sh
 cargo add opentui-ssh
-cargo add anomalyco-opentui --rename opentui
+cargo add opentui
 ```
 
-`anomalyco-opentui` is OpenTUI's official Rust crate, published under an
-interim name; its library is named `opentui`. Like it, this crate needs
-OpenTUI's native library: see
+Like `opentui`, this crate needs OpenTUI's native library: see
 [Install, link, and ship](https://opentui.com/docs/bindings/rust/install). The
 guide is [Serve over SSH](https://opentui.com/docs/bindings/rust/ssh).
 

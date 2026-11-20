@@ -46,13 +46,11 @@ terminal or platform is unavailable locally.
 - `crates/opentui-sys/src/generated.rs` is generated: `bun run generate:abi` in `packages/core` writes it and `check:abi`
   checks it. Do not edit it.
 - The crates link `packages/native/lib/<target>`, so build native first. `OPENTUI_LIB_DIR` overrides the path.
-- Run the narrowest test first (`cargo test -p anomalyco-opentui --test <file>`; `tests/lifecycle.rs` also needs the
+- Run the narrowest test first (`cargo test -p opentui --test <file>`; `tests/lifecycle.rs` also needs the
   examples built), then `sh packages/rust/test.sh shared`, and `static` on Linux and macOS when linking changes.
   `rustfmt.toml` is the Rust formatting source of truth.
 - A change to `opentui.h` also runs `sh packages/rust/test.sh shared` and fixes the crates in the same pull request.
-- The crates carry `@opentui/core`'s version; `prepare-release` sets it. The packages `opentui` and `opentui-sys` are
-  named `anomalyco-opentui` and `anomalyco-opentui-sys` on crates.io for now (`cargo -p` takes these names); their
-  libraries keep the names `opentui` and `opentui_sys`.
+- The crates carry `@opentui/core`'s version; `prepare-release` sets it.
 
 ## Portable FFI
 

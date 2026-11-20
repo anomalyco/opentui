@@ -15,7 +15,7 @@ case $(uname -s)/$(uname -m) in
     *) printf '%s\n' 'SKIP: OpenTUI Rust examples support Linux x86_64, macOS, and Windows x86_64 only.' >&2; exit 77 ;;
 esac
 example=hello
-package=anomalyco-opentui
+package=opentui
 case ${1:-} in
     hello|showcase|effects|tasks|native|workbench|lifecycle|terminal|split|video) example=$1; shift ;;
     # An SSH chat server on 127.0.0.1:2222; connect with `ssh -p 2222 localhost`.
@@ -35,4 +35,4 @@ if [ -n "${OPENTUI_LIB_DIR:-}" ]; then
     export OPENTUI_LIB_DIR
 fi
 exec "${CARGO:-cargo}" run --locked --manifest-path "$here/Cargo.toml" -p "$package" --example "$example" \
-    $defaults --features anomalyco-opentui/tree-sitter
+    $defaults --features opentui/tree-sitter

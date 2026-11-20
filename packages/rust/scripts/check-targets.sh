@@ -76,8 +76,8 @@ exec $zig cc -target $zig_target "\$@"
 EOF
     chmod +x "$tools/cc-$target"
     # The static feature is a default one.
-    shared='--no-default-features --features anomalyco-opentui/tokio,anomalyco-opentui/log,anomalyco-opentui/tree-sitter'
-    static='--features anomalyco-opentui/tokio,anomalyco-opentui/log,anomalyco-opentui/tree-sitter'
+    shared='--no-default-features --features opentui/tokio,opentui/log,opentui/tree-sitter'
+    static='--features opentui/tokio,opentui/log,opentui/tree-sitter'
     archiver=ar
     rustflags=
     case $target in
@@ -104,7 +104,7 @@ $targets
 EOF
 
 # A crt-static executable has no dynamic loader and would crash at start, so build.rs refuses to link it shared.
-if "$cargo" check --locked --target x86_64-unknown-linux-musl --manifest-path "$here/Cargo.toml" -p anomalyco-opentui-sys \
+if "$cargo" check --locked --target x86_64-unknown-linux-musl --manifest-path "$here/Cargo.toml" -p opentui-sys \
     --no-default-features < /dev/null 2> "$tools/crt-static"; then
     echo 'FAIL: a crt-static musl build links the shared library' >&2
     exit 1
@@ -114,7 +114,7 @@ echo 'PASS: build.rs refuses shared linking under crt-static'
 
 # Apple's linker takes libopentui.dylib over libopentui.a from one directory, so a static build must not search one
 # that holds both. Rewriting the stubs reran each build script after the header copy, so -newer skips stale outputs.
-find "$CARGO_TARGET_DIR" -path '*-apple-darwin/debug/build/anomalyco-opentui-sys-*/output' -newer "$tools/lib/opentui.h" \
+find "$CARGO_TARGET_DIR" -path '*-apple-darwin/debug/build/opentui-sys-*/output' -newer "$tools/lib/opentui.h" \
     -exec grep -qx 'cargo:static=1' {} \; -print > "$tools/static-outputs"
 [ "$(wc -l < "$tools/static-outputs")" -eq 2 ] || { echo 'FAIL: no static build per macOS target' >&2; exit 1; }
 while IFS= read -r output; do
@@ -130,7 +130,7 @@ echo 'PASS: static macOS builds search libopentui.a and no libopentui.dylib'
 
 # The Windows GNU targets link opentui.dll with the static feature too, though the stubs include the archives. MSVC
 # links opentui-static.lib with it.
-find "$CARGO_TARGET_DIR" -path "$CARGO_TARGET_DIR/*-pc-windows-*/debug/build/anomalyco-opentui-sys-*/output" \
+find "$CARGO_TARGET_DIR" -path "$CARGO_TARGET_DIR/*-pc-windows-*/debug/build/opentui-sys-*/output" \
     -newer "$tools/lib/opentui.h" -print > "$tools/windows-outputs"
 msvc_static=0
 while IFS= read -r output; do

@@ -284,13 +284,15 @@ function updateWorkspacePackage(workspacePackage: WorkspacePackage, version: str
 
 // The crates in packages/rust carry core's version: the workspace version, the exact versions the crates require of
 // each other, and the members' entries in Cargo.lock, which `cargo --locked` checks. So does the Zig module in
-// packages/native. Rewritten as text because snapshot builds run without Rust.
+// packages/native, and the release archive the Rust install page names. Rewritten as text because snapshot builds
+// run without Rust.
 function updateTextVersions(version: string, dryRun: boolean): void {
   for (const [file, pattern, count] of [
     ["packages/rust/Cargo.toml", /^(\[workspace\.package\]\nversion = ")[^"\n]*(")/gm, 1],
-    ["packages/rust/Cargo.toml", /^(opentui(?:-sys)? = \{ package = "anomalyco-[^\n]* version = "=)[^"\n]*(")/gm, 2],
-    ["packages/rust/Cargo.lock", /^(name = "(?:anomalyco-opentui(?:-sys)?|opentui-ssh)"\nversion = ")[^"\n]*(")/gm, 3],
+    ["packages/rust/Cargo.toml", /^(opentui(?:-sys)? = \{ path = "[^\n]* version = "=)[^"\n]*(")/gm, 2],
+    ["packages/rust/Cargo.lock", /^(name = "opentui(?:-sys|-ssh)?"\nversion = ")[^"\n]*(")/gm, 3],
     ["packages/native/build.zig.zon", /^( {4}\.version = ")[^"\n]*(")/gm, 1],
+    ["packages/web/src/content/docs/bindings/rust/install.mdx", /(opentui-native-v)\d[^\s`]*?(-linux-x64\.zip)/g, 1],
   ] as const) {
     const path = join(rootDir, file)
     const text = readFileSync(path, "utf8")
@@ -301,7 +303,7 @@ function updateTextVersions(version: string, dryRun: boolean): void {
     }
     if (!dryRun) writeFileSync(path, text.replace(pattern, `$1${version}$2`))
   }
-  console.log(`Updating the Rust crates (opentui, opentui-ssh, opentui-sys) and the Zig module to ${version}`)
+  console.log(`Updating the Rust crates, the Zig module, and the Rust install page to ${version}`)
 }
 
 function updateCoreOptionalDependencies(packageJson: PackageJson, version: string): string[] {
