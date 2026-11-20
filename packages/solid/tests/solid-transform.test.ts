@@ -15,6 +15,17 @@ const cases: [file: string, source: string, expected: string][] = [
   ],
   [
     "a.js",
+    'require.requireActual("m"); require.requireMock("m"); jest.genMockFromModule("m"); jest.unmock("m"); jest.doMock("m"); jest.dontMock("m"); jest.setMock("m"); jest.requireActual("m"); jest.requireMock("m")',
+    'require.requireActual("m!"); require.requireMock("m!"); jest.genMockFromModule("m!"); jest.unmock("m!"); jest.doMock("m!"); jest.dontMock("m!"); jest.setMock("m!"); jest.requireActual("m!"); jest.requireMock("m!")',
+  ],
+  [
+    "a.ts",
+    'import("m" as const); require("m" satisfies string); require.resolve("m"!); require(<string>"m"); require(("m"))',
+    'import("m"); require("m"); require.resolve("m"); require("m"); require("m!")',
+  ],
+  ["a.tsx", 'export const A = () => <box>{require("m" as string)}</box>', 'require("m!")'],
+  [
+    "a.js",
     'require(x); require(`m`); a.require("m"); require?.("m"); require()',
     'require(x); require(`m`); a.require("m"); require?.("m"); require()',
   ],

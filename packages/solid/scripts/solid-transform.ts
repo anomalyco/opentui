@@ -47,10 +47,17 @@ const moduleCalls = ["require.resolve", "System.import", "require.requireActual"
 
 // Rewrites module specifiers once, after the Solid preset has added its runtime imports.
 function importResolver(options: TransformSolidSourceOptions): PluginObj {
+  // Like the resolver, leave a call alone whose argument was not a plain string before TypeScript erased its cast.
+  const castCalls = new WeakSet<NodePath>()
   const rewrite = (source: NodePath<any> | NodePath<any>[] | undefined) => {
     if (Array.isArray(source) || !source?.isStringLiteral()) return
     const value = options.resolvePath?.(source.node.value) ?? source.node.value
     if (value) source.replaceWith(types.stringLiteral(value))
+  }
+  const findCasts = {
+    CallExpression(path: NodePath<types.CallExpression>) {
+      if (!path.get("arguments")[0]?.isStringLiteral()) castCalls.add(path)
+    },
   }
   const visitor = {
     "ImportDeclaration|ExportNamedDeclaration|ExportAllDeclaration"(path: NodePath<any>) {
@@ -59,14 +66,19 @@ function importResolver(options: TransformSolidSourceOptions): PluginObj {
     CallExpression(path: NodePath<types.CallExpression>) {
       const callee = path.get("callee")
       if (
-        callee.isImport() ||
-        callee.isIdentifier({ name: "require" }) ||
-        moduleCalls.some((p) => callee.matchesPattern(p))
+        !castCalls.has(path) &&
+        (callee.isImport() ||
+          callee.isIdentifier({ name: "require" }) ||
+          moduleCalls.some((p) => callee.matchesPattern(p)))
       )
         rewrite(path.get("arguments")[0])
     },
   }
-  return { visitor: { Program: { exit: (program) => program.traverse(visitor) } } }
+  return {
+    visitor: {
+      Program: { enter: (program) => program.traverse(findCasts), exit: (program) => program.traverse(visitor) },
+    },
+  }
 }
 
 export async function transformSolidSource(code: string, options: TransformSolidSourceOptions): Promise<string> {
