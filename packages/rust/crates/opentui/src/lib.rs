@@ -90,7 +90,7 @@ pub mod prelude {
         Event, KeyCode, KeyEvent, Keymap, Modifiers, MouseButton, MouseEvent, MouseEventKind, Shortcut,
     };
     pub use crate::layout::{
-        Align, Edge, FlexDirection, Justify, LayoutMode, Length, Overflow, PositionType, Rect, Wrap,
+        Align, BoxSizing, Edge, FlexDirection, Justify, LayoutMode, Length, Overflow, PositionType, Rect, Wrap,
     };
     pub use crate::native::{MousePointer, PaintCell, SelectionColors, WrapMode};
     pub use crate::post::{Channels, ColorMatrix, Filter, Surface};

@@ -179,6 +179,26 @@ fn column_and_row_gaps_space_one_axis() {
     assert_eq!(rows(&app), ["ab cd ef", "", "gh"]);
 }
 
+#[test]
+fn box_sizing_aspect_ratio_and_percentage_basis_size_views() {
+    let app = TestApp::new(20, 14);
+    let child = View::new(&app).height(1).basis(Length::percent(50.0));
+    let row = View::new(&app).row().width(10).min_height(3).padding(1).box_sizing(BoxSizing::ContentBox).child(&child);
+    let ratio = View::new(&app).width(12).aspect_ratio(1.5);
+    app.root().add(&row).add(&ratio);
+    let read = || {
+        app.render();
+        (row.rect().width, row.rect().height, child.rect().width, ratio.rect().height)
+    };
+    // Content-box adds the padding to the width and the minimum height; the basis is half the inner width.
+    assert_eq!(read(), (12.0, 5.0, 5.0, 8.0));
+    row.box_sizing(BoxSizing::BorderBox);
+    child.basis(Length::percent(25.0));
+    ratio.aspect_ratio(f32::NAN);
+    // An empty view is one row high, as without a ratio.
+    assert_eq!(read(), (10.0, 3.0, 2.0, 1.0));
+}
+
 // As in Core, a list lays out its rows as a column with `overflow: scroll` does: a row direction does not apply, and a
 // percent height inside an auto-height row resolves against no height, so the row after it starts right below.
 #[test]
