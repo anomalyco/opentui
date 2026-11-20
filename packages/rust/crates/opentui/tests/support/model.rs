@@ -1,9 +1,12 @@
 //! Shared harness for seeded model tests (markdown-highlight-ssot-models.md, 3.1), as `packages/native/src/tests/
 //! model.zig` is for Zig: generate a command list from a seed, run it against the system and its oracle, and on a
-//! failure shrink the list (drop chunks of n/2 down to 1, then simplify each command) and print the trace.
+//! failure shrink the list (drop chunks of n/2 down to 1, then simplify each command) while it fails the same property
+//! at a step of the same kind, and print the trace. A panic in
+//! `run` is a failure too: the property `throws`, at no step.
 //!
 //! Environment: `MODEL_SEED=<n>` runs one seed, `MODEL_SEEDS=<n>` sets how many seeds run, `MODEL_SKIP=<property,...>`
-//! ignores failures of the named properties.
+//! ignores failures of the named properties: a check site returns `fail`'s failure only when there is one, so the seed
+//! goes on. `MODEL_STATS=1` prints the counts a test made.
 
 use std::fmt::Debug;
 
@@ -58,22 +61,50 @@ fn environment(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|value| !value.is_empty())
 }
 
+thread_local! {
+    /// How often a command took effect or a property compared, as a test counts them: a check that never runs passes
+    /// too.
+    static COUNTS: std::cell::RefCell<std::collections::BTreeMap<&'static str, u64>> = Default::default();
+}
+
+/// Counts `name` once.
+#[allow(dead_code)] // No Rust model counts anything yet.
+pub fn count(name: &'static str) {
+    COUNTS.with_borrow_mut(|counts| *counts.entry(name).or_default() += 1);
+}
+
+/// Whether failures of `property` count: `MODEL_SKIP` lists the ones that don't.
+pub fn enabled(property: &str) -> bool {
+    !environment("MODEL_SKIP").unwrap_or_default().split(',').any(|name| name == property)
+}
+
+/// A failure of `property` at `step`, or `None` when `MODEL_SKIP` lists the property. A name holds no comma:
+/// `MODEL_SKIP` could not name it.
+pub fn fail(property: &'static str, step: usize) -> Option<Failure> {
+    assert!(!property.contains(','), "a model property name holds no comma: {property}");
+    enabled(property).then_some(Failure { property, step })
+}
+
 /// Runs `seeds` seeds of `steps` commands (or the environment's), and panics with the shrunk trace of a failure.
 pub fn check<M: Model>(model: &M, seeds: u64, steps: usize) {
     let seed_value = environment("MODEL_SEED").map(|text| text.parse::<u64>().expect("MODEL_SEED is a number"));
     let seeds = environment("MODEL_SEEDS").map_or(seeds, |text| text.parse().expect("MODEL_SEEDS is a number"));
-    let skip = environment("MODEL_SKIP").unwrap_or_default();
     let range = match seed_value {
         Some(seed) => seed..seed + 1,
         None => 0..seeds,
     };
+    // Seeds a site stopped at a skipped failure (a panic, or a site that cannot go on).
+    let mut unchecked = 0;
+    COUNTS.with_borrow_mut(|counts| counts.clear());
     for seed in range {
         let commands = model.generate(&mut Rng::new(seed), steps);
-        let Some(failure) = model.run(&commands) else { continue };
-        if skip.split(',').any(|name| name == failure.property) {
+        let Some(failure) = outcome(model, &commands) else { continue };
+        if !enabled(failure.property) {
+            unchecked += 1;
             continue;
         }
-        let shrunk = shrink(model, commands, failure.property);
+        let wanted = identity(&commands, &failure);
+        let shrunk = shrink(model, commands, &wanted);
         let trace: Vec<String> = shrunk.iter().map(|command| format!("  {command:?}")).collect();
         panic!(
             "model failure: seed {seed}, property {}, shrunk to {} commands:\n{}",
@@ -81,6 +112,12 @@ pub fn check<M: Model>(model: &M, seeds: u64, steps: usize) {
             shrunk.len(),
             trace.join("\n")
         );
+    }
+    if unchecked > 0 {
+        eprintln!("model: {unchecked} seeds unchecked after a skipped failure");
+    }
+    if environment("MODEL_STATS").is_some() {
+        COUNTS.with_borrow(|counts| counts.iter().for_each(|(name, n)| eprintln!("{name}: {n}")));
     }
 }
 
@@ -103,13 +140,25 @@ pub fn check_exhaustive<M: Model>(model: &M, alphabet: &[M::Command], depth: u32
     }
 }
 
-/// The shrinker keeps a candidate only when it fails the same property: a model names each check site with its own
-/// property, so a candidate that fails another check (another bug) is not taken for this one.
-fn fails_with<M: Model>(model: &M, commands: &[M::Command], property: &str) -> bool {
-    model.run(commands).is_some_and(|failure| failure.property == property)
+/// What a shrunk trace must still fail: the same property, at a step of the same kind of command (a property alone could
+/// drift to another bug that breaks it at another kind of step). A panic has no step, so no kind.
+type Identity<C> = (&'static str, Option<std::mem::Discriminant<C>>);
+
+fn identity<C>(commands: &[C], failure: &Failure) -> Identity<C> {
+    (failure.property, commands.get(failure.step).map(std::mem::discriminant))
 }
 
-fn shrink<M: Model>(model: &M, initial: Vec<M::Command>, property: &str) -> Vec<M::Command> {
+fn fails_with<M: Model>(model: &M, commands: &[M::Command], wanted: &Identity<M::Command>) -> bool {
+    outcome(model, commands).is_some_and(|failure| identity(commands, &failure) == *wanted)
+}
+
+/// The run's failure; a panic in it is the property `throws`, at no step (the command count).
+fn outcome<M: Model>(model: &M, commands: &[M::Command]) -> Option<Failure> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| model.run(commands)))
+        .unwrap_or(Some(Failure { property: "throws", step: commands.len() }))
+}
+
+fn shrink<M: Model>(model: &M, initial: Vec<M::Command>, wanted: &Identity<M::Command>) -> Vec<M::Command> {
     let mut current = initial;
     let mut chunk = (current.len() / 2).max(1);
     loop {
@@ -118,7 +167,7 @@ fn shrink<M: Model>(model: &M, initial: Vec<M::Command>, property: &str) -> Vec<
         while start < current.len() {
             let end = current.len().min(start + chunk);
             let candidate: Vec<M::Command> = current[..start].iter().chain(&current[end..]).cloned().collect();
-            if fails_with(model, &candidate, property) {
+            if fails_with(model, &candidate, wanted) {
                 current = candidate;
                 removed_any = true;
             } else {
@@ -137,7 +186,7 @@ fn shrink<M: Model>(model: &M, initial: Vec<M::Command>, property: &str) -> Vec<
         'simpler: loop {
             for candidate in model.simplify(&current[index]) {
                 let saved = std::mem::replace(&mut current[index], candidate);
-                if fails_with(model, &current, property) {
+                if fails_with(model, &current, wanted) {
                     continue 'simpler;
                 }
                 current[index] = saved;

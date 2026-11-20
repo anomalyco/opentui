@@ -11,7 +11,7 @@ import { RGBA } from "../../lib/RGBA.js"
 import { TreeSitterClient } from "../../lib/tree-sitter/index.js"
 import type { SimpleHighlight } from "../../lib/tree-sitter/types.js"
 import { createTestRenderer, setRendererCapabilities, type TestRenderer } from "../../testing.js"
-import { check, fail, rng } from "../../testing/model.js"
+import { check, count, fail, rng } from "../../testing/model.js"
 import { getBaseAttributes } from "../../types.js"
 
 // A worker whose replies the model releases one by one, in any order. Only fences reach it: prose is the engine's.
@@ -249,7 +249,8 @@ async function run(commands: Command[]): Promise<void> {
 
   const frame = async () => {
     await renderOnce()
-    if (!inView) return
+    if (!inView) return count("frame scrolled out")
+    count("frame in view")
     const lines = rows()
     const now = lines.map((line) => line.trimEnd())
     // A fence's code is never hooked, and draws again once its highlight lands.
@@ -277,6 +278,7 @@ async function run(commands: Command[]): Promise<void> {
         .map((row) => row.slice(fence.x, fence.x + fence.width))
         .join("")
       // Long lines wrap, so only the characters count.
+      count("P9 compared")
       if (drawn.replace(/\s/g, "") !== code.replace(/\s/g, "")) failWith("P9", `fence draws ${JSON.stringify(drawn)}`)
     })
     // A code span that holds more than an ID is not hooked: it shows its inner backticks, or, while a "```" run inside a
@@ -299,10 +301,12 @@ async function run(commands: Command[]): Promise<void> {
         .replace(/[\s│#─|`~*-]/g, "").length,
     }
     const lost = shown.rows < drawn.rows || shown.cells < drawn.cells - 2
+    if (md.streaming && !span) count("P7 compared")
     if (md.streaming && !span && lost) failWith("P7", `drawn text lost\n--- before\n${last}`)
     drawn = shown
     last = text(now)
-    if (md.height > target.height) return
+    if (md.height > target.height) return count("P6 too tall")
+    count("P6 compared")
     // P6 per frame: characters, colors and links equal a fresh twin's, except from a fence whose highlight is in flight
     // down, and a fence's colors after a failed highlight.
     const plain = failed ? code : new Set<number>()
@@ -319,6 +323,7 @@ async function run(commands: Command[]): Promise<void> {
       trace.push(JSON.stringify(command))
       switch (command.k) {
         case "append":
+          count(md.streaming ? "append" : "append after finish (none)")
           if (md.streaming) md.content += command.piece
           break
         case "replace":
@@ -330,10 +335,12 @@ async function run(commands: Command[]): Promise<void> {
           await frame()
           break
         case "reply":
+          count(worker.pending.length ? "reply" : "reply with none pending")
           worker.reply(command.at % Math.max(1, worker.pending.length))
           await new Promise<void>((resolve) => setImmediate(resolve))
           break
         case "fail":
+          count(worker.pending.length ? "fail" : "fail with none pending")
           failed ||= worker.pending.length > 0
           worker.fail(command.at % Math.max(1, worker.pending.length))
           await new Promise<void>((resolve) => setImmediate(resolve))

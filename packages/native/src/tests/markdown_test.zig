@@ -548,7 +548,10 @@ const Engine = struct {
         var at: usize = 0;
         for (0..steps) |_| {
             const roll = random.uintLessThan(u32, 100);
-            if (roll < 70 and at < base.items.len) {
+            if (roll < 70 and at >= base.items.len) {
+                // The base document is used up: appends go on with soup (else finish took their share).
+                try commands.append(arena, .{ .append = soup[random.uintLessThan(usize, soup.len)] });
+            } else if (roll < 70) {
                 // 1 byte or a few code points; "\r\n" may split.
                 var end = at + 1 + random.uintLessThan(usize, if (random.boolean()) 1 else 12);
                 end = @min(end, base.items.len);
@@ -616,6 +619,7 @@ const Engine = struct {
         var fed: Fed = .{};
         var math_once: MathOnce = .{};
         for (commands, 0..) |command, step| {
+            model.count(@tagName(command));
             const was_finished = f.doc.finished;
             switch (command) {
                 // An append after finish parses the whole document again (N2).
@@ -643,11 +647,11 @@ const Engine = struct {
                     try fresh.init(options);
                     defer fresh.deinit();
                     try fresh.doc.append(text);
-                    if (!try sameDocs(arena, &f.doc, &fresh.doc)) return .{ .property = "P2 replace equals fresh", .step = step };
+                    if (!try sameDocs(arena, &f.doc, &fresh.doc)) if (model.fail("P2 replace equals fresh", step)) |failure| return failure;
                     // Blocks a read listed stay unless at or past removed_from_index.
                     const kept = @min(@min(f.doc.removed_from_index, read_before), @as(u32, @intCast(@min(before_blocks.len, f.doc.blocks.items.len))));
                     for (before_blocks[0..kept], f.doc.blocks.items[0..kept]) |a, b| {
-                        if (a.kind != b.kind or a.source_start_byte != b.source_start_byte) return .{ .property = "P2 leading blocks kept", .step = step };
+                        if (a.kind != b.kind or a.source_start_byte != b.source_start_byte) if (model.fail("P2 leading blocks kept", step)) |failure| return failure;
                     }
                 },
                 .read => |capacity_kind| {
@@ -662,9 +666,10 @@ const Engine = struct {
                     const out = try arena.alloc(markdown.Doc.Change, capacity);
                     const mirror_len = mirror.items.len;
                     const read = f.doc.readChanges(out);
+                    // The records past read.count are not written: the seed stops here, skipped or not.
                     if (read.count != count) return .{ .property = "P5 change count", .step = step };
                     // Only blocks a read listed can be reported removed.
-                    if (read.removed_from_index != markdown.none and read.removed_from_index >= mirror_len) return .{ .property = "P5 removal of an unread block", .step = step };
+                    if (read.removed_from_index != markdown.none and read.removed_from_index >= mirror_len) if (model.fail("P5 removal of an unread block", step)) |failure| return failure;
                     if (capacity > 0 and capacity >= count) {
                         if (read.removed_from_index != markdown.none and read.removed_from_index < mirror.items.len) mirror.items.len = read.removed_from_index;
                         for (out[0..count]) |change| {
@@ -681,12 +686,13 @@ const Engine = struct {
                         for (outputs.items, 0..) |output, index| {
                             const known = output orelse continue;
                             if (f.doc.blocks.items[index].flags.open) continue;
-                            if (!std.mem.eql(u8, known, try leafOutput(arena, &f.doc, @intCast(index)))) return .{ .property = "P5 host mirror of leaf output", .step = step };
+                            if (!std.mem.eql(u8, known, try leafOutput(arena, &f.doc, @intCast(index)))) if (model.fail("P5 host mirror of leaf output", step)) |failure| return failure;
                         }
                         // P5: the host mirror equals the engine's blocks.
+                        // The loop below needs equal lengths: the seed stops here, skipped or not.
                         if (mirror.items.len != f.doc.blocks.items.len) return .{ .property = "P5 host mirror", .step = step };
                         for (mirror.items, f.doc.blocks.items) |a, b| {
-                            if (!sameRecord(a, b)) return .{ .property = "P5 host mirror", .step = step };
+                            if (!sameRecord(a, b)) if (model.fail("P5 host mirror", step)) |failure| return failure;
                         }
                     }
                 },
@@ -716,10 +722,10 @@ const Engine = struct {
             } else {
                 try fresh.doc.append(f.doc.source.items);
             }
-            if (!try sameDocs(arena, &f.doc, &fresh.doc)) return .{ .property = "P1 streamed equals whole", .step = step };
+            if (!try sameDocs(arena, &f.doc, &fresh.doc)) if (model.fail("P1 streamed equals whole", step)) |failure| return failure;
             // P4: the committed count only grows; P4': every closed top-level prefix block is
             // committed (N1 (a): unresolved labels do not hold it).
-            if (f.doc.committed_top_level_count < committed) return .{ .property = "P4 committed count monotone", .step = step };
+            if (f.doc.committed_top_level_count < committed) if (model.fail("P4 committed count monotone", step)) |failure| return failure;
             committed = f.doc.committed_top_level_count;
             var closed_prefix: u32 = 0;
             var i: u32 = 0;
@@ -729,10 +735,10 @@ const Engine = struct {
                 closed_prefix += 1;
                 i = f.doc.subtreeEnd(i);
             }
-            if (closed_prefix != committed) return .{ .property = "P4' commit liveness", .step = step };
+            if (closed_prefix != committed) if (model.fail("P4' commit liveness", step)) |failure| return failure;
             // P3: a closed block keeps its kind, ranges and parent.
             for (closed.items, 0..) |snapshot, index| {
-                if (index >= f.doc.blocks.items.len or !sameStructure(snapshot, f.doc.blocks.items[index])) return .{ .property = "P3 closed is final", .step = step };
+                if (index >= f.doc.blocks.items.len or !sameStructure(snapshot, f.doc.blocks.items[index])) if (model.fail("P3 closed is final", step)) |failure| return failure;
             }
             closed.clearRetainingCapacity();
             for (f.doc.blocks.items) |b| {
@@ -747,7 +753,7 @@ const Engine = struct {
                     const found = std.mem.indexOfPos(u8, f.doc.source.items, b.source_start_byte, options.hook_filter);
                     // An empty filter hooks every prose leaf.
                     const holds = options.hook_filter.len == 0 or (found != null and found.? < b.source_end_byte);
-                    if (holds != b.flags.hooked) return .{ .property = "P18 filter latch equals substring", .step = step };
+                    if (holds != b.flags.hooked) if (model.fail("P18 filter latch equals substring", step)) |failure| return failure;
                 }
             }
             // P7: no frame loses drawn text (B's exceptions aside, see framesGrow).
@@ -757,23 +763,23 @@ const Engine = struct {
                 if (frame) |previous| {
                     if (!p7.exempt(&f.doc) and !framesGrow(previous, next, options.math)) {
                         if (std.debug.runtime_safety and model.environment(arena, "MODEL_SEED") != null) std.debug.print("frame '{s}' then '{s}'\n", .{ previous, next });
-                        return .{ .property = "P7 no frame loses drawn text", .step = step };
+                        if (model.fail("P7 no frame loses drawn text", step)) |failure| return failure;
                     }
                 }
                 frame = next;
             }
-            if (sink.mismatch_count > 0) return .{ .property = "live tail writes equal the leaf's display", .step = step };
+            if (sink.mismatch_count > 0) if (model.fail("live tail writes equal the leaf's display", step)) |failure| return failure;
             // Every node at finish; after another call, the ones it wrote or listed.
             const nodes_ok = if (command == .finish) try liveShowsReadLeaf(arena, &f.doc, &sink) else try writtenShowReadLeaf(arena, &f.doc, &sink, true);
-            if (!nodes_ok) return .{ .property = "every node shows read_leaf (P5, B)", .step = step };
-            if (f.doc.counters.live_mismatch_count > 0) return .{ .property = "live pending line guessed its leaf", .step = step };
+            if (!nodes_ok) if (model.fail("every node shows read_leaf (P5/B)", step)) |failure| return failure;
+            if (f.doc.counters.live_mismatch_count > 0) if (model.fail("live pending line guessed its leaf", step)) |failure| return failure;
             // (c) after appends: other commands lay the pending line out as an append would.
-            if (try genericProperties(arena, &f.doc, fed, options, command == .append)) |property| return .{ .property = property, .step = step };
+            if (try genericProperties(arena, &f.doc, fed, options, command == .append)) |property| if (model.fail(property, step)) |failure| return failure;
             if (command != .append and command != .read) math_once = .{};
-            if (!math_once.check(&f.doc)) return .{ .property = "(c) a math block never reverts to text", .step = step };
+            if (!math_once.check(&f.doc)) if (model.fail("(c) a math block never reverts to text", step)) |failure| return failure;
         }
         // Every node once more at the end (a call checks only the nodes it wrote or listed).
-        if (!try liveShowsReadLeaf(arena, &f.doc, &sink)) return .{ .property = "every node shows read_leaf (P5, B)", .step = commands.len -| 1 };
+        if (!try liveShowsReadLeaf(arena, &f.doc, &sink)) if (model.fail("every node shows read_leaf (P5/B)", commands.len -| 1)) |failure| return failure;
         return null;
     }
 };
@@ -823,10 +829,10 @@ fn genericProperties(arena: std.mem.Allocator, doc: *const Doc, fed: Fed, option
         // match kind, once for each further kind (k kinds the doc's closers made, at most 3),
         // and once for each run that waited before it and is revealed (D), plus the last one
         // per call.
-        .{ "(a) work: run token visits <= (1 + max(1, k) + D)n + calls", c.run_token_visits, (1 + @max(1, @popCount(c.restyled_kinds)) + c.waiting_runs_max) * n + calls + 64 },
+        .{ "(a) work: run token visits <= (1 + (k or 1) + D)n + calls", c.run_token_visits, (1 + @max(1, @popCount(c.restyled_kinds)) + c.waiting_runs_max) * n + calls + 64 },
         // The walk reads a token's match records as it passes it: each match has two, and
         // matches are at most n / 2.
-        .{ "(a) work: match reads <= (1 + max(1, k) + D)n + calls", c.match_reads, (1 + @max(1, @popCount(c.restyled_kinds)) + c.waiting_runs_max) * n + calls + 64 },
+        .{ "(a) work: match reads <= (1 + (k or 1) + D)n + calls", c.match_reads, (1 + @max(1, @popCount(c.restyled_kinds)) + c.waiting_runs_max) * n + calls + 64 },
     };
     for (bounds) |bound| {
         if (bound[1] > bound[2]) {
@@ -1212,15 +1218,15 @@ const Families = struct {
                     try f.doc.setOptions(options);
                 },
             }
-            if (try genericProperties(step_arena.allocator(), &f.doc, fed, options, true)) |property| return .{ .property = property, .step = step };
-            if (sink.mismatch_count > 0) return .{ .property = "every node shows read_leaf (P5)", .step = step };
+            if (try genericProperties(step_arena.allocator(), &f.doc, fed, options, true)) |property| if (model.fail(property, step)) |failure| return failure;
+            if (sink.mismatch_count > 0) if (model.fail("every node shows read_leaf (P5)", step)) |failure| return failure;
             // P5 at every call, styles included, while the document is small enough to read
             // whole each time (carbon-r3-1 lost a style mid-stream that finish restored).
             if (f.doc.source.items.len <= fresh_compare_byte_count_max and !try writtenShowReadLeaf(step_arena.allocator(), &f.doc, &sink, false)) {
-                return .{ .property = "every node shows read_leaf after every call (P5)", .step = step };
+                if (model.fail("every node shows read_leaf after every call (P5)", step)) |failure| return failure;
             }
             if (command == .math or command == .filter) math_once = .{};
-            if (!math_once.check(&f.doc)) return .{ .property = "(c) a math block never reverts to text", .step = step };
+            if (!math_once.check(&f.doc)) if (model.fail("(c) a math block never reverts to text", step)) |failure| return failure;
         }
         return null;
     }
@@ -1621,17 +1627,38 @@ fn p7Exempt(doc: *const Doc) P7Exempt {
 
 /// Whether every non-white-space byte `previous` drew is in `next`, in order (P7). B's
 /// exceptions are left out of both: link brackets and an image's `!` (concealed when the link
-/// resolves) and math delimiters (`$`, and with math on `\(` and `\)`, concealed when math
-/// closes).
+/// resolves), an autolink's drawn target (a link that resolves around it takes it: links do not
+/// nest; its text stays drawn), and math delimiters (`$`, and with math on `\(` and `\)`,
+/// concealed when math closes).
 fn framesGrow(previous: []const u8, next: []const u8, math: bool) bool {
     var at: usize = 0;
-    for (previous, 0..) |c, i| {
+    var i: usize = 0;
+    while (i < previous.len) : (i += 1) {
+        i += autolinkTarget(previous, i);
+        if (i == previous.len) break;
         if (frameIgnored(previous, i, math)) continue;
-        while (at < next.len and next[at] != c) at += 1;
+        while (at < next.len and next[at] != previous[i]) at += 1;
         if (at == next.len) return false;
         at += 1;
     }
     return true;
+}
+
+/// The length of the target frameLeaf draws at `i` after an autolink's text `w`: ` (w)`,
+/// ` (http://w)` or ` (mailto:w)`; 0 at any other byte.
+fn autolinkTarget(s: []const u8, i: usize) usize {
+    if (!std.mem.startsWith(u8, s[i..], " (")) return 0;
+    var start = i;
+    // An extended autolink starts after white space, `[`, or `*`, `_`, `~` and `(` (GFM 6.9).
+    while (start > 0 and std.mem.indexOfScalar(u8, " \n[(*_~", s[start - 1]) == null) start -= 1;
+    const word = s[start..i];
+    const rest = s[i + 2 ..];
+    if (word.len == 0) return 0;
+    for ([_][]const u8{ "", "http://", "mailto:" }) |prefix| {
+        const n = prefix.len + word.len;
+        if (rest.len > n and rest[n] == ')' and std.mem.startsWith(u8, rest, prefix) and std.mem.eql(u8, rest[prefix.len..n], word)) return n + 3;
+    }
+    return 0;
 }
 
 fn frameIgnored(s: []const u8, i: usize, math: bool) bool {
