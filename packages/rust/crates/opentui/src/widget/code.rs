@@ -34,7 +34,7 @@ pub(crate) struct CodeInner {
     /// it, so a new theme restyles the shown highlight without highlighting again.
     table: SyntaxStyle,
     sets: RefCell<CaptureSets>,
-    /// The text color, under the syntax theme's `default` style.
+    /// The color of text the syntax layer does not paint; highlighted text takes the `default` style instead.
     fg: Cell<Color>,
     /// Text styled by the crate, shown instead of highlighting until the next `set_code`.
     styled: RefCell<Option<Vec<Span<'static>>>>,
@@ -334,7 +334,7 @@ impl CodeInner {
     }
 
     /// Makes `syntax` the table's capture palette, which every code view and editor sharing the table paints.
-    /// The text color `fg` goes under the theme's `default` style.
+    /// `fg` colors the text the syntax layer does not paint.
     pub(crate) fn restyle(&self, syntax: Arc<SyntaxTheme>, fg: Color) {
         self.report(self.table.set_capture_theme(&syntax));
         *self.syntax.borrow_mut() = syntax;
@@ -343,10 +343,9 @@ impl CodeInner {
         self.element.app().inspect(App::request_redraw);
     }
 
-    /// Unstyled text takes the text color with the syntax theme's `default` style on top.
+    /// Plain text takes the text color alone, as Core's `CodeRenderable`: highlights paint `default` themselves.
     fn apply_defaults(&self) {
-        let default = self.syntax.borrow().get("default").unwrap_or_default();
-        self.report(self.buffer.set_defaults(Style::new().fg(self.fg.get()).patch(default)));
+        self.report(self.buffer.set_defaults(Style::new().fg(self.fg.get())));
     }
 }
 
@@ -938,10 +937,8 @@ pub(crate) mod tests {
                         ))
                     }
                     7 => {
+                        // Plain text keeps the twin's defaults: the text color, whatever the theme.
                         let next = themes[next(themes.len())].clone();
-                        let defaults =
-                            Style::new().fg(fresh.theme().foreground).patch(next.get("default").unwrap_or_default());
-                        twin.buffer().set_defaults(defaults).unwrap();
                         code.syntax_theme(next.clone());
                         *theme.borrow_mut() = next;
                     }

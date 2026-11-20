@@ -1550,16 +1550,16 @@ mod tests {
     use crate::testing::TestApp;
 
     // Core's `baseStyle`: prose takes the text color before the `default` scope's, and the scope's background and
-    // attributes, under a quote too, where the border reads the scope.
+    // attributes, under a quote too, where the border reads the scope. Unhighlighted fence text takes the text color.
     #[test]
     fn prose_takes_the_text_color_over_the_default_scope() {
         let colors = MarkdownColors { text: Color::RED, ..MarkdownColors::from_theme(&Theme::default()) };
         let default = Style::new().fg(Color::GREEN).bg(Color::BLUE).italic();
         for restyle in [false, true] {
-            let app = TestApp::new(20, 4);
+            let app = TestApp::new(20, 8);
             let markdown =
                 Markdown::new(&app).colors(colors).syntax_theme(SyntaxTheme::new().style("default", default));
-            app.root().add(&markdown.scope_styles(!restyle).set_markdown("hello\n\n> quoted"));
+            app.root().add(&markdown.scope_styles(!restyle).set_markdown("hello\n\n> quoted\n\n```\nfence\n```"));
             if restyle {
                 app.render();
                 markdown.scope_styles(true);
@@ -1572,6 +1572,12 @@ mod tests {
                 "{restyle}"
             );
             assert_eq!((border.fg, quoted.bg), (Color::GREEN, Color::BLUE), "{restyle}\n{capture}");
+            let fence = capture.cells.iter().find(|cell| cell.symbol == "f").unwrap();
+            assert_eq!(
+                (fence.fg, fence.bg, fence.attributes),
+                (Color::RED, colors.code_bg, Attributes::NONE),
+                "{restyle}"
+            );
         }
     }
 
