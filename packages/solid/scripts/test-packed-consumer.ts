@@ -220,7 +220,6 @@ import { pathToFileURL } from "node:url"
 
 import { transformAsync } from "@babel/core"
 import ts from "@babel/preset-typescript"
-import moduleResolver from "babel-plugin-module-resolver"
 import solid from "babel-preset-solid"
 
 const solidRuntime = await import(${JSON.stringify(packageJson.name)})
@@ -271,18 +270,6 @@ const transformOptions = {
   filename: join(process.cwd(), "fixture.tsx"),
   configFile: false,
   babelrc: false,
-  plugins: [
-    [
-      moduleResolver,
-      {
-        resolvePath(specifier) {
-          if (specifier === "solid-js") return "solid-js/dist/solid.js"
-          if (specifier === "solid-js/store") return "solid-js/store/dist/store.js"
-          return specifier
-        },
-      },
-    ],
-  ],
   presets: [
     [solid, { moduleName: ${JSON.stringify(packageJson.name)}, generate: "universal" }],
     [ts],
@@ -432,7 +419,12 @@ function installAndTest(nodeDir: string): void {
     nodeDir,
     "Node import smoke check failed",
   )
-  runCommand(nodePath, [...nodeFfiArgs, "index.mjs"], nodeDir, "Node solid dist smoke tests failed")
+  runCommand(
+    nodePath,
+    [...nodeFfiArgs, "--conditions=browser", "index.mjs"],
+    nodeDir,
+    "Node solid dist smoke tests failed",
+  )
 
   assertNodeStaticImportFailure(
     nodeDir,

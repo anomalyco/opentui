@@ -1,8 +1,6 @@
-import { transformAsync } from "@babel/core"
+import { transformAsync, types, type NodePath, type PluginObj } from "@babel/core"
 // @ts-expect-error - Types not important.
 import ts from "@babel/preset-typescript"
-// @ts-expect-error - Types not important.
-import moduleResolver from "babel-plugin-module-resolver"
 // @ts-expect-error - Types not important.
 import solid from "babel-preset-solid"
 
@@ -40,20 +38,40 @@ export function resolveNodeSolidRuntimeImport(specifier: string): string | null 
   }
 }
 
+// The call forms babel-plugin-module-resolver rewrote, besides require() and import().
+const moduleCalls = ["require.resolve", "System.import", "require.requireActual", "require.requireMock"].concat(
+  ["genMockFromModule", "mock", "unmock", "doMock", "dontMock", "setMock", "requireActual", "requireMock"].map(
+    (name) => "jest." + name,
+  ),
+)
+
+// Rewrites module specifiers once, after the Solid preset has added its runtime imports.
+function importResolver(options: TransformSolidSourceOptions): PluginObj {
+  const rewrite = (source: NodePath<any> | NodePath<any>[] | undefined) => {
+    if (Array.isArray(source) || !source?.isStringLiteral()) return
+    const value = options.resolvePath?.(source.node.value) ?? source.node.value
+    if (value) source.replaceWith(types.stringLiteral(value))
+  }
+  const visitor = {
+    "ImportDeclaration|ExportNamedDeclaration|ExportAllDeclaration"(path: NodePath<any>) {
+      rewrite(path.get("source"))
+    },
+    CallExpression(path: NodePath<types.CallExpression>) {
+      const callee = path.get("callee")
+      if (
+        callee.isImport() ||
+        callee.isIdentifier({ name: "require" }) ||
+        moduleCalls.some((p) => callee.matchesPattern(p))
+      )
+        rewrite(path.get("arguments")[0])
+    },
+  }
+  return { visitor: { Program: { exit: (program) => program.traverse(visitor) } } }
+}
+
 export async function transformSolidSource(code: string, options: TransformSolidSourceOptions): Promise<string> {
   const filename = stripQueryAndHash(options.filename)
-  const plugins = options.resolvePath
-    ? [
-        [
-          moduleResolver,
-          {
-            resolvePath(specifier: string) {
-              return options.resolvePath?.(specifier) ?? specifier
-            },
-          },
-        ],
-      ]
-    : []
+  const plugins = options.resolvePath ? [importResolver(options)] : []
 
   const presets = []
 
