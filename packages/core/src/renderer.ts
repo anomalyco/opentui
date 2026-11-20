@@ -4891,6 +4891,22 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     ) {
       throw new Error("Native scene resume requires completed suspension")
     }
+    // A stopped process gets no SIGWINCH (its shell owns the terminal, and `fg` sends only SIGCONT), and the runtime's
+    // stdout size stays stale until refreshed. Native resume reserves main-screen rows for the renderer's height, so a
+    // new terminal size, or else a size requested while suspended, applies first.
+    const stdout = this.stdout as NodeJS.WriteStream & { _refreshSize?: () => void }
+    const { columns, rows } = stdout
+    if (this._usesProcessStdout) stdout._refreshSize?.()
+    const resized = stdout.columns > 0 && stdout.rows > 0 && (stdout.columns !== columns || stdout.rows !== rows)
+    const size = resized ? { width: stdout.columns, height: stdout.rows } : this.pendingNativeResize
+    this.pendingNativeResize = null
+    this.pendingResizeSawDifferentSize = false
+    try {
+      if (size) this.resize(size.width, size.height)
+    } catch (error) {
+      // As for a live resize: a size the Session rejects is reported and dropped.
+      this.handleError(error)
+    }
     if (this.pendingSplitFooterTransition) {
       // Terminal setup requires clean native split state; retain the deferred work on the host.
       this.lib.sessionSplitControl(this.nativeSession.context, this.nativeSession.session, {
@@ -4959,7 +4975,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     for (const batch of this.replyBatches) this.armReplyBackstop(batch)
     this.syncReplyContext(false)
     if (this.pixelResolutionRequeryPending) this.queryPixelResolution()
-    this.applyPendingNativeResize()
 
     if (
       this._previousControlState === RendererControlState.AUTO_STARTED ||

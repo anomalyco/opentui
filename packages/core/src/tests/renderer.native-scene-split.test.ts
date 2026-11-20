@@ -513,6 +513,36 @@ test.each([
   expect(screen.join("\n").replace(/ +$/gm, "").trimEnd()).toBe((size ? rows : [...rows, "", "FFFFFFFFF"]).join("\n"))
 })
 
+// A size the terminal took while suspended applies before native resume, which reserves main-screen rows for the
+// renderer's height: the shell's rows stay above the frame, and a row captured meanwhile goes out under a footer that
+// already has the new width.
+test.each(["main-screen", "split-footer"] as const)("%s resume takes a size set while suspended", async (mode) => {
+  const externalOutputMode = mode === "split-footer" ? "capture-stdout" : "passthrough"
+  const terminal = await setupTerminal({ height: 6, footerHeight: 2, screenMode: mode, externalOutputMode })
+  terminal.renderer.root.add(new TextRenderable(terminal.renderer, { content: "F".repeat(12) }))
+  await terminal.frame()
+  await terminal.renderer.suspend()
+  terminal.stdout.write("queued\n")
+  terminal.renderer.requestResize(8, 9)
+  terminal.stdout.clear()
+  await terminal.renderer.resume()
+  await terminal.frame()
+  const view = await createTestRenderer({ width: 8, height: 18 })
+  renderers.push(view.renderer)
+  const vt = new EmbeddedTerminalRenderable(view.renderer, { cols: 8, rows: 9 })
+  view.renderer.root.add(vt)
+  const shell = lines(8).map((line) => line.replace("line ", "sh"))
+  // With the cursor on the bottom row, the taller VT pulls the scrollback down above the screen.
+  vt.write(shell.join("\r\n") + "\r\n$" + terminal.stdout.text() + "\x1b[9;1H")
+  vt.height = 18
+  await view.renderOnce()
+  const screen = view.captureCharFrame()
+  // The split footer owns the rows above it; the main screen must keep the shell's.
+  const lost = mode === "main-screen" ? shell.filter((line) => !screen.includes(line)) : []
+  expect({ lost, wide: terminal.stdout.text().includes("F".repeat(9)) }).toEqual({ lost: [], wide: false })
+  expect(terminal.printed(/queued/g)).toHaveLength(mode === "split-footer" ? 1 : 0)
+})
+
 // Each commit is "text:rowColumns", plus "\n" when it ends its line. No variable of the test's environment reaches the
 // renderer: the last column alone selects the width method.
 const wcwidth = { environment: { OPENTUI_FORCE_WCWIDTH: "1" } }

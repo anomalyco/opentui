@@ -128,6 +128,57 @@ for (const screenMode of ["main-screen", "alternate-screen"] as const) {
   })
 }
 
+// A stopped job gets no SIGWINCH: its shell owns the terminal meanwhile, and `fg` sends only SIGCONT. The runtime's
+// cached stdout size is stale until `_refreshSize()` reads the terminal again. Each row: the terminal's size at resume,
+// a size the app asked for while suspended, and the size the resumed frame has.
+const stoppedResizes: Array<[columns: number, rows: number, requested: [number, number] | null, w: number, h: number]> =
+  [
+    [100, 24, null, 100, 24],
+    [80, 10, null, 80, 10],
+    [0, 0, null, 80, 24],
+    [80, 24, [71, 19], 71, 19],
+    // A size the Session rejects is reported and dropped, as a live resize is.
+    [80, 24, [0, 0], 80, 24],
+  ]
+for (const [columns, rows, requested, width, height] of stoppedResizes) {
+  test(`resume() with the terminal at ${columns}x${rows} after ${requested ?? "no"} request renders at ${width}x${height}`, async () => {
+    renderer.destroy()
+    await renderer.closed
+    const stdout = process.stdout
+    const keys = ["columns", "rows", "_refreshSize"]
+    const saved = keys.map((key) => Object.getOwnPropertyDescriptor(stdout, key))
+    const terminal = { columns: 80, rows: 24 }
+    Object.defineProperties(stdout, {
+      columns: { configurable: true, writable: true, value: 80 },
+      rows: { configurable: true, writable: true, value: 24 },
+      _refreshSize: { configurable: true, value: () => Object.assign(stdout, terminal) },
+    })
+    try {
+      let captureSpans: () => { cols: number; rows: number }
+      const clock = new ManualClock()
+      ;({ renderer, renderOnce, captureSpans } = await createTestRenderer({ stdout, width: 80, height: 24, clock }))
+      await renderer.setupTerminal()
+      await renderer.suspend()
+      Object.assign(terminal, { columns, rows })
+      if (requested) renderer.requestResize(...requested)
+      await renderer.resume()
+      await renderOnce()
+      const frame = captureSpans()
+      expect([renderer.width, renderer.height, frame.cols, frame.rows]).toEqual([width, height, width, height])
+      // The consumed request leaves nothing behind: asking again for the same size paints nothing.
+      const frames = renderer.getStats().nativeFrameCount
+      renderer.requestResize(width, height)
+      clock.advance(200)
+      await renderer.idle()
+      expect(renderer.getStats().nativeFrameCount).toBe(frames)
+    } finally {
+      renderer.destroy()
+      await renderer.closed
+      keys.forEach((key, i) => (saved[i] ? Object.defineProperty(stdout, key, saved[i]!) : delete (stdout as any)[key]))
+    }
+  })
+}
+
 test("requestRender() does not trigger when renderer is suspended", async () => {
   renderer.start()
   await renderer.suspend()
