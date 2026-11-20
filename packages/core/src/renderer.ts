@@ -4900,7 +4900,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     const resized = stdout.columns > 0 && stdout.rows > 0 && (stdout.columns !== columns || stdout.rows !== rows)
     const size = resized ? { width: stdout.columns, height: stdout.rows } : this.pendingNativeResize
     this.pendingNativeResize = null
-    if (size) this.resize(size.width, size.height)
+    this.pendingResizeSawDifferentSize = false
+    try {
+      if (size) this.resize(size.width, size.height)
+    } catch (error) {
+      // As for a live resize: a size the Session rejects is reported and dropped.
+      this.handleError(error)
+    }
     if (this.pendingSplitFooterTransition) {
       // Terminal setup requires clean native split state; retain the deferred work on the host.
       this.lib.sessionSplitControl(this.nativeSession.context, this.nativeSession.session, {

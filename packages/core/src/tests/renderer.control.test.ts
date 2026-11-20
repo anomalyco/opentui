@@ -137,6 +137,8 @@ const stoppedResizes: Array<[columns: number, rows: number, requested: [number, 
     [80, 10, null, 80, 10],
     [0, 0, null, 80, 24],
     [80, 24, [71, 19], 71, 19],
+    // A size the Session rejects is reported and dropped, as a live resize is.
+    [80, 24, [0, 0], 80, 24],
   ]
 for (const [columns, rows, requested, width, height] of stoppedResizes) {
   test(`resume() with the terminal at ${columns}x${rows} after ${requested ?? "no"} request renders at ${width}x${height}`, async () => {
@@ -153,7 +155,8 @@ for (const [columns, rows, requested, width, height] of stoppedResizes) {
     })
     try {
       let captureSpans: () => { cols: number; rows: number }
-      ;({ renderer, renderOnce, captureSpans } = await createTestRenderer({ stdout, width: 80, height: 24 }))
+      const clock = new ManualClock()
+      ;({ renderer, renderOnce, captureSpans } = await createTestRenderer({ stdout, width: 80, height: 24, clock }))
       await renderer.setupTerminal()
       await renderer.suspend()
       Object.assign(terminal, { columns, rows })
@@ -162,6 +165,12 @@ for (const [columns, rows, requested, width, height] of stoppedResizes) {
       await renderOnce()
       const frame = captureSpans()
       expect([renderer.width, renderer.height, frame.cols, frame.rows]).toEqual([width, height, width, height])
+      // The consumed request leaves nothing behind: asking again for the same size paints nothing.
+      const frames = renderer.getStats().nativeFrameCount
+      renderer.requestResize(width, height)
+      clock.advance(200)
+      await renderer.idle()
+      expect(renderer.getStats().nativeFrameCount).toBe(frames)
     } finally {
       renderer.destroy()
       await renderer.closed
