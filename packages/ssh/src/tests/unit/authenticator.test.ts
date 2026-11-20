@@ -134,6 +134,26 @@ test("publickey: a signature from the WRONG private key is rejected", async () =
   expect(spoofed.type).toBe("reject")
 })
 
+test("publickey: a second key embedded in the algorithm string is ignored", async () => {
+  const victim = genKey()
+  const attacker = genKey()
+  const auth = createAuthenticator({ publicKey: "any" })
+
+  const victimBlob = parse(victim.public).getPublicSSH() as Buffer
+  const attackerBlob = parse(attacker.public).getPublicSSH() as Buffer
+  const evilAlgorithm = `ssh-ed25519 ${attackerBlob.toString("base64")}`
+  const blob = Buffer.from("ssh-session-id-blob")
+  const sig = parse(attacker.private).sign(blob) as Buffer
+  const attempt: AuthAttempt = {
+    method: "publickey",
+    username: "mallory",
+    key: { algorithm: evilAlgorithm, blob: victimBlob },
+    blob,
+    signature: sig,
+  }
+  expect((await auth.authenticate(attempt)).type).toBe("reject")
+})
+
 test("fuzz: mutated public-key proofs always fail closed", async () => {
   const key = genKey()
   const valid = pkAttempt({ pubPem: key.public, privPem: key.private })
