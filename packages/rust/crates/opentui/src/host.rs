@@ -918,6 +918,10 @@ impl Host {
         unsafe { sys::ot_terminal_flush_input() };
         let output = task();
         restore.terminal.borrow_mut().enter_raw()?;
+        // The terminal may have resized meanwhile, unseen by a stopped process. Native resume reserves main-screen rows
+        // for the renderer's height, so the size applies first.
+        self.check_size()?;
+        self.apply_resize(events)?;
         if let Some(split) = &self.split {
             split.before_resume()?;
         }
@@ -932,7 +936,6 @@ impl Host {
         self.parser.resume()?;
         self.route(events);
         self.force_next_frame = true;
-        self.check_size()?;
         events.push(Event::Resumed);
         Ok(output)
     }
