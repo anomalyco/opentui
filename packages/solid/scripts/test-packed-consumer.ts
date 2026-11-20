@@ -220,9 +220,10 @@ import { pathToFileURL } from "node:url"
 
 import { transformAsync } from "@babel/core"
 import ts from "@babel/preset-typescript"
-import moduleResolver from "babel-plugin-module-resolver"
 import solid from "babel-preset-solid"
 
+// The renderer's process error handlers only log, so an uncaught error would exit 0.
+process.exitCode = 1
 const solidRuntime = await import(${JSON.stringify(packageJson.name)})
 const componentsRuntime = await import(${JSON.stringify(`${packageJson.name}/components`)})
 const jsxRuntime = await import(${JSON.stringify(`${packageJson.name}/jsx-runtime`)})
@@ -271,18 +272,6 @@ const transformOptions = {
   filename: join(process.cwd(), "fixture.tsx"),
   configFile: false,
   babelrc: false,
-  plugins: [
-    [
-      moduleResolver,
-      {
-        resolvePath(specifier) {
-          if (specifier === "solid-js") return "solid-js/dist/solid.js"
-          if (specifier === "solid-js/store") return "solid-js/store/dist/store.js"
-          return specifier
-        },
-      },
-    ],
-  ],
   presets: [
     [solid, { moduleName: ${JSON.stringify(packageJson.name)}, generate: "universal" }],
     [ts],
@@ -341,6 +330,7 @@ await expectBunOnlyFailure(
   ${JSON.stringify(`${packageJson.name}/runtime-plugin-support/configure is Bun-only`)},
 )
 
+process.exitCode = 0
 console.log("Node solid dist smoke test passed")
 `,
   )
@@ -432,7 +422,12 @@ function installAndTest(nodeDir: string): void {
     nodeDir,
     "Node import smoke check failed",
   )
-  runCommand(nodePath, [...nodeFfiArgs, "index.mjs"], nodeDir, "Node solid dist smoke tests failed")
+  runCommand(
+    nodePath,
+    [...nodeFfiArgs, "--conditions=browser", "index.mjs"],
+    nodeDir,
+    "Node solid dist smoke tests failed",
+  )
 
   assertNodeStaticImportFailure(
     nodeDir,
