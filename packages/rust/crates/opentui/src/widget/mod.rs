@@ -79,8 +79,8 @@ use crate::app::{AnimationTick, App, AppInner, Cx, HandlerId, Tick};
 use crate::error::Result;
 use crate::input::{KeyEvent, MouseEvent};
 use crate::layout::{
-    Align, Display, Edge, FlexDirection, Gutter, Justify, LayoutMode, LayoutProperty, Length, Overflow, PositionType,
-    Rect, Wrap,
+    Align, BoxSizing, Display, Edge, FlexDirection, Gutter, Justify, LayoutMode, LayoutProperty, Length, Overflow,
+    PositionType, Rect, Wrap,
 };
 use crate::native::{BoxDetails, Hooks, Node, NodeKind, Observation, Paint, SelectionUnit, TextOptions};
 use crate::post::{Filter, FilterCell, FilterId};
@@ -828,6 +828,19 @@ pub trait Widget: Clone + 'static {
 
     fn max_height(&self, height: impl Into<Length>) -> Self {
         self.element().set_layout(LayoutProperty::MaxHeight(height.into()));
+        self.clone()
+    }
+
+    /// Derives one dimension from the other: width in columns divided by height in rows. `f32::NAN` removes it.
+    fn aspect_ratio(&self, ratio: f32) -> Self {
+        self.element().set_layout(LayoutProperty::AspectRatio(ratio));
+        self.clone()
+    }
+
+    /// [`BoxSizing::ContentBox`] adds padding and border to the size and its limits; [`BoxSizing::BorderBox`], the
+    /// default, includes them.
+    fn box_sizing(&self, sizing: BoxSizing) -> Self {
+        self.element().set_layout(LayoutProperty::BoxSizing(sizing));
         self.clone()
     }
 

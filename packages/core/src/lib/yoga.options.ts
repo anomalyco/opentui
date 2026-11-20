@@ -80,18 +80,8 @@ export function parseAlignContent(value: string | null | undefined): Align {
   return parseAlignment(value, Align.FlexStart)
 }
 
-export function parseBoxSizing(value: string): BoxSizing {
-  if (value == null) {
-    return BoxSizing.BorderBox
-  }
-  switch (value.toLowerCase()) {
-    case "border-box":
-      return BoxSizing.BorderBox
-    case "content-box":
-      return BoxSizing.ContentBox
-    default:
-      return BoxSizing.BorderBox
-  }
+export function parseBoxSizing(value: string | null | undefined): BoxSizing {
+  return value?.toLowerCase() === "content-box" ? BoxSizing.ContentBox : BoxSizing.BorderBox
 }
 
 export function parseDimension(value: string): Dimension {

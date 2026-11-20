@@ -62,14 +62,13 @@ export function isDimensionType(value: any): value is number | "auto" | `${numbe
   return isPositionType(value)
 }
 
-export function isFlexBasisType(value: any): value is number | "auto" | undefined {
-  if (value === undefined || value === "auto") {
-    return true
+export function isFlexBasisType(value: any): value is number | "auto" | `${number}%` | undefined {
+  if (typeof value === "string" && value.endsWith("%")) {
+    // The whole number before "%" must parse, and to what the writer's parseFloat reads, within the f32 range it takes.
+    const percent = Number(value.slice(0, -1))
+    return percent === Number.parseFloat(value) && Math.abs(percent) <= 3.4028234663852886e38
   }
-  if (typeof value === "number" && !Number.isNaN(value)) {
-    return true
-  }
-  return false
+  return value === undefined || isPositionType(value)
 }
 
 export function isSizeType(value: any): value is number | `${number}%` | undefined {

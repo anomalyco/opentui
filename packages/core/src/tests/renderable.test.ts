@@ -15,7 +15,7 @@ import { TextNodeRenderable } from "../renderables/TextNode.js"
 import { TextRenderable } from "../renderables/Text.js"
 import { ScrollBoxRenderable } from "../renderables/ScrollBox.js"
 import { BoxRenderable, type BoxOptions } from "../renderables/Box.js"
-import { Align, Edge, FlexDirection, Gutter, Justify, PositionType, Unit, Wrap } from "../yoga.js"
+import { Align, BoxSizing, Edge, FlexDirection, Gutter, Justify, PositionType, Unit, Wrap } from "../yoga.js"
 import { InputRenderable } from "../renderables/Input.js"
 import { SliderRenderable } from "../renderables/Slider.js"
 import { ImageRenderable } from "../renderables/Image.js"
@@ -371,12 +371,14 @@ describe("Renderable - declared style getters", () => {
     ["getAlignItems", (box) => box.getAlignItems(), { alignItems: "center" }, Align.Center],
     ["getAlignContent", (box) => box.getAlignContent(), { alignContent: "space-around" }, Align.SpaceAround],
     ["getAspectRatio", (box) => box.getAspectRatio(), { aspectRatio: 1.5 }, 1.5],
+    ["getBoxSizing", (box) => box.getBoxSizing(), { boxSizing: "content-box" }, BoxSizing.ContentBox],
     ["getJustifyContent", (box) => box.getJustifyContent(), { justifyContent: "space-between" }, Justify.SpaceBetween],
     ["getAlignSelf", (box) => box.getAlignSelf(), { alignSelf: "flex-end" }, Align.FlexEnd],
     ["getPositionType", (box) => box.getPositionType(), { position: "absolute" }, PositionType.Absolute],
     ["getFlexGrow", (box) => box.getFlexGrow(), { flexGrow: 2 }, 2],
     ["getFlexShrink", (box) => box.getFlexShrink(), { flexShrink: 3 }, 3],
     ["getFlexBasis", (box) => box.getFlexBasis(), { flexBasis: 7 }, point(7)],
+    ["getFlexBasis percent", (box) => box.getFlexBasis(), { flexBasis: "60%" }, percent(60)],
     ["getWidth", (box) => box.getWidth(), { width: "50%" }, percent(50)],
     ["getHeight", (box) => box.getHeight(), { height: "40%" }, percent(40)],
     ["getMinWidth", (box) => box.getMinWidth(), { minWidth: 4 }, point(4)],
@@ -500,6 +502,33 @@ test.each(["box", "scroll content"])("%s lays out wrapped lines at the requested
   target.alignContent = undefined
   target.aspectRatio = null
   expect(await geometry()).toEqual([6, 0, 2])
+})
+
+test("content-box adds padding to box and scroll content sizes, and a percentage basis sizes a child", async () => {
+  const contentBox = { minHeight: 3, padding: 1, boxSizing: "content-box" } as const
+  const box = new BoxRenderable(testRenderer, { ...contentBox, width: 10, flexDirection: "row" })
+  const scroll = new ScrollBoxRenderable(testRenderer, {
+    width: 10,
+    height: 8,
+    scrollbarOptions: { visible: false },
+    contentOptions: contentBox,
+  })
+  const child = new BoxRenderable(testRenderer, { height: 1, flexBasis: "50%" })
+  box.add(child)
+  testRenderer.root.add(box)
+  testRenderer.root.add(scroll)
+  const geometry = async () => {
+    await renderOnce()
+    return [box.width, box.height, scroll.content.height, child.width]
+  }
+  expect(await geometry()).toEqual([12, 5, 5, 5])
+  child.flexBasis = "30%"
+  scroll.content.boxSizing = "border-box"
+  expect(await geometry()).toEqual([12, 5, 3, 3])
+  box.boxSizing = null
+  child.flexBasis = undefined
+  // The width of the same child built without a basis.
+  expect(await geometry()).toEqual([10, 3, 3, 1])
 })
 
 describe("Renderable - Child Management", () => {

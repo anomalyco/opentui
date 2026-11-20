@@ -5,6 +5,7 @@ import {
   parseAlign,
   parseAlignContent,
   parseAlignItems,
+  parseBoxSizing,
   parseFlexDirection,
   parseJustify,
   parseLayoutMode,
@@ -238,6 +239,7 @@ const contentStyles: Record<string, StyleWrite> = {}
     ["layoutMode", YogaEnumKind.LayoutMode, parseLayoutMode],
     ["alignItems", YogaEnumKind.AlignItems, parseAlignItems],
     ["alignContent", YogaEnumKind.AlignContent, parseAlignContent],
+    ["boxSizing", YogaEnumKind.BoxSizing, parseBoxSizing],
     ["justifyContent", YogaEnumKind.JustifyContent, parseJustify],
     ["alignSelf", YogaEnumKind.AlignSelf, parseAlign],
   ]
@@ -575,6 +577,7 @@ type ContentLayoutKey =
   | "alignItems"
   | "alignContent"
   | "aspectRatio"
+  | "boxSizing"
   | "justifyContent"
   | "alignSelf"
   | "flexGrow"
