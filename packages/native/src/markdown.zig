@@ -2957,9 +2957,9 @@ pub const Doc = struct {
             self.counters.run_token_visits += 1;
             live.token_styles.items[i] = .{ .strong = styler.styles.strong, .italic = styler.styles.italic, .strikethrough = styler.styles.strikethrough, .link = link, .matches = @intCast(r.matches.len) };
             live.styled_count = i + 1;
-            if (live.display_ends.items[i] > to) {
-                // A hold inside this token: B drew its start, styled as read_leaf styles a token
-                // the cut reaches (no autolink of its own; a cut math span is literal).
+            if (live.display_ends.items[i] > to or i == live.partial_token) {
+                // A hold inside this token (its whole display may end by the cut): B drew its start,
+                // styled as read_leaf styles a cut token (no autolink of its own; a cut math span is literal).
                 const t = r.tokens[i];
                 styler.sync();
                 writer.base.raw = t.kind == .code;

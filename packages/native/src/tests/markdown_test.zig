@@ -1291,8 +1291,8 @@ test "Markdown sweep: every pair of appends, then finish, under every option set
     // The tear prototype's repros (math on): A aborted in M2 before fd4ab4e19; B and D pass.
     // Then a task marker before more text (M3-a, M2 F9), an escaped backslash that ends an
     // append inside `\(` and a lone one (bigboi-2), a `$` run that ends an append and a span decided after a prefix (bigboi-3, -5), and a held display
-    // math line after a fold, when its line ends, after its closer and closing a code span (bigboi-4).
-    for ([_][]const []const u8{ &.{ "@\n$$_", "$$\n" }, &.{"&amp;\n===\n"}, &.{ "&amp;", "\n===\n" }, &.{ "- [x] - [x] ", "**" }, &.{ "- [x] ", "- [x] ", "word " }, &.{ "\\(a b\\\\", ")", " now" }, &.{ "a \\(\u{e9} x\\", ")", " now" }, &.{ "$ $$", "$x$" }, &.{ "pay ($2", "$", ")." }, &.{ "some text\n\\[a $b$", " z\\]", "\n" }, &.{ "$$_s_s_ ", "\n" }, &.{ "$$a $b$ c$$", " " }, &.{ "] ```\n$", "$_```- [x]", "(" } }) |parts| {
+    // math line after a fold, when its line ends, after its closer and closing a code span (bigboi-4). First: a pipe-held span a bracket settles is literal.
+    for ([_][]const []const u8{ &.{"$|$["}, &.{ "@\n$$_", "$$\n" }, &.{"&amp;\n===\n"}, &.{ "&amp;", "\n===\n" }, &.{ "- [x] - [x] ", "**" }, &.{ "- [x] ", "- [x] ", "word " }, &.{ "\\(a b\\\\", ")", " now" }, &.{ "a \\(\u{e9} x\\", ")", " now" }, &.{ "$ $$", "$x$" }, &.{ "pay ($2", "$", ")." }, &.{ "some text\n\\[a $b$", " z\\]", "\n" }, &.{ "$$_s_s_ ", "\n" }, &.{ "$$a $b$ c$$", " " }, &.{ "] ```\n$", "$_```- [x]", "(" } }) |parts| {
         try std.testing.expect(try streamAgreesParts(arena_state.allocator(), "math tear", parts));
     }
     // E and F's inputs with the options M1 has (conceal and hyperlinks are M2's).
