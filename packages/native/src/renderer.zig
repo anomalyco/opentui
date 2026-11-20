@@ -1060,7 +1060,7 @@ pub const CliRenderer = struct {
                     ansi.ANSI.moveToOutput(writer, 1, self.renderOffset + 1) catch b.failFrame();
                     writer.writeAll(ansi.ANSI.showCursor) catch b.failFrame();
                 }
-                if (self.terminal.synchronizedOutput()) writer.writeAll(ansi.ANSI.syncReset) catch b.failFrame();
+                if (self.synchronizedOutput()) writer.writeAll(ansi.ANSI.syncReset) catch b.failFrame();
             }
             writer.flush() catch b.failFrame();
         }
@@ -1732,8 +1732,17 @@ pub const CliRenderer = struct {
         return redraw_footer;
     }
 
-    fn beginRenderFrame(self: *const CliRenderer, writer: anytype) void {
-        if (self.terminal.synchronizedOutput()) writer.writeAll(ansi.ANSI.syncSet) catch {};
+    fn synchronizedOutput(self: *CliRenderer) bool {
+        // tmux redraws its text grid when a synchronized update ends, erasing
+        // passthrough Sixel pixels even when the image itself has not changed.
+        // Keep explicit preferences, but avoid those redraws for live Sixel in auto mode.
+        if (self.terminal.synchronized_output == .auto and self.terminal.isInTmux() and
+            (self.hasNextProtocol(.sixel) or self.hasCommittedProtocol(.sixel))) return false;
+        return self.terminal.synchronizedOutput();
+    }
+
+    fn beginRenderFrame(self: *CliRenderer, writer: anytype) void {
+        if (self.synchronizedOutput()) writer.writeAll(ansi.ANSI.syncSet) catch {};
         writer.writeAll(ansi.ANSI.hideCursor) catch {};
     }
 
@@ -3073,7 +3082,7 @@ pub const CliRenderer = struct {
         }
 
         // Only close sync if we opened it. This keeps true no-op frames empty.
-        if (frame_started and self.terminal.synchronizedOutput()) {
+        if (frame_started and self.synchronizedOutput()) {
             writer.writeAll(ansi.ANSI.syncReset) catch {};
         }
 
