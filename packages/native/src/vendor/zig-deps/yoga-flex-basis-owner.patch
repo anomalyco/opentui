@@ -1,0 +1,70 @@
+diff --git a/yoga/algorithm/CalculateLayout.cpp b/yoga/algorithm/CalculateLayout.cpp
+index e5883bb..ce6dcf1 100644
+--- a/yoga/algorithm/CalculateLayout.cpp
++++ b/yoga/algorithm/CalculateLayout.cpp
+@@ -239,6 +239,20 @@ void constrainMaxSizeForMode(
+   }
+ }
+ 
++// OpenTUI: whether a defined flex basis resolves a percentage against the
++// owner: a percent basis, or percent padding (resolved against the owner width).
++static bool hasPercentFlexBasisInput(const yoga::Node* const child) {
++  if (child->processFlexBasis().isPercent()) {
++    return true;
++  }
++  for (auto edge : ordinals<Edge>()) {
++    if (child->style().padding(edge).isPercent()) {
++      return true;
++    }
++  }
++  return false;
++}
++
+ static void computeFlexBasisForChild(
+     const yoga::Node* const node,
+     yoga::Node* const child,
+@@ -278,7 +292,20 @@ static void computeFlexBasisForChild(
+       resolvedFlexBasis.isDefined() && yoga::isDefined(mainAxisSize);
+ 
+   if (useResolvedFlexBasis) {
+-    if (child->getLayout().computedFlexBasis.isUndefined() ||
++    // OpenTUI: a parent's resize doesn't dirty its children, so a basis that
++    // resolves a percentage (its own, or a percent padding against the owner
++    // width) is computed again in a later layout when the owner or the main
++    // axis it was last resolved against changed. Reuse within one layout, and
++    // of a basis without a percentage, stays as upstream.
++    const std::array<float, 3> owner = {
++        {mainAxisOwnerSize, ownerWidth, isMainAxisRow ? 1.0f : 0.0f}};
++    const auto& cachedOwner = child->getLayout().computedFlexBasisOwner;
++    const bool ownerChanged =
++        child->getLayout().computedFlexBasisGeneration != generationCount &&
++        yoga::isDefined(cachedOwner[2]) &&
++        !yoga::inexactEquals(cachedOwner, owner) &&
++        hasPercentFlexBasisInput(child);
++    if (child->getLayout().computedFlexBasis.isUndefined() || ownerChanged ||
+         (child->getConfig()->isExperimentalFeatureEnabled(
+              ExperimentalFeature::WebFlexBasis) &&
+          child->getLayout().computedFlexBasisGeneration != generationCount)) {
+@@ -286,6 +313,7 @@ static void computeFlexBasisForChild(
+           paddingAndBorderForAxis(child, mainAxis, direction, ownerWidth));
+       child->setLayoutComputedFlexBasis(
+           yoga::maxOrDefined(resolvedFlexBasis, paddingAndBorder));
++      child->getLayout().computedFlexBasisOwner = owner;
+     }
+   } else if (isMainAxisRow && isRowStyleDimDefined) {
+     // The width is definite, so use that as the flex basis.
+diff --git a/yoga/node/LayoutResults.h b/yoga/node/LayoutResults.h
+index 07a74d5..a2398ad 100644
+--- a/yoga/node/LayoutResults.h
++++ b/yoga/node/LayoutResults.h
+@@ -26,6 +26,10 @@ struct LayoutResults {
+ 
+   uint32_t computedFlexBasisGeneration = 0;
+   FloatOptional computedFlexBasis = {};
++  // OpenTUI: the main-axis owner size, owner width and main axis (1 for a row)
++  // that computeFlexBasisForChild last resolved a defined flex basis against.
++  std::array<float, 3> computedFlexBasisOwner = {
++      {YGUndefined, YGUndefined, YGUndefined}};
+ 
+   // Per-flex-item floor along the main axis derived from CSS Flexbox §4.5
+   // automatic minimum sizing. Set by `resolveFlexibleLength` when the parent's

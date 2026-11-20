@@ -1359,6 +1359,69 @@ test "Yoga incremental solves of measured leaves with margins equal fresh solves
         }
         try std.testing.expectEqual(leaf_layouts[1], leaf_layouts[0]);
     }
+    // A 50% flex basis, or a zero basis with 25% padding, in a row whose width grows and shrinks (its
+    // own width, or the root's for a 100% row); that padding beside a growing box in a 20 × 20 box that
+    // turns from a column into a row; and a growing zero-basis box of height 7 under an absolute box
+    // whose max height of 1 goes: each solve as fresh. A parent's resize or new direction leaves the
+    // child clean.
+    const BasisTree = struct {
+        const c_api = @import("context_abi_c");
+        nodes: [4]yoga.YGNodeRef,
+
+        fn init(owner: yoga.YGConfigRef, case: usize) @This() {
+            var nodes: [4]yoga.YGNodeRef = undefined;
+            for (&nodes, 0..) |*node, i| {
+                node.* = yoga.yogaNodeCreateWithConfig(owner);
+                if (i > 0) yoga.yogaNodeInsertChild(nodes[if (case == 4 and i == 3) 1 else i - 1], node.*, if (case == 4 and i == 3) 1 else 0);
+            }
+            const pt = @backingInt(yoga.YogaUnit.point);
+            if (case == 4) yoga.yogaNodeStyleSetFloat(nodes[3], @backingInt(yoga.YogaFloatKind.flex_grow), 1);
+            const basis = @backingInt(yoga.YogaValueKind.flex_basis);
+            if (case == 3) {
+                yoga.yogaNodeStyleSetEnum(nodes[1], @backingInt(yoga.YogaEnumKind.position_type), c_api.OT_POSITION_ABSOLUTE);
+                yoga.yogaNodeStyleSetValue(nodes[3], @backingInt(yoga.YogaValueKind.height), 0, pt, 7);
+                yoga.yogaNodeStyleSetValue(nodes[3], basis, 0, pt, 0);
+                yoga.yogaNodeStyleSetFloat(nodes[3], @backingInt(yoga.YogaFloatKind.flex_grow), 1);
+                return .{ .nodes = nodes };
+            }
+            if (case == 4) for ([_]yoga.YogaValueKind{ .width, .height }) |kind| yoga.yogaNodeStyleSetValue(nodes[1], @backingInt(kind), 0, pt, 20);
+            if (case != 4) yoga.yogaNodeStyleSetEnum(nodes[1], @backingInt(yoga.YogaEnumKind.flex_direction), @backingInt(yoga.YogaFlexDirection.row));
+            if (case == 1) yoga.yogaNodeStyleSetValue(nodes[1], @backingInt(yoga.YogaValueKind.width), 0, @backingInt(yoga.YogaUnit.percent), 100);
+            const padded = case == 2 or case == 4;
+            if (padded) yoga.yogaNodeStyleSetValue(nodes[2], @backingInt(yoga.YogaValueKind.padding), c_api.OT_EDGE_LEFT, @backingInt(yoga.YogaUnit.percent), 25);
+            yoga.yogaNodeStyleSetValue(nodes[2], basis, 0, if (padded) pt else @backingInt(yoga.YogaUnit.percent), if (padded) 0 else 50);
+            return .{ .nodes = nodes };
+        }
+
+        fn solve(self: @This(), case: usize, value: f32) void {
+            const ltr_direction = @backingInt(yoga.YogaDirection.ltr);
+            if (case == 3) {
+                yoga.yogaNodeStyleSetValue(self.nodes[1], @backingInt(yoga.YogaValueKind.max_height), 0, @backingInt(if (std.math.isNan(value)) yoga.YogaUnit.undefined else yoga.YogaUnit.point), value);
+                return yoga.yogaNodeCalculateLayout(self.nodes[0], 42, 15, ltr_direction);
+            }
+            if (case == 4) yoga.yogaNodeStyleSetEnum(self.nodes[1], @backingInt(yoga.YogaEnumKind.flex_direction), @intFromFloat(value));
+            if (case == 0 or case == 2) yoga.yogaNodeStyleSetValue(self.nodes[1], @backingInt(yoga.YogaValueKind.width), 0, @backingInt(yoga.YogaUnit.point), value);
+            yoga.yogaNodeCalculateLayout(self.nodes[0], if (case == 1) value else 40, 10, ltr_direction);
+        }
+    };
+    const c_column: f32 = @floatFromInt(@backingInt(yoga.YogaFlexDirection.column));
+    const c_row: f32 = @floatFromInt(@backingInt(yoga.YogaFlexDirection.row));
+    for ([_][]const f32{ &.{ 20, 30, 12 }, &.{ 40, 60, 30 }, &.{ 20, 30, 12 }, &.{ 1, std.math.nan(f32) }, &.{ c_column, c_row } }, 0..) |values, case| {
+        const live = BasisTree.init(config, case);
+        defer yoga.yogaNodeFreeRecursive(live.nodes[0]);
+        for (values) |value| {
+            live.solve(case, value);
+            const fresh = BasisTree.init(config, case);
+            defer yoga.yogaNodeFreeRecursive(fresh.nodes[0]);
+            fresh.solve(case, value);
+            for (live.nodes, fresh.nodes) |live_node, fresh_node| {
+                var layouts: [2]yoga.ExternalYogaLayout = undefined;
+                yoga.yogaNodeGetComputedLayout(fresh_node, &layouts[0]);
+                yoga.yogaNodeGetComputedLayout(live_node, &layouts[1]);
+                try std.testing.expectEqual(layouts[0], layouts[1]);
+            }
+        }
+    }
     // Trees whose skipped subtrees once held values a full pass would change; the test build's
     // fixed-point check is the oracle. A box made inside a display: none box (directly or one box
     // deeper, in a panel whose layout is cached) gets a laid-out subtree with fractional offsets (a
