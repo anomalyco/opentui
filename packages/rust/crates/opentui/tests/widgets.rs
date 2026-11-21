@@ -780,6 +780,16 @@ fn scroll_moves_to_the_end_follow_content_added_before_the_frame() {
     scroll.add(&Text::new(&app, "line 13"));
     app.render();
     assert_eq!(scroll.scroll_position().1, 3.0);
+    // Content laid out at zero rows has no end yet, as in Core: a move past that layout's limits is a row, not the end.
+    let app = TestApp::new(10, 12);
+    let content = View::new(&app).height(1).shrink(0.0);
+    let scroll = ScrollBox::new(&app).height(0).scrollbars(false).child(&content);
+    app.root().add(&scroll);
+    app.render();
+    content.height(30);
+    scroll.height(10).scroll_to(0.0, 3.0);
+    app.render();
+    assert_eq!(scroll.scroll_position().1, 3.0);
 }
 
 #[test]

@@ -297,7 +297,9 @@ impl ScrollInner {
         }
         let frame = self.element.app().map_or(0, |app| app.frame_number());
         let pending = self.requested.get().filter(|&(_, at)| at == frame).map_or((None, None), |(target, _)| target);
-        let (content, (max_x, max_y), (offset_x, offset_y)) = (self.content.rect(), self.limits(), self.scroll.get());
+        // The solved size, as the native box's extent: content laid out at zero cells reports one.
+        let content = self.content.element().query(|node| node.layout(Observation::Yoga)).unwrap_or_default();
+        let ((max_x, max_y), (offset_x, offset_y)) = (self.limits(), self.scroll.get());
         let aim = |value: f64, relative: bool, pending: Option<f64>, offset: f64, max: f64, extent: f32| {
             let base = pending.map_or(offset, |target| if target == f64::INFINITY { max } else { target });
             if relative && value == 0.0 {
