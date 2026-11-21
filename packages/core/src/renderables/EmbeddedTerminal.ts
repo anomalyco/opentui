@@ -179,12 +179,14 @@ export class EmbeddedTerminalRenderable extends Renderable {
     if (key.name === "linefeed") key = new KeyEvent({ ...key, name: "j", ctrl: true, sequence: key.shift ? "J" : "j" })
     const text = textualKey(key)
     const physical = physicalKey(key)
+    const unshifted = unshiftedCodepoint(key, physical)
     const options: EmbeddedTerminalKey = {
       action: key.eventType === "release" ? "release" : key.repeated ? "repeat" : "press",
       key: physical,
       mods: modifiers(key),
+      consumedMods: key.shift && text && unshifted && text !== String.fromCodePoint(unshifted) ? MOD_SHIFT : 0,
       text,
-      unshiftedCodepoint: unshiftedCodepoint(key, physical),
+      unshiftedCodepoint: unshifted,
     }
     return this.lib.contextEmbeddedTerminalEncodeKey(this.handle.context, this.handle, options)
   }
