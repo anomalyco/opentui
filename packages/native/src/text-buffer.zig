@@ -1976,7 +1976,6 @@ pub const UnifiedTextBuffer = struct {
         const before = (self._rope.seekCountSum(iter_mod.leafCount, iter_mod.textBytes, found.leaf_index) orelse unreachable).sum;
         const chunk = found.leaf.asText() orelse return before;
         const target_col = weight - found.start_weight;
-        if (!whole_grapheme and target_col == 0) return before;
         const ascii_only = (chunk.flags & TextChunk.Flags.ASCII_ONLY) != 0;
         const find = if (whole_grapheme) utf8.findGraphemePosByWidth else utf8.findPosByWidth;
         const split = find(chunk.getBytes(&self.mem_registry), target_col, self.tab_width, self.control_display, ascii_only, false, self.width_method);

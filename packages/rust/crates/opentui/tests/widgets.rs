@@ -780,13 +780,23 @@ fn scroll_moves_to_the_end_follow_content_added_before_the_frame() {
     scroll.add(&Text::new(&app, "line 13"));
     app.render();
     assert_eq!(scroll.scroll_position().1, 3.0);
+    // Content laid out at zero rows has no end yet, as in Core: a move past that layout's limits is a row, not the end.
+    let app = TestApp::new(10, 12);
+    let content = View::new(&app).height(1).shrink(0.0);
+    let scroll = ScrollBox::new(&app).height(0).scrollbars(false).child(&content);
+    app.root().add(&scroll);
+    app.render();
+    content.height(30);
+    scroll.height(10).scroll_to(0.0, 3.0);
+    app.render();
+    assert_eq!(scroll.scroll_position().1, 3.0);
 }
 
 #[test]
 fn scroll_events_report_each_move_once_before_it_paints() {
     // 10 lines in 4 rows scroll from 0 to 6. `|` ends a frame; an event is its cause and row (`x` and a column for a
     // horizontal move); `H` is the resize handler of the root's last child. `bar` clicks the scrollbar's last row;
-    // `sticky` makes the box follow the bottom; `add` adds a line; `tall`, `wide`, `slim` and `narrow` resize the
+    // `sticky` makes the box follow the bottom from there; `add` adds a line; `tall`, `wide`, `slim` and `narrow` resize the
     // terminal, the last taller and wrapping every line to two rows; `poke` resizes only H; `arm` makes H scroll to
     // row 2; `on` adds the scroll handler,
     // which rows without it add first; `echo` adds a handler that scrolls by 2 once; `defer` scrolls to row 4 from a
@@ -801,9 +811,17 @@ fn scroll_events_report_each_move_once_before_it_paints() {
         ("the scrollbar", &["bar", "F"], "Pointer 5 |"),
         ("the program, before layout is known", &["3", "F", "F"], "Program 3 | |"),
         ("a move to the end follows content added before the frame", &["end", "add", "F"], "Key 6 Key 7 |"),
-        ("a sticky box follows new content", &["sticky", "add", "F", "add", "F"], "Layout 7 | Layout 8 |"),
+        (
+            "a sticky box follows new content",
+            &["end", "F", "sticky", "add", "F", "add", "F"],
+            "Key 6 | Layout 7 | Layout 8 |",
+        ),
         ("a clamp to a taller view", &["end", "F", "tall", "F"], "Key 6 | Layout 4 |"),
-        ("view and content resize at once", &["sticky", "add", "F", "narrow", "F"], "Layout 7 | Layout 15 H |"),
+        (
+            "view and content resize at once",
+            &["end", "F", "sticky", "add", "F", "narrow", "F"],
+            "Key 6 | Layout 7 | Layout 15 H |",
+        ),
         (
             "view and content widen at once",
             &["sideways", "F", "widen", "slim", "F"],
@@ -2430,6 +2448,26 @@ fn sticky_boxes_follow_only_the_edge_they_start_at() {
     content.height(8);
     app.render();
     assert_eq!(scroll.scroll_position(), (6.0, 2.0));
+    // Turning sticky on follows from where the view is, as Core's follow change does: from an edge a layout clamped it
+    // to, and not from an edge it left while it did not follow. Setting it while on changes nothing.
+    for (scrolled, off, expected) in [(true, true, 3.0), (true, false, 2.0), (false, true, 2.0)] {
+        let app = TestApp::new(4, 2);
+        let scroll = ScrollBox::new(&app).size(2, 2).scrollbars(false).sticky(true);
+        let content = View::new(&app).shrink(0.0).width(2).height(if scrolled { 6 } else { 4 });
+        app.root().add(&scroll.child(&content));
+        app.render();
+        if scrolled {
+            scroll.scroll_to(0.0, 2.0);
+            app.render();
+        }
+        scroll.sticky(!off);
+        content.height(if scrolled { 4 } else { 6 });
+        app.render();
+        scroll.sticky(true);
+        content.height(if scrolled { 5 } else { 7 });
+        app.render();
+        assert_eq!(scroll.scroll_position().1, expected, "scrolled {scrolled}, off {off}");
+    }
 }
 
 #[test]

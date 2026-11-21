@@ -372,7 +372,9 @@ pub fn Rope(comptime T: type) type {
                     .leaf => |*l| {
                         const leaf_weight = node.metrics().weight();
 
-                        if (target_weight == 0 and (leaf_weight > 0 or bias != .left)) {
+                        // Under a left bias, a leaf whose split may leave an empty piece decides what lies at
+                        // weight 0 (zero-width text), as inside it.
+                        if (target_weight == 0 and (bias != .left or (leaf_weight > 0 and !@hasDecl(T, "isVoid")))) {
                             return .{ .left = empty_leaf, .right = node };
                         } else if (target_weight >= leaf_weight) {
                             return .{ .left = node, .right = empty_leaf };
@@ -383,9 +385,8 @@ pub fn Rope(comptime T: type) type {
                         // leaf that would sit between the leaves a join must see. A split keeps the
                         // grapheme that passes the weight, so the right piece holds bytes.
                         if (@hasDecl(T, "isVoid")) std.debug.assert(!split_result.right.isVoid());
-                        const left_node = if (@hasDecl(T, "isVoid") and split_result.left.isVoid()) empty_leaf else try new_leaf(allocator, split_result.left);
-                        const right_node = try new_leaf(allocator, split_result.right);
-                        return .{ .left = left_node, .right = right_node };
+                        if (@hasDecl(T, "isVoid") and split_result.left.isVoid()) return .{ .left = empty_leaf, .right = node };
+                        return .{ .left = try new_leaf(allocator, split_result.left), .right = try new_leaf(allocator, split_result.right) };
                     },
                     .branch => |*b| {
                         const left_weight = b.left.metrics().weight();

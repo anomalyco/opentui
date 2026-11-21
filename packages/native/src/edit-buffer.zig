@@ -392,12 +392,11 @@ pub const EditBuffer = struct {
         weight: u32,
     ) error{ OutOfBounds, OutOfMemory }!struct { left: TextChunk, right: TextChunk } {
         const chunk_weight = chunk.width_cols;
+        const is_ascii_only = (chunk.flags & TextChunk.Flags.ASCII_ONLY) != 0;
 
-        if (weight == 0) {
-            return .{
-                .left = TextChunk{ .mem_id = 0, .byte_start = 0, .byte_end = 0, .width_cols = 0 },
-                .right = chunk.*,
-            };
+        // At weight 0 only zero-width text at the start goes left, and ASCII has none.
+        if (weight == 0 and is_ascii_only) {
+            return .{ .left = TextChunk.empty(), .right = chunk.* };
         } else if (weight >= chunk_weight) {
             return .{
                 .left = chunk.*,
@@ -406,7 +405,6 @@ pub const EditBuffer = struct {
         }
 
         const chunk_bytes = chunk.getBytes(self.tb.memRegistry());
-        const is_ascii_only = (chunk.flags & TextChunk.Flags.ASCII_ONLY) != 0;
 
         const result = utf8.findPosByWidth(chunk_bytes, weight, self.tb.tabWidth(), self.tb.controlDisplay(), is_ascii_only, false, self.tb.widthMethod());
         const split_byte_offset = result.byte_offset;
@@ -442,10 +440,8 @@ pub const EditBuffer = struct {
                 .right = Segment{ .text = result.right },
             };
         } else {
-            return .{
-                .left = Segment{ .brk = {} },
-                .right = Segment{ .brk = {} },
-            };
+            // A break splits only at weight 0, before it.
+            return .{ .left = Segment.empty(), .right = leaf.* };
         }
     }
 
