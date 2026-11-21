@@ -15,11 +15,11 @@ Each style is split by `unicode-range`, so a page loads only the files that
 its text needs:
 
 - `latin`: Latin, punctuation, arrows, shortcut keys such as `⌘` and `⇧`,
-  box drawing, block elements, and geometric shapes. Pages preload the
-  Regular file.
+  box drawing, block elements, geometric shapes, and common symbols such
+  as `✓`, `⚠`, and `≠`. Pages preload the Regular file.
 - `cyrillic`: Cyrillic and its stress marks (U+0300 to U+0301).
-- `rest`: the other characters, such as Greek, Vietnamese, Armenian, math
-  operators, combining marks, and `✓`.
+- `rest`: the other characters, such as Greek, Vietnamese, Armenian, the
+  other math operators, and combining marks.
 
 `layouts/Minimal.astro` declares the files as the `OpenMono` family. The
 `unicode-range` of each rule must be the range of that group in the
