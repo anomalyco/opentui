@@ -403,29 +403,39 @@ test "Rope fuzz - edited text answers line queries like fresh text" {
 test "Rope fuzz - an insert next to zero-width pieces lands where it lands in one piece" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
-    // The marks follow "ab" or open the line; their pieces make tree shapes that one piece does not.
-    for ([_][]const u8{ "\u{0301}", "\u{200b}" }) |mark| for ([_][]const u8{ "ab", "" }) |head| for (0..12) |count| for ([_]u32{ 0, 2, 4 }) |col| {
+    // The marks follow "ab", open the line, or follow a tab; their pieces make tree shapes that one piece does not.
+    for ([_][]const u8{ "\u{0301}", "\u{200b}" }) |mark| for ([_][]const u8{ "ab", "", "\t" }) |head| for (0..12) |count| for ([_]u32{ 0, 2, 4 }) |col| {
         errdefer std.debug.print("mark {any} head \"{s}\" count {d} col {d}\n", .{ mark, head, count, col });
         var text: std.ArrayList(u8) = .empty;
         defer text.deinit(std.testing.allocator);
         try text.appendSlice(std.testing.allocator, head);
         for (0..count) |_| try text.appendSlice(std.testing.allocator, mark);
         try text.appendSlice(std.testing.allocator, "cdef"[0 .. 4 - head.len]);
-        var results: [2][64]u8 = undefined;
-        var lens: [2]usize = undefined;
-        for (0..2) |pieces| {
+        var results: [3][64]u8 = undefined;
+        var lens: [3]usize = undefined;
+        var edit_bytes: [3]u32 = undefined;
+        // Appended pieces, or the rest typed after the head, which the add buffer keeps apart from it.
+        const head_end: u32 = if (head.len == 0) 0 else 2;
+        for (0..3) |pieces| {
             const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode, null);
             defer eb.deinit();
-            if (pieces == 0) try eb.setText(text.items) else {
+            if (pieces == 0) try eb.setText(text.items) else if (pieces == 1) {
                 try eb.setText(head);
                 for (0..count) |_| try eb.getTextBuffer().append(mark);
                 try eb.getTextBuffer().append("cdef"[0 .. 4 - head.len]);
+            } else {
+                try eb.setText(head);
+                try eb.setCursor(0, head_end);
+                try eb.insertText(text.items[head.len..]);
             }
+            // Marks and layers take an edit's start byte from `byteAtOffset`.
+            edit_bytes[pieces] = eb.getTextBuffer().byteAtOffset(@min(col, eb.getTextBuffer().getLength()));
             try eb.setCursor(0, col);
             try eb.insertText("Z");
             lens[pieces] = eb.getText(&results[pieces]);
+            try std.testing.expectEqualStrings(results[0][0..lens[0]], results[pieces][0..lens[pieces]]);
+            try std.testing.expectEqual(edit_bytes[0], edit_bytes[pieces]);
         }
-        try std.testing.expectEqualStrings(results[0][0..lens[0]], results[1][0..lens[1]]);
     };
     // Marks typed at one place, with typing elsewhere between them, stay in typed order.
     const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode, null);
