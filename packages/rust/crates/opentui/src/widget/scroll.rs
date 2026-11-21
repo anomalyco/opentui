@@ -841,9 +841,13 @@ impl ScrollBox {
 
     /// Keeps the view at its [`Self::sticky_start`] edge as content changes, as Core's sticky scrolling does: at the
     /// edge, new content scrolls into view; scrolled away from it, the view stays put; scrolling back to the edge
-    /// follows it again, and so does any scroll while the content overflows by at most one cell. A sticky box follows
-    /// the bottom unless [`Self::sticky_start`] says otherwise.
+    /// follows it again, and so does any scroll while the content overflows by at most one cell. Turning it on follows
+    /// only if the view is at the edge then. A sticky box follows the bottom unless [`Self::sticky_start`] says
+    /// otherwise.
     pub fn sticky(&self, sticky: bool) -> Self {
+        if sticky && !self.0.sticky.get() {
+            self.0.follow_reached_edges((true, true));
+        }
         self.0.sticky.set(sticky);
         self.clone()
     }
