@@ -2617,3 +2617,26 @@ test("destroy releases resources when the Session output pump throws", async () 
     renderers.delete(renderer)
   }
 })
+
+test.each([
+  { name: "Node EIO code", error: Object.assign(new Error("setRawMode EIO"), { code: "EIO" }), logged: false },
+  { name: "Bun errno message", error: new Error("setRawMode failed with errno: 5"), logged: false },
+  { name: "other failure", error: new Error("setRawMode failed with errno: 9"), logged: true },
+])("destroy after the terminal hung up: $name", async ({ error, logged }) => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(80, 24)
+  stdin.setRawMode = (enabled) => {
+    if (!enabled) throw error
+    return stdin
+  }
+  const errors = spyOn(console, "error").mockImplementation(() => {})
+  try {
+    const renderer = await createCliRenderer({ stdin, stdout })
+    renderer.destroy()
+    await renderer.closed
+    const rawModeErrors = errors.mock.calls.filter(([message]) => message === "Error disabling raw mode:")
+    expect(rawModeErrors).toEqual(logged ? [["Error disabling raw mode:", error]] : [])
+  } finally {
+    errors.mockRestore()
+  }
+})
