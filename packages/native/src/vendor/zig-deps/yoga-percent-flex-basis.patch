@@ -1,0 +1,59 @@
+diff --git a/yoga/algorithm/CalculateLayout.cpp b/yoga/algorithm/CalculateLayout.cpp
+index e5883bb..f9faff5 100644
+--- a/yoga/algorithm/CalculateLayout.cpp
++++ b/yoga/algorithm/CalculateLayout.cpp
+@@ -239,6 +239,37 @@ void constrainMaxSizeForMode(
+   }
+ }
+ 
++// OpenTUI: whether a node's size on an axis comes from the root, its style, or
++// a stretch across a parent styled on that axis, and so not from its content.
++static bool hasDefinedSize(const yoga::Node* const node, Dimension axis) {
++  const auto styled = [axis](const yoga::Node* const n) {
++    const auto length = n->getProcessedDimension(axis);
++    return n->getOwner() == nullptr || length.isPoints() || length.isPercent();
++  };
++  const yoga::Node* const owner = node->getOwner();
++  return styled(node) ||
++      (styled(owner) &&
++       isRow(owner->style().flexDirection()) == (axis == Dimension::Height) &&
++       owner->style().flexWrap() == Wrap::NoWrap &&
++       resolveChildAlignment(owner, node) == Align::Stretch);
++}
++
++// OpenTUI: whether a defined flex basis must be resolved again in a new
++// layout: a percent basis, or percent padding (resolved against the owner
++// width), under a parent whose size it resolves against isn't content-sized.
++static bool resolvesAgainstDefinedOwner(
++    const yoga::Node* const node,
++    const yoga::Node* const child,
++    Dimension mainDimension) {
++  bool percentPadding = false;
++  for (auto edge : ordinals<Edge>()) {
++    percentPadding = percentPadding || child->style().padding(edge).isPercent();
++  }
++  return hasDefinedSize(node, mainDimension) &&
++      (percentPadding ? hasDefinedSize(node, Dimension::Width)
++                      : child->processFlexBasis().isPercent());
++}
++
+ static void computeFlexBasisForChild(
+     const yoga::Node* const node,
+     yoga::Node* const child,
+@@ -278,7 +309,15 @@ static void computeFlexBasisForChild(
+       resolvedFlexBasis.isDefined() && yoga::isDefined(mainAxisSize);
+ 
+   if (useResolvedFlexBasis) {
+-    if (child->getLayout().computedFlexBasis.isUndefined() ||
++    // OpenTUI: a parent's resize doesn't dirty its children, so a basis that
++    // resolves a percentage against a parent that isn't content-sized is
++    // computed again on its first visit in each layout. Reuse within one
++    // layout, and of other bases, stays as upstream: under a content-sized
++    // parent the first visit may come from another pass than in a fresh solve.
++    const bool resolveAgain =
++        child->getLayout().computedFlexBasisGeneration != generationCount &&
++        resolvesAgainstDefinedOwner(node, child, dimension(mainAxis));
++    if (child->getLayout().computedFlexBasis.isUndefined() || resolveAgain ||
+         (child->getConfig()->isExperimentalFeatureEnabled(
+              ExperimentalFeature::WebFlexBasis) &&
+          child->getLayout().computedFlexBasisGeneration != generationCount)) {
