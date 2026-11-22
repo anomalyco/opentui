@@ -135,6 +135,8 @@ impl SyntaxTheme {
         let palette = if light { Palette::LIGHT } else { Palette::DARK };
         let fg = |color: Color| Style::new().fg(color);
         let comment = fg(theme.muted).italic();
+        #[cfg(all(test, feature = "tree-sitter"))]
+        THEME_BUILDS.set(THEME_BUILDS.get() + 1);
         let mut styles = Self::new();
         for (names, style) in [
             (
@@ -165,6 +167,12 @@ impl SyntaxTheme {
         }
         styles
     }
+}
+
+#[cfg(all(test, feature = "tree-sitter"))]
+thread_local! {
+    /// [`SyntaxTheme::from_theme`] calls on this thread, for tests.
+    pub(crate) static THEME_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 impl<K: Into<String>> FromIterator<(K, Style)> for SyntaxTheme {

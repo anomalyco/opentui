@@ -483,7 +483,7 @@ impl Code {
     ///
     /// Panics if native code cannot create the text buffer or view, after the app recorded the error.
     pub fn new(app: &App) -> Self {
-        Self::themed(app, Arc::new(SyntaxTheme::from_theme(&app.theme())), None)
+        Self::themed(app, app.syntax_theme(), None)
     }
 
     /// A code view that shares `syntax` and the style `table`, as Markdown's code blocks share the document's; without
@@ -651,10 +651,11 @@ impl Code {
     }
 
     /// The styles for highlighted text. It starts as [`SyntaxTheme::from_theme`] for the app's theme. A new theme
-    /// restyles the shown highlight without highlighting again.
-    pub fn syntax_theme(&self, theme: SyntaxTheme) -> Self {
-        if **self.0.syntax.borrow() != theme {
-            self.0.restyle(Arc::new(theme), self.0.fg.get());
+    /// restyles the shown highlight without highlighting again. Views given clones of one `Arc` share the theme.
+    pub fn syntax_theme(&self, theme: impl Into<Arc<SyntaxTheme>>) -> Self {
+        let theme = theme.into();
+        if *self.0.syntax.borrow() != theme {
+            self.0.restyle(theme, self.0.fg.get());
         }
         self.clone()
     }
@@ -780,6 +781,26 @@ pub(crate) mod tests {
         drop(code);
         app.root().element().insert(&other.element, None);
         assert_eq!(app.render().cell(0, 0).unwrap().fg, Color::RED);
+    }
+
+    // Views keep the syntax theme `Arc` they are given, and views given none share the one the app keeps for its
+    // theme: none copies the theme, and `new` builds none of its own.
+    #[test]
+    fn views_share_the_syntax_theme_they_are_given() {
+        use crate::widget::{Diff, Markdown, Textarea};
+        let app = TestApp::new(12, 4);
+        let (_, shared) = (app.syntax_theme(), Arc::new(SyntaxTheme::new().style("keyword", Style::new())));
+        let builds = syntax::THEME_BUILDS.get();
+        let (markdown, area, code, diff) = (Markdown::new(&app), Textarea::new(&app), Code::new(&app), Diff::new(&app));
+        assert_eq!(syntax::THEME_BUILDS.get(), builds, "a view built a default theme");
+        let (left, right) = diff.code_views();
+        let count = Arc::strong_count(&shared);
+        markdown.syntax_theme(Arc::clone(&shared));
+        area.syntax_theme(Arc::clone(&shared));
+        assert_eq!(Arc::strong_count(&shared), count + 2);
+        code.syntax_theme(Arc::clone(&shared));
+        diff.syntax_theme(Arc::clone(&shared));
+        assert!([&code, &left, &right].iter().all(|view| Arc::ptr_eq(&view.0.syntax.borrow(), &shared)));
     }
 
     // Rust, JavaScript and Markdown pieces, balanced ones and openers alone; a CR and an LF also arrive apart.

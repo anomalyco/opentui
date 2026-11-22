@@ -10,6 +10,7 @@ use crate::theme::{Theme, ThemeMode};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// How a [`Diff`] lays out old and new lines.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -303,7 +304,7 @@ struct State {
     view: DiffView,
     colors: DiffColors,
     filetype: Option<String>,
-    syntax: SyntaxTheme,
+    syntax: Arc<SyntaxTheme>,
     wrap: WrapMode,
     line_numbers: bool,
     gutter: DiffGutter,
@@ -452,7 +453,7 @@ impl Diff {
                 view: DiffView::Unified,
                 colors: DiffColors::from_theme(&theme),
                 filetype: None,
-                syntax: SyntaxTheme::from_theme(&theme),
+                syntax: app.syntax_theme(),
                 wrap: WrapMode::None,
                 line_numbers: true,
                 gutter: DiffGutter::default(),
@@ -512,7 +513,8 @@ impl Diff {
     }
 
     /// The styles for highlighted code, as [`Code::syntax_theme`].
-    pub fn syntax_theme(&self, theme: SyntaxTheme) -> Self {
+    pub fn syntax_theme(&self, theme: impl Into<Arc<SyntaxTheme>>) -> Self {
+        let theme = theme.into();
         self.update(|state| state.syntax = theme)
     }
 
