@@ -7,6 +7,7 @@ use crate::native::{EditBuffer, EditorView, SelectionColors, SyntaxStyle, WrapMo
 use crate::style::Color;
 use crate::syntax::SyntaxTheme;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// Multi-line text editing with Core's key bindings, undo, wrapping, mouse selection, and paste.
 ///
@@ -101,9 +102,10 @@ impl Textarea {
         self.clone()
     }
 
-    /// The styles for highlighted text. It starts as [`SyntaxTheme::from_theme`] for the app's theme.
-    pub fn syntax_theme(&self, theme: SyntaxTheme) -> Self {
-        self.0.set_syntax_theme(theme);
+    /// The styles for highlighted text. It starts as [`SyntaxTheme::from_theme`] for the app's theme. Textareas given
+    /// clones of one `Arc` share the theme.
+    pub fn syntax_theme(&self, theme: impl Into<Arc<SyntaxTheme>>) -> Self {
+        self.0.set_syntax_theme(theme.into());
         self.clone()
     }
 

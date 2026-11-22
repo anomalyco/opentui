@@ -51,6 +51,7 @@ use crate::native::{
 };
 use crate::post::{Area, PostState};
 use crate::remote::RemoteTerminal;
+use crate::syntax::SyntaxTheme;
 use crate::term::{QueryPort, TerminalPalette};
 use crate::theme::{Theme, ThemeMode};
 use crate::widget::{AnyWidget, Behavior, Callbacks, Element, Painter, ScrollInner, View, Widget};
@@ -298,6 +299,8 @@ pub(crate) struct AppInner {
     options: AppOptions,
     /// The theme new widgets read, from [`AppOptions`] until [`App::set_theme`] changes it.
     theme: Cell<Theme>,
+    /// The syntax theme for `theme` that views start with, shared by all of them.
+    syntax: RefCell<Option<(Theme, Arc<SyntaxTheme>)>>,
     /// Whether the app runs on a remote terminal, which waits here until [`App::run`].
     remote: bool,
     remote_terminal: RefCell<Option<RemoteTerminal>>,
@@ -534,6 +537,7 @@ impl App {
         let app = Self(Rc::new(AppInner {
             session,
             theme: Cell::new(options.theme),
+            syntax: RefCell::new(None),
             options,
             remote,
             remote_terminal: RefCell::new(remote_terminal),
@@ -620,6 +624,16 @@ impl App {
     /// until [`Self::set_theme`] changes them.
     pub fn theme(&self) -> Theme {
         self.0.theme.get()
+    }
+
+    /// [`SyntaxTheme::from_theme`] for [`Self::theme`], built once per theme and shared by the views that start with it.
+    pub(crate) fn syntax_theme(&self) -> Arc<SyntaxTheme> {
+        let theme = self.theme();
+        let mut cached = self.0.syntax.borrow_mut();
+        match &*cached {
+            Some((key, syntax)) if *key == theme => Arc::clone(syntax),
+            _ => Arc::clone(&cached.insert((theme, Arc::new(SyntaxTheme::from_theme(&theme)))).1),
+        }
     }
 
     /// Changes the theme widgets created from now on start with, and the screen background behind them, including

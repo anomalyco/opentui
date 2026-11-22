@@ -333,7 +333,7 @@ impl EditorCore {
             cursor_options: Cell::new(EditorOptions { color: theme.cursor, ..Default::default() }),
             on_cursor: Callbacks::default(),
             filetype: RefCell::new(None),
-            syntax_theme: RefCell::new(Arc::new(SyntaxTheme::from_theme(&theme))),
+            syntax_theme: RefCell::new(app.syntax_theme()),
             highlighted: Cell::new(None),
             incremental: RefCell::new(None),
             #[cfg(test)]
@@ -873,10 +873,9 @@ impl EditorCore {
         }
     }
 
-    pub fn set_syntax_theme(&self, theme: SyntaxTheme) {
+    pub fn set_syntax_theme(&self, theme: Arc<SyntaxTheme>) {
         // Without a table yet there is nothing to restyle, and no table to make: one the app bound stays.
         let table = self.extmarks.borrow().syntax.clone();
-        let theme = Arc::new(theme);
         let restyled = table.is_some_and(|table| self.report(table.set_capture_theme(&theme)) == Some(true));
         if restyled || *self.syntax_theme.borrow() != theme {
             *self.syntax_theme.borrow_mut() = theme;

@@ -27,6 +27,18 @@ Without the feature, or without a grammar for the filetype, the text stays plain
 A `SyntaxTheme` maps highlight names, such as `keyword`, `string`, and `function.method`, to styles.
 Widgets start with `SyntaxTheme::from_theme`, which matches the app's dark or light theme.
 
+`syntax_theme` takes a `SyntaxTheme` or an `Arc<SyntaxTheme>`.
+To give many widgets one theme, build it once and pass clones of its `Arc`, so no widget copies it:
+
+```rust
+use std::sync::Arc;
+use opentui::syntax::SyntaxTheme;
+
+let theme = Arc::new(SyntaxTheme::from_theme(&app.theme()).style("keyword", Style::new().fg(Color::RED)));
+let doc = Markdown::new(&app).syntax_theme(Arc::clone(&theme));
+let source = Code::new(&app).syntax_theme(Arc::clone(&theme));
+```
+
 A name without its own style takes the style of its longest dotted prefix that has one.
 For example, `function.method` falls back to `function`.
 

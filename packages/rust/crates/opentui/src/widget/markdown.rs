@@ -456,7 +456,7 @@ impl Markdown {
             style,
             guard: RefCell::new(()),
             colors: RefCell::new(colors),
-            syntax: RefCell::new(Arc::new(SyntaxTheme::from_theme(&app.theme()))),
+            syntax: RefCell::new(app.syntax_theme()),
             options: RefCell::new(Rc::new(Options {
                 conceal: true,
                 task_markers: ["☐".to_owned(), "☑".to_owned()],
@@ -525,9 +525,10 @@ impl Markdown {
     }
 
     /// The styles for code blocks, which the `tree-sitter` feature highlights as the filetype their fence names:
-    /// `rust` in ` ```rust `. It starts as [`SyntaxTheme::from_theme`] for the app's theme.
-    pub fn syntax_theme(&self, theme: SyntaxTheme) -> Self {
-        *self.0.syntax.borrow_mut() = Arc::new(theme);
+    /// `rust` in ` ```rust `. It starts as [`SyntaxTheme::from_theme`] for the app's theme. Documents given clones of
+    /// one `Arc` share the theme.
+    pub fn syntax_theme(&self, theme: impl Into<Arc<SyntaxTheme>>) -> Self {
+        *self.0.syntax.borrow_mut() = theme.into();
         self.restyle();
         self.clone()
     }
@@ -1384,8 +1385,7 @@ impl Markdown {
     fn restyle(&self) {
         let options = Rc::clone(&self.0.options.borrow());
         let styles = MarkdownStyles::new(&self.0.colors.borrow(), options.scopes.then_some(&**self.0.syntax.borrow()));
-        self.0.styles.set(styles);
-        if let (Some(app), Some(style)) = (self.app(), &self.0.style) {
+        if let (true, Some(app), Some(style)) = (self.0.styles.replace(styles) != styles, self.app(), &self.0.style) {
             app.report(styles.register(style));
         }
         self.rebuild_where(|block| block.parent.is_none());
