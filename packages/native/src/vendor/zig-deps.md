@@ -26,7 +26,7 @@ Both ports change only Zig code, and the update script gives both copies the sam
 generated tables do not change.
 The Yoga archive contains only the `yoga` source directory.
 
-The Yoga source is upstream Yoga `main` at commit `41118bd3a` with eleven changes, applied in this order:
+The Yoga source is upstream Yoga `main` at commit `41118bd3a` with twelve changes, applied in this order:
 
 - `yoga-error-boundary.patch` routes every Yoga allocation, including the Grid style storage, through
   `yoga/OTAllocator.h`, so a test build can inject allocation failures. It also makes style updates, child
@@ -95,6 +95,14 @@ The Yoga source is upstream Yoga `main` at commit `41118bd3a` with eleven change
   and zeroes out a dirty node again. Upstream clears it only on the `display: none` node, so a node
   made under it stays dirty, and a later change below that node stops its dirty walk there: the
   parent's cached layout never zeroes the change out, and the new node keeps a `NaN` size.
+- `yoga-percent-flex-basis.patch` computes a child's defined flex basis again on its first visit in each
+  layout when the basis resolves a percentage against a parent that isn't content-sized: a percent
+  basis, or percent padding, whose parent's size on the main axis (and, for padding, its width) comes
+  from the root, a point or percent style, or a stretch across a parent styled on that axis. A parent's
+  resize doesn't dirty its children, so upstream reuses the basis of the first layout: a 50% child of a
+  row that grows from 20 to 30 stays 10. Reuse within one layout, and other bases, stay as upstream.
+  Under a content-sized parent, an incremental layout can reach the child first from another pass than
+  a fresh one, so such a child keeps its basis until a change to it or its style dirties it.
 
 `src/tests/yoga_test.zig` tests each change.
 
