@@ -1807,6 +1807,41 @@ test("CSI 997 does not query theme colors again while a refresh is already pendi
   expect(await captureQueries()).toEqual(["\x1b]10;?\x07", "\x1b]11;?\x07"])
 })
 
+test("CSI 997 before the terminal is set up does not drop the input that follows", async () => {
+  const clock = new ManualClock()
+  const stdout = new RecordingWriteStream(80, 24)
+  const { renderer } = await createTestRenderer({
+    clock,
+    stdout: stdout as unknown as NodeJS.WriteStream,
+    bufferedOutput: "stdout",
+    remote: true,
+    forwardEnvKeys: [],
+  })
+  themeQueryRenderer = renderer
+
+  const keys: string[] = []
+  renderer.keyInput.on("keypress", (key) => {
+    keys.push(key.name)
+  })
+
+  // Input is read from construction on, but the native terminal rejects queries until setup activates it. The
+  // rejected query must not reset the parser and drop the input that follows the notification.
+  renderer.stdin.emit("data", Buffer.from("\x1b[?997;1na"))
+  advanceClock(clock)
+  expect(keys).toEqual(["a"])
+
+  await renderer.setupTerminal()
+  await renderer.nativeScene!.driver.idle()
+  stdout.clear()
+  advanceClock(clock, 300)
+
+  // The dropped notification does not hold back later refreshes.
+  renderer.stdin.emit("data", Buffer.from("\x1b[?997;2n"))
+  advanceClock(clock)
+  await renderer.nativeScene!.driver.idle()
+  expect(stdout.text().match(/\x1b\]1[01];\?\x07/g) ?? []).toEqual(["\x1b]10;?\x07", "\x1b]11;?\x07"])
+})
+
 test("conflicting CSI 997 before initial OSC replies does not override the OSC-derived mode", () => {
   const themeModes: string[] = []
   currentRenderer.on("theme_mode", (mode) => {

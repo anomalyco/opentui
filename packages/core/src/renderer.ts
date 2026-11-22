@@ -1549,7 +1549,14 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.themeModeState = new RendererThemeMode(
         {
           queryThemeColors: () => {
-            this.nativeSession.control({ kind: "query-theme-colors", sentinel: this.replySentinel })
+            try {
+              this.nativeSession.control({ kind: "query-theme-colors", sentinel: this.replySentinel })
+            } catch (error) {
+              // A ?997 notification can arrive while the terminal is inactive, such as before setup completes.
+              // Setup asks OSC 10/11 itself. Throwing would reset the stdin parser and drop the input that follows.
+              if (error instanceof NativeError && error.status === NativeStatus.InvalidPhase) return false
+              throw error
+            }
             if (!this.replySentinel) return false
             this.admitReplyBatch("theme", () => {
               this.themeModeState.cancelRefresh()
