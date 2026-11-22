@@ -1963,9 +1963,9 @@ pub const UnifiedTextBuffer = struct {
         return chunk.getBytes(&self.mem_registry)[byte - found.before] & 0xC0 != 0x80;
     }
 
-    /// Text bytes before rope weight `weight` (cells plus one per break), where an editor edit at
-    /// that weight away from a line start splits the text: after zero-width text, and after a
-    /// whole grapheme. Matches `EditBuffer.splitChunkAtWeight`.
+    /// Text bytes before rope weight `weight` (cells plus one per break), where an editor insert
+    /// at that weight splits the text: after zero-width text, and after a whole grapheme. Matches
+    /// `EditBuffer.splitChunkAtWeight`; past the text, its end.
     pub fn byteOffsetAtWeight(self: *const Self, weight: u32) u32 {
         return self.byteAtCell(weight, false);
     }
@@ -2044,13 +2044,6 @@ pub const UnifiedTextBuffer = struct {
             _ = cursor.advanceTo(cursor.byte_offset + 1);
         }
         return before + if (round_down and cursor.byte_offset > target) columns_before else cursor.columns;
-    }
-
-    /// The text byte where an edit at cursor offset `offset` starts: a line start's first byte, or
-    /// where `byteOffsetAtWeight` splits the text elsewhere.
-    pub fn byteAtOffset(self: *const Self, offset: u32) u32 {
-        const coords = iter_mod.offsetToCoords(&self._rope, @min(offset, self._rope.totalWeight())).?;
-        return if (coords.col == 0) self.lineStartByte(coords.row) else self.byteOffsetAtWeight(offset);
     }
 
     /// The text byte where line `row` starts.

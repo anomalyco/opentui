@@ -404,7 +404,7 @@ test "Rope fuzz - an insert next to zero-width pieces lands where it lands in on
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
     // The marks follow "ab", open the line, or follow a tab; their pieces make tree shapes that one piece does not.
-    for ([_][]const u8{ "\u{0301}", "\u{200b}" }) |mark| for ([_][]const u8{ "ab", "", "\t" }) |head| for (0..12) |count| for ([_]u32{ 0, 2, 4 }) |col| {
+    for ([_][]const u8{ "\u{0301}", "\u{200b}", "\u{200d}" }) |mark| for ([_][]const u8{ "ab", "", "\t" }) |head| for (0..12) |count| for ([_]u32{ 0, 2, 4 }) |col| {
         errdefer std.debug.print("mark {any} head \"{s}\" count {d} col {d}\n", .{ mark, head, count, col });
         var text: std.ArrayList(u8) = .empty;
         defer text.deinit(std.testing.allocator);
@@ -428,13 +428,23 @@ test "Rope fuzz - an insert next to zero-width pieces lands where it lands in on
                 try eb.setCursor(0, head_end);
                 try eb.insertText(text.items[head.len..]);
             }
-            // Marks and layers take an edit's start byte from `byteAtOffset`.
-            edit_bytes[pieces] = eb.getTextBuffer().byteAtOffset(@min(col, eb.getTextBuffer().getLength()));
+            // Marks and layers take an edit's start byte from `byteOffsetAtWeight`. The insert lands at
+            // the byte its cell maps to, even at the line start, and after a mark that ends there.
+            const at = @min(col, eb.getTextBuffer().getLength());
+            edit_bytes[pieces] = eb.getTextBuffer().byteOffsetAtWeight(at);
+            const cell_byte = eb.getTextBuffer().byteAtCell(at, true);
+            _ = try eb.addMark(.{ .start = 0, .end = at });
+            try std.testing.expectEqual(eb.getTextBuffer().byteOffsetAtWeight(0), eb.getTextBuffer().marks()[0].start_byte);
             try eb.setCursor(0, col);
-            try eb.insertText("Z");
+            // An insert through `replaceRange` moves the mark as `insertText` does.
+            if (pieces == 1) try eb.replaceRange(at, at, "Z", .{ .ctx = eb, .handle = struct {
+                fn handle(_: *anyopaque) void {}
+            }.handle }) else try eb.insertText("Z");
             lens[pieces] = eb.getText(&results[pieces]);
             try std.testing.expectEqualStrings(results[0][0..lens[0]], results[pieces][0..lens[pieces]]);
             try std.testing.expectEqual(edit_bytes[0], edit_bytes[pieces]);
+            try std.testing.expectEqual(cell_byte, std.mem.indexOfScalar(u8, results[pieces][0..lens[pieces]], 'Z').?);
+            try std.testing.expectEqual(cell_byte, eb.getTextBuffer().marks()[0].end_byte);
         }
     };
     // Marks typed at one place, with typing elsewhere between them, stay in typed order.
@@ -446,7 +456,27 @@ test "Rope fuzz - an insert next to zero-width pieces lands where it lands in on
         try eb.insertText(mark);
         try eb.setCursor(1, col);
         try eb.insertText("x");
+        try eb.setCursor(2, 0);
+        try eb.insertText(mark);
     }
+    try eb.insertText("x");
     var out: [64]u8 = undefined;
     try std.testing.expectStringStartsWith(out[0..eb.getText(&out)], "abc\u{0300}\u{0301}\u{0302}\n");
+    // So do marks typed at a line start, and a letter typed after them.
+    try std.testing.expect(std.mem.indexOf(u8, out[0..eb.getText(&out)], "\n\u{0300}\u{0301}\u{0302}xghi\n") != null);
+    // A mark that ends at that line start keeps its end when a line break goes in there, as on a plain line.
+    _ = try eb.addMark(.{ .start = 0, .end = iter_mod.coordsToOffset(eb.getTextBuffer().rope(), 2, 0).? });
+    const end_byte = eb.getTextBuffer().marks()[0].end_byte;
+    try eb.setCursor(2, 0);
+    try eb.insertText("\n");
+    try std.testing.expectEqual(end_byte, eb.getTextBuffer().marks()[0].end_byte);
+    // A mark from a last line of only zero-width text to past the text stays empty across Enter there.
+    const tail = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode, null);
+    defer tail.deinit();
+    try tail.setText("ab\n\u{200d}");
+    _ = try tail.addMark(.{ .start = 3, .end = 4 });
+    try tail.setCursor(1, 0);
+    try tail.insertText("\n");
+    const mark = tail.getTextBuffer().marks()[0];
+    try std.testing.expectEqual(mark.start_byte, mark.end_byte);
 }

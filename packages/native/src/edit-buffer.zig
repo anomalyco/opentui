@@ -505,10 +505,11 @@ pub const EditBuffer = struct {
 
         // Prepare root/end-marker repairs without touching shared history.
         var candidate = self.tb.rope().*;
-        const span = try candidate.insertSliceByWeight(insert_offset, insertBias(cursor), result.segments.items, &self.segment_splitter);
+        const bias = insertBias(cursor.col, bytes);
+        const span = try candidate.insertSliceByWeight(insert_offset, bias, result.segments.items, &self.segment_splitter);
         const added_lines = iter_mod.getLineCount(&candidate) - self.tb.lineCount();
         const end = endCursor(.{ .row = cursor.row, .col = cursor.col, .offset = insert_offset }, added_lines, &candidate, span.end);
-        var splice = self.editSplice(cursor.row, cursor.col, insert_offset, false);
+        var splice = self.editSplice(if (bias == .right) cursor.row else null, insert_offset, false);
         const marks = try splice.nextMarks(self.tb.rope().allocator, &candidate);
         try self.autoStoreUndo();
         self.tb.rope().root = candidate.root;
@@ -540,7 +541,7 @@ pub const EditBuffer = struct {
         errdefer checkpoint.restore(self.tb, &self.add_buffer);
         var candidate = rope.*;
         const span = try self.replaceByWeight(&candidate, start_offset, end_offset, &.{});
-        var splice = self.editSplice(start.row, start.col, start_offset, false);
+        var splice = self.editSplice(if (start.col == 0) start.row else null, start_offset, false);
         const marks = try splice.nextMarks(rope.allocator, &candidate);
         try self.autoStoreUndo();
         self.tb.rope().root = candidate.root;
@@ -585,7 +586,7 @@ pub const EditBuffer = struct {
             if (bytes.len > 0) inserted_span = try self.replaceByWeight(&inserted, start_offset, end_offset, segments.segments.items);
         } else if (bytes.len > 0) {
             start.offset = iter_mod.coordsToOffset(self.tb.rope(), start.row, start.col) orelse return EditBufferError.InvalidCursor;
-            inserted_span = try inserted.insertSliceByWeight(start.offset, insertBias(start), segments.segments.items, &self.segment_splitter);
+            inserted_span = try inserted.insertSliceByWeight(start.offset, insertBias(start.col, bytes), segments.segments.items, &self.segment_splitter);
         }
         const deleted_cursor = if (has_deletion) endCursor(start, 0, &deleted, deletedCursorOffset(deleted_span)) else start;
         const inserted_cursor = if (bytes.len > 0) endCursor(start, iter_mod.getLineCount(&inserted) - iter_mod.getLineCount(&deleted), &inserted, inserted_span.end) else start;
@@ -601,7 +602,8 @@ pub const EditBuffer = struct {
         // One splice byte for both steps: seeking the cell again in the deleted text can land
         // elsewhere when the deletion joined graphemes. Both mark versions precede publication.
         // after_delete may set a layer, which the insertion must move too.
-        var splice = self.editSplice(start.row, start.col, start.offset, true);
+        const takes_line_start = start.col == 0 and (has_deletion or insertBias(0, bytes) == .right);
+        var splice = self.editSplice(if (takes_line_start) start.row else null, start.offset, true);
         const deleted_marks = if (has_deletion) try splice.nextMarks(self.tb.rope().allocator, &deleted) else 0;
         const inserted_marks = if (bytes.len > 0) try splice.nextMarks(self.tb.rope().allocator, &inserted) else 0;
         if (has_deletion) {
@@ -666,16 +668,16 @@ pub const EditBuffer = struct {
         }
     };
 
-    inline fn editSplice(self: *const EditBuffer, row: u32, col: u32, offset: u32, always: bool) EditSplice {
+    /// `line_start` names the row whose start a deletion or a leading line break begins at, before
+    /// the zero-width text there (`replaceByWeight`, `insertBias`). Any other edit starts after it.
+    inline fn editSplice(self: *const EditBuffer, line_start: ?u32, offset: u32, always: bool) EditSplice {
         if (!always and self.tb.layers.isEmpty() and self.tb.marks().len == 0) return .{ .active = false };
-        return self.activeSplice(row, col, offset);
+        return self.activeSplice(line_start, offset);
     }
 
-    fn activeSplice(self: *const EditBuffer, row: u32, col: u32, offset: u32) EditSplice {
+    fn activeSplice(self: *const EditBuffer, line_start: ?u32, offset: u32) EditSplice {
         const marks = self.tb.rope().aux;
-        // At a line start an edit goes before zero-width text (`insertBias`, `replaceByWeight`);
-        // elsewhere after it, where the weight seek lands.
-        const start_byte = if (col == 0) self.tb.lineStartByte(row) else self.tb.byteOffsetAtWeight(offset);
+        const start_byte = if (line_start) |row| self.tb.lineStartByte(row) else self.tb.byteOffsetAtWeight(offset);
         const marks_byte_count = iter_mod.textBytes(&self.tb.rope().root.metrics());
         return .{ .active = true, .start_byte = start_byte, .byte_count = self.tb.getByteSize(), .marks = marks, .marks_byte_count = marks_byte_count, .marked = marks != 0 };
     }
@@ -705,9 +707,10 @@ pub const EditBuffer = struct {
         return span.end;
     }
 
-    /// An insert goes before zero-width text at a line start and after it elsewhere, as in one chunk.
-    fn insertBias(cursor: Cursor) UnifiedRope.Node.Bias {
-        return if (cursor.col == 0) .right else .left;
+    /// An insert goes after zero-width text, as the cell maps, but one that adds a line break at a line start goes
+    /// before the zero-width text that starts the line, so the line keeps it.
+    fn insertBias(col: u32, bytes: []const u8) UnifiedRope.Node.Bias {
+        return if (col == 0 and std.mem.indexOfAny(u8, bytes, "\r\n") != null) .right else .left;
     }
 
     /// A weight lies on both sides of zero-weight leaves. A range takes those at its start only from a line start,
@@ -1033,12 +1036,14 @@ pub const EditBuffer = struct {
         const rope = self.tb.rope();
         if (self.tb.marks().len == edit_marks.count_max or self.next_mark_id == std.math.maxInt(u32)) return error.ObjectLimit;
         const style = if (options.style_value) |value| try self.tb.internMarkStyle(value) else options.style;
+        // A mark that ends at a line start ends before the zero-width text there, where a line break goes in.
+        const end = iter_mod.offsetToCoords(rope, @min(options.end, rope.totalWeight())).?;
         const mark: edit_marks.Mark = .{
             .id = self.next_mark_id,
             .kind = options.kind,
             .style = style,
-            .start_byte = self.tb.byteAtOffset(options.start),
-            .end_byte = self.tb.byteAtOffset(options.end),
+            .start_byte = self.tb.byteOffsetAtWeight(options.start),
+            .end_byte = if (@min(options.end, rope.totalWeight()) > options.start and end.col == 0) self.tb.lineStartByte(end.row) else self.tb.byteOffsetAtWeight(options.end),
             .priority = options.priority,
             .atomic = options.atomic,
             .style_value = options.style_value != null,

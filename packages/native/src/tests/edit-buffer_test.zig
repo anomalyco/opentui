@@ -240,6 +240,7 @@ test "EditBuffer - text typed in pieces measures and moves like the same text se
     defer pools.deinit();
     // `text` defaults to the pieces joined in order; `before` (default `text`) ends where typing leaves the cursor.
     const Case = struct { pieces: []const Piece, text: ?[]const u8 = null, before: ?[]const u8 = null };
+    const rlm = "\u{200f}\u{5e9}\u{5dc}\u{5d5}\u{5dd}";
     const cases = [_]Case{
         .{ .pieces = &.{ .{ .bytes = "h" }, .{ .bytes = "e" }, .{ .bytes = "l" }, .{ .bytes = "l" }, .{ .bytes = "o" } } },
         .{ .pieces = &.{ .{ .bytes = "abc" }, .{ .col = 0, .bytes = "xyz" } }, .text = "xyzabc", .before = "xyz" },
@@ -268,6 +269,14 @@ test "EditBuffer - text typed in pieces measures and moves like the same text se
         // A multi-line insert that ends by joining the text after it leaves the cursor past the joined grapheme.
         .{ .pieces = &.{ .{ .bytes = "\u{fe0f}Z" }, .{ .col = 0, .bytes = "x\n\u{263a}" } }, .text = "x\n\u{263a}\u{fe0f}Z", .before = "x\n\u{263a}\u{fe0f}" },
         .{ .pieces = &.{ .{ .bytes = "\u{fe0f}Z" }, .{ .col = 0, .replace = true, .bytes = "x\n\u{263a}" } }, .text = "x\n\u{263a}\u{fe0f}Z", .before = "x\n\u{263a}\u{fe0f}" },
+        // Typing at a line start goes after the zero-width text there, as its cell maps.
+        .{ .pieces = &.{ .{ .bytes = "\u{fe0f}Z" }, .{ .col = 0, .replace = true, .bytes = "x" } }, .text = "\u{fe0f}xZ", .before = "\u{fe0f}x" },
+        // An insert that adds a line break there goes before it, so the line keeps it; typing then goes after it.
+        .{ .pieces = &.{ .{ .bytes = rlm }, .{ .col = 0, .bytes = "\n" }, .{ .bytes = "y" } }, .text = "\n\u{200f}y\u{5e9}\u{5dc}\u{5d5}\u{5dd}", .before = "\n\u{200f}y" },
+        .{ .pieces = &.{ .{ .bytes = rlm }, .{ .col = 0, .bytes = "abc\n" } }, .text = "abc\n" ++ rlm, .before = "abc\n" },
+        .{ .pieces = &.{ .{ .bytes = rlm }, .{ .col = 0, .bytes = "\r\n" } }, .text = "\n" ++ rlm, .before = "\n" },
+        .{ .pieces = &.{ .{ .bytes = "\u{301}x" }, .{ .col = 0, .bytes = "\r" } }, .text = "\n\u{301}x", .before = "\n" },
+        .{ .pieces = &.{ .{ .bytes = "\u{301}x" }, .{ .col = 0, .replace = true, .bytes = "\n" } }, .text = "\n\u{301}x", .before = "\n" },
         .{ .pieces = &.{ .{ .bytes = "\u{ac01}" }, .{ .bytes = "\u{11a8}" } } },
         .{ .pieces = &.{ .{ .bytes = "\u{263a}" }, .{ .bytes = "\u{fe0f}" } } },
         .{ .pieces = &.{ .{ .bytes = "\u{65e5}" }, .{ .bytes = "\u{301}" } } },
@@ -319,7 +328,7 @@ test "EditBuffer - an edit that joins graphemes leaves the cursor at a stop afte
     const Row = struct { method: utf8.WidthMethod = .unicode, set: []const u8, pre: []const Piece = &.{}, at: [2]u32, op: Op, bytes: []const u8 = "", to: [2]u32 = .{ 0, 0 }, text: []const u8, before: []const u8 };
     const rows = [_]Row{
         // The grapheme that holds the insert's end goes on into the next chunk; in wcwidth it widens there.
-        .{ .method = .wcwidth, .set = "\u{1f469}", .pre = &.{.{ .col = 0, .bytes = "\u{200d}" }}, .at = .{ 0, 0 }, .op = .insert, .bytes = "\u{1f468}", .text = "\u{1f468}\u{200d}\u{1f469}", .before = "\u{1f468}\u{200d}\u{1f469}" },
+        .{ .method = .wcwidth, .set = "\u{1f469}", .at = .{ 0, 0 }, .op = .insert, .bytes = "\u{1f468}\u{200d}", .text = "\u{1f468}\u{200d}\u{1f469}", .before = "\u{1f468}\u{200d}\u{1f469}" },
         // Deleting `x` merges the contiguous typed chunks, whose junction is inside a flag.
         .{ .set = "x\u{1f1e9}", .pre = &.{ .{ .col = 0, .bytes = "\u{1f1e6}" }, .{ .col = 2, .bytes = "\u{1f1e7}\u{1f1e8}" } }, .at = .{ 0, 1 }, .op = .delete, .text = "\u{1f1e6}\u{1f1e7}\u{1f1e8}\u{1f1e9}", .before = "\u{1f1e6}\u{1f1e7}" },
         .{ .set = "\u{1f468}\u{1f469}", .at = .{ 0, 2 }, .op = .insert, .bytes = "\u{200d}", .text = "\u{1f468}\u{200d}\u{1f469}", .before = "\u{1f468}\u{200d}\u{1f469}" },
