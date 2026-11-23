@@ -349,6 +349,7 @@ pub fn fingerprint(owner: *Context, member: *const native.NativeRenderable, byte
                     } else |_| {}
                     if (bound != null and bound.? != member) result.stable = false;
                     hasher.update(std.mem.asBytes(&state));
+                    hasher.update(std.mem.asBytes(&owner.selection_epoch));
                     hasher.update(std.mem.asBytes(&layout));
                 },
                 // Images take the full path, as image nodes do.

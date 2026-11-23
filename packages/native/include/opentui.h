@@ -2151,6 +2151,12 @@ ot_status ot_editor_view_set_placeholder(ot_context *, const ot_handle *, const 
  * reentry with OT_CONTEXT_BUSY. */
 typedef void (*ot_edit_event_callback)(uint64_t context_id, uint32_t slot, uint32_t generation, uint32_t event);
 ot_status ot_context_set_edit_event_callback(ot_context *, ot_edit_event_callback);
+/* Default selection colors for every text, editor and scene text view of this Context.
+ * A selection without its own background or foreground draws the default's, per
+ * color; with no background from either, it inverts its cells. NULL clears a color.
+ * Colors retain terminal color intent. Takes effect at the next draw of each view,
+ * including current selections. */
+ot_status ot_context_set_selection_colors(ot_context *, const uint16_t background[4], const uint16_t foreground[4]);
 /* Bind only OT_SCENE_EDITOR nodes. A view binds at most one node at a time.
  * NULL unbinds. Binding retains no host memory and does not transfer ownership.
  * Session/node destruction unbinds without destroying the view or edit buffer. */

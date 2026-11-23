@@ -2397,7 +2397,7 @@ test "EditorView - controls show Vim notation that the cursor stops on and delet
             var frame = try opt_buffer_mod.OptimizedBuffer.init(std.testing.allocator, 8, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = width_method });
             defer frame.deinit();
             frame.clear(ansi.rgbColor(0, 0, 0, 255), null);
-            try frame.drawEditorViewChecked(ev, 0, 0);
+            try frame.drawEditorViewChecked(ev, 0, 0, .{});
             var frame_bytes: [32]u8 = undefined;
             var expected_frame: [32]u8 = undefined;
             const expected = try std.fmt.bufPrint(&expected_frame, "a{s}b{s}", .{ shown, "      "[width..] });
@@ -2471,7 +2471,7 @@ test "EditorView - wrapping never splits control notation" {
             var frame = try opt_buffer_mod.OptimizedBuffer.init(std.testing.allocator, @intCast(width), shown.len, .{ .link_pool = &pools.links, .pool = &pools.graphemes });
             defer frame.deinit();
             frame.clear(ansi.rgbColor(0, 0, 0, 255), null);
-            try frame.drawEditorViewChecked(ev, 0, 0);
+            try frame.drawEditorViewChecked(ev, 0, 0, .{});
             var frame_bytes: [shown.len * (shown.len + 2)]u8 = undefined;
             var rows = std.mem.splitScalar(u8, frame_bytes[0..try frame.writeResolvedChars(&frame_bytes, true)], '\n');
             var joined: [shown.len]u8 = undefined;

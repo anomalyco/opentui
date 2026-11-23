@@ -1981,7 +1981,7 @@ test "drawTextBuffer - wide tab indicator occupies whole cells without moving se
     }) |case| {
         target.clear(ansi.rgbColor(0, 0, 0, 255), 32);
         view.setViewport(.{ .x = 0, .y = 0, .width = case.width, .height = 1 });
-        try target.drawTextBufferChecked(view, 0, 0);
+        try target.drawTextBufferChecked(view, 0, 0, .{});
         var output: [32]u8 = undefined;
         const written = try target.writeResolvedChars(&output, false);
         try std.testing.expectEqualStrings(case.text, output[0..written]);

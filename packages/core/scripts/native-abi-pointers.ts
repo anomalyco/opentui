@@ -139,6 +139,7 @@ export const nativePointerPolicies = {
   ot_text_buffer_view_set_viewport: { 0: context, 1: buffer, 2: buffer },
   ot_text_buffer_view_command: { 0: context, 1: buffer },
   ot_text_buffer_view_set_tab_color: { 0: context, 1: buffer, 2: optional },
+  ot_context_set_selection_colors: { 0: context, 1: optional, 2: optional },
   ot_text_buffer_view_select: { 0: context, 1: buffer, 2: buffer, 3: buffer },
   ot_text_buffer_view_get_info: { 0: context, 1: buffer, 2: buffer },
   ot_text_buffer_view_get_selected_text: { 0: context, 1: buffer, 2: empty, 4: buffer },

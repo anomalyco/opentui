@@ -178,13 +178,13 @@ fn benchDrawScrolledLongLine(
     try eb.setCursor(0, @intCast(text.len));
     const screen = try OptimizedBuffer.init(allocator, 80, 24, .{ .pool = pool, .link_pool = link_pool });
     defer screen.deinit();
-    try screen.drawEditorViewChecked(ev, 0, 0);
+    try screen.drawEditorViewChecked(ev, 0, 0, .{});
     if (ev.getViewport().?.x == 0) return error.ViewportNotScrolled;
 
     var stats: BenchStats = .{};
     for (0..iterations) |_| {
         const timer = bench_utils.BenchTimer.start(io);
-        for (0..100) |_| try screen.drawEditorViewChecked(ev, 0, 0);
+        for (0..100) |_| try screen.drawEditorViewChecked(ev, 0, 0, .{});
         stats.record(timer.read());
     }
     try appendResult(allocator, results, name, stats);

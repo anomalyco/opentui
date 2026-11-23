@@ -672,7 +672,7 @@ fn paint(setup: *Setup, tb: *TextBuffer, width: u32, height: u32) !*OptimizedBuf
     view.setViewport(.{ .x = 0, .y = 0, .width = width, .height = height });
     const screen = try setup.screen(width, height);
     errdefer screen.deinit();
-    try screen.drawTextBufferChecked(view, 0, 0);
+    try screen.drawTextBufferChecked(view, 0, 0, .{});
     return screen;
 }
 
@@ -985,12 +985,12 @@ test "layers: a deep viewport stores spans for the painted rows only" {
     const screen = try setup.screen(8, 1);
     defer screen.deinit();
     _ = text_work.take();
-    try screen.drawTextBufferChecked(view, 0, 0);
+    try screen.drawTextBufferChecked(view, 0, 0, .{});
     try testing.expectEqual(@as(u64, 1), text_work.take().line_span_builds);
     try testing.expectEqual(@as(u32, 1), tb.line_spans.count());
     // A layer call that changes nothing builds nothing at the next paint.
     try tb.setLayer(1, 0, 0, &.{});
-    try screen.drawTextBufferChecked(view, 0, 0);
+    try screen.drawTextBufferChecked(view, 0, 0, .{});
     try testing.expectEqual(@as(u64, 0), text_work.take().line_span_builds);
 }
 
@@ -1423,7 +1423,7 @@ test "layers: span work for k runs or k overlapping records on one line is O(k l
             view.setViewport(.{ .x = 0, .y = 0, .width = 80, .height = 1 });
             const screen = try setup.screen(80, 1);
             defer screen.deinit();
-            try screen.drawTextBufferChecked(view, 0, 0);
+            try screen.drawTextBufferChecked(view, 0, 0, .{});
             if (overlapping) {
                 // Nested ranges [i, 4k - i); the highest priority covers column 0.
                 for (0..k) |index| {
@@ -1440,7 +1440,7 @@ test "layers: span work for k runs or k overlapping records on one line is O(k l
                 try tb.setLayer(1, 0, tb.getByteSize(), runs);
             }
             _ = text_work.take();
-            try screen.drawTextBufferChecked(view, 0, 0);
+            try screen.drawTextBufferChecked(view, 0, 0, .{});
             const work = text_work.take();
             try testing.expectEqual(@as(u64, 1), work.line_span_builds);
             try testing.expectEqual(@as(u64, k), work.line_span_highlights);
@@ -1606,12 +1606,12 @@ test "layers: theme changes rebuild no spans and unpainted lines stay unbuilt" {
     view.setViewport(.{ .x = 0, .y = 0, .width = 8, .height = 10 });
     const screen = try setup.screen(8, 10);
     defer screen.deinit();
-    try screen.drawTextBufferChecked(view, 0, 0);
+    try screen.drawTextBufferChecked(view, 0, 0, .{});
     try tb.setLayer(1, 0, tb.getByteSize(), &.{ .{ .start_byte = 0, .end_byte = 2, .group_set = 1 }, .{ .start_byte = 200, .end_byte = 202, .group_set = 2 } });
     // A second layer off the painted lines makes no painted line depend on definitions.
     try tb.setLayer(2, 0, tb.getByteSize(), &.{.{ .start_byte = 204, .end_byte = 206, .group_set = 3 }});
     _ = text_work.take();
-    try screen.drawTextBufferChecked(view, 0, 0);
+    try screen.drawTextBufferChecked(view, 0, 0, .{});
     try testing.expectEqual(@as(u64, 10), text_work.take().line_span_builds);
     // Only the ten painted lines have entries, all current.
     try testing.expectEqual(@as(u32, 10), tb.line_spans.count());
@@ -1623,13 +1623,13 @@ test "layers: theme changes rebuild no spans and unpainted lines stay unbuilt" {
     try testing.expectEqual(red, screen.get(0, 0).?.fg);
 
     _ = try setup.style.registerStyle("s1", blue, null, 0);
-    try screen.drawTextBufferChecked(view, 0, 0);
+    try screen.drawTextBufferChecked(view, 0, 0, .{});
     try testing.expectEqual(blue, screen.get(0, 0).?.fg);
     const other = try ss.SyntaxStyle.init(gpa);
     defer other.deinit();
     _ = try other.registerStyle("s1", green, null, 0);
     tb.setSyntaxStyle(other);
-    try screen.drawTextBufferChecked(view, 0, 0);
+    try screen.drawTextBufferChecked(view, 0, 0, .{});
     try testing.expectEqual(green, screen.get(0, 0).?.fg);
     try testing.expectEqual(@as(u64, 0), text_work.take().line_span_builds);
     tb.setSyntaxStyle(setup.style);
@@ -1652,7 +1652,7 @@ test "layers: a tab width change moves runs to their new columns" {
         tb.setTabWidth(row[0]);
         const screen = try setup.screen(8, 1);
         defer screen.deinit();
-        try screen.drawTextBufferChecked(view, 0, 0);
+        try screen.drawTextBufferChecked(view, 0, 0, .{});
         for (0..6) |x| try testing.expectEqual(x == row[1], std.meta.eql(red, screen.get(@intCast(x), 0).?.fg));
     }
 }
@@ -1954,7 +1954,7 @@ test "layers: seeded span model, from-scratch cells and a forced full repaint ag
                         const screen = try setup.screen(target.viewport.width, target.viewport.height);
                         defer screen.deinit();
                         _ = text_work.take();
-                        try screen.drawTextBufferChecked(target.view, 0, 0);
+                        try screen.drawTextBufferChecked(target.view, 0, 0, .{});
                         try testing.expectEqual(0, text_work.take().line_span_builds);
                     }
                 },
@@ -2095,7 +2095,7 @@ fn expectModelPaint(setup: *Setup, model: *SpanModel, target: *const ModelTarget
     const retained = try setup.screen(width, height);
     defer retained.deinit();
     _ = text_work.take();
-    try retained.drawTextBufferChecked(target.view, 0, 0);
+    try retained.drawTextBufferChecked(target.view, 0, 0, .{});
     const builds = text_work.take().line_span_builds;
 
     // The rows the viewport shows, by virtual line (the view returns the viewport's slice).
@@ -2163,7 +2163,7 @@ fn expectModelPaint(setup: *Setup, model: *SpanModel, target: *const ModelTarget
     target.configure(fresh_view);
     const fresh = try setup.screen(width, height);
     defer fresh.deinit();
-    try fresh.drawTextBufferChecked(fresh_view, 0, 0);
+    try fresh.drawTextBufferChecked(fresh_view, 0, 0, .{});
     var y: u32 = 0;
     while (y < height) : (y += 1) {
         var x: u32 = 0;
