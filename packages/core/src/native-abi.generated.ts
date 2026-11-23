@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 18064486de0ef6f07485fe84137c19de73adf5cb04f907845033cc34b05a4981
+// ABI audit SHA-256: d3566b262e1248a72d2eb4eaa6f8852dc82c14f532d5141156cad517a84951d8
 
 export const OT_CONTEXT_ABI_VERSION = 2
 export const OT_OK = 0
@@ -1003,6 +1003,7 @@ export const nativeSymbols = {
   ot_editor_view_measure: { args: ["ptr", "buffer", "u32", "u32", "buffer"], returns: "i32" },
   ot_editor_view_set_placeholder: { args: ["ptr", "buffer", "ptr", "u32", "ptr", "u32"], returns: "i32" },
   ot_context_set_edit_event_callback: { args: ["ptr", "ptr"], returns: "i32" },
+  ot_context_set_selection_colors: { args: ["ptr", "ptr", "ptr"], returns: "i32" },
   ot_scene_set_editor_view: { args: ["ptr", "buffer", "ptr"], returns: "i32" },
   ot_scene_set_editor_options: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_image_destroy: { args: ["ptr", "buffer"], returns: "i32" },

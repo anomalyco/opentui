@@ -228,7 +228,7 @@ test "Scene editor checked preparation reports allocation failure and retries wi
     defer arena.child_allocator = allocator;
     layout_view.virtual_lines_dirty = true;
     const cli = try owner.raw().getSessionRenderer(fixture.session);
-    try testing.expectError(error.OutOfMemory, cli.getNextBuffer().drawEditorViewChecked(editor.view, 0, 0));
+    try testing.expectError(error.OutOfMemory, cli.getNextBuffer().drawEditorViewChecked(editor.view, 0, 0, .{}));
     try testing.expectError(error.OutOfMemory, repaint(owner, fixture.session, background, true, 0));
     try testing.expect(failing.has_induced_failure);
     try testing.expect(!(try owner.sceneGetCursorState(fixture.session)).visible);

@@ -708,7 +708,7 @@ test "OptimizedBuffer drawTextBufferChecked returns errors at every drawing allo
             const injected = if (fail_metadata) &metadata else &failing;
             injected.fail_index = injected.alloc_index + fail_after;
             injected.resize_fail_index = injected.resize_index;
-            const result = target.drawTextBufferChecked(view, 0, 0);
+            const result = target.drawTextBufferChecked(view, 0, 0, .{});
             injected.fail_index = std.math.maxInt(usize);
             injected.resize_fail_index = std.math.maxInt(usize);
             if (result) |_| {
@@ -727,7 +727,7 @@ test "OptimizedBuffer drawTextBufferChecked returns errors at every drawing allo
             var allocated: usize = 0;
             for (pool.classes) |class| allocated += class.num_slots - class.free_list.items.len;
             try std.testing.expectEqual(@as(usize, 1), allocated);
-            try target.drawTextBufferChecked(view, 0, 0);
+            try target.drawTextBufferChecked(view, 0, 0, .{});
             try std.testing.expectEqualStrings("\u{3a9}", try pool.get(gp.graphemeIdFromChar(target.get(0, 0).?.char)));
             try std.testing.expectEqual(@as(u32, 'l'), target.get(0, 1).?.char);
             if (succeeded) break;
@@ -757,7 +757,7 @@ test "OptimizedBuffer drawTextBuffer transparent glyphs reclaim pending slots an
         const kept = try pool.acquire("\u{4e16}");
         defer pool.decref(kept) catch unreachable;
         for (0..400) |_| {
-            if (checked) try target.drawTextBufferChecked(view, 0, 0) else target.drawTextBuffer(view, 0, 0);
+            if (checked) try target.drawTextBufferChecked(view, 0, 0, .{}) else target.drawTextBuffer(view, 0, 0);
             try std.testing.expectEqual(@as(u32, 1), try pool.getRefcount(kept));
             var allocated: usize = 0;
             for (pool.classes) |class| allocated += class.num_slots - class.free_list.items.len;
@@ -931,7 +931,7 @@ fn drawCheckedText(path: CheckedTextPath, target: *OptimizedBuffer, pools: *Test
             try content.setText(text);
             content.setDefaultFg(fg);
             content.setDefaultBg(bg);
-            try target.drawTextBufferChecked(view, 0, 0);
+            try target.drawTextBufferChecked(view, 0, 0, .{});
         },
         .editor_view => {
             const content = try edit_buffer.EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode, null);
@@ -941,7 +941,7 @@ fn drawCheckedText(path: CheckedTextPath, target: *OptimizedBuffer, pools: *Test
             try content.setText(text);
             content.getTextBuffer().setDefaultFg(fg);
             content.getTextBuffer().setDefaultBg(bg);
-            try target.drawEditorViewChecked(view, 0, 0);
+            try target.drawEditorViewChecked(view, 0, 0, .{});
         },
     }
 }
@@ -1142,7 +1142,7 @@ test "OptimizedBuffer text views attach a combining mark only to the glyph drawn
                     view.setSelection(1, 3, selected, null);
                     if (row.wrap) view.setWrapMode(.char);
                     if (row.wrap) view.setWrapWidth(row.viewport.width);
-                    try target.drawTextBufferChecked(view, row.x, 0);
+                    try target.drawTextBufferChecked(view, row.x, 0, .{});
                 },
                 .insert => {
                     const content = try edit_buffer.EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode, null);
@@ -1159,7 +1159,7 @@ test "OptimizedBuffer text views attach a combining mark only to the glyph drawn
                     content.getTextBuffer().setDefaultBg(bg);
                     if (row.wrap) view.setWrapMode(.char);
                     view.setSelection(1, 3, selected, null);
-                    try target.drawEditorViewChecked(view, row.x, 0);
+                    try target.drawEditorViewChecked(view, row.x, 0, .{});
                 },
             }
         }
@@ -1800,7 +1800,7 @@ test "OptimizedBuffer seeded drawing keeps trackers and pool references consiste
                         view.setWrapMode(if (random.boolean()) .char else .none);
                         view.setWrapWidth(random.intRangeAtMost(u32, 1, 12));
                         _ = view.getVirtualLines();
-                        if (random.boolean()) try target.drawTextBufferChecked(view, x, y) else target.drawTextBuffer(view, x, y);
+                        if (random.boolean()) try target.drawTextBufferChecked(view, x, y, .{}) else target.drawTextBuffer(view, x, y);
                     },
                     3 => {
                         text.clearRetainingCapacity();

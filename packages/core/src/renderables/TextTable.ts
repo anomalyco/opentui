@@ -399,21 +399,6 @@ export class TextTableRenderable extends Renderable {
     this.requestRender()
   }
 
-  private get resolvedSelectionBg(): RGBA | undefined {
-    return this._selectionBg ?? this._ctx.selectionBg
-  }
-
-  private get resolvedSelectionFg(): RGBA | undefined {
-    return this._selectionFg ?? this._ctx.selectionFg
-  }
-
-  override _refreshSelectionColors(): void {
-    for (const row of this._cells) {
-      for (const cell of row) cell.textBufferView.setSelectionColors(this.resolvedSelectionBg, this.resolvedSelectionFg)
-    }
-    this.requestRender()
-  }
-
   public shouldStartSelection(x: number, y: number): boolean {
     if (!this.selectable) return false
 
@@ -638,7 +623,7 @@ export class TextTableRenderable extends Renderable {
     for (const { row, col, range, text } of kept) {
       const cell = cells[row][col]
       if (cell.textBuffer.getPlainText() === text) {
-        cell.textBufferView.setSelection(range.start, range.end, this.resolvedSelectionBg, this.resolvedSelectionFg)
+        cell.textBufferView.setSelection(range.start, range.end, this._selectionBg, this._selectionFg)
       }
     }
     this.runCleanup((run) => {
@@ -1150,14 +1135,7 @@ export class TextTableRenderable extends Renderable {
         const { rowIdx, colIdx } = this._pressedCell
         const x = localSelection.anchorX - ((this._layout.columnOffsets[colIdx] ?? 0) + 1 + this._cellPaddingX)
         const y = localSelection.anchorY - ((this._layout.rowOffsets[rowIdx] ?? 0) + 1 + this._cellPaddingY)
-        this._cells[rowIdx][colIdx].textBufferView.setLocalSelection(
-          x,
-          y,
-          x,
-          y,
-          this.resolvedSelectionBg,
-          this.resolvedSelectionFg,
-        )
+        this._cells[rowIdx][colIdx].textBufferView.setLocalSelection(x, y, x, y, this._selectionBg, this._selectionFg)
       }
       return
     }
@@ -1225,8 +1203,8 @@ export class TextTableRenderable extends Renderable {
             coords.anchorY,
             coords.focusX,
             coords.focusY,
-            this.resolvedSelectionBg,
-            this.resolvedSelectionFg,
+            this._selectionBg,
+            this._selectionFg,
           )
         } else {
           cell.textBufferView.updateLocalSelection(
@@ -1234,8 +1212,8 @@ export class TextTableRenderable extends Renderable {
             coords.anchorY,
             coords.focusX,
             coords.focusY,
-            this.resolvedSelectionBg,
-            this.resolvedSelectionFg,
+            this._selectionBg,
+            this._selectionFg,
           )
         }
       }
@@ -1248,7 +1226,7 @@ export class TextTableRenderable extends Renderable {
     const view = this._cells[rowIdx][colIdx].textBufferView
     const offset = this._pressAnchor ?? this.pressOffset(view)
     this._pressAnchor = offset
-    const colors = [this.resolvedSelectionBg, this.resolvedSelectionFg] as const
+    const colors = [this._selectionBg, this._selectionFg] as const
     // The last row that starts at or before the character, then the first cell whose character ends after it.
     let y = 0
     for (let row = 1; row < view.getVirtualLineCount(); row++) {
@@ -1274,11 +1252,11 @@ export class TextTableRenderable extends Renderable {
 
   /** The character offset of the press `view` pins: a drag from it to below the text starts there. */
   private pressOffset(view: TextBufferView): number {
-    view.updateLocalSelection(0, 0, 0, 1 << 20, this.resolvedSelectionBg, this.resolvedSelectionFg)
+    view.updateLocalSelection(0, 0, 0, 1 << 20, this._selectionBg, this._selectionFg)
     const below = view.getSelection()
     if (below) return below.start
     // A press after the text: up to it is the whole text.
-    view.updateLocalSelection(0, 0, 0, -1, this.resolvedSelectionBg, this.resolvedSelectionFg)
+    view.updateLocalSelection(0, 0, 0, -1, this._selectionBg, this._selectionFg)
     return view.getSelection()?.end ?? 0
   }
 

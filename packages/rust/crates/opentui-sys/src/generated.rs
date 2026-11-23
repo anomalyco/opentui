@@ -5,7 +5,7 @@ use core::ffi::c_void;
 
 /// FNV-1a 64-bit hash of the `opentui.h` these declarations were generated from.
 /// The build script rejects native artifacts whose header has a different hash.
-pub const OPENTUI_HEADER_FNV1A64: u64 = 0x99dd2d0018a6caa3;
+pub const OPENTUI_HEADER_FNV1A64: u64 = 0x95c14bf82763459a;
 
 pub type ot_status = i32;
 
@@ -4683,6 +4683,7 @@ unsafe extern "C" {
     pub fn ot_editor_view_measure(context: *mut ot_context, handle: *const ot_handle, width: u32, height: u32, out_info: *mut ot_editor_measure) -> ot_status;
     pub fn ot_editor_view_set_placeholder(context: *mut ot_context, handle: *const ot_handle, bytes: *const u8, byte_count: u32, chunks: *const ot_styled_text_chunk, chunk_count: u32) -> ot_status;
     pub fn ot_context_set_edit_event_callback(context: *mut ot_context, callback: ot_edit_event_callback) -> ot_status;
+    pub fn ot_context_set_selection_colors(context: *mut ot_context, background: *const u16, foreground: *const u16) -> ot_status;
     pub fn ot_scene_set_editor_view(context: *mut ot_context, node: *const ot_handle, view: *const ot_handle) -> ot_status;
     pub fn ot_scene_set_editor_options(context: *mut ot_context, node: *const ot_handle, scene_editor_options: *const ot_scene_editor_options) -> ot_status;
     pub fn ot_image_destroy(context: *mut ot_context, image: *const ot_handle) -> ot_status;

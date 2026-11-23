@@ -917,7 +917,7 @@ impl TextTable {
                 border_bg: Color::TRANSPARENT,
                 text: Style::new().fg(theme.foreground).bg(Color::TRANSPARENT),
                 selectable: true,
-                selection_colors: SelectionColors { fg: Some(theme.selection_fg), bg: Some(theme.selection_bg) },
+                selection_colors: SelectionColors::default(),
             }),
             measured: RefCell::new(None),
             layout: RefCell::new(None),

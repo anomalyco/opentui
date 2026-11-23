@@ -2328,20 +2328,22 @@ pub const OptimizedBuffer = struct {
         x: i32,
         y: i32,
     ) void {
-        self.drawTextBufferInternal(TextBufferView, false, text_buffer_view, x, y) catch |err| {
+        self.drawTextBufferInternal(TextBufferView, false, text_buffer_view, x, y, .{}) catch |err| {
             self.logger.warn("drawTextBuffer failed: {}", .{err});
         };
     }
 
     /// Errors can leave partial cells. The frame owner must clear or discard them.
     /// Every cell write has tracker capacity and a live glyph reference prepared.
+    /// `selection_default` colors a selection per color where it has none of its own.
     pub fn drawTextBufferChecked(
         self: *OptimizedBuffer,
         text_buffer_view: *TextBufferView,
         x: i32,
         y: i32,
+        selection_default: tbv.SelectionStyle,
     ) !void {
-        return self.drawTextBufferInternal(TextBufferView, true, text_buffer_view, x, y);
+        return self.drawTextBufferInternal(TextBufferView, true, text_buffer_view, x, y, selection_default);
     }
 
     /// Internal implementation that accepts either TextBufferView or EditorView
@@ -2353,6 +2355,7 @@ pub const OptimizedBuffer = struct {
         view: *ViewType,
         x: i32,
         y: i32,
+        selection_default: tbv.SelectionStyle,
     ) !void {
         view.setDrawY(y);
         const opacity = self.getCurrentOpacity();
@@ -2414,7 +2417,11 @@ pub const OptimizedBuffer = struct {
         const total_line_count = text_buffer.lineCount();
 
         const line_info = view.getCachedLineInfo();
-        const selection = view.getSelection();
+        var selection = view.getSelection();
+        if (selection) |*sel| {
+            sel.bgColor = sel.bgColor orelse selection_default.bgColor;
+            sel.fgColor = sel.fgColor orelse selection_default.fgColor;
+        }
         var document_cell_offset: u32 = if (firstVisibleLine < line_info.line_start_cols.len)
             line_info.line_start_cols[firstVisibleLine]
         else
@@ -2919,7 +2926,7 @@ pub const OptimizedBuffer = struct {
         x: i32,
         y: i32,
     ) void {
-        self.drawTextBufferInternal(EditorView, false, editor_view, x, y) catch |err| {
+        self.drawTextBufferInternal(EditorView, false, editor_view, x, y, .{}) catch |err| {
             self.logger.warn("drawEditorView failed: {}", .{err});
         };
     }
@@ -2929,8 +2936,9 @@ pub const OptimizedBuffer = struct {
         editor_view: *EditorView,
         x: i32,
         y: i32,
+        selection_default: tbv.SelectionStyle,
     ) !void {
-        return self.drawTextBufferInternal(EditorView, true, editor_view, x, y);
+        return self.drawTextBufferInternal(EditorView, true, editor_view, x, y, selection_default);
     }
 
     /// Draw a complete border grid in a single call.

@@ -320,7 +320,7 @@ impl EditorCore {
                 focused_fg: theme.foreground,
                 focused_bg: theme.input_focused_bg,
                 placeholder: theme.muted,
-                selection: SelectionColors { fg: Some(theme.selection_fg), bg: Some(theme.selection_bg) },
+                selection: SelectionColors::default(),
             }),
             placeholder: RefCell::new(String::new()),
             on_change: Callbacks::default(),

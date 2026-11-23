@@ -642,6 +642,16 @@ impl Context {
         })?;
         Ok(width)
     }
+
+    /// The selection colors of every text and editor view of this Context whose selection has none of its own, per
+    /// color. Current selections take them at their next draw.
+    pub fn set_selection_colors(&self, colors: SelectionColors) -> Result<()> {
+        let (bg, fg) = (colors.bg.map(Color::to_raw), colors.fg.map(Color::to_raw));
+        let ptr = |raw: &Option<[u16; 4]>| raw.as_ref().map_or(std::ptr::null(), |raw| raw.as_ptr());
+        check("ot_context_set_selection_colors", unsafe {
+            sys::ot_context_set_selection_colors(self.as_raw(), ptr(&bg), ptr(&fg))
+        })
+    }
 }
 
 /// The visible region of an editor or text view, in display cells.
@@ -698,7 +708,8 @@ impl SelectionUnit {
     }
 }
 
-/// Selection colors. `None` keeps the text's own color.
+/// Selection colors. `None` takes the color from [`Context::set_selection_colors`]; with no background from either,
+/// the selection inverts its cells.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SelectionColors {
     pub fg: Option<Color>,

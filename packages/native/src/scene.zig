@@ -400,6 +400,8 @@ const PaintInputs = struct {
     resource_epoch: u64,
     // A destroyed style unbinds its borrowers without a mutation gate.
     styled: bool,
+    // The Context's selection colors' epoch, for a member with a selection.
+    selection_epoch: u64,
     // What the member's paint hooks recorded this frame, or 0.
     record_digest: u64,
 };
@@ -2741,14 +2743,17 @@ pub const Scene = struct {
         }
         var resource_epoch: u64 = 0;
         var styled = false;
+        var selected = if (node.text) |text| text.view.getSelection() != null else false;
         if (node.kind == api.OT_SCENE_TEXT_VIEW) {
             if (node.control.text_view.view) |view| {
                 resource_epoch = view.paint_epoch;
                 styled = view.text.buffer.getSyntaxStyle() != null;
+                selected = view.view.getSelection() != null;
             }
         } else if (node.editor) |editor| {
             resource_epoch = editor.paint_epoch;
             styled = editor.edit.buffer.tb.getSyntaxStyle() != null;
+            selected = editor.view.getSelection() != null;
         }
         const slot: usize = @intFromBool(node.records[0].frame == self.presented_records_frame and self.presented_records_frame != 0);
         node.records[slot] = .{ .frame = self.records_frame, .index = @intCast(self.records.items.len) };
@@ -2766,6 +2771,7 @@ pub const Scene = struct {
                 .node_epoch = node.paint_epoch,
                 .resource_epoch = resource_epoch,
                 .styled = styled,
+                .selection_epoch = if (selected) owner.selection_epoch else 0,
                 .record_digest = print.digest,
             },
         });
@@ -3060,7 +3066,7 @@ pub const Scene = struct {
             const content = cellClip(contentLayout(entry.layout));
             const hit = intersection(content, entry.clip);
             if (hit.width != 0 and hit.height != 0) {
-                try target.drawTextBufferChecked(text.view, content.x, content.y);
+                try target.drawTextBufferChecked(text.view, content.x, content.y, owner.selection_default);
                 // Fully transparent text draws no glyph. A redraw of the same mapping keeps the frame it was
                 // first drawn in, which a failed attempt's redraw must not move.
                 const painted = if (entry.opacity > 0) text.mapping() else null;
@@ -3071,11 +3077,11 @@ pub const Scene = struct {
             const view = node.control.text_view.view orelse return;
             if (!node.control.text_view.paint) return;
             const hit = intersection(.{ .x = x, .y = y, .width = width, .height = height }, entry.clip);
-            if (hit.width != 0 and hit.height != 0) try target.drawTextBufferChecked(view.view, x, y);
+            if (hit.width != 0 and hit.height != 0) try target.drawTextBufferChecked(view.view, x, y, owner.selection_default);
         } else if (node.kind == api.OT_SCENE_EDITOR) {
             const editor = node.editor orelse return;
             const hit = intersection(.{ .x = x, .y = y, .width = width, .height = height }, entry.clip);
-            if (hit.width != 0 and hit.height != 0) try target.drawEditorViewChecked(editor.view, x, y);
+            if (hit.width != 0 and hit.height != 0) try target.drawEditorViewChecked(editor.view, x, y, owner.selection_default);
         } else if (node.kind == api.OT_SCENE_IMAGE) {
             try paintImage(cli, node.control.image, cells);
         } else if (node.kind == api.OT_SCENE_VIDEO) {

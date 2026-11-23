@@ -390,6 +390,14 @@ pub fn ot_context_set_edit_event_callback(context: ?*ContextHandle, callback: c.
     return c.OT_OK;
 }
 
+pub fn ot_context_set_selection_colors(context: ?*ContextHandle, background: ?*const [4]u16, foreground: ?*const [4]u16) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    owner.core.setSelectionColors(if (background) |bg| bg.* else null, if (foreground) |fg| fg.* else null) catch |err| return sessionError(owner, err);
+    return c.OT_OK;
+}
+
 pub fn ot_scene_set_editor_view(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, view_ptr: ?*const c.ot_handle) callconv(.c) c.ot_status {
     const status = sessionContextStatus(context);
     if (status != c.OT_OK) return status;
@@ -4571,6 +4579,10 @@ test "Scene text selection ABI validates records pointers and readonly outputs" 
         try std.testing.expectEqual(c.OT_OK, ot_scene_get_text_selection(handle, &node, &packed_selection));
         try std.testing.expectEqual(@as(u64, 3), packed_selection);
     }
+    // The Context's default selection colors keep the last valid pair.
+    try std.testing.expectEqual(c.OT_OK, ot_context_set_selection_colors(handle, null, &options.foreground));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_context_set_selection_colors(handle, &.{ 256, 0, 0, 0 }, null));
+    try std.testing.expectEqualDeep(@TypeOf(owner.selection_default){ .fgColor = options.foreground }, owner.selection_default);
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_get_selected_text(handle, &node, null, 1, &count));
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_get_selected_text(handle, &node, &bytes, 2, &count));
     try std.testing.expectEqual(@as(u32, 999), count);

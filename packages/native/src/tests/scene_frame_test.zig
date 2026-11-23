@@ -605,7 +605,7 @@ test "Scene frame work counts each frame kind and publishes only presented scene
     (try f.owner.raw().getSession(f.id)).cancel();
 }
 
-const Retained = enum { unchanged, scroll, scroll_same, scroll_grow, scroll_colors, scroll_arrow, focus, blur, register, destroy_style, unbind, rebind, select, reset, styled_text, plain_text, text_options, view_paint_off, view_paint_on, box_details, arrow, slider, editor_select, editor_rebind, editor_unbind, z_order, surface_write, resend, same_text, same_width, sub_cell, palette, draft_write, session_draw, lease_next, lease_current, raw_render, skipped_commit, width_method, preserve, recorded, image };
+const Retained = enum { unchanged, scroll, scroll_same, scroll_grow, scroll_colors, scroll_arrow, focus, blur, register, destroy_style, unbind, rebind, select, selection_colors, reset, styled_text, plain_text, text_options, view_paint_off, view_paint_on, box_details, arrow, slider, editor_select, editor_rebind, editor_unbind, z_order, surface_write, resend, same_text, same_width, sub_cell, palette, draft_write, session_draw, lease_next, lease_current, raw_render, skipped_commit, width_method, preserve, recorded, image };
 
 /// A node at a fixed place, painted after its earlier siblings.
 fn placedAt(f: Fixture, parent: context.Handle, kind: u32, num: u32, left: f32, top: f32, width: f32, height: f32) !context.Handle {
@@ -905,7 +905,7 @@ test "Scene frame band frames paint what a full repaint paints" {
 // later sibling, and below them a scroll node (rows 4-7) of six rows. Each row changes one input and expects the rows it damages and the full-path
 // reasons. The table runs without VERIFY, then with it: VERIFY must pass and change no count.
 test "Scene frame retained paint damages the rows of changed inputs only" {
-    var results: [2][@typeInfo(Retained).@"enum".field_names.len + 8]FrameWork = undefined;
+    var results: [2][@typeInfo(Retained).@"enum".field_names.len + 9]FrameWork = undefined;
     for ([_]bool{ false, true }, &results) |verify, *counts| try retainedTable(verify, counts);
     try testing.expectEqualSlices(FrameWork, &results[0], &results[1]);
 }
@@ -977,7 +977,10 @@ fn retainedTable(verify: bool, counts: []FrameWork) !void {
         .{ .change = .unbind, .damage = 3 },
         .{ .change = .rebind, .damage = 3 },
         .{ .change = .select, .damage = 3 },
+        // The Context's selection colors repaint members with a selection only.
+        .{ .change = .selection_colors, .damage = 3 },
         .{ .change = .reset, .damage = 3 },
+        .{ .change = .selection_colors, .damage = 2 },
         .{ .change = .styled_text, .damage = 3 },
         // The same bytes without styles drop the styles.
         .{ .change = .plain_text, .damage = 3 },
@@ -1020,7 +1023,7 @@ fn retainedTable(verify: bool, counts: []FrameWork) !void {
         .{ .change = .image, .damage = 9, .reasons = FrameWork.full_path_images },
     };
     var image_node: context.Handle = undefined;
-    comptime std.debug.assert(rows.len + 6 <= @typeInfo(Retained).@"enum".field_names.len + 8);
+    comptime std.debug.assert(rows.len + 6 <= @typeInfo(Retained).@"enum".field_names.len + 9);
     for (rows, 0..) |row, row_index| {
         errdefer std.debug.print("row {s}, verify {}\n", .{ @tagName(row.change), verify });
         switch (row.change) {
@@ -1046,6 +1049,7 @@ fn retainedTable(verify: bool, counts: []FrameWork) !void {
             },
             .select => try testing.expect(try f.owner.sceneSetTextSelection(text, .{ .operation = c.OT_SCENE_TEXT_SELECTION_SET, .focus_x = 3, .background = ansi.rgbColor(0, 0, 255, 255) })),
             .reset => try testing.expect(try f.owner.sceneSetTextSelection(text, .{ .operation = c.OT_SCENE_TEXT_SELECTION_RESET })),
+            .selection_colors => try f.owner.setSelectionColors(null, ansi.rgbColor(9, 9, 9, 255)),
             .styled_text => try f.owner.sceneSetStyledText(text, "hello", &.{.{ .byte_count = 5, .foreground = ansi.rgbColor(0, 255, 255, 255) }}),
             .plain_text, .same_text => try f.owner.sceneSetText(text, "hello"),
             .text_options => try f.owner.sceneSetTextOptions(text, .{ .attributes = ansi.TextAttributes.BOLD }),

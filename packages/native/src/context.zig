@@ -922,6 +922,10 @@ pub const Context = struct {
     yoga_config: yoga.Config,
     edit_event_callback: ?EditEventCallback = null,
     edit_event_userdata: ?*anyopaque = null,
+    /// Selection colors of views whose selection has none of its own, per color; neither inverts the cells.
+    selection_default: text_buffer_view.SelectionStyle = .{},
+    /// Changes with `selection_default`, so retained paint repaints selections.
+    selection_epoch: u64 = 0,
     closing: bool = false,
     mutating: bool = false,
     scene_measuring: bool = false,
@@ -2279,7 +2283,7 @@ pub const Context = struct {
         const view = try self.getTextBufferView(view_handle);
         if (x >= target.width or y >= target.height) return;
         try view.prepareView();
-        try target.drawTextBufferChecked(view.view, x, y);
+        try target.drawTextBufferChecked(view.view, x, y, self.selection_default);
     }
 
     pub fn drawEditorView(self: *Context, handle: Handle, frame: ?scene.FrameRequest, view_handle: Handle, x: i32, y: i32) !void {
@@ -2291,7 +2295,7 @@ pub const Context = struct {
     pub fn drawEditorViewOn(self: *Context, target: *buf.OptimizedBuffer, view_handle: Handle, x: i32, y: i32) !void {
         const editor = try self.getEditorView(view_handle);
         if (x >= target.width or y >= target.height) return;
-        try target.drawEditorViewChecked(editor.view, x, y);
+        try target.drawEditorViewChecked(editor.view, x, y, self.selection_default);
     }
 
     pub fn drawSceneBody(self: *Context, handle: Handle, frame: ?scene.FrameRequest, node_handle: Handle, x: i32, y: i32) !void {
@@ -2312,7 +2316,7 @@ pub const Context = struct {
         if (owned.geometry_epoch != std.math.maxInt(u64) and (content.width == 0 or content.height == 0)) return;
         try text.prepareView();
         const offset = scene.contentOffset(owned.layout);
-        try target.drawTextBufferChecked(text.view, x +| offset[0], y +| offset[1]);
+        try target.drawTextBufferChecked(text.view, x +| offset[0], y +| offset[1], self.selection_default);
     }
 
     pub fn acquireOwnedBufferLease(self: *Context, handle: Handle) Error!Handle {
@@ -3953,6 +3957,15 @@ pub const Context = struct {
         if (color) |rgba| try buf.validateColor(rgba);
         view.view.setTabIndicatorColor(color);
         view.invalidatePreparation();
+    }
+
+    /// Paint takes the default at draw time, so every view's current selection follows it.
+    pub fn setSelectionColors(self: *Context, bg: ?buf.RGBA, fg: ?buf.RGBA) !void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        for ([_]?buf.RGBA{ bg, fg }) |color| if (color) |rgba| try buf.validateColor(rgba);
+        self.selection_default = .{ .bgColor = bg, .fgColor = fg };
+        self.selection_epoch = nextPaintEpoch();
     }
 
     pub fn textViewSelect(self: *Context, handle: Handle, options: TextSelection) !bool {
