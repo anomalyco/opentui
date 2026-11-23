@@ -1921,6 +1921,20 @@ test("a list lays out again when a shown item gains a block or a replace rebuild
   md.content = "1. \n1. `run x`"
   await renderOnce()
   expect(frameText()).toBe("1.\n2. run x")
+  // A renderer shows a list again for a lazy line as a nested item arrives.
+  md.renderBlock = () => null
+  md.content = "- 1. a\n"
+  await renderOnce()
+  md.content += "q\n  2. c"
+  await renderOnce()
+  expect(frameText()).toBe("- 1. a\n     q\n  2. c")
+  md.renderBlock = undefined
+  // An item's paragraph becomes a table as the next item arrives.
+  md.content = "1. | a |\n"
+  await renderOnce()
+  md.content += "   |--|\n2. b"
+  await renderOnce()
+  expect(frameText()).toMatch(/^1\. ┌─+┐\n   │a +│\n   └─+┘\n\n2\. b$/)
 })
 
 // New defect M3-e (engine): the design's fast path is one call (`changed_block_count = 0`), but M1 lists a grown pending
