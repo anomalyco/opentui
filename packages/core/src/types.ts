@@ -214,6 +214,10 @@ export interface RenderContext extends EventEmitter {
   requestLive: () => void
   dropLive: () => void
   onAnimationTick: (fps: number, callback: AnimationTickCallback, options?: AnimationTickOptions) => () => void
+  /** Selection highlight for renderables that set no `selectionBg` of their own. */
+  readonly selectionBg?: RGBA
+  /** Selected text colour for renderables that set no `selectionFg` of their own. */
+  readonly selectionFg?: RGBA
   hasSelection: boolean
   getSelection: () => Selection | null
   requestSelectionUpdate: () => void

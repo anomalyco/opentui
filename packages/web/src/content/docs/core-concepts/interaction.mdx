@@ -232,6 +232,10 @@ A normal left-button down that does not start or extend selection clears it. A m
 
 You can also call `renderer.clearSelection()`.
 
+A renderable without its own `selectionBg` or `selectionFg` uses the renderer's: set them with the `selectionBg` and
+`selectionFg` options of `createCliRenderer()` or with `renderer.setSelectionColors(bg, fg)`, which also recolours an
+active selection; `undefined` restores the inverted cells.
+
 Use these public values:
 
 - `renderer.hasSelection` reports whether a global selection object exists.

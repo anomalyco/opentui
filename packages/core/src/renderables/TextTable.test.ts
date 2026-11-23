@@ -1141,6 +1141,19 @@ describe("TextTableRenderable", () => {
     expect(getCharAt(buffer, farX, farY)).toBe("D".codePointAt(0)!)
   })
 
+  test("recolours a selection when the renderer's selection colours change", async () => {
+    const table = new TextTableRenderable(renderer, { left: 0, top: 0, content: [[cell("alpha"), cell("beta")]] })
+    renderer.root.add(table)
+    await renderOnce()
+    await mockMouse.drag(table.x + 1, table.y + 1, table.x + 3, table.y + 1)
+
+    renderer.setSelectionColors("#cc5500", undefined)
+    await renderOnce()
+
+    expect(table.getSelectedText()).toBe("alp")
+    expect(getBgAt(renderer.currentRenderBuffer, table.x + 2, table.y + 1)).toEqual(RGBA.fromHex("#cc5500"))
+  })
+
   test("does not start selection when drag begins on border", async () => {
     const table = new TextTableRenderable(renderer, {
       left: 0,

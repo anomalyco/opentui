@@ -1,8 +1,11 @@
 import { test, expect, beforeEach, afterEach } from "bun:test"
 import { createTestRenderer, type MockMouse, type TestRenderer } from "../testing/test-renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
+import { RGBA } from "../lib/RGBA.js"
 import { BoxRenderable } from "../renderables/Box.js"
+import { ScrollBoxRenderable } from "../renderables/ScrollBox.js"
 import { TextRenderable } from "../renderables/Text.js"
+import { TextareaRenderable } from "../renderables/Textarea.js"
 
 let renderer: TestRenderer
 let renderOnce: () => Promise<void>
@@ -192,4 +195,133 @@ test("double-click then drag onto the next word selects both", async () => {
   await mockMouse.drag(text.x + 6, text.y, text.x + 12, text.y)
   await renderOnce()
   expect(text.getSelectedText()).toBe("beta gamma")
+})
+
+const highlight = RGBA.fromHex("#3366ff")
+const ink = RGBA.fromHex("#ffffff")
+const own = RGBA.fromHex("#ff0000")
+
+function cell(x: number, y: number) {
+  const index = y * renderer.currentRenderBuffer.width + x
+  return renderer.currentRenderBuffer.withBuffers(({ fg, bg }) => ({
+    fg: RGBA.fromArray(fg.slice(index * 4, index * 4 + 4)),
+    bg: RGBA.fromArray(bg.slice(index * 4, index * 4 + 4)),
+  }))
+}
+
+async function useRendererColours(): Promise<void> {
+  renderer.destroy()
+  ;({ renderer, renderOnce, mockMouse } = await createTestRenderer({ clock, selectionBg: highlight, selectionFg: ink }))
+}
+
+async function selectFirstCells(target: { x: number; y: number }): Promise<void> {
+  await mockMouse.drag(target.x, target.y, target.x + 5, target.y)
+  await renderOnce()
+}
+
+async function selectText(options: { selectionBg?: RGBA } = {}): Promise<TextRenderable> {
+  const text = new TextRenderable(renderer, { content: "Selected text", fg: "#101010", ...options })
+  renderer.root.add(text)
+  await renderOnce()
+  await selectFirstCells(text)
+  return text
+}
+
+async function addTextarea(options: { selectionBg?: RGBA } = {}): Promise<TextareaRenderable> {
+  const textarea = new TextareaRenderable(renderer, {
+    initialValue: "Selected text",
+    width: 30,
+    height: 2,
+    textColor: "#101010",
+    ...options,
+  })
+  renderer.root.add(textarea)
+  await renderOnce()
+  return textarea
+}
+
+test("renderer selection colours paint a text selection", async () => {
+  await useRendererColours()
+  const text = await selectText()
+
+  expect(text.getSelectedText()).toBe("Select")
+  expect(cell(text.x + 1, text.y)).toEqual({ fg: ink, bg: highlight })
+  expect(text.selectionBg).toBeUndefined()
+})
+
+test("renderer selection colours paint a textarea selection", async () => {
+  await useRendererColours()
+  const textarea = await addTextarea()
+  await selectFirstCells(textarea)
+
+  expect(textarea.getSelectedText()).toBe("Select")
+  expect(cell(textarea.x + 1, textarea.y)).toEqual({ fg: ink, bg: highlight })
+})
+
+test("a renderable's own selection colour wins over the renderer's", async () => {
+  await useRendererColours()
+  const text = await selectText({ selectionBg: own })
+
+  expect(cell(text.x + 1, text.y)).toEqual({ fg: ink, bg: own })
+})
+
+test("renderer selection colours repaint an active selection", async () => {
+  const text = await selectText()
+
+  renderer.setSelectionColors(highlight, ink)
+  await renderOnce()
+
+  expect(text.getSelectedText()).toBe("Select")
+  expect(cell(text.x + 1, text.y)).toEqual({ fg: ink, bg: highlight })
+  expect(renderer.selectionBg).toEqual(highlight)
+  expect(renderer.selectionFg).toEqual(ink)
+})
+
+test("clearing the renderer's selection colours inverts the cells again", async () => {
+  await useRendererColours()
+  const text = await selectText()
+
+  renderer.setSelectionColors(undefined, undefined)
+  await renderOnce()
+
+  expect(cell(text.x + 1, text.y).bg).toEqual(RGBA.fromHex("#101010"))
+})
+
+test("renderer selection colours recolour a scrolled selection without moving it", async () => {
+  const box = new ScrollBoxRenderable(renderer, { width: 20, height: 4 })
+  const lines = Array.from({ length: 12 }, (_, i) => `line${i} abcdefgh`)
+  const text = new TextRenderable(renderer, { content: lines.join("\n") })
+  box.add(text)
+  renderer.root.add(box)
+  await renderOnce()
+  await mockMouse.drag(text.x, text.y, text.x + 4, text.y)
+  box.scrollTop = 3
+  await renderOnce()
+
+  renderer.setSelectionColors(highlight, ink)
+  await renderOnce()
+
+  expect(text.getSelectedText()).toBe("line0")
+})
+
+test("renderer selection colours recolour a textarea's setSelection", async () => {
+  const textarea = await addTextarea()
+  textarea.setSelection(0, 6)
+
+  renderer.setSelectionColors(highlight, ink)
+  await renderOnce()
+
+  expect(cell(textarea.x + 1, textarea.y)).toEqual({ fg: ink, bg: highlight })
+})
+
+test("a textarea that clears its own selection colour falls back to the renderer's", async () => {
+  renderer.setSelectionColors(highlight, ink)
+  const textarea = await addTextarea({ selectionBg: own })
+  await selectFirstCells(textarea)
+  expect(cell(textarea.x + 1, textarea.y)).toEqual({ fg: ink, bg: own })
+
+  textarea.selectionBg = undefined
+  await renderOnce()
+
+  expect(cell(textarea.x + 1, textarea.y)).toEqual({ fg: ink, bg: highlight })
 })

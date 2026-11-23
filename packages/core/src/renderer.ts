@@ -234,6 +234,10 @@ export interface CliRendererConfig {
   // Fill the render buffer with this background color. Default transparent.
   backgroundColor?: ColorInput
 
+  // Selection colours for renderables that set none of their own. Without them a selection inverts its cells.
+  selectionBg?: ColorInput
+  selectionFg?: ColorInput
+
   // Open the console overlay on uncaught errors. Defaults to true in development.
   openConsoleOnError?: boolean
 
@@ -1154,6 +1158,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private maxStatSamples: number = 300
   private postProcessFns: ((buffer: OptimizedBuffer, deltaTime: number) => void)[] = []
   private backgroundColor: RGBA = RGBA.fromInts(0, 0, 0, 0)
+  private _selectionBg: RGBA | undefined
+  private _selectionFg: RGBA | undefined
   private waitingForPixelResolution: boolean = false
   private pixelResolutionRequeryPending: boolean = false
   // Pixel replies still owed; each consumes one.
@@ -1593,6 +1599,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       )
       this._capabilities = this.nativeSession.getCapabilities()
       if (config.backgroundColor !== undefined) this.backgroundColor = RGBA.clone(parseColor(config.backgroundColor))
+      if (config.selectionBg !== undefined) this._selectionBg = RGBA.clone(parseColor(config.selectionBg))
+      if (config.selectionFg !== undefined) this._selectionFg = RGBA.clone(parseColor(config.selectionFg))
       this.postProcessFns = config.postProcessFns || []
       this.prependedInputHandlers = config.prependInputHandlers || []
 
@@ -4507,6 +4515,26 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   public setBackgroundColor(color: ColorInput): void {
     this.backgroundColor = RGBA.clone(parseColor(color))
+    this.requestRender()
+  }
+
+  public get selectionBg(): RGBA | undefined {
+    return this._selectionBg
+  }
+
+  public get selectionFg(): RGBA | undefined {
+    return this._selectionFg
+  }
+
+  /** Sets the selection colours of renderables that set none of their own; `undefined` restores the inverted cells. */
+  public setSelectionColors(bg: ColorInput | undefined, fg: ColorInput | undefined): void {
+    this._selectionBg = bg === undefined ? undefined : RGBA.clone(parseColor(bg))
+    this._selectionFg = fg === undefined ? undefined : RGBA.clone(parseColor(fg))
+    const refresh = (renderable: Renderable): void => {
+      renderable._refreshSelectionColors()
+      for (const child of renderable.getChildren()) refresh(child)
+    }
+    refresh(this.root)
     this.requestRender()
   }
 

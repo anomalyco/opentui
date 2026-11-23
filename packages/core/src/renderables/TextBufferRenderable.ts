@@ -293,11 +293,8 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   set selectionBg(value: RGBA | string | undefined) {
     const newColor = value ? RGBA.clone(parseColor(value)) : undefined
     if (this._selectionBg !== newColor) {
-      this.runMutation(() => {
-        this.setSelectionColors(newColor, this._selectionFg)
-        this._selectionBg = newColor
-        this.requestRender()
-      })
+      this._selectionBg = newColor
+      this._refreshSelectionColors()
     }
   }
 
@@ -308,12 +305,17 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   set selectionFg(value: RGBA | string | undefined) {
     const newColor = value ? RGBA.clone(parseColor(value)) : undefined
     if (this._selectionFg !== newColor) {
-      this.runMutation(() => {
-        this.setSelectionColors(this._selectionBg, newColor)
-        this._selectionFg = newColor
-        this.requestRender()
-      })
+      this._selectionFg = newColor
+      this._refreshSelectionColors()
     }
+  }
+
+  private get resolvedSelectionBg(): RGBA | undefined {
+    return this._selectionBg ?? this._ctx.selectionBg
+  }
+
+  private get resolvedSelectionFg(): RGBA | undefined {
+    return this._selectionFg ?? this._ctx.selectionFg
   }
 
   get bg(): RGBA {
@@ -449,9 +451,14 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   }
 
   /** Restyles the accepted selection; replaying its cells would select other text after a width change. */
-  private setSelectionColors(bg?: RGBA, fg?: RGBA): void {
-    if (this.nativeTextScene) this.nativeTextScene.setTextSelection(this, "colors", null, bg, fg)
-    else this.textBufferView.setSelectionColors(bg, fg)
+  override _refreshSelectionColors(): void {
+    const bg = this.resolvedSelectionBg
+    const fg = this.resolvedSelectionFg
+    this.runMutation(() => {
+      if (this.nativeTextScene) this.nativeTextScene.setTextSelection(this, "colors", null, bg, fg)
+      else this.textBufferView.setSelectionColors(bg, fg)
+      this.requestRender()
+    })
   }
 
   private updateLocalSelection(
@@ -459,8 +466,8 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     isStart = true,
     colors?: { bg?: RGBA; fg?: RGBA },
   ): boolean {
-    const bg = colors ? colors.bg : this._selectionBg
-    const fg = colors ? colors.fg : this._selectionFg
+    const bg = colors ? colors.bg : this.resolvedSelectionBg
+    const fg = colors ? colors.fg : this.resolvedSelectionFg
     if (this.nativeTextScene) {
       return this.nativeTextScene.setTextSelection(
         this,
