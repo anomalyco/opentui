@@ -857,7 +857,7 @@ test "input parser SGR mouse reports" {
         .{ "\x1b[<0;0;0M", down(0, 0, 0) },
         .{ "\x1b[<0;501;301M", down(0, 500, 300) },
         .{ "\x1b[<0;70000;1M", down(0, 65535, 0) },
-        // A wheel release carries nothing (issue 048); button 3 is no button.
+        // A wheel release carries nothing (issue 048); button 3 is no button, and with none held its release is none.
         .{ "\x1b[<64;11;6m", reply("\x1b[<64;11;6m") },
         .{ "\x1b[<3;11;6M", reply("\x1b[<3;11;6M") },
         .{ "\x1b[<3;11;6m", reply("\x1b[<3;11;6m") },
@@ -873,10 +873,11 @@ test "input parser SGR mouse reports" {
     try check("\x1b[<0;6;6M\x1b[<32;9;6m\x1b[<0;9;6m\x1b[<35;11;6m", &.{
         down(0, 5, 5), mouse(.drag, 0, 8, 5, NONE), mouse(.up, 0, 8, 5, NONE), mouse(.move, none, 10, 5, NONE),
     });
-    try check("\x1b[<0;1;1M\x1b[<2;1;1M\x1b[<65;1;1M\x1b[<113;2;1M\x1b[<35;2;1M\x1b[<0;2;1m\x1b[<99;3;1M\x1b[<2;3;1m\x1b[<96;4;1M", &.{
+    // ConEmu releases with X10's button 3: the lowest button held.
+    try check("\x1b[<0;1;1M\x1b[<2;1;1M\x1b[<65;1;1M\x1b[<113;2;1M\x1b[<35;2;1M\x1b[<0;2;1m\x1b[<99;3;1M\x1b[<2;3;1m\x1b[<96;4;1M\x1b[<1;5;1M\x1b[<3;5;1m", &.{
         down(0, 0, 0),                  down(2, 0, 0),             mouse(.scroll, 1, 0, 0, NONE), mouse(.drag, 0, 1, 0, CTRL),
         mouse(.move, none, 1, 0, NONE), mouse(.up, 0, 1, 0, NONE), mouse(.drag, 2, 2, 0, NONE),   mouse(.up, 2, 2, 0, NONE),
-        mouse(.move, none, 3, 0, NONE),
+        mouse(.move, none, 3, 0, NONE), down(1, 4, 0),             mouse(.up, 1, 4, 0, NONE),
     });
     try check("x\x1b[<64;10;5M", &.{ ch('x'), mouse(.scroll, 0, 9, 4, NONE) });
     var harness = try Harness.create();

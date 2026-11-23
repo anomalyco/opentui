@@ -1423,7 +1423,8 @@ fn mouseKind(code: u32, release: bool, held: u3) ?Mouse {
         if (release) return null;
         return .{ .action = .scroll, .button = low };
     }
-    if (button == mouse_button_none) return null;
+    // ConEmu sends X10's release, button 3, in SGR form too: it releases the lowest button held.
+    if (button == mouse_button_none) return if (release and held != 0) .{ .action = .up, .button = @ctz(held) } else null;
     return .{ .action = if (release) .up else .down, .button = button };
 }
 

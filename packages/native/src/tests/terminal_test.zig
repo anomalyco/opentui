@@ -1181,6 +1181,10 @@ test "queryTerminalSend - one DA1 follows DECRQM 2026, and sentinel mode leaves 
         const moved = try std.mem.replaceOwned(u8, testing.allocator, clock.getWritten(), da1, "");
         defer testing.allocator.free(moved);
         try testing.expectEqualStrings(moved, sentinel.getWritten());
+        // ConEmu holds a write's last `ESC \` and then skips two bytes of the next write: setup's `ESC [` of `?1049h`.
+        for ([_][]const u8{ clock.getWritten(), sentinel.getWritten() }) |batch| {
+            try testing.expectEqual(@as(u8, '['), batch[std.mem.findScalarLast(u8, batch, 0x1b).? + 1]);
+        }
     }
 }
 
