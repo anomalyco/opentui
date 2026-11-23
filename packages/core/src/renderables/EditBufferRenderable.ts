@@ -351,7 +351,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   set selectionBg(value: RGBA | string | undefined) {
     const newColor = value ? RGBA.clone(parseColor(value)) : undefined
     if (this._selectionBg !== newColor) {
-      this.editorView.setSelectionColors(newColor, this._selectionFg)
+      this.editorView.setSelectionColors(newColor ?? this._ctx.selectionBg, this.resolvedSelectionFg)
       this._selectionBg = newColor
       this.requestRender()
     }
@@ -364,10 +364,18 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   set selectionFg(value: RGBA | string | undefined) {
     const newColor = value ? RGBA.clone(parseColor(value)) : undefined
     if (this._selectionFg !== newColor) {
-      this.editorView.setSelectionColors(this._selectionBg, newColor)
+      this.editorView.setSelectionColors(this.resolvedSelectionBg, newColor ?? this._ctx.selectionFg)
       this._selectionFg = newColor
       this.requestRender()
     }
+  }
+
+  private get resolvedSelectionBg(): RGBA | undefined {
+    return this._selectionBg ?? this._ctx.selectionBg
+  }
+
+  private get resolvedSelectionFg(): RGBA | undefined {
+    return this._selectionFg ?? this._ctx.selectionFg
   }
 
   get backgroundColor(): RGBA {
@@ -579,8 +587,8 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
       localSelection.anchorY,
       localSelection.focusX,
       localSelection.focusY,
-      this._selectionBg,
-      this._selectionFg,
+      this.resolvedSelectionBg,
+      this.resolvedSelectionFg,
       false,
       false,
       localSelection.behavior,
@@ -615,8 +623,8 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
         localSelection.anchorY,
         localSelection.focusX,
         localSelection.focusY,
-        this._selectionBg,
-        this._selectionFg,
+        this.resolvedSelectionBg,
+        this.resolvedSelectionFg,
         updateCursor,
         followCursor,
         localSelection.behavior,
@@ -627,8 +635,8 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
         localSelection.anchorY,
         localSelection.focusX,
         localSelection.focusY,
-        this._selectionBg,
-        this._selectionFg,
+        this.resolvedSelectionBg,
+        this.resolvedSelectionFg,
         updateCursor,
         followCursor,
         localSelection.behavior,
@@ -737,7 +745,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   /** Selects [start, end) in document display cells, counting one cell per newline. */
   setSelection(start: number, end: number): void {
     this.resetSelection()
-    this.editorView.setSelection(start, end, this._selectionBg, this._selectionFg)
+    this.editorView.setSelection(start, end, this.resolvedSelectionBg, this.resolvedSelectionFg)
     this.editorView._keepCursorOutside(0)
     this.requestRender()
   }
@@ -745,7 +753,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   /** Takes document cell offsets (one per newline); cell occupancy includes the grapheme at the larger endpoint. */
   setSelectionInclusive(start: number, end: number): void {
     this.resetSelection()
-    this.editorView.setSelectionInclusive(start, end, this._selectionBg, this._selectionFg)
+    this.editorView.setSelectionInclusive(start, end, this.resolvedSelectionBg, this.resolvedSelectionFg)
     this.editorView._keepCursorOutside(0)
     this.requestRender()
   }

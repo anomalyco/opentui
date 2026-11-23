@@ -294,7 +294,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     const newColor = value ? RGBA.clone(parseColor(value)) : undefined
     if (this._selectionBg !== newColor) {
       this.runMutation(() => {
-        this.setSelectionColors(newColor, this._selectionFg)
+        this.setSelectionColors(newColor ?? this._ctx.selectionBg, this.resolvedSelectionFg)
         this._selectionBg = newColor
         this.requestRender()
       })
@@ -309,11 +309,19 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     const newColor = value ? RGBA.clone(parseColor(value)) : undefined
     if (this._selectionFg !== newColor) {
       this.runMutation(() => {
-        this.setSelectionColors(this._selectionBg, newColor)
+        this.setSelectionColors(this.resolvedSelectionBg, newColor ?? this._ctx.selectionFg)
         this._selectionFg = newColor
         this.requestRender()
       })
     }
+  }
+
+  private get resolvedSelectionBg(): RGBA | undefined {
+    return this._selectionBg ?? this._ctx.selectionBg
+  }
+
+  private get resolvedSelectionFg(): RGBA | undefined {
+    return this._selectionFg ?? this._ctx.selectionFg
   }
 
   get bg(): RGBA {
@@ -459,8 +467,8 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     isStart = true,
     colors?: { bg?: RGBA; fg?: RGBA },
   ): boolean {
-    const bg = colors ? colors.bg : this._selectionBg
-    const fg = colors ? colors.fg : this._selectionFg
+    const bg = colors ? colors.bg : this.resolvedSelectionBg
+    const fg = colors ? colors.fg : this.resolvedSelectionFg
     if (this.nativeTextScene) {
       return this.nativeTextScene.setTextSelection(
         this,
