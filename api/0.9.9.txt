@@ -1,0 +1,3 @@
+base 0.9.8
++ @opentui/core: method FFIRenderLib.contextSetSelectionColors(context: NativeContextHandle, bg: RGBA | undefined, fg: RGBA | undefined): void
++ opentui.h: function ot_context_set_selection_colors(ot_context *, const uint16_t background[4], const uint16_t foreground[4]): ot_status
