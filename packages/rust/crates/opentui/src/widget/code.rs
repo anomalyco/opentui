@@ -537,10 +537,7 @@ impl Code {
                 on_scroll: Callbacks::default(),
                 laid_out_height: Cell::new(None),
                 selectable: Cell::new(true),
-                selection_colors: Cell::new(SelectionColors {
-                    fg: Some(theme.selection_fg),
-                    bg: Some(theme.selection_bg),
-                }),
+                selection_colors: Cell::default(),
                 selection: Cell::new(None),
                 reselect: Cell::new(false),
             }

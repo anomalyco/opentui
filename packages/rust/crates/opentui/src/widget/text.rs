@@ -69,7 +69,7 @@ impl Text {
         let text = Self(build(app, NodeKind::Text, |element| TextInner {
             element,
             selectable: Cell::new(true),
-            selection_colors: Cell::new(SelectionColors { fg: Some(theme.selection_fg), bg: Some(theme.selection_bg) }),
+            selection_colors: Cell::default(),
             content: Cell::new(None),
             selection: Cell::new(None),
         }));

@@ -47,7 +47,7 @@ use crate::host::{Host, HostOptions};
 use crate::input::{Event, KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use crate::native::{
     Context, Control, CursorUpdate, Draft, FrameOptions, HostRequest, MousePointer, ProgramStatus, Pump, Remote,
-    RenderOutcome, RendererState, Session, WidthMethod,
+    RenderOutcome, RendererState, SelectionColors, Session, WidthMethod,
 };
 use crate::post::{Area, PostState};
 use crate::remote::RemoteTerminal;
@@ -456,7 +456,7 @@ impl App {
         let (mode, palette) = port.map_or((None, None), |mut port| ask_terminal(&options, &mut port));
         apply_theme_mode(&mut options, mode);
         let session = Host::new_session(&options.host)?;
-        Ok(Self::with_session(session, options, Clock::Real(Instant::now()), None)?.detected(mode, palette))
+        Ok(Self::with_session(session, options, Clock::Real(Instant::now()), None, None)?.detected(mode, palette))
     }
 
     /// Creates an app for a [remote terminal](crate::remote), such as an SSH client's, sized to it. Like
@@ -467,7 +467,7 @@ impl App {
         let (mode, palette) = if wants_colors(&options) { ask_terminal(&options, &mut terminal) } else { (None, None) };
         apply_theme_mode(&mut options, mode);
         let session = Host::new_remote_session(&terminal, &options.host)?;
-        let app = Self::with_session(session, options, Clock::Real(Instant::now()), Some(terminal))?;
+        let app = Self::with_session(session, options, Clock::Real(Instant::now()), Some(terminal), None)?;
         Ok(app.detected(mode, palette))
     }
 
@@ -494,7 +494,7 @@ impl App {
     /// [`Self::resize`], and [`Self::capture`]. See [`HeadlessOptions`].
     pub fn headless(options: HeadlessOptions) -> Result<Self> {
         let session = Self::headless_session(options.width, options.height, &options.app)?;
-        let app = Self::with_session(session, options.app, Clock::Real(Instant::now()), None)?;
+        let app = Self::with_session(session, options.app, Clock::Real(Instant::now()), None, None)?;
         #[expect(clippy::let_underscore_must_use, reason = "a new app's cell is empty")]
         let _ = app.0.headless.set(headless::HeadlessState::default());
         Ok(app)
@@ -504,7 +504,7 @@ impl App {
     pub(crate) fn manual(width: u16, height: u16, options: AppOptions) -> Result<Self> {
         let session = Self::headless_session(width, height, &options)?;
         let start = Instant::now();
-        Self::with_session(session, options, Clock::Manual { start, now: Cell::new(start) }, None)
+        Self::with_session(session, options, Clock::Manual { start, now: Cell::new(start) }, None, None)
     }
 
     fn headless_session(width: u16, height: u16, options: &AppOptions) -> Result<Session> {
@@ -519,10 +519,7 @@ impl App {
     /// An app on a detached Session that never runs, for painting widgets offscreen, with a manual clock.
     pub(crate) fn detached(session: Session, parent: Session, options: AppOptions) -> Result<Self> {
         let start = Instant::now();
-        let app = Self::with_session(session, options, Clock::Manual { start, now: Cell::new(start) }, None)?;
-        #[expect(clippy::let_underscore_must_use, reason = "a new app's cell is empty")]
-        let _ = app.0.parent.set(parent);
-        Ok(app)
+        Self::with_session(session, options, Clock::Manual { start, now: Cell::new(start) }, None, Some(parent))
     }
 
     fn with_session(
@@ -530,6 +527,7 @@ impl App {
         options: AppOptions,
         clock: Clock,
         remote_terminal: Option<RemoteTerminal>,
+        parent: Option<Session>,
     ) -> Result<Self> {
         let renderer = session.renderer_state()?;
         let title = options.title.clone();
@@ -541,7 +539,7 @@ impl App {
             options,
             remote,
             remote_terminal: RefCell::new(remote_terminal),
-            parent: std::cell::OnceCell::new(),
+            parent: parent.map_or_else(std::cell::OnceCell::new, std::cell::OnceCell::from),
             root: RefCell::new(None),
             registry: RefCell::new(HashMap::new()),
             next_num: Cell::new(1),
@@ -599,9 +597,8 @@ impl App {
             #[cfg(feature = "tokio")]
             runtime: RefCell::new(tasks::Runtime::default()),
         }));
-        let root = View::root(&app);
-        root.element().update_paint(|paint| paint.background = app.theme().background);
-        *app.0.root.borrow_mut() = Some(root);
+        *app.0.root.borrow_mut() = Some(View::root(&app));
+        app.apply_theme(app.theme());
         app.0.console_id.set(crate::console::register(app.proxy(), !remote));
         app.check()?;
         Ok(app)
@@ -636,13 +633,23 @@ impl App {
         }
     }
 
-    /// Changes the theme widgets created from now on start with, and the screen background behind them, including
-    /// the root's. Existing widgets keep their colors: rebuild or recolor them, for example from
-    /// [`Self::on_theme_mode`].
+    /// Changes the theme widgets created from now on start with, the screen background behind them, including the
+    /// root's, and the selection colors of every widget without its own
+    /// [`selection_colors`](crate::widget::Text::selection_colors), current selections included. Existing widgets
+    /// keep their other colors: rebuild or recolor them, for example from [`Self::on_theme_mode`].
     pub fn set_theme(&self, theme: Theme) {
         self.0.theme.set(theme);
-        self.root().element().update_paint(|paint| paint.background = theme.background);
+        self.apply_theme(theme);
         self.request_redraw();
+    }
+
+    /// An app that shares its parent's Context, a scrollback's, leaves the parent's selection colors.
+    fn apply_theme(&self, theme: Theme) {
+        self.root().element().update_paint(|paint| paint.background = theme.background);
+        if self.0.parent.get().is_none() {
+            let colors = SelectionColors { fg: Some(theme.selection_fg), bg: Some(theme.selection_bg) };
+            self.report(self.0.session.context().set_selection_colors(colors));
+        }
     }
 
     pub(crate) fn console_id(&self) -> u64 {
@@ -875,8 +882,8 @@ impl App {
     }
 
     /// Called when the terminal reports a background of the other brightness, such as when the system switches
-    /// between dark and light mode. Widgets keep their colors: call [`Self::set_theme`] here, then rebuild or recolor
-    /// them.
+    /// between dark and light mode. Widgets keep their colors other than selection colors: call [`Self::set_theme`]
+    /// here, then rebuild or recolor them.
     pub fn on_theme_mode(&self, mut handler: impl FnMut(&mut Cx<'_>, ThemeMode) + 'static) -> HandlerId {
         self.0.handlers.theme_mode.add(move |cx, mode: &ThemeMode| handler(cx, *mode))
     }

@@ -442,6 +442,11 @@ fn text_selects_with_the_mouse() {
     assert_eq!(app.selected_text().as_deref(), Some("me"));
     let capture = app.render();
     assert_eq!(capture.cell(7, 0).unwrap().bg, app.theme().selection_bg);
+    // A theme change recolors the current selection.
+    let light = opentui::theme::Theme::light();
+    app.set_theme(light);
+    let cell = app.render().cell(7, 0).map(|cell| (cell.bg, cell.fg));
+    assert_eq!(cell, Some((light.selection_bg, light.selection_fg)));
 }
 
 fn menu(app: &TestApp) -> Select {

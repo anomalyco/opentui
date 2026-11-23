@@ -90,8 +90,9 @@ To choose instead, set a theme with `AppOptions::with_theme`.
 
 When the system switches between dark and light mode, the app calls your `App::on_theme_mode` handlers.
 In the handler, call `App::set_theme`.
-It changes the background and the colors that new widgets start with.
-Existing widgets keep their colors, so the handler also recolors or rebuilds them.
+It changes the background, the colors that new widgets start with, and the selection colors of every widget, current selections included.
+A widget's own `selection_colors` win per color: a color it leaves `None` takes the theme's, so a selection inverts its cells only when neither sets a background.
+Existing widgets keep their other colors, so the handler also recolors or rebuilds them.
 
 Set `AppOptions::palette_size` to also read the terminal's color palette, which `App::palette` returns.
 On terminals without true color, the renderer uses the palette to pick the closest colors.
