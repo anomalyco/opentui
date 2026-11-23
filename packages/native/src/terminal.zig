@@ -398,7 +398,7 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     self.state.theme_queries_sent = true;
 
     // Send xtversion first (used for tmux detection)
-    try tty.writeAll(ansi.ANSI.xtversion ++ ansi.ANSI.hideCursor);
+    try tty.writeAll(ansi.ANSI.xtversion);
 
     // Capture the startup cursor position, which seeds the split scrollback.
     try tty.writeAll(ansi.ANSI.cursorPositionRequest);
@@ -421,6 +421,8 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     if (!self.skip_graphics_query and !self.isInTmux() and !self.remoteTmuxHint()) try tty.writeAll(ansi.ANSI.kittyGraphicsQuery);
     // Its reply settles the 2026 decision and Sixel; sentinel mode sends it at the end of setup instead.
     if (!self.reply_sentinel) try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
+    // Last: ConEmu holds a write's final `ESC \` and then skips two bytes of the next write, the `ESC [` of `?1049h`.
+    try tty.writeAll(ansi.ANSI.hideCursor);
 
     // Only queryExplicitWidth's own reports count; a key between packets is not one.
     self.explicit_width_probe_reports_pending = 0;
