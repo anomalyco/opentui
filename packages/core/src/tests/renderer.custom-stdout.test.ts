@@ -2434,7 +2434,7 @@ test("resize(w, h) updates dimensions and fires RESIZE event", async () => {
   expect(renderer.height).toBe(40)
 })
 
-test("resize() after destroy is a no-op", async () => {
+test("resize() and setSelectionColors() after destroy are no-ops", async () => {
   const stdin = createTestStdin()
   const stdout = createCollectingStdout(80, 24)
 
@@ -2446,6 +2446,8 @@ test("resize() after destroy is a no-op", async () => {
 
   renderer.destroy()
   expect(() => renderer.resize(100, 50)).not.toThrow()
+  await renderer.closed
+  expect(() => renderer.setSelectionColors("#ff0000", undefined)).not.toThrow()
 })
 
 // ---- Session teardown ----

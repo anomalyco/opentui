@@ -605,9 +605,6 @@ export abstract class Renderable extends BaseRenderable {
     return ""
   }
 
-  /** @internal Restyles the current selection, in place, with the resolved selection colours. */
-  _refreshSelectionColors(): void {}
-
   public shouldStartSelection(x: number, y: number): boolean {
     return false
   }

@@ -1601,6 +1601,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       if (config.backgroundColor !== undefined) this.backgroundColor = RGBA.clone(parseColor(config.backgroundColor))
       if (config.selectionBg !== undefined) this._selectionBg = RGBA.clone(parseColor(config.selectionBg))
       if (config.selectionFg !== undefined) this._selectionFg = RGBA.clone(parseColor(config.selectionFg))
+      this.lib.contextSetSelectionColors(this.nativeSession.context, this._selectionBg, this._selectionFg)
       this.postProcessFns = config.postProcessFns || []
       this.prependedInputHandlers = config.prependInputHandlers || []
 
@@ -4530,11 +4531,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   public setSelectionColors(bg: ColorInput | undefined, fg: ColorInput | undefined): void {
     this._selectionBg = bg === undefined ? undefined : RGBA.clone(parseColor(bg))
     this._selectionFg = fg === undefined ? undefined : RGBA.clone(parseColor(fg))
-    const refresh = (renderable: Renderable): void => {
-      renderable._refreshSelectionColors()
-      for (const child of renderable.getChildren()) refresh(child)
-    }
-    refresh(this.root)
+    if (!this._isDestroyed)
+      this.lib.contextSetSelectionColors(this.nativeSession.context, this._selectionBg, this._selectionFg)
     this.requestRender()
   }
 

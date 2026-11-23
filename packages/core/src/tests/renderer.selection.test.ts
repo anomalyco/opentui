@@ -6,6 +6,7 @@ import { BoxRenderable } from "../renderables/Box.js"
 import { ScrollBoxRenderable } from "../renderables/ScrollBox.js"
 import { TextRenderable } from "../renderables/Text.js"
 import { TextareaRenderable } from "../renderables/Textarea.js"
+import { TextTableRenderable } from "../renderables/TextTable.js"
 
 let renderer: TestRenderer
 let renderOnce: () => Promise<void>
@@ -307,11 +308,25 @@ test("renderer selection colours recolour a scrolled selection without moving it
 test("renderer selection colours recolour a textarea's setSelection", async () => {
   const textarea = await addTextarea()
   textarea.setSelection(0, 6)
+  await renderOnce()
 
   renderer.setSelectionColors(highlight, ink)
   await renderOnce()
 
   expect(cell(textarea.x + 1, textarea.y)).toEqual({ fg: ink, bg: highlight })
+})
+
+test("renderer selection colours recolour a text table selection", async () => {
+  const content = [[[{ __isChunk: true as const, text: "alpha" }], [{ __isChunk: true as const, text: "beta" }]]]
+  const table = new TextTableRenderable(renderer, { content })
+  renderer.root.add(table)
+  await renderOnce()
+  await selectFirstCells({ x: table.x + 1, y: table.y + 1 })
+
+  renderer.setSelectionColors(highlight, ink)
+  await renderOnce()
+
+  expect(cell(table.x + 2, table.y + 1)).toEqual({ fg: ink, bg: highlight })
 })
 
 test("a textarea that clears its own selection colour falls back to the renderer's", async () => {

@@ -3823,6 +3823,18 @@ export class FFIRenderLib {
     return count[0] === 0 ? "" : this.decoder.decode(bytes.subarray(0, count[0]))
   }
 
+  /** Sets the selection colors of every view in `context` whose selection has none of its own. */
+  public contextSetSelectionColors(context: NativeContextHandle, bg: RGBA | undefined, fg: RGBA | undefined): void {
+    const records = [bg, fg].map((color) => (color === undefined ? null : contextBufferColor(color)))
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_context_set_selection_colors")
+      nativeResult(
+        "ot_context_set_selection_colors",
+        this.opentui.symbols.ot_context_set_selection_colors(pointer, records[0], records[1]),
+      )
+    })
+  }
+
   public createContextTextBuffer(
     context: NativeContextHandle,
     options: NativeContextEditBufferOptions = {},
