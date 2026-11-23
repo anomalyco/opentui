@@ -3,8 +3,11 @@
 ## Engineering
 
 - Reuse existing seams; do not duplicate policy, ownership, or state across TypeScript, Zig, and framework layers.
-- For bug fixes, first add a focused regression test of observable behavior or invariants. If automation is impossible,
-  record the evidence and remaining manual verification; do not substitute contract sketches or guesses.
+- For bug fixes, check the fix against observable behavior or invariants. Keep the bug from returning with the
+  smallest check: a row or assertion in an existing test, not a new test file or harness. Add a new test only when
+  nothing existing can hold the case, and keep it small. Don't add tests beyond that; simplify or remove low-value ones
+  instead. If automation is impossible, record the evidence and remaining manual verification; do not substitute
+  contract sketches or guesses.
 - Make native ownership explicit; clean up handles, callbacks, buffers, and listeners on every exit path. Bound
   input-driven work and test lifecycle failures.
 - Do not interchange byte lengths, code points, graphemes, and terminal display-cell widths.
