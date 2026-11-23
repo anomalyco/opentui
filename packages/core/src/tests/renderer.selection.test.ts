@@ -209,6 +209,24 @@ function cell(x: number, y: number) {
   }))
 }
 
+async function useRendererColours(): Promise<void> {
+  renderer.destroy()
+  ;({ renderer, renderOnce, mockMouse } = await createTestRenderer({ clock, selectionBg: highlight, selectionFg: ink }))
+}
+
+async function selectFirstCells(target: { x: number; y: number }): Promise<void> {
+  await mockMouse.drag(target.x, target.y, target.x + 5, target.y)
+  await renderOnce()
+}
+
+async function selectText(options: { selectionBg?: RGBA } = {}): Promise<TextRenderable> {
+  const text = new TextRenderable(renderer, { content: "Selected text", fg: "#101010", ...options })
+  renderer.root.add(text)
+  await renderOnce()
+  await selectFirstCells(text)
+  return text
+}
+
 async function addTextarea(options: { selectionBg?: RGBA } = {}): Promise<TextareaRenderable> {
   const textarea = new TextareaRenderable(renderer, {
     initialValue: "Selected text",
@@ -221,6 +239,53 @@ async function addTextarea(options: { selectionBg?: RGBA } = {}): Promise<Textar
   await renderOnce()
   return textarea
 }
+
+test("renderer selection colours paint a text selection", async () => {
+  await useRendererColours()
+  const text = await selectText()
+
+  expect(text.getSelectedText()).toBe("Select")
+  expect(cell(text.x + 1, text.y)).toEqual({ fg: ink, bg: highlight })
+  expect(text.selectionBg).toBeUndefined()
+})
+
+test("renderer selection colours paint a textarea selection", async () => {
+  await useRendererColours()
+  const textarea = await addTextarea()
+  await selectFirstCells(textarea)
+
+  expect(textarea.getSelectedText()).toBe("Select")
+  expect(cell(textarea.x + 1, textarea.y)).toEqual({ fg: ink, bg: highlight })
+})
+
+test("a renderable's own selection colour wins over the renderer's", async () => {
+  await useRendererColours()
+  const text = await selectText({ selectionBg: own })
+
+  expect(cell(text.x + 1, text.y)).toEqual({ fg: ink, bg: own })
+})
+
+test("renderer selection colours repaint an active selection", async () => {
+  const text = await selectText()
+
+  renderer.setSelectionColors(highlight, ink)
+  await renderOnce()
+
+  expect(text.getSelectedText()).toBe("Select")
+  expect(cell(text.x + 1, text.y)).toEqual({ fg: ink, bg: highlight })
+  expect(renderer.selectionBg).toEqual(highlight)
+  expect(renderer.selectionFg).toEqual(ink)
+})
+
+test("clearing the renderer's selection colours inverts the cells again", async () => {
+  await useRendererColours()
+  const text = await selectText()
+
+  renderer.setSelectionColors(undefined, undefined)
+  await renderOnce()
+
+  expect(cell(text.x + 1, text.y).bg).toEqual(RGBA.fromHex("#101010"))
+})
 
 test("renderer selection colours recolour a scrolled selection without moving it", async () => {
   const box = new ScrollBoxRenderable(renderer, { width: 20, height: 4 })
@@ -252,8 +317,7 @@ test("renderer selection colours recolour a textarea's setSelection", async () =
 test("a textarea that clears its own selection colour falls back to the renderer's", async () => {
   renderer.setSelectionColors(highlight, ink)
   const textarea = await addTextarea({ selectionBg: own })
-  await mockMouse.drag(textarea.x, textarea.y, textarea.x + 5, textarea.y)
-  await renderOnce()
+  await selectFirstCells(textarea)
   expect(cell(textarea.x + 1, textarea.y)).toEqual({ fg: ink, bg: own })
 
   textarea.selectionBg = undefined
