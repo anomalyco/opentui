@@ -3,7 +3,7 @@ members = ["crates/opentui-sys", "crates/opentui", "crates/opentui-ssh"]
 resolver = "3"
 
 [workspace.package]
-version = "0.9.7"
+version = "0.9.8"
 edition = "2024"
 # Let chains.
 rust-version = "1.88"
@@ -15,8 +15,8 @@ exclude = ["tests/"]
 
 # The exact versions keep the crates and their generated declarations from one release.
 [workspace.dependencies]
-opentui = { path = "crates/opentui", version = "=0.9.7", default-features = false }
-opentui-sys = { path = "crates/opentui-sys", version = "=0.9.7", default-features = false }
+opentui = { path = "crates/opentui", version = "=0.9.8", default-features = false }
+opentui-sys = { path = "crates/opentui-sys", version = "=0.9.8", default-features = false }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

@@ -1,0 +1,17 @@
+base 0.9.7
+- @opentui/core: function parseBoxSizing(value: string): BoxSizing
++ @opentui/core: function parseBoxSizing(value: string | null | undefined): BoxSizing
++ @opentui/core: method CliRenderer.setSelectionColors(bg: ColorInput | undefined, fg: ColorInput | undefined): void
++ @opentui/core: method Renderable.getBoxSizing(): BoxSizing
++ @opentui/core: readonly property CliRenderer.selectionBg: RGBA | undefined
++ @opentui/core: readonly property CliRenderer.selectionFg: RGBA | undefined
++ @opentui/core: property CliRendererConfig.selectionBg?: ColorInput
++ @opentui/core: property CliRendererConfig.selectionFg?: ColorInput
++ @opentui/core: property LayoutOptions.boxSizing?: BoxSizingString
+- @opentui/core: property LayoutOptions.flexBasis?: number | "auto" | undefined
++ @opentui/core: property LayoutOptions.flexBasis?: number | "auto" | `${number}%` | undefined
++ @opentui/core: readonly property RenderContext.selectionBg?: RGBA
++ @opentui/core: readonly property RenderContext.selectionFg?: RGBA
++ @opentui/core: property Renderable.boxSizing: BoxSizingString | null | undefined
+- @opentui/core: property Renderable.flexBasis: number | "auto" | null | undefined
++ @opentui/core: property Renderable.flexBasis: number | "auto" | `${number}%` | null | undefined

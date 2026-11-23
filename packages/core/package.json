@@ -9,7 +9,7 @@
   "types": "src/index.ts",
   "module": "src/index.ts",
   "main": "src/index.ts",
-  "version": "0.9.7",
+  "version": "0.9.8",
   "type": "module",
   "imports": {
     "#opentui/runtime-assets": {
@@ -78,14 +78,14 @@
     "web-tree-sitter": "0.25.10"
   },
   "optionalDependencies": {
-    "@opentui/core-darwin-x64": "0.9.7",
-    "@opentui/core-darwin-arm64": "0.9.7",
-    "@opentui/core-linux-x64": "0.9.7",
-    "@opentui/core-linux-arm64": "0.9.7",
-    "@opentui/core-win32-x64": "0.9.7",
-    "@opentui/core-win32-arm64": "0.9.7",
-    "@opentui/core-linux-x64-musl": "0.9.7",
-    "@opentui/core-linux-arm64-musl": "0.9.7"
+    "@opentui/core-darwin-x64": "0.9.8",
+    "@opentui/core-darwin-arm64": "0.9.8",
+    "@opentui/core-linux-x64": "0.9.8",
+    "@opentui/core-linux-arm64": "0.9.8",
+    "@opentui/core-win32-x64": "0.9.8",
+    "@opentui/core-win32-arm64": "0.9.8",
+    "@opentui/core-linux-x64-musl": "0.9.8",
+    "@opentui/core-linux-arm64-musl": "0.9.8"
   },
   "exports": {
     ".": {
