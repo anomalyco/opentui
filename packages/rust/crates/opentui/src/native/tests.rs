@@ -854,6 +854,18 @@ fn editor_converts_byte_indices_and_cells() -> Result<()> {
         assert_eq!(context.measure_edit_text(text, method, 4)?, offset);
         buffer.set_text("\u{301}界", false)?;
         assert_eq!(buffer.cell_offset_to_byte_index(0)?, "\u{301}".len());
+        // An insert there lands at that index, as does a letter typed after a mark on a new line.
+        for text in ["x", "\n\u{200d}", "y"] {
+            buffer.insert(text)?;
+        }
+        assert_eq!(buffer.text()?, "\u{301}x\n\u{200d}y界");
+        // Enter at a line start moves the whole line down, its leading zero-width text included.
+        for text in ["\u{200f}שלום", "\u{301}x"] {
+            buffer.set_text(text, false)?;
+            buffer.set_cursor(0, 0)?;
+            buffer.insert("\n")?;
+            assert_eq!(buffer.text()?, format!("\n{text}"));
+        }
         let text = "ab\tcd";
         for i in 0..text.len() {
             buffer.set_text(text, false)?;

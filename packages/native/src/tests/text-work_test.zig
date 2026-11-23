@@ -90,18 +90,18 @@ test "text work: edits in a 10,000-line editor lay out the edited line at the ne
     const rows = [_]struct { mode: WrapMode, frame: Counts, measure: Counts }{
         .{
             .mode = .none,
-            .frame = .{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 93, .lines_shifted = 9_989, .splices = 1, .line_seeks = 12, .line_seek_nodes = 186, .clusters_drawn = 3_171 },
+            .frame = .{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 87, .lines_shifted = 9_989, .splices = 1, .line_seeks = 12, .line_seek_nodes = 185, .clusters_drawn = 3_171 },
             // Unwrapped measure reads the widest line from the rope metrics.
             .measure = .{ .measure_passes = 1 },
         },
         .{
             .mode = .word,
-            .frame = .{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 93, .lines_shifted = 9_989, .splices = 1, .line_seeks = 12, .line_seek_nodes = 186, .clusters_drawn = 3_171, .ascii_bytes = 90 },
+            .frame = .{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 87, .lines_shifted = 9_989, .splices = 1, .line_seeks = 12, .line_seek_nodes = 185, .clusters_drawn = 3_171, .ascii_bytes = 90 },
             .measure = .{ .measure_passes = 1, .measure_lines = 10_000, .ascii_bytes = 790_011 },
         },
         .{
             .mode = .char,
-            .frame = .{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 93, .lines_shifted = 9_989, .splices = 1, .line_seeks = 12, .line_seek_nodes = 186, .clusters_drawn = 3_171, .prefix_seeks = 2 },
+            .frame = .{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 87, .lines_shifted = 9_989, .splices = 1, .line_seeks = 12, .line_seek_nodes = 185, .clusters_drawn = 3_171, .prefix_seeks = 2 },
             .measure = .{ .measure_passes = 1, .measure_lines = 10_000, .prefix_seeks = 10_001 },
         },
     };

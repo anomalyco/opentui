@@ -559,6 +559,10 @@ describe("EditBuffer", () => {
       editor.setText("\u0301界") // Two string boundaries share cell 0; prefer the later boundary.
       expect(editor.cellOffsetToStringIndex(0)).toBe(1)
       expect(editor.stringIndexToCellOffset(1)).toBe(0)
+      editor.insertText("x") // An insert there lands at that index, as does a letter typed after a mark on a new line.
+      editor.insertText("\n‍")
+      editor.insertText("y")
+      expect(editor.getText()).toBe("́x\n‍y界")
       for (const text of ["", "ascii", "plain\nASCII", "\u0301"]) {
         editor.setText(text)
         expect(editor.cellOffsetToStringIndex(0xffffffff)).toBe(text.length)

@@ -876,20 +876,22 @@ test "layers: edits beside zero-width text keep runs on their characters" {
     defer setup.deinit();
     const zwsp = "\u{200b}";
     // Each row: the text, where an edit puts the zero-width character (null: the text has it),
-    // the edit column, and whether the edit deletes the next character instead of inserting "x".
-    for ([_]struct { []const u8, ?u32, u32, bool }{
-        .{ "abc", 0, 0, false },
-        .{ "abc", 0, 0, true },
-        .{ "abc", 1, 1, false },
-        .{ "abc", 1, 1, true },
-        .{ "abc", 3, 3, false },
-        .{ "abc", 2, 1, true },
-        .{ "z\nabc", null, 0, false },
-        .{ "z\nabc", null, 0, true },
-        .{ "a\u{200b}bc", null, 1, false },
-        .{ "a\u{200b}bc", null, 1, true },
-        .{ "\u{200b}abc", null, 0, false },
-        .{ "\u{200b}abc", null, 0, true },
+    // the edit column, and the text the edit inserts (null: it deletes the next character).
+    for ([_]struct { []const u8, ?u32, u32, ?[]const u8 }{
+        .{ "abc", 0, 0, "x" },
+        .{ "abc", 0, 0, null },
+        .{ "abc", 1, 1, "x" },
+        .{ "abc", 1, 1, null },
+        .{ "abc", 3, 3, "x" },
+        .{ "abc", 2, 1, null },
+        .{ "z\nabc", null, 0, "x" },
+        .{ "z\nabc", null, 0, null },
+        .{ "a\u{200b}bc", null, 1, "x" },
+        .{ "a\u{200b}bc", null, 1, null },
+        .{ "\u{200b}abc", null, 0, "x" },
+        .{ "\u{200b}abc", null, 0, null },
+        // Enter moves the line down with its zero-width text.
+        .{ "\u{200b}abc", null, 0, "\n" },
     }, 0..) |row, index| {
         errdefer std.debug.print("zero-width row {d}\n", .{index});
         const eb = try EditBuffer.initWithOptions(gpa, &setup.pools.graphemes, &setup.pools.links, .unicode, null, .{ .group_sets = &setup.sets });
@@ -917,7 +919,7 @@ test "layers: edits beside zero-width text keep runs on their characters" {
         }
         try eb.tb.setLayer(1, 0, byte, runs[0..count]);
         try eb.setCursor(edit_row, row[2]);
-        if (row[3]) try eb.deleteForward() else try eb.insertText("x");
+        if (row[3]) |inserted| try eb.insertText(inserted) else try eb.deleteForward();
         var after_bytes: [64]u8 = undefined;
         const after = plainText(eb.tb, &after_bytes);
         // Every surviving run still covers one character of its kind.
@@ -929,12 +931,12 @@ test "layers: edits beside zero-width text keep runs on their characters" {
                 try testing.expectEqualStrings(zwsp, slice);
             } else {
                 try testing.expectEqual(@as(usize, 1), slice.len);
-                try testing.expect(slice[0] != 'x');
+                try testing.expect(row[3] == null or slice[0] != row[3].?[0]);
             }
             covered += slice.len;
         }
-        // Runs cover every character but an inserted "x".
-        try testing.expectEqual(after.len - @intFromBool(!row[3]), covered);
+        // Runs cover every character but the inserted text.
+        try testing.expectEqual(after.len - if (row[3]) |inserted| inserted.len else 0, covered);
     }
 }
 

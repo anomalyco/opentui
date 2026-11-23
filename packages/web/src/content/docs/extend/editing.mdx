@@ -173,8 +173,9 @@ no line breaks, so do not use them for editor offsets.
 Use the helpers on `textarea.editBuffer` (Rust: `textarea.buffer()` or `input.buffer()`) to translate positions in
 the current buffer text. Each newline in that text is one LF. The helpers use the buffer's tab width and grapheme
 width method. An index inside a grapheme or a cell inside a tab or wide grapheme rounds down to its start. At a
-cell shared by zero-width text, the returned string index is **after** that text. Values past EOF clamp to EOF;
-Core takes unsigned 32-bit integers. Neither call moves the cursor.
+cell shared by zero-width text, the returned string index is **after** that text, where text typed at that cell goes,
+at a line start too. An insert that adds a line break at a line start goes before the line's leading zero-width text,
+so the line keeps it. Values past EOF clamp to EOF; Core takes unsigned 32-bit integers. Neither call moves the cursor.
 
 ```typescript
 buffer.setText("ab\tcd") // Default tab width: 2 cells
