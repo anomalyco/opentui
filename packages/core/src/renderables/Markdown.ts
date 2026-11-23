@@ -851,7 +851,7 @@ export class MarkdownRenderable extends Renderable {
       const reuse = leaf && same && old!.default === old!.renderable ? old!.default : undefined
       this._shown.push({ record: block, default: reuse })
       if (reuse) old!.renderable = undefined
-      if (!this.isHidden(index)) this.show(index, undefined)
+      if (!this.isHidden(index)) this.show(index, undefined, refresh)
       // The doc unbound the removed block's node.
       if (reuse instanceof TextRenderable && isProse(block.kind) && !this.hostWrites(block)) this.bind(index, reuse)
     } else {
@@ -864,14 +864,17 @@ export class MarkdownRenderable extends Renderable {
       shown.record = block
       if (this.isHidden(index)) {
         // Shown with its parent.
-      } else if (rebuild || (changed && this.rendersCustom(block))) this.show(index, shown.renderable)
+      } else if (rebuild || (changed && this.rendersCustom(block))) this.show(index, shown.renderable, refresh)
       else if (shown.default instanceof CodeRenderable) this.setCode(index, shown.default)
     }
     this.afterChange(index, refresh, layout)
   }
 
-  /** Builds the renderable of block `index` and puts it where `old` was, or last in its parent. */
-  private show(index: number, old: Renderable | undefined): void {
+  /**
+   * Builds the renderable of block `index` and puts it where `old` was, or last in its parent. Descendants shown again
+   * list their tables and lists in `refresh`, which the caller runs once every block of the call is shown.
+   */
+  private show(index: number, old: Renderable | undefined, refresh: Refresh): void {
     this._shownInCall?.add(index)
     const shown = this._shown[index]!
     const before = shown.default
@@ -892,10 +895,10 @@ export class MarkdownRenderable extends Renderable {
     if (!fallback) shown.container = shown.marker = undefined
     // Descendants lose what showed them with the old default, and show again in the new one; shown children of a block
     // its renderer showed alone show in a default that appears.
-    if (before || (fallback && this._shown[index + 1]?.record.parent === index)) this.showDescendants(index)
+    if (before || (fallback && this._shown[index + 1]?.record.parent === index)) this.showDescendants(index, refresh)
   }
 
-  private showDescendants(index: number): void {
+  private showDescendants(index: number, refresh: Refresh): void {
     // Descendants listed later in the same call are not shown yet; they show when they come.
     const end = Math.min(this.subtreeEnd(index), this._shown.length)
     for (let at = index + 1; at < end; at++) {
@@ -903,13 +906,11 @@ export class MarkdownRenderable extends Renderable {
       shown.renderable = shown.default = shown.container = shown.marker = shown.written = shown.targets = undefined
       shown.gap = shown.width = shown.count = shown.ordinal = undefined
     }
-    const refresh: Refresh = { tables: new Set(), lists: new Set(), items: new Set() }
     for (let at = index + 1; at < end; at++) {
-      if (!this.isHidden(at)) this.show(at, undefined)
+      if (!this.isHidden(at)) this.show(at, undefined, refresh)
       this.afterChange(at, refresh, true)
     }
     this.afterChange(index, refresh, true)
-    this.refresh(refresh)
   }
 
   private subtreeEnd(index: number): number {
@@ -1344,12 +1345,11 @@ export class MarkdownRenderable extends Renderable {
    * since they read the style; nothing is parsed again.
    */
   private restyle(skip: ReadonlySet<number> = new Set()): void {
-    const tables: number[] = []
-    const lists: number[] = []
+    const refresh: Refresh = { tables: new Set(), lists: new Set(), items: new Set() }
     this._shown.forEach((shown, index) => {
       const block = this._doc.blocks[index]!
       if (this.isHidden(index)) return
-      if (this.rendersCustom(block) && !skip.has(index)) this.show(index, shown.renderable)
+      if (this.rendersCustom(block) && !skip.has(index)) this.show(index, shown.renderable, refresh)
       const renderable = shown.default
       if (!renderable) return
       if (renderable instanceof TextRenderable) this.styleText(index, renderable)
@@ -1357,16 +1357,15 @@ export class MarkdownRenderable extends Renderable {
       else if (renderable instanceof TextTableRenderable) {
         this.applyTableRenderableOptions(renderable, this.resolveTableRenderableOptions())
         for (let at = index + 1, end = this.subtreeEnd(index); at < end; at++) this._shown[at]!.cell = undefined
-        tables.push(index)
-      } else if (block.kind === md.OT_MD_LIST) lists.push(index)
+        refresh.tables.add(index)
+      } else if (block.kind === md.OT_MD_LIST) refresh.lists.add(index)
       else if (block.kind === md.OT_MD_RULE && renderable instanceof BoxRenderable) {
         renderable.borderColor = this.getStyle("conceal")?.fg ?? this._fg ?? "#888888"
       } else if (block.kind === md.OT_MD_QUOTE && renderable instanceof BoxRenderable) {
         renderable.borderColor = this.getStyle("conceal")?.fg ?? this.getStyle("default")?.fg ?? this._fg ?? "#FFFFFF"
       }
     })
-    for (const table of tables) this.fillTable(table)
-    for (const list of lists) this.updateList(list)
+    this.refresh(refresh)
   }
 
   /** Builds every block's renderable again (a new renderer), keeping the doc. */
