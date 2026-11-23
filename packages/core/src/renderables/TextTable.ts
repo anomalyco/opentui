@@ -407,6 +407,13 @@ export class TextTableRenderable extends Renderable {
     return this._selectionFg ?? this._ctx.selectionFg
   }
 
+  override _refreshSelectionColors(): void {
+    for (const row of this._cells) {
+      for (const cell of row) cell.textBufferView.setSelectionColors(this.resolvedSelectionBg, this.resolvedSelectionFg)
+    }
+    this.requestRender()
+  }
+
   public shouldStartSelection(x: number, y: number): boolean {
     if (!this.selectable) return false
 

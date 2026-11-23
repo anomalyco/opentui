@@ -4530,7 +4530,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   public setSelectionColors(bg: ColorInput | undefined, fg: ColorInput | undefined): void {
     this._selectionBg = bg === undefined ? undefined : RGBA.clone(parseColor(bg))
     this._selectionFg = fg === undefined ? undefined : RGBA.clone(parseColor(fg))
-    if (this.currentSelection) this.notifySelectablesOfSelectionChange()
+    const refresh = (renderable: Renderable): void => {
+      renderable._refreshSelectionColors()
+      for (const child of renderable.getChildren()) refresh(child)
+    }
+    refresh(this.root)
     this.requestRender()
   }
 

@@ -351,9 +351,8 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   set selectionBg(value: RGBA | string | undefined) {
     const newColor = value ? RGBA.clone(parseColor(value)) : undefined
     if (this._selectionBg !== newColor) {
-      this.editorView.setSelectionColors(newColor ?? this._ctx.selectionBg, this.resolvedSelectionFg)
       this._selectionBg = newColor
-      this.requestRender()
+      this._refreshSelectionColors()
     }
   }
 
@@ -364,10 +363,14 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   set selectionFg(value: RGBA | string | undefined) {
     const newColor = value ? RGBA.clone(parseColor(value)) : undefined
     if (this._selectionFg !== newColor) {
-      this.editorView.setSelectionColors(this.resolvedSelectionBg, newColor ?? this._ctx.selectionFg)
       this._selectionFg = newColor
-      this.requestRender()
+      this._refreshSelectionColors()
     }
+  }
+
+  override _refreshSelectionColors(): void {
+    this.editorView.setSelectionColors(this.resolvedSelectionBg, this.resolvedSelectionFg)
+    this.requestRender()
   }
 
   private get resolvedSelectionBg(): RGBA | undefined {
