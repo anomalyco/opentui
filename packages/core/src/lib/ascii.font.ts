@@ -183,7 +183,10 @@ export function getCharacterPositions(text: string, font: keyof typeof fonts = "
 
     currentX += charWidth
 
-    if (i < text.length - 1) {
+    // Match measureText/renderFontToFrameBuffer: letterspace is only added after
+    // a rendered glyph. Unknown characters fall back to a blank advance without
+    // letterspace, so skip it here too to keep selection offsets aligned.
+    if (charDef && i < text.length - 1) {
       currentX += fontDef.letterspace_size
     }
 
