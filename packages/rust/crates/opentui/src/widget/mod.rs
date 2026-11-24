@@ -288,7 +288,6 @@ pub struct Element {
     app: Weak<AppInner>,
     node: Option<Node>,
     num: u32,
-    root: bool,
     this: Weak<dyn Behavior>,
     parent: RefCell<Option<Weak<dyn Behavior>>>,
     children: RefCell<Vec<Rc<dyn Behavior>>>,
@@ -331,7 +330,6 @@ impl Element {
             app: Rc::downgrade(app.inner()),
             node,
             num,
-            root: kind == Some(NodeKind::Root),
             this,
             parent: RefCell::new(None),
             children: RefCell::new(Vec::new()),
@@ -463,7 +461,11 @@ impl Element {
     /// Registers the hook that tells which frames draw the widget: a paint slot, whose clip shows whether any of it is
     /// in view. The root has no paint slot and nothing clips it; its update tells.
     pub(crate) fn report_draws(&self) {
-        self.add_hooks(if self.root { Hooks::UPDATE } else { Hooks::RENDER_BEFORE });
+        self.add_hooks(if self.is_root() { Hooks::UPDATE } else { Hooks::RENDER_BEFORE });
+    }
+
+    fn is_root(&self) -> bool {
+        self.node.as_ref().is_some_and(|node| node.kind() == NodeKind::Root)
     }
 
     /// The hooks the widget registers itself. Its own drawing records in the latest of their paint phases.
@@ -475,7 +477,7 @@ impl Element {
     /// The root cannot have paint hooks; its filters cover the whole screen.
     fn sync_hooks(&self) {
         let mut hooks = self.hooks.get();
-        if !self.root && !self.filters.borrow().is_empty() {
+        if !self.is_root() && !self.filters.borrow().is_empty() {
             hooks = hooks.union(Hooks::RENDER_BEFORE);
         }
         if hooks == self.registered.get() {
