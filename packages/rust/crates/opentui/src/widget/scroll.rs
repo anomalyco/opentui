@@ -977,8 +977,12 @@ impl ScrollBox {
         self.clone()
     }
 
-    /// Scrolls the least distance that brings `child` fully into view, using the latest frame's layout.
+    /// Scrolls the least distance that brings `child` fully into view, using the latest frame's layout. A
+    /// [`Fragment`](super::Fragment) has no rect, so it does not scroll.
     pub fn scroll_into_view(&self, child: &impl Widget) -> Self {
+        if child.element().node.is_none() {
+            return self.clone();
+        }
         fn delta(start: f64, end: f64, view_start: f64, view_end: f64) -> f64 {
             let (size, view) = (end - start, view_end - view_start);
             match (start < view_start, end > view_end) {

@@ -74,12 +74,32 @@ The `Widget` trait has the layout methods:
 | `VideoView`    | An MP4 file, played with audio, looping, and seeking.                                              |
 | `FrameBuffer`  | A grid of cells you draw into yourself.                                                            |
 | `Custom<T>`    | A widget you paint yourself by implementing `Component`.                                           |
+| `Fragment`     | A group of children with no box of its own. They lay out as its parent's children.                 |
 
 Other pages cover the larger widgets:
 
 - [Code, Markdown, and highlighting](/docs/bindings/rust/text): `Code`, `Diff`, and `Markdown`.
 - [Images, video, sound, and terminals](/docs/bindings/rust/media): `ImageView`, `VideoView`, `TerminalView`, and `FrameBuffer`.
 - [Your own widgets](/docs/bindings/rust/custom-widgets): `Custom<T>`.
+
+## Fragments
+
+A `Fragment` groups widgets without adding a box.
+Its children lay out, draw, take focus, and receive clicks as children of the fragment's parent, at the fragment's position:
+
+```rust
+let extras = Fragment::new(&app).child(&Text::new(&app, "b")).child(&Text::new(&app, "c"));
+let row = View::new(&app).row().child(&Text::new(&app, "a")).child(&extras).child(&Text::new(&app, "d"));
+// The row shows "abcd".
+```
+
+The parent holds the fragment as one child.
+`insert`, `detach`, and adding it to another parent move all of its children together, and you can add children to the fragment before or after it is attached.
+Fragments nest, and an empty fragment takes no space.
+Keys and mouse events bubble from its children through the fragment's handlers to its parent.
+
+A fragment has no geometry: its `rect` is empty, and the layout, paint, filter, `visible`, `focusable`, `on_click`, and `on_resize` methods do nothing on it, and neither does `ScrollBox::scroll_into_view(&fragment)`.
+Use its children instead.
 
 ## Themes
 

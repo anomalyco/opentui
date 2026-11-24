@@ -167,6 +167,101 @@ fn clear_detaches_every_child_and_their_focus() {
 }
 
 #[test]
+fn fragments_place_their_children_in_the_parent() {
+    // The root holds the rows `p` and `q`; `f`, `g` and `e` are fragments, and each text shows its own letter. Rows
+    // read top to bottom, joined by `/`.
+    struct Tree {
+        app: TestApp,
+        p: View,
+        q: View,
+        f: Fragment,
+        g: Fragment,
+        e: Fragment,
+        t: Vec<Text>,
+    }
+    type Change = fn(&Tree);
+    let cases: [(&str, Change, &str); 16] = [
+        ("children added before it is attached", |t| drop(t.p.add(&t.f.child(&t.t[1]).child(&t.t[2]))), "bc"),
+        ("children added and inserted after", |t| drop(t.f.add(&t.t[5]).insert(0, &t.t[4])), "axbcyd"),
+        ("inserted between siblings", |t| drop(t.p.insert(1, &t.g.child(&t.t[4]))), "axbcd"),
+        ("a sibling inserted after it", |t| drop(t.p.insert(2, &t.t[4])), "abcxd"),
+        ("moved forward in its parent", |t| drop(t.p.insert(2, &t.f)), "adbc"),
+        ("moved back in its parent", |t| drop(t.p.insert(0, &t.f)), "bcad"),
+        ("moved to another parent", |t| drop(t.q.add(&t.f)), "ad/bc"),
+        (
+            "detached and added again",
+            |t| (t.f.detach(), assert_eq!(rows(&t.app)[0], "ad"), drop(t.p.add(&t.f))).2,
+            "adbc",
+        ),
+        ("cleared and filled again", |t| (t.f.clear(), t.app.render(), drop(t.f.add(&t.t[4]))).2, "axd"),
+        ("a child moved out to its parent", |t| drop(t.p.add(&t.t[1])), "acdb"),
+        ("a sibling moved in", |t| drop(t.f.insert(1, &t.t[0])), "bacd"),
+        ("a child taken by a detached fragment", |t| drop(t.g.add(&t.t[2])), "abd"),
+        ("hidden, which does nothing", |t| drop(t.f.visible(false)), "abcd"),
+        ("the root's child", |t| drop(t.app.root().insert(0, &t.g.child(&t.t[4]))), "x/abcd"),
+        // `f` holds `b`, `e` (empty, then `x`), `g` and `c`; then `e` moves into `g`, within the same host.
+        (
+            "nested",
+            |t| {
+                t.f.insert(1, &t.e).insert(2, &t.g.child(&t.t[5]));
+                t.app.render();
+                t.e.add(&t.t[4]);
+                t.g.insert(0, &t.e);
+            },
+            "abxycd",
+        ),
+        // As for a widget with a node, the app reports the refused move.
+        (
+            "moved into its own child, refused",
+            |t| (t.g.add(&t.f.child(&t.g)), assert!(t.app.try_render().is_err())).1,
+            "abcd",
+        ),
+    ];
+    for (name, change, expected) in cases {
+        let app = TestApp::new(8, 3);
+        let (p, q) = (View::new(&app).row().height(1), View::new(&app).row().height(1));
+        app.root().add(&p).add(&q);
+        let t: Vec<_> = "abcdxy".chars().map(|letter| Text::new(&app, letter.to_string())).collect();
+        let (f, g, e) = (Fragment::new(&app), Fragment::new(&app), Fragment::new(&app));
+        // Every case but the first starts from `a`, `f` with `b` and `c`, and `d` in `p`.
+        if name != cases[0].0 {
+            p.add(&t[0]).add(&f.child(&t[1]).child(&t[2])).add(&t[3]);
+            app.render();
+        }
+        let tree = Tree { app, p, q, f, g, e, t };
+        change(&tree);
+        assert_eq!(rows(&tree.app).join("/").trim_end_matches('/'), expected, "{name}");
+        // Hit tests find each text where it shows, never a fragment, and the text counts as shown.
+        for (y, row) in expected.split('/').enumerate() {
+            for (x, letter) in row.chars().enumerate() {
+                let text = &tree.t["abcdxy".find(letter).unwrap()];
+                assert_eq!(tree.app.widget_at(x as u16, y as u16).map(|hit| hit.id()), Some(text.id()), "{name}");
+                assert!(text.is_shown(), "{name}: {letter}");
+            }
+        }
+    }
+    // A widget with a node detaches without a list of the nodes it holds.
+    let app = TestApp::new(4, 1);
+    let text = Text::new(&app, "a");
+    app.root().add(&text);
+    app.render();
+    let before = allocations::count();
+    text.detach();
+    assert_eq!(allocations::count() - before, 0, "a detach allocated");
+    // A detached fragment that drops releases its children.
+    let app = TestApp::new(4, 1);
+    let child = Text::new(&app, "b");
+    let (released, fragment) = (child.downgrade(), Fragment::new(&app).child(&child));
+    app.root().add(&fragment);
+    app.render();
+    drop(child);
+    fragment.detach();
+    assert!(released.upgrade().is_some());
+    drop(fragment);
+    assert!(released.upgrade().is_none());
+}
+
+#[test]
 fn column_and_row_gaps_space_one_axis() {
     let app = TestApp::new(9, 3);
     let row = View::new(&app).row().flex_wrap(Wrap::Wrap).column_gap(1);
@@ -926,7 +1021,9 @@ fn tab_moves_focus_in_tree_order_and_skips_hidden_widgets() {
     let hidden = Input::new(&app).visible(false);
     let list = menu(&app).height(2);
     let last = Input::new(&app);
-    app.root().add(&first).add(&hidden).add(&View::new(&app).child(&list)).add(&last);
+    // A fragment cannot take focus; its children take theirs in place.
+    let fragment = Fragment::new(&app).focusable(true).child(&Fragment::new(&app).child(&list));
+    app.root().add(&first).add(&hidden).add(&fragment).add(&last);
     app.press("tab");
     assert!(first.is_focused());
     assert!(app.focused().unwrap().element().is_editor());
