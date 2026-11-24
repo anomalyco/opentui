@@ -9,6 +9,12 @@ import {
 export type InputAction = TextareaAction
 export type InputKeyBinding = TextareaKeyBinding
 
+const defaultInputKeyBindings: InputKeyBinding[] = [
+  { name: "return", action: "submit" },
+  { name: "kpenter", action: "submit" },
+  { name: "linefeed", action: "submit" },
+]
+
 /** Cuts `text` to at most `max` UTF-16 code units, leaving out a character that does not fit whole. */
 function fit(text: string, max: number): string {
   const cut = text.substring(0, max)
@@ -83,12 +89,7 @@ export class InputRenderable extends TextareaRenderable {
       height: 1,
       wrapMode: "none",
       // Override return/linefeed to submit instead of newline
-      keyBindings: [
-        { name: "return", action: "submit" },
-        { name: "kpenter", action: "submit" },
-        { name: "linefeed", action: "submit" },
-        ...(options.keyBindings || []),
-      ],
+      keyBindings: [...defaultInputKeyBindings, ...(options.keyBindings || [])],
     })
 
     try {
@@ -103,6 +104,10 @@ export class InputRenderable extends TextareaRenderable {
     } catch (error) {
       this.rollbackConstruction(error)
     }
+  }
+
+  public override set keyBindings(bindings: InputKeyBinding[] | null | undefined) {
+    super.keyBindings = [...defaultInputKeyBindings, ...(bindings ?? [])]
   }
 
   /**
