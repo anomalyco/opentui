@@ -590,7 +590,10 @@ impl Element {
 
     /// Detaches the nodes this element put in its host.
     fn detach_natives(&self) -> Result<()> {
-        self.natives(0).iter().try_for_each(|native| native.element().node.as_ref().map_or(Ok(()), Node::detach))
+        match &self.node {
+            Some(node) => node.detach(),
+            None => self.natives(0).iter().try_for_each(|native| native.element().detach_natives()),
+        }
     }
 
     /// The element whose node this element's children attach to, and the native index of the first of them there,

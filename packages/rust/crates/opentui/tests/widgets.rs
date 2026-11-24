@@ -240,6 +240,14 @@ fn fragments_place_their_children_in_the_parent() {
             }
         }
     }
+    // A widget with a node detaches without a list of the nodes it holds.
+    let app = TestApp::new(4, 1);
+    let text = Text::new(&app, "a");
+    app.root().add(&text);
+    app.render();
+    let before = allocations::count();
+    text.detach();
+    assert_eq!(allocations::count() - before, 0, "a detach allocated");
     // A detached fragment that drops releases its children.
     let app = TestApp::new(4, 1);
     let child = Text::new(&app, "b");
