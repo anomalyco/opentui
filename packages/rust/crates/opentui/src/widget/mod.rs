@@ -21,6 +21,7 @@ mod custom;
 mod diff;
 mod editor;
 mod extmarks;
+mod fragment;
 mod frame_buffer;
 mod image;
 mod input;
@@ -45,6 +46,7 @@ pub use custom::{Component, Custom};
 pub use diff::{Diff, DiffColors, DiffGutter, DiffView};
 pub use editor::EditorAction;
 pub use extmarks::{Extmark, ExtmarkId, ExtmarkOptions};
+pub use fragment::Fragment;
 pub use frame_buffer::FrameBuffer;
 pub use image::ImageView;
 pub use input::Input;
@@ -76,7 +78,7 @@ pub use crate::native::{
 };
 
 use crate::app::{AnimationTick, App, AppInner, Cx, HandlerId, Tick};
-use crate::error::Result;
+use crate::error::{Error, Result, Status};
 use crate::input::{KeyEvent, MouseEvent};
 use crate::layout::{
     Align, BoxSizing, Display, Edge, FlexDirection, Gutter, Justify, LayoutMode, LayoutProperty, Length, Overflow,
@@ -290,6 +292,8 @@ pub struct Element {
     this: Weak<dyn Behavior>,
     parent: RefCell<Option<Weak<dyn Behavior>>>,
     children: RefCell<Vec<Rc<dyn Behavior>>>,
+    /// Whether a child ever had no node. Until then each child is one native child, so positions need no count.
+    held_fragment: Cell<bool>,
     pub(crate) handlers: Handlers,
     focusable: Cell<bool>,
     visible: Cell<bool>,
@@ -317,19 +321,21 @@ impl Drop for Element {
 }
 
 impl Element {
-    /// Creates the element and its native node. A native failure is reported to the app; the element then does
-    /// nothing.
-    pub(crate) fn new(app: &App, kind: NodeKind, this: Weak<dyn Behavior>) -> Self {
+    /// Creates the element and its native node, or no node for a [`Fragment`]. A native failure is reported to the
+    /// app; the element then does nothing.
+    pub(crate) fn new(app: &App, kind: impl Into<Option<NodeKind>>, this: Weak<dyn Behavior>) -> Self {
         let num = app.inner().allocate_num();
-        let node = app.report(Node::new(app.synced_session(), kind, num));
+        let kind = kind.into();
+        let node = kind.and_then(|kind| app.report(Node::new(app.synced_session(), kind, num)));
         Self {
             app: Rc::downgrade(app.inner()),
             node,
             num,
-            root: kind == NodeKind::Root,
+            root: kind == Some(NodeKind::Root),
             this,
             parent: RefCell::new(None),
             children: RefCell::new(Vec::new()),
+            held_fragment: Cell::new(false),
             handlers: Handlers::default(),
             focusable: Cell::new(false),
             visible: Cell::new(true),
@@ -536,7 +542,7 @@ impl Element {
 
     /// Sets whether the element can take focus. Making the focused element unfocusable blurs it.
     pub(crate) fn set_focusable(&self, focusable: bool) {
-        self.focusable.set(focusable);
+        self.focusable.set(focusable && self.node.is_some());
         if !focusable
             && let Some(app) = self.app()
             && app.focused().is_some_and(|focused| focused.id() == self.num)
@@ -572,19 +578,73 @@ impl Element {
         self.children.borrow().clone()
     }
 
-    /// Moves `child` under this element at `index`, or last. A child that is an ancestor is rejected natively.
+    /// The elements with a node that this element puts in its host, in order: itself, or a fragment's children's,
+    /// leaving out the element numbered `except` and what it holds.
+    fn natives(&self, except: u32) -> Vec<Rc<dyn Behavior>> {
+        match &self.node {
+            _ if self.num == except => Vec::new(),
+            Some(_) => self.behavior().into_iter().collect(),
+            None => self.children.borrow().iter().flat_map(|child| child.element().natives(except)).collect(),
+        }
+    }
+
+    /// Detaches the nodes this element put in its host.
+    fn detach_natives(&self) -> Result<()> {
+        self.natives(0).iter().try_for_each(|native| native.element().node.as_ref().map_or(Ok(()), Node::detach))
+    }
+
+    /// The element whose node this element's children attach to, and the native index of the first of them there,
+    /// leaving out the element numbered `except`. A fragment's host is its parent's; a detached fragment has none.
+    fn host(&self, except: u32) -> Option<(Rc<dyn Behavior>, usize)> {
+        if self.node.is_some() {
+            return Some((self.behavior()?, 0));
+        }
+        let parent = self.parent_behavior()?;
+        let (host, offset) = parent.element().host(except)?;
+        let siblings = parent.element().children.borrow().clone();
+        let before = siblings.iter().take_while(|sibling| sibling.element().num != self.num);
+        Some((host, offset + before.map(|sibling| sibling.element().natives(except).len()).sum::<usize>()))
+    }
+
+    /// Moves `child` under this element at `index`, or last. A child that is an ancestor is rejected natively, or
+    /// here with the same error for a fragment.
     pub(crate) fn insert(&self, child: &Element, index: Option<usize>) {
         let Some(behavior) = child.behavior() else { return };
         if std::ptr::eq(child, self) {
             return;
         }
-        let Some(parent_node) = &self.node else { return };
+        if child.node.is_none() && self.is_within(child) {
+            let error = Error::Native { operation: "ot_scene_move_node", status: Status::InvalidArgument };
+            if let Some(app) = self.app() {
+                app.report::<()>(Err(error));
+            }
+            return;
+        }
         // Positions count this parent's other children, as native moves within one parent do.
         let within = child.parent.borrow().as_ref().is_some_and(|parent| Weak::ptr_eq(parent, &self.this));
         let others = self.children.borrow().len() - usize::from(within);
         let index = index.unwrap_or(others).min(others);
-        // Change the Rust tree only after native code accepts the move, so a rejected move changes nothing.
-        let result = child.node.as_ref().map_or(Ok(()), |node| node.insert_into(parent_node, index as u32));
+        // The native position counts the host's other nodes before `index`; a detached fragment has no host.
+        let target = self.host(child.num).map(|(host, offset)| {
+            if !self.held_fragment.get() {
+                return (host, offset + index);
+            }
+            let siblings = self.children.borrow().clone();
+            let before = siblings.iter().filter(|sibling| sibling.element().num != child.num).take(index);
+            (host, offset + before.map(|sibling| sibling.element().natives(child.num).len()).sum::<usize>())
+        });
+        let target = target.as_ref().map(|(host, at)| (host.element().node.as_ref().expect("a host has a node"), *at));
+        // Change the Rust tree only after native code accepts the move, so a rejected move changes nothing. A
+        // fragment's nodes leave first, so their new positions count only the nodes that stay.
+        let result = match (&child.node, target) {
+            (Some(node), Some((host, at))) => node.insert_into(host, at as u32),
+            _ => child.detach_natives().and_then(|()| {
+                let Some((host, at)) = target else { return Ok(()) };
+                child.natives(0).iter().zip(at..).try_for_each(|(native, at)| {
+                    native.element().node.as_ref().map_or(Ok(()), |node| node.insert_into(host, at as u32))
+                })
+            }),
+        };
         let accepted = result.is_ok();
         let app = self.app();
         if let Some(app) = &app {
@@ -595,6 +655,7 @@ impl Element {
             return;
         }
         child.detach_from_parent();
+        self.held_fragment.set(self.held_fragment.get() || child.node.is_none());
         self.children.borrow_mut().insert(index, behavior);
         *child.parent.borrow_mut() = Some(self.this.clone());
         if let Some(app) = app
@@ -619,20 +680,25 @@ impl Element {
         let had_parent = self.parent.borrow().is_some();
         self.detach_from_parent();
         if had_parent {
-            self.apply(Node::detach);
+            let result = self.detach_natives();
             if let Some(app) = self.app() {
+                app.report(result);
+                app.request_redraw();
                 app.subtree_removed(self);
             }
         }
     }
 
     pub(crate) fn clear_children(&self) {
-        let Some(node) = &self.node else { return };
         if self.children.borrow().is_empty() {
             return;
         }
-        // Native code detaches every child in one pass, or none on error; the Rust tree follows only on success.
-        let result = node.clear_children();
+        // Native code detaches every child in one pass, or none on error; the Rust tree follows only on success. A
+        // fragment detaches the nodes it put in its host.
+        let result = match &self.node {
+            Some(node) => node.clear_children(),
+            None => self.detach_natives(),
+        };
         let accepted = result.is_ok();
         let app = self.app();
         if let Some(app) = &app {
@@ -682,7 +748,7 @@ impl Element {
     }
 
     fn set_visible(&self, visible: bool) {
-        if self.cached() && visible == self.visible.get() {
+        if self.node.is_none() || (self.cached() && visible == self.visible.get()) {
             return;
         }
         self.visible.set(visible);
@@ -1225,7 +1291,11 @@ pub trait Container: Widget {
 }
 
 /// Creates a widget's shared state with its element, then registers it.
-pub(crate) fn build<T: Behavior>(app: &App, kind: NodeKind, make: impl FnOnce(Element) -> T) -> Rc<T> {
+pub(crate) fn build<T: Behavior>(
+    app: &App,
+    kind: impl Into<Option<NodeKind>>,
+    make: impl FnOnce(Element) -> T,
+) -> Rc<T> {
     let inner = Rc::new_cyclic(|this: &Weak<T>| {
         let this: Weak<dyn Behavior> = this.clone();
         make(Element::new(app, kind, this))

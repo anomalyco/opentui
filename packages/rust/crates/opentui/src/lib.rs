@@ -98,9 +98,9 @@ pub mod prelude {
     pub use crate::theme::{Theme, ThemeMode};
     pub use crate::widget::{
         AnyWidget, Code, Column, ColumnWidth, Component, Container, Content, Custom, Diff, DiffView, EditorAction,
-        ExtmarkOptions, FrameBuffer, ImageView, Input, LineNumbers, Markdown, Painter, ScrollAction, ScrollBox, Select,
-        SelectAction, SelectOption, Slider, SliderAction, TabSelect, TabSelectAction, Table, TableAction, TerminalView,
-        Text, TextTable, Textarea, VideoEvent, VideoView, View, Widget,
+        ExtmarkOptions, Fragment, FrameBuffer, ImageView, Input, LineNumbers, Markdown, Painter, ScrollAction,
+        ScrollBox, Select, SelectAction, SelectOption, Slider, SliderAction, TabSelect, TabSelectAction, Table,
+        TableAction, TerminalView, Text, TextTable, Textarea, VideoEvent, VideoView, View, Widget,
     };
     pub use crate::{Error, Result};
 }
