@@ -10,7 +10,7 @@ skill:
 
 Runtime module support lets a Bun application load trusted external modules with `import()`. It keeps those modules on
 the host's Core, React, Solid, and related singleton instances. It is Bun-only. It does not discover plugins or define
-plugin slots.
+plugin slots. [Nested slots](#nested-slots) shows the slot tree for plugins that nest content.
 
 ## Choose one installer
 
@@ -245,6 +245,80 @@ did not know about.
 Deploy each plugin file as a sidecar. Also deploy dependencies that are not mapped to host modules. Read
 [Deploy an OpenTUI application](/docs/ship/deploy) and
 [Standalone executables](/docs/reference/standalone-executables) before compiling the host.
+
+## Nested slots
+
+The slot registry gives each slot one flat name. When plugins add content inside other content, such as
+`prompt.footer` and `prompt.footer.status`, use a `SlotTree` from `@opentui/core` instead. The registry does not change
+and shares nothing with the tree.
+
+A slot path is names joined by dots. A path contains every path that extends it at a dot: `prompt.footer` contains
+`prompt.footer.status`, not `prompt.footerbar`. The host mounts paths, and a slot mounted inside another slot must
+extend its path. An empty name, as in `prompt..footer`, throws.
+
+An owner, such as one plugin, claims a place with one placement on a target path:
+
+| Placement | Shows the claim                                                         |
+| --------- | ----------------------------------------------------------------------- |
+| `before`  | Before the target, outside it                                           |
+| `prepend` | First inside the target                                                 |
+| `append`  | Last inside the target                                                  |
+| `after`   | After the target, outside it                                            |
+| `replace` | Instead of the target's children and of every claim on a path inside it |
+
+The tree resolves the claims of all owners against the mounted paths:
+
+- Claims are in owner order, then in the order each owner made them. An owner is last when it opens, unless
+  `tree.order(ids)` lists it.
+- For each target the last `replace` wins. A winning `replace` suppresses every claim inside its target, in any order.
+- A claim on a path that is not mounted appends to the nearest mounted ancestor. With no mounted ancestor, or for a
+  `replace`, it is suppressed.
+- `tree.resolution()` returns the placed claims, each suppressed claim with the claim that won, and each claim that
+  moved to an ancestor. `resolveSlotClaims()` computes the same result without a tree.
+
+`owner.claim()` shows a claim at once and returns a function that removes it. `owner.reset()` drops the owner's claims
+and keeps its place, for a reload. `owner.remove()` forgets the owner.
+
+`owner.stage()` collects claims for one activation. They show only when `stage.commit()` runs. The commit replaces the
+owner's claims in one change, and a claim object that already shows keeps its mount. `stage.dispose()` drops a stage
+whose setup failed. Nothing it held shows.
+
+Solid and React bind a tree to a `<Slot>` component with `createTreeSlot()`. A slot renders `before`, then the
+`replace` claim or `prepend`, its children and `append`, then `after`. Each claim renders in its own error boundary.
+A failure calls the tree's `onError` with `phase: "render"` and shows the placeholder. A placeholder that fails reports
+`phase: "placeholder"`. Slot inputs are objects, and a claim reads the slot's current input.
+
+```tsx
+import { SlotTree } from "@opentui/core"
+import { createTreeSlot } from "@opentui/solid"
+import type { JSX } from "@opentui/solid"
+
+type Slots = { "prompt.footer": { user: string }; "prompt.footer.status": {} }
+
+const tree = new SlotTree<JSX.Element, Slots>({
+  onError: (event) => console.error(event.owner, event.path, event.phase, event.error),
+})
+const Slot = createTreeSlot(tree, { placeholder: (failure) => <text>({failure.owner})</text> })
+
+export function Footer(props: { user: string }) {
+  return (
+    <Slot path="prompt.footer" input={{ user: props.user }}>
+      <Slot path="prompt.footer.status">
+        <text>ready</text>
+      </Slot>
+    </Slot>
+  )
+}
+
+const stage = tree.owner("clock").stage()
+stage.claim({ append: "prompt.footer.status", render: () => <text> 12:00</text> })
+stage.claim({ before: "prompt.footer", render: (input) => <text>{input.user}</text> })
+stage.commit()
+```
+
+In Solid, a claim renders renderables, with text inside its own `<text>`. Do not place a Solid tree slot inside
+`<text>`. In React, a claim on a slot that another claim renders mounts twice in one commit: first on the outer slot,
+then on its own. Nothing draws in between.
 
 ## Trust boundary
 
