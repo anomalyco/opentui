@@ -2694,23 +2694,55 @@ test("multiple markdown renderables share and clean up one renderer capability l
   expect(renderer.listenerCount("capabilities")).toBe(listenersBefore)
 })
 
-// The Rust crate's tests/markdown.rs renders the same rows: the first paint after each streamed chunk, and after the
-// last chunk the settled frame once streaming has ended.
-type CorpusRow = [name: string, chunks: string[], html: string, fails: string[], text?: string[]]
+// The Rust crate's tests/markdown.rs renders the same rows under the same theme: the first paint after each streamed
+// chunk, and after the last chunk the settled frame once streaming has ended, with the style of each of its cells.
+type CorpusRow = [name: string, chunks: string[], html: string, fails: string[], text?: string[], styles?: string]
+const ATTRIBUTE_NAMES = ["bold", "dim", "italic", "underline", "blink", "inverse", "hidden", "strikethrough"]
+const VISIBLE_ON_SPACE = TextAttributes.UNDERLINE | TextAttributes.INVERSE | TextAttributes.STRIKETHROUGH
+
+/** The first `count` lines of the frame as the corpus's `theme.styles` letters, as its format says. */
+function styleLetters(count: number): string {
+  const letters = new Map(Object.entries(corpus.theme.styles).map(([letter, style]) => [style, letter]))
+  const frame = captureSpans()
+  const clear = frame.lines.at(-1)!.spans.at(-1)!.bg
+  const hex = (color: RGBA) => {
+    const ints = color.toInts()
+    return "#" + (ints[3] === 255 ? ints.slice(0, 3) : ints).map((v) => v.toString(16).padStart(2, "0")).join("")
+  }
+  const segmenter = new Intl.Segmenter()
+  const line = (spans: CapturedFrame["lines"][number]["spans"]) =>
+    spans.flatMap((span) => {
+      const bg = span.bg.equals(clear) ? "" : ` on ${hex(span.bg)}`
+      const names = ATTRIBUTE_NAMES.filter((_, bit) => span.attributes & (1 << bit))
+      const style = [`${hex(span.fg)}${bg}`, ...names].join(" ")
+      const blank = !bg && (span.attributes & VISIBLE_ON_SPACE) === 0
+      return [...segmenter.segment(span.text)].map(
+        ({ segment }) => letters.get(blank && segment === " " ? "blank" : style) ?? "?",
+      )
+    })
+  return frame.lines
+    .slice(0, count)
+    .map(({ spans }) => line(spans).join("").trimEnd())
+    .join("\n")
+}
+
 test("corpus text: frames match each row unless the row lists them", async () => {
   // Every listed check exists, and a frame check names one of the row's frames.
-  const check = /^(engine-(?:html|stream)|(core|rust|engine|ts)-text:([1-9]\d*))$/
+  const check = /^(engine-(?:html|stream)|(core|rust)-style|(core|rust|engine|ts)-text:([1-9]\d*))$/
   const rows = corpus.rows as unknown as CorpusRow[]
   const unknown = rows.flatMap(([name, , , fails, text]) =>
     fails
-      .filter((fail) => !check.test(fail) || Number(fail.match(check)![3] ?? 0) > (text?.length ?? 0))
+      .filter((fail) => !check.test(fail) || Number(fail.match(check)![4] ?? 0) > (text?.length ?? 0))
       .map(() => name),
   )
   expect(unknown).toEqual([])
+  const theme = SyntaxStyle.fromStyles(corpus.theme.scopes, renderer.nativeScene!)
   const wrong: string[] = []
-  for (const [name, chunks, , fails, text] of rows.filter((row) => row[4])) {
+  for (const [name, chunks, , fails, text, styles] of rows.filter((row) => row[4])) {
     const md = createMarkdownRenderable({
-      syntaxStyle,
+      syntaxStyle: theme,
+      fg: corpus.theme.text,
+      conceal: !name.startsWith("source "),
       streaming: chunks.length > 1,
       tableOptions: { widthMode: "content" },
     })
@@ -2729,6 +2761,11 @@ test("corpus text: frames match each row unless the row lists them", async () =>
       const check = `core-text:${index + 1}`
       if ((frame === text![index]) === fails.includes(check)) wrong.push(`${name}|${check}`)
     }
+    if (
+      styles !== undefined &&
+      (styleLetters(text!.at(-1)!.split("\n").length) === styles) === fails.includes("core-style")
+    )
+      wrong.push(`${name}|core-style`)
     md.destroyRecursively()
     // OpenCode's reasoning still shows Markdown through Tree-sitter (N10): its drift from each frame is listed.
     const reasoning = new CodeRenderable(renderer, {
@@ -2756,6 +2793,7 @@ test("corpus text: frames match each row unless the row lists them", async () =>
     }
     reasoning.destroyRecursively()
   }
+  theme.destroy()
   expect(wrong).toEqual([])
 })
 

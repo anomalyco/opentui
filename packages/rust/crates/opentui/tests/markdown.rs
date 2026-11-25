@@ -4,15 +4,17 @@
 use opentui::input::{MouseButton, MouseEventKind};
 use opentui::native::Capture;
 use opentui::style::{Attributes, Color, Span, Style};
+use opentui::syntax::SyntaxTheme;
 use opentui::testing::TestApp;
 use opentui::widget::{
-    AnyWidget, ColumnWidthMode, Container, InlineContext, InlineSpan, Markdown, MarkdownExtension,
+    AnyWidget, ColumnWidthMode, Container, InlineContext, InlineSpan, Markdown, MarkdownColors, MarkdownExtension,
     MarkdownTableOptions, ScrollBox, Text, View, Widget,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
 
 #[path = "support/allocations.rs"]
 mod allocations;
@@ -97,19 +99,85 @@ fn corpus_matches_core_one_shot_and_streamed() {
     }
 }
 
+/// The corpus's `theme` as Rust builds it: the scopes as a syntax theme, the text color, and the letter of each style.
+fn corpus_theme() -> (Arc<SyntaxTheme>, Color, HashMap<String, String>) {
+    let corpus: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../core/src/renderables/markdown.conformance.json")).unwrap();
+    let color = |value: &serde_json::Value| Color::parse(value.as_str().unwrap()).unwrap();
+    let mut syntax = SyntaxTheme::new();
+    for (name, definition) in corpus["theme"]["scopes"].as_object().unwrap() {
+        let flag = |key: &str| definition.get(key).is_some_and(|on| on.as_bool().unwrap());
+        let mut style = Style::new();
+        style.fg = definition.get("fg").map(color);
+        style.bg = definition.get("bg").map(color);
+        for (key, attribute) in [
+            ("bold", Attributes::BOLD),
+            ("italic", Attributes::ITALIC),
+            ("underline", Attributes::UNDERLINE),
+            ("dim", Attributes::DIM),
+            ("strikethrough", Attributes::STRIKETHROUGH),
+        ] {
+            if flag(key) {
+                style.attributes |= attribute;
+            }
+        }
+        syntax.set(name.as_str(), style);
+    }
+    let styles = corpus["theme"]["styles"].as_object().unwrap();
+    let letters = styles.iter().map(|(letter, style)| (style.as_str().unwrap().to_owned(), letter.clone())).collect();
+    (Arc::new(syntax), color(&corpus["theme"]["text"]), letters)
+}
+
+/// The first `count` lines of the frame as the corpus's `theme.styles` letters, as its format says.
+fn style_letters(capture: &Capture, count: u32, letters: &HashMap<String, String>) -> String {
+    let clear = capture.cell(capture.width - 1, capture.height - 1).unwrap().bg;
+    let hex = |color: Color| {
+        let rgb = format!("#{:02x}{:02x}{:02x}", color.r, color.g, color.b);
+        if color.a == 255 { rgb } else { format!("{rgb}{:02x}", color.a) }
+    };
+    let names = ["bold", "dim", "italic", "underline", "blink", "inverse", "hidden", "strikethrough"];
+    let visible_on_space = Attributes::UNDERLINE | Attributes::INVERSE | Attributes::STRIKETHROUGH;
+    let line = |y: u32| {
+        let cells = (0..capture.width).filter_map(|x| capture.cell(x, y)).filter(|cell| !cell.symbol.is_empty());
+        let row = cells.map(|cell| {
+            let bg = if cell.bg == clear { String::new() } else { format!(" on {}", hex(cell.bg)) };
+            let blank = bg.is_empty() && cell.symbol == " " && (cell.attributes.bits() & visible_on_space.bits()) == 0;
+            let attributes = names.iter().enumerate().filter(|(bit, _)| cell.attributes.bits() & (1 << bit) != 0);
+            let style = attributes.fold(format!("{}{bg}", hex(cell.fg)), |style, (_, name)| style + " " + name);
+            letters.get(if blank { "blank" } else { style.as_str() }).map_or("?", String::as_str)
+        });
+        row.collect::<String>().trim_end().to_owned()
+    };
+    (0..count).map(line).collect::<Vec<_>>().join("\n")
+}
+
 #[test]
 fn corpus_text_matches_unless_listed() {
-    // Core's Markdown test renders the same rows with the same table options: the frame after each chunk, the last
-    // after streaming ends. Each frame is its own check.
+    // Core's Markdown test renders the same rows with the same table options and theme: the frame after each chunk,
+    // the last after streaming ends, and the style of each cell of that last frame. Each is its own check.
     let corpus = corpus();
+    let (syntax, text_color, letters) = corpus_theme();
     let mut wrong = Vec::new();
     for row in corpus.iter().filter(|row| row.get(4).is_some()) {
         let chunks = strings(&row[1]);
         let app = TestApp::new(60, 40);
         let options = MarkdownTableOptions { width_mode: Some(ColumnWidthMode::Content), ..Default::default() };
-        let math = row[0].as_str().unwrap().starts_with("math ");
-        let extensions: &[_] = if math { &[MarkdownExtension::Math] } else { &[] };
-        let markdown = Markdown::new(&app).extensions(extensions).table_options(options).streaming(chunks.len() > 1);
+        let name = row[0].as_str().unwrap();
+        let extensions: &[_] = if name.starts_with("math ") { &[MarkdownExtension::Math] } else { &[] };
+        // Core draws fences on the Markdown's bg, which the theme leaves unset.
+        let colors = MarkdownColors {
+            text: text_color,
+            code_bg: Color::TRANSPARENT,
+            ..MarkdownColors::from_theme(&app.theme())
+        };
+        let markdown = Markdown::new(&app)
+            .colors(colors)
+            .syntax_theme(syntax.clone())
+            .scope_styles(true)
+            .conceal(!name.starts_with("source "))
+            .extensions(extensions)
+            .table_options(options)
+            .streaming(chunks.len() > 1);
         app.root().add(&markdown);
         let text = strings(&row[4]);
         let fails = strings(&row[3]);
@@ -120,7 +188,15 @@ fn corpus_text_matches_unless_listed() {
             }
             let check = format!("rust-text:{}", index + 1);
             if (frame(&app) == format!("{}\n", text[index])) == fails.contains(&check.as_str()) {
-                wrong.push(format!("{}|{check}", row[0].as_str().unwrap()));
+                wrong.push(format!("{name}|{check}"));
+            }
+        }
+        if let Some(styles) = row.get(5) {
+            let lines = text.last().unwrap().split('\n').count() as u32;
+            if (style_letters(&app.render(), lines, &letters) == styles.as_str().unwrap())
+                == fails.contains(&"rust-style")
+            {
+                wrong.push(format!("{name}|rust-style"));
             }
         }
     }
