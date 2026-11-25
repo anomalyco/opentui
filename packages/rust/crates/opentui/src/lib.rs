@@ -55,6 +55,7 @@ pub mod native;
 pub mod post;
 pub mod pty;
 pub mod remote;
+pub mod slot;
 pub mod split;
 pub mod style;
 pub mod syntax;

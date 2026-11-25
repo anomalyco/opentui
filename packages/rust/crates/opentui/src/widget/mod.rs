@@ -580,6 +580,11 @@ impl Element {
         self.children.borrow().clone()
     }
 
+    /// Child `at`, without the copy of the list [`Element::child_behaviors`] makes.
+    pub(crate) fn child_behavior(&self, at: usize) -> Option<Rc<dyn Behavior>> {
+        self.children.borrow().get(at).cloned()
+    }
+
     /// The elements with a node that this element puts in its host, in order: itself, or a fragment's children's,
     /// leaving out the element numbered `except` and what it holds.
     fn natives(&self, except: u32) -> Vec<Rc<dyn Behavior>> {

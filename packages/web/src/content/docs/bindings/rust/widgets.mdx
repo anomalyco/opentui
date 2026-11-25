@@ -101,6 +101,51 @@ Keys and mouse events bubble from its children through the fragment's handlers t
 A fragment has no geometry: its `rect` is empty, and the layout, paint, filter, `visible`, `focusable`, `on_click`, and `on_resize` methods do nothing on it, and neither does `ScrollBox::scroll_into_view(&fragment)`.
 Use its children instead.
 
+## Slots
+
+`opentui::slot` lets plugins add widgets to places that the app names, as Core's [slot tree](/docs/extend/runtime-plugins#nested-slots) does.
+A slot path is names joined by dots, and a path contains every path that extends it at a dot.
+A `slot::Tree<I, M>` holds the owners, their claims, and the mounted slots.
+`I` is a slot's input, and `M` is what a claim's render returns, `AnyWidget` by default.
+
+```rust
+use opentui::slot::{Placement, Tree};
+
+let tree = Tree::<String>::new();
+let clock = tree.owner("clock");
+clock.claim(Placement::append("footer.status"), |app, _, _| Text::new(app, " 12:00").as_any())?;
+clock.claim(Placement::before("footer"), |app, user: &String, _| Text::new(app, user.clone()).as_any())?;
+
+let footer = tree.mount(&app, "footer", "ava".to_owned());
+let status = footer.mount("footer.status", String::new())?;
+status.content().add(&Text::new(&app, "ready"));
+footer.content().add(&status);
+app.root().add(&footer);
+```
+
+`tree.mount` returns a `Slot`, a widget with no box of its own, like a `Fragment`.
+It shows the claims before it, then the replacing claim or the prepended claims, its `content()` and the appended claims, then the claims after it.
+The path stays mounted while one of its slots lives.
+
+`slot.mount` nests a slot whose path extends the slot's, or returns `MountError::NotContained`.
+A render gets a `WeakSlot`, so a mount can nest slots after the render returns; once the slot is gone, `WeakSlot::mount` returns `MountError::Unmounted`.
+A path with an empty name, such as `footer..status`, makes `owner.claim`, `slot.mount`, and `WeakSlot::mount` return `MountError::InvalidPath`, so a plugin's mistyped path fails only its own claim.
+The host's own `tree.mount` panics on one, as a programming error.
+
+The claims resolve as in Core: in owner order, then in the order each owner made them, and `tree.order(ids)` sets the owner order.
+For each target the last replacement wins and suppresses every claim inside it.
+A claim on a path that is not mounted appends to its nearest mounted ancestor.
+`tree.resolution()` lists the placed, suppressed, and degraded claims, and `slot::resolve` computes the same without a tree.
+`owner.unclaim(id)` removes one claim, `owner.reset()` drops all of them and keeps the owner's place, and `owner.remove()` forgets the owner.
+
+A render can return an app type that implements `Mount<I>`: `root()` gives the widget, and `set_input` takes a new input in place, or returns `false` to render the claim again.
+`slot.set_input` gives every claim of the slot a new input, and `slot.each` visits the mounted claims.
+
+A change made through a slot, such as `tree.mount` or `slot.set_input`, or inside `tree.batch`, shows when the call returns.
+Any other change, such as a claim, a reset, or the last slot of a path dropping, shows at a settle that the tree defers to the app before the next frame.
+`tree.settle()` shows it at once.
+A claim that still shows keeps its mount.
+
 ## Themes
 
 Widgets take their default colors from the app's `Theme` when you create them.
