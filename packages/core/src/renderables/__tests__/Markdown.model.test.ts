@@ -1,9 +1,16 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { MarkdownRenderable, type MarkdownInlineHook } from "../Markdown.js"
+import {
+  createMarkdownCodeBlockRenderer,
+  MarkdownRenderable,
+  type MarkdownBlock,
+  type MarkdownInlineHook,
+  type MarkdownOptions,
+} from "../Markdown.js"
 import { BoxRenderable } from "../Box.js"
 import { CodeRenderable } from "../Code.js"
+import { TextRenderable } from "../Text.js"
 import type { Renderable } from "../../Renderable.js"
 import { ScrollBoxRenderable } from "../ScrollBox.js"
 import { SyntaxStyle } from "../../syntax-style.js"
@@ -78,6 +85,7 @@ type Command =
   | { k: "replace"; head: boolean }
   | { k: "frame" | "rename" | "finish" | "resume" | "style" | "conceal" | "links" | "filter" | "scroll" | "remount" }
   | { k: "reply" | "fail"; at: number }
+  | { k: "renderer"; to: number }
 
 const pieces = ["see ", "ses_a ", "ses_b\n", "word ", "\n\n", "# ", "> ", "- ", "1. ", "*x* ", "`ses_a` ", "`run x` "]
 // Three columns: a line holds at most one table piece, so only a delimiter's "--" cells can fall beyond the header.
@@ -94,6 +102,27 @@ const others: Command["k"][] = [
   "filter",
   "scroll",
   "remount",
+  "renderer",
+]
+
+// A renderer's result is never hooked. `before` is the block count before an append: a renderer call on a list below it
+// shows that list again in the update (#2199).
+const taken = new WeakSet<Renderable>()
+let before = Infinity
+let reshown = 0
+const takeover = (block: MarkdownBlock) => {
+  const text = new TextRenderable(target, { content: block.text, flexShrink: 0 })
+  taken.add(text)
+  return text
+}
+const seen = (block: MarkdownBlock) => void (block.kind === "list" && block.index < before && reshown++)
+// What a host sets: no renderer; one that leaves every block to the default, so a changed top-level block shows again;
+// one that takes over every code block, in lists too; and a code block renderer that takes over `ts` fences.
+const renderers: MarkdownOptions["renderBlock"][] = [
+  undefined,
+  (block) => (seen(block), null),
+  (block) => (seen(block), block.kind === "code" ? takeover(block) : null),
+  createMarkdownCodeBlockRenderer({ ts: takeover, typescript: takeover }),
 ]
 
 function generate(seed: number): Command[] {
@@ -105,7 +134,8 @@ function generate(seed: number): Command[] {
     if (roll < 0.65) return { k: "frame" }
     if (roll < 0.75) return { k: random() < 0.8 ? "reply" : "fail", at: Math.floor(random() * 4) }
     if (roll < 0.78) return { k: "replace", head: random() < 0.5 }
-    return { k: pick(others) } as Command
+    const k = pick(others)
+    return (k === "renderer" ? { k, to: Math.floor(random() * renderers.length) } : { k }) as Command
   })
 }
 
@@ -147,10 +177,13 @@ afterAll(() => {
 
 const rows = () => captureFrame().split("\n")
 const text = (lines: string[]) => lines.join("\n").trimEnd()
-const codes = (node: Renderable): CodeRenderable[] => [
-  ...(node instanceof CodeRenderable ? [node] : []),
-  ...node.getChildren().flatMap(codes),
+const find = (node: Renderable, is: (node: Renderable) => boolean): Renderable[] => [
+  ...(is(node) ? [node] : []),
+  ...node.getChildren().flatMap((child) => find(child, is)),
 ]
+const codes = (node: Renderable) => find(node, (it) => it instanceof CodeRenderable) as CodeRenderable[]
+// A fence's code and a renderer's result are never hooked.
+const unhooked = (node: Renderable) => find(node, (it) => it instanceof CodeRenderable || taken.has(it))
 const rowsOf = (nodes: Renderable[]) =>
   new Set(nodes.flatMap((node) => Array.from({ length: node.height }, (_, at) => node.y + at)))
 
@@ -187,7 +220,7 @@ async function run(commands: Command[]): Promise<void> {
     ["ses_a", "A"],
     ["ses_b", "B"],
   ])
-  const options = { style: 0, conceal: true, links: true, filter: true, streaming: true }
+  const options = { style: 0, conceal: true, links: true, filter: true, streaming: true, renderer: 0 }
   const worker = new FakeWorker()
   const markdown = (content: string, streaming: boolean, client: TreeSitterClient) =>
     new MarkdownRenderable(target, {
@@ -199,6 +232,7 @@ async function run(commands: Command[]): Promise<void> {
       inlineHook: sessionLinks(titles),
       inlineHookFilter: options.filter ? ["ses_"] : undefined,
       tableOptions: { style: "columns" },
+      renderBlock: renderers[options.renderer],
     })
   // The subject scrolls among 16 siblings, so the scene culls it when scrolled away; a twin is drawn alone.
   const mount = (content: string, streaming = options.streaming) => {
@@ -255,7 +289,7 @@ async function run(commands: Command[]): Promise<void> {
     const now = lines.map((line) => line.trimEnd())
     // A fence's code is never hooked, and draws again once its highlight lands.
     const fences = codes(md)
-    const code = rowsOf(fences)
+    const code = rowsOf(unhooked(md))
     // A fence waiting for its highlight keeps its old size, so the rows from it down may differ from a twin's.
     const first = Math.min(
       ...fences
@@ -281,9 +315,9 @@ async function run(commands: Command[]): Promise<void> {
       count("P9 compared")
       if (drawn.replace(/\s/g, "") !== code.replace(/\s/g, "")) failWith("P9", `fence draws ${JSON.stringify(drawn)}`)
     })
-    // A code span that holds more than an ID is not hooked: it shows its inner backticks, or, while a "```" run inside a
-    // line may still close one, its text as code.
-    const span = /[^\n]```/.test(md.content)
+    // A code span that holds more than an ID is not hooked: it shows its inner backticks, or, while a "```" run may still
+    // close one, its text as code. Such a run is inside a line, or opens one that a backtick later makes no fence.
+    const span = /[^\n]```|```[^\n]*`/.test(md.content)
     if (options.conceal && !span && /(?<!`)ses_[ab](?!`)/.test(prose.join("\n"))) failWith("P8", "unhooked ID")
     // Committed rows never change; text never leaves the frame while streaming.
     const blocks = md.getChildren()
@@ -324,7 +358,11 @@ async function run(commands: Command[]): Promise<void> {
       switch (command.k) {
         case "append":
           count(md.streaming ? "append" : "append after finish (none)")
+          before = md.blocks.length
+          reshown = 0
           if (md.streaming) md.content += command.piece
+          if (reshown > 0 && md.blocks.length > before) count("renderer shows a list again as blocks arrive")
+          before = Infinity
           break
         case "replace":
           // OpenCode's trim(), or text before the old content: both parse again.
@@ -374,6 +412,11 @@ async function run(commands: Command[]): Promise<void> {
         case "filter":
           options.filter = !options.filter
           md.inlineHookFilter = options.filter ? ["ses_"] : undefined
+          break
+        case "renderer":
+          options.renderer = command.to
+          md.renderBlock = renderers[command.to]
+          reset()
           break
         case "scroll":
           inView = !inView
