@@ -228,9 +228,15 @@ class Link {
 /** A Writable over the link: each write completes once the link has taken all of its bytes. */
 class LinkSink extends TestWriteStream {
   fd: number | undefined
+  /** The far end's size. `columns` and `rows` follow it on SIGWINCH, or when a resumed renderer refreshes them. */
+  readonly terminal = { columns: 120, rows: 40 }
 
   constructor(private readonly link: Link) {
     super(120, 40, { highWaterMark: 1 })
+  }
+
+  _refreshSize(): void {
+    Object.assign(this, this.terminal)
   }
 
   override _write(chunk: Uint8Array, _encoding: BufferEncoding, done: (error?: Error | null) => void): void {
@@ -450,7 +456,22 @@ async function simulate(preset: Preset, path: Path, seed: number): Promise<numbe
       keyArrival = event.at
       app.stdin.emit("data", Buffer.from(String.fromCharCode(97 + draw(26))))
     }
-    const resume = () => after(app.resume(), () => ((transition = false), checkActive()))
+    // I16: a resumed renderer has the terminal's size, though a stopped job got no SIGWINCH (#2181). On fd 1 it can
+    // read it; a borrowed Writable is told sizes by its owner.
+    let suspended = false
+    let badSizes = 0
+    // Resumes whose stdout size is stale: the terminal resized while suspended.
+    let staleResumes = 0
+    const resume = () => {
+      suspended = false
+      if (sink.columns !== sink.terminal.columns || sink.rows !== sink.terminal.rows) staleResumes++
+      after(app.resume(), () => {
+        transition = false
+        checkActive()
+        const { columns, rows } = sink.terminal
+        if (fd && !app.isDestroyed && (app.terminalWidth !== columns || app.terminalHeight !== rows)) badSizes++
+      })
+    }
     // I13: capability replies arrive at any time, during transitions and with a copy in flight; they are applied
     // or consumed, never delivered as keys.
     const reply = () => app.stdin.emit("data", Buffer.from("\x1b[?1004;1$y\x1b[?2004;2$y\x1b[?2026;2$y\x1b[?62;22c"))
@@ -474,6 +495,7 @@ async function simulate(preset: Preset, path: Path, seed: number): Promise<numbe
     const suspendCycle = (offset = link.stream.length) =>
       after(app.suspend(), () => {
         if (!link.restored(offset) && !link.failed) badTransitions++
+        suspended = true
         world.at("script", BigInt(1 + draw(50)) * MS, resume)
       })
     let at = 0n
@@ -495,7 +517,12 @@ async function simulate(preset: Preset, path: Path, seed: number): Promise<numbe
         } else if (kind < 88) world.at("input", BigInt(draw(40)) * MS, press)
         else if (kind < 98) {
           const size = 2 * draw(3)
-          if (active()) app.requestResize(sizes[size]!, sizes[size + 1]!)
+          const terminal = { columns: sizes[size]!, rows: sizes[size + 1]! }
+          if (active()) {
+            Object.assign(sink.terminal, terminal)
+            Object.assign(sink, terminal)
+            app.requestResize(terminal.columns, terminal.rows)
+          } else if (suspended && fd) Object.assign(sink.terminal, terminal)
         } else if (active() && remaining > 20) {
           transition = true
           suspendCycle()
@@ -508,6 +535,7 @@ async function simulate(preset: Preset, path: Path, seed: number): Promise<numbe
     await world.until(() => !transition || app.isDestroyed)
     expect(keys, label).toBe(keysSent)
     expect(badTransitions, label).toBe(0)
+    expect(badSizes, label).toBe(0)
     // On a slow link keys wait behind a blocking write with the writer thread off (388, today's behavior).
     if (preset === "ssh_slow" && fd === "blocking" && path === "fd-off") expect(stalled, label).toBeGreaterThan(0)
     if (writer) expect(stalled, label).toBe(0)
@@ -635,6 +663,7 @@ async function simulate(preset: Preset, path: Path, seed: number): Promise<numbe
       end,
       restored,
       closed,
+      staleResumes,
       ...(flood ? produced : {}),
     }
     if (process.env.OUTPUT_SIM_SUMMARY) console.log(label, JSON.stringify(summary))
