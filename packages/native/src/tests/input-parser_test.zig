@@ -1049,6 +1049,12 @@ test "input parser times out partial units unless they may be mouse reports, Kit
         .{ plain, "\x1b\x1b[2", 2, "x", &.{ k(K.escape, NONE), frag("\x1b[2"), ch('x') } },
         .{ kitty, "\x1b[118;5", 0, ";3u", &.{kt('v', CTRL, "v")} },
         .{ kitty, "\x1b[97;", 0, "2u", &.{kt('a', SHIFT, "A")} },
+        // Before the first `;` too: a bare `ESC [` with a digit and more in the read; the rest of a paste start alone is typed.
+        .{ kitty, "\x1b[", 0, "9u", &.{k(K.tab, NONE)} },
+        .{ kitty, "\x1b[", 0, "9", &.{ frag("\x1b["), ch('9') } },
+        .{ kitty, "\x1b[97", 0, "u", &.{kt('a', NONE, "a")} },
+        .{ kitty, "\x1b[20", 0, "0~", &([_]Expect{frag("\x1b[20")} ++ typed("0~")) },
+        .{ kitty, "\x1b[2", 0, "0", &.{ frag("\x1b[2"), ch('0') } },
         .{ kitty, "\x1b[97:65;", 0, "6:1u", &.{k('a', mods(&.{ CTRL, SHIFT }))} },
         .{ kitty, "\x1b[97;9", 0, "u", &.{k('a', SUPER)} },
         .{ kitty, "\x1b[1;1:", 0, "3A", &.{ka(K.up, NONE, .release)} },
