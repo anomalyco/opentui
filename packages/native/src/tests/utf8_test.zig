@@ -2059,26 +2059,19 @@ test "calculateTextWidth: complex text with emojis and multiple scripts" {
     try testing.expect(width >= 30 and width <= 50);
 }
 
-test "calculateTextWidth: validate against unicode-width-map.zon" {
-    // Runs of code points with the width terminals draw them in.
-    const Run = struct { first: u21, last: u21, width: u32 };
+test "calculateTextWidth: validate against fixtures/unicode-width-map.json" {
+    // Runs of code points with the width terminals draw them in; the bindings read the same file.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var diagnostics: std.zon.parse.Diagnostics = undefined;
-    const runs = try std.zon.parse.fromSlice([]const Run, .{
-        .gpa = testing.allocator,
-        .arena = arena.allocator(),
-        .source = @embedFile("unicode-width-map.zon"),
-        .diagnostics = &diagnostics,
-    });
+    const map = try std.json.parseFromSliceLeaky(struct { format: []const []const u8, runs: []const struct { []const u8, []const u8, u32 } }, arena.allocator(), @embedFile("fixtures/unicode-width-map.json"), .{});
     var failures: usize = 0;
-    for (runs) |run| for (run.first..run.last + 1) |cp| {
+    for (map.runs) |run| for (try std.fmt.parseInt(u21, run[0], 16)..try std.fmt.parseInt(u21, run[1], 16) + 1) |cp| {
         var buf: [4]u8 = undefined;
         const str = buf[0..try std.unicode.utf8Encode(@intCast(cp), &buf)];
         for (std.enums.values(utf8.WidthMethod)) |method| {
             const actual = utf8.calculateTextWidth(str, 4, .hidden, false, method);
-            if (actual == run.width) continue;
-            std.debug.print("U+{X:0>4} {s}: {d}, expected {d}\n", .{ cp, @tagName(method), actual, run.width });
+            if (actual == run[2]) continue;
+            std.debug.print("U+{X:0>4} {s}: {d}, expected {d}\n", .{ cp, @tagName(method), actual, run[2] });
             failures += 1;
         }
     };
