@@ -1640,36 +1640,6 @@ test "input parser arbitrary bytes parse the same in any fragments" {
     try testing.expect(small.feeds > whole.feeds);
 }
 
-test "input parser accounts for every input byte" {
-    var seed: u64 = 0x2545_f491_4f6c_dd1d;
-    for (0..8) |_| {
-        const stream = try arbitraryBytes(testing.allocator, &seed, 16 * 1024);
-        defer testing.allocator.free(stream);
-        var harness = try Harness.create();
-        defer harness.deinit();
-        _ = try harness.feed(stream);
-        _ = try harness.wait(20);
-        try testing.expectEqual(@as(u32, 0), harness.parser.discarded_count);
-        // G3: raw spans, paste text and markers, and the pending unit cover the input.
-        var total: usize = 0;
-        for (harness.out.items) |got| {
-            total += got.raw.len + got.text.len * @intFromBool(got.kind == .paste);
-            if (got.kind == .paste) {
-                if (got.flags & ip.flags.paste_start != 0) total += 6;
-                if (got.flags & ip.flags.paste_end != 0) total += 6;
-            }
-        }
-        const parser = harness.parser;
-        total += switch (parser.state) {
-            .ground, .expired => 0,
-            .paste => |paste_state| paste_state.matched,
-            .csi => |csi| parser.unit_len + @intFromBool(csi.alt),
-            else => return error.TestUnexpectedResult,
-        };
-        try testing.expectEqual(stream.len, total);
-    }
-}
-
 test "input parser arbitrary bytes with uneven time stay bounded" {
     var seed: u64 = 0x2545_f491_4f6c_dd1d;
     var harness = try Harness.init(ip.events_per_byte_max, ip.payload_per_byte_max);

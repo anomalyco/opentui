@@ -5,6 +5,12 @@ import type { Clock, TimerHandle } from "./clock.js"
 import type { ScrollInfo } from "./parse.mouse.js"
 import conformance from "./stdin-parser.conformance.json" with { type: "json" }
 import { NativeStdinParser, type NativeStdinParserOptions, type StdinEvent } from "./stdin-parser-native.js"
+import { nativeConstants, nativeLayouts } from "../native-abi.generated.js"
+import type { CliRenderer } from "../renderer.js"
+import { createMockKeys } from "../testing/mock-keys.js"
+import { createMockMouse, type MouseButton } from "../testing/mock-mouse.js"
+import { check, count, fail, rng } from "../testing/model.js"
+import { resolveRenderLib } from "../zig.js"
 
 type Parser = NativeStdinParser
 
@@ -118,10 +124,6 @@ function latin1(input: number[] | Uint8Array): string {
   return Buffer.from(buf(input)).toString("latin1")
 }
 
-function concatChunks(chunks: ChunkInput[]): Uint8Array {
-  return Buffer.concat(chunks.map((chunk) => Buffer.from(buf(chunk))))
-}
-
 function x10bytes(rawButton: number, x: number, y: number): number[] {
   return [0x1b, 0x5b, 0x4d, rawButton + 32, x + 33, y + 33]
 }
@@ -201,16 +203,6 @@ describe("stdin parser", () => {
     return { parser: new NativeStdinParser({ armTimeouts: true, clock, ...options }), clock }
   }
 
-  function snapChunks(chunks: ChunkInput[], opts?: NativeStdinParserOptions): Snap[] {
-    const p = createParser(opts)
-    try {
-      for (const chunk of chunks) p.push(buf(chunk))
-      return snap(p)
-    } finally {
-      p.destroy()
-    }
-  }
-
   function table(cases: Case[], opts?: NativeStdinParserOptions) {
     for (const [label, input, expected] of cases) {
       test(label, () => {
@@ -225,27 +217,13 @@ describe("stdin parser", () => {
     }
   }
 
-  /** push each byte individually, assert same result as whole-chunk push */
-  function assertChunkInvariant(input: Uint8Array, opts?: NativeStdinParserOptions) {
-    const whole = createParser(opts)
-    const split = createParser(opts)
-    try {
-      whole.push(input)
-      const expected = snap(whole)
-      for (let i = 0; i < input.length; i++) split.push(input.subarray(i, i + 1))
-      expect(snap(split)).toEqual(expected)
-    } finally {
-      whole.destroy()
-      split.destroy()
-    }
-  }
-
-  function runConformance(steps: ConformanceRow[1], options: NativeStdinParserOptions): string[] {
+  /** Feeds each read, lets a number of milliseconds or (null) the timeout pass, and lets the timeout pass at the end. */
+  function runConformance(steps: Array<ChunkInput | number | null>, options: NativeStdinParserOptions): string[] {
     const { parser, clock } = createTimedParser(options)
     const out: string[] = []
     try {
       for (const step of [...steps, null]) {
-        if (step === null) clock.advance(TEST_TIMEOUT_MS)
+        if (step === null || typeof step === "number") clock.advance(step ?? TEST_TIMEOUT_MS)
         else parser.push(buf(step))
         parser.drain((event) => out.push(notation(event)))
       }
@@ -2054,89 +2032,329 @@ describe("stdin parser", () => {
       })
     })
 
-    describe("chunk-shape invariance", () => {
-      const sequences = [
-        "abc", // multiple ASCII
-        "\x1b[A", // arrow
-        "\x1bOP", // SS3 F1
-        "\x1b[[A", // Cygwin F1
-        "\x1b[[5~", // putty pageup
-        "\x1b[<0;10;20M", // SGR mouse
-        "\x1b[M !!", // X10 mouse
-        "\x1b]4;0;#ffffff\x07", // OSC
-        "\x1bP>|test\x1b\\", // DCS
-        "\x1b_OK\x1b\\", // APC
-        "\x1b[200~hello\x1b[201~", // paste
-        "\x1b[I", // focus in
-        "\x1b[1;5A", // ctrl+up
-        "\x1b[97u", // kitty key
-        "\x1b[27;2;13~", // modifyOtherKeys
+    // Properties of the parser on generated input, through this binding and, for byte accounting, through the C ABI,
+    // so that they hold for any library behind opentui.h. testing/model.ts runs the seeds: MODEL_SEED=<n> replays one,
+    // MODEL_SEEDS=<n> runs more, and MODEL_STATS=1 prints the inputs and events the seeds reached.
+    describe("properties", () => {
+      type Mods = { ctrl?: boolean; meta?: boolean; shift?: boolean; super?: boolean; hyper?: boolean }
+      type Mode = "legacy" | "modifyOtherKeys" | "kitty"
+      /** Generated input and the events it must read back as; `cut` is where a pause of at least the timeout splits it. */
+      type Unit = {
+        k: string
+        mode: Mode
+        bytes: number[]
+        expected: string[]
+        cut?: number
+        cutExpected?: string[]
+        pause: number
+        splits: number[]
+        slow: boolean
+        escape?: boolean
+      }
+      const MODES: Mode[] = ["legacy", "modifyOtherKeys", "kitty"]
+      const CHARS = [..."abfhijmopkqxz059 ,./;'-=`!@#$%&*()+{}|:\"<>?[]\\^_~", "é", "ж", "中", "👍", "\ue000", "\ue004"]
+      const NAMED: Record<string, string> = {
+        ARROW_UP: "up",
+        ARROW_LEFT: "left",
+        HOME: "home",
+        END: "end",
+        DELETE: "delete",
+        F1: "f1",
+        F4: "f4",
+        F5: "f5",
+        F12: "f12",
+        RETURN: "return",
+        TAB: "tab",
+        BACKSPACE: "backspace",
+        ESCAPE: "escape",
+      }
+      const PASTE = [..."ab\r\n\t\x00\x7f", "\x1b", "\x1b[A", "\x1b[20", "\x1b[201", "\x1b[200~", "é", "👍"]
+      // Bytes and pieces that start or shape sequences.
+      const FRAGMENTS = [..."\x1b\x07;:$<M[~u0123456789"].concat(
+        ["\x1b[", "\x1b[<", "\x1b[M", "\x1bO", "\x1b]", "\x1bP", "\x1b\\", "\x1b[200~", "\x1b[201~", "\x1b\x1b["],
+        ["\x1b[?", "\xe4\xb8", "\x1b[97;", "\x1b[1;"],
+      )
+      const C = nativeConstants
+      const CONTEXTS: Array<[ConformanceContext, number]> = [
+        [{}, 0],
+        [{ kitty: true }, C.OT_INPUT_EXPECT_KITTY_KEYBOARD],
+        [{ pending: ["cpr"] }, C.OT_INPUT_EXPECT_REPLIES | C.OT_INPUT_EXPECT_CURSOR_POSITION],
       ]
 
-      for (const seq of sequences) {
-        test(`byte-at-a-time: ${JSON.stringify(seq).slice(1, -1).slice(0, 30)}`, () => {
-          assertChunkInvariant(Buffer.from(seq))
-        })
+      function captured(emit: (renderer: CliRenderer) => unknown): number[] {
+        const chunks: Buffer[] = []
+        emit({ stdin: { emit: (_event: string, data: Buffer) => chunks.push(data) } } as unknown as CliRenderer)
+        return [...Buffer.concat(chunks)]
       }
 
-      test("mixed stream byte-at-a-time", () => {
-        const stream = Buffer.concat([
-          Buffer.from("x"),
-          Buffer.from("\x1b[<64;10;5M"),
-          Buffer.from("\x1b[I"),
-          Buffer.from("\x1b]4;0;#fff\x07"),
-          Buffer.from("\x1b[200~paste\x1b[201~"),
-          Buffer.from("👍"),
-        ])
-        assertChunkInvariant(stream)
-      })
+      function keyEvent(name: string, mods: Mods): string {
+        const list = ["ctrl", "meta", "shift", "super", "hyper"] as const
+        return `key(${JSON.stringify(name === " " ? "space" : name)}${flags(list.map((mod) => [mod, mods[mod]]))})`
+      }
 
-      test("random two-chunk splits", () => {
-        const stream = Buffer.from("x\x1b[<64;10;5M\x1b[I\x1b]4;0;#fff\x07\x1b[200~p\x1b[201~y")
-        const whole = createParser()
-        try {
-          whole.push(stream)
-          const expected = snap(whole)
-          // Try splitting at every possible position
-          for (let split = 1; split < stream.length - 1; split++) {
-            const p = createParser()
-            try {
-              p.push(stream.subarray(0, split))
-              p.push(stream.subarray(split))
-              expect(snap(p)).toEqual(expected)
-            } finally {
-              p.destroy()
-            }
-          }
-        } finally {
-          whole.destroy()
+      /** A byte typed as text: Core names an uppercase letter by its lowercase key with Shift. */
+      function typed(byte: number): string {
+        const text = String.fromCharCode(byte)
+        return /[A-Z]/.test(text) ? keyEvent(text.toLowerCase(), { shift: true }) : keyEvent(text, {})
+      }
+
+      /** Core's name for `key` with `mods`, if the encoder in `mode` sends it in a form that reads back as that key. */
+      function encodable(mode: Mode, key: string, mods: Mods): string | undefined {
+        const named = NAMED[key]
+        const char = named ? undefined : key
+        const none = !mods.ctrl && !mods.meta && !mods.shift && !mods.super && !mods.hyper
+        if (mode === "kitty") return char && (char === "👍" ? !none : char >= "\ue000") ? undefined : (named ?? char)
+        if (mode === "modifyOtherKeys") {
+          if (char === "👍") return undefined
+          // A modified character, Return, Tab, Backspace, or Escape is CSI 27 ; mods ; code ~.
+          if (!none && (char || ["return", "tab", "backspace", "escape"].includes(named!))) return named ?? char
         }
+        if (named) {
+          if (mods.super || mods.hyper) return /^(f[14]|return|tab|escape)$/.test(named) ? undefined : named
+          if (named === "f1" || named === "f4") return none ? named : undefined
+          if (named === "return" || named === "escape") return mods.ctrl || mods.shift ? undefined : named
+          if (named === "tab") return mods.ctrl ? undefined : named
+          return named === "backspace" && mods.shift && !mods.ctrl ? undefined : named
+        }
+        // Ctrl+h, i, j, and m are Backspace, Tab, line feed, and Return; Alt+[, ], \, and _ begin sequences, and so do
+        // Alt+Shift+o and p; Alt+Shift+b and f are old Alt+arrow forms.
+        if (mods.super || mods.hyper) return undefined
+        const letter = /^[a-z]$/.test(char!)
+        if (mods.ctrl)
+          return !mods.shift && ((letter && !"hijm".includes(char!)) || "\\]^_ ".includes(char!)) ? char : undefined
+        if (mods.shift) return letter && !(mods.meta && "bfop".includes(char!)) ? char : undefined
+        return mods.meta && "[]\\_".includes(char!) ? undefined : char
+      }
+
+      /** Reads that split a unit at random, each after 0 or 19 ms, and sometimes a long pause inside it. */
+      function schedule(r: () => number, bytes: number[]) {
+        const at = () => 1 + Math.floor(r() * (bytes.length - 1))
+        const splits = bytes.length > 1 ? [...new Set(Array.from({ length: Math.floor(r() * 4) }, at))] : []
+        const cut = bytes.length > 1 && r() < 0.3 ? at() : undefined
+        return { splits: splits.sort((a, b) => a - b), slow: r() < 0.5, cut, pause: Math.floor(r() * 1000) }
+      }
+
+      function keyUnit(r: () => number, mode: Mode): Unit | undefined {
+        const keys = [...CHARS, ...Object.keys(NAMED)]
+        const key = keys[Math.floor(r() * keys.length)]!
+        const mods: Mods = { ctrl: r() < 0.2, meta: r() < 0.3, shift: r() < 0.3, super: r() < 0.1, hyper: r() < 0.05 }
+        const name = encodable(mode, key, mods)
+        if (name === undefined) return undefined
+        const options = { kittyKeyboard: mode === "kitty", otherModifiersMode: mode === "modifyOtherKeys" }
+        const bytes = captured((renderer) => createMockKeys(renderer, options).pressKey(key, mods))
+        // Core's name for ESC + an uppercase letter keeps its case.
+        const upper = bytes.length === 2 && bytes[0] === 0x1b && bytes[1]! >= 0x41 && bytes[1]! <= 0x5a
+        const unit = {
+          k: "key",
+          mode,
+          bytes,
+          expected: [keyEvent(upper ? name.toUpperCase() : name, mods)],
+          ...schedule(r, bytes),
+        }
+        // A lone Escape, or ESC ESC, is a key once the timeout passes.
+        if (bytes.every((byte) => byte === 0x1b)) return { ...unit, k: "escape", escape: true, cut: undefined }
+        const rest = unit.cut === undefined ? [] : bytes.slice(unit.cut)
+        if (bytes[0] !== 0x1b || rest.length === 0 || !rest.every((byte) => byte >= 0x20 && byte < 0x7f)) {
+          return { ...unit, cut: undefined }
+        }
+        // Kitty keys wait for their rest (opentui.h, OT_INPUT_EXPECT_KITTY_KEYBOARD). Known defect: one cut before
+        // its first `;` does not, so those cuts are left out.
+        if (mode === "kitty" && unit.cut! > 1) {
+          if (bytes.slice(0, unit.cut).includes(0x3b)) return { ...unit, cutExpected: unit.expected }
+          count("kitty key cut before its first ; (left out)")
+          return { ...unit, cut: undefined }
+        }
+        // Otherwise the cut sequence ends at the timeout: a lone ESC is Escape, ESC ESC Alt+Escape, a longer one a
+        // reply (after ESC ESC, Escape and a reply), and the rest is typed.
+        const alt = bytes[1] === 0x1b && unit.cut! > 1 ? 1 : 0
+        const reply = `response(${JSON.stringify(latin1(bytes.slice(alt, unit.cut)))})`
+        const head =
+          unit.cut === 1
+            ? [keyEvent("escape", {})]
+            : unit.cut === 2 && alt
+              ? [keyEvent("escape", { meta: true })]
+              : [reply]
+        return {
+          ...unit,
+          cutExpected: [...(alt && unit.cut! > 2 ? [keyEvent("escape", {})] : []), ...head, ...rest.map(typed)],
+        }
+      }
+
+      function mouseUnit(r: () => number, mode: Mode): Unit {
+        const type = (["down", "up", "drag", "move", "scroll"] as const)[Math.floor(r() * 5)]!
+        const [x, y, button, direction] = [r() * 250, r() * 250, r() * 3, r() * 4].map(Math.floor) as [
+          number,
+          number,
+          number,
+          number,
+        ]
+        const mods = { shift: r() < 0.2, alt: r() < 0.2, ctrl: r() < 0.2 }
+        const code = (type === "scroll" ? 64 + direction : button) as MouseButton
+        const bytes = captured((renderer) =>
+          createMockMouse(renderer).emitMouseEvent(type, x, y, code, { modifiers: mods }),
+        )
+        // Core's button numbers: SGR motion reports 0, and the right wheel 0.
+        const number = type === "move" ? 0 : type === "scroll" ? [0, 1, 2, 0][direction] : button
+        const modifiers = flags([
+          ["shift", mods.shift],
+          ["meta", mods.alt],
+          ["ctrl", mods.ctrl],
+        ])
+        const expected = [`mouse(${type} ${x},${y} b${number}${modifiers})`]
+        const unit = { k: "mouse", mode, bytes, expected, ...schedule(r, bytes) }
+        // A partial report waits for its rest, and `[<` after a timed-out Escape resumes it.
+        return { ...unit, cutExpected: unit.cut === 1 ? [keyEvent("escape", {}), ...expected] : expected }
+      }
+
+      function pasteUnit(r: () => number, mode: Mode): Unit {
+        let text = ""
+        for (let n = Math.floor(r() * 12); n > 0; n--) text += PASTE[Math.floor(r() * PASTE.length)]
+        const bytes = captured((renderer) => createMockKeys(renderer).pasteBracketedText(text))
+        const unit = { k: "paste", mode, bytes, expected: [`paste(${JSON.stringify(text)})`], ...schedule(r, bytes) }
+        // A pause right after the start marker's ESC makes that ESC the Escape key.
+        return { ...unit, cut: unit.cut === 1 ? undefined : unit.cut, cutExpected: unit.expected }
+      }
+
+      function generateUnits(seed: number): Unit[] {
+        const r = rng(seed)
+        const mode = MODES[seed % MODES.length]!
+        const units: Unit[] = []
+        while (units.length < 4 + (seed % 24)) {
+          const roll = r()
+          const unit = roll < 0.6 ? keyUnit(r, mode) : roll < 0.8 ? mouseUnit(r, mode) : pasteUnit(r, mode)
+          // After a timed-out Escape, `[` may begin a mouse report.
+          if (unit && !(units.at(-1)?.escape && unit.bytes[0] === 0x5b)) units.push(unit)
+        }
+        return units
+      }
+
+      /** The units' reads, split if `split`, with the timeout after an Escape and a long pause at each cut. */
+      function reads(units: Unit[], split: boolean): Array<number[] | number> {
+        const steps: Array<number[] | number> = []
+        let read: number[] = []
+        const wait = (ms: number) => {
+          if (read.length > 0) steps.push(read)
+          read = []
+          if (ms > 0) steps.push(ms)
+        }
+        for (const unit of units) {
+          // The read after a long pause holds the rest of the unit: a cut paste start or a bare `ESC [` continues
+          // only into a read that holds more.
+          const cuts = split ? unit.splits.filter((at) => unit.cut === undefined || at < unit.cut) : []
+          if (unit.cut !== undefined) cuts.push(unit.cut)
+          let from = 0
+          for (const at of cuts) {
+            read.push(...unit.bytes.slice(from, at))
+            wait(at === unit.cut ? TEST_TIMEOUT_MS + unit.pause : unit.slow ? TEST_TIMEOUT_MS - 1 : 0)
+            from = at
+          }
+          read.push(...unit.bytes.slice(from))
+          if (unit.escape) wait(TEST_TIMEOUT_MS)
+        }
+        wait(0)
+        return steps
+      }
+
+      test("keys, mouse reports, and pastes from the encoders read back as sent, in any reads", async () => {
+        await check(240, generateUnits, async (units) => {
+          const options = conformanceContext({ kitty: units[0]?.mode === "kitty" })
+          const got = runConformance(reads(units, false), options)
+          for (const unit of units) count(`${unit.mode} ${unit.k}${unit.cut === undefined ? "" : " cut"}`)
+          for (const event of got) count(`event ${event.slice(0, event.indexOf("("))}`)
+          let at = 0
+          for (const unit of units) {
+            const want = unit.cut === undefined ? unit.expected : unit.cutExpected!
+            if (JSON.stringify(got.slice(at, at + want.length)) !== JSON.stringify(want)) {
+              const property =
+                unit.cut === undefined ? "round trip" : unit.k === "paste" ? "paste isolation" : "timeout"
+              const input = `${JSON.stringify(latin1(unit.bytes))}${unit.cut === undefined ? "" : ` cut at ${unit.cut}`}`
+              fail(property, `${input}: expected ${want.join(" ")}, got ${got.slice(at).join(" ")}`)
+            }
+            at += want.length
+          }
+          if (at !== got.length) fail("round trip", `more events: ${got.slice(at).join(" ")}`)
+          const split = runConformance(reads(units, true), options)
+          if (JSON.stringify(split) !== JSON.stringify(got))
+            fail("chunking", `${got.join(" ")} became ${split.join(" ")}`)
+        })
       })
 
-      const comboAtoms: Array<[label: string, input: ChunkInput]> = [
-        ["ascii", "xy"],
-        ["utf8", "👍"],
-        ["arrow", "\x1b[A"],
-        ["sgr", "\x1b[<64;10;5M"],
-        ["x10", x10bytes(0, 0, 0)],
-        ["osc", "\x1b]4;0;#fff\x07"],
-        ["paste", "\x1b[200~p\x1b[201~"],
-        ["kitty", "\x1b[97u"],
-      ]
+      /** Feeds `steps` through the C ABI and counts the bytes its records account for. */
+      function accounted(steps: Array<number[] | number>, expectations: number, small: boolean): number {
+        const lib = resolveRenderLib()
+        const context = lib.createContext({ objectCapacity: 4, renderCellsMax: 1 })
+        const RECORD = nativeLayouts.ot_input_event
+        const field = (name: keyof typeof RECORD.fields, index: number) =>
+          index * RECORD.size + RECORD.fields[name].offset
+        try {
+          const session = lib.createSession(context, { chunkSize: 4096, spanCapacity: 2, maxBytes: 8192n })
+          lib.sessionInputExpect(context, session, expectations)
+          // The smallest sink the ABI accepts stops every call early.
+          const records = new Uint8Array((small ? C.OT_INPUT_EVENTS_MIN : 64) * RECORD.size)
+          const payload = new Uint8Array(small ? C.OT_INPUT_PAYLOAD_BYTES_MIN : 16 * 1024)
+          const view = new DataView(records.buffer)
+          let [now, total] = [0n, 0]
+          for (const step of steps) {
+            const bytes = typeof step === "number" ? new Uint8Array(0) : Uint8Array.from(step)
+            if (typeof step === "number") now += BigInt(step) * 1_000_000n
+            let offset = 0
+            do {
+              const drain = lib.sessionInputFeed(context, session, bytes.subarray(offset), now, records, payload)
+              for (let index = 0; index < drain.count; index++) {
+                total += view.getUint32(field("raw_len", index), true)
+                if (records[field("kind", index)] !== C.OT_INPUT_PASTE) continue
+                // A paste's markers are not in its text.
+                const markers = records[field("flags", index)]!
+                total += view.getUint32(field("text_len", index), true)
+                total +=
+                  6 *
+                  (Number((markers & C.OT_INPUT_PASTE_START) !== 0) + Number((markers & C.OT_INPUT_PASTE_END) !== 0))
+              }
+              offset += drain.consumed
+            } while (offset < bytes.length)
+          }
+          return total
+        } finally {
+          lib.getYogaHost().runMutation(() => lib.destroyContext(context))
+        }
+      }
 
-      for (const [firstLabel, first] of comboAtoms) {
-        for (const [secondLabel, second] of comboAtoms) {
-          test(`${firstLabel} + ${secondLabel} across every two-chunk split`, () => {
-            const stream = concatChunks([first, second])
-            const expected = snapChunks([stream])
-
-            expect(snapChunks([first, second])).toEqual(expected)
-            for (let split = 1; split < stream.length; split++) {
-              expect(snapChunks([stream.subarray(0, split), stream.subarray(split)])).toEqual(expected)
+      test("arbitrary bytes read the same in any reads, and every byte is in an event", async () => {
+        type Piece = { k: "bytes"; bytes: number[]; slow: boolean; seed: number }
+        const generate = (seed: number): Piece[] => {
+          const r = rng(seed)
+          return Array.from({ length: 1 + (seed % 48) }, () => {
+            const bytes: number[] = []
+            for (let n = 1 + Math.floor(r() * 6); n > 0; n--) {
+              if (r() < 0.6) bytes.push(...Buffer.from(FRAGMENTS[Math.floor(r() * FRAGMENTS.length)]!, "latin1"))
+              else bytes.push(Math.floor(r() * 256))
             }
+            return { k: "bytes", bytes, slow: r() < 0.5, seed }
           })
         }
-      }
+        await check(120, generate, async (pieces) => {
+          const seed = pieces[0]?.seed ?? 0
+          const [context, expectations] = CONTEXTS[seed % CONTEXTS.length]!
+          const options = conformanceContext(context)
+          const whole = runConformance([pieces.flatMap((piece) => piece.bytes)], options)
+          const split = runConformance(
+            pieces.flatMap((piece) => [piece.bytes, piece.slow ? TEST_TIMEOUT_MS - 1 : 0]),
+            options,
+          )
+          for (const event of whole) count(`event ${event.slice(0, event.indexOf("("))}`)
+          if (JSON.stringify(split) !== JSON.stringify(whole))
+            fail("chunking", `${whole.join(" ")} became ${split.join(" ")}`)
+          // A paste end marker ends whatever is pending: a paste, or with its ESC any other unit.
+          const steps = [
+            ...pieces.flatMap((piece) => [piece.bytes, piece.slow ? TEST_TIMEOUT_MS - 1 : 0]),
+            [...Buffer.from("\x1b[201~")],
+            TEST_TIMEOUT_MS,
+          ]
+          const input = steps.reduce((sum: number, step) => sum + (typeof step === "number" ? 0 : step.length), 0)
+          const total = accounted(steps, expectations, seed % 2 === 0)
+          if (total !== input) fail("no loss", `${input} bytes in, ${total} in events`)
+        })
+      })
     })
 
     describe("state management", () => {
