@@ -1853,7 +1853,10 @@ fn conformanceRun(allocator: std.mem.Allocator, steps: []const ?[]const u8, expe
     for (steps) |step| _ = if (step) |bytes| try harness.feed(bytes) else try harness.wait(timeout_ms);
     _ = try harness.wait(timeout_ms);
     var out: std.ArrayList([]const u8) = .empty;
-    for (harness.out.items) |got| try out.append(allocator, try notation(allocator, got));
+    // Core reports a paste when it ends.
+    for (harness.out.items) |got| if (got.kind != .paste or got.flags & ip.flags.paste_end != 0) {
+        try out.append(allocator, try notation(allocator, got));
+    };
     return out.items;
 }
 
@@ -1866,14 +1869,17 @@ fn notation(allocator: std.mem.Allocator, got: Got) ![]const u8 {
         .key => {
             var shift = modifiers.shift;
             var scalar: [4]u8 = undefined;
-            const name = if (got.code == 0) got.text else if (if (got.flags & ip.flags.key_typed != 0) null else coreKeyName(got.code)) |core| core else name: {
-                if (got.flags & ip.flags.key_typed == 0 and got.code >= K.functional_first and got.code <= K.functional_last) {
-                    std.debug.print("no notation name for key code {d}; add Core's name to coreKeyName\n", .{got.code});
-                    return error.UnnamedKey;
-                }
+            const kitty = got.flags & ip.flags.key_kitty != 0;
+            // Core keeps a letter's case and Shift bit for a sequence, not for ESC + character.
+            const lead: usize = if (got.raw.len > 1 and got.raw[1] == 0x1b) 2 else 1;
+            const sequence = kitty or (got.raw.len > lead + 1 and got.raw[0] == 0x1b and (got.raw[lead] == '[' or got.raw[lead] == 'O'));
+            const name = if (got.code == 0) got.text else if (if (got.flags & ip.flags.key_typed != 0) null else coreKeyName(got.code)) |core|
+                // Core tells a raw line feed from Enter.
+                if (got.code == K.enter and !kitty and std.mem.endsWith(u8, got.raw, "\n")) "linefeed" else core
+            else if (got.code == ' ') "space" else name: {
                 const len = try std.unicode.utf8Encode(@intCast(got.code), &scalar);
                 // Core names a typed uppercase letter by its lowercase key with Shift; Alt keeps the case.
-                if (got.flags & ip.flags.key_kitty == 0 and got.code >= 'A' and got.code <= 'Z') {
+                if (!sequence and got.code >= 'A' and got.code <= 'Z') {
                     shift = true;
                     if (!modifiers.alt) scalar[0] += 'a' - 'A';
                 }
@@ -1881,10 +1887,12 @@ fn notation(allocator: std.mem.Allocator, got: Got) ![]const u8 {
             };
             try out.appendSlice(allocator, "key(");
             try appendJson(&out, allocator, name, false);
-            if (modifiers.ctrl) try out.appendSlice(allocator, " ctrl");
-            if (modifiers.alt or modifiers.meta) try out.appendSlice(allocator, " meta");
-            if (shift) try out.appendSlice(allocator, " shift");
-            if (got.action == @backingInt(ip.KeyAction.release)) try out.appendSlice(allocator, " release");
+            const action: ip.KeyAction = @fromBackingInt(got.action);
+            try appendFlags(&out, allocator, &.{
+                .{ "ctrl", modifiers.ctrl },        .{ "meta", modifiers.alt or modifiers.meta }, .{ "shift", shift },
+                .{ "super", modifiers.super },      .{ "hyper", modifiers.hyper },                .{ "capslock", modifiers.caps_lock },
+                .{ "numlock", modifiers.num_lock }, .{ "release", action == .release },           .{ "repeat", action == .repeat },
+            });
             try out.append(allocator, ')');
         },
         .mouse => {
@@ -1894,10 +1902,11 @@ fn notation(allocator: std.mem.Allocator, got: Got) ![]const u8 {
             var button: i64 = got.code;
             if (got.code == ip.mouse_button_none) button = if (sgr) 0 else -1;
             if (action == .scroll and (!sgr or got.code == 3)) button = 0;
-            try out.print(allocator, "mouse({s} {d},{d} b{d})", .{ @tagName(action), got.x, got.y, button });
+            try out.print(allocator, "mouse({s} {d},{d} b{d}", .{ @tagName(action), got.x, got.y, button });
+            try appendFlags(&out, allocator, &.{ .{ "shift", modifiers.shift }, .{ "meta", modifiers.alt }, .{ "ctrl", modifiers.ctrl } });
+            try out.append(allocator, ')');
         },
         .paste => {
-            try testing.expect(got.flags & ip.flags.paste_end != 0);
             try out.appendSlice(allocator, "paste(");
             try appendJson(&out, allocator, got.text, false);
             try out.append(allocator, ')');
@@ -1912,29 +1921,42 @@ fn notation(allocator: std.mem.Allocator, got: Got) ![]const u8 {
     return out.items;
 }
 
-/// Core's names (kitty-keys.ts kittyKeyMap) for the codes the vectors use.
+/// Core's names (kitty-keys.ts kittyKeyMap) for the functional key codes.
 fn coreKeyName(code: u32) ?[]const u8 {
+    const functional = [_][]const u8{
+        "escape",    "return",     "tab",            "backspace",    "insert",           "delete",           "left",
+        "right",     "up",         "down",           "pageup",       "pagedown",         "home",             "end",
+        "capslock",  "scrolllock", "numlock",        "printscreen",  "pause",            "menu",             "f1",
+        "f2",        "f3",         "f4",             "f5",           "f6",               "f7",               "f8",
+        "f9",        "f10",        "f11",            "f12",          "f13",              "f14",              "f15",
+        "f16",       "f17",        "f18",            "f19",          "f20",              "f21",              "f22",
+        "f23",       "f24",        "f25",            "f26",          "f27",              "f28",              "f29",
+        "f30",       "f31",        "f32",            "f33",          "f34",              "f35",              "kp0",
+        "kp1",       "kp2",        "kp3",            "kp4",          "kp5",              "kp6",              "kp7",
+        "kp8",       "kp9",        "kpdecimal",      "kpdivide",     "kpmultiply",       "kpminus",          "kpplus",
+        "kpenter",   "kpequal",    "kpseparator",    "kpleft",       "kpright",          "kpup",             "kpdown",
+        "kppageup",  "kppagedown", "kphome",         "kpend",        "kpinsert",         "kpdelete",         "clear",
+        "mediaplay", "mediapause", "mediaplaypause", "mediareverse", "mediastop",        "mediafastforward", "mediarewind",
+        "medianext", "mediaprev",  "mediarecord",    "volumedown",   "volumeup",         "mute",             "leftshift",
+        "leftctrl",  "leftalt",    "leftsuper",      "lefthyper",    "leftmeta",         "rightshift",       "rightctrl",
+        "rightalt",  "rightsuper", "righthyper",     "rightmeta",    "iso_level3_shift", "iso_level5_shift",
+    };
+    comptime std.debug.assert(functional.len == K.functional_last - K.functional_first + 1);
     return switch (code) {
-        ' ' => "space",
         K.escape => "escape",
         K.enter => "return",
         K.tab => "tab",
         K.backspace => "backspace",
-        K.insert => "insert",
-        K.delete => "delete",
-        K.left => "left",
-        K.right => "right",
-        K.up => "up",
-        K.down => "down",
-        K.page_up => "pageup",
-        K.page_down => "pagedown",
-        K.home => "home",
-        K.end => "end",
-        K.f(1) => "f1",
-        K.f(2) => "f2",
-        K.f(3) => "f3",
-        K.f(4) => "f4",
+        K.functional_first...K.functional_last => functional[code - K.functional_first],
         else => null,
+    };
+}
+
+/// Writes each set flag as ` name`, in order.
+fn appendFlags(out: *std.ArrayList(u8), allocator: std.mem.Allocator, list: []const struct { []const u8, bool }) !void {
+    for (list) |flag| if (flag[1]) {
+        try out.append(allocator, ' ');
+        try out.appendSlice(allocator, flag[0]);
     };
 }
 

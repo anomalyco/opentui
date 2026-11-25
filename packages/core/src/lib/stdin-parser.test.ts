@@ -156,15 +156,34 @@ function conformanceContext({ kitty = false, pending = [] }: ConformanceContext 
   return { protocolContext }
 }
 
-function notation(event: Snap): string {
+function flags(entries: Array<[string, boolean | undefined]>): string {
+  return entries.map(([name, on]) => (on ? ` ${name}` : "")).join("")
+}
+
+function notation(event: StdinEvent): string {
   switch (event.type) {
     case "key": {
-      const flags = (["ctrl", "meta", "shift"] as const).filter((flag) => event[flag]).map((flag) => ` ${flag}`)
-      const kind = event.eventType === "press" ? "" : ` ${event.eventType}`
-      return `key(${JSON.stringify(event.name)}${flags.join("")}${kind})`
+      const { key } = event
+      return `key(${JSON.stringify(key.name)}${flags([
+        ["ctrl", key.ctrl],
+        ["meta", key.meta],
+        ["shift", key.shift],
+        ["super", key.super],
+        ["hyper", key.hyper],
+        ["capslock", key.capsLock],
+        ["numlock", key.numLock],
+        ["release", key.eventType === "release"],
+        ["repeat", key.repeated],
+      ])})`
     }
-    case "mouse":
-      return `mouse(${event.event.type} ${event.event.x},${event.event.y} b${event.event.button})`
+    case "mouse": {
+      const { type, x, y, button, modifiers } = event.event
+      return `mouse(${type} ${x},${y} b${button}${flags([
+        ["shift", modifiers.shift],
+        ["meta", modifiers.alt],
+        ["ctrl", modifiers.ctrl],
+      ])})`
+    }
     case "response":
       return `response(${JSON.stringify(event.sequence)})`
     case "paste":
@@ -228,7 +247,7 @@ describe("stdin parser", () => {
       for (const step of [...steps, null]) {
         if (step === null) clock.advance(TEST_TIMEOUT_MS)
         else parser.push(buf(step))
-        out.push(...snap(parser).map(notation))
+        parser.drain((event) => out.push(notation(event)))
       }
       return out
     } finally {
