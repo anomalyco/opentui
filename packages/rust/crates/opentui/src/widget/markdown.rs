@@ -979,6 +979,7 @@ impl Markdown {
     }
 
     /// The style text in block `index` takes where no part styles it: the text style, under each quote around it.
+    /// Code and tables take the text color instead, in a quote too, as Core's.
     fn base(&self, parent: Option<u32>) -> Style {
         let styles = self.0.styles.get();
         let blocks = self.0.blocks.borrow();
@@ -1014,9 +1015,10 @@ impl Markdown {
             sys::OT_MD_RULE => {
                 Rendered::Other(View::new(app).border_sides(Sides::TOP).border_color(styles.rule).height(1))
             }
-            sys::OT_MD_TABLE => Rendered::Table(self.table(app, base)),
+            sys::OT_MD_TABLE => Rendered::Table(self.table(app)),
             sys::OT_MD_QUOTE => Rendered::Other(
                 View::new(app)
+                    .min_height(1) // An empty quote still shows its bar.
                     .border_sides(Sides::LEFT)
                     .border_color(styles.quote_border)
                     .padding_edge(Edge::Left, 1)
@@ -1178,11 +1180,10 @@ impl Markdown {
             view.filetype(language).set_code(code.as_str()).0.set_closed(closed);
             return Some(Rendered::Code(container.clone(), view.clone()));
         }
-        let base = self.base(block.parent);
         let colors = *self.0.colors.borrow();
         // It shows all its lines, wrapped as Core's, so it has nothing to scroll and takes no focus: Tab passes over it.
         let view = Code::themed(app, Arc::clone(&self.0.syntax.borrow()), self.0.style.as_ref())
-            .fg(base.fg.unwrap_or(colors.text))
+            .fg(colors.text)
             .filetype(language)
             .set_code(code)
             .wrap(WrapMode::Word)
@@ -1191,12 +1192,12 @@ impl Markdown {
         Some(Rendered::Code(View::new(app).bg(colors.code_bg).child(&view), view))
     }
 
-    fn table(&self, app: &App, base: Style) -> TextTable {
+    fn table(&self, app: &App) -> TextTable {
         let options = self.0.options.borrow().table;
         let styles = self.0.styles.get();
         let columns = options.style == MarkdownTableStyle::Columns;
         let borders = options.borders.unwrap_or(!columns);
-        let widget = TextTable::new(app).fg(base.fg.unwrap_or(self.0.colors.borrow().text));
+        let widget = TextTable::new(app).fg(self.0.colors.borrow().text);
         if let Some(style) = options.border_style {
             widget.border(style);
         }
@@ -1327,7 +1328,9 @@ impl Markdown {
         let last = u64::from(block.number) + (items.len() as u64).saturating_sub(1);
         let digits = |number: u64| number.checked_ilog10().unwrap_or(0) as usize + 1;
         let width = if ordered { digits(last) + 1 } else { 1 };
-        let marker = self.base(Some(list)).patch(self.0.styles.get().list);
+        // Core's marker takes the list style's attributes alone, not a quote's.
+        let style = self.0.styles.get().list;
+        let marker = Style { attributes: style.attributes, ..self.base(Some(list)).patch(style) };
         let options = Rc::clone(&self.0.options.borrow());
         let [unchecked, checked]: [&str; 2] =
             if options.conceal { [&options.task_markers[0], &options.task_markers[1]] } else { ["[ ]", "[x]"] };
@@ -1427,8 +1430,7 @@ impl Markdown {
                     if let Some(Rendered::Code(container, code)) = &new {
                         let colors = *self.0.colors.borrow();
                         container.bg(colors.code_bg);
-                        let fg = self.base(block.parent).fg.unwrap_or(colors.text);
-                        code.0.restyle(Arc::clone(&self.0.syntax.borrow()), fg);
+                        code.0.restyle(Arc::clone(&self.0.syntax.borrow()), colors.text);
                     } else if let Some(Rendered::Custom(widget)) = &new {
                         widget.shrink(0.0);
                     }
@@ -1550,7 +1552,8 @@ mod tests {
     use crate::testing::TestApp;
 
     // Core's `baseStyle`: prose takes the text color before the `default` scope's, and the scope's background and
-    // attributes, under a quote too, where the border reads the scope. Unhighlighted fence text takes the text color.
+    // attributes, under a quote too, where the border reads the scope. Unhighlighted fence text takes the text color,
+    // in a quote too. A list marker takes the scope's background through the base.
     #[test]
     fn prose_takes_the_text_color_over_the_default_scope() {
         let colors = MarkdownColors { text: Color::RED, ..MarkdownColors::from_theme(&Theme::default()) };
@@ -1559,7 +1562,8 @@ mod tests {
             let app = TestApp::new(20, 8);
             let markdown =
                 Markdown::new(&app).colors(colors).syntax_theme(SyntaxTheme::new().style("default", default));
-            app.root().add(&markdown.scope_styles(!restyle).set_markdown("hello\n\n> quoted\n\n```\nfence\n```"));
+            let source = "hello\n\n> quoted\n>\n> ```\n> fence\n> ```\n\n- m";
+            app.root().add(&markdown.scope_styles(!restyle).set_markdown(source));
             if restyle {
                 app.render();
                 markdown.scope_styles(true);
@@ -1578,6 +1582,7 @@ mod tests {
                 (Color::RED, colors.code_bg, Attributes::NONE),
                 "{restyle}"
             );
+            assert_eq!(capture.cell(0, 6).unwrap().bg, Color::BLUE, "{restyle}\n{capture}");
         }
     }
 
