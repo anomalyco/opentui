@@ -2043,7 +2043,12 @@ test("blockquote updates quote text and bar colors when syntaxStyle changes", as
 for (const [name, options] of [
   ["defaults", {}],
   ["renderBlock", { renderBlock: () => undefined }],
-] as const) {
+  // A renderer that takes over a fence in an item builds a new node each time it is asked.
+  [
+    "a renderer that takes over code",
+    { renderBlock: (block) => (block.kind === "code" ? new TextRenderable(renderer, { content: block.text }) : null) },
+  ],
+] as const satisfies readonly (readonly [string, Partial<MarkdownOptions>])[]) {
   test(`list items follow fg and syntax style changes with ${name}`, async () => {
     const fg1 = RGBA.fromValues(0.25, 0.5, 0.75, 1)
     const fg2 = RGBA.fromValues(0.75, 0.5, 0.25, 1)

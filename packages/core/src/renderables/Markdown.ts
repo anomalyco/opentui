@@ -907,7 +907,8 @@ export class MarkdownRenderable extends Renderable {
       shown.gap = shown.width = shown.count = shown.ordinal = undefined
     }
     for (let at = index + 1; at < end; at++) {
-      if (!this.isHidden(at)) this.show(at, undefined, refresh)
+      // A child whose default appears shows its own descendants first; showing them again would add a second result.
+      if (!this.isHidden(at) && !this._shown[at]!.renderable) this.show(at, undefined, refresh)
       this.afterChange(at, refresh, true)
     }
     this.afterChange(index, refresh, true)
