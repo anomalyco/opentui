@@ -200,8 +200,6 @@ per top-level block, a blank row between blocks. These change to match Core:
   the same.
 - Concealed escapes drop their backslash: `\*` shows `*`. Core's tree-sitter
   queries do not conceal escapes, which shows the backslash in rendered text.
-- Quotes hold rendered blocks, so a list in a quote is a list. Core shows the
-  quote's text as highlighted Markdown source.
 - Setext headings show as ATX headings in source mode.
 - Hyperlink support is read on each update, which rebuilds every block when it
   changed. Core also rebuilds link text the moment the terminal reports its

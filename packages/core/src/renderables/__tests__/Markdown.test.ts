@@ -179,24 +179,6 @@ async function renderMarkdownRenderable(md: MarkdownRenderable, fences = false):
   throw new Error("Timed out waiting for markdown paragraph highlights")
 }
 
-async function renderMarkdown(markdown: string, conceal: boolean = true): Promise<string> {
-  const md = createMarkdownRenderable({
-    id: "markdown",
-    content: markdown,
-    syntaxStyle,
-    conceal,
-    tableOptions: { widthMode: "content" },
-  })
-
-  renderer.root.add(md)
-  await renderMarkdownRenderable(md)
-
-  const lines = captureFrame()
-    .split("\n")
-    .map((line) => line.trimEnd())
-  return "\n" + lines.join("\n").trimEnd()
-}
-
 function findSpanContaining(frame: CapturedFrame, text: string) {
   for (const line of frame.lines) {
     const span = line.spans.find((candidate) => candidate.text.includes(text))
@@ -226,24 +208,6 @@ function getTableColumnWidths(headerY: number): number[] {
   )
   return borderXs.slice(1).map((x, index) => x - borderXs[index]! - 1)
 }
-
-test("basic table alignment", async () => {
-  const markdown = `| Name | Age |
-|---|---|
-| Alice | 30 |
-| Bob | 5 |`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    ┌─────┬───┐
-    │Name │Age│
-    ├─────┼───┤
-    │Alice│30 │
-    ├─────┼───┤
-    │Bob  │5  │
-    └─────┴───┘"
-  `)
-})
 
 test("tableOptions.widthMode configures markdown table layout", async () => {
   const md = createMarkdownRenderable({
@@ -444,173 +408,6 @@ test("borderless column tables keep visual spacing out of copied text", async ()
   expect(table.getSelectedText()).toBe("Name\tAge\nAlice\t30")
 })
 
-test("table with inline code (backticks)", async () => {
-  const markdown = `| Command | Description |
-|---|---|
-| \`npm install\` | Install deps |
-| \`npm run build\` | Build project |
-| \`npm test\` | Run tests |`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    ┌─────────────┬─────────────┐
-    │Command      │Description  │
-    ├─────────────┼─────────────┤
-    │npm install  │Install deps │
-    ├─────────────┼─────────────┤
-    │npm run build│Build project│
-    ├─────────────┼─────────────┤
-    │npm test     │Run tests    │
-    └─────────────┴─────────────┘"
-  `)
-})
-
-test("table with bold text", async () => {
-  const markdown = `| Feature | Status |
-|---|---|
-| **Authentication** | Done |
-| **API** | WIP |`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    ┌──────────────┬──────┐
-    │Feature       │Status│
-    ├──────────────┼──────┤
-    │Authentication│Done  │
-    ├──────────────┼──────┤
-    │API           │WIP   │
-    └──────────────┴──────┘"
-  `)
-})
-
-test("table with italic text", async () => {
-  const markdown = `| Item | Note |
-|---|---|
-| One | *important* |
-| Two | *ok* |`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    ┌────┬─────────┐
-    │Item│Note     │
-    ├────┼─────────┤
-    │One │important│
-    ├────┼─────────┤
-    │Two │ok       │
-    └────┴─────────┘"
-  `)
-})
-
-test("table with mixed formatting", async () => {
-  const markdown = `| Type | Value | Notes |
-|---|---|---|
-| **Bold** | \`code\` | *italic* |
-| Plain | **strong** | \`cmd\` |`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    ┌─────┬──────┬──────┐
-    │Type │Value │Notes │
-    ├─────┼──────┼──────┤
-    │Bold │code  │italic│
-    ├─────┼──────┼──────┤
-    │Plain│strong│cmd   │
-    └─────┴──────┴──────┘"
-  `)
-})
-
-test("table with empty cells", async () => {
-  const markdown = `| A | B |
-|---|---|
-| X |  |
-|  | Y |`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    ┌─┬─┐
-    │A│B│
-    ├─┼─┤
-    │X│ │
-    ├─┼─┤
-    │ │Y│
-    └─┴─┘"
-  `)
-})
-
-test("table with long header and short content", async () => {
-  const markdown = `| Very Long Column Header | Short |
-|---|---|
-| A | B |`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    ┌───────────────────────┬─────┐
-    │Very Long Column Header│Short│
-    ├───────────────────────┼─────┤
-    │A                      │B    │
-    └───────────────────────┴─────┘"
-  `)
-})
-
-test("table with short header and long content", async () => {
-  const markdown = `| X | Y |
-|---|---|
-| This is very long content | Short |`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    ┌─────────────────────────┬─────┐
-    │X                        │Y    │
-    ├─────────────────────────┼─────┤
-    │This is very long content│Short│
-    └─────────────────────────┴─────┘"
-  `)
-})
-
-test("table inside code block should NOT be formatted", async () => {
-  const markdown = `\`\`\`
-| Not | A | Table |
-|---|---|---|
-| Should | Stay | Raw |
-\`\`\`
-
-| Real | Table |
-|---|---|
-| Is | Formatted |`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    | Not | A | Table |
-    |---|---|---|
-    | Should | Stay | Raw |
-
-    ┌────┬─────────┐
-    │Real│Table    │
-    ├────┼─────────┤
-    │Is  │Formatted│
-    └────┴─────────┘"
-  `)
-})
-
-test("paragraphs and fenced code blocks keep markdown block spacing", async () => {
-  const markdown = `Before
-
-\`\`\`ts
-const value = 1
-\`\`\`
-
-After`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    Before
-
-    const value = 1
-
-    After"
-  `)
-})
-
 test("paragraphs keep spacing when a fenced code block is appended", async () => {
   const md = createMarkdownRenderable({
     id: "markdown-append-code-spacing",
@@ -685,196 +482,6 @@ const value = 1
   expect(topKinds(md)).toEqual(["code"])
 })
 
-test("tight paragraphs and fenced code blocks keep exactly one separator row", async () => {
-  const markdown = `Before
-\`\`\`ts
-const value = 1
-\`\`\``
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    Before
-
-    const value = 1"
-  `)
-})
-
-test("headings and fenced code blocks keep exactly one separator row", async () => {
-  const markdown = `## Before
-
-\`\`\`ts
-const value = 1
-\`\`\``
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    Before
-
-    const value = 1"
-  `)
-})
-
-test("headings and tables keep exactly one separator row", async () => {
-  const markdown = `## Before
-
-| A | B |
-|---|---|
-| 1 | 2 |`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    Before
-
-    ┌─┬─┐
-    │A│B│
-    ├─┼─┤
-    │1│2│
-    └─┴─┘"
-  `)
-})
-
-test("headings and blockquotes keep exactly one separator row", async () => {
-  const markdown = `## Before
-
-> quoted text`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    Before
-
-    │ quoted text"
-  `)
-})
-
-test("headings and horizontal rules keep exactly one separator row", async () => {
-  const markdown = `## Before
-
----`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    Before
-
-    ────────────────────────────────────────────────────────────"
-  `)
-})
-
-test("multiple tables in same document", async () => {
-  const markdown = `| Table1 | A |
-|---|---|
-| X | Y |
-
-Some text between.
-
-| Table2 | BB |
-|---|---|
-| Long content | Z |`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    ┌──────┬─┐
-    │Table1│A│
-    ├──────┼─┤
-    │X     │Y│
-    └──────┴─┘
-
-    Some text between.
-
-    ┌────────────┬──┐
-    │Table2      │BB│
-    ├────────────┼──┤
-    │Long content│Z │
-    └────────────┴──┘"
-  `)
-})
-
-test("table with escaped pipe character", async () => {
-  const markdown = `| Command | Output |
-|---|---|
-| echo | Hello |
-| ls \\| grep | Filtered |
-| \\$rate | \\*x\\* |`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    ┌─────────┬────────┐
-    │Command  │Output  │
-    ├─────────┼────────┤
-    │echo     │Hello   │
-    ├─────────┼────────┤
-    │ls | grep│Filtered│
-    ├─────────┼────────┤
-    │$rate    │*x*     │
-    └─────────┴────────┘"
-  `)
-})
-
-test("table with unicode characters", async () => {
-  const markdown = `| Emoji | Name |
-|---|---|
-| 🎉 | Party |
-| 🚀 | Rocket |
-| 日本語 | Japanese |`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    ┌──────┬────────┐
-    │Emoji │Name    │
-    ├──────┼────────┤
-    │🎉    │Party   │
-    ├──────┼────────┤
-    │🚀    │Rocket  │
-    ├──────┼────────┤
-    │日本語│Japanese│
-    └──────┴────────┘"
-  `)
-})
-
-test("table with links", async () => {
-  const markdown = `| Name | Link |
-|---|---|
-| Google | [link](https://google.com) |
-| GitHub | [gh](https://github.com) |`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    ┌──────┬─────────────────────────┐
-    │Name  │Link                     │
-    ├──────┼─────────────────────────┤
-    │Google│link (https://google.com)│
-    ├──────┼─────────────────────────┤
-    │GitHub│gh (https://github.com)  │
-    └──────┴─────────────────────────┘"
-  `)
-})
-
-test("single row table (header + delimiter only)", async () => {
-  const markdown = `| Only | Header |
-|---|---|`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    ┌────┬──────┐
-    │Only│Header│
-    └────┴──────┘"
-  `)
-})
-
-test("table with many columns", async () => {
-  const markdown = `| A | B | C | D | E |
-|---|---|---|---|---|
-| 1 | 2 | 3 | 4 | 5 |`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    ┌─┬─┬─┬─┬─┐
-    │A│B│C│D│E│
-    ├─┼─┼─┼─┼─┤
-    │1│2│3│4│5│
-    └─┴─┴─┴─┴─┘"
-  `)
-})
-
 test("a table may hold more native objects than the renderer's initial object capacity", async () => {
   // Each cell holds a text buffer and a view, so 4 x 21 cells need more than 64 slots.
   const stdout = createTestStdout(20, 4)
@@ -890,177 +497,6 @@ test("a table may hold more native objects than the renderer's initial object ca
     setup.renderer.destroy()
     await setup.renderer.closed
   }
-})
-
-test("no tables returns original content", async () => {
-  const markdown = `# Just a heading
-
-Some paragraph text.
-
-- List item`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    Just a heading
-
-    Some paragraph text.
-
-    - List item"
-  `)
-})
-
-test("table with nested inline formatting", async () => {
-  const markdown = `| Description |
-|---|
-| This has **bold and \`code\`** together |
-| And *italic with **nested bold*** |`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    ┌───────────────────────────────┐
-    │Description                    │
-    ├───────────────────────────────┤
-    │This has bold and code together│
-    ├───────────────────────────────┤
-    │And italic with nested bold    │
-    └───────────────────────────────┘"
-  `)
-})
-
-// Tests with conceal=false - formatting markers should be visible and columns sized accordingly
-
-test("conceal=false: table with bold text", async () => {
-  const markdown = `| Feature | Status |
-|---|---|
-| **Authentication** | Done |
-| **API** | WIP |`
-
-  expect(await renderMarkdown(markdown, false)).toMatchInlineSnapshot(`
-    "
-    ┌──────────────────┬──────┐
-    │Feature           │Status│
-    ├──────────────────┼──────┤
-    │**Authentication**│Done  │
-    ├──────────────────┼──────┤
-    │**API**           │WIP   │
-    └──────────────────┴──────┘"
-  `)
-})
-
-test("conceal=false: table with inline code", async () => {
-  const markdown = `| Command | Description |
-|---|---|
-| \`npm install\` | Install deps |
-| \`npm run build\` | Build project |`
-
-  expect(await renderMarkdown(markdown, false)).toMatchInlineSnapshot(`
-    "
-    ┌───────────────┬─────────────┐
-    │Command        │Description  │
-    ├───────────────┼─────────────┤
-    │\`npm install\`  │Install deps │
-    ├───────────────┼─────────────┤
-    │\`npm run build\`│Build project│
-    └───────────────┴─────────────┘"
-  `)
-})
-
-test("conceal=false: table with italic text", async () => {
-  const markdown = `| Item | Note |
-|---|---|
-| One | *important* |
-| Two | *ok* |`
-
-  expect(await renderMarkdown(markdown, false)).toMatchInlineSnapshot(`
-    "
-    ┌────┬───────────┐
-    │Item│Note       │
-    ├────┼───────────┤
-    │One │*important*│
-    ├────┼───────────┤
-    │Two │*ok*       │
-    └────┴───────────┘"
-  `)
-})
-
-test("conceal=false: table with mixed formatting", async () => {
-  const markdown = `| Type | Value | Notes |
-|---|---|---|
-| **Bold** | \`code\` | *italic* |
-| Plain | **strong** | \`cmd\` |`
-
-  expect(await renderMarkdown(markdown, false)).toMatchInlineSnapshot(`
-    "
-    ┌────────┬──────────┬────────┐
-    │Type    │Value     │Notes   │
-    ├────────┼──────────┼────────┤
-    │**Bold**│\`code\`    │*italic*│
-    ├────────┼──────────┼────────┤
-    │Plain   │**strong**│\`cmd\`   │
-    └────────┴──────────┴────────┘"
-  `)
-})
-
-test("conceal=false: table with unicode characters", async () => {
-  const markdown = `| Emoji | Name |
-|---|---|
-| 🎉 | Party |
-| 🚀 | Rocket |
-| 日本語 | Japanese |`
-
-  expect(await renderMarkdown(markdown, false)).toMatchInlineSnapshot(`
-    "
-    ┌──────┬────────┐
-    │Emoji │Name    │
-    ├──────┼────────┤
-    │🎉    │Party   │
-    ├──────┼────────┤
-    │🚀    │Rocket  │
-    ├──────┼────────┤
-    │日本語│Japanese│
-    └──────┴────────┘"
-  `)
-})
-
-test("conceal=false: basic table alignment", async () => {
-  const markdown = `| Name | Age |
-|---|---|
-| Alice | 30 |
-| Bob | 5 |`
-
-  expect(await renderMarkdown(markdown, false)).toMatchInlineSnapshot(`
-    "
-    ┌─────┬───┐
-    │Name │Age│
-    ├─────┼───┤
-    │Alice│30 │
-    ├─────┼───┤
-    │Bob  │5  │
-    └─────┴───┘"
-  `)
-})
-
-test("table with paragraphs before and after", async () => {
-  const markdown = `This is a paragraph before the table.
-
-| Name | Age |
-|---|---|
-| Alice | 30 |
-
-This is a paragraph after the table.`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    This is a paragraph before the table.
-
-    ┌─────┬───┐
-    │Name │Age│
-    ├─────┼───┤
-    │Alice│30 │
-    └─────┴───┘
-
-    This is a paragraph after the table."
-  `)
 })
 
 test("selection across markdown table includes table data", async () => {
@@ -1107,91 +543,6 @@ Outro line below table.`
 })
 
 // Code block tests
-
-test("code block with language", async () => {
-  const markdown = `\`\`\`typescript
-const x = 1;
-console.log(x);
-\`\`\``
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    const x = 1;
-    console.log(x);"
-  `)
-})
-
-test("code block without language", async () => {
-  const markdown = `\`\`\`
-plain code block
-with multiple lines
-\`\`\``
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    plain code block
-    with multiple lines"
-  `)
-})
-
-test("code block mixed with text", async () => {
-  const markdown = `Here is some code:
-
-\`\`\`js
-function hello() {
-  return "world";
-}
-\`\`\`
-
-And here is more text after.`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    Here is some code:
-
-    function hello() {
-      return "world";
-    }
-
-    And here is more text after."
-  `)
-})
-
-test("multiple code blocks", async () => {
-  const markdown = `First block:
-
-\`\`\`python
-print("hello")
-\`\`\`
-
-Second block:
-
-\`\`\`rust
-fn main() {}
-\`\`\``
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    First block:
-
-    print("hello")
-
-    Second block:
-
-    fn main() {}"
-  `)
-})
-
-test("code block in conceal=false mode", async () => {
-  const markdown = `\`\`\`js
-const x = 1;
-\`\`\``
-
-  expect(await renderMarkdown(markdown, false)).toMatchInlineSnapshot(`
-    "
-    const x = 1;"
-  `)
-})
 
 test("code block concealment is disabled by default", async () => {
   const mockTreeSitterClient = createMockTreeSitterClient()
@@ -1308,78 +659,7 @@ test("toggling concealCode updates existing code block renderables", async () =>
   expect(frameAfter).toContain("Hidden heading")
 })
 
-// Heading tests
-
-test("headings h1 through h3", async () => {
-  const markdown = `# Heading 1
-
-## Heading 2
-
-### Heading 3`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    Heading 1
-
-    Heading 2
-
-    Heading 3"
-  `)
-})
-
-test("headings with conceal=false show markers", async () => {
-  const markdown = `# Heading 1
-
-## Heading 2`
-
-  expect(await renderMarkdown(markdown, false)).toMatchInlineSnapshot(`
-    "
-    # Heading 1
-
-    ## Heading 2"
-  `)
-})
-
 // List tests
-
-test("unordered list", async () => {
-  const markdown = `- Item one
-- Item two
-- Item three`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    - Item one
-    - Item two
-    - Item three"
-  `)
-})
-
-test("ordered list", async () => {
-  const markdown = `1. First item
-2. Second item
-3. Third item`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    1. First item
-    2. Second item
-    3. Third item"
-  `)
-})
-
-test("list with inline formatting", async () => {
-  const markdown = `- **Bold** item
-- *Italic* item
-- \`Code\` item`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    - Bold item
-    - Italic item
-    - Code item"
-  `)
-})
 
 test("task lists render checkbox and text on the same line", async () => {
   const md = createMarkdownRenderable({
@@ -1724,29 +1004,6 @@ Paragraph after diff.
 
 // Blockquote tests
 
-test("simple blockquote", async () => {
-  const markdown = `> This is a quote
-> spanning multiple lines`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    │ This is a quote
-    │ spanning multiple lines"
-  `)
-})
-
-// A quote shows its blocks, one row apart as at the top level: prose stays prose, a fence is a code block.
-test.each([
-  ["> a\n>\n> b", "│ a\n│\n│ b"],
-  [">", "│"],
-  ["> # Title\n> text\n> ```\n> **raw**\n> ```", "│ Title\n│\n│ text\n│\n│ **raw**"],
-  ["> - one\n> - two", "│ - one\n│ - two"],
-  ["> outer\n>\n> > inner", "│ outer\n│\n│ │ inner"],
-  ["> a\n>\n> b\n> ```\n> c\n> ```", "│ a\n│\n│ b\n│\n│ c"],
-])("blockquote %j renders its child blocks", async (markdown, expected) => {
-  expect(await renderMarkdown(markdown)).toBe("\n" + expected)
-})
-
 test("code-block renderers reach fences inside quotes and lists", async () => {
   const seen: string[] = []
   const md = createMarkdownRenderable({
@@ -2043,7 +1300,12 @@ test("blockquote updates quote text and bar colors when syntaxStyle changes", as
 for (const [name, options] of [
   ["defaults", {}],
   ["renderBlock", { renderBlock: () => undefined }],
-] as const) {
+  // A renderer that takes over a fence in an item builds a new node each time it is asked.
+  [
+    "a renderer that takes over code",
+    { renderBlock: (block) => (block.kind === "code" ? new TextRenderable(renderer, { content: block.text }) : null) },
+  ],
+] as const satisfies readonly (readonly [string, Partial<MarkdownOptions>])[]) {
   test(`list items follow fg and syntax style changes with ${name}`, async () => {
     const fg1 = RGBA.fromValues(0.25, 0.5, 0.75, 1)
     const fg2 = RGBA.fromValues(0.75, 0.5, 0.25, 1)
@@ -2155,53 +1417,6 @@ test("fenced diff blocks color added and removed lines", async () => {
 
   expect(findSpanContaining(captureSpans(), "- old")?.fg?.toInts()).toEqual(RGBA.fromValues(1, 0, 0, 1).toInts())
   expect(findSpanContaining(captureSpans(), "+ new")?.fg?.toInts()).toEqual(RGBA.fromValues(0, 1, 0, 1).toInts())
-})
-
-// Inline formatting tests
-
-test("bold text", async () => {
-  const markdown = `This has **bold** text in it.`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    This has bold text in it."
-  `)
-})
-
-test("italic text", async () => {
-  const markdown = `This has *italic* text in it.`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    This has italic text in it."
-  `)
-})
-
-test("inline code", async () => {
-  const markdown = `Use \`console.log()\` to debug.`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    Use console.log() to debug."
-  `)
-})
-
-test("mixed inline formatting", async () => {
-  const markdown = `**Bold**, *italic*, and \`code\` together.`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    Bold, italic, and code together."
-  `)
-})
-
-test("inline formatting with conceal=false", async () => {
-  const markdown = `**Bold**, *italic*, and \`code\` together.`
-
-  expect(await renderMarkdown(markdown, false)).toMatchInlineSnapshot(`
-    "
-    **Bold**, *italic*, and \`code\` together."
-  `)
 })
 
 // Link tests
@@ -2694,23 +1909,55 @@ test("multiple markdown renderables share and clean up one renderer capability l
   expect(renderer.listenerCount("capabilities")).toBe(listenersBefore)
 })
 
-// The Rust crate's tests/markdown.rs renders the same rows: the first paint after each streamed chunk, and after the
-// last chunk the settled frame once streaming has ended.
-type CorpusRow = [name: string, chunks: string[], html: string, fails: string[], text?: string[]]
+// The Rust crate's tests/markdown.rs renders the same rows under the same theme: the first paint after each streamed
+// chunk, and after the last chunk the settled frame once streaming has ended, with the style of each of its cells.
+type CorpusRow = [name: string, chunks: string[], html: string, fails: string[], text?: string[], styles?: string]
+const ATTRIBUTE_NAMES = ["bold", "dim", "italic", "underline", "blink", "inverse", "hidden", "strikethrough"]
+const VISIBLE_ON_SPACE = TextAttributes.UNDERLINE | TextAttributes.INVERSE | TextAttributes.STRIKETHROUGH
+
+/** The first `count` lines of the frame as the corpus's `theme.styles` letters, as its format says. */
+function styleLetters(count: number): string {
+  const letters = new Map(Object.entries(corpus.theme.styles).map(([letter, style]) => [style, letter]))
+  const frame = captureSpans()
+  const clear = frame.lines.at(-1)!.spans.at(-1)!.bg
+  const hex = (color: RGBA) => {
+    const ints = color.toInts()
+    return "#" + (ints[3] === 255 ? ints.slice(0, 3) : ints).map((v) => v.toString(16).padStart(2, "0")).join("")
+  }
+  const segmenter = new Intl.Segmenter()
+  const line = (spans: CapturedFrame["lines"][number]["spans"]) =>
+    spans.flatMap((span) => {
+      const bg = span.bg.equals(clear) ? "" : ` on ${hex(span.bg)}`
+      const names = ATTRIBUTE_NAMES.filter((_, bit) => span.attributes & (1 << bit))
+      const style = [`${hex(span.fg)}${bg}`, ...names].join(" ")
+      const blank = !bg && (span.attributes & VISIBLE_ON_SPACE) === 0
+      return [...segmenter.segment(span.text)].map(
+        ({ segment }) => letters.get(blank && segment === " " ? "blank" : style) ?? "?",
+      )
+    })
+  return frame.lines
+    .slice(0, count)
+    .map(({ spans }) => line(spans).join("").trimEnd())
+    .join("\n")
+}
+
 test("corpus text: frames match each row unless the row lists them", async () => {
   // Every listed check exists, and a frame check names one of the row's frames.
-  const check = /^(engine-(?:html|stream)|(core|rust|engine|ts)-text:([1-9]\d*))$/
+  const check = /^(engine-(?:html|stream)|(core|rust)-style|(core|rust|engine|ts)-text:([1-9]\d*))$/
   const rows = corpus.rows as unknown as CorpusRow[]
   const unknown = rows.flatMap(([name, , , fails, text]) =>
     fails
-      .filter((fail) => !check.test(fail) || Number(fail.match(check)![3] ?? 0) > (text?.length ?? 0))
+      .filter((fail) => !check.test(fail) || Number(fail.match(check)![4] ?? 0) > (text?.length ?? 0))
       .map(() => name),
   )
   expect(unknown).toEqual([])
+  const theme = SyntaxStyle.fromStyles(corpus.theme.scopes, renderer.nativeScene!)
   const wrong: string[] = []
-  for (const [name, chunks, , fails, text] of rows.filter((row) => row[4])) {
+  for (const [name, chunks, , fails, text, styles] of rows.filter((row) => row[4])) {
     const md = createMarkdownRenderable({
-      syntaxStyle,
+      syntaxStyle: theme,
+      fg: corpus.theme.text,
+      conceal: !name.startsWith("source "),
       streaming: chunks.length > 1,
       tableOptions: { widthMode: "content" },
     })
@@ -2729,6 +1976,11 @@ test("corpus text: frames match each row unless the row lists them", async () =>
       const check = `core-text:${index + 1}`
       if ((frame === text![index]) === fails.includes(check)) wrong.push(`${name}|${check}`)
     }
+    if (
+      styles !== undefined &&
+      (styleLetters(text!.at(-1)!.split("\n").length) === styles) === fails.includes("core-style")
+    )
+      wrong.push(`${name}|core-style`)
     md.destroyRecursively()
     // OpenCode's reasoning still shows Markdown through Tree-sitter (N10): its drift from each frame is listed.
     const reasoning = new CodeRenderable(renderer, {
@@ -2756,46 +2008,11 @@ test("corpus text: frames match each row unless the row lists them", async () =>
     }
     reasoning.destroyRecursively()
   }
+  theme.destroy()
   expect(wrong).toEqual([])
 })
 
-test("links with conceal mode", async () => {
-  const markdown = `Check out [OpenTUI](https://github.com/sst/opentui) for more.`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    Check out OpenTUI (https://github.com/sst/opentui) for more."
-  `)
-})
-
-test("links with conceal=false", async () => {
-  const markdown = `Check out [OpenTUI](https://github.com/sst/opentui) for more.`
-
-  expect(await renderMarkdown(markdown, false)).toMatchInlineSnapshot(`
-    "
-    Check out [OpenTUI](https://github.com/sst/opentui) for
-    more."
-  `)
-})
-
 // Horizontal rule
-
-test("horizontal rule", async () => {
-  const markdown = `Before
-
----
-
-After`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    Before
-
-    ────────────────────────────────────────────────────────────
-
-    After"
-  `)
-})
 
 test("horizontal rule has one blank row before and after", async () => {
   const md = createMarkdownRenderable({
@@ -2817,63 +2034,6 @@ test("horizontal rule has one blank row before and after", async () => {
     ────────────────────────────────────────────────────────────
     
     After"
-  `)
-})
-
-// Complex document
-
-test("complex markdown document", async () => {
-  const markdown = `# Project Title
-
-Welcome to **OpenTUI**, a terminal UI library.
-
-## Features
-
-- Automatic table alignment
-- \`inline code\` support
-- *Italic* and **bold** text
-
-## Code Example
-
-\`\`\`typescript
-const md = new MarkdownRenderable(ctx, {
-  content: "# Hello",
-})
-\`\`\`
-
-## Links
-
-Visit [GitHub](https://github.com) for more.
-
----
-
-*Press \`?\` for help*`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    Project Title
-
-    Welcome to OpenTUI, a terminal UI library.
-
-    Features
-
-    - Automatic table alignment
-    - inline code support
-    - Italic and bold text
-
-    Code Example
-
-    const md = new MarkdownRenderable(ctx, {
-      content: "# Hello",
-    })
-
-    Links
-
-    Visit GitHub (https://github.com) for more.
-
-    ────────────────────────────────────────────────────────────
-
-    Press ? for help"
   `)
 })
 
@@ -3513,187 +2673,6 @@ for (const [name, options] of [
     }
   })
 }
-
-// Incomplete/invalid markdown tests
-
-test("incomplete code block (no closing fence)", async () => {
-  const markdown = `Here is some code:
-
-\`\`\`javascript
-const x = 1;
-console.log(x);`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    Here is some code:
-
-    const x = 1;
-    console.log(x);"
-  `)
-})
-
-test("incomplete bold (no closing **)", async () => {
-  const markdown = `This has **unclosed bold text`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    This has **unclosed bold text"
-  `)
-})
-
-test("incomplete italic (no closing *)", async () => {
-  const markdown = `This has *unclosed italic text`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    This has *unclosed italic text"
-  `)
-})
-
-test("incomplete link (no closing paren)", async () => {
-  const markdown = `Check out [this link](https://example.com`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    Check out [this link](https://example.com"
-  `)
-})
-
-test("incomplete table (only header)", async () => {
-  const markdown = `| Header1 | Header2 |`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    | Header1 | Header2 |"
-  `)
-})
-
-test("incomplete table (header + delimiter, no rows)", async () => {
-  const markdown = `| Header1 | Header2 |
-|---|---|`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    ┌───────┬───────┐
-    │Header1│Header2│
-    └───────┴───────┘"
-  `)
-})
-
-test("streaming-like content with partial code block", async () => {
-  const markdown = `# Title
-
-Some text before code.
-
-\`\`\`py`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    Title
-
-    Some text before code."
-  `)
-})
-
-test("malformed table with missing pipes", async () => {
-  const markdown = `| A | B
-|---|---
-| 1 | 2`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    ┌─┬─┐
-    │A│B│
-    ├─┼─┤
-    │1│2│
-    └─┴─┘"
-  `)
-})
-
-test("trailing blank lines do not add spacing", async () => {
-  const markdown = `# Heading
-
-Paragraph text.
-
-
-`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    Heading
-
-    Paragraph text."
-  `)
-})
-
-test("multiple trailing blank lines do not add spacing", async () => {
-  const markdown = `First paragraph.
-
-Second paragraph.
-
-
-
-`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    First paragraph.
-
-    Second paragraph."
-  `)
-})
-
-test("blank lines between blocks add spacing", async () => {
-  const markdown = `First
-
-Second
-
-Third`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    First
-
-    Second
-
-    Third"
-  `)
-})
-
-test("code block at end with trailing blank lines", async () => {
-  const markdown = `Text before
-
-\`\`\`js
-const x = 1;
-\`\`\`
-
-`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    Text before
-
-    const x = 1;"
-  `)
-})
-
-test("table at end with trailing blank lines", async () => {
-  const markdown = `| A | B |
-|---|---|
-| 1 | 2 |
-
-
-`
-
-  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
-    "
-    ┌─┬─┐
-    │A│B│
-    ├─┼─┤
-    │1│2│
-    └─┴─┘"
-  `)
-})
 
 // Incremental parsing tests
 
