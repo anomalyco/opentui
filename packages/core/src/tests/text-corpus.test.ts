@@ -265,6 +265,27 @@ for (const row of corpus.rows) {
   })
 }
 
+test("text corpus: each code point of unicode-width-map.json takes its cells", () => {
+  const map = JSON.parse(
+    readFileSync(new URL("../../../native/src/tests/fixtures/unicode-width-map.json", import.meta.url), "utf8"),
+  ) as { runs: [string, string, number][] }
+  const context = new ResourceContext({ objectCapacity: 4096, renderCellsMax: 1 << 20 })
+  const failures: string[] = []
+  for (const method of Object.values(methods)) {
+    const buffer = TextBuffer.create(method, context)
+    const view = TextBufferView.create(buffer)
+    for (const [first, last, cells] of map.runs)
+      for (let cp = parseInt(first, 16); cp <= parseInt(last, 16); cp++) {
+        buffer.setText(String.fromCodePoint(cp))
+        if (view.lineInfo.lineWidthCols[0] !== cells) failures.push(`U+${cp.toString(16)} ${method}`)
+      }
+    view.destroy()
+    buffer.destroy()
+  }
+  context.destroy()
+  expect(failures).toEqual([])
+})
+
 // Each check kind runs as often as the file says, so a runner change cannot skip one silently.
 test("text corpus: every check kind runs the expected number of times", () => {
   expect(counts).toEqual(corpus.checks.ts)
