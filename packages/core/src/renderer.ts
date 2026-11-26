@@ -5247,7 +5247,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     try {
       this.stdin.setRawMode?.(false)
     } catch (e) {
-      console.error("Error disabling raw mode:", e)
+      // A terminal that already hung up (SIGHUP, closed PTY) fails with EIO; there is no raw mode left to restore.
+      if (!isTerminalGoneError(e)) console.error("Error disabling raw mode:", e)
     }
     if (flushInput && this.stdin === process.stdin) this.lib.terminalFlushInput()
   }
@@ -6239,4 +6240,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     const finalPalette = this.getCachedPaletteBySize(requestedSize) ?? detected
     return finalPalette
   }
+}
+
+// Node sets `code === "EIO"`; Bun only reports the errno in the message ("setRawMode failed with errno: 5").
+function isTerminalGoneError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  return (error as NodeJS.ErrnoException).code === "EIO" || /\berrno:? 5\b/.test(error.message)
 }
