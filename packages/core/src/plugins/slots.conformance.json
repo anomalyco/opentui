@@ -1,0 +1,332 @@
+{
+  "format": [
+    "Slot resolver conformance vectors. Core (tree.test.ts) runs this file; a Rust port reads it too.",
+    "contains rows are [ancestor, path, expected]. A path contains every path it prefixes at a dot.",
+    "rows are [name, paths, claims, expected]: paths names a set in `paths` (the mounted paths); claims are [placement, target] in order.",
+    "expected.placed maps each targeted path to its claims by placement (claim indices; empty lists left out); suppressed is [claim, by or null]; degraded is [claim, ancestor]."
+  ],
+  "contains": [
+    ["side", "side.child", true],
+    ["side", "side.child.leaf", true],
+    ["side", "sidebar", false],
+    ["side", "side", false],
+    ["side.child", "side", false],
+    ["", "side", false]
+  ],
+  "paths": {
+    "footer": ["prompt.footer", "prompt.footer.status", "prompt.footer.file"],
+    "tree": [
+      "prompt.footer",
+      "prompt.footer.left",
+      "prompt.footer.left.mode",
+      "prompt.footer.right",
+      "prompt.footer.right.directory",
+      "prompt.footer.right.model",
+      "prompt.footer.right.tokens"
+    ],
+    "side": ["side", "side.child", "sidebar"],
+    "app": [
+      "app",
+      "home.footer",
+      "home.footer.status",
+      "prompt.footer",
+      "prompt.footer.status",
+      "prompt.footer.file",
+      "session.composer.top",
+      "session.panel",
+      "sidebar.content",
+      "sidebar.footer"
+    ]
+  },
+  "rows": [
+    ["no claims", "footer", [], { "placed": {}, "suppressed": [], "degraded": [] }],
+    [
+      "prepend and append land inside, several in order",
+      "footer",
+      [
+        ["append", "prompt.footer"],
+        ["prepend", "prompt.footer"],
+        ["append", "prompt.footer"]
+      ],
+      { "placed": { "prompt.footer": { "prepend": [1], "append": [0, 2] } }, "suppressed": [], "degraded": [] }
+    ],
+    [
+      "before and after anchor to a path",
+      "footer",
+      [
+        ["after", "prompt.footer.status"],
+        ["before", "prompt.footer.status"]
+      ],
+      { "placed": { "prompt.footer.status": { "before": [1], "after": [0] } }, "suppressed": [], "degraded": [] }
+    ],
+    [
+      "a missing target appends to the nearest mounted ancestor",
+      "footer",
+      [["after", "prompt.footer.tokens"]],
+      { "placed": { "prompt.footer": { "append": [0] } }, "suppressed": [], "degraded": [[0, "prompt.footer"]] }
+    ],
+    [
+      "an additive claim with no mounted ancestor is suppressed",
+      "footer",
+      [["append", "session.composer.top"]],
+      { "placed": {}, "suppressed": [[0, null]], "degraded": [] }
+    ],
+    [
+      "a missing replace is suppressed, never degraded",
+      "footer",
+      [["replace", "prompt.footer.tokens"]],
+      { "placed": {}, "suppressed": [[0, null]], "degraded": [] }
+    ],
+    [
+      "a replace keeps the outside anchors of its boundary",
+      "footer",
+      [
+        ["replace", "prompt.footer.status"],
+        ["after", "prompt.footer.status"]
+      ],
+      { "placed": { "prompt.footer.status": { "after": [1], "replace": 0 } }, "suppressed": [], "degraded": [] }
+    ],
+    [
+      "inside claims on a replaced boundary are suppressed",
+      "footer",
+      [
+        ["append", "prompt.footer"],
+        ["replace", "prompt.footer"],
+        ["prepend", "prompt.footer"]
+      ],
+      {
+        "placed": { "prompt.footer": { "replace": 1 } },
+        "suppressed": [
+          [0, 1],
+          [2, 1]
+        ],
+        "degraded": []
+      }
+    ],
+    [
+      "same target: the last replace wins over each one before it",
+      "footer",
+      [
+        ["replace", "prompt.footer.status"],
+        ["replace", "prompt.footer.status"],
+        ["replace", "prompt.footer.status"]
+      ],
+      {
+        "placed": { "prompt.footer.status": { "replace": 2 } },
+        "suppressed": [
+          [0, 2],
+          [1, 2]
+        ],
+        "degraded": []
+      }
+    ],
+    [
+      "a container replace suppresses its subtree",
+      "tree",
+      [
+        ["replace", "prompt.footer.right"],
+        ["after", "prompt.footer.right.model"],
+        ["replace", "prompt.footer.right.tokens"]
+      ],
+      {
+        "placed": { "prompt.footer.right": { "replace": 0 } },
+        "suppressed": [
+          [2, 0],
+          [1, 0]
+        ],
+        "degraded": []
+      }
+    ],
+    [
+      "hierarchy beats order: an ancestor replace first",
+      "tree",
+      [
+        ["replace", "prompt.footer.right"],
+        ["replace", "prompt.footer.right.model"]
+      ],
+      { "placed": { "prompt.footer.right": { "replace": 0 } }, "suppressed": [[1, 0]], "degraded": [] }
+    ],
+    [
+      "hierarchy beats order: an ancestor replace last wins over each replace inside it",
+      "tree",
+      [
+        ["replace", "prompt.footer.right.model"],
+        ["replace", "prompt.footer.right.model"],
+        ["replace", "prompt.footer.right"]
+      ],
+      {
+        "placed": { "prompt.footer.right": { "replace": 2 } },
+        "suppressed": [
+          [0, 2],
+          [1, 2]
+        ],
+        "degraded": []
+      }
+    ],
+    [
+      "a root replace suppresses every inside claim",
+      "tree",
+      [
+        ["append", "prompt.footer"],
+        ["replace", "prompt.footer"]
+      ],
+      { "placed": { "prompt.footer": { "replace": 1 } }, "suppressed": [[0, 1]], "degraded": [] }
+    ],
+    [
+      "a degraded claim inside a replaced boundary is suppressed",
+      "tree",
+      [
+        ["replace", "prompt.footer.right"],
+        ["after", "prompt.footer.right.gone"]
+      ],
+      { "placed": { "prompt.footer.right": { "replace": 0 } }, "suppressed": [[1, 0]], "degraded": [] }
+    ],
+    [
+      "anchors on a container wrap it",
+      "tree",
+      [
+        ["before", "prompt.footer.right"],
+        ["after", "prompt.footer.right"]
+      ],
+      { "placed": { "prompt.footer.right": { "before": [0], "after": [1] } }, "suppressed": [], "degraded": [] }
+    ],
+    [
+      "replace suppresses its contents in any order (0)",
+      "side",
+      [
+        ["replace", "side"],
+        ["replace", "side.child"],
+        ["append", "side"],
+        ["before", "side"],
+        ["append", "sidebar"],
+        ["replace", "side"]
+      ],
+      {
+        "placed": { "side": { "before": [3], "replace": 5 }, "sidebar": { "append": [4] } },
+        "suppressed": [
+          [0, 5],
+          [1, 5],
+          [2, 5]
+        ],
+        "degraded": []
+      }
+    ],
+    [
+      "replace suppresses its contents in any order (1)",
+      "side",
+      [
+        ["replace", "side.child"],
+        ["append", "side"],
+        ["before", "side"],
+        ["append", "sidebar"],
+        ["replace", "side"],
+        ["replace", "side"]
+      ],
+      {
+        "placed": { "side": { "before": [2], "replace": 5 }, "sidebar": { "append": [3] } },
+        "suppressed": [
+          [4, 5],
+          [0, 5],
+          [1, 5]
+        ],
+        "degraded": []
+      }
+    ],
+    [
+      "replace suppresses its contents in any order (2)",
+      "side",
+      [
+        ["append", "side"],
+        ["before", "side"],
+        ["append", "sidebar"],
+        ["replace", "side"],
+        ["replace", "side.child"],
+        ["replace", "side"]
+      ],
+      {
+        "placed": { "side": { "before": [1], "replace": 5 }, "sidebar": { "append": [2] } },
+        "suppressed": [
+          [3, 5],
+          [4, 5],
+          [0, 5]
+        ],
+        "degraded": []
+      }
+    ],
+    [
+      "replace suppresses its contents in any order (3)",
+      "side",
+      [
+        ["before", "side"],
+        ["append", "sidebar"],
+        ["replace", "side"],
+        ["replace", "side.child"],
+        ["append", "side"],
+        ["replace", "side"]
+      ],
+      {
+        "placed": { "side": { "before": [0], "replace": 5 }, "sidebar": { "append": [1] } },
+        "suppressed": [
+          [2, 5],
+          [3, 5],
+          [4, 5]
+        ],
+        "degraded": []
+      }
+    ],
+    [
+      "replace suppresses its contents in any order (4)",
+      "side",
+      [
+        ["append", "sidebar"],
+        ["replace", "side"],
+        ["replace", "side.child"],
+        ["append", "side"],
+        ["before", "side"],
+        ["replace", "side"]
+      ],
+      {
+        "placed": { "side": { "before": [4], "replace": 5 }, "sidebar": { "append": [0] } },
+        "suppressed": [
+          [1, 5],
+          [2, 5],
+          [3, 5]
+        ],
+        "degraded": []
+      }
+    ],
+    [
+      "missing targets degrade two levels up or are suppressed",
+      "app",
+      [
+        ["prepend", "home.footer.version.left"],
+        ["replace", "home.footer.gone"],
+        ["after", "nowhere.at.all"]
+      ],
+      {
+        "placed": { "home.footer": { "append": [0] } },
+        "suppressed": [
+          [1, null],
+          [2, null]
+        ],
+        "degraded": [[0, "home.footer"]]
+      }
+    ],
+    [
+      "a target that starts with a dot has no mounted ancestor",
+      "side",
+      [
+        ["append", ".side"],
+        ["after", "."]
+      ],
+      {
+        "placed": {},
+        "suppressed": [
+          [0, null],
+          [1, null]
+        ],
+        "degraded": []
+      }
+    ]
+  ]
+}
