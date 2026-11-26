@@ -248,10 +248,11 @@ pub const InputParser = struct {
         if (!sink.hasRoomForOneByte()) return 0;
         // A new batch never extends a unit whose deadline already passed.
         self.expire(now_ns, sink);
-        // A deferred paste start continues only into a read that begins with the rest of its marker and more.
-        if (self.state == .csi and self.state.csi.deferred and self.pastePrefix()) {
+        // A deferred paste start continues only into a read that begins with the rest of its marker and more; held, the rest alone is typed.
+        if (self.state == .csi and self.state.csi.deferred and self.pastePrefix() and bytes.len > 0) {
             const rest = "200~"[self.unit_len - 2 ..];
             if (bytes.len > rest.len and std.mem.startsWith(u8, bytes, rest)) self.state.csi = .{ .alt = false, .deferred = false };
+            if (std.mem.startsWith(u8, rest, bytes)) self.state.csi.held = true;
         }
         var consumed: usize = 0;
         while (consumed < bytes.len) {
@@ -848,7 +849,7 @@ pub const InputParser = struct {
         if (self.kittyHeld()) return true;
         if (params[0] == '<') return allOf(params[1..], "0123456789;");
         return self.pastePrefix() or (self.expect.replies and self.replyShaped()) or
-            (self.expect.kitty_keyboard and params[0] != '?' and Shape.of(params, true) != null);
+            (self.expect.kitty_keyboard and !self.state.csi.held and params[0] != '?' and Shape.of(params, true) != null);
     }
 
     /// Whether a CSI is a cut paste start that owes no Escape key or recovered introducer.
@@ -904,11 +905,12 @@ pub const InputParser = struct {
     fn continuesDeferred(self: *const InputParser, b: u8, reply_only: bool) bool {
         const params = self.unit[2..self.unit_len];
         const digit = isDigit(b);
-        // A reply prefix continues a bare unit only while the host awaits the sentinel.
-        if (params.len == 0) return (b == '<' and self.batch_left >= 1) or (b == 'M' and self.batch_left >= 3) or
+        const kitty = self.expect.kitty_keyboard and !reply_only;
+        // A reply prefix continues a bare unit only while the host awaits the sentinel; a Kitty key's digit, with its rest.
+        if (params.len == 0) return ((b == '<' or (kitty and digit)) and self.batch_left >= 1) or (b == 'M' and self.batch_left >= 3) or
             (self.expect.kitty_query and b == '?' and self.batch_left >= 2) or (self.expect.sentinel and beginsReply('[', b));
         // With `sentinel`, a number continues toward a cursor or pixel size reply.
-        if (allDigits(params)) return self.expect.sentinel and (digit or b == ';');
+        if (allDigits(params) and !kitty) return self.expect.sentinel and (digit or b == ';');
         // Whether the field being read has a digit; a mode report's `$` follows its digits.
         const field = std.mem.trimEnd(u8, params, "$");
         const has_digit = isDigit(field[field.len - 1]);
@@ -924,7 +926,6 @@ pub const InputParser = struct {
                 };
             },
             else => {
-                const kitty = self.expect.kitty_keyboard and !reply_only;
                 const shape = Shape.of(params, kitty) orelse return false;
                 if (digit or b == ':' or b == ';') return true;
                 if (!has_digit) return false;
@@ -1094,7 +1095,7 @@ const Shape = struct {
     first: ?u32,
 
     /// A number first (or, with Kitty, a number with alternate keys after `:`), then
-    /// one or two more fields of up to three `:` parts where each `:` follows a digit.
+    /// up to two more fields of up to three `:` parts where each `:` follows a digit.
     fn of(params: []const u8, kitty: bool) ?Shape {
         var fields = std.mem.splitScalar(u8, params, ';');
         const first = fields.first();
@@ -1115,7 +1116,6 @@ const Shape = struct {
             }
             shape.segments = count;
         }
-        if (shape.semicolons == 0) return null;
         return shape;
     }
 };

@@ -66,6 +66,7 @@
     ["row-12 cursor position report split by a timeout while a cursor position request is pending", ["\u001b[12;5", null, "R"], ["response(\"\\u001b[12;5R\")"], null, {"pending": ["cpr"]}],
     ["pixel-size reply split by a timeout while a pixel-size query is pending", ["\u001b[4;10;20", null, "t"], ["response(\"\\u001b[4;10;20t\")"], null, {"pending": ["pixel"]}],
     ["Kitty mode: Shift+a as CSI u split by a timeout", ["\u001b[97;2", null, "u"], ["key(\"a\" shift)"], null, {"kitty": true}],
+    ["Kitty mode: Shift+a as CSI u split by a timeout before its first ;", ["\u001b[97", null, ";2u"], ["key(\"a\" shift)"], null, {"kitty": true}],
     ["partial CPR, pixel-size reply, and CSI u flush on timeout when nothing is pending", ["\u001b[1;2", null, "R\u001b[4;10;20", null, "t\u001b[97;2", null, "u"], ["response(\"\\u001b[1;2\")", "key(\"r\" shift)", "response(\"\\u001b[4;10;20\")", "key(\"t\")", "response(\"\\u001b[97;2\")", "key(\"u\")"]],
     ["cursor position report at home", ["\u001b[1;1R"], ["response(\"\\u001b[1;1R\")"]],
     ["cursor position report, row 12", ["\u001b[12;5R"], ["response(\"\\u001b[12;5R\")"]],
