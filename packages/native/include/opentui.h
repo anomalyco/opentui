@@ -2802,13 +2802,14 @@ typedef struct ot_session_terminal_options {
 #define OT_CONTROL_PALETTE_QUERY UINT32_C(10)
 #define OT_CONTROL_PROGRAM_STATUS UINT32_C(11)
 #define OT_CONTROL_END_REPLY_SENTINEL UINT32_C(12)
+#define OT_CONTROL_PROGRAM_RESUME UINT32_C(13)
 
 /* argument is 0/1/2 (disabled/drag/motion) for MOUSE, 0..31 for Kitty flags,
  * 0/1 for QUERY_PIXEL_RESOLUTION, QUERY_THEME_COLORS and PALETTE_QUERY (1 appends
  * the DA1 sentinel, after the validated palette queries in the same packet; a
  * tmux-wrapped query's replies trail tmux's own DA1, so it takes 0), and zero
- * otherwise. CAPABILITY_RESPONSE, TITLE, CURSOR, PALETTE_QUERY, and
- * PROGRAM_STATUS accept payload bytes. reserved must be zero. END_REPLY_SENTINEL,
+ * otherwise. CAPABILITY_RESPONSE, TITLE, CURSOR, PALETTE_QUERY, PROGRAM_STATUS,
+ * and PROGRAM_RESUME accept payload bytes. reserved must be zero. END_REPLY_SENTINEL,
  * accepted in every open phase, turns REPLY_SENTINEL off for good once a DA1
  * reply never came: later Kitty keyboard pushes send no CSI ? u query. */
 typedef struct ot_session_control_options {
@@ -2876,6 +2877,29 @@ typedef struct ot_session_program_status {
     uint32_t title_len;
     uint32_t message_len;
 } ot_session_program_status;
+
+/* PROGRAM_RESUME payload is one copied ot_session_program_resume, with native
+ * byte order and no alignment requirement, followed by exactly token_len and
+ * cwd_len bytes and then argc arguments, each a native-order uint32_t byte
+ * length and that many bytes. It writes one OSC 7577 Program Resume Protocol
+ * report: the command that brings process pid back after the terminal
+ * restarts. token is the 22..64 [A-Za-z0-9_-] bytes the terminal set in
+ * OSC7577_TOKEN; the report carries only its SHA-256 mac. pid and time
+ * (seconds since the Unix epoch) are nonzero. argc zero clears pid's record,
+ * and the report then leaves out any cwd. A command the protocol cannot carry is written as
+ * a clear instead, so the terminal does not resume an earlier command in its
+ * place: more than 64 arguments, an argument or cwd that is not UTF-8 or
+ * contains a C0, DEL, or C1 control, a first argument that is neither a bare
+ * command name not starting with '-' nor an absolute path, a cwd that is not
+ * absolute, or a report longer than 2048 bytes. Output is never
+ * multiplexer-wrapped. */
+typedef struct ot_session_program_resume {
+    uint32_t pid;
+    uint32_t argc;
+    uint64_t time;
+    uint32_t token_len;
+    uint32_t cwd_len;
+} ot_session_program_resume;
 
 #define OT_CAP_KITTY_KEYBOARD UINT32_C(1)
 #define OT_CAP_KITTY_GRAPHICS UINT32_C(2)

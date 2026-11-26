@@ -23,7 +23,7 @@ import {
   type SessionHandle,
   type NativeSplitSnapshot,
 } from "./zig.js"
-import type { ProgramStatus } from "./types.js"
+import type { ProgramResume, ProgramStatus } from "./types.js"
 
 export interface NativeSessionScheduler {
   /** Monotonic nanoseconds. */
@@ -484,9 +484,23 @@ export class NativeSession {
 
   /** Returns false while the terminal is inactive or output is full. Invalid reports throw. */
   setProgramStatus(status: ProgramStatus): boolean {
+    return this.programReport({ kind: "program-status", status })
+  }
+
+  /**
+   * Returns false while the terminal is inactive or output is full. A command the protocol can't carry is reported as
+   * a clear. Invalid tokens, pids, and times throw.
+   */
+  setProgramResume(report: ProgramResume): boolean {
+    return this.programReport({ kind: "program-resume", report })
+  }
+
+  private programReport(
+    command: Extract<NativeSessionControl, { kind: "program-status" | "program-resume" }>,
+  ): boolean {
     this.checkOpen()
     try {
-      this.lib.sessionControl(this.context, this.session, { kind: "program-status", status })
+      this.lib.sessionControl(this.context, this.session, command)
     } catch (error) {
       if (
         error instanceof NativeError &&

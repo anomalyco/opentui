@@ -199,6 +199,24 @@ pub const ProgramStatus = struct {
     message: []const u8 = "",
 };
 
+/// One OSC 7577 Program Resume Protocol report: the command that brings the
+/// owning process back after the terminal restarts, signed with the token the
+/// terminal set in OSC7577_TOKEN. Empty argv clears the owner's record. A
+/// command the protocol cannot carry is reported as a clear instead, so the
+/// terminal does not resume an earlier command in its place.
+pub const ProgramResume = struct {
+    /// 22 to 64 bytes of [A-Za-z0-9_-]. Only hashed into the report, never written.
+    token: []const u8,
+    /// The owning process, usually the caller.
+    pid: u32,
+    /// Seconds since the Unix epoch; terminals ignore reports far from their clock.
+    time: u64,
+    /// UTF-8 arguments. The first is a bare command name or an absolute path.
+    argv: []const []const u8 = &.{},
+    /// Empty or an absolute UTF-8 path to resume in. A clear leaves it out.
+    cwd: []const u8 = "",
+};
+
 /// Complete read-only OSC palette queries, optionally wrapped for tmux.
 pub const PaletteQuery = struct {
     bytes: []const u8,
@@ -228,6 +246,8 @@ pub const Control = union(enum) {
     cursor: CursorOptions,
     /// Validated against the protocol limits below; never multiplexer-wrapped.
     program_status: ProgramStatus,
+    /// Never multiplexer-wrapped: a multiplexer gives each pane its own token.
+    program_resume: ProgramResume,
 };
 
 pub const InputFeed = struct {
@@ -255,6 +275,12 @@ pub const program_status_message_bytes_max: u32 = 2048;
 pub const program_status_bytes_max: u32 = "\x1b]7501;state=blocked:id=:kind=permission:progress=100:app=:title=:msg=\x1b\\".len +
     program_status_id_bytes_max + program_status_app_bytes_max + std.base64.standard.Encoder.calcSize(program_status_title_bytes_max) +
     std.base64.standard.Encoder.calcSize(program_status_message_bytes_max);
+pub const program_resume_token_bytes_min: u32 = 22;
+pub const program_resume_token_bytes_max: u32 = 64;
+/// The sizes every terminal accepts. A longer report may go unverified, which
+/// would leave the previous record in place.
+pub const program_resume_bytes_max: u32 = 2048;
+pub const program_resume_args_max: u32 = 64;
 pub const cursor_settle_ns: u64 = 10 * std.time.ns_per_ms;
 pub const split_snapshots_max: u32 = api.OT_SPLIT_SNAPSHOTS_MAX;
 
@@ -774,6 +800,7 @@ pub const Session = struct {
             },
             .palette_query => |query| try validatePaletteQuery(query.bytes),
             .program_status => |status| try validateProgramStatus(status),
+            .program_resume => |report| try validateProgramResume(report),
             else => {},
         }
         switch (self.lifecycle.phase) {
@@ -814,6 +841,18 @@ pub const Session = struct {
         if (status.app.len != 0) try validateProgramStatusName(status.app, program_status_app_bytes_max);
         try validateText(status.title, program_status_title_bytes_max);
         try validateText(status.message, program_status_message_bytes_max);
+    }
+
+    /// Rejects reports no terminal could verify or attribute. The command is not
+    /// checked here: one the protocol cannot carry is written as a clear.
+    fn validateProgramResume(report: ProgramResume) Error!void {
+        if (report.pid == 0 or report.time == 0) return error.InvalidOptions;
+        if (report.token.len < program_resume_token_bytes_min or report.token.len > program_resume_token_bytes_max) {
+            return error.InvalidOptions;
+        }
+        for (report.token) |byte| {
+            if (!std.ascii.isAlphanumeric(byte) and byte != '_' and byte != '-') return error.InvalidOptions;
+        }
     }
 
     fn validateProgramStatusName(name: []const u8, bytes_max: u32) Error!void {
@@ -1212,7 +1251,57 @@ pub const Session = struct {
             .reset_background => try writer.writeAll(ansi.ANSI.resetTerminalBgColor),
             .cursor, .end_reply_sentinel => unreachable,
             .program_status => |status| writeProgramStatus(writer, status),
+            .program_resume => |report| writeProgramResume(writer, report),
         }
+    }
+
+    /// Writes the command's report, or a clear when the protocol cannot carry
+    /// the command. Either fits the empty packet, so writing cannot fail.
+    fn writeProgramResume(writer: *std.Io.Writer, report: ProgramResume) void {
+        comptime std.debug.assert(program_resume_bytes_max <= control_packet_bytes_max);
+        const space = writer.unusedCapacitySlice()[0..program_resume_bytes_max];
+        // A command too long for the report limit fails to encode and becomes a clear.
+        const len = encodeProgramResume(space, report, carriesCommand(report)) catch
+            encodeProgramResume(space, report, false) catch unreachable;
+        writer.advance(len);
+    }
+
+    fn encodeProgramResume(space: []u8, report: ProgramResume, command: bool) std.Io.Writer.Error!usize {
+        var out: std.Io.Writer = .fixed(space);
+        try out.print("\x1b]7577;pid={d}:time={d}:", .{ report.pid, report.time });
+        if (command) {
+            try out.writeAll("argv=");
+            for (report.argv, 0..) |argument, index| {
+                if (index != 0) try out.writeByte(',');
+                try out.print("{b64}", .{argument});
+            }
+            if (report.cwd.len != 0) try out.print(":cwd={b64}", .{report.cwd});
+        } else {
+            try out.writeAll("clear=1");
+        }
+        // The mac is a plain SHA-256 of the body, a colon, and the token, as the protocol specifies.
+        var mac = std.crypto.hash.sha2.Sha256.init(.{});
+        mac.update(out.buffered()["\x1b]7577;".len..]);
+        mac.update(":");
+        mac.update(report.token);
+        try out.print(":mac={s}\x1b\\", .{&std.fmt.bytesToHex(mac.finalResult(), .lower)});
+        return out.end;
+    }
+
+    /// Whether a terminal accepts the command: at most 64 arguments of UTF-8
+    /// without control characters, a bare command name that does not start with
+    /// '-' or an absolute path first, and an absolute cwd if any.
+    fn carriesCommand(report: ProgramResume) bool {
+        if (report.argv.len == 0 or report.argv.len > program_resume_args_max) return false;
+        const program = report.argv[0];
+        const separators = if (builtin.os.tag == .windows) "/\\" else "/";
+        const bare = program.len != 0 and program[0] != '-' and std.mem.findAny(u8, program, separators) == null;
+        if (!bare and !std.fs.path.isAbsolute(program)) return false;
+        if (report.cwd.len != 0 and !std.fs.path.isAbsolute(report.cwd)) return false;
+        for (report.argv) |argument| {
+            if (!std.unicode.utf8ValidateSlice(argument) or utf8.containsControl(argument)) return false;
+        }
+        return std.unicode.utf8ValidateSlice(report.cwd) and !utf8.containsControl(report.cwd);
     }
 
     /// Validation bounds the report, and the bound fits the empty packet, so writing cannot fail.

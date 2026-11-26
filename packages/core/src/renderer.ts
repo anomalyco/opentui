@@ -15,6 +15,7 @@ import {
   type CursorStyleOptions,
   type MousePointerStyle,
   type ProgramStatus,
+  type ProgramResume,
   type RenderContext,
   type TerminalCapabilities,
   type ThemeMode,
@@ -2259,6 +2260,19 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   public setProgramStatus(status: ProgramStatus): boolean {
     if (!this.nativeSession.open) return false
     return this.nativeSession.setProgramStatus(status)
+  }
+
+  /**
+   * Report how to resume the program with OSC 7577 after the terminal restarts, or clear that command. Terminals that
+   * support the protocol set `OSC7577_TOKEN`; without it there is nothing to report. A command the protocol can't
+   * carry, such as one with a newline or a relative program path, is reported as a clear, so the terminal doesn't
+   * resume an earlier command in its place.
+   * Returns false when the report is not queued: the session failed or is closing (from the microtask after
+   * `destroy()`), the terminal is not active, or output is full. Invalid tokens, pids, and times throw.
+   */
+  public setProgramResume(report: ProgramResume): boolean {
+    if (!this.nativeSession.open) return false
+    return this.nativeSession.setProgramResume(report)
   }
 
   public get themeMode(): ThemeMode | null {

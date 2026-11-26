@@ -46,8 +46,8 @@ use crate::error::{Error, Result, Status};
 use crate::host::{Host, HostOptions};
 use crate::input::{Event, KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use crate::native::{
-    Context, Control, CursorUpdate, Draft, FrameOptions, HostRequest, MousePointer, ProgramStatus, Pump, Remote,
-    RenderOutcome, RendererState, SelectionColors, Session, WidthMethod,
+    Context, Control, CursorUpdate, Draft, FrameOptions, HostRequest, MousePointer, ProgramResume, ProgramStatus, Pump,
+    Remote, RenderOutcome, RendererState, SelectionColors, Session, WidthMethod,
 };
 use crate::post::{Area, PostState};
 use crate::remote::RemoteTerminal;
@@ -817,10 +817,22 @@ impl App {
     /// without a running terminal, as in tests, or when output is backed up; terminals without the protocol ignore
     /// the report. A report native code rejects, such as an id with a space, ends the event loop with the error.
     pub fn set_program_status(&self, status: ProgramStatus<'_>) -> bool {
+        self.program_report(Control::ProgramStatus(status))
+    }
+
+    /// Sends an OSC 7577 program resume report: the command that brings the app back after the terminal restarts, or
+    /// an empty `argv` to clear it. Returns `false` without a running terminal, as in tests, or when output is backed
+    /// up; terminals without the protocol ignore the report. A command the protocol can't carry is reported as a
+    /// clear. A report native code rejects, such as a malformed token, ends the event loop with the error.
+    pub fn set_program_resume(&self, report: ProgramResume<'_>) -> bool {
+        self.program_report(Control::ProgramResume(report))
+    }
+
+    fn program_report(&self, control: Control<'_>) -> bool {
         if !self.0.terminal_active.get() {
             return false;
         }
-        let Err(error) = self.0.session.control(Control::ProgramStatus(status)) else {
+        let Err(error) = self.0.session.control(control) else {
             return true;
         };
         if !matches!(error.status(), Some(Status::InvalidPhase | Status::OutputBackpressure)) {

@@ -24,6 +24,7 @@ import {
   type MousePointerStyle,
   type ImageRenderProtocol,
   type ProgramStatus,
+  type ProgramResume,
 } from "./types.js"
 export type {
   LineInfo,
@@ -909,6 +910,7 @@ export type NativeSessionControl =
   | { kind: "mouse"; mode: "disabled" | "drag" | "motion" }
   | { kind: "kitty-keyboard-flags"; flags: number }
   | { kind: "program-status"; status: ProgramStatus }
+  | { kind: "program-resume"; report: ProgramResume }
   | { kind: "query-pixel-resolution" | "query-theme-colors"; sentinel?: boolean }
   | { kind: "restore-modes" | "reset-background" | "end-reply-sentinel" }
 
@@ -1404,6 +1406,68 @@ function programStatusPayload(status: ProgramStatus, encoder: TextEncoder): Uint
     payload.set(part, offset)
     offset += part.byteLength
   }
+  return payload
+}
+
+/**
+ * Packs one ot_session_program_resume record, its token and cwd, then each argument after its native-order u32 length.
+ * Native code validates the token, pid, and time, and clears a command the protocol can't carry.
+ */
+function programResumePayload(report: ProgramResume, encoder: TextEncoder): Uint8Array {
+  const layout = nativeLayouts.ot_session_program_resume
+  const {
+    token,
+    pid = process.pid,
+    time = Math.floor(Date.now() / 1000),
+    argv,
+    cwd,
+    clear,
+  } = report as Partial<Record<string, unknown>>
+  if (typeof token !== "string") throw new TypeError("Program resume token must be a string")
+  if (typeof pid !== "number" || !isFFIU32(pid)) throw new RangeError("Program resume pid must be a u32 integer")
+  if (typeof time !== "number" || !Number.isSafeInteger(time) || time < 0) {
+    throw new RangeError("Program resume time must be a non-negative integer")
+  }
+  if (argv === undefined ? clear !== true : !Array.isArray(argv)) {
+    throw new TypeError("Program resume needs argv, or clear: true")
+  }
+  if (cwd != null && typeof cwd !== "string") throw new TypeError("Program resume cwd must be a string")
+  // An empty argv clears like any command the protocol can't carry, and drops its cwd. A cwd with clear: true is a
+  // mistake in the call, so it throws.
+  if (argv === undefined && cwd != null) throw new TypeError("Program resume cwd needs argv")
+  const directory = typeof cwd === "string" ? cwd : ""
+  const command = (argv ?? []) as unknown[]
+  if (!command.every((argument): argument is string => typeof argument === "string")) {
+    throw new TypeError("Program resume arguments must be strings")
+  }
+  // A lone surrogate has no UTF-8 encoding, and TextEncoder would change the argument, so that command clears.
+  const carried = command.every((argument) => argument.isWellFormed()) && directory.isWellFormed()
+  // A report is at most 2048 bytes, so a packet's worth of arguments, each a packet's worth of UTF-16 units, keeps
+  // native code's decision without an unbounded encoding.
+  const limit = NATIVE_SESSION_CONTROL_PACKET_BYTES + 1
+  const parts = [token, carried ? directory : "", ...(carried ? command.slice(0, limit) : [])].map((text) =>
+    encoder.encode(text.slice(0, limit)),
+  )
+  const header = new ArrayBuffer(layout.size)
+  const words = new Uint32Array(header)
+  words[layout.fields.pid.offset / 4] = pid
+  words[layout.fields.argc.offset / 4] = parts.length - 2
+  words[layout.fields.token_len.offset / 4] = parts[0].byteLength
+  words[layout.fields.cwd_len.offset / 4] = parts[1].byteLength
+  new BigUint64Array(header)[layout.fields.time.offset / 8] = BigInt(time)
+  const payload = new Uint8Array(
+    layout.size + parts.reduce((total, part, index) => total + part.byteLength + (index < 2 ? 0 : 4), 0),
+  )
+  payload.set(new Uint8Array(header))
+  let offset = layout.size
+  parts.forEach((part, index) => {
+    if (index >= 2) {
+      payload.set(new Uint8Array(new Uint32Array([part.byteLength]).buffer), offset)
+      offset += 4
+    }
+    payload.set(part, offset)
+    offset += part.byteLength
+  })
   return payload
 }
 
@@ -7221,6 +7285,10 @@ export class FFIRenderLib {
       case "program-status":
         record[kind] = nativeConstants.OT_CONTROL_PROGRAM_STATUS
         bytes = programStatusPayload(command.status, this.encoder)
+        break
+      case "program-resume":
+        record[kind] = nativeConstants.OT_CONTROL_PROGRAM_RESUME
+        bytes = programResumePayload(command.report, this.encoder)
         break
       case "restore-modes":
         record[kind] = nativeConstants.OT_CONTROL_RESTORE_MODES

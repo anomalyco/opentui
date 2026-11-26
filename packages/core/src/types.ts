@@ -170,6 +170,31 @@ export type ProgramStatus =
   | (ProgramStatusRecord & { state: "blocked"; kind?: ProgramStatusKind; progress?: number })
   | { state: "clear"; id?: string }
 
+/**
+ * One OSC 7577 Program Resume Protocol report: the command that brings the program back after the terminal restarts,
+ * or `clear` to remove it. A command the protocol can't carry is reported as `clear` instead, so the terminal doesn't
+ * resume an earlier command in its place.
+ */
+export type ProgramResume = {
+  /**
+   * The `OSC7577_TOKEN` the terminal set. It signs the report and is never written. Remove it from the environment of
+   * every process the program starts, so they can't replace the command or register their own.
+   */
+  token: string
+  /** The process the command brings back. Defaults to this process. */
+  pid?: number
+  /** When the report is made, in seconds since the Unix epoch. Defaults to now. */
+  time?: number
+} & (
+  | {
+      /** The program, a bare command name looked up on PATH or an absolute path, then its arguments. */
+      argv: readonly string[]
+      /** The absolute directory to resume in. */
+      cwd?: string
+    }
+  | { clear: true }
+)
+
 export interface RendererEvents {
   resize: (width: number, height: number) => void
   key: (data: Buffer) => void

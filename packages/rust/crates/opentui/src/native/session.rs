@@ -319,6 +319,8 @@ pub enum Control<'a> {
     PaletteQuery(&'a [u8]),
     /// One OSC 7501 Program Status Protocol report. Terminals without the protocol ignore it.
     ProgramStatus(ProgramStatus<'a>),
+    /// One OSC 7577 Program Resume Protocol report. Terminals without the protocol ignore it.
+    ProgramResume(ProgramResume<'a>),
 }
 
 /// What a [`ProgramStatus`] report says the program is doing.
@@ -393,6 +395,48 @@ impl ProgramStatus<'_> {
         let mut payload = sys::bytes_of(&header).to_vec();
         for text in [self.id, self.app, self.title, self.message] {
             payload.extend_from_slice(text.as_bytes());
+        }
+        Ok(payload)
+    }
+}
+
+/// One OSC 7577 report for [`Control::ProgramResume`]: the command that brings process `pid` back after the
+/// terminal restarts. An empty `argv` clears the record.
+///
+/// The token is the 22 to 64 `[A-Za-z0-9_-]` bytes the terminal set in `OSC7577_TOKEN`; the report carries only its
+/// hash. Remove it from the environment of every process the program starts. `pid` and `time` (seconds since the Unix
+/// epoch) are nonzero. Native code rejects anything else as an invalid argument. A command the protocol can't carry,
+/// such as an argument with a newline, a relative program or cwd, more than 64 arguments, or a report over 2048 bytes,
+/// is reported as a clear, so the terminal doesn't resume an earlier command in its place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ProgramResume<'a> {
+    pub token: &'a str,
+    pub pid: u32,
+    pub time: u64,
+    /// A bare command name or an absolute path, then its arguments.
+    pub argv: &'a [&'a str],
+    /// Empty, or the absolute directory to resume in. A clear leaves it out.
+    pub cwd: &'a str,
+}
+
+impl ProgramResume<'_> {
+    /// The control payload: the fixed header, the token and cwd bytes, then each argument after its native-order
+    /// length.
+    fn encode(&self) -> Result<Vec<u8>> {
+        const OPERATION: &str = "ot_session_control";
+        let header = sys::ot_session_program_resume {
+            pid: self.pid,
+            argc: count(OPERATION, self.argv.len())?,
+            time: self.time,
+            token_len: count(OPERATION, self.token.len())?,
+            cwd_len: count(OPERATION, self.cwd.len())?,
+        };
+        let mut payload = sys::bytes_of(&header).to_vec();
+        payload.extend_from_slice(self.token.as_bytes());
+        payload.extend_from_slice(self.cwd.as_bytes());
+        for argument in self.argv {
+            payload.extend_from_slice(&count(OPERATION, argument.len())?.to_ne_bytes());
+            payload.extend_from_slice(argument.as_bytes());
         }
         Ok(payload)
     }
@@ -755,6 +799,10 @@ impl Session {
             Control::ProgramStatus(report) => {
                 status = report.encode()?;
                 (sys::OT_CONTROL_PROGRAM_STATUS, 0, &status)
+            }
+            Control::ProgramResume(report) => {
+                status = report.encode()?;
+                (sys::OT_CONTROL_PROGRAM_RESUME, 0, &status)
             }
         };
         let options = sys::ot_session_control_options { kind, argument, ..Default::default() };
