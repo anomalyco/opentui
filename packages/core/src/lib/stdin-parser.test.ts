@@ -2157,13 +2157,8 @@ describe("stdin parser", () => {
         if (bytes[0] !== 0x1b || rest.length === 0 || !rest.every((byte) => byte >= 0x20 && byte < 0x7f)) {
           return { ...unit, cut: undefined }
         }
-        // Kitty keys wait for their rest (opentui.h, OT_INPUT_EXPECT_KITTY_KEYBOARD). Known defect: one cut before
-        // its first `;` does not, so those cuts are left out.
-        if (mode === "kitty" && unit.cut! > 1) {
-          if (bytes.slice(0, unit.cut).includes(0x3b)) return { ...unit, cutExpected: unit.expected }
-          count("kitty key cut before its first ; (left out)")
-          return { ...unit, cut: undefined }
-        }
+        // Kitty keys (always CSI u here) wait for their rest (opentui.h, OT_INPUT_EXPECT_KITTY_KEYBOARD).
+        if (mode === "kitty" && unit.cut! > 1) return { ...unit, cutExpected: unit.expected }
         // Otherwise the cut sequence ends at the timeout: a lone ESC is Escape, ESC ESC Alt+Escape, a longer one a
         // reply (after ESC ESC, Escape and a reply), and the rest is typed.
         const alt = bytes[1] === 0x1b && unit.cut! > 1 ? 1 : 0
