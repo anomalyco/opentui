@@ -1,0 +1,81 @@
+---
+title: Program resume
+description: Tell the terminal how to bring the program back after the terminal restarts
+skill:
+  intents: [program-resume, osc7577, terminal, session-restore, renderer]
+---
+
+# Program resume
+
+OpenTUI sends [OSC 7577 Program Resume Protocol](https://www.superlogical.com/rex/docs/build/program-resume) reports.
+A report tells the terminal which command brings the program back after the terminal restarts, for example after an
+update, a crash, or a reboot. The terminal decides whether and when to run it.
+
+Terminals that support the protocol set `OSC7577_TOKEN` in the environment of the first process in each terminal. A
+report is signed with that token, so text that only passes through the terminal, such as a file shown with `cat` or the
+output of `ssh`, cannot register a command.
+
+```typescript
+const token = process.env.OSC7577_TOKEN
+// Processes the program starts must not get the token.
+delete process.env.OSC7577_TOKEN
+
+if (token) renderer.setProgramResume({ token, argv: ["notes", "--open", file], cwd: process.cwd() })
+// When the user quits:
+if (token) renderer.setProgramResume({ token, clear: true })
+```
+
+## Reports
+
+| Field   | Value                                                                                        |
+| ------- | -------------------------------------------------------------------------------------------- |
+| `token` | The `OSC7577_TOKEN` value: 22 to 64 `[A-Za-z0-9_-]` bytes. The report carries only its hash  |
+| `argv`  | The program, a bare command name looked up on `PATH` or an absolute path, then its arguments |
+| `cwd`   | The absolute directory to resume in. Optional                                                |
+| `clear` | `true` removes the command instead. A report has `argv` or `clear`                           |
+| `pid`   | The process the command brings back. Defaults to `process.pid`                               |
+| `time`  | Seconds since the Unix epoch. Defaults to now; terminals ignore reports far from their clock |
+
+The terminal holds one command for each process. Each report replaces it. Report again when the command changes, for
+example when the user opens another document, and after the program continues from a stop, because a program that ran
+in the meantime may have replaced it.
+
+## Commands the protocol can't carry
+
+Some commands can't be reported: an argument or `cwd` with a control character such as a newline, a lone surrogate, a
+relative program or `cwd`, a program that starts with `-`, an empty `argv`, more than 64 arguments, or a report longer
+than 2048 bytes. OpenTUI reports a `clear` for them instead, so the terminal does not resume an earlier command in its
+place. A `clear` leaves out the `cwd`.
+
+The terminal runs the command in a new environment, without the variables the program had. Put anything the program
+needs, such as a profile or a server address, in its arguments.
+
+## Results
+
+`setProgramResume()` returns `true` when OpenTUI queues the report. It returns `false` in these cases:
+
+- The session failed, or the terminal is closing: from the microtask after `destroy()`, or when the process exits.
+  Reports made in `destroy` listeners, in `onDestroy`, or right after `destroy()` are still queued.
+- The terminal is not active, for example before `setupTerminal()` finishes or while the renderer is suspended.
+- The output queue is full.
+
+A token, `pid`, or `time` that breaks a rule above throws, as does a `cwd` with `clear`. OpenTUI checks the whole
+report before it writes anything.
+
+## Lifetime
+
+Records belong to the terminal, not to the renderer. OpenTUI does not clear the command when the renderer is
+destroyed or suspended.
+
+Clear the command when the user quits, and only then. When the terminal ends the program, with `SIGHUP` or `SIGTERM`
+or by closing its terminal, keep it: that is when the terminal needs it.
+
+## Multiplexers
+
+OpenTUI does not wrap reports in tmux or GNU Screen passthrough. A multiplexer that implements OSC 7577 gives each pane
+its own token and receives reports directly.
+
+## Next
+
+- [Program status](/docs/application-apis/program-status) tells the terminal what the program is doing.
+- [Renderer](/docs/core-concepts/renderer) documents the renderer.

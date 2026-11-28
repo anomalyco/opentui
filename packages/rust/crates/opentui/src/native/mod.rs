@@ -40,9 +40,9 @@ pub use record::{BoxSpec, GridSpec, PaintCell, Phase, Recorder};
 pub(crate) use resource::Resource;
 pub use session::{
     Capabilities, CapabilityFlags, Control, Corner, CursorPosition, CursorStyle, CursorUpdate, FrameStats,
-    KittyImageReply, KittyKeyboard, MousePointer, MouseTracking, Multiplexer, OutputTicket, ProgramKind, ProgramState,
-    ProgramStatus, Pump, Remote, RendererState, Session, SessionOptions, SessionState, TerminalOptions, TerminalState,
-    WidthMethod,
+    KittyImageReply, KittyKeyboard, MousePointer, MouseTracking, Multiplexer, OutputTicket, ProgramKind, ProgramResume,
+    ProgramState, ProgramStatus, Pump, Remote, RendererState, Session, SessionOptions, SessionState, TerminalOptions,
+    TerminalState, WidthMethod,
 };
 pub use terminal::{
     EmbeddedTerminal, EmbeddedTerminalOptions, TERMINAL_INPUT_BYTES_MAX, TerminalCursor, TerminalCursorShape,

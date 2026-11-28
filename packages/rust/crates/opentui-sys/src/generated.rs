@@ -5,7 +5,7 @@ use core::ffi::c_void;
 
 /// FNV-1a 64-bit hash of the `opentui.h` these declarations were generated from.
 /// The build script rejects native artifacts whose header has a different hash.
-pub const OPENTUI_HEADER_FNV1A64: u64 = 0x95c14bf82763459a;
+pub const OPENTUI_HEADER_FNV1A64: u64 = 0x377100b96dc9b5c5;
 
 pub type ot_status = i32;
 
@@ -651,6 +651,7 @@ pub const OT_CONTROL_RESET_BACKGROUND: u32 = 9;
 pub const OT_CONTROL_PALETTE_QUERY: u32 = 10;
 pub const OT_CONTROL_PROGRAM_STATUS: u32 = 11;
 pub const OT_CONTROL_END_REPLY_SENTINEL: u32 = 12;
+pub const OT_CONTROL_PROGRAM_RESUME: u32 = 13;
 pub const OT_CURSOR_POSITION: u32 = 1;
 pub const OT_CURSOR_STYLE: u32 = 2;
 pub const OT_CURSOR_BLINKING: u32 = 4;
@@ -3832,6 +3833,36 @@ const _: () = {
     assert!(core::mem::offset_of!(ot_session_program_status, app_len) == 20);
     assert!(core::mem::offset_of!(ot_session_program_status, title_len) == 24);
     assert!(core::mem::offset_of!(ot_session_program_status, message_len) == 28);
+};
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ot_session_program_resume {
+    pub pid: u32,
+    pub argc: u32,
+    pub time: u64,
+    pub token_len: u32,
+    pub cwd_len: u32,
+}
+
+// SAFETY: the record has no padding and only integer or float fields.
+unsafe impl Pod for ot_session_program_resume {}
+
+impl Default for ot_session_program_resume {
+    fn default() -> Self {
+        // SAFETY: every field is an integer, a float, or an array or record of them; all-zero is valid.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<ot_session_program_resume>() == 24);
+    assert!(core::mem::align_of::<ot_session_program_resume>() == 8);
+    assert!(core::mem::offset_of!(ot_session_program_resume, pid) == 0);
+    assert!(core::mem::offset_of!(ot_session_program_resume, argc) == 4);
+    assert!(core::mem::offset_of!(ot_session_program_resume, time) == 8);
+    assert!(core::mem::offset_of!(ot_session_program_resume, token_len) == 16);
+    assert!(core::mem::offset_of!(ot_session_program_resume, cwd_len) == 20);
 };
 
 #[repr(C)]

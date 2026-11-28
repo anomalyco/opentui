@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: d3566b262e1248a72d2eb4eaa6f8852dc82c14f532d5141156cad517a84951d8
+// ABI audit SHA-256: f7c8ebb5c1352cf89153feff52384b11790dd12c24ae41efdef5beb925884d37
 
 export const OT_CONTEXT_ABI_VERSION = 2
 export const OT_OK = 0
@@ -638,6 +638,7 @@ export const OT_CONTROL_RESET_BACKGROUND = 9
 export const OT_CONTROL_PALETTE_QUERY = 10
 export const OT_CONTROL_PROGRAM_STATUS = 11
 export const OT_CONTROL_END_REPLY_SENTINEL = 12
+export const OT_CONTROL_PROGRAM_RESUME = 13
 export const OT_CURSOR_POSITION = 1
 export const OT_CURSOR_STYLE = 2
 export const OT_CURSOR_BLINKING = 4
@@ -2283,6 +2284,17 @@ export const nativeLayouts = {
       message_len: { offset: 28, size: 4, alignment: 4, type: "u32" },
     },
   },
+  ot_session_program_resume: {
+    size: 24,
+    alignment: 8,
+    fields: {
+      pid: { offset: 0, size: 4, alignment: 4, type: "u32" },
+      argc: { offset: 4, size: 4, alignment: 4, type: "u32" },
+      time: { offset: 8, size: 8, alignment: 8, type: "u64" },
+      token_len: { offset: 16, size: 4, alignment: 4, type: "u32" },
+      cwd_len: { offset: 20, size: 4, alignment: 4, type: "u32" },
+    },
+  },
   ot_session_capabilities: {
     size: 144,
     alignment: 4,
@@ -3184,6 +3196,7 @@ export const nativeConstants = {
   OT_CONTROL_PALETTE_QUERY: 10,
   OT_CONTROL_PROGRAM_STATUS: 11,
   OT_CONTROL_END_REPLY_SENTINEL: 12,
+  OT_CONTROL_PROGRAM_RESUME: 13,
   OT_CURSOR_POSITION: 1,
   OT_CURSOR_STYLE: 2,
   OT_CURSOR_BLINKING: 4,

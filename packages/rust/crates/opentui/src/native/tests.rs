@@ -751,6 +751,34 @@ fn program_status_reports_encode_every_state_and_reject_bad_records() -> Result<
 }
 
 #[test]
+fn program_resume_reports_sign_commands_and_clear_what_they_cannot_carry() -> Result<()> {
+    let context = context(1)?;
+    let session = session(&context, 8, 2)?;
+    session.setup_terminal(TerminalOptions::default())?;
+    let mut now_ns = 0;
+    session.pump_until_quiet(&mut now_ns)?;
+    let mut report = |record| -> Result<Vec<u8>> {
+        session.control(Control::ProgramResume(record))?;
+        session.pump_until_quiet(&mut now_ns)
+    };
+    // The token, pid, time, and lazygit report of the protocol's examples, with the real mac values.
+    let clear = ProgramResume { token: "dummy-token-replace-me", pid: 74877, time: 1795543200, argv: &[], cwd: "" };
+    let output = report(ProgramResume { argv: &["lazygit"], cwd: "/home/user/src/project", ..clear })?;
+    let lazygit = "\x1b]7577;pid=74877:time=1795543200:argv=bGF6eWdpdA==:cwd=L2hvbWUvdXNlci9zcmMvcHJvamVjdA==:\
+                   mac=35cb909805c380336efd3689a125acc774a9dec8422a1d21492ebec06ca758e1\x1b\\";
+    assert!(contains(&output, lazygit.as_bytes()), "{:?}", String::from_utf8_lossy(&output));
+    let cleared = b"\x1b]7577;pid=74877:time=1795543200:clear=1:\
+                    mac=c30603369f98fef581a4098be889175b0c74f0641e49f8b25f4326cb38f97c93\x1b\\";
+    assert!(contains(&report(clear)?, cleared));
+    // A command the protocol can't carry clears instead, a clear leaves out the cwd, and a report no terminal could
+    // verify is rejected.
+    assert!(contains(&report(ProgramResume { argv: &["./run.sh"], ..clear })?, cleared));
+    assert!(contains(&report(ProgramResume { cwd: "/home", ..clear })?, cleared));
+    assert_eq!(status(report(ProgramResume { token: "short", ..clear })), Status::InvalidArgument);
+    Ok(())
+}
+
+#[test]
 fn capabilities_name_width_methods_multiplexers_and_forced_image_protocols() -> Result<()> {
     let context = context(3)?;
     let capabilities = session(&context, 4, 1)?.capabilities()?;

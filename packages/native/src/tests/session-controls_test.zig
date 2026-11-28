@@ -13,6 +13,8 @@ const transport: session.Options = .{
 };
 
 const Fixture = @import("session-terminal_test.zig").Fixture;
+/// The token of the OSC 7577 specification's examples.
+const token = "dummy-token-replace-me";
 const utils = @import("../utils.zig");
 const input_parser = @import("../input-parser.zig");
 
@@ -31,6 +33,7 @@ test "Session controls gate inactive phases and reject malformed or over-limit i
         .{ .query_theme_colors = false },
         .reset_background,
         .{ .program_status = .{ .state = .working } },
+        .{ .program_resume = .{ .token = token, .pid = 1, .time = 1 } },
     };
     for (commands) |command| try testing.expectError(error.TerminalInactive, f.value.control(command));
     try testing.expectError(error.InvalidOptions, f.value.control(.{ .program_status = .{ .state = .idle, .id = "a b" } }));
@@ -86,6 +89,12 @@ test "Session controls gate inactive phases and reject malformed or over-limit i
         .{ .program_status = .{ .state = .idle, .title = long_text[0 .. session.program_status_title_bytes_max + 1] } },
         .{ .program_status = .{ .state = .idle, .message = "\x1b\\" } },
         .{ .program_status = .{ .state = .idle, .message = &long_text } },
+        // Reports a terminal could not verify or attribute; a command it cannot carry becomes a clear instead.
+        .{ .program_resume = .{ .token = token, .pid = 0, .time = 1 } },
+        .{ .program_resume = .{ .token = token, .pid = 1, .time = 0 } },
+        .{ .program_resume = .{ .token = token[1..], .pid = 1, .time = 1 } },
+        .{ .program_resume = .{ .token = token ++ token ++ token[1..], .pid = 1, .time = 1 } },
+        .{ .program_resume = .{ .token = "dummy:token-replace-me", .pid = 1, .time = 1 } },
     };
     // One reply per rule: framing, DCS, OSC, APC, then each CSI form.
     const replies = [_][]const u8{
@@ -194,6 +203,39 @@ test "Session controls bound input and output without allocation after attachmen
         try f.value.control(.{ .program_status = case[0] });
         try testing.expectEqualStrings(case[1], try f.drain(&bytes));
     }
+    // The first four reports are the OSC 7577 specification's examples, with their real mac values.
+    const nvim = [_][]const u8{ "nvim", "-S", "/home/user/.local/state/nvim/sessions/8f2c1d.vim" };
+    const clear = "\x1b]7577;pid=74877:time=1795543200:clear=1:mac=c30603369f98fef581a4098be889175b0c74f0641e49f8b25f4326cb38f97c93\x1b\\";
+    const too_many: [session.program_resume_args_max + 1][]const u8 = @splat("x");
+    const too_long = [_][]const u8{ "x", &@as([session.program_resume_bytes_max]u8, @splat('x')) };
+    for ([_]struct { []const []const u8, []const u8, u32, []const u8 }{
+        .{ &nvim, "", 74877, "\x1b]7577;pid=74877:time=1795543200:argv=bnZpbQ==,LVM=,L2hvbWUvdXNlci8ubG9jYWwvc3RhdGUvbnZpbS9zZXNzaW9ucy84ZjJjMWQudmlt:mac=9dbb99bfb856749a87563839d7ce9062818d78cf25909db93f309e0cd3b1909b\x1b\\" },
+        .{ &.{"lazygit"}, "/home/user/src/project", 74877, "\x1b]7577;pid=74877:time=1795543200:argv=bGF6eWdpdA==:cwd=L2hvbWUvdXNlci9zcmMvcHJvamVjdA==:mac=35cb909805c380336efd3689a125acc774a9dec8422a1d21492ebec06ca758e1\x1b\\" },
+        .{ &.{ "resume-wrap", "ssh", "devbox" }, "", 90412, "\x1b]7577;pid=90412:time=1795543200:argv=cmVzdW1lLXdyYXA=,c3No,ZGV2Ym94:mac=e76149d0ba54a83570ffab0583867dacdfa23928ba9d18604f0badea88b62b65\x1b\\" },
+        .{ &.{}, "", 74877, clear },
+        // A clear leaves out the cwd.
+        .{ &.{}, "/home", 74877, clear },
+        // A command the protocol cannot carry clears instead: one row per rule.
+        .{ &.{"./run.sh"}, "", 74877, clear },
+        .{ &.{"-x"}, "", 74877, clear },
+        .{ &.{""}, "", 74877, clear },
+        .{ &.{"lazygit"}, "project", 74877, clear },
+        .{ &.{ "nvim", "line\nbreak" }, "", 74877, clear },
+        .{ &.{ "nvim", "\xc2\x9b" }, "", 74877, clear },
+        .{ &.{ "nvim", "\xff" }, "", 74877, clear },
+        .{ &.{"nvim"}, "/tmp/line\nbreak", 74877, clear },
+        .{ &too_many, "", 74877, clear },
+        .{ &too_long, "", 74877, clear },
+    }) |case| {
+        try f.value.control(.{ .program_resume = .{ .token = token, .pid = case[2], .time = 1795543200, .argv = case[0], .cwd = case[1] } });
+        try testing.expectEqualStrings(case[3], try f.drain(&bytes));
+    }
+    // Empty arguments after the program are kept, and the longest carried report is exactly the limit.
+    const longest_arg: [1458]u8 = @splat('x');
+    try f.value.control(.{ .program_resume = .{ .token = token, .pid = 100, .time = 1, .argv = &.{ "x", "", &longest_arg } } });
+    const resume_longest = try f.drain(&bytes);
+    try testing.expectEqual(session.program_resume_bytes_max, resume_longest.len);
+    try testing.expect(std.mem.startsWith(u8, resume_longest, "\x1b]7577;pid=100:time=1:argv=eA==,,eHh4"));
     const segment = utils.repeat(u8, "s", session.program_status_id_segment_bytes_max);
     try f.value.control(.{ .program_status = .{
         .state = .blocked,

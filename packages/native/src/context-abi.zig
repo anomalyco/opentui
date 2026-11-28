@@ -1369,7 +1369,7 @@ pub fn ot_session_control(
     if (options.abi_version != c.OT_CONTEXT_ABI_VERSION) return sessionError(owner, error.UnsupportedVersion);
     if (options.reserved != 0 or (byte_count != 0 and bytes_ptr == null)) return sessionError(owner, error.InvalidOptions);
     const payload = options.kind == c.OT_CONTROL_CAPABILITY_RESPONSE or options.kind == c.OT_CONTROL_TITLE or options.kind == c.OT_CONTROL_CURSOR or options.kind == c.OT_CONTROL_PALETTE_QUERY or
-        options.kind == c.OT_CONTROL_PROGRAM_STATUS;
+        options.kind == c.OT_CONTROL_PROGRAM_STATUS or options.kind == c.OT_CONTROL_PROGRAM_RESUME;
     const argument_max: u32 = switch (options.kind) {
         c.OT_CONTROL_MOUSE => @backingInt(@import("session.zig").MouseMode.motion),
         c.OT_CONTROL_KITTY_KEYBOARD_FLAGS => c.OT_KITTY_KEYBOARD_ALL,
@@ -1378,6 +1378,8 @@ pub fn ot_session_control(
     };
     if ((!payload and byte_count != 0) or options.argument > argument_max) return sessionError(owner, error.InvalidOptions);
     const bytes = if (bytes_ptr) |ptr| ptr[0..byte_count] else &.{};
+    // Program resume arguments; one past the limit already means the command cannot be carried.
+    var arguments: [@import("session.zig").program_resume_args_max + 1][]const u8 = undefined;
     const command: @import("session.zig").Control = switch (options.kind) {
         c.OT_CONTROL_CAPABILITY_RESPONSE => .{ .capability_response = bytes },
         c.OT_CONTROL_TITLE => .{ .title = bytes },
@@ -1438,6 +1440,32 @@ pub fn ot_session_control(
                 .app = text[app_start..title_start],
                 .title = text[title_start..message_start],
                 .message = text[message_start..],
+            } };
+        },
+        c.OT_CONTROL_PROGRAM_RESUME => blk: {
+            const header_len = @sizeOf(c.ot_session_program_resume);
+            if (bytes.len < header_len) return sessionError(owner, error.InvalidOptions);
+            var report: c.ot_session_program_resume = undefined;
+            @memcpy(std.mem.asBytes(&report), bytes[0..header_len]);
+            if (@as(u64, report.token_len) + report.cwd_len > bytes.len - header_len) return sessionError(owner, error.InvalidOptions);
+            const token_end = header_len + report.token_len;
+            const cwd_end = token_end + report.cwd_len;
+            // Each argument is a native-order u32 length and its bytes, exactly filling the rest.
+            var rest = bytes[cwd_end..];
+            for (0..report.argc) |index| {
+                if (rest.len < @sizeOf(u32)) return sessionError(owner, error.InvalidOptions);
+                const len = std.mem.bytesToValue(u32, rest[0..@sizeOf(u32)]);
+                if (len > rest.len - @sizeOf(u32)) return sessionError(owner, error.InvalidOptions);
+                if (index < arguments.len) arguments[index] = rest[@sizeOf(u32)..][0..len];
+                rest = rest[@sizeOf(u32) + len ..];
+            }
+            if (rest.len != 0) return sessionError(owner, error.InvalidOptions);
+            break :blk .{ .program_resume = .{
+                .token = bytes[header_len..token_end],
+                .pid = report.pid,
+                .time = report.time,
+                .argv = arguments[0..@min(report.argc, arguments.len)],
+                .cwd = bytes[token_end..cwd_end],
             } };
         },
         else => return sessionError(owner, error.InvalidOptions),
@@ -3455,6 +3483,19 @@ inline fn programStatus(comptime values: anytype, comptime text: []const u8) []c
     }
 }
 
+/// A well-formed clear report, signed with a valid token, unless values override its fields. text follows the header.
+inline fn programResume(comptime values: anytype, comptime text: []const u8) []const u8 {
+    comptime {
+        var report = std.mem.zeroes(c.ot_session_program_resume);
+        report.pid = 1;
+        report.time = 1;
+        report.token_len = 22;
+        for (@typeInfo(@TypeOf(values)).@"struct".field_names) |name| @field(report, name) = @field(values, name);
+        const bytes = std.mem.toBytes(report) ++ "dummy-token-replace-me".* ++ text[0..text.len].*;
+        return &bytes;
+    }
+}
+
 test "Context ABI Session control decodes kinds arguments and cursor records before admission" {
     const context = try createTestContext(.{ .object_capacity = 1, .render_cells_max = 16 });
     defer std.testing.expectEqual(c.OT_OK, ot_context_destroy(context)) catch unreachable;
@@ -3482,7 +3523,7 @@ test "Context ABI Session control decodes kinds arguments and cursor records bef
         .{ .kind = c.OT_CONTROL_TITLE, .bytes = "t", .reserved = 1 },
         .{ .kind = c.OT_CONTROL_TITLE, .null_bytes = true },
         .{ .kind = 0 },
-        .{ .kind = c.OT_CONTROL_END_REPLY_SENTINEL + 1 },
+        .{ .kind = c.OT_CONTROL_PROGRAM_RESUME + 1 },
         // The sentinel end, like the cursor, applies in any open phase and takes no argument.
         .{ .kind = c.OT_CONTROL_END_REPLY_SENTINEL, .argument = 1 },
         .{ .kind = c.OT_CONTROL_END_REPLY_SENTINEL, .bytes = "x" },
@@ -3499,6 +3540,14 @@ test "Context ABI Session control decodes kinds arguments and cursor records bef
         .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{ .message_len = 2 }, "m") },
         .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{ .id_len = 1 }, "id") },
         .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{ .id_len = std.math.maxInt(u32), .app_len = 2 }, "a") },
+        // Program resume records have exact token, cwd, and length-prefixed argument bytes.
+        .{ .kind = c.OT_CONTROL_PROGRAM_RESUME, .bytes = programResume(.{}, "")[1..] },
+        .{ .kind = c.OT_CONTROL_PROGRAM_RESUME, .bytes = programResume(.{ .token_len = 23 }, "") },
+        .{ .kind = c.OT_CONTROL_PROGRAM_RESUME, .bytes = programResume(.{ .token_len = std.math.maxInt(u32), .cwd_len = 2 }, "") },
+        .{ .kind = c.OT_CONTROL_PROGRAM_RESUME, .bytes = programResume(.{}, "x") },
+        .{ .kind = c.OT_CONTROL_PROGRAM_RESUME, .bytes = programResume(.{ .argc = 1 }, "\x01\x00") },
+        .{ .kind = c.OT_CONTROL_PROGRAM_RESUME, .bytes = programResume(.{ .argc = 1 }, &std.mem.toBytes(@as(u32, 2)) ++ "x") },
+        .{ .kind = c.OT_CONTROL_PROGRAM_RESUME, .bytes = programResume(.{ .argc = 2 }, &std.mem.toBytes(@as(u32, 1)) ++ "x") },
         // Cursor records have an exact size, known fields, bounded values, and zero unselected values.
         .{ .cursor = cursorUpdate(0, .{}), .argument = 1 },
         .{ .cursor = cursorUpdate(0, .{}), .cursor_size = @sizeOf(Cursor) - 1 },
@@ -5346,4 +5395,7 @@ comptime {
         session.program_status_id_segments_max != 8 or session.program_status_app_bytes_max != 32 or
         session.program_status_title_bytes_max != 192 or session.program_status_message_bytes_max != 2048)
         @compileError("opentui.h and program-status.mdx document the program status limits");
+    if (session.program_resume_token_bytes_min != 22 or session.program_resume_token_bytes_max != 64 or
+        session.program_resume_bytes_max != 2048 or session.program_resume_args_max != 64)
+        @compileError("opentui.h and program-resume.mdx document the program resume limits");
 }
