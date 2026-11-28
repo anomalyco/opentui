@@ -969,6 +969,33 @@ describe("TextTableRenderable", () => {
     expect(rendererSelection?.getSelectedText()).not.toContain("│")
   })
 
+  test.each([
+    [2, 7, "beta"],
+    [3, 7, "alpha beta gamma"],
+    [2, 13, "beta gamma"],
+  ] as const)("%i-click selection to offset %i respects word and line boundaries", async (clicks, offset, expected) => {
+    const table = new TextTableRenderable(renderer, {
+      columnWidthMode: "content",
+      content: [[cell("neighbor"), cell("alpha beta gamma")]],
+    })
+
+    renderer.root.add(table)
+    await renderOnce()
+
+    const point = findTextPoint(captureFrame(), "alpha beta gamma")
+    for (let click = 1; click < clicks; click++) {
+      await mockMouse.click(point.x + 7, point.y)
+    }
+    if (offset === 7) {
+      await mockMouse.click(point.x + 7, point.y)
+    } else {
+      await mockMouse.drag(point.x + 7, point.y, point.x + offset, point.y)
+    }
+    await renderOnce()
+
+    expect(renderer.getSelection()?.getSelectedText()).toBe(expected)
+  })
+
   test("keeps partial selection when focus stays in the anchor cell", async () => {
     const table = new TextTableRenderable(renderer, {
       left: 0,
