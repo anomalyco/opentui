@@ -2,7 +2,7 @@
   "format": [
     "Input maxLength conformance vectors. Core (Input.test.ts) and Rust (tests/widgets.rs) run this file. A row is [name, value, maxLength, select, insert, expected, issue?].",
     "The input gets value and maxLength in each order the binding allows, Shift+Left selects `select` characters left of the end, and insert replaces the selection. expected is the value it holds.",
-    "maxLength counts UTF-16 code units. A cut never splits a character: a character that does not fit whole is left out."
+    "maxLength counts UTF-16 code units. A cut never splits a grapheme cluster: a cluster that does not fit whole is left out."
   ],
   "rows": [
     ["ASCII value", "hello world", 5, 0, "", "hello"],
@@ -18,6 +18,11 @@
     ["a selected emoji frees two units", "ab😀", 4, 1, "xyz", "abxy", "529"],
     ["a two-cell CJK selection frees one unit", "a界", 2, 1, "xy", "ax"],
     ["a one-cell combining sequence frees two units", "ae\u0301", 3, 1, "xyz", "axy"],
-    ["newlines go before the cut", "a\nbc", 3, 0, "", "abc", "529"]
+    ["newlines go before the cut", "a\nbc", 3, 0, "", "abc", "529"],
+    ["a flag across the limit", "a🇺🇸", 3, 0, "", "a"],
+    ["a skin tone modifier across the limit", "ab👍🏽", 4, 0, "", "ab"],
+    ["a ZWJ sequence across the limit", "a👨\u200d👩\u200d👧", 4, 0, "", "a"],
+    ["a combining sequence across the limit", "ae\u0301", 2, 0, "", "a"],
+    ["an inserted flag with three units of room", "a", 4, 0, "🇺🇸", "a"]
   ]
 }
