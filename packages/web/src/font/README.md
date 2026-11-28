@@ -7,7 +7,7 @@ built on [Iosevka](https://github.com/be5invis/Iosevka) by Renzhi Li
 
 The site does not compile the typeface. The files in `public/fonts/` are
 the WOFF2 files that the OpenCode website serves. That website makes them
-from the OpenMono 1.000 build with `services/site/script/openmono.py` in
+from the OpenMono 1.001 build with `services/site/script/openmono.py` in
 `anomalyco/opencode`. The files have no ligatures. Each character is one
 cell wide, and that includes arrows and geometric shapes.
 
@@ -15,8 +15,9 @@ Each style is split by `unicode-range`, so a page loads only the files that
 its text needs:
 
 - `latin`: Latin, punctuation, arrows, shortcut keys such as `⌘` and `⇧`,
-  box drawing, block elements, geometric shapes, and common symbols such
-  as `✓`, `⚠`, and `≠`. Pages preload the Regular file.
+  box drawing, block elements, geometric shapes, common symbols such as
+  `✓`, `⚠`, and `≠`, and the OpenCode logo (U+10C0DE). Pages preload the
+  Regular file.
 - `cyrillic`: Cyrillic and its stress marks (U+0300 to U+0301).
 - `rest`: the other characters, such as Greek, Vietnamese, Armenian, the
   other math operators, and combining marks.
