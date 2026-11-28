@@ -118,7 +118,8 @@ export class SelectRenderable extends Renderable {
     try {
       this._options = options.options || []
       const requestedIndex = options.selectedIndex ?? this._defaultOptions.selectedIndex
-      this._selectedIndex = this._options.length > 0 ? Math.min(requestedIndex, this._options.length - 1) : 0
+      this._selectedIndex =
+        this._options.length > 0 ? Math.min(Math.max(0, requestedIndex), this._options.length - 1) : 0
       this._backgroundColor = RGBA.clone(parseColor(options.backgroundColor || this._defaultOptions.backgroundColor))
       this._textColor = RGBA.clone(parseColor(options.textColor || this._defaultOptions.textColor))
       this._focusedBackgroundColor = RGBA.clone(
@@ -273,7 +274,7 @@ export class SelectRenderable extends Renderable {
     } else if (this._wrapSelection && this._options.length > 0) {
       this._selectedIndex = 0
     } else {
-      this._selectedIndex = this._options.length - 1
+      this._selectedIndex = this._options.length > 0 ? this._options.length - 1 : 0
     }
 
     this.updateScrollOffset()

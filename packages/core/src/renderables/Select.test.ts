@@ -118,6 +118,18 @@ describe("SelectRenderable", () => {
       expect(select.getSelectedOption()).toBe(null)
     })
 
+    test("should keep selectedIndex at 0 when moveDown on empty options", async () => {
+      const { select } = await createSelectRenderable(currentRenderer, {
+        width: 20,
+        height: 5,
+        options: [],
+      })
+
+      select.moveDown()
+      expect(select.getSelectedIndex()).toBe(0)
+      expect(select.getSelectedOption()).toBe(null)
+    })
+
     test("should clamp selectedIndex to valid range", async () => {
       const { select } = await createSelectRenderable(currentRenderer, {
         width: 20,
