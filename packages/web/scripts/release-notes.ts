@@ -16,7 +16,7 @@
 // The draft is based on the commits and pull requests since the previous release, the API changes, and the
 // changed documentation. opencode reads it and replies with the file; it can also read the repository and load the
 // writing-rsc and writing-ste skills. The reply must pass the release notes format check, or the draft is retried
-// once with the problems. The draft uses Claude Opus 5.5 with high reasoning through OpenCode; set
+// once with the problems. The draft uses Gemini 4 Neon with high reasoning through OpenCode; set
 // OPENTUI_RELEASE_NOTES_MODEL (provider/model#variant) to choose another model.
 import { spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
@@ -33,7 +33,7 @@ const NOTES_ROOT = join(REPO_ROOT, "packages/web/src/content/docs/releases")
 const API_ROOT = join(REPO_ROOT, "api")
 const SITE = "https://opentui.com"
 const PULL_REQUEST_BODY_LIMIT = 3000
-const DEFAULT_MODEL = "opencode/claude-opus-5-5#high"
+const DEFAULT_MODEL = "opencode/gemini-4-neon#high"
 const COMMANDS = ["draft", "context", "github"]
 // The draft reads the repository and loads the writing skills, and nothing else: the context quotes contributors'
 // pull request descriptions. OpenCode applies the rules on the private server of `opencode run --standalone`.
